@@ -64,7 +64,13 @@
        (D-06 / R-1): cursor-pointer + a stable id, but NO click binding in Phase 58 (row->record is
        Phase 61). Reads the Phase-57.1 mid-flight signal (fine_windows_analyzed/total) only. #}
     <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
-        {% set columns = ["File", "Duration", "Lane", "State"] %}
+        {# Phase 87 (87-05, UI-01 cutover): this column is DERIVED window-progress text (window N/M ·
+           running · pending (quota) · complete), NEVER a raw FileRecord.state render -- so the raw-enum
+           "State" surface the anti-feature table forbids does not live here. Renamed "State" -> "Progress"
+           to make that explicit; the canonical per-stage status pill matrix is on the files table. The
+           `f.state == '...'` lines below are pure COMPARISONS driving friendly words (WORK-04 mid-flight
+           signal), not raw-enum renders -- test_no_raw_state_render.py filters those out. #}
+        {% set columns = ["File", "Duration", "Lane", "Progress"] %}
         {% set lane_badges = {
             'local': ('🖥️ local', 'text-emerald-600 dark:text-emerald-300'),
             'a1': ('☁️ A1', 'text-blue-600 dark:text-blue-300'),

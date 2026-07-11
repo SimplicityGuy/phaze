@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -321,11 +322,12 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
 
 
 async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, int]:
-    """Return the four-way ``{not_started, in_flight, done, failed}`` count for ``stage``, degrade-safe.
+    """Return the five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
 
     ONE ``GROUP BY stage_status_case(stage)`` scoped to music/video files. Because every music/video
-    file resolves to exactly one of the four :func:`phaze.services.stage_status.stage_status_case`
-    buckets (precedence ``in_flight ≻ done ≻ failed ≻ not_started``), the four counts SUM to
+    file resolves to exactly one of the five :func:`phaze.services.stage_status.stage_status_case`
+    buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``; ``skipped`` is the
+    Phase-87 force-skip marker, enrich-only), the five counts SUM to
     ``music_video_total`` on a healthy query. Reuses the LOCKED ``stage_status_case`` ``CASE`` ladder
     verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
     equivalence lock (and, transitively, the Python resolver).
@@ -334,7 +336,7 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     ANY exception this logs a warning, guarded-rolls-back the aborted transaction (so a Postgres
     "current transaction is aborted" state cannot poison the later stage COUNTs), and returns the
     all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
-    degrade the four buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
+    degrade the five buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
     invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
     """
     out: dict[str, int] = {s.value: 0 for s in Status}
@@ -369,16 +371,16 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     (READ-02, D-05) removed the former state-grouped ``get_pipeline_stats`` entirely; the stats path
     now derives its seven keys from THIS function (no ``FileRecord.state`` read).
 
-    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FOUR-BUCKET shape
-    ``{not_started, in_flight, done, failed, total}`` (Phase 82); every OTHER node keeps
+    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FIVE-BUCKET shape
+    ``{not_started, in_flight, done, skipped, failed, total}`` (Phase 82 + Phase-87 ``skipped``); every OTHER node keeps
     ``{"done": int, "total": int | None}``:
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
-    - ``metadata``    -- FOUR-BUCKET via ``stage_status_case(METADATA)`` over music/video files
+    - ``metadata``    -- FIVE-BUCKET via ``stage_status_case(METADATA)`` over music/video files
       (:func:`_safe_bucket_counts`); ``done`` = row present + ``failed_at`` NULL; total = music/video count
-    - ``fingerprint`` -- FOUR-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
+    - ``fingerprint`` -- FIVE-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
       ('success','completed'); ``failed`` = failed-only (no success); total = music/video count
-    - ``analyze``     -- FOUR-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
+    - ``analyze``     -- FIVE-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
       ``analysis_completed_at`` NOT NULL (a partial in-flight row is ``in_flight``, not done); total = music/video count
     - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
@@ -431,9 +433,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
-        # Phase 82 (READ-02, D-04/D-05): the three enrich nodes are FOUR-BUCKET
-        # ({not_started, in_flight, done, failed} + total) via one GROUP BY stage_status_case(stage)
-        # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the four buckets sum
+        # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the three enrich nodes are FIVE-BUCKET
+        # ({not_started, in_flight, done, skipped, failed} + total) via one GROUP BY stage_status_case(stage)
+        # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
         "metadata": {**await _safe_bucket_counts(session, Stage.METADATA), "total": music_video_total},
@@ -583,6 +585,65 @@ async def get_live_job_keys(session: AsyncSession) -> set[str]:
         logger.warning("live_job_keys_degraded", exc_info=True)
         return set()
     return {row[0] for row in rows}
+
+
+async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
+    """Return the per-enrich-stage orphaned/stuck (recovery-candidate) count, degrade-safe (Phase 87, UI-05/D-05).
+
+    orphan(stage) = the number of ``scheduling_ledger`` rows for the stage's function that are NEITHER
+    live (a queued/active ``saq_jobs`` key) NOR domain-completed NOR owned by an in-flight ``cloud_job``
+    -- i.e. EXACTLY the set :func:`phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for
+    that stage. Parity with recovery is DEFINITIONAL (T-87-31 / OQ-2): this reuses recovery's OWN
+    classification predicate (``is_domain_completed`` + the per-stage done-set derivation
+    ``_build_done_sets`` + the in-flight cloud exclusion ``_in_flight_cloud_job_ids``) rather than
+    re-deriving the done clauses here, so the amber rail badge can never drift from what recovery does.
+
+    Returns ``{metadata, analyze, fingerprint}`` -> int (the three :data:`STAGE_TO_FUNCTION` enrich
+    functions ``extract_file_metadata`` / ``process_file`` / ``fingerprint_file``); ``push_file`` /
+    ``scan_live_set`` / the controller functions are NOT part of the per-enrich badge.
+
+    No staleness threshold is used, so the naive-``enqueued_at`` footgun (Pitfall 4, project memory)
+    never bites here -- the only naive/aware comparison is the D-10 metadata cell inside
+    ``is_domain_completed``, which already coerces the naive ledger stamp to UTC-aware (CR-02).
+
+    Failure isolation (T-87-28): the whole derivation runs inside a SAVEPOINT
+    (``session.begin_nested()``); on ANY DB error the nested scope is rolled back ALONE -- recovering
+    the aborted Postgres transaction WITHOUT expiring the dashboard's already-loaded ORM objects (a
+    plain ``session.rollback()`` would 500 the page on the next lazy load) -- and the all-zero default
+    is returned. It NEVER raises into the hot 5s /pipeline/stats poll. The ``reenqueue`` import is
+    FUNCTION-LOCAL: ``reenqueue`` imports :func:`get_live_job_keys` FROM this module, so a top-level
+    import would be circular; deferring it also keeps the agent-worker import boundary intact
+    (``reenqueue`` is control-only and must never be loaded merely by importing ``services.pipeline``).
+    """
+    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    try:
+        async with session.begin_nested():
+            # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
+            # preserve the control-only boundary (tests/test_task_split.py).
+            from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
+            from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
+                _build_done_sets,
+                _in_flight_cloud_job_ids,
+                _ledger_fids,
+                _natural_id,
+                is_domain_completed,
+            )
+
+            rows = await get_ledger_rows(session)
+            live = await get_live_job_keys(session)
+            done_sets = await _build_done_sets(session, _ledger_fids(rows))
+            in_flight = await _in_flight_cloud_job_ids(session)
+            for row in rows:
+                stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
+                if stage is None:
+                    continue  # push_file / scan_live_set / controller rows are not enrich badges
+                if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
+                    continue
+                out[stage] += 1
+    except Exception:
+        logger.warning("stage_orphan_counts_degraded", exc_info=True)
+        return {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    return out
 
 
 # Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
@@ -1675,3 +1736,107 @@ async def get_straggler_count(session: AsyncSession, threshold_sec: int) -> int:
         if started_ms is not None and (now_ms - started_ms) / 1000 > threshold_sec:
             count += 1
     return count
+
+
+# --------------------------------------------------------------------------------------------------
+# Phase 87 (87-04, UI-01 / D-02 / PERF-01): the scannable, per-row-derived files page.
+#
+# The operator's "where's this file at?" overview. Two anti-features are forbidden by the phase's
+# anti-feature table and BOTH are honoured here: (1) "rendering raw internal status strings" -- every
+# per-stage cell is the DERIVED stage_status_case bucket, never FileRecord.state; (2) "a stats poll
+# that scans the whole corpus" -- the query is LIMIT-bounded, keyset/offset-paginated, and NEVER emits
+# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The six correlated
+# stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
+# the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
+# --------------------------------------------------------------------------------------------------
+
+# The six pills the UI shows, in matrix order. The 7-stage -> 6-pill remap LANDMINE lives HERE and in
+# _stage_matrix.html: tracklist is omitted; Appr = REVIEW, Exec = APPLY. `.value` keys the row dict so
+# the template reads buckets.review for the Appr pill and buckets.apply for the Exec pill.
+_FILES_PAGE_STAGES: tuple[Stage, ...] = (
+    Stage.METADATA,
+    Stage.FINGERPRINT,
+    Stage.ANALYZE,
+    Stage.PROPOSE,
+    Stage.REVIEW,
+    Stage.APPLY,
+)
+
+
+@dataclass
+class FilesPageRow:
+    """One rendered file row: the ORM record + its six DERIVED per-stage buckets (keyed by Stage value)."""
+
+    file: FileRecord
+    buckets: dict[str, str]
+
+
+@dataclass
+class FilesPage:
+    """A bounded, derive-per-row page of files. ``has_next`` comes from a +1 sentinel row -- never a COUNT."""
+
+    rows: list[FilesPageRow] = field(default_factory=list)
+    page: int = 1
+    page_size: int = 25
+    has_next: bool = False
+
+
+def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None) -> Select[Any]:
+    """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
+
+    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by the
+    ``FileRecord.id`` PK index and LIMITed to ``page_size + 1`` (the sentinel that yields ``has_next``
+    with NO COUNT). Each ``stage_status_case`` is a correlated CASE over the Phase-77 partial indexes
+    (``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed`` / ``ix_fprint_success``),
+    so the derivation touches only the page rows. The optional ``stage``+``bucket`` filter is applied as
+    ``stage_status_case(stage) == bucket`` -- a pure ORM bound-param comparison (never f-string SQL,
+    T-87-14); the caller validates ``stage``/``bucket`` against the ``Stage``/``Status`` allowlists.
+    """
+    offset = (page - 1) * page_size
+    cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
+    stmt = select(FileRecord, *cols).order_by(FileRecord.id)
+    if stage is not None and bucket is not None:
+        stmt = stmt.where(stage_status_case(stage) == bucket)
+    # +1 sentinel -> has_next WITHOUT a whole-corpus COUNT (the T-87-11 DoS mitigation).
+    return stmt.offset(offset).limit(page_size + 1)
+
+
+async def get_files_page(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+    stage: Stage | None = None,
+    bucket: str | None = None,
+) -> FilesPage:
+    """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
+
+    Clamps ``page`` (>=1) and ``page_size`` (10..100), builds the bounded :func:`_files_page_stmt`, and
+    runs it inside a ``begin_nested()`` SAVEPOINT so ANY error (a DB hiccup, an aborted transaction, a
+    build-time raise) rolls back the nested scope ALONE, logs a warning, and returns a safe EMPTY page --
+    it NEVER 500s the poll (INFLIGHT-02 / D-00c / T-87-12). ``has_next`` is derived from the LIMIT+1
+    sentinel row, so pagination costs no COUNT. The six correlated ``stage_status_case`` columns are read
+    back into each row's ``buckets`` dict keyed by ``Stage`` value (metadata/fingerprint/analyze/propose/
+    review/apply) -- the derived buckets the ``_stage_pill`` cells render (never ``FileRecord.state``).
+
+    ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
+    wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
+    """
+    page = max(page, 1)
+    page_size = min(max(page_size, 10), 100)
+    try:
+        async with session.begin_nested():
+            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket)
+            result = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)
+        return FilesPage(rows=[], page=page, page_size=page_size, has_next=False)
+    has_next = len(result) > page_size
+    rows = [
+        FilesPageRow(
+            file=row[0],
+            buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
+        )
+        for row in result[:page_size]
+    ]
+    return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)

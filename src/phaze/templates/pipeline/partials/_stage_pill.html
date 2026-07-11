@@ -1,0 +1,29 @@
+{# Phase 87 (87-04, UI-01 / D-01 / D-08): the five-bucket stage-status token.
+
+   Based on scan_status_pill.html's pill geometry (text-xs font-semibold px-2 py-0.5
+   rounded-full bg-{hue}-100 dark:bg-{hue}-950 text-{hue}-700 dark:text-{hue}-400 -- py-0.5
+   is the documented project-wide pill spacing exception), extended to the UI-SPEC five-bucket
+   token table. Color is NEVER the sole channel (WCAG 1.4.1): every branch carries a distinct
+   GLYPH shape, a human WORD, and an aria-label -- a colorblind operator reads the matrix in
+   both themes. skipped is deliberately unlike done (violet + prohibition glyph + dashed ring,
+   never a solid green check) so a force-skip can never read as genuine completion (D-08 honesty).
+
+   Params (set by the caller, e.g. via {% with %} before the include):
+     * stage_label -- the human stage name shown in the aria-label (Meta / FP / Analyze / ...).
+     * bucket      -- one of 'done' | 'in_flight' | 'not_started' | 'failed' | 'skipped'
+                      (the derived stage_status_case value; unknown -> not_started fallback).
+
+   Pure template: no HTMX, no self-poll. The stage_label crosses only trusted-constant text
+   (column labels), and bucket is a derived enum value -- both autoescape.
+#}
+{% if bucket == 'done' %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400" aria-label="{{ stage_label }}: done"><span aria-hidden="true">✓</span> done</span>
+{% elif bucket == 'in_flight' %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 animate-pulse" aria-label="{{ stage_label }}: in flight"><span aria-hidden="true">●</span> in flight</span>
+{% elif bucket == 'failed' %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400" aria-label="{{ stage_label }}: failed"><span aria-hidden="true">✗</span> failed</span>
+{% elif bucket == 'skipped' %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60" aria-label="{{ stage_label }}: skipped (force-completed)"><span aria-hidden="true">⊘</span> skipped</span>
+{% else %}
+<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400" aria-label="{{ stage_label }}: not started"><span aria-hidden="true">—</span> not started</span>
+{% endif %}

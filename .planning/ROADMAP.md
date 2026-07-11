@@ -30,7 +30,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 84: Dedup & Fingerprint-Progress Cutover** — `services/dedup.py` + `get_fingerprint_progress` derive from the dedup marker / output tables; resolve/undo preserved (READ-04, SIDECAR-02) (completed 2026-07-10)
 - [x] **Phase 85: EXECUTED-Gate Revival** — the dead `state == EXECUTED` gates revived against the real apply-outcome (`applied(f)` predicate); turns tag/CUE writing on for the first time — **own PR, live-UAT-worthy, not bundled** (READ-05) (completed 2026-07-10)
 - [x] **Phase 86: Proposals Cutover** — `proposals.status` becomes the sole authority; the redundant `FileRecord.state` cascade (`_TERMINAL_FILE_STATES`) deleted, dissolving the `store_proposals` MOVED-regression bug (SIDECAR-03) (completed 2026-07-11)
-- [ ] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01)
+- [x] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01) (completed 2026-07-11)
 - [ ] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03)
 - [ ] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03)
 - [ ] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04)
@@ -275,7 +275,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
-| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
+| 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
@@ -559,7 +559,34 @@ Plans:
   4. The operator can force a stage to done / skip it for a specific file (so the `failed` bucket can converge), and an orphaned/stuck-work count is surfaced.
   5. The per-stage job-priority stepper (▲ raises priority / lowers the number; pause/resume too if likewise orphaned) is re-wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint.
 
-**Plans**: TBD
+**Plans**: 8 plans in 6 waves
+Plans:
+**Wave 1**
+
+- [x] 87-01-PLAN.md — `stage_skip` sidecar model + registry + additive migration 037 + migration test (UI-04, D-13a) [wave 1]
+
+**Wave 2** *(depends on 87-01)*
+
+- [x] 87-02-PLAN.md — Derivation twins: `skipped_clause` + Status.SKIPPED threaded into stage_status_case/eligible_clause/domain_completed_clause + Python twin (UI-04, D-08/D-10) [wave 2]
+
+**Wave 3** *(depends on 87-02)*
+
+- [x] 87-03-PLAN.md — DERIV-04 harness extension + pending-set-drop/recovery guards + shadow-compare-green (UI-04, D-13c/d; behaviors 1-6) [wave 3]
+- [x] 87-04-PLAN.md — 5-bucket pill + 6-pill matrix + paginated degrade-safe `GET /pipeline/files` (UI-01; behavior 7) [wave 3]
+
+**Wave 4** *(depends on 87-04 / 87-02)*
+
+- [x] 87-05-PLAN.md — Status/failure filter bar (URL-carried) + retire raw-enum "State" + grep guard (UI-01, UI-02) [wave 4]
+- [x] 87-06-PLAN.md — Force-skip writer + single-row eligibility trace + right-pane matrix/dialog (UI-03, UI-04; behaviors 6/9/10) [wave 4]
+
+**Wave 5** *(depends on 87-04/05/06)*
+
+- [x] 87-07-PLAN.md — Per-file + bulk retry affordances (analyze manual-only) (UI-02; behavior 8) [wave 5]
+
+**Wave 6** *(depends on 87-07 / 87-02)*
+
+- [x] 87-08-PLAN.md — Orphan-count badge (recovery-parity, degrade-safe) + priority stepper/pause-resume re-wire (UI-05, PRIO-01) [wave 6]
+
 **UI hint**: yes
 
 ### Phase 88: Lane / Agent Drill-In
@@ -1498,6 +1525,7 @@ Plans:
 
 ## Backlog (unscheduled — no phase number yet)
 
+- **⚠ MILESTONE-CLOSE GATE (2026.7.5) — Bound the hot-poll cost of `get_stage_orphan_counts` (Phase 87 code-review WR-02).** _[Surfaced 2026-07-11 by the Phase 87 code review; MUST be resolved before `/gsd:complete-milestone 2026.7.5`.]_ `services/pipeline.py get_stage_orphan_counts` reuses recovery's full machinery on EVERY 5s `/pipeline/stats` tick: `get_ledger_rows` over the entire `scheduling_ledger` (~44.5K rows in the 2026-06-18 incident) + `_build_done_sets` + live-key + in-flight-cloud reads. It is SAVEPOINT degrade-safe (→ zeros on error), so it never 500s, but on a large ledger it can BLOCK — not just degrade — the hot poll. Steady-state the ledger is small (cleared on completion), so the badge is usually cheap; the risk is the post-incident large-ledger window. Fix options to weigh at planning: a cheaper bounded count query (per-stage `COUNT` of ledger-minus-done rather than materializing full sets), a short-TTL memoization across the poll fan-out, or capping the ledger scan. The orphan badge must stay "definitionally what recovery would re-enqueue" (no drift from `recover_orphaned_work`). Presentation stays; this is a read-path performance bound only.
 - **Distributed cloud analysis (burst the backlog).** _[SCHEDULED as v5.0 Cloud Burst Analysis, Phases 47-51 — narrowed to rsync-over-Tailscale to a free arm64 OCI A1 (essentia built from source), no object storage. See Phase Details (v5.0).]_ Offload long-file analysis to cloud x86 workers via the existing agent model: stage file to object storage → cloud worker pulls (presigned GET) → analyzes → PUTs result; **reconcile by `file_id`** (already end-to-end), sha256 for download integrity. Only new pieces: optional `source_url`+`sha256` on `ProcessFilePayload` + a "stager". essentia is **x86-only** (no aarch64 wheel; source build infeasible). Best near-free path = **GCP $300/90-day trial, x86 e2 spot, GCS same-region** (≈$0 out of pocket); min-cost paid = OCI E5 preemptible (~$100, free egress). **Gate: only pursue if nox throughput is still insufficient after the Phase 43 redeploy + re-measure** — bounding may make this moot. Full design: memory `reference-essentia-arm64-cloud-burst` + `project-analyze-4h-timeout-incident`.
 - **Partition the test suite for parallel CI.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 63 (CI-01/02/03). See Phase Details (2026.7.0).]_ Split the ~1750-test pytest suite into independently-runnable buckets so CI fans them out across parallel jobs instead of one serial run. Partition by **pipeline workflow-step** (discovery, metadata, fingerprint, analyze, identify/tracklist, review/apply, agents/distributed) plus a **generic/shared** bucket (schema, config, helpers, routing). Open questions to resolve at planning: marker-based selection (`@pytest.mark.<step>`) vs directory layout vs `pytest-xdist` sharding vs a CI job matrix; how to keep coverage aggregation correct across shards (combine `.coverage` files → single Codecov upload) and preserve the 85% gate; real-Postgres integration tests likely need their own bucket. Goal: cut wall-clock CI time without losing the single coverage report.
 - **Adopt CalVer ([calver.org](https://calver.org/)) for release versioning.** _[SCHEDULED as 2026.7.0 Engineering Improvements, Phase 65 (VER-01..04). See Phase Details (2026.7.0).]_ Replace the current milestone-aligned `vN.M` scheme (now at v7.0) with a calendar-based version. Decide the exact scheme at planning (e.g. `YYYY.MM.MICRO` or `YY.MM.MICRO`) and how it coexists with the milestone narrative (milestones become named, versions become dated). Update: the release procedure (pyproject `version` + `uv.lock` bump → annotated tag PUSH → GHCR publish — see memory `project-release-procedure`), README/version badges (one-line badge style), the milestone↔version mapping in ROADMAP/MILESTONES, and any image tags / compose references. Note the prior cadence shipped many `v4.0.x` patch releases — pick a MICRO convention that supports same-month patches.

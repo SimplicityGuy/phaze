@@ -35,6 +35,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services.pipeline import (
+    get_files_page,
     get_fingerprint_pending_files,
     get_match_pending_tracklists,
     get_metadata_pending_files,
@@ -75,6 +76,14 @@ STAGE_PARTIALS: dict[str, str] = {
     # path) that also acts as the dead-template guard's entry root. The stage has NO DB-backed
     # context -- `_render_stage` deliberately gives it no branch (zero reads, zero extra keys).
     "summary": "shell/partials/summary_placeholder.html",
+    # Phase 87 (87-09, UI-01/UI-02): the derived per-file stage-matrix files page -- the scannable
+    # "where's this file at?" overview -- surfaced as a first-class, reachable rail workspace. Its
+    # backing route GET /pipeline/files (pipeline.py) rendered this same partial but was UNREACHABLE
+    # from the shell (no nav entry, no full-page fork); this second reference makes it a real stage.
+    # A STATIC string literal (T-57-01: `stage` is NEVER spliced into a template path) that also
+    # doubles as a dead-template-guard entry root. Placed right after summary -- the file-level
+    # overview sibling of the stage-level Summary landing.
+    "files": "pipeline/partials/files_table_view.html",
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
     "discover": "pipeline/partials/discover_workspace.html",
@@ -192,6 +201,27 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
             # exclude kind="compute" (media-less burst backends) from the picker.
             agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
             context["agents"] = (await session.execute(agents_stmt)).scalars().all()
+    elif stage == "files":
+        # Phase 87 (87-09, UI-01/UI-02): the derived per-file stage-matrix files page, surfaced as a
+        # reachable rail workspace. Build the SAME context the standalone GET /pipeline/files route
+        # does (pipeline.pipeline_files): the bounded, per-page-derived, SAVEPOINT degrade-safe
+        # get_files_page over the default first page (stage/bucket filters are UNSET here -- the
+        # unfiltered overview; the _status_filter_bar in the partial drives filtering via
+        # /pipeline/files links). The three keys mirror the route verbatim. stage/stage_partial/
+        # oob_counts are re-asserted AFTER (defensive; the merge above only added base keys) so the
+        # files context can never shadow the shell fork discriminators.
+        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None)
+        context["active_stage"] = None
+        context["active_bucket"] = None
+        # 87-09 gap-fix: mounted as a WORKSPACE, so host the shared OOB seed-target placeholders (like
+        # every other workspace via _workspace_scaffold) — else the single chrome /pipeline/stats poll's
+        # OOB seeds (rail orphan badge, priority store, agent-busy gating) land nowhere on /s/files and log
+        # htmx:oobErrorNoTarget every 5s. The pipeline_files() filter/pagination endpoint omits this flag,
+        # so the fragment it swaps into #files-table-view never re-emits (and never duplicates) the seeds.
+        context["include_poll_seeds"] = True
+        context["stage"] = stage
+        context["stage_partial"] = STAGE_PARTIALS[stage]
+        context["oob_counts"] = False
     elif stage == "discover":
         # Phase 58 (58-02, WORK-01): the Discover workspace reuses the EXISTING recent-scans
         # data verbatim (build_recent_scans -- the SAME helper build_dashboard_context uses) and

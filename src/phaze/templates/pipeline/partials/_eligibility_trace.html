@@ -1,0 +1,31 @@
+{# Phase 87 (87-06, UI-03 / D-06/D-07): the per-file eligibility trace — the diagnostic whose
+   absence hid the deadlock. Revealed under the clicked stage pill (HTMX hx-get on the pill).
+
+   Context (from routers/pipeline.eligibility_trace):
+     * unavailable  -- truthy → the degrade line ("Trace unavailable this tick."); nothing else.
+     * verdict      -- "{Stage} — eligible (in the pending set)" | "{Stage} — NOT eligible".
+     * eligible     -- bool; tints the verdict green (eligible) or amber (blocked).
+     * conjuncts    -- ordered list of {question, ok (bool ✓/✗), phrase, blocker (bool)}.
+
+   Trust boundary: every field is a server-derived enum/bool/fixed phrase (NO operator free text —
+   the skip reason is never echoed here, T-87-21). All values autoescape through Jinja.
+   Status is word + glyph, never hue-only (WCAG 1.4.1). role="status" aria-live so the revealed
+   verdict is announced. #}
+<div role="status" aria-live="polite"
+     class="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-phaze-border dark:bg-phaze-panel">
+{% if unavailable %}
+    <p class="text-gray-400 dark:text-gray-500">Trace unavailable this tick.</p>
+{% else %}
+    <p class="font-semibold {{ 'text-green-700 dark:text-green-400' if eligible else 'text-amber-700 dark:text-amber-300' }}">{{ verdict }}</p>
+    <ul class="mt-2 space-y-1 font-mono text-[13px]">
+    {% for c in conjuncts %}
+        <li class="flex items-baseline gap-2 {{ 'font-semibold text-gray-900 dark:text-gray-100' if c.blocker else 'text-gray-600 dark:text-gray-400' }}">
+            <span class="w-24 shrink-0 text-gray-500 dark:text-gray-400">{{ c.question }}</span>
+            <span aria-hidden="true" class="{{ 'text-green-600 dark:text-green-400' if c.ok else 'text-red-600 dark:text-red-400' }}">{{ '✓' if c.ok else '✗' }}</span>
+            <span>{{ c.phrase }}</span>
+            {% if c.blocker %}<span class="font-semibold text-red-600 dark:text-red-400">← blocker</span>{% endif %}
+        </li>
+    {% endfor %}
+    </ul>
+{% endif %}
+</div>

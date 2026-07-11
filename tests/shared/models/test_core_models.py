@@ -44,6 +44,7 @@ def test_all_tables_defined() -> None:
         "cloud_job",
         "route_control",  # Phase 71 (71-02, BEUI-02): force-local control row (migration 031)
         "dedup_resolution",  # Phase 77 (77-02, D-07): dedup marker sidecar (migration 032)
+        "stage_skip",  # Phase 87 (87-01, D-13): force-skip marker sidecar (migration 037)
     }
     assert expected == table_names
 

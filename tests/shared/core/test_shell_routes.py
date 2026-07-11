@@ -34,10 +34,12 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
 
 
-# The 13 navigable rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
-# Summary landing node prepended), each wired to /s/<id>.
+# The 14 navigable rail-node ids (VERBATIM prototype RAIL order, with the quick-260707-sq3
+# Summary landing node prepended and the Phase-87 87-09 Files stage-matrix overview inserted
+# right after it), each wired to /s/<id>.
 _RAIL_STAGES = [
     "summary",
+    "files",
     "discover",
     "metadata",
     "fingerprint",
@@ -123,6 +125,74 @@ async def test_summary_stage_route_and_fragment(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_files_stage_route_and_fragment(client: AsyncClient, make_file) -> None:  # type: ignore[no-untyped-def]
+    """UI-01/UI-02 (87-09) -- /s/files serves the full shell on direct nav and a bare fragment on an HX swap.
+
+    The derived per-file stage-matrix files page was fully built + tested (87-04) but UNREACHABLE:
+    no rail entry pointed at it and a direct hit on /pipeline/files returned a chrome-less fragment.
+    Surfacing it as a real rail stage inherits the _render_stage fork for free -- a direct navigation
+    gets the full shell.html chrome (with the workspace stage marker) and an HX rail swap gets the
+    bare, content-only files_table_view.html. Seed one file so the derived matrix actually renders a
+    row (a _stage_pill), not just the empty state.
+    """
+    await make_file()
+
+    full = await client.get("/s/files")
+    assert full.status_code == 200
+    full_body = full.text
+    # Full shell chrome: the persistent swap target with the files stage marker on it.
+    assert 'id="stage-workspace"' in full_body
+    assert 'data-stage="files"' in full_body
+    # The distinctive derived-matrix markup: the files table root + at least one rendered stage pill.
+    assert 'id="files-table-view"' in full_body
+    assert "aria-label=" in full_body and "not started" in full_body  # a _stage_pill token rendered a row
+
+    hx = await client.get("/s/files", headers={"HX-Request": "true"})
+    assert hx.status_code == 200
+    fragment = hx.text
+    # The files matrix rides in as content-only: no document wrapper / head (a rail swap never injects
+    # duplicate landmarks or skip-links -- the chrome persists across swaps).
+    assert 'id="files-table-view"' in fragment
+    assert "<html" not in fragment
+    assert "<head" not in fragment
+
+
+@pytest.mark.asyncio
+async def test_files_rail_node_is_reachable_and_accessible(client: AsyncClient) -> None:
+    """UI-01 (87-09) -- the shipped shell exposes a keyboard-accessible Files rail node wired to /s/files.
+
+    The gap this closes: the files matrix was unreachable because NOTHING navigated to it. Assert the
+    rail carries a Files node whose hx-get points at /s/files, that it is a native <button> (keyboard-
+    operable, focus-visible) carrying its visible+sr-only label, an aria-hidden glyph, a title tooltip,
+    and the aria-current binding -- matching the sibling nav nodes' a11y exactly.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    # The Files node is wired to the reachable route.
+    assert 'hx-get="/s/files"' in body
+
+    # Locate the Files node's opening <button ...> tag and assert its a11y contract.
+    node = re.search(r'<button\b[^>]*data-rail-stage="files"[^>]*>', body, re.DOTALL)
+    assert node is not None, 'no data-rail-stage="files" nav <button> in the rail'
+    attrs = node.group(0)
+    assert 'hx-get="/s/files"' in attrs, "Files node not wired to /s/files"
+    assert 'hx-target="#stage-workspace"' in attrs and 'hx-push-url="true"' in attrs
+    assert 'title="Files"' in attrs, "Files node missing its native title tooltip"
+    assert "focus-visible:" in attrs, "Files node missing a focus-visible ring (keyboard a11y)"
+
+    # The label span carries max-lg:sr-only (screen-reader-navigable when collapsed), NEVER max-lg:hidden.
+    label = re.search(r'data-rail-stage="files".*?<span[^>]*>Files</span>', body, re.DOTALL)
+    assert label is not None, "Files node missing its 'Files' label span"
+    assert "max-lg:sr-only" in label.group(0), "Files label must collapse via max-lg:sr-only (CUT-04 ↔ CUT-01)"
+    assert "max-lg:hidden" not in label.group(0), "Files label must NOT use max-lg:hidden (strips it from the a11y tree)"
+    # An aria-hidden inline-SVG glyph rides between the button open tag and the label.
+    glyph = re.search(r'data-rail-stage="files".*?<svg[^>]*aria-hidden="true"[^>]*>', body, re.DOTALL)
+    assert glyph is not None, "Files node missing its aria-hidden inline-SVG glyph"
+
+
+@pytest.mark.asyncio
 async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
     """SHELL-02 -- /s/<stage> is a bare fragment on an HX request, the full shell on direct nav (D-01)."""
     hx = await client.get("/s/discover", headers={"HX-Request": "true"})
@@ -149,7 +219,7 @@ async def test_unknown_stage_404(client: AsyncClient) -> None:
 async def test_rail_nodes_wired(client: AsyncClient) -> None:
     """SHELL-02 -- every navigable rail node carries the HTMX swap wiring; summary is active.
 
-    The DAG rail is the nav spine: each of the 13 nodes swaps ONLY ``#stage-workspace``
+    The DAG rail is the nav spine: each of the 14 nodes swaps ONLY ``#stage-workspace``
     (innerHTML) via ``/s/<id>`` with ``hx-push-url``. The ``/`` default marks the summary node
     ``aria-current="page"`` (quick 260707-sq3 -- it was analyze before the landing repoint).
     """
@@ -157,7 +227,7 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
     assert response.status_code == 200
     body = response.text
 
-    # Every navigable node carries hx-get="/s/<id>" for all 13 rail-order stages.
+    # Every navigable node carries hx-get="/s/<id>" for all 14 rail-order stages.
     for stage in _RAIL_STAGES:
         assert f'hx-get="/s/{stage}"' in body, f"rail node {stage} missing hx-get wiring"
 
@@ -165,7 +235,7 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
     assert 'hx-target="#stage-workspace"' in body
     assert 'hx-swap="innerHTML"' in body
     assert 'hx-push-url="true"' in body
-    # Exactly one swap-target attr per navigable stage node (the 13 /s/ stages).
+    # Exactly one swap-target attr per navigable stage node (the 14 /s/ stages).
     assert body.count('hx-target="#stage-workspace"') >= len(_RAIL_STAGES)
 
     # The summary node (the / default) is the active rail node: aria-current="page" sits on

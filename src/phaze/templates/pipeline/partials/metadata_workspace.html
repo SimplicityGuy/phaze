@@ -37,17 +37,19 @@
     {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
     <div id="metadata-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     <div class="p-6">
-        {% set columns = ["File", "Format", "Size", "Existing tags", "State"] %}
+        {# Phase 87 (87-05, UI-01 cutover): the raw-enum "State" column is RETIRED here -- it rendered
+           FileRecord.state directly ({'text': f.state}), which the anti-feature table forbids ("rendering
+           raw internal status strings"). Per-stage status now lives in ONE canonical home: the derived
+           _stage_matrix pill row on the files table (files_table_view.html). test_no_raw_state_render.py
+           guards this so the raw render can never silently return. #}
+        {% set columns = ["File", "Format", "Size", "Existing tags"] %}
         {% set ns = namespace(rows=[]) %}
         {% for f in metadata_files %}
-            {% set extracted = f.state in ("metadata_extracted", "fingerprinted", "analyzed") %}
-            {% set state_color = 'text-emerald-600 dark:text-emerald-300' if extracted else 'text-gray-500 dark:text-gray-400' %}
             {% set _ = ns.rows.append([
                 {'text': f.original_filename, 'mono': True, 'title': f.original_path},
                 {'text': f.file_type},
                 {'text': f.file_size | filesizeformat, 'mono': True},
                 {'text': '—'},
-                {'text': f.state, 'color': state_color},
             ]) %}
         {% endfor %}
         {% set rows = ns.rows %}

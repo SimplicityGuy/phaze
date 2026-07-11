@@ -54,6 +54,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -178,6 +179,21 @@ async def seed_analysis_failed_inflight(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
+async def seed_analysis_skipped_over_failed(session: AsyncSession) -> uuid.UUID:
+    """D-08 precedence cell: a terminally-failed analyze + a ``stage_skip`` marker derives SKIPPED not FAILED.
+
+    The force-skip writer is ADDITIVE (never clears ``failed_at``), so ``failed_clause`` is still True --
+    the CASE / branch order ``done ≻ skipped ≻ failed`` (not the writer) is what makes ``skipped`` win
+    (Pitfall 2). This is the single load-bearing precedence cell of Plan 03.
+    """
+    fid = await _new_file(session)
+    session.add(AnalysisResult(file_id=fid, failed_at=datetime.now(UTC)))  # terminally failed
+    await session.flush()
+    session.add(StageSkip(file_id=fid, stage="analyze", reason="corrupt source"))  # additive marker
+    await session.flush()
+    return fid
+
+
 async def seed_metadata_none(session: AsyncSession) -> uuid.UUID:
     return await _new_file(session)
 
@@ -199,6 +215,14 @@ async def seed_metadata_failed_only(session: AsyncSession) -> uuid.UUID:
 async def seed_metadata_inflight(session: AsyncSession) -> uuid.UUID:
     fid = await _new_file(session)
     await _seed_ledger(session, Stage.METADATA, fid)
+    return fid
+
+
+async def seed_metadata_skipped(session: AsyncSession) -> uuid.UUID:
+    """D-08: a ``stage_skip(metadata)`` marker on an otherwise not-started file derives SKIPPED."""
+    fid = await _new_file(session)
+    session.add(StageSkip(file_id=fid, stage="metadata", reason="operator force-skip"))
+    await session.flush()
     return fid
 
 
@@ -233,6 +257,14 @@ async def seed_fp_failed_only(session: AsyncSession) -> uuid.UUID:
 async def seed_fp_inflight(session: AsyncSession) -> uuid.UUID:
     fid = await _new_file(session)
     await _seed_ledger(session, Stage.FINGERPRINT, fid)
+    return fid
+
+
+async def seed_fp_skipped(session: AsyncSession) -> uuid.UUID:
+    """D-08: a ``stage_skip(fingerprint)`` marker on an otherwise not-started file derives SKIPPED."""
+    fid = await _new_file(session)
+    session.add(StageSkip(file_id=fid, stage="fingerprint", reason="operator force-skip"))
+    await session.flush()
     return fid
 
 
@@ -310,17 +342,20 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
     (Stage.ANALYZE, seed_analysis_completed, "done"),
     (Stage.ANALYZE, seed_analysis_failed, "failed"),
     (Stage.ANALYZE, seed_analysis_failed_inflight, "in_flight"),  # precedence: ledger wins
+    (Stage.ANALYZE, seed_analysis_skipped_over_failed, "skipped"),  # D-08 skipped ≻ failed precedence
     # metadata
     (Stage.METADATA, seed_metadata_none, "not_started"),
     (Stage.METADATA, seed_metadata_done, "done"),
     (Stage.METADATA, seed_metadata_failed_only, "failed"),  # D-03 failure-only != done
     (Stage.METADATA, seed_metadata_inflight, "in_flight"),
+    (Stage.METADATA, seed_metadata_skipped, "skipped"),  # D-08 force-skip marker
     # fingerprint
     (Stage.FINGERPRINT, seed_fp_none, "not_started"),
     (Stage.FINGERPRINT, seed_fp_success, "done"),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, "done"),  # DERIV-05 aggregation
     (Stage.FINGERPRINT, seed_fp_failed_only, "failed"),  # ELIG-04 not-done
     (Stage.FINGERPRINT, seed_fp_inflight, "in_flight"),
+    (Stage.FINGERPRINT, seed_fp_skipped, "skipped"),  # D-08 force-skip marker
     # tracklist (downstream presence)
     (Stage.TRACKLIST, seed_tracklist_none, "not_started"),
     (Stage.TRACKLIST, seed_tracklist_done, "done"),
@@ -348,6 +383,17 @@ async def _ledger_inflight(session: AsyncSession, stage: Stage, file_id: uuid.UU
     return row.first() is not None
 
 
+async def _skipped_marker(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:
+    """Read the D-08 ``stage_skip`` marker for the enrich ``(file, stage)`` into the DB-free scalar shape.
+
+    Mirrors the SQL twin's :func:`phaze.services.stage_status.skipped_clause` correlated-``exists`` probe
+    (marker-row existence = the fact) so the Python side of the equivalence sees the SAME ``skipped``
+    bool the ``ColumnElement`` CASE ladder does.
+    """
+    row = (await session.execute(select(StageSkip.id).where(StageSkip.file_id == file_id, StageSkip.stage == stage.value))).first()
+    return row is not None
+
+
 async def load_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> dict[str, Any]:
     """Read the persisted rows into the DB-free scalar shape ``resolve_status`` consumes."""
     inflight = await _ledger_inflight(session, stage, file_id)
@@ -355,13 +401,23 @@ async def load_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) 
         row = (
             await session.execute(select(AnalysisResult.analysis_completed_at, AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))
         ).first()
-        return {"completed_at": row[0] if row else None, "failed_at": row[1] if row else None, "inflight": inflight}
+        return {
+            "completed_at": row[0] if row else None,
+            "failed_at": row[1] if row else None,
+            "inflight": inflight,
+            "skipped": await _skipped_marker(session, stage, file_id),
+        }
     if stage is Stage.METADATA:
         row = (await session.execute(select(FileMetadata.failed_at).where(FileMetadata.file_id == file_id))).first()
-        return {"row_present": row is not None, "failed_at": row[0] if row else None, "inflight": inflight}
+        return {
+            "row_present": row is not None,
+            "failed_at": row[0] if row else None,
+            "inflight": inflight,
+            "skipped": await _skipped_marker(session, stage, file_id),
+        }
     if stage is Stage.FINGERPRINT:
         rows = (await session.execute(select(FingerprintResult.status).where(FingerprintResult.file_id == file_id))).all()
-        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight}
+        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight, "skipped": await _skipped_marker(session, stage, file_id)}
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
         return {"row_present": present, "failed": False, "inflight": inflight}
@@ -448,15 +504,18 @@ DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uui
     (Stage.ANALYZE, seed_analysis_partial, False),  # completed_at NULL -> not_started -> not complete
     (Stage.ANALYZE, seed_analysis_completed, True),
     (Stage.ANALYZE, seed_analysis_failed, True),  # FAIL-01: analyze failure is TERMINAL
+    (Stage.ANALYZE, seed_analysis_skipped_over_failed, True),  # D-08: skipped is domain-complete (recovery must not re-run)
     # metadata -- terminal failure: a failure-only row IS domain-complete (recovery must not re-run).
     (Stage.METADATA, seed_metadata_none, False),
     (Stage.METADATA, seed_metadata_done, True),
     (Stage.METADATA, seed_metadata_failed_only, True),  # metadata failure is TERMINAL
+    (Stage.METADATA, seed_metadata_skipped, True),  # D-08: skipped is domain-complete
     # fingerprint -- NON-terminal failure: DONE completes, a failed-only row does NOT (auto-retries).
     (Stage.FINGERPRINT, seed_fp_none, False),
     (Stage.FINGERPRINT, seed_fp_success, True),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, True),  # DERIV-05: success wins -> done -> complete
     (Stage.FINGERPRINT, seed_fp_failed_only, False),  # FAIL-04: fingerprint failure is NOT terminal
+    (Stage.FINGERPRINT, seed_fp_skipped, True),  # D-08: skipped is domain-complete even though FP failure is not terminal
 ]
 
 
@@ -505,18 +564,21 @@ ELIGIBLE_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]]
     (Stage.METADATA, seed_metadata_done, False),
     (Stage.METADATA, seed_metadata_failed_only, True),  # ELIGIBLE_AFTER_FAILURE True -> stays eligible
     (Stage.METADATA, seed_metadata_inflight, False),
+    (Stage.METADATA, seed_metadata_skipped, False),  # D-08: a skipped stage leaves the pending set
     # fingerprint: same shape (ELIG-04 -- a failed-only fingerprint stays eligible for auto-retry).
     (Stage.FINGERPRINT, seed_fp_none, True),
     (Stage.FINGERPRINT, seed_fp_success, False),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, False),  # DERIV-05 success wins -> done -> ineligible
     (Stage.FINGERPRINT, seed_fp_failed_only, True),  # ELIG-04 failed-only stays eligible
     (Stage.FINGERPRINT, seed_fp_inflight, False),
+    (Stage.FINGERPRINT, seed_fp_skipped, False),  # D-08: a skipped stage leaves the pending set
     # analyze: eligible ONLY when NOT_STARTED -- a FAILED analyze is TERMINAL (ELIG-03, 44.5K guard).
     (Stage.ANALYZE, seed_analysis_none, True),
     (Stage.ANALYZE, seed_analysis_partial, True),  # completed_at NULL -> not_started -> eligible
     (Stage.ANALYZE, seed_analysis_completed, False),
     (Stage.ANALYZE, seed_analysis_failed, False),  # <- the load-bearing ELIG-03 carve-out cell
     (Stage.ANALYZE, seed_analysis_failed_inflight, False),  # precedence: ledger row -> in_flight -> ineligible
+    (Stage.ANALYZE, seed_analysis_skipped_over_failed, False),  # D-08: skipped ≻ failed, still leaves the pending set
 ]
 
 

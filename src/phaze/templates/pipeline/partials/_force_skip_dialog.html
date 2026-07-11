@@ -1,0 +1,61 @@
+{# Phase 87 (87-06, UI-04 / D-08/D-09/D-10): the enrich-only force-skip control + confirm dialog.
+
+   Rendered ONCE per ENRICH stage (metadata / fingerprint / analyze) from the record slide-in right
+   pane — propose/review/apply NEVER include this partial (the approval-bypass hazard, D-10). A
+   self-contained Alpine island: the "Force complete / skip" trigger + an x-trap focus-trap modal
+   (the record-slide-in / ⌘K idiom) with a REQUIRED reason textarea. Submit POSTs to the Task-1
+   writer (`POST /pipeline/files/{id}/skip/{stage}`); the pill flips to ⊘ skipped on the NEXT poll
+   tick (not optimistic), and the writer's success ack is an aria-live toast (hx-swap-oob).
+
+   Params (set via {% with %} before the include):
+     * stage_value -- the enrich stage: 'metadata' | 'fingerprint' | 'analyze'.
+     * stage_label -- the pill label (Meta / FP / Analyze) — informational only.
+     * file_id     -- the file UUID (path scope for the writer).
+
+   Copy is VERBATIM from the UI-SPEC Copywriting Contract. The confirm button is accent (Phaze
+   cyan) — it is gated, not deletion (D-09). Cancel takes default focus. The operator reason is
+   NEVER echoed back (T-87-21); every rendered value autoescapes.
+
+   HTMX↔Alpine bridge: the form targets an inline error box and swaps innerHTML. A 422 validation
+   response ("A reason is required.") is force-swapped into that box via before-swap (HTMX skips
+   non-2xx swaps by default); a 200 success closes the dialog via the @htmx:after-request listener
+   on the Alpine root (hx-on:: cannot reach the Alpine scope, so the bridge lives here). Closing is
+   routed through hide() so the reactive flag is toggled from ONE place. #}
+<div x-data="{ open: false, hide() { this.open = false } }" class="inline-flex"
+     @htmx:after-request="if ($event.detail.successful) hide()">
+    <button type="button"
+            aria-label="Force {{ stage_value }} complete for this file"
+            @click="open = true; $nextTick(() => $refs.cancel && $refs.cancel.focus())"
+            class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium text-gray-500 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-400 dark:hover:text-gray-200">
+        Force complete / skip
+    </button>
+
+    <div x-show="open" style="display:none" class="fixed inset-0 z-50"
+         role="dialog" aria-modal="true" aria-label="Force {{ stage_value }} complete for this file"
+         @keydown.escape.window="hide()">
+        <div class="absolute inset-0 bg-black/60" @click="hide()"></div>
+        <div x-trap.noscroll="open"
+             class="absolute left-1/2 top-1/3 w-[440px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-phaze-border dark:bg-phaze-panel">
+            <h3 class="font-jura text-[15px] font-semibold uppercase tracking-wide text-gray-900 dark:text-gray-100">Force {{ stage_value }} complete for this file?</h3>
+            <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">This marks {{ stage_value }} as skipped so downstream stages can proceed. It is recorded as <code class="rounded bg-gray-100 px-1 font-mono text-xs dark:bg-phaze-bg">skipped</code>, not <code class="rounded bg-gray-100 px-1 font-mono text-xs dark:bg-phaze-bg">done</code> — it stays distinguishable from real completion forever. Enrich stages only.</p>
+
+            <form class="mt-4"
+                  hx-post="/pipeline/files/{{ file_id }}/skip/{{ stage_value }}"
+                  hx-target="#skip-error-{{ stage_value }}-{{ file_id }}"
+                  hx-swap="innerHTML"
+                  hx-on::before-swap="if (event.detail.xhr.status === 422) { event.detail.shouldSwap = true; }">
+                <label for="reason-{{ stage_value }}-{{ file_id }}" class="block text-sm font-semibold text-gray-700 dark:text-gray-200">Why are you skipping this? (required)</label>
+                <textarea id="reason-{{ stage_value }}-{{ file_id }}" name="reason" required rows="3"
+                          placeholder="e.g. corrupt source file, analyze crashes on this set"
+                          class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-100"></textarea>
+                <div id="skip-error-{{ stage_value }}-{{ file_id }}" aria-live="polite" class="mt-1 empty:hidden"></div>
+                <div class="mt-4 flex items-center justify-end gap-2">
+                    <button type="button" x-ref="cancel" @click="hide()"
+                            class="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-300 dark:hover:bg-white/5">Cancel</button>
+                    <button type="submit"
+                            class="rounded-lg bg-cyan-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 dark:bg-cyan-500 dark:hover:bg-cyan-400">Force complete / skip</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>

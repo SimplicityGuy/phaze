@@ -43,11 +43,19 @@ class Stage(enum.StrEnum):
 
 
 class Status(enum.StrEnum):
-    """The 4-way derived per-stage status (precedence ``in_flight ≻ done ≻ failed ≻ not_started``)."""
+    """The 5-way derived per-stage status (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``).
+
+    ``SKIPPED`` (D-08) is the reported bucket for a force-skipped enrich stage: a ``stage_skip`` marker
+    row exists for the ``(file, stage)`` pair. It is ordered ``done ≻ skipped ≻ failed`` — a completed
+    stage still reads DONE, but a skipped stage outranks a lingering failure (the writer is additive and
+    never clears ``failed_at``, so the ordering — not the writer — decides). Only the three enrich stages
+    ever carry it; the downstream stages stay 4-way.
+    """
 
     NOT_STARTED = "not_started"
     IN_FLIGHT = "in_flight"
     DONE = "done"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 
@@ -91,34 +99,40 @@ ELIGIBLE_AFTER_FAILURE: dict[Stage, bool] = {Stage.ANALYZE: False, Stage.METADAT
 # --------------------------------------------------------------------------------------------------
 # Per-stage resolver twins — each applies the DERIV-02 precedence ladder with ``inflight`` first.
 # --------------------------------------------------------------------------------------------------
-def _analyze_status(*, completed_at: Any, failed_at: Any, inflight: bool) -> Status:
+def _analyze_status(*, completed_at: Any, failed_at: Any, inflight: bool, skipped: bool = False) -> Status:
     """analyze: done iff ``analysis_completed_at IS NOT NULL`` (DERIV-03 — completed_at NULL != done)."""
     if inflight:
         return Status.IN_FLIGHT
     if completed_at is not None:
         return Status.DONE
+    if skipped:  # D-08: after done, before failed (load-bearing precedence — Pitfall 2)
+        return Status.SKIPPED
     if failed_at is not None:
         return Status.FAILED
     return Status.NOT_STARTED
 
 
-def _metadata_status(*, row_present: bool, failed_at: Any, inflight: bool) -> Status:
+def _metadata_status(*, row_present: bool, failed_at: Any, inflight: bool, skipped: bool = False) -> Status:
     """metadata: done requires a row present AND ``failed_at IS NULL`` (D-03 — failure-only row = FAILED)."""
     if inflight:
         return Status.IN_FLIGHT
     if row_present and failed_at is None:
         return Status.DONE
+    if skipped:  # D-08: after done, before failed (load-bearing precedence — Pitfall 2)
+        return Status.SKIPPED
     if failed_at is not None:
         return Status.FAILED
     return Status.NOT_STARTED
 
 
-def _fingerprint_status(*, engine_statuses: list[str], inflight: bool) -> Status:
+def _fingerprint_status(*, engine_statuses: list[str], inflight: bool, skipped: bool = False) -> Status:
     """fingerprint: 1:N aggregation — one ``success``/``completed`` engine wins over a failed sibling (DERIV-05)."""
     if inflight:
         return Status.IN_FLIGHT
     if any(s in _DONE_FP for s in engine_statuses):
         return Status.DONE
+    if skipped:  # D-08: after done, before failed (load-bearing precedence — Pitfall 2)
+        return Status.SKIPPED
     if any(s == "failed" for s in engine_statuses):
         return Status.FAILED
     return Status.NOT_STARTED
@@ -160,16 +174,21 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
     - fingerprint: ``engine_statuses`` (list[str]), ``inflight``
     - downstream (tracklist/propose/review/apply): ``row_present``, ``failed``, ``inflight``
 
-    Applies the DERIV-02 precedence ladder ``in_flight ≻ done ≻ failed ≻ not_started`` (``inflight``
-    from the SAQ scheduling ledger always wins). Never touches a database.
+    Applies the DERIV-02 precedence ladder ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``
+    (``inflight`` from the SAQ scheduling ledger always wins; ``skipped`` from the ``stage_skip`` marker,
+    D-08, sits just under ``done``). Never touches a database. The ``skipped`` scalar is passed ONLY to
+    the three enrich branches — the downstream stages have no force-skip marker and ignore it.
     """
     inflight = bool(scalars.get("inflight", False))
+    skipped = bool(scalars.get("skipped", False))
     if stage is Stage.ANALYZE:
-        return _analyze_status(completed_at=scalars.get("completed_at"), failed_at=scalars.get("failed_at"), inflight=inflight)
+        return _analyze_status(completed_at=scalars.get("completed_at"), failed_at=scalars.get("failed_at"), inflight=inflight, skipped=skipped)
     if stage is Stage.METADATA:
-        return _metadata_status(row_present=bool(scalars.get("row_present", False)), failed_at=scalars.get("failed_at"), inflight=inflight)
+        return _metadata_status(
+            row_present=bool(scalars.get("row_present", False)), failed_at=scalars.get("failed_at"), inflight=inflight, skipped=skipped
+        )
     if stage is Stage.FINGERPRINT:
-        return _fingerprint_status(engine_statuses=list(scalars.get("engine_statuses", [])), inflight=inflight)
+        return _fingerprint_status(engine_statuses=list(scalars.get("engine_statuses", [])), inflight=inflight, skipped=skipped)
     row_present = bool(scalars.get("row_present", False))
     failed = bool(scalars.get("failed", False))
     if stage is Stage.TRACKLIST:
@@ -186,7 +205,8 @@ def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
 def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
     """Pure predicate: has ``stage`` reached a DOMAIN-COMPLETE state that recovery must NOT re-run?
 
-    ``DONE`` is always domain-complete; a ``FAILED`` stage is domain-complete ONLY when the failure is
+    ``DONE`` and ``SKIPPED`` (D-08 force-skip marker) are always domain-complete; a ``FAILED`` stage is
+    domain-complete ONLY when the failure is
     terminal (:data:`FAILURE_IS_TERMINAL`) — i.e. analyze / metadata (retry is operator-driven) but NOT
     fingerprint (which auto-retries). This is the DB-free twin of
     :func:`phaze.services.stage_status.domain_completed_clause`; the two are drift-locked by the Phase 78
@@ -209,7 +229,7 @@ def domain_completed(status_map: Mapping[Stage, Status], stage: Stage) -> bool:
     # `Status.X.value` strings. Under `is`, a raw "done" matched nothing and this returned False for a
     # genuinely-complete stage. Equality makes both spellings agree.
     st = Status(status_map.get(stage, Status.NOT_STARTED))
-    return st == Status.DONE or (st == Status.FAILED and FAILURE_IS_TERMINAL[stage])
+    return st in (Status.DONE, Status.SKIPPED) or (st == Status.FAILED and FAILURE_IS_TERMINAL[stage])
 
 
 def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_proposal: bool = False) -> bool:
@@ -218,7 +238,8 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
     Dispatched per stage — the enrich stages do NOT share one uniform rule (D-04 boundary; no DB):
 
     - ``METADATA`` / ``FINGERPRINT`` / ``ANALYZE`` (the three enrich stages): eligible iff status NOT in
-      ``(DONE, IN_FLIGHT)`` AND (status is not ``FAILED`` OR :data:`ELIGIBLE_AFTER_FAILURE`\\ ``[stage]``).
+      ``(DONE, IN_FLIGHT, SKIPPED)`` AND (status is not ``FAILED`` OR :data:`ELIGIBLE_AFTER_FAILURE`\\ ``[stage]``).
+      A ``SKIPPED`` stage (D-08 force-skip marker) is never eligible — it leaves the pending set.
       The per-stage failure axis lives in the :data:`ELIGIBLE_AFTER_FAILURE` table, not inlined here
       (D-15/D-16). This yields IDENTICAL truth to the prior per-branch dispatch: METADATA/FINGERPRINT
       (``True``) → eligible when ``NOT_STARTED`` OR ``FAILED`` (ELIG-01 independence; ELIG-04 — a FAILED
@@ -240,7 +261,7 @@ def eligible(status_map: Mapping[Stage, Status], stage: Stage, *, has_approved_p
         # `status is not Status.FAILED` -- identity fails for an equal string -- and reported a FAILED
         # analyze as ELIGIBLE. That is the 44.5K over-enqueue class ELIG-03 exists to guard.
         status = Status(status_map.get(stage, Status.NOT_STARTED))
-        return status not in (Status.DONE, Status.IN_FLIGHT) and (status != Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
+        return status not in (Status.DONE, Status.IN_FLIGHT, Status.SKIPPED) and (status != Status.FAILED or ELIGIBLE_AFTER_FAILURE[stage])
     if stage is Stage.APPLY:
         return has_approved_proposal and status_map.get(Stage.APPLY, Status.NOT_STARTED) != Status.DONE
     upstream_done = all(status_map.get(u, Status.NOT_STARTED) == Status.DONE for u in ELIGIBILITY_DAG[stage])

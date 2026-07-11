@@ -14,7 +14,17 @@
 
   Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
   exists in $store.pipeline (base.html:106-136). summary + trackid + the five Review & Apply
-  items carry NO count. NEVER add a store key. Counts are numeric server/store values only.
+  items carry NO count. Counts are numeric server/store values only.
+
+  Phase 87 (87-08) ambient enrich-node additions (each rides the SAME #pipeline-stats OOB
+  fanout — no self-poll; store keys added to base.html):
+    • UI-05 — amber orphaned/stuck (recovery-candidate) badge bound to
+      $store.pipeline.{metadata,fingerprint,analyze}Orphan, role="status", hidden at 0.
+    • PRIO-01 — per-enrich-stage priority stepper (▲/▼) + pause/resume toggle, re-wired to the
+      LIVE durable-control endpoints POST /pipeline/stages/{stage}/{priority,pause,resume}
+      (routers/pipeline_stages.py). The interactive controls live in a sub-row OUTSIDE the nav
+      <button> (never nested interactive elements); hx-swap="none" (the {stage,priority,paused}
+      JSON is not swapped — the label reads the store, refreshed each 5s poll from the durable row).
 
   HTMX wiring (every navigable node): hx-get="/s/<id>" hx-target="#stage-workspace"
   hx-swap="innerHTML" hx-push-url="true". The active node (node id == the shell `stage`
@@ -67,6 +77,25 @@
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Summary</span>
         </button>
 
+        {# 0b — Files (top-level node · the derived per-file stage-matrix overview, Phase 87 87-09,
+           UI-01/UI-02). Placement: right after Summary — the file-level "where's this file at?"
+           overview sibling of the stage-level Summary landing. A PLAIN nav node (like Summary /
+           Track-ID): NO backing $store.pipeline key, so it carries no x-text count (locked
+           live-vs-static rule), and NO priority stepper / pause sub-row (those belong only to the
+           three enrich agent nodes). Wired identically to every navigable node: hx-get="/s/files"
+           innerHTML-swaps #stage-workspace with hx-push-url; aria-current="page" when active. The
+           label span carries max-lg:sr-only (NEVER max-lg:hidden — CUT-04 ↔ CUT-01: the collapsed
+           strip must stay screen-reader-navigable) and the glyph is aria-hidden. #}
+        <button type="button"
+                data-rail-stage="files"
+                hx-get="/s/files" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                title="Files"
+                {% if stage == 'files' %}aria-current="page"{% endif %}
+                class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0 1 12 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m0-3.75h7.5c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-9.75 0h9.75"/></svg>
+            <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Files</span>
+        </button>
+
         {# 1 — Discover (top-level node · done) #}
         <button type="button"
                 data-rail-stage="discover"
@@ -93,7 +122,47 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Metadata</span>
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.metadataDone">0</span>
+                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge — the
+                   count recover_orphaned_work would re-enqueue. Rides the #pipeline-stats OOB fanout via
+                   $store.pipeline.metadataOrphan (seeded 0 in base.html, no self-poll); hidden at 0 via
+                   x-show. role="status"; amber = "needs attention, not failure" (never red). #}
+                <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak
+                      role="status"
+                      :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      x-text="$store.pipeline.metadataOrphan">0</span>
             </button>
+
+            {# 2a-controls — Phase 87 (87-08, PRIO-01 / D-11): metadata priority stepper + pause/resume,
+               re-wired to the LIVE durable-control endpoints (routers/pipeline_stages.py — do NOT resurrect
+               the removed Phase-38 templates). The {stage,priority,paused} JSON response is NOT swapped
+               (hx-swap="none"); the label reads $store.pipeline.metadataPriority/Paused, refreshed each 5s
+               poll from the durable control row. Hidden in the collapsed icon-rail (max-lg:hidden). #}
+            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Metadata priority and pause controls">
+                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
+                      x-text="'Priority: ' + ($store.pipeline.metadataPriority < 50 ? 'High' : ($store.pipeline.metadataPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.metadataPriority + ')'">Priority: Normal (50)</span>
+                <button type="button"
+                        hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                        aria-label="Raise metadata priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
+                <button type="button"
+                        hx-post="/pipeline/stages/metadata/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                        aria-label="Lower metadata priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
+                <button type="button"
+                        x-show="!$store.pipeline.metadataPaused"
+                        hx-post="/pipeline/stages/metadata/pause" hx-swap="none"
+                        aria-label="Pause metadata"
+                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
+                <button type="button"
+                        x-show="$store.pipeline.metadataPaused" x-cloak
+                        hx-post="/pipeline/stages/metadata/resume" hx-swap="none"
+                        aria-label="Resume metadata"
+                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
+                <span x-show="$store.pipeline.metadataPaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
+            </div>
 
             {# 2b — Fingerprint (done) #}
             <button type="button"
@@ -105,7 +174,41 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a7.464 7.464 0 0 1-1.15 3.993m1.989 3.559A11.209 11.209 0 0 0 8.25 10.5a3.75 3.75 0 1 1 7.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 0 1-3.6 9.75m6.633-4.596a18.666 18.666 0 0 1-2.485 5.33"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Fingerprint</span>
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.fingerprintDone">0</span>
+                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge. #}
+                <span x-show="$store.pipeline.fingerprintOrphan > 0" x-cloak
+                      role="status"
+                      :aria-label="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      x-text="$store.pipeline.fingerprintOrphan">0</span>
             </button>
+
+            {# 2b-controls — Phase 87 (87-08, PRIO-01 / D-11): fingerprint priority stepper + pause/resume
+               (LIVE endpoints; hx-swap="none"; store-driven label; collapsed-rail hidden). #}
+            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Fingerprint priority and pause controls">
+                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
+                      x-text="'Priority: ' + ($store.pipeline.fingerprintPriority < 50 ? 'High' : ($store.pipeline.fingerprintPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.fingerprintPriority + ')'">Priority: Normal (50)</span>
+                <button type="button"
+                        hx-post="/pipeline/stages/fingerprint/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                        aria-label="Raise fingerprint priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
+                <button type="button"
+                        hx-post="/pipeline/stages/fingerprint/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                        aria-label="Lower fingerprint priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
+                <button type="button"
+                        x-show="!$store.pipeline.fingerprintPaused"
+                        hx-post="/pipeline/stages/fingerprint/pause" hx-swap="none"
+                        aria-label="Pause fingerprint"
+                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
+                <button type="button"
+                        x-show="$store.pipeline.fingerprintPaused" x-cloak
+                        hx-post="/pipeline/stages/fingerprint/resume" hx-swap="none"
+                        aria-label="Resume fingerprint"
+                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
+                <span x-show="$store.pipeline.fingerprintPaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
+            </div>
 
             {# 2c — Analyze (live · blue pulse · the / default node) #}
             <button type="button"
@@ -117,7 +220,41 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Analyze</span>
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.analyzeActive">0</span>
+                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge. #}
+                <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak
+                      role="status"
+                      :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      x-text="$store.pipeline.analyzeOrphan">0</span>
             </button>
+
+            {# 2c-controls — Phase 87 (87-08, PRIO-01 / D-11): analyze priority stepper + pause/resume
+               (LIVE endpoints; hx-swap="none"; store-driven label; collapsed-rail hidden). #}
+            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Analyze priority and pause controls">
+                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
+                      x-text="'Priority: ' + ($store.pipeline.analyzePriority < 50 ? 'High' : ($store.pipeline.analyzePriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.analyzePriority + ')'">Priority: Normal (50)</span>
+                <button type="button"
+                        hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": -10}' hx-swap="none"
+                        aria-label="Raise analyze priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
+                <button type="button"
+                        hx-post="/pipeline/stages/analyze/priority" hx-vals='{"delta": 10}' hx-swap="none"
+                        aria-label="Lower analyze priority"
+                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
+                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
+                <button type="button"
+                        x-show="!$store.pipeline.analyzePaused"
+                        hx-post="/pipeline/stages/analyze/pause" hx-swap="none"
+                        aria-label="Pause analyze"
+                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
+                <button type="button"
+                        x-show="$store.pipeline.analyzePaused" x-cloak
+                        hx-post="/pipeline/stages/analyze/resume" hx-swap="none"
+                        aria-label="Resume analyze"
+                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
+                <span x-show="$store.pipeline.analyzePaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
+            </div>
         </div>
 
         {# 3 — Identify (group) #}

@@ -40,3 +40,8 @@ body { font-family: 'Inter', sans-serif; }
 .font-jura { font-family: 'Jura', sans-serif; }
 .htmx-indicator { opacity: 0; transition: opacity 200ms; }
 .htmx-request .htmx-indicator { opacity: 1; }
+/* Alpine v3 does not inject this rule itself — the app must define it, or every
+ * `x-cloak` in the templates (theme toggle, header, cmdk modal, record host,
+ * agents table, the Phase-87 rail orphan badge / Resume / Paused caption) is inert
+ * and flashes its fallback content for a few ms before `x-show` initializes. */
+[x-cloak] { display: none !important; }

@@ -5,26 +5,36 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.config import settings
 from phaze.database import async_session, get_session
+from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible, resolve_status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
+from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord, FileState
+from phaze.models.fingerprint import FingerprintResult
+from phaze.models.metadata import FileMetadata
+from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.models.stage_skip import StageSkip
+from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.backends import get_backend_lane_snapshot, hold_awaiting_cloud, resolved_non_local_kind
 from phaze.services.fingerprint import get_fingerprint_progress
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
@@ -35,6 +45,7 @@ from phaze.services.pipeline import (
     get_backfill_candidates,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
+    get_files_page,
     get_fingerprint_pending_files,
     get_global_reconciliation,
     get_inadmissible_count,
@@ -53,6 +64,7 @@ from phaze.services.pipeline import (
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
+    get_stage_orphan_counts,
     get_stage_progress,
     get_straggler_count,
     get_untracked_files,
@@ -61,6 +73,7 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
 
 
@@ -226,6 +239,17 @@ async def _build_dag_context(
         dag[f"{stage_name}Paused"] = int(controls[stage_name]["paused"])
         dag[f"{stage_name}Priority"] = int(controls[stage_name]["priority"])
 
+    # Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck (recovery-candidate) count --
+    # the exact number recover_orphaned_work would re-enqueue for the stage (ledger minus live minus
+    # domain-completed minus in-flight-cloud). get_stage_orphan_counts owns the never-500 SAVEPOINT degrade
+    # (all-zeros on any DB error), so NO try/except here; the ints ride the same dag.items() OOB seed
+    # loop onto the amber rail badges (no self-poll, no stats_bar.html edit -- the badge just needs the
+    # store key present, seeded to 0 in base.html so x-show reads a number before the first poll).
+    orphans = await get_stage_orphan_counts(session)
+    dag["metadataOrphan"] = int(orphans["metadata"])
+    dag["analyzeOrphan"] = int(orphans["analyze"])
+    dag["fingerprintOrphan"] = int(orphans["fingerprint"])
+
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
     # agentBusy gate so the three agent enqueue buttons gate independently (run in parallel).
     # get_stage_busy_counts owns the never-500 degrade (all-zeros on any DB error), so NO try/except
@@ -280,8 +304,6 @@ async def _build_dag_context(
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from phaze.models.tracklist import Tracklist
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -747,6 +769,47 @@ async def pipeline_stats_partial(
     )
 
 
+_VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
+
+
+@router.get("/pipeline/files", response_class=HTMLResponse)
+async def pipeline_files(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=10, le=100),
+    stage: str | None = Query(None),
+    bucket: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render the paginated, per-row-derived files table (UI-01 / D-02).
+
+    The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
+    derived per page (never the raw ``FileRecord.state`` string, never a whole-corpus scan per poll
+    -- see :func:`phaze.services.pipeline.get_files_page`). The ``stage``+``bucket`` query params are
+    validated against the ``Stage`` / ``Status`` allowlists (T-87-14 -- an unknown value degrades to
+    an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
+    bar is templates-only. The read is SAVEPOINT degrade-safe at the service layer, so NO router
+    try/except -- a DB hiccup renders a safe empty page, never a 500.
+    """
+    stage_enum: Stage | None = None
+    if stage:
+        try:
+            stage_enum = Stage(stage)
+        except ValueError:
+            stage_enum = None
+    bucket_val = bucket if bucket in _VALID_BUCKETS else None
+    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/files_table_view.html",
+        context={
+            "files_page": files_page,
+            "active_stage": stage_enum.value if stage_enum is not None else None,
+            "active_bucket": bucket_val,
+        },
+    )
+
+
 @router.post("/pipeline/analyze", response_class=HTMLResponse)
 async def trigger_analysis_ui(
     request: Request,
@@ -1074,6 +1137,415 @@ async def retry_metadata_failed(
         name="pipeline/partials/metadata_retry_response.html",
         context={"request": request, "count": len(files), "no_active_agent": False},
     )
+
+
+# --------------------------------------------------------------------------------------------------
+# Per-file scoped retry variants (87-07 / UI-02 / D-04): the console's per-row Retry on a failed
+# enrich cell. Each re-drives ONE file through the SAME Phase-30-hardened guarded funnel the bulk
+# endpoints use (``enqueue_router.resolve_queue_for_task`` -> ``NoActiveAgentError`` guard ->
+# enqueue), filtered to a single ``file_id`` instead of the whole failed set, and reuses the bulk
+# response partials VERBATIM (a count of 1 / 0). The analyze variant preserves the manual-only
+# terminal-analyze path (``ELIGIBLE_AFTER_FAILURE[ANALYZE]=False``): it flips ANALYSIS_FAILED ->
+# FINGERPRINTED + clears ``analysis.failed_at`` in ONE transaction and commits BEFORE enqueue (the
+# Phase-81 CR-01 rule) so the file leaves the failed disjunct -- it NEVER creates an auto-retry loop
+# (the 44.5K over-enqueue guard, behavior 8).
+# --------------------------------------------------------------------------------------------------
+@router.post("/pipeline/files/{file_id}/analysis-failed/retry", response_class=HTMLResponse)
+async def retry_analysis_failed_file(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated PER-FILE retry of ONE ANALYSIS_FAILED file (87-07, UI-02 / D-04).
+
+    The scoped twin of :func:`retry_analysis_failed`: it re-drives EXACTLY ONE file through the
+    identical guarded funnel (per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`enqueue_process_file` with the COMPLETE ``ProcessFilePayload`` + deterministic
+    ``process_file:<id>`` key), scoped by ``id == file_id AND state == ANALYSIS_FAILED`` so a
+    non-failed (or unknown) file is a safe no-op ack (T-87-27 input validation — a UUID path param +
+    the state guard, never an unscoped enqueue).
+
+    MANUAL-ONLY, no auto-loop (D-00b, behavior 8, T-87-24): analyze is the ONLY enrich carve-out
+    (``ELIGIBLE_AFTER_FAILURE[ANALYZE]=False``) — a FAILED analyze is terminal and is NEVER
+    auto-retried by ``recover_orphaned_work`` / the derived pending set. This endpoint is that
+    invariant's deliberate operator-gated counterpart: it flips ANALYSIS_FAILED -> FINGERPRINTED AND
+    clears the ``analysis.failed_at`` / ``error_message`` marker in the SAME transaction, then
+    ``commit`` BEFORE the enqueue (``get_session`` does NOT auto-commit) so the file leaves the failed
+    disjunct immediately and derives ``not_started`` for a fresh re-analysis. The deterministic key
+    dedups a live in-flight job to a no-op (T-87-26). The ack is count/bool-only — no operator
+    free-text crosses into Jinja (T-d79-04).
+    """
+    file = (
+        await session.execute(select(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.ANALYSIS_FAILED))
+    ).scalar_one_or_none()
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30, T-87-25).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/retry_failed_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # CR-01 (Phase 81): clear BOTH halves of the FAIL-01 dual-write and COMMIT before the enqueue, so
+    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis) rather than
+    # stranding as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` (a shadow-compare
+    # divergence + a domain_completed(ANALYZE) "un-processable" that Phase 80 recovery would skip).
+    file.state = FileState.FINGERPRINTED
+    await session.execute(
+        update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(failed_at=None, error_message=None),
+    )
+    await session.commit()
+
+    # NORMAL caps: a retry is a fresh re-analysis, not a deepen -- no fine_cap/coarse_cap override.
+    await enqueue_process_file(routed.queue, file, agent_id, settings.models_path)
+
+    logger.info("retry_analysis_failed_file re-queued", file_id=str(file_id))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/retry_failed_response.html",
+        context={"request": request, "count": 1, "no_active_agent": False},
+    )
+
+
+@router.post("/pipeline/files/{file_id}/metadata-failed/retry", response_class=HTMLResponse)
+async def retry_metadata_failed_file(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: operator-gated PER-FILE retry of ONE terminally-failed metadata file (87-07, UI-02 / D-04).
+
+    The scoped twin of :func:`retry_metadata_failed`: it re-drives EXACTLY ONE file through the
+    identical guarded funnel (per-agent routing -> ``NoActiveAgentError`` guard ->
+    :func:`_enqueue_extraction_jobs` with the COMPLETE ``ExtractMetadataPayload`` + the central
+    ``extract_file_metadata:<id>`` dedup key), scoped by ``id == file_id AND EXISTS(a metadata row
+    with failed_at)`` so a non-failed (or unknown) file is a safe no-op ack (T-87-27).
+
+    D-11: NO ``f.state`` flip and NO ``failed_at`` clear — metadata has no terminal FileState and the
+    failure lives only in the ``metadata`` row; clearing it here would make a zero-metadata file read
+    DONE forever. ``put_metadata``'s clear-on-success wipes the marker only when real metadata lands.
+    With no state mutation there is nothing to commit before the enqueue. The deterministic key dedups
+    a live in-flight job to a no-op (T-87-26). The ack is count/bool-only (T-d79-04).
+    """
+    file = (
+        await session.execute(
+            select(FileRecord).where(
+                FileRecord.id == file_id,
+                exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None))),
+            ),
+        )
+    ).scalar_one_or_none()
+    if file is None:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": False},
+        )
+
+    try:
+        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+    except enqueue_router.NoActiveAgentError:
+        # Do NOT enqueue, do NOT mutate state, do NOT fall through to the default queue (Phase-30, T-87-25).
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/metadata_retry_response.html",
+            context={"request": request, "count": 0, "no_active_agent": True},
+        )
+
+    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
+    agent_id = cast("str", routed.agent_id)
+
+    # D-11: no state flip, so no pre-enqueue commit. The shared producer builds the COMPLETE payload
+    # and the central extract_file_metadata:<file_id> key dedups an in-flight job.
+    await _enqueue_extraction_jobs(routed.queue, [file], agent_id)
+
+    logger.info("retry_metadata_failed_file re-queued", file_id=str(file_id))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/metadata_retry_response.html",
+        context={"request": request, "count": 1, "no_active_agent": False},
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+# Force-skip writer (UI-04 / D-08/D-09/D-10): the right-pane escape hatch that lets the ``failed``
+# bucket converge for genuinely-unprocessable files. The correctness-sensitive mutating endpoint of
+# this phase: enrich-only (approval-bypass hazard, D-10), additive (never clears a failure marker, so
+# the Phase-79 shadow-compare gate stays green), reason required + sanitized (NUL-abort footgun), and
+# committed (get_session NEVER auto-commits).
+# --------------------------------------------------------------------------------------------------
+@router.post("/pipeline/files/{file_id}/skip/{stage}", response_class=HTMLResponse)
+async def force_skip_stage(
+    file_id: uuid.UUID,
+    stage: str,
+    reason: Annotated[str, Form()],
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Force-skip an ENRICH stage for one file: write a distinct ``skipped`` marker (UI-04, D-08/D-09/D-10).
+
+    The escape hatch that lets the ``failed`` bucket converge for genuinely-unprocessable files. It is
+    deliberately NOT ``done``: a ``stage_skip`` marker row derives the honest ``skipped`` bucket, which
+    stays distinguishable from real completion forever (D-08). Discipline (mirrors the retry endpoints +
+    ``pipeline_stages._validate_stage``):
+
+    - ENRICH-ONLY (D-10, T-87-18): ``stage`` must be in :data:`STAGE_TO_FUNCTION`
+      (metadata/analyze/fingerprint) — a ``propose``/``review``/``apply`` skip is an approval-bypass
+      hazard and returns 422 BEFORE any write, backstopped by the Plan-01 DB CHECK.
+    - REASON REQUIRED (D-09, T-87-22): a blank/whitespace reason returns the inline validation fragment
+      with NO write.
+    - SANITIZED (T-87-19): ``sanitize_pg_text`` strips NUL / lone surrogates before persist — a NUL in
+      free text passes pydantic then aborts the PG txn (the unbounded-recovery-loop footgun).
+    - ADDITIVE-ONLY (T-87-20): the writer ONLY adds the marker row; it NEVER clears ``analysis.failed_at``
+      or any failure marker, so a terminally-failed stage keeps its failure fact and the shadow-compare
+      gate stays green. Precedence (``done ≻ skipped ≻ failed``) — not the writer — decides the bucket.
+    - COMMITTED (Pitfall 7): ``get_session`` does NOT auto-commit, so the writer commits itself.
+
+    The pill flips to ``⊘ skipped`` on the NEXT poll tick (not optimistic) — the ack is a toast only.
+    ``reason`` is never echoed back into the response (T-87-21 — no XSS surface via the free text).
+    """
+    if stage not in STAGE_TO_FUNCTION:  # D-10 enrich-only — mirror pipeline_stages._validate_stage
+        raise HTTPException(status_code=422, detail="stage not force-skippable")
+    # Sanitize BEFORE the blank check (WR-01): str.strip() alone does not remove NUL / control chars, so a
+    # NUL-only reason would slip past a raw-input gate and then persist as "". Validate the SANITIZED value.
+    clean_reason = sanitize_pg_text(reason).strip()  # project memory: NUL aborts the PG txn (services/pg_text.py)
+    if not clean_reason:  # D-09 reason required — inline validation on the sanitized value, NO write
+        return HTMLResponse(
+            '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
+            status_code=422,
+        )
+    # Idempotent additive write (CR-01): re-submitting a force-skip for the same (file, stage) is a NORMAL
+    # path — `_force_skip_dialog.html` is not hidden after success — and the UNIQUE(file_id, stage) constraint
+    # would turn a bare INSERT into an unhandled IntegrityError → HTTP 500. on_conflict_do_nothing mirrors
+    # `insert_ledger_if_absent`: the marker's existence IS the desired end state, so a duplicate is a no-op
+    # success. Never clears failed_at (additive-only, T-87-20).
+    await session.execute(
+        pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
+    )
+    await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
+    logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
+    # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
+    # the operator reason is NOT echoed (T-87-21). The pill flips ⊘ skipped on the next 5s poll.
+    return HTMLResponse(
+        f'<div hx-swap-oob="beforeend:#toast-container">'
+        f'<div role="status" aria-live="polite" x-data="{{ show: true }}" x-show="show" '
+        f'x-init="setTimeout(() => show = false, 5000)" x-transition '
+        f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
+        f"Skipped {stage} — reason recorded.</div></div>"
+    )
+
+
+# --------------------------------------------------------------------------------------------------
+# Per-file eligibility trace (UI-03 / D-06/D-07): the diagnostic whose absence hid the deadlock. A
+# single-row resolve_status/eligible() evaluation (NOT a corpus scan, T-87-23) that names the ONE
+# unmet blocker keeping a stage out of the pending set.
+# --------------------------------------------------------------------------------------------------
+
+# Display label per stage for the six-pill matrix + trace verdict (the 7->6 remap: tracklist is
+# omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
+_STAGE_TRACE_LABELS: dict[Stage, str] = {
+    Stage.METADATA: "Meta",
+    Stage.FINGERPRINT: "FP",
+    Stage.ANALYZE: "Analyze",
+    Stage.PROPOSE: "Prop",
+    Stage.REVIEW: "Appr",
+    Stage.APPLY: "Exec",
+}
+
+
+async def _one_stage_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> dict[str, Any]:
+    """Read ONE file's per-stage scalars in the DB-free ``resolve_status`` shape (mirrors ``load_scalars``).
+
+    Every read is strictly ``file_id``-scoped (T-87-23 — a single-row evaluation, never a corpus scan).
+    """
+    func_name = STAGE_TO_FUNCTION.get(stage.value)
+    inflight = False
+    if func_name is not None:
+        ledger_row = (await session.execute(select(SchedulingLedger.key).where(SchedulingLedger.key == f"{func_name}:{file_id}"))).first()
+        inflight = ledger_row is not None
+
+    async def _skipped() -> bool:
+        found = (await session.execute(select(StageSkip.id).where(StageSkip.file_id == file_id, StageSkip.stage == stage.value))).first()
+        return found is not None
+
+    if stage is Stage.ANALYZE:
+        arow = (
+            await session.execute(select(AnalysisResult.analysis_completed_at, AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))
+        ).first()
+        return {"completed_at": arow[0] if arow else None, "failed_at": arow[1] if arow else None, "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.METADATA:
+        mrow = (await session.execute(select(FileMetadata.failed_at).where(FileMetadata.file_id == file_id))).first()
+        return {"row_present": mrow is not None, "failed_at": mrow[0] if mrow else None, "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.FINGERPRINT:
+        rows = (await session.execute(select(FingerprintResult.status).where(FingerprintResult.file_id == file_id))).all()
+        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight, "skipped": await _skipped()}
+    if stage is Stage.TRACKLIST:
+        present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
+        return {"row_present": present, "failed": False, "inflight": inflight}
+    if stage in (Stage.PROPOSE, Stage.REVIEW):
+        present = (await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id))).first() is not None
+        failed = (
+            await session.execute(select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == "failed"))
+        ).first() is not None
+        return {"row_present": present, "failed": failed, "inflight": inflight}
+    # apply: execution_log joined through proposals (execution_log has NO file_id)
+    present = (
+        await session.execute(
+            select(ExecutionLog.id)
+            .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+            .where(RenameProposal.file_id == file_id, ExecutionLog.status == "completed")
+        )
+    ).first() is not None
+    failed = (
+        await session.execute(
+            select(ExecutionLog.id)
+            .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
+            .where(RenameProposal.file_id == file_id, ExecutionLog.status == "failed")
+        )
+    ).first() is not None
+    return {"row_present": present, "failed": failed, "inflight": inflight}
+
+
+async def _has_approved_proposal(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """file_id-scoped single-row probe: does an APPROVED proposal exist? (apply's ELIG-02 gate)."""
+    row = (
+        await session.execute(
+            select(RenameProposal.id).where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.APPROVED.value)
+        )
+    ).first()
+    return row is not None
+
+
+async def _eligibility_trace_context(session: AsyncSession, file_id: uuid.UUID, stage: Stage) -> dict[str, Any]:
+    """Evaluate ``eligible()`` for ONE file/stage and build the named-conjunct trace context (UI-03, D-06/D-07).
+
+    Loads the stage's own status plus its ``ELIGIBILITY_DAG`` upstream statuses (single-row reads),
+    evaluates the REAL ``eligible()`` (the scheduler's source of truth) in Python, and names the single
+    unmet blocker. Enrich stages have no upstream, so ``upstream met?`` is vacuously true. The upstream
+    conjunct STRICTLY mirrors ``eligible()`` (upstream must be DONE): under the OQ-1 SCOPE-MINIMAL
+    resolution a force-skipped enrich upstream does NOT unblock its downstream (Phase 90), so a SKIPPED
+    upstream is rendered as still-gating — a lenient "skipped = met" display would make the trace claim a
+    downstream is eligible when the scheduler permanently gates it (the deadlock UI-03 exists to expose).
+    NOT a corpus query (T-87-23).
+    """
+    label = _STAGE_TRACE_LABELS.get(stage, stage.value)
+    upstreams = ELIGIBILITY_DAG[stage]
+    statuses: dict[Stage, Status] = {stage: resolve_status(stage, await _one_stage_scalars(session, stage, file_id))}
+    for u in upstreams:
+        statuses[u] = resolve_status(u, await _one_stage_scalars(session, u, file_id))
+    has_approved = await _has_approved_proposal(session, file_id) if stage is Stage.APPLY else False
+
+    target = statuses[stage]
+    is_done = target == Status.DONE
+    is_in_flight = target == Status.IN_FLIGHT
+    is_skipped = target == Status.SKIPPED
+    is_terminal_fail = stage in ELIGIBLE_AFTER_FAILURE and target == Status.FAILED and not ELIGIBLE_AFTER_FAILURE[stage]
+
+    if stage is Stage.APPLY:
+        # apply is gated on an APPROVED proposal (ELIG-02), NOT on bare done(review).
+        upstream_met = has_approved
+        upstream_phrase = "approved proposal exists" if has_approved else "no approved proposal"
+    elif upstreams:
+        # STRICT mirror of eligible()'s downstream check (upstream must be DONE). Under the OQ-1
+        # SCOPE-MINIMAL resolution a force-skipped enrich upstream does NOT unblock its downstream
+        # (deferred to Phase 90), so a SKIPPED upstream stays gating — the trace names it honestly
+        # rather than claiming a downstream is eligible when the scheduler permanently gates it.
+        unmet = [u for u in upstreams if statuses[u] != Status.DONE]
+        upstream_met = not unmet
+        if upstream_met:
+            upstream_phrase = "all upstream done"
+        elif statuses[unmet[0]] == Status.SKIPPED:
+            upstream_phrase = f"{unmet[0].value} skipped — downstream stays gated (Phase 90)"
+        else:
+            upstream_phrase = f"{unmet[0].value} not done"
+    else:  # enrich: empty upstream is vacuously met (ELIG-01 independence)
+        upstream_met = True
+        upstream_phrase = "no upstream (enrich stage)"
+
+    # Verdict is the REAL eligible() — the single source of truth the scheduler uses. A diagnostic that
+    # diverged from it would hide the very deadlock UI-03 exists to expose.
+    is_eligible = eligible(statuses, stage, has_approved_proposal=has_approved)
+
+    # The single blocker follows eligible()'s short-circuit order (skipped folds onto the settled done? line).
+    blocker = ""
+    if not is_eligible:
+        if is_done or is_skipped:
+            blocker = "done"
+        elif is_in_flight:
+            blocker = "inflight"
+        elif is_terminal_fail:
+            blocker = "terminal"
+        elif not upstream_met:
+            blocker = "upstream"
+
+    if is_done:
+        done_ok, done_phrase = True, "already done"
+    elif is_skipped:
+        done_ok, done_phrase = True, "force-skipped (⊘) — recorded as skipped, not done"
+    else:
+        done_ok, done_phrase = False, "not done"
+
+    conjuncts = [
+        {"question": "done?", "ok": done_ok, "phrase": done_phrase, "blocker": blocker == "done"},
+        {
+            "question": "in-flight?",
+            "ok": is_in_flight,
+            "phrase": "currently running" if is_in_flight else "not running",
+            "blocker": blocker == "inflight",
+        },
+        {"question": "upstream met?", "ok": upstream_met, "phrase": upstream_phrase, "blocker": blocker == "upstream"},
+        {
+            "question": "terminal fail?",
+            "ok": is_terminal_fail,
+            "phrase": "terminal failure — retry is manual" if is_terminal_fail else "no terminal failure",
+            "blocker": blocker == "terminal",
+        },
+    ]
+    verdict = f"{label} — eligible (in the pending set)" if is_eligible else f"{label} — NOT eligible"
+    return {"stage_label": label, "eligible": is_eligible, "verdict": verdict, "conjuncts": conjuncts, "unavailable": False}
+
+
+@router.get("/pipeline/files/{file_id}/trace/{stage}", response_class=HTMLResponse)
+async def eligibility_trace(
+    request: Request,
+    file_id: uuid.UUID,
+    stage: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Per-file, per-stage eligibility trace (UI-03) — the diagnostic whose absence hid the deadlock.
+
+    Renders ``_eligibility_trace.html`` under the clicked pill: a verdict line plus the four named
+    conjuncts (``done?`` · ``in-flight?`` · ``upstream met?`` · ``terminal fail?``) with the single
+    unmet blocker highlighted. It is a single-row ``resolve_status``/``eligible()`` evaluation
+    (T-87-23 — never a corpus scan) and degrades to "Trace unavailable this tick." on any error, so a
+    poll never 500s.
+    """
+    stage_enum: Stage | None
+    try:
+        stage_enum = Stage(stage)
+    except ValueError:
+        stage_enum = None
+    context: dict[str, Any] = {"request": request}
+    if stage_enum is None:
+        context["unavailable"] = True
+        return templates.TemplateResponse(request=request, name="pipeline/partials/_eligibility_trace.html", context=context)
+    try:
+        context.update(await _eligibility_trace_context(session, file_id, stage_enum))
+    except Exception:
+        logger.warning("eligibility_trace degraded", file_id=str(file_id), stage=stage, exc_info=True)
+        context["unavailable"] = True
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_eligibility_trace.html", context=context)
 
 
 @router.post("/pipeline/files/{file_id}/deepen", response_class=HTMLResponse)
