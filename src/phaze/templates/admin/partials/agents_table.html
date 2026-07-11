@@ -23,6 +23,7 @@
 <section id="agents-table-section"
          hx-get="/admin/agents/_table"
          hx-trigger="every 5s"
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"

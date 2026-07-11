@@ -190,6 +190,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False
+        # Phase 88 (88-01, DRILL-03 / D-02): a reload of /s/analyze?lane={id} seeds the selected-lane
+        # highlight server-side for the initial full grid (the poll re-applies it thereafter). Resolved
+        # by lookup-in-known-set against the seeded snapshot (T-88-01) — an unknown/absent id highlights
+        # nothing, never errors.
+        lane_param = request.query_params.get("lane")
+        seeded_lanes = context.get("lanes") or []
+        context["selected_lane"] = lane_param if any(one.get("id") == lane_param for one in seeded_lanes) else None
         # Phase 61 (61-05, RECORD-04): first-run empty state. When NO files exist, swap the
         # analyze stage_partial to the empty-state guide and inject the non-revoked agent list
         # (for the agent-roots cards). file_count>0 leaves the dashboard render untouched; the

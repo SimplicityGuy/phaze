@@ -193,9 +193,16 @@
          the request on every tick while the tab is backgrounded (the interval keeps running but
          no fetch fires — a SINGLE poll element, never a second loop); the visibilitychange
          listener below resumes immediately on foreground. -->
+    <!-- Phase 88 (88-01, DRILL-03 / D-02, RESEARCH OQ-2): carry the pushed ?lane= onto this single
+         persistent lane poll. htmx 2.0.10 does NOT auto-append the pushed URL's query to the poll
+         hx-get, so the selected lane id is sent explicitly via hx-vals. This is globally safe: on any
+         page other than /s/analyze?lane=…, location.search has no `lane`, so hx-vals sends lane:null
+         and pipeline_stats_partial highlights nothing (lookup-in-known-set miss). The _analyze_lanes
+         grid then re-emits aria-current + the selected ring for the matching card on every 5s swap. -->
     <div id="pipeline-stats"
          hx-get="/pipeline/stats"
          hx-trigger="every 5s [document.visibilityState === 'visible']"
+         hx-vals='js:{lane: new URLSearchParams(location.search).get("lane")}'
          hx-swap="innerHTML"
          class="hidden"></div>
 

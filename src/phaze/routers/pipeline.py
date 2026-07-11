@@ -685,9 +685,17 @@ async def dashboard() -> RedirectResponse:
 @router.get("/pipeline/stats", response_class=HTMLResponse)
 async def pipeline_stats_partial(
     request: Request,
+    lane: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Return the stats bar partial for HTMX polling refresh."""
+    """Return the stats bar partial for HTMX polling refresh.
+
+    Phase 88 (88-01, DRILL-03 / D-02): the single persistent ``#pipeline-stats`` poll carries the
+    pushed ``?lane=`` via ``hx-vals`` (shell.html), so this hot 5s tick re-emits the selected-lane
+    highlight (aria-current + ring) on the matching card through the OOB ``_analyze_lanes`` grid.
+    ``lane`` is resolved by lookup-in-known-set against the snapshot (T-88-01): an unknown/absent id
+    resolves to ``None`` and highlights nothing — never a 422/500 into the poll.
+    """
     # Phase 82 (D-05, READ-02): ONE get_stage_progress read feeds the derived seven-key `stats` dict
     # (via _derive_stats -- the removed FileRecord.state get_pipeline_stats) AND the per-node DAG
     # context below (passed through so the heavy multi-count read runs once on the hot 5s poll).
@@ -738,6 +746,9 @@ async def pipeline_stats_partial(
     # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
     # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
     lanes = await get_backend_lane_snapshot(session)
+    # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
+    # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
+    selected_lane = lane if any(one["id"] == lane for one in lanes) else None
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -762,6 +773,7 @@ async def pipeline_stats_partial(
             "running_count": cloud_phase_counts["running"],
             "finished_count": cloud_phase_counts["finished"],
             "lanes": lanes,
+            "selected_lane": selected_lane,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,
