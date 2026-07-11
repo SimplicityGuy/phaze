@@ -276,7 +276,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
 | 86. Proposals Cutover | 2026.7.5 | 5/5 | Complete    | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
-| 88. Lane / Agent Drill-In | 2026.7.5 | 1/3 | In Progress|  |
+| 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete   | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
 
@@ -607,8 +607,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 88-02-PLAN.md — `GET /pipeline/lanes/{backend_id}` + `_lane_detail.html` (kind-adaptive fields, N=20 recent completions, degrade-safe) (DRILL-01; D-06/D-07) [wave 2]
-- [ ] 88-03-PLAN.md — `GET /admin/agents/{agent_id}/_activity` + per-agent GROUP BY stage aggregate + `_agent_activity.html` (DRILL-02; D-00a/D-04/D-05) [wave 2]
+- [x] 88-02-PLAN.md — `GET /pipeline/lanes/{backend_id}` + `_lane_detail.html` (kind-adaptive fields, N=20 recent completions, degrade-safe) (DRILL-01; D-06/D-07) [wave 2]
+- [x] 88-03-PLAN.md — `GET /admin/agents/{agent_id}/_activity` + per-agent GROUP BY stage aggregate + `_agent_activity.html` (DRILL-02; D-00a/D-04/D-05) [wave 2]
 
 **UI hint**: yes
 
