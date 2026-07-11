@@ -19,6 +19,11 @@ created: 2026-07-11
 > a center workspace (single `#stage-workspace` HTMX swap target), and a persistent record slide-in host
 > (`shell/partials/record_host.html`, `#record-body`) — the "right pane" referenced throughout CONTEXT.md.
 > There is exactly ONE live poll for the whole shell (`#pipeline-stats`, `every 5s`, OOB fanout).
+>
+> **Consistency mandate:** this phase adds ZERO new design debt. Font families, weights, and the spacing grid
+> are INHERITED from the shipped v7.0 app; where a value looks off an abstract ideal but matches 70–212
+> existing elements, the shipped convention wins (documented honestly below). New surfaces use only the
+> phase's declared 2-weight / grid-aligned system.
 
 ---
 
@@ -30,7 +35,7 @@ created: 2026-07-11
 | Preset | not applicable |
 | Component library | none — reuse existing partials (`_file_table.html`, `scan_status_pill.html`, `_lane_card.html`, `metadata_retry_response.html`) |
 | Icon library | Inline SVG (Heroicons-style outline, `stroke-width="1.5"`, `w-5 h-5`) + Unicode status glyphs (✓ ● — ✗ ⊘) |
-| Font | **Jura** (`.font-jura`, weights 300/500) for labels/headers/eyebrows; **Inter** (body, weights 400/600) for prose. Both via Google Fonts `<link>`. `font-mono` (system mono) for paths/IDs. |
+| Font | **INHERITED from the shipped v7.0 shell — out of this phase's scope to change or re-declare.** Jura (`.font-jura`) for eyebrows/headers, Inter for prose, `font-mono` for paths/IDs, all already loaded by `base.html`/`shell.html`. This phase picks a family for NO new surface. |
 
 **Registry safety:** Not applicable — no shadcn, no third-party UI registry. All markup is first-party Jinja2.
 
@@ -38,36 +43,52 @@ created: 2026-07-11
 
 ## Spacing Scale
 
-Tailwind default scale (all multiples of 4). This phase adds no new spacing tokens — it reuses the frozen
-box model of the existing partials.
+**This phase's scale is 100% grid-aligned (multiples of 4).** No new off-grid spacing is introduced. All
+values below already dominate the shipped app, so the new components sit flush with existing ones.
 
 | Token | Value | Usage in this phase |
 |-------|-------|---------------------|
-| 0.5 | 2px | **Documented pill exception** — `py-0.5` vertical padding on status pills (project-wide pill pattern, `scan_status_pill.html`) |
-| 1.5 | 6px | Progress-bar height (`h-1.5`), inline glyph↔label gap inside a pill |
-| 2 | 8px | Pill horizontal padding (`px-2`), pill-to-pill gap in the matrix row (`gap-2`), icon gaps |
-| 2.5 | 10px | Table header vertical padding (`py-2.5`, from `_file_table.html` thead) |
-| 3 | 12px | Table cell vertical padding (`py-3`), card internal rhythm (`mt-3`) |
+| 2 | 8px | Pill horizontal padding (`px-2`), pill-to-pill gap in the matrix row (`gap-2`), progress-bar height (`h-2`), icon gaps |
+| 3 | 12px | Table header AND cell vertical padding (`py-3` — the app's dominant ×101 padding; header now matches cells), card rhythm (`mt-3`) |
 | 4 | 16px | Card padding (`p-4`), rail-node padding, trace-block internal gaps |
 | 6 | 24px | Table cell horizontal padding (`px-6`), workspace section padding (`p-6`) |
-| 12 | 48px | Empty-state vertical padding (`py-12`, from `_file_table.html` empty branch) |
+| 12 | 48px | Empty-state vertical padding (`py-12`, `_file_table.html` empty branch) |
 
-Exceptions: `py-0.5` (2px) on pills is the single sanctioned sub-4 value — inherited from the established
-pill token, not introduced here. The confirm dialog and trace block use only the tokens above.
+**On-grid corrections vs. the shipped-elsewhere box model (this phase adopts the grid-aligned value):**
+- Progress-bar height uses **`h-2`** (8px, on-grid; already ×12 in the app), not `_lane_card.html`'s `h-1.5`.
+- Table header vertical padding uses **`py-3`** (12px, on-grid; the ×101 dominant cell padding), not the
+  scaffold's `py-2.5` — this also makes the header rhythm match the body cells.
+
+### Inherited shared token (NOT introduced by this phase)
+
+- **`py-0.5` (2px)** on the stage-matrix pill ONLY. This is the mandatory project-wide pill token
+  (`scan_status_pill.html`, documented there as "the documented spacing exception (project-wide pill
+  pattern)"; 70 existing uses across the shipped app). It is off the 4px grid, but changing it would visually
+  break the new matrix pills against every other pill in the shipped UI. Reused verbatim, not a new decision —
+  so this phase's *own* scale (above) stays fully grid-aligned.
 
 ---
 
 ## Typography
 
-Two families, two weights each (Jura 300/500, Inter 400/600) — already loaded; this phase declares no new
-sizes beyond the four roles below (all present in existing partials).
+**Two families are INHERITED (Jura eyebrows, Inter body) — this phase does not choose or change them.** The
+weight system the phase's NEW components declare is exactly **2 weights**, matching the shipped app's dominant
+conventions (`font-semibold` ×212, `font-normal` the default body weight):
 
-| Role | Size | Family / Weight | Line Height | Usage |
-|------|------|-----------------|-------------|-------|
-| Eyebrow / table header / rail label | 11px (`text-[11px]` / `text-xs`) | Jura 500, `uppercase tracking-[0.2em]` | 1.2 | Column headers, rail stage names, `RANK n` captions, pill legend |
-| Body / cell / control | 14px (`text-sm`) | Inter 400 | 1.5 | Table cells, retry acks, trace conjunct lines, button labels |
-| Pill / caption / mono path | 12px (`text-xs`) | Inter 600 (pills) / mono (paths) | 1.4 | Status pills (`font-semibold`), file paths (`font-mono text-xs truncate`), sub-counts |
-| Workspace heading | 20px (`text-xl`) | Jura 500 | 1.2 | Workspace `<h1>` (focus target after rail swap) |
+| Weight | Token | Applied to (this phase's new surfaces) |
+|--------|-------|----------------------------------------|
+| **Semibold** | `font-semibold` | All labels, status pills, table headers, the trace verdict line, control labels — every emphasis element. Matches the dominant ×212 existing convention. |
+| **Normal** | `font-normal` (default) | Body text: file paths, trace conjunct lines, reason-note text, retry-ack prose. |
+
+Sizes used (all already present in shipped partials — no new size introduced):
+
+| Role | Size | Weight | Line Height | Usage |
+|------|------|--------|-------------|-------|
+| Eyebrow / table header / rail label | 11–12px (`text-[11px]` / `text-xs`, `uppercase tracking-[0.2em]`) | `font-semibold` | 1.2 | Column headers, rail stage names, pill legend |
+| Pill | 12px (`text-xs`) | `font-semibold` | 1.4 | The five stage-status pills |
+| Body / cell / control / trace | 14px (`text-sm`) | `font-normal` (labels within: `font-semibold`) | 1.5 | Table cells, retry acks, trace conjunct lines, reason text, button labels |
+| Mono path | 12px (`font-mono text-xs truncate`) | `font-normal` | 1.4 | File paths / IDs |
+| Workspace heading | 20px (`text-xl`) | `font-semibold` | 1.2 | Workspace `<h1>` (focus target after rail swap) |
 
 Line-height defaults: body 1.5, headings/labels 1.2. No display type in this phase.
 
@@ -86,7 +107,7 @@ Phaze palette (`@theme` in `app.css`). `blue-*` is remapped to the Phaze cyan (`
 | Destructive | `red-600` / `dark:red-400`; surface `red-100`/`dark:red-950` | Failed pill, per-row + bulk retry affordance framing, force-skip confirm button |
 
 **Accent (Phaze cyan) reserved for:** primary action buttons (bulk "Retry all failed", the force-skip
-**cancel/primary** in the dialog), the active rail node tint + inset bar (`aria-current=page`), focus rings
+primary in the dialog), the active rail node tint + inset bar (`aria-current=page`), focus rings
 (`focus:ring-blue-500`), and interactive numerals (lane in-flight counts). NOT used for status encoding
 (status uses the semantic hues below) and never as a generic "all interactive elements" wash.
 
@@ -122,11 +143,16 @@ the `100/700` (light) and `950/400` (dark) pairings are the project's proven pil
 Prescriptive list for the planner/executor. "Reuse" = extend an existing partial; "New" = new partial in
 `src/phaze/templates/pipeline/partials/`.
 
+**Primary visual anchor (Visuals):** on the files-table screen, **the stage-matrix pill column is the primary
+scan target / visual anchor** — the operator's eye lands on the row of colored, glyphed pills to answer
+"where is this file at?", with the mono path as the secondary identifier. In the right pane, the enlarged
+pill matrix is the anchor and the eligibility trace expands beneath the pill the operator clicks.
+
 | Component | Source | Contract |
 |-----------|--------|----------|
 | **Stage-matrix pill** | New `_stage_pill.html` (based on `scan_status_pill.html`) | Params: `stage_label`, `bucket`. Renders one of the 5 tokens above. Pure, no HTMX. In the table it is inline (matrix cell); in the right pane it is a clickable trace trigger (below). |
 | **Pill matrix row** | New `_stage_matrix.html` | 6 `_stage_pill` in stage order: **Meta · FP · Analyze · Prop · Appr · Exec**. `flex flex-wrap gap-2` — wraps on narrow screens (D-01). One legend rendered once per surface: `✓ done · ● in-flight · — not-started · ✗ failed · ⊘ skipped`. |
-| **Files table** | Reuse `_file_table.html` scaffold (D-02) | Columns: `File · Type · Meta · FP · Analyze · Prop · Appr · Exec`. Path cell = `font-mono text-xs truncate` with `title=full_path`. Each stage cell hosts one `_stage_pill`. Paginated (keyset/offset — planning's call, D-00c: **never** a whole-corpus scan per poll). Rows bind to the record slide-in via `row_file_ids` (existing mechanism). |
+| **Files table** | Reuse `_file_table.html` scaffold (D-02) | Columns: `File · Type · Meta · FP · Analyze · Prop · Appr · Exec`. Path cell = `font-mono text-xs truncate` with `title=full_path`. Each stage cell hosts one `_stage_pill` (this column is the screen's visual anchor). Paginated (keyset/offset — planning's call, D-00c: **never** a whole-corpus scan per poll). Rows bind to the record slide-in via `row_file_ids` (existing mechanism). |
 | **Status filter bar** | New, above the table (D-03) | Per-stage bucket filter — "Show files where `{stage}` = `{bucket}`", including `failed`. One canonical surface (no separate failures page). Filter state carried in the URL query (survives the record slide-in + back/forward). |
 | **Per-row retry** | New affordance in the failed-stage cell (D-04) | Only rendered when that cell's bucket = `failed`. HTMX `POST` to the scoped variant of `analysis-failed/retry` / `metadata-failed/retry`. Response = a `metadata_retry_response.html`-shaped ack. Analyze respects the terminal-analyze guard (D-00b): manual retry only, no auto-loop wording. |
 | **Bulk "retry all failed in stage"** | Reuse `metadata_retry_response.html` / `retry_failed_response.html` (D-04) | One primary (accent) button per enrich stage's failed filter view. Ack ints/bools only (no operator free-text through Jinja). |
@@ -134,7 +160,7 @@ Prescriptive list for the planner/executor. "Reuse" = extend an existing partial
 | **Eligibility trace block** | New `_eligibility_trace.html` (D-06/D-07) | HTMX `hx-get` on pill click → reveals THAT stage's trace under the pill. Named conjunct pass/fail lines + the blocker highlighted (see Copywriting). Reads `eligible()` conjuncts + `ELIGIBILITY_DAG`. |
 | **Force-done / skip control** | New, right pane, enrich stages only (D-08/D-09/D-10) | Button → confirm dialog (Alpine `x-data`/`x-trap` focus-trap, same pattern as the record slide-in/⌘K) with a **required** free-text reason `<textarea>`. Submit `POST` writes the `skipped` marker + reason. Metadata/fingerprint/analyze ONLY — propose/approve/execute have NO force-skip affordance (approval-bypass hazard). |
 | **Orphan-count badge** | New on the rail near the affected stage (D-05) | Amber numeral pill, `role="status"`, rides the existing `#pipeline-stats` OOB seed fanout (no self-poll). Hidden when count = 0 (`empty:hidden` / `x-show`). |
-| **Priority stepper + pause/resume** | Re-wire Phase-38 control onto the rail (D-11/PRIO-01) | Per enrich stage. `▲`/`▼` `POST /pipeline/stages/{stage}/priority`; pause/resume toggle → `/pause` `/resume`. Response `{stage, priority, paused}` re-renders the control. Seeds already exist in the `$store.pipeline` (`metadataPriority`, `analyzePaused`, …). **Clarified labeling** — see below. |
+| **Priority stepper + pause/resume** | Re-wire Phase-38 control onto the rail (D-11/PRIO-01) | Per enrich stage. `▲`/`▼` buttons `POST /pipeline/stages/{stage}/priority`; pause/resume toggle → `/pause` `/resume`. Response `{stage, priority, paused}` re-renders the control. Seeds already exist in `$store.pipeline` (`metadataPriority`, `analyzePaused`, …). Each stepper button carries an explicit **`aria-label`** (not tooltip-only, Visuals/a11y): `aria-label="Raise {stage} priority"` on `▲`, `aria-label="Lower {stage} priority"` on `▼`; the D-11 clarifying tooltip is ALSO present (see Copywriting). |
 
 ---
 
@@ -154,8 +180,8 @@ and the paginated table **degrade to a safe empty/zero, never 500** (D-00c / INF
 
 **Accessibility baseline (inherited + required):** focus-trap on the confirm dialog (`@alpinejs/focus`
 `x-trap`), `focus:ring-blue-500` visible rings, keyboard-openable trace (`role="button"`, Enter/Space), the
-record-row `hx-trigger="click, keyup[key=='Enter']"` pattern, and `aria-live="polite"` toasts (existing
-`#toast-container`). Status is always word+glyph, never hue-only.
+record-row `hx-trigger="click, keyup[key=='Enter']"` pattern, explicit `aria-label`s on the priority steppers,
+and `aria-live="polite"` toasts (existing `#toast-container`). Status is always word+glyph, never hue-only.
 
 ---
 
@@ -182,7 +208,7 @@ record-row `hx-trigger="click, keyup[key=='Enter']"` pattern, and `aria-live="po
 | Force-skip reason label | **Why are you skipping this? (required)** — placeholder: "e.g. corrupt source file, analyze crashes on this set" |
 | Force-skip validation | **A reason is required.** |
 | Force-skip success toast | **Skipped {stage} — reason recorded.** |
-| Priority stepper label | **Priority: {High\|Normal\|Low} ({n})** with `▲`/`▼` steppers |
+| Priority stepper label | **Priority: {High\|Normal\|Low} ({n})** with `▲`/`▼` steppers; `▲` `aria-label="Raise {stage} priority"`, `▼` `aria-label="Lower {stage} priority"` |
 | Priority clarifying tooltip (D-11) | **▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority.** |
 | Pause/resume | **Pause** / **Resume** (toggle; paused state shows a `Paused` amber caption on the rail node) |
 
