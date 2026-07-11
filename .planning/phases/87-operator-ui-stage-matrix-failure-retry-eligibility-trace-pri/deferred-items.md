@@ -85,3 +85,26 @@ Out-of-scope discoveries logged during execution (SCOPE BOUNDARY). Not fixed by 
   outside this plan's scope. It is a pre-existing, app-wide latent issue, not introduced by 87-08.
 - **Proposed fix (when a CSS-owning change can take it):** add `[x-cloak] { display: none !important; }`
   to `assets/src/app.css` (after the `htmx-indicator` rules) and rebuild via `just tailwind`.
+
+---
+
+## Code-review dispositions (orchestrator, 87-REVIEW.md — 2026-07-11)
+
+- **CR-01 (blocker) — RESOLVED.** Force-skip writer 500'd on a duplicate `(file_id, stage)` (bare INSERT
+  vs UNIQUE). Fixed with `pg_insert(...).on_conflict_do_nothing(index_elements=["file_id","stage"])`
+  (idempotent, mirrors `insert_ledger_if_absent`). Mutation-verified; regression guard
+  `test_duplicate_force_skip_is_idempotent_not_500`. Commit `7b166337`.
+- **WR-01 — RESOLVED.** The D-09 "reason required" gate ran on raw input before `sanitize_pg_text`, so a
+  NUL-only reason bypassed it and persisted as `""`. Now sanitizes first, validates the sanitized value.
+  Regression guard `test_nul_only_reason_returns_422_and_writes_nothing`. Commit `7b166337`.
+- **WR-02 — BACKLOGGED (milestone-close gate).** `get_stage_orphan_counts` runs recovery's full ledger
+  derivation on every 5s poll — degrade-safe but can block on a large ledger. Genuine read-path perf
+  redesign, so recorded in the ROADMAP backlog as a MUST-fix-before-2026.7.5-close gate. Commit `5107b385`.
+- **IN-01 — RESOLVED.** The `_safe_bucket_counts` / `get_stage_progress` docstrings said "FOUR-BUCKET";
+  the code already returns FIVE (Status.SKIPPED zero-fills `{s.value: 0 for s in Status}` since 87-02).
+  Corrected the docstrings to the five-bucket shape + `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`
+  precedence. Doc-only; code was correct.
+- **IN-02 — ACCEPTED (no change).** The status-filter offers `skipped` for downstream stages where it can
+  never match; the query correctly returns the filter-aware empty state (`files_table_view.html`), so it
+  degrades cleanly. Not a bug — a harmless valid query with a clear empty result. Left as-is; hiding the
+  option per-stage would need client-side coupling for no functional gain.

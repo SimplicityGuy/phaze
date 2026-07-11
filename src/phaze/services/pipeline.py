@@ -322,11 +322,12 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
 
 
 async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, int]:
-    """Return the four-way ``{not_started, in_flight, done, failed}`` count for ``stage``, degrade-safe.
+    """Return the five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
 
     ONE ``GROUP BY stage_status_case(stage)`` scoped to music/video files. Because every music/video
-    file resolves to exactly one of the four :func:`phaze.services.stage_status.stage_status_case`
-    buckets (precedence ``in_flight ≻ done ≻ failed ≻ not_started``), the four counts SUM to
+    file resolves to exactly one of the five :func:`phaze.services.stage_status.stage_status_case`
+    buckets (precedence ``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``; ``skipped`` is the
+    Phase-87 force-skip marker, enrich-only), the five counts SUM to
     ``music_video_total`` on a healthy query. Reuses the LOCKED ``stage_status_case`` ``CASE`` ladder
     verbatim -- NEVER a fresh ``CASE`` (D-04) -- so the buckets can never drift from the DERIV-04
     equivalence lock (and, transitively, the Python resolver).
@@ -335,7 +336,7 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     ANY exception this logs a warning, guarded-rolls-back the aborted transaction (so a Postgres
     "current transaction is aborted" state cannot poison the later stage COUNTs), and returns the
     all-zero dict -- it NEVER raises into the hot 5s /pipeline/stats poll. On that fail-safe-to-zero
-    degrade the four buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
+    degrade the five buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
     invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
     """
     out: dict[str, int] = {s.value: 0 for s in Status}
@@ -370,16 +371,16 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     (READ-02, D-05) removed the former state-grouped ``get_pipeline_stats`` entirely; the stats path
     now derives its seven keys from THIS function (no ``FileRecord.state`` read).
 
-    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FOUR-BUCKET shape
-    ``{not_started, in_flight, done, failed, total}`` (Phase 82); every OTHER node keeps
+    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FIVE-BUCKET shape
+    ``{not_started, in_flight, done, skipped, failed, total}`` (Phase 82 + Phase-87 ``skipped``); every OTHER node keeps
     ``{"done": int, "total": int | None}``:
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
-    - ``metadata``    -- FOUR-BUCKET via ``stage_status_case(METADATA)`` over music/video files
+    - ``metadata``    -- FIVE-BUCKET via ``stage_status_case(METADATA)`` over music/video files
       (:func:`_safe_bucket_counts`); ``done`` = row present + ``failed_at`` NULL; total = music/video count
-    - ``fingerprint`` -- FOUR-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
+    - ``fingerprint`` -- FIVE-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
       ('success','completed'); ``failed`` = failed-only (no success); total = music/video count
-    - ``analyze``     -- FOUR-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
+    - ``analyze``     -- FIVE-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
       ``analysis_completed_at`` NOT NULL (a partial in-flight row is ``in_flight``, not done); total = music/video count
     - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
@@ -432,9 +433,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
-        # Phase 82 (READ-02, D-04/D-05): the three enrich nodes are FOUR-BUCKET
-        # ({not_started, in_flight, done, failed} + total) via one GROUP BY stage_status_case(stage)
-        # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the four buckets sum
+        # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the three enrich nodes are FIVE-BUCKET
+        # ({not_started, in_flight, done, skipped, failed} + total) via one GROUP BY stage_status_case(stage)
+        # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
         "metadata": {**await _safe_bucket_counts(session, Stage.METADATA), "total": music_video_total},
