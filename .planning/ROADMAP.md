@@ -274,7 +274,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 83. Cloud-Routing Sidecar Cutover | 2026.7.5 | 7/7 | Complete    | 2026-07-09 |
 | 84. Dedup & Fingerprint-Progress Cutover | 2026.7.5 | 6/6 | Complete    | 2026-07-10 |
 | 85. EXECUTED-Gate Revival | 2026.7.5 | 4/4 | Complete    | 2026-07-10 |
-| 86. Proposals Cutover | 2026.7.5 | 2/3 | In Progress|  |
+| 86. Proposals Cutover | 2026.7.5 | 3/3 | Complete   | 2026-07-11 |
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 0/0 | Not started | - |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 0/0 | Not started | - |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 0/0 | Not started | - |
@@ -539,7 +539,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 86-03-PLAN.md — Mutation-verified AST source-scan anti-drift guard over all three cutover files
+- [x] 86-03-PLAN.md — Mutation-verified AST source-scan anti-drift guard over all three cutover files
 
 ### Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority
 
