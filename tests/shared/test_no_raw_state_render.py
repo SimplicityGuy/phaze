@@ -30,12 +30,14 @@ import re
 
 
 # The operator surfaces that render per-file/per-stage status: the pipeline partials (files table,
-# stage workspaces) and the per-file record views. If a new status surface is added elsewhere, extend
-# this list -- the guard is only as wide as the directories it scans.
+# stage workspaces), the per-file record views, and the admin partials (Phase 88's agent-activity
+# drill-in renders a per-agent stage matrix here -- T-88-10). If a new status surface is added
+# elsewhere, extend this list -- the guard is only as wide as the directories it scans.
 _TEMPLATE_ROOT = Path(__file__).resolve().parents[2] / "src" / "phaze" / "templates"
 _SCANNED_DIRS = (
     _TEMPLATE_ROOT / "pipeline" / "partials",
     _TEMPLATE_ROOT / "record",
+    _TEMPLATE_ROOT / "admin" / "partials",
 )
 
 # A Jinja output of a bare ``<var>.state`` attribute (optionally through a filter): ``{{ f.state }}``.
@@ -74,7 +76,7 @@ def _raw_state_render_sites() -> list[str]:
 
 
 def test_no_raw_enum_state_render_in_operator_templates() -> None:
-    """No pipeline/record template renders the raw-enum ``.state`` string (UI-01 anti-feature)."""
+    """No pipeline/record/admin-partial template renders the raw-enum ``.state`` string (UI-01 anti-feature)."""
     # Sanity: the guard is actually scanning real files (a silent empty glob must not pass vacuously).
     assert _iter_template_files(), f"guard scanned no templates under {_SCANNED_DIRS}"
 
