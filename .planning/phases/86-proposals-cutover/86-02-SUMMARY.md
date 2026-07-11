@@ -92,6 +92,11 @@ None - plan executed exactly as written.
 - SIDECAR-03 router half complete. Combined with Plan 01's `proposal_queries.py` cutover, the proposal→`file.state` cascade is fully removed; the Wave-2 AST source-scan guard should now assert `agent_proposals.py` has zero `FileState`/`.state` occurrences.
 - Full `just test-bucket review` green must be confirmed post-Wave-1-merge (Plan 01's `test_proposal_queries.py` adaptations are not in this worktree, so that file still asserts the pre-cutover behavior here).
 
+## Self-Check: PASSED
+
+- `86-02-SUMMARY.md` present.
+- Commits `850a57d6` (Task 1), `3af2bff3` (Task 2), `3034277d` (docs) all in git history.
+
 ---
 *Phase: 86-proposals-cutover*
 *Completed: 2026-07-10*
