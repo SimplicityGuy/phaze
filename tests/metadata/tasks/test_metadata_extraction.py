@@ -229,7 +229,7 @@ async def test_success_path_does_not_ack(mock_extract: MagicMock) -> None:
     api.report_metadata_failed.assert_not_awaited()
 
 
-# NOTE (Phase 35 D-06): the former ``test_run_scan_auto_enqueues_extraction`` test (which
-# asserted run_scan auto-enqueues the metadata-extraction task per the retired D-09) has been
-# removed. Metadata extraction is now operator-triggered ONLY; the inverse regression guard
-# (run_scan does NOT auto-enqueue) lives in tests/test_no_auto_metadata_enqueue.py.
+# NOTE (Phase 35 D-06): metadata extraction is operator-triggered ONLY. The former legacy
+# ingestion auto-enqueue path was removed entirely in Phase 89 (LEGACY-01) along with
+# ``services/ingestion.py``; the surviving agent-upsert inverse regression guard (an INSERT
+# does NOT auto-enqueue) lives in tests/shared/core/test_no_auto_metadata_enqueue.py.
