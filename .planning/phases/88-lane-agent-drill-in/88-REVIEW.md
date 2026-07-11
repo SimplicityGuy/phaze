@@ -22,8 +22,14 @@ findings:
   warning: 2
   info: 2
   total: 6
-status: issues_found
+status: resolved
+resolved_in: 3665d328
 ---
+
+> **Resolution (commit `3665d328`):** CR-01, CR-02, WR-01/WR-02, and IN-01 fixed with
+> mutation-verified regression tests (each new/changed test fails on the pre-fix code).
+> IN-02 required no code change (spec-confirmed DRILL-02 semantics). See the commit body
+> for the fix-by-finding mapping.
 
 # Phase 88: Code Review Report
 
