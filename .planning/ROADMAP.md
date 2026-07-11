@@ -559,7 +559,34 @@ Plans:
   4. The operator can force a stage to done / skip it for a specific file (so the `failed` bucket can converge), and an orphaned/stuck-work count is surfaced.
   5. The per-stage job-priority stepper (▲ raises priority / lowers the number; pause/resume too if likewise orphaned) is re-wired to the existing `POST /pipeline/stages/{stage}/priority` endpoint.
 
-**Plans**: TBD
+**Plans**: 8 plans in 6 waves
+Plans:
+**Wave 1**
+
+- [ ] 87-01-PLAN.md — `stage_skip` sidecar model + registry + additive migration 037 + migration test (UI-04, D-13a) [wave 1]
+
+**Wave 2** *(depends on 87-01)*
+
+- [ ] 87-02-PLAN.md — Derivation twins: `skipped_clause` + Status.SKIPPED threaded into stage_status_case/eligible_clause/domain_completed_clause + Python twin (UI-04, D-08/D-10) [wave 2]
+
+**Wave 3** *(depends on 87-02)*
+
+- [ ] 87-03-PLAN.md — DERIV-04 harness extension + pending-set-drop/recovery guards + shadow-compare-green (UI-04, D-13c/d; behaviors 1-6) [wave 3]
+- [ ] 87-04-PLAN.md — 5-bucket pill + 6-pill matrix + paginated degrade-safe `GET /pipeline/files` (UI-01; behavior 7) [wave 3]
+
+**Wave 4** *(depends on 87-04 / 87-02)*
+
+- [ ] 87-05-PLAN.md — Status/failure filter bar (URL-carried) + retire raw-enum "State" + grep guard (UI-01, UI-02) [wave 4]
+- [ ] 87-06-PLAN.md — Force-skip writer + single-row eligibility trace + right-pane matrix/dialog (UI-03, UI-04; behaviors 6/9/10) [wave 4]
+
+**Wave 5** *(depends on 87-04/05/06)*
+
+- [ ] 87-07-PLAN.md — Per-file + bulk retry affordances (analyze manual-only) (UI-02; behavior 8) [wave 5]
+
+**Wave 6** *(depends on 87-07 / 87-02)*
+
+- [ ] 87-08-PLAN.md — Orphan-count badge (recovery-parity, degrade-safe) + priority stepper/pause-resume re-wire (UI-05, PRIO-01) [wave 6]
+
 **UI hint**: yes
 
 ### Phase 88: Lane / Agent Drill-In
