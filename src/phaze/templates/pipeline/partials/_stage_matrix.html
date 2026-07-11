@@ -19,6 +19,12 @@
                       HERE and never repeated per row.
 
    Container wraps on narrow screens (flex flex-wrap gap-2, D-01). Pure template: no HTMX.
+
+   Per-file RETRY affordance (87-07, UI-02 / D-04) is NOT here: this component takes only a `buckets`
+   dict and has no per-cell `file_id`, so it cannot host a scoped HTMX retry. The per-row Retry on a
+   failed enrich cell (metadata/analyze; fingerprint self-retries, so no control) lives in
+   `files_table_view.html`'s cell loop, where `row.file.id` + the stage key are in scope. This partial
+   stays a pure presentational token so the record right pane (trace triggers, 87-06) can reuse it.
 #}
 {% set _matrix_stages = [
     ('Meta', buckets.metadata if buckets else none),
