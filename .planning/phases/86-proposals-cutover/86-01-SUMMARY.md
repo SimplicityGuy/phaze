@@ -104,6 +104,10 @@ The rigorous, mutation-verified drift guard (flagging a re-added `file.state` wr
 - SIDECAR-03 service-layer half complete. `agent_proposals.py` router cutover (D-01 site "5"/"4") and the Plan-03 AST source-scan guard remain for the rest of Phase 86.
 - Plan 03's AST guard should assert clean absence (`== []`) across `proposal.py`, `proposal_queries.py`, and `agent_proposals.py` — the first two are confirmed clean of any `FileState.<member>` occurrence or `.state` Store/Load node after this plan.
 
+## Self-Check: PASSED
+
+All 4 modified files present on disk; all 3 commits (`216e14f9`, `b9a91ee6`, `f9342e60`) exist in git history.
+
 ---
 *Phase: 86-proposals-cutover*
 *Completed: 2026-07-11*
