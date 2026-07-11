@@ -600,7 +600,10 @@ Plans:
   2. Clicking an agent row opens `GET /admin/agents/{agent_id}/_activity` showing owned files grouped by derived `stage_status`, recent scan batches, per-lane queue depths, and liveness.
   3. The drill-in survives the 5s poll swap (selection carried via URL param / rendered outside the polled `outerHTML` region) and is keyboard-accessible (`role=button`, Enter/Space, focus ring).
 
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
+- [ ] 88-01-PLAN.md — Shared non-modal detail-pane shell + keyboard-accessible triggers + `?param` poll-survival highlight (DRILL-03; D-01/D-02/D-03/D-08/D-09) [wave 1]
+- [ ] 88-02-PLAN.md — `GET /pipeline/lanes/{backend_id}` + `_lane_detail.html` (kind-adaptive fields, N=20 recent completions, degrade-safe) (DRILL-01; D-06/D-07) [wave 2]
+- [ ] 88-03-PLAN.md — `GET /admin/agents/{agent_id}/_activity` + per-agent GROUP BY stage aggregate + `_agent_activity.html` (DRILL-02; D-00a/D-04/D-05) [wave 2]
 **UI hint**: yes
 
 ### Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution
