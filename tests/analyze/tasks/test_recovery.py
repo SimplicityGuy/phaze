@@ -704,28 +704,19 @@ async def test_skipped_metadata_row_is_excluded_from_recovery(
     assert router.queues == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "GAP (87-03 deferred): recovery's fingerprint_done reads done_clause(FINGERPRINT) ONLY, NOT "
-        "domain_completed_clause -- so skipped_clause is not consulted and a force-skipped fingerprint "
-        "with a surviving ledger row IS re-enqueued, violating behavior 5. Fix: _build_done_sets should "
-        "derive fingerprint_done from or_(done_clause, skipped_clause). When that lands this xfail XPASSes "
-        "and (strict) turns RED -- remove the marker then. See deferred-items.md."
-    ),
-)
 @pytest.mark.asyncio
 async def test_skipped_fingerprint_row_is_excluded_from_recovery(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DESIRED (currently RED): a force-SKIPPED fingerprint file should be excluded from recovery (behavior 5).
+    """A force-SKIPPED fingerprint file is excluded from recovery (phase-87 behavior 5).
 
-    This encodes the correct behavior as a tracked regression guard. It currently FAILS because
-    ``_build_done_sets`` computes ``fingerprint_done`` from ``done_clause(FINGERPRINT)`` alone (to keep a
-    FAILED fingerprint auto-retryable) and never consults ``skipped_clause`` -- so the skip does not
-    suppress the re-drive. Documented in the phase ``deferred-items.md`` and flagged to the orchestrator.
+    ``_build_done_sets`` now derives ``fingerprint_done`` from
+    ``or_(done_clause(FINGERPRINT), skipped_clause(FINGERPRINT))``: a FAILED-but-not-skipped fingerprint
+    still auto-retries, but an operator-force-SKIPPED fingerprint whose ``fingerprint_file`` ledger row
+    survives a crash/restart is NOT re-enqueued -- recovery never re-drives a stage the operator skipped.
+    (Regression guard for the 87-03 gap; previously a strict-xfail tripwire, made GREEN by the 87-03 fix.)
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)

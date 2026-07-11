@@ -23,7 +23,15 @@ Out-of-scope discoveries logged during execution (SCOPE BOUNDARY). Not fixed by 
 
 ## From Plan 03 (Wave 3)
 
-- **OPEN — Recovery re-enqueues a force-SKIPPED fingerprint file (behavior 5 gap for the fingerprint stage).**
+- **RESOLVED (orchestrator, mid-phase) — Recovery re-enqueues a force-SKIPPED fingerprint file (behavior 5 gap for the fingerprint stage).**
+  - Fix applied: `_build_done_sets` now derives `fingerprint_done` from
+    `or_(done_clause(Stage.FINGERPRINT), skipped_clause(Stage.FINGERPRINT))` in `src/phaze/tasks/reenqueue.py`
+    (a FAILED-but-not-skipped fingerprint still auto-retries; a force-SKIPPED one is excluded). Docstrings
+    updated at every anchor that claimed "done_clause(FINGERPRINT) ONLY". The strict-xfail tripwire
+    `test_skipped_fingerprint_row_is_excluded_from_recovery` was converted to a plain passing guard; the
+    full recovery suite is green (54 passed) and the guard was mutation-verified (stripping the
+    `skipped_clause` disjunct re-RED'd it with `fingerprint_file reenqueued: 1`).
+  - Original finding below (kept for the record):
   - Discovered while writing the Task-2 recovery guard (`tests/analyze/tasks/test_recovery.py`).
   - Root cause: `phaze.tasks.reenqueue._build_done_sets` derives `fingerprint_done` from
     `done_clause(Stage.FINGERPRINT)` **only** (deliberately, so a FAILED fingerprint auto-retries —

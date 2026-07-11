@@ -56,8 +56,10 @@ NOT in_flight``) to a DIRECT ``in done-set`` test. The exclusion stays EXPLICIT 
   ``domain_completed_clause(ANALYZE)`` == done OR terminal-failed -- FAILURE_IS_TERMINAL[analyze],
   so an un-analyzable file is NEVER auto-re-driven), ``extract_file_metadata`` (done via
   ``domain_completed_clause(METADATA)`` with the D-10 ``enqueued_at <= failed_at`` gate applied at the
-  call site), ``fingerprint_file`` (done via ``done_clause(FINGERPRINT)`` ONLY -- a FAILED fingerprint
-  auto-retries, the intentional analyze/fingerprint asymmetry D-01 encodes), and ``push_file`` (done
+  call site), ``fingerprint_file`` (done via ``done_clause(FINGERPRINT) OR skipped_clause(FINGERPRINT)``
+  -- a FAILED fingerprint still auto-retries, the intentional analyze/fingerprint asymmetry D-01 encodes,
+  but an operator-force-SKIPPED fingerprint is excluded so recovery never re-drives a skipped stage
+  [phase-87 behavior 5]), and ``push_file`` (done
   via ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` -- D-07, no backend-kind
   resolution needed because a ``push_file`` ledger row implies compute).
 - live-keys-only (everything else): ``scan_live_set`` (Plan 02's terminal ack clears its ledger row
@@ -99,7 +101,7 @@ from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
-from phaze.services.stage_status import domain_completed_clause, done_clause
+from phaze.services.stage_status import domain_completed_clause, done_clause, skipped_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
@@ -134,7 +136,7 @@ _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
     {
         "process_file",  # analyze: domain_completed_clause(ANALYZE) == done OR terminal-failed
         "extract_file_metadata",  # domain_completed_clause(METADATA) + the D-10 enqueued_at gate at the call site
-        "fingerprint_file",  # done_clause(FINGERPRINT) ONLY -- a failed fingerprint auto-retries (D-01)
+        "fingerprint_file",  # done_clause(FINGERPRINT) OR skipped_clause -- failed auto-retries (D-01), force-skip excluded
         "push_file",  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
     }
 )
@@ -165,7 +167,7 @@ class _DoneSets:
     analyze_done: set[str]  # domain_completed_clause(ANALYZE): done OR terminal-failed
     metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR failed (D-10 gate refines failed)
     metadata_failed_at: dict[str, datetime]  # failed_clause(METADATA) rows -> failed_at (D-10 gate)
-    fingerprint_done: set[str]  # done_clause(FINGERPRINT): a success/completed engine (failed auto-retries)
+    fingerprint_done: set[str]  # done_clause(FINGERPRINT) OR skipped_clause: failed auto-retries, force-skip excluded
     push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
 
 
@@ -223,8 +225,12 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
       (``done OR (failed AND enqueued_at <= failed_at)``) -- both twins stay ledger-agnostic. Deriving the
       set via ``domain_completed_clause`` (not a bare ``done_clause``) is what makes the D-11 lock bite: a
       ``~inflight_clause`` conjunct wrongly added to it would drop every failed-and-inflight candidate.
-    - ``fingerprint_done``: ``done_clause(FINGERPRINT)`` ONLY (a failed fingerprint auto-retries, so it
-      is NOT domain-complete -- the analyze/fingerprint asymmetry D-01 encodes).
+    - ``fingerprint_done``: ``done_clause(FINGERPRINT) OR skipped_clause(FINGERPRINT)`` -- a FAILED
+      fingerprint still auto-retries (it is NOT domain-complete: the analyze/fingerprint asymmetry D-01
+      encodes, FAILURE_IS_TERMINAL[fingerprint] is False), but an operator-force-SKIPPED fingerprint is
+      excluded so ``recover_orphaned_work`` never re-drives a stage the operator explicitly skipped
+      (phase-87 behavior 5). NOT ``domain_completed_clause`` -- that would couple recovery to the
+      terminality axis and obscure the FAIL-04 auto-retry intent (here it collapses to the same set).
     - ``push_done``: ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` (D-07). A
       ``push_file`` ledger row implies compute (``_enqueue_push_file`` is its only producer), so no
       backend-kind resolution is needed: SUCCEEDED covers the landed-but-not-yet-analyzed window and
@@ -255,7 +261,12 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
         ).all()
     }
     fingerprint_done = {
-        str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "f_ids"), done_clause(Stage.FINGERPRINT)))).all()
+        str(fid)
+        for fid in (
+            await session.scalars(
+                select(FileRecord.id).where(_fids_scope(fids, "f_ids"), or_(done_clause(Stage.FINGERPRINT), skipped_clause(Stage.FINGERPRINT)))
+            )
+        ).all()
     }
     push_done = {str(fid) for fid in (await session.scalars(_select_done_push_ids(fids))).all()}
 
@@ -368,7 +379,8 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
 
     - ``process_file``: file id in ``analyze_done`` (domain_completed(analyze) == done OR terminal-failed).
     - ``push_file``: file id in ``push_done`` (succeeded OR domain_completed(analyze), D-07).
-    - ``fingerprint_file``: file id in ``fingerprint_done`` (done ONLY -- a failed fingerprint auto-retries).
+    - ``fingerprint_file``: file id in ``fingerprint_done`` (done OR skipped -- a failed fingerprint
+      auto-retries; an operator-force-SKIPPED fingerprint is excluded, phase-87 behavior 5).
     - ``extract_file_metadata``: the D-10 cell. Domain-complete when ``done(metadata)`` OR the metadata
       FAILED AND the ledger row's ``enqueued_at <= metadata.failed_at``. metadata is the ONLY stage with
       this ambiguous cell: ``retry_metadata_failed`` LEAVES ``failed_at`` set (81 D-11) then re-enqueues,
