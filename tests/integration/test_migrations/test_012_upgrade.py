@@ -33,7 +33,10 @@ from tests.integration.test_migrations.conftest import (
 
 
 # ---------------------------------------------------------------------------
-# Tests that consume the ``migrated_engine`` fixture (already at head revision).
+# Schema-shape assertions consume ``migrated_engine`` (head=038 — 038 is data-only,
+# so column/index inventory is unchanged). Assertions on the legacy sentinel agent or
+# its ``<watcher>`` live batch consume ``pre_retire_engine`` (pinned to 037), because
+# migration 038 DELETEs the sentinel and its live batch at head.
 # ---------------------------------------------------------------------------
 
 
@@ -104,9 +107,12 @@ async def test_token_hash_nullable(migrated_engine) -> None:  # type: ignore[no-
 
 
 @pytest.mark.asyncio
-async def test_legacy_agent_born_revoked(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-04 / T-V4-01: legacy-application-server has token_hash NULL and revoked_at NOT NULL."""
-    async with migrated_engine.connect() as conn:
+async def test_legacy_agent_born_revoked(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-04 / T-V4-01: legacy-application-server has token_hash NULL and revoked_at NOT NULL.
+
+    Pinned to revision 037: migration 038 DELETEs the sentinel agent at head.
+    """
+    async with pre_retire_engine.connect() as conn:
         result = await conn.execute(text("SELECT token_hash, revoked_at FROM agents WHERE id = 'legacy-application-server'"))
         row = result.one()
     assert row.token_hash is None
@@ -114,28 +120,37 @@ async def test_legacy_agent_born_revoked(migrated_engine) -> None:  # type: igno
 
 
 @pytest.mark.asyncio
-async def test_sentinel_scan_path_literal(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-04: legacy agent's LIVE sentinel has scan_path '<watcher>' (literal angle brackets)."""
-    async with migrated_engine.connect() as conn:
+async def test_sentinel_scan_path_literal(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-04: legacy agent's LIVE sentinel has scan_path '<watcher>' (literal angle brackets).
+
+    Pinned to revision 037: migration 038 DELETEs the live watcher batch at head.
+    """
+    async with pre_retire_engine.connect() as conn:
         result = await conn.execute(text("SELECT scan_path FROM scan_batches WHERE agent_id = 'legacy-application-server' AND status = 'live'"))
         row = result.one()
     assert row.scan_path == "<watcher>"
 
 
 @pytest.mark.asyncio
-async def test_legacy_sentinel_exists(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-03: exactly one LIVE sentinel exists for the legacy agent after upgrade."""
-    async with migrated_engine.connect() as conn:
+async def test_legacy_sentinel_exists(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-03: exactly one LIVE sentinel exists for the legacy agent after upgrade.
+
+    Pinned to revision 037: migration 038 DELETEs the live watcher batch at head.
+    """
+    async with pre_retire_engine.connect() as conn:
         result = await conn.execute(text("SELECT COUNT(*) AS n FROM scan_batches WHERE agent_id = 'legacy-application-server' AND status = 'live'"))
         row = result.one()
     assert row.n == 1
 
 
 @pytest.mark.asyncio
-async def test_partial_uq_rejects_dup_live(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-03: partial unique index rejects a second LIVE scan_batch for the same agent."""
+async def test_partial_uq_rejects_dup_live(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-03: partial unique index rejects a second LIVE scan_batch for the same agent.
+
+    Pinned to revision 037: relies on the sentinel's existing live batch (038 removes it at head).
+    """
     with pytest.raises(IntegrityError):
-        async with migrated_engine.begin() as conn:
+        async with pre_retire_engine.begin() as conn:
             await conn.execute(
                 text(
                     "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files, "
@@ -147,9 +162,12 @@ async def test_partial_uq_rejects_dup_live(migrated_engine) -> None:  # type: ig
 
 
 @pytest.mark.asyncio
-async def test_partial_uq_allows_multiple_non_live(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-03: partial unique index only enforces uniqueness when status = 'live'; multiple non-LIVE rows allowed."""
-    async with migrated_engine.begin() as conn:
+async def test_partial_uq_allows_multiple_non_live(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-03: partial unique index only enforces uniqueness when status = 'live'; multiple non-LIVE rows allowed.
+
+    Pinned to revision 037: inserts under the legacy agent FK, which 038 DELETEs at head.
+    """
+    async with pre_retire_engine.begin() as conn:
         for _ in range(2):
             await conn.execute(
                 text(
@@ -160,7 +178,7 @@ async def test_partial_uq_allows_multiple_non_live(migrated_engine) -> None:  # 
                 {"id": uuid.uuid4(), "agent_id": "legacy-application-server"},
             )
     # If both inserts committed, the partial UQ correctly ignored non-LIVE rows.
-    async with migrated_engine.connect() as conn:
+    async with pre_retire_engine.connect() as conn:
         result = await conn.execute(
             text("SELECT COUNT(*) AS n FROM scan_batches WHERE agent_id = 'legacy-application-server' AND status = 'running'")
         )

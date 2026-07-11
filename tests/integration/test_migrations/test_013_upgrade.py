@@ -45,9 +45,12 @@ async def test_scan_batches_agent_id_not_null(migrated_engine) -> None:  # type:
 
 
 @pytest.mark.asyncio
-async def test_same_path_different_agent(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-02 (SC #2): same original_path under two different agent_id values both succeed."""
-    async with migrated_engine.begin() as conn:
+async def test_same_path_different_agent(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-02 (SC #2): same original_path under two different agent_id values both succeed.
+
+    Pinned to revision 037: inserts a file under the legacy agent FK, which 038 DELETEs at head.
+    """
+    async with pre_retire_engine.begin() as conn:
         # Create a second agent so we can attribute the second file row to it.
         await conn.execute(
             text("INSERT INTO agents (id, name, scan_roots, created_at, updated_at) VALUES ('agent-b', 'agent-b', CAST('[]' AS jsonb), NOW(), NOW())")
@@ -73,17 +76,20 @@ async def test_same_path_different_agent(migrated_engine) -> None:  # type: igno
             {"id": uuid.uuid4(), "hash": "b" * 64},
         )
 
-    async with migrated_engine.connect() as conn:
+    async with pre_retire_engine.connect() as conn:
         result = await conn.execute(text("SELECT COUNT(*) AS n FROM files WHERE original_path = '/music/shared.mp3'"))
         row = result.one()
     assert row.n == 2
 
 
 @pytest.mark.asyncio
-async def test_composite_unique_rejects_dup(migrated_engine) -> None:  # type: ignore[no-untyped-def]
-    """DATA-02: same (agent_id, original_path) twice is rejected by the composite unique index."""
+async def test_composite_unique_rejects_dup(pre_retire_engine) -> None:  # type: ignore[no-untyped-def]
+    """DATA-02: same (agent_id, original_path) twice is rejected by the composite unique index.
+
+    Pinned to revision 037: inserts files under the legacy agent FK, which 038 DELETEs at head.
+    """
     with pytest.raises(IntegrityError):
-        async with migrated_engine.begin() as conn:
+        async with pre_retire_engine.begin() as conn:
             for _ in range(2):
                 await conn.execute(
                     text(
