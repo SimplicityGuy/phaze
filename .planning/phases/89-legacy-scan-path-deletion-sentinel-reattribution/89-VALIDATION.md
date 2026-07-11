@@ -1,8 +1,8 @@
 ---
 phase: 89
 slug: legacy-scan-path-deletion-sentinel-reattribution
-status: draft
-nyquist_compliant: false
+status: approved
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-11
 ---
@@ -40,7 +40,10 @@ created: 2026-07-11
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| _to be filled by planner from PLAN.md tasks_ | | | LEGACY-01/02/03 | | | migration / unit / integration | `uv run pytest ...` | ❌ W0 | ⬜ pending |
+| 89-01-01 | 01 | 1 | LEGACY-03 | — | Fixtures repoint to a real fileserver while default still present (green) | integration | `uv run pytest tests/integration/test_stage_status_equivalence.py tests/integration/test_files_page.py -x -q` | ✅ | ⬜ pending |
+| 89-01-02 | 01 | 1 | LEGACY-01, LEGACY-03 | T-89-01 | App boots without scan router; no NOT-NULL/FK flush failure after default drop | integration | `uv run pytest tests/shared/routers/test_pipeline.py tests/agents/services/test_agent_upsert.py -x -q` + full `uv run pytest -q` | ✅ | ⬜ pending |
+| 89-02-01 | 02 | 2 | LEGACY-02, LEGACY-03 | T-89-02 | Migration 038 revision/down_revision correct; downgrade raises NotImplementedError | unit (import) | `uv run python -c "…revision=='038' and down_revision=='037'…pytest.raises(NotImplementedError, m.downgrade)"` | ✅ | ⬜ pending |
+| 89-02-02 | 02 | 2 | LEGACY-02, LEGACY-03 | T-89-02 | 8 scenarios: reattribute, delete-live-batch, abort-0-fileserver, abort->1-no-override, -x override, COUNT=0 assert, sentinel deleted | migration/integration | `uv run pytest tests/integration/test_migrations/test_migration_038_retire_legacy_sentinel.py -x -q` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -68,11 +71,11 @@ created: 2026-07-11
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (conftest/constant repoints land in 89-01-01)
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s (targeted `uv run pytest` invocations)
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-07-11 (plan-checker: 0 blockers)

@@ -380,14 +380,12 @@ Low security surface — this is deletion + an internal data migration.
 | A3 | Single `UPDATE` over ~11,428 rows is sub-second, no batching/lock_timeout needed | Code Example Pattern 2 | LOW — indexed FK re-point; if slow, add a batched loop (still one txn) |
 | A4 | The target fileserver (nox) has its own `status='live'` batch, guaranteeing the Pitfall-1 collision | Pitfall 1 | LOW — the DELETE-the-legacy-live-batch fix is collision-proof either way (safe even if nox has no live batch) |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **D-03 live-batch handling (BLOCKING micro-decision).**
-   - What we know: blanket reattribution of the legacy `status='live'` batch violates `uq_scan_batches_agent_id_live`.
-   - What's unclear: whether the planner may refine D-03 directly or must bounce to discuss-phase.
-   - Recommendation: refine to **DELETE the legacy live batch**; record as a plan-level clarification of D-03 (intent preserved: no legacy-owned rows survive).
-2. **`ingestion.py` wholesale delete vs trio-only** (A1) — recommend wholesale delete; confirm at plan time.
-3. **`LEGACY_AGENT_ID` constant retention** — recommend KEEP (test-referenced + historical label); the string still exists in DB history and migration-012 tests. Retiring it is a separate cleanup, not required by LEGACY-01..03.
+1. **D-03 live-batch handling (BLOCKING micro-decision).** **RESOLVED** — user chose "Delete the live watcher batch" (2026-07-11); 89-CONTEXT.md D-03/D-09 REFINED to DELETE the legacy `status='live'` watcher batch (not reattribute it), avoiding the `uq_scan_batches_agent_id_live` collision. Intent (no legacy-owned rows survive) preserved.
+   - What we knew: blanket reattribution of the legacy `status='live'` batch violates `uq_scan_batches_agent_id_live`.
+2. **`ingestion.py` wholesale delete vs trio-only** (A1) — **RESOLVED**: plan 89-01 Task 2 deletes `services/ingestion.py` wholesale (grep-guarded no surviving importer), per recommendation.
+3. **`LEGACY_AGENT_ID` constant retention** — **RESOLVED**: KEEP `models/agent.py:14` (still test-referenced + labels historical data); confirmed in 89-CONTEXT.md canonical_refs and honored by both plans. Retiring it is a separate cleanup, not required by LEGACY-01..03.
 
 ## Environment Availability
 
