@@ -624,9 +624,13 @@ Plans:
   3. After reattribution, the `agent_id` column `default=` is dropped and the sentinel `Agent` row is deleted — the `ondelete=RESTRICT` FK is satisfiable only because reattribution ran first (ordering enforced within the migration).
 
 **Plans**: 2 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 89-01-PLAN.md — Delete legacy scan path (routers/scan, services/ingestion, schemas/scan) + drop agent_id model defaults + repoint test fixtures (LEGACY-01, LEGACY-03 model half)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 89-02-PLAN.md — Migration 038 reattributes legacy-owned rows to the sole fileserver + deletes the sentinel row, with its integration test (LEGACY-02, LEGACY-03 migration half)
 
 ### Phase 90: Destructive Migration & Writer Removal
