@@ -24,7 +24,15 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 
 
 if TYPE_CHECKING:
+    from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _render_lane_detail(**context: object) -> str:
+    """Render the _lane_detail.html body directly (no request global) for template-level assertions."""
+    from phaze.routers.pipeline import templates
+
+    return templates.get_template("pipeline/partials/_lane_detail.html").render(**context)
 
 
 async def _seed_succeeded(session: AsyncSession, make_file, backend_id: str, n: int, base: datetime) -> None:  # type: ignore[no-untyped-def]
@@ -116,3 +124,92 @@ async def test_queue_depths_degrade_to_zero_without_app_state() -> None:
     depths = await get_lane_queue_depths(_BareState(), "compute-x")
     assert set(depths) == {"analyze", "fingerprint", "meta", "io"}
     assert all(v == 0 for v in depths.values())
+
+
+# ---------------------------------------------------------------------------
+# Task 2: GET /pipeline/lanes/{backend_id} endpoint + _lane_detail.html body.
+# ---------------------------------------------------------------------------
+
+
+async def _first_lane(session: AsyncSession) -> dict:  # type: ignore[type-arg]
+    """Return the first degrade-safe snapshot lane (default registry -> a 'local' lane)."""
+    from phaze.services.backends import get_backend_lane_snapshot
+
+    lanes = await get_backend_lane_snapshot(session)
+    if not lanes:
+        pytest.skip("no backend lanes resolved in this environment")
+    return lanes[0]
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_known_lane_renders_fields(client: AsyncClient, session: AsyncSession) -> None:
+    """A known lane -> 200 fragment with the RANK label, in-flight/cap, and the own 5s tick (DRILL-01)."""
+    lane = await _first_lane(session)
+    response = await client.get(f"/pipeline/lanes/{lane['id']}")
+    assert response.status_code == 200, response.text
+    body = response.text
+
+    assert f"· {lane['id']}" in body
+    assert f"RANK {lane['rank']}" in body
+    assert f"{lane['in_flight']}/{lane['cap']}" in body
+    # Queue depths degrade to 0 (test client skips the lifespan -> no task_router) but still render.
+    assert "Queue depth" in body
+    assert "Recent completions" in body
+    # D-03 own-tick: the body self-refreshes on its own bounded 5s tick scoped to this lane.
+    assert 'hx-trigger="every 5s"' in body
+    assert f'hx-get="/pipeline/lanes/{lane["id"]}"' in body
+    assert 'hx-target="#detail-pane"' in body
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_unknown_lane_is_friendly_offline(client: AsyncClient, session: AsyncSession) -> None:
+    """An unknown backend_id -> a friendly "Lane offline" fragment (200 HTML), never a 500 / JSON (T-88-03)."""
+    await _first_lane(session)  # ensure the registry resolves in this env
+    response = await client.get("/pipeline/lanes/__nope__")
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert "Lane offline" in body
+    assert "offline" in body
+    # Never a JSON error body.
+    assert response.headers["content-type"].startswith("text/html")
+    assert '{"detail"' not in body
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_local_lane_no_completions_empty_state(client: AsyncClient, session: AsyncSession) -> None:
+    """A local lane shows the "No completions in the last 20" empty state (OQ1: local writes none)."""
+    lane = await _first_lane(session)
+    if lane["kind"] != "local":
+        pytest.skip("default registry did not resolve a local lane first")
+    response = await client.get(f"/pipeline/lanes/{lane['id']}")
+    assert response.status_code == 200, response.text
+    assert "No completions in the last 20." in response.text
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_template_kueue_shows_inadmissible() -> None:
+    """A kueue lane renders quota-waiting + Inadmissible under the D-06 kueue-only branch."""
+    kueue_lane = {"id": "k8s-a", "kind": "kueue", "rank": 3, "cap": 8, "in_flight": 2, "available": True, "quota_wait": 4, "inadmissible": 2}
+    body = _render_lane_detail(lane=kueue_lane, recent_completions=[], queue_depths={}, refreshed_at=None, recent_n=20)
+    assert "inadmissible" in body
+    assert "waiting" in body
+    assert 'role="alert"' in body  # inadmissible > 0 -> amber alert
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_template_non_kueue_has_no_inadmissible() -> None:
+    """A local/compute lane renders NO quota/Inadmissible row (D-06 -- no fabricated n/a fillers)."""
+    for kind in ("local", "compute"):
+        lane = {"id": f"{kind}-1", "kind": kind, "rank": 1, "cap": 4, "in_flight": 0, "available": True, "quota_wait": 0, "inadmissible": 0}
+        body = _render_lane_detail(lane=lane, recent_completions=[], queue_depths={}, refreshed_at=None, recent_n=20)
+        assert "inadmissible" not in body
+        assert 'role="alert"' not in body
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_no_unsafe_filter(client: AsyncClient, session: AsyncSession) -> None:
+    """Operator-declared lane id/kind stay Jinja-autoescaped -- never |safe (T-88-05)."""
+    lane = await _first_lane(session)
+    response = await client.get(f"/pipeline/lanes/{lane['id']}")
+    assert response.status_code == 200
+    assert "|safe" not in response.text
