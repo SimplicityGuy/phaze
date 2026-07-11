@@ -1,3 +1,13 @@
+---
+phase: 88
+slug: lane-agent-drill-in
+status: secured
+threats_open: 0
+threats_total: 11
+asvs_level: 1
+created: 2026-07-11
+---
+
 # SECURITY.md — Phase 88 (lane-agent-drill-in)
 
 **Audited:** 2026-07-11
