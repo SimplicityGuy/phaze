@@ -240,6 +240,42 @@ async def test_038_aborts_and_rolls_back_when_no_fileserver() -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+# Scenario 4b (CR-01): abort when the target already owns a file at a legacy file's original_path
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_038_aborts_when_target_owns_colliding_original_path() -> None:
+    """CR-01: a legacy file and a target file sharing original_path abort 038 with clear guidance + rollback.
+
+    ``uq_files_agent_id_original_path`` (013) permits the same path under different agents, so this is a
+    reachable production state. Reattributing legacy -> nox would duplicate ``(nox, path)`` and raise an
+    opaque IntegrityError; the pre-flight guard raises a clear RuntimeError instead and the whole txn rolls
+    back (sentinel + both files survive, no partial reattribution).
+    """
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+    await asyncio.to_thread(upgrade_to, cfg, "037")
+    engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+    dup_path = "/music/dup.flac"
+    try:
+        await _seed_agent(engine, _NOX)
+        await _seed_file(engine, _FILE_A, _LEGACY, dup_path)  # legacy-owned
+        await _seed_file(engine, _FILE_B, _NOX, dup_path)  # target already owns the same path
+
+        with pytest.raises(RuntimeError, match=r"already owns files at legacy original_path"):
+            await asyncio.to_thread(upgrade_to, cfg, "038")
+
+        # Rollback proof: nothing reattributed, sentinel + both files intact.
+        assert await _count(engine, "SELECT count(*) FROM agents WHERE id = :a", {"a": _LEGACY}) == 1
+        assert await _count(engine, "SELECT count(*) FROM files WHERE agent_id = :a", {"a": _LEGACY}) == 1
+        assert await _count(engine, "SELECT count(*) FROM files WHERE agent_id = :a AND original_path = :p", {"a": _NOX, "p": dup_path}) == 1
+    finally:
+        await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+# --------------------------------------------------------------------------------------------------
 # Scenario 5: abort on >1 fileserver (no override) -- message points at -x reattribute_to
 # --------------------------------------------------------------------------------------------------
 

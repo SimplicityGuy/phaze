@@ -24,6 +24,10 @@ the sentinel DELETE is never reached in a bad state (T-89-02-02/03/04):
      SECOND live batch for the target and violate the ``uq_scan_batches_agent_id_live`` partial unique
      index (``UNIQUE (agent_id) WHERE status='live'``, 012:104-110) -- so it is DELETED, not
      reattributed (D-03 refined, RESEARCH Pitfall 1, T-89-02-05).
+  1.5. CR-01 guard: abort with clear operator guidance if the target already owns a ``files`` row at a
+     legacy file's ``original_path``. The step-2 UPDATE would otherwise duplicate ``(target, original_path)``
+     and violate ``uq_files_agent_id_original_path`` (013 / file.py:99) with an opaque ``IntegrityError``.
+     013's composite UQ deliberately allows the same path under different agents, so this is a real state.
   2. UPDATE ``files`` -> target (parameterized on ``:target``).
   3. UPDATE ``scan_batches`` -> target (no live rows remain to collide).
   4. Assert ``COUNT(*)`` of remaining legacy-owned rows across ``files`` U ``scan_batches`` == 0, else
@@ -79,6 +83,22 @@ _VALIDATE_OVERRIDE = "SELECT id FROM agents WHERE id = :id AND revoked_at IS NUL
 # uq_scan_batches_agent_id_live. Static literal id -- no interpolation surface.
 _DELETE_LEGACY_LIVE_BATCH = "DELETE FROM scan_batches WHERE agent_id = 'legacy-application-server' AND status = 'live'"
 
+# Step 1.5 (CR-01 guard): the reattribution UPDATE below re-points every legacy-owned ``files`` row to
+# ``:target``. ``files`` carries the composite unique index ``uq_files_agent_id_original_path`` on
+# ``(agent_id, original_path)`` (013 / models/file.py:99). If the target fileserver ALREADY owns a row at
+# the same ``original_path`` as any legacy-owned row, the UPDATE would produce a duplicate
+# ``(target, original_path)`` and abort mid-transaction with an opaque ``IntegrityError``. Migration 013's
+# composite UQ deliberately allows the same ``original_path`` under different agents, so this is a real
+# reachable production state. Detect it FIRST and abort with clear operator guidance (mirroring the
+# 0/>1-fileserver aborts and 013's D-16 downgrade guard) instead of a raw IntegrityError. Parameterized on
+# ``:target`` -- never f-stringed. LIMIT 5 keeps the error message bounded.
+_FILES_PATH_COLLISION = (
+    "SELECT l.original_path FROM files l "
+    "JOIN files t ON t.original_path = l.original_path AND t.agent_id = :target "
+    "WHERE l.agent_id = 'legacy-application-server' "
+    "ORDER BY l.original_path LIMIT 5"
+)
+
 # Steps 2/3: reattribute the surviving legacy-owned rows to the chosen target. Parameterized on
 # ``:target`` (bindparams) -- the target id is NEVER f-stringed into the SQL (T-89-02-01).
 _REATTRIBUTE_FILES = "UPDATE files SET agent_id = :target WHERE agent_id = 'legacy-application-server'"
@@ -125,6 +145,17 @@ def upgrade() -> None:
 
     # (1) DELETE the legacy live watcher batch (Pitfall 1) BEFORE the bulk scan_batches UPDATE.
     bind.execute(sa.text(_DELETE_LEGACY_LIVE_BATCH))
+    # (1.5) CR-01 guard: abort with clear operator guidance if the target already owns a file at a
+    # legacy file's original_path -- the reattribution UPDATE would otherwise violate
+    # uq_files_agent_id_original_path with an opaque IntegrityError. The raise rolls back the whole txn
+    # (the sentinel DELETE is never reached), same all-or-nothing contract as the COUNT!=0 gate (D-09).
+    collisions = bind.execute(sa.text(_FILES_PATH_COLLISION).bindparams(target=target)).scalars().all()
+    if collisions:
+        raise RuntimeError(
+            f"Cannot reattribute: target {target!r} already owns files at legacy original_path(s) "
+            f"{list(collisions)} (composite UQ uq_files_agent_id_original_path would collide). "
+            "Resolve these duplicate paths (delete the redundant legacy or target row) before retrying 038."
+        )
     # (2)/(3) reattribute the surviving legacy-owned rows (parameterized on :target).
     bind.execute(sa.text(_REATTRIBUTE_FILES).bindparams(target=target))
     bind.execute(sa.text(_REATTRIBUTE_SCAN_BATCHES).bindparams(target=target))
