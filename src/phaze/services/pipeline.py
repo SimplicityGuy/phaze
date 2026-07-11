@@ -26,6 +26,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.enqueue_router import LANES
 from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, stage_status_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
@@ -405,6 +406,62 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
         except Exception:
             logger.warning("agent_stage_bucket_rollback_failed", stage=stage.value, agent_id=agent_id, exc_info=True)
     return out
+
+
+# Recent-scan-batches cap for the agent-activity pane (D-05 / D-00b). A small fixed LIMIT keeps the
+# per-poll read bounded -- the agent pane shows the most recent handful, scroll for depth is unnecessary.
+_AGENT_RECENT_SCANS_N = 10
+
+
+async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]:
+    """Return the agent's per-lane in-flight depth ``{analyze, fingerprint, meta, io}``, degrade-safe (D-05 / D-00b).
+
+    Sums ``count("queued") + count("active")`` across each of the agent's four
+    :data:`phaze.services.enqueue_router.LANES` queues (the same ``all_lane_queues`` seam
+    :func:`get_queue_activity` uses), keyed by lane name so the agent pane can render
+    ``analyze N · fingerprint N · meta N · io N``. The legacy base queue is deliberately EXCLUDED
+    here -- this pane shows the live per-lane split, not the migration-drain total.
+
+    Failure isolation mirrors :func:`get_queue_activity`: a missing ``app.state.task_router`` (the test
+    client skips the lifespan, so the queue handles are absent) or a broker hiccup degrades the whole
+    dict to all-zero; a single dead lane degrades THAT lane to 0 without zeroing the others. It NEVER
+    raises into the 5s ``/admin/agents/{id}/_activity`` poll (D-00b).
+    """
+    out: dict[str, int] = dict.fromkeys(LANES, 0)
+    try:
+        queues = app_state.task_router.all_lane_queues(agent_id)
+    except Exception:
+        # Broad by design: a missing app.state attr (test lifespan-skip) or any broker hiccup must
+        # degrade every lane to 0, never 500 the 5s agent-pane poll.
+        logger.warning("agent_lane_depths_degraded", agent_id=agent_id, exc_info=True)
+        return out
+    for lane, q in zip(LANES, queues, strict=False):
+        try:
+            out[lane] = await q.count("queued") + await q.count("active")
+        except Exception:
+            logger.warning("agent_lane_depth_degraded", agent_id=agent_id, lane=lane, exc_info=True)
+            out[lane] = 0
+    return out
+
+
+async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit: int = _AGENT_RECENT_SCANS_N) -> list[ScanBatch]:
+    """Return the agent's most-recent ``ScanBatch`` rows (newest-first, bounded), degrade-safe (D-05 / D-00b).
+
+    One indexed read over ``ix_scan_batches_agent_id`` (``models/scan_batch.py``): the agent's scan
+    batches ordered ``created_at DESC`` with a fixed small ``LIMIT`` so the per-poll cost stays bounded
+    (T-88-08). The read runs inside a SAVEPOINT (``begin_nested``) so ANY DB error rolls back the nested
+    scope ALONE -- recovering the aborted transaction WITHOUT expiring the caller's already-loaded
+    ``agent`` ORM object (a plain ``session.rollback()`` would expire it and 500 the render on the next
+    lazy load) -- and the function returns ``[]``. It NEVER raises into the 5s agent-pane poll.
+    """
+    try:
+        async with session.begin_nested():
+            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc()).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+        return list(rows)
+    except Exception:
+        logger.warning("agent_recent_scans_degraded", agent_id=agent_id, exc_info=True)
+        return []
 
 
 async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:
