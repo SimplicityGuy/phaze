@@ -134,6 +134,52 @@ async def test_metadata_replay_overwrites(seed_test_agent: tuple[Agent, str], se
 
 
 @pytest.mark.asyncio
+async def test_metadata_callback_idempotent_after_cas_removal(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """Phase 90 (D-09, CAS-guard clarification): removing the DISCOVERED->METADATA_EXTRACTED
+    FileRecord.state CAS advance from put_metadata preserves idempotency.
+
+    Before PR-B the metadata callback advanced files.state under a ``state == DISCOVERED`` CAS guard.
+    PR-B deletes that embedded READ + WRITE atomically. This test PROVES the ON CONFLICT ``metadata``
+    upsert (the marker path) is now the sole idempotency authority: invoking the callback TWICE with the
+    SAME payload yields exactly one metadata row, no error, an unchanged final result, and a cleared
+    scheduling-ledger row -- the second call produces no duplicate or incorrect effect.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    # The callback clears extract_file_metadata:<file_id> on every success (Phase 45 L-02); seed it so
+    # we can assert the non-state work still commits after the CAS removal.
+    ledger_key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, ledger_key, "extract_file_metadata", file_id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    payload = {"artist": "Boards of Canada", "title": "Roygbiv", "year": 1998}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r1 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json=payload)
+        r2 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json=payload)
+
+    # Both calls succeed; the second is an idempotent upsert (ON CONFLICT), not an error.
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+
+    # Exactly ONE metadata marker row survives the double call (the idempotency authority).
+    session.expire_all()
+    rows = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalars().all()
+    assert len(rows) == 1
+    # Final observable result is unchanged (same payload both times) and carries no failure marker.
+    assert rows[0].artist == "Boards of Canada"
+    assert rows[0].title == "Roygbiv"
+    assert rows[0].year == 1998
+    assert rows[0].failed_at is None
+    # The non-state work (ledger clear + commit) still ran after the CAS removal.
+    assert await _ledger_present(session, ledger_key) is False
+
+
+@pytest.mark.asyncio
 async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """D-16: extra body field -> 422 extra_forbidden.
 
@@ -242,11 +288,17 @@ async def test_metadata_empty_put_is_noop_for_existing_row(
 
 
 @pytest.mark.asyncio
-async def test_metadata_put_advances_discovered_to_extracted(
+async def test_metadata_put_writes_marker_without_touching_state(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """A metadata PUT for a DISCOVERED file advances its state to METADATA_EXTRACTED (unblocks fingerprint)."""
+    """Phase 90 (D-09): a metadata PUT writes the ``metadata`` marker (the derived progress authority --
+    done(metadata) = EXISTS metadata WHERE failed_at IS NULL, so the marker is what unblocks the
+    fingerprint stage) and NO LONGER writes files.state.
+
+    Before PR-B this callback advanced files.state DISCOVERED -> METADATA_EXTRACTED under a CAS guard.
+    PR-B removed that write; the derived marker is the sole authority.
+    """
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)  # seeded in FileState.DISCOVERED
 
@@ -258,10 +310,13 @@ async def test_metadata_put_advances_discovered_to_extracted(
     assert r.status_code == 200, r.text
 
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.METADATA_EXTRACTED, "metadata PUT must advance DISCOVERED -> METADATA_EXTRACTED"
+    # The metadata marker (derived progress authority) is written, with no failure stamp.
     meta_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
     assert meta_row.artist == "A"
+    assert meta_row.failed_at is None
+    # ...and files.state is left untouched -- the raw column is dead as of Phase 90 PR-B.
+    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    assert file_row.state == FileState.DISCOVERED, "metadata PUT must not write files.state after PR-B"
 
 
 @pytest.mark.asyncio

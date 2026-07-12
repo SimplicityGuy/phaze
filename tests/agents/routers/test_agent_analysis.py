@@ -384,7 +384,8 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """Phase 43: a non-empty PUT advances files.state to 'analyzed' and lands coverage in dedicated columns (not features)."""
+    """Phase 43 / Phase 90 (D-09): a non-empty PUT marks analysis complete (analysis_completed_at, the
+    derived 'analyzed' authority -- the files.state write was removed) and lands coverage in dedicated columns."""
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
 
@@ -404,10 +405,9 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
     assert response.status_code == 200, response.text
     session.expire_all()
 
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED, "non-empty PUT must advance state to analyzed"
-
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    # Phase 90 (D-09): done(analyze) derives from analysis_completed_at, not files.state.
+    assert row.analysis_completed_at is not None, "non-empty PUT must stamp the derived 'analyzed' completion marker"
     # Coverage landed in dedicated columns (Pitfall 3 -- NOT the features JSONB).
     assert row.fine_windows_analyzed == 10
     assert row.fine_windows_total == 40
@@ -675,8 +675,9 @@ async def test_progress_post_forged_body_key_422(seed_test_agent: tuple[Agent, s
 
 
 @pytest.mark.asyncio
-async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
-    """POST /{file_id}/failed advances files.state to 'analysis_failed' and echoes agent_id/file_id."""
+async def test_analysis_failed_sets_marker(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST /{file_id}/failed stamps the derived analyze-failure marker (analysis.failed_at, the sole
+    authority after Phase 90 D-09 removed the files.state = ANALYSIS_FAILED write) and echoes agent_id/file_id."""
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
 
@@ -692,8 +693,10 @@ async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], se
     assert body["file_id"] == str(file_id)
 
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYSIS_FAILED
+    # Phase 90 (D-09): failed_clause(Stage.ANALYZE) derives from analysis.failed_at, not files.state.
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None
+    assert row.analysis_completed_at is None, "a failure marker must not also read as complete (XOR CHECK)"
 
 
 @pytest.mark.asyncio

@@ -40,7 +40,6 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import (
     AnalysisFailurePayload,
@@ -244,9 +243,10 @@ async def put_analysis(
     # whole archive. An empty-body PUT (`{}`) leaves `dumped` falsy and is a no-op:
     # state is preserved. `file_id` is the PATH value only (AUTH-01).
     if dumped:
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
+        # Phase 90 (D-09): the ANALYZED files.state write was removed; analysis_completed_at is now
+        # the sole derived completion authority (done(analyze) reads it, not files.state).
         # Phase 57.1 (D-03 KEY RISK): stamp the completion discriminator in the SAME txn as the
-        # ANALYZED flip. Server-set via func.now() ONLY -- analysis_completed_at is excluded from the
+        # result write. Server-set via func.now() ONLY -- analysis_completed_at is excluded from the
         # wire payload + _ANALYSIS_COLUMN_FIELDS, so a client cannot forge completion (T-57.1-12).
         # An in-flight/partial row (D-03 START upsert) skips this branch -> stays NULL, so the
         # proposal convergence gate (analysis_completed_at IS NOT NULL) can never batch it.
@@ -377,12 +377,12 @@ async def report_analysis_failed(
         set_={"failed_at": now, "error_message": error_message, "analysis_completed_at": None},
     )
     await session.execute(stmt)
-    # D-05 dual-write: keep the `files.state = ANALYSIS_FAILED` write alive (three live readers depend on
-    # it until Phases 80/82 cut over; it dies in Phase 90). The additive marker changes no derived status.
-    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYSIS_FAILED))
+    # Phase 90 (D-09): the ANALYSIS_FAILED files.state dual-write was removed. The durable
+    # `analysis.failed_at` marker upserted above is now the sole derived failure authority
+    # (failed_clause(Stage.ANALYZE), stage_status.py); readers cut over in PR-A.
     # Phase 45 (L-02, locked decision #1 -- THE POISON CASE): a terminal analyze failure must
     # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction
-    # as the ANALYSIS_FAILED state write. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
+    # as the failure marker. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
     await clear_ledger_entry(session, f"process_file:{file_id}")
     # D-02 inline delete: a terminal failure is also a result-callback terminal outcome -- the
     # staged object is no longer needed. No-op (zero S3 calls) when no cloud_job row exists.

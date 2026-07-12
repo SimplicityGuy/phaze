@@ -25,7 +25,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadResponse
@@ -108,7 +108,6 @@ async def upsert_files(
         # RESEARCH Pitfall 7: NFC-normalize defensively
         data["original_path"] = unicodedata.normalize("NFC", data["original_path"])
         data["agent_id"] = agent.id  # AUTH-01 -- stamped from auth, NEVER from body
-        data["state"] = FileState.DISCOVERED  # server stamps initial state
         data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
         data["batch_id"] = resolved_batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
         raw_records.append(data)

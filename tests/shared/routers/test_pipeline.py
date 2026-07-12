@@ -1352,10 +1352,12 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
 
     All N failed files land on ``phaze-agent-nox`` (never the default queue) carrying the COMPLETE
     ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
-    and every file is now FINGERPRINTED (0 remain ANALYSIS_FAILED). The ack reports N.
+    and every file's derived analyze-failure marker is cleared (0 remain in failed_clause). Phase 90
+    (D-09): retry NO LONGER writes files.state. The ack reports N.
     """
     failed = await _seed_analysis_failed(session, 3)
-    failed_ids = {str(f.id) for f in failed}
+    failed_uuids = [f.id for f in failed]  # capture before any expire_all() (avoids async lazy reload)
+    failed_ids = {str(fid) for fid in failed_uuids}
     await seed_active_agent(session)
     _, task_router = install_fake_queues(client)
 
@@ -1378,11 +1380,12 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
         captured_ids.add(payload["file_id"])
     assert captured_ids == failed_ids
 
-    # Every failed file left the terminal bucket -> FINGERPRINTED (committed before enqueue).
-    remaining = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
-    assert remaining == []
-    fingerprinted = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.FINGERPRINTED))).scalars().all()
-    assert {str(f.id) for f in fingerprinted} == failed_ids
+    # Phase 90 (D-09): retry clears the derived failure marker (analysis.failed_at), committed before
+    # enqueue, so every retried file leaves failed_clause(Stage.ANALYZE). files.state is NOT written.
+    session.expire_all()
+    marker_rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(failed_uuids)))).scalars().all()
+    assert len(marker_rows) == 3
+    assert all(r.failed_at is None for r in marker_rows), "every retried file's analyze-failure marker must be cleared"
 
 
 @pytest.mark.asyncio
