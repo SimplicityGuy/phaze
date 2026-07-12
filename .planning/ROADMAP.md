@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
-| 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
+| 90. Destructive Migration & Writer Removal | 2026.7.5 | 1/3 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -649,7 +649,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 90-01-PLAN.md — PR-A: reader cutover — convert every live FileRecord.state reader to derived sources (stage_status.py builders + cloud_job) while the column is intact; two cloud cards (D-12), proposal-batch Pitfall-4 fix, held_files ledger-seed coverage, search facet deletion (D-11) [Wave 1]
+- [x] 90-01-PLAN.md — PR-A: reader cutover — convert every live FileRecord.state reader to derived sources (stage_status.py builders + cloud_job) while the column is intact; two cloud cards (D-12), proposal-batch Pitfall-4 fix, held_files ledger-seed coverage, search facet deletion (D-11) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

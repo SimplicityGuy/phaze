@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: ready_to_execute
-last_updated: "2026-07-12T20:28:50.310Z"
-last_activity: 2026-07-12 -- Phase 90 planning complete
+status: executing
+last_updated: "2026-07-12T20:49:01.070Z"
+last_activity: 2026-07-12 -- Phase 90 execution started
 progress:
   total_phases: 52
-  completed_phases: 27
-  total_plans: 113
+  completed_phases: 13
+  total_plans: 60
   completed_plans: 58
-  percent: 52
-stopped_at: Phase 90 planned (3 plans, readers-first PR-A/B/C) — ready to execute
+  percent: 25
 ---
 
 # Project State
@@ -21,14 +20,14 @@ stopped_at: Phase 90 planned (3 plans, readers-first PR-A/B/C) — ready to exec
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 90 — destructive migration & writer removal
+**Current focus:** Phase 90 — destructive-migration-writer-removal
 
 ## Current Position
 
-Phase: 90
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-12 -- Phase 90 planning complete
+Phase: 90 (destructive-migration-writer-removal) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 90
+Last activity: 2026-07-12 -- Phase 90 execution started
 
 ## Performance Metrics
 
