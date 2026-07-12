@@ -189,8 +189,14 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
 # marker, the exact HARD divergence at shadow_compare.py:135 that SC#3 must keep green.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_undo_with_invalid_previous_state_keeps_marker_and_gate_green(db_session: AsyncSession) -> None:
-    """An unknown previous_state drops the entry BEFORE the DELETE — marker survives, gate stays green."""
+async def test_undo_with_invalid_previous_state_deletes_marker_and_neutralises_state(db_session: AsyncSession) -> None:
+    """Phase 90 (PR-A, INVERTED contract): an unknown previous_state NO LONGER gates the marker DELETE.
+
+    The DELETE + gate now derive from the payload id-set alone (the blocker fix), so a corrupted
+    previous_state still deletes the marker for the valid id. The legacy state restore then neutralises
+    to ``FileState.DISCOVERED`` (no parseable previous_state), so there is never a
+    ``duplicate_resolved``-without-marker orphan and the shadow gate stays green.
+    """
     keeper = await _file(db_session)
     dup = await _file(db_session)
     await db_session.flush()
@@ -199,15 +205,15 @@ async def test_undo_with_invalid_previous_state_keeps_marker_and_gate_green(db_s
     assert dup.id in await _marker_file_ids(db_session)
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
-    # Corrupt the state the browser echoes back. Nothing may be written.
+    # Corrupt the state the browser echoes back. The marker DELETE is keyed on the id-set, not this value.
     poisoned = [{**entry, "previous_state": "not_a_real_state"} for entry in payload]
     restored = await undo_resolve(db_session, poisoned)
 
-    assert restored == 0
-    assert dup.id in await _marker_file_ids(db_session)  # marker NOT deleted
+    assert restored == 1  # DELETE keyed on entry["id"], independent of the unparseable previous_state
+    assert dup.id not in await _marker_file_ids(db_session)  # marker DELETED (decoupled from FileState)
     await db_session.refresh(dup)
-    assert dup.state == FileState.DUPLICATE_RESOLVED  # state untouched
-    assert (await run_shadow_compare(db_session)).hard_fail_total == 0  # no orphaned state
+    assert dup.state == FileState.DISCOVERED  # neutralised (no parseable previous_state), never left resolved
+    assert (await run_shadow_compare(db_session)).hard_fail_total == 0  # no duplicate_resolved-without-marker orphan
 
 
 @pytest.mark.asyncio
@@ -329,31 +335,27 @@ async def test_undo_accepts_uuid_typed_id(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_undo_with_null_previous_state_keeps_marker(db_session: AsyncSession) -> None:
-    """A JSON `null` (or any non-str) previous_state drops the entry BEFORE the DELETE.
+async def test_undo_with_null_previous_state_deletes_marker_and_neutralises_state(db_session: AsyncSession) -> None:
+    """Phase 90 (PR-A, INVERTED contract): a JSON `null` (or any non-str) previous_state STILL deletes the marker.
 
-    `FileState(None)` raises, so validating after the DELETE would orphan the marker — the same
-    hard-divergence class as WR-01. The entry must be dropped during validation instead.
-
-    What this actually locks: the `try/except ValueError` around `FileState(raw_state)`. Removing it
-    makes both this test and its sibling RED. The `isinstance(raw_state, str)` check on the line above
-    is **not** a runtime control -- `FileState` is a `StrEnum`, so its members already satisfy
-    `isinstance(x, str)`, and `FileState(None | 42 | [...] | True)` raises `ValueError` regardless.
-    That check exists solely to narrow `Any | None` to `str` for mypy; deleting it changes no behaviour
-    and no mutation can turn it RED. Recorded rather than papered over: a branch that survives every
-    mutation is type-checker scaffolding, not a guard.
+    Under the decoupled undo the DELETE is keyed on the payload id-set, so an unparseable/absent
+    previous_state no longer gates it. For each malformed value the marker is deleted for the valid id and
+    the state neutralises to ``FileState.DISCOVERED`` (the vacuous, invariant-free state), keeping the
+    shadow gate green (no ``duplicate_resolved``-without-marker orphan). A fresh group per case isolates
+    the assertions (once deleted, a marker cannot be deleted again).
     """
-    keeper = await _file(db_session)
-    dup = await _file(db_session)
-    await db_session.flush()
+    for i, bad_state in enumerate((None, 42, ["discovered"])):
+        group_hash = f"{i:064d}"
+        keeper = await _file(db_session, sha256=group_hash)
+        dup = await _file(db_session, sha256=group_hash)
+        await db_session.flush()
 
-    _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
+        _count, payload = await resolve_group(db_session, group_hash, keeper.id)
+        assert dup.id in await _marker_file_ids(db_session)
 
-    for bad_state in (None, 42, ["discovered"]):
         poisoned = [{**entry, "previous_state": bad_state} for entry in payload]
-        assert await undo_resolve(db_session, poisoned) == 0
-        assert dup.id in await _marker_file_ids(db_session)  # marker survives every time
-
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DUPLICATE_RESOLVED
-    assert (await run_shadow_compare(db_session)).hard_fail_total == 0
+        assert await undo_resolve(db_session, poisoned) == 1  # id-set DELETE fires despite the bad previous_state
+        assert dup.id not in await _marker_file_ids(db_session)  # marker DELETED
+        await db_session.refresh(dup)
+        assert dup.state == FileState.DISCOVERED  # neutralised
+        assert (await run_shadow_compare(db_session)).hard_fail_total == 0

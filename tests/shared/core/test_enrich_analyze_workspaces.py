@@ -25,6 +25,7 @@ in-flight rows for the WORK-04 mid-flight assertion) and the cloud_job lane/admi
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
@@ -88,17 +89,22 @@ async def _seed_analysis(
     file_id: uuid.UUID,
     fine_done: int | None,
     fine_total: int | None,
+    *,
+    completed: bool = False,
 ) -> AnalysisResult:
     """Insert the 1:1 ``analysis`` aggregate row for ``file_id``.
 
     ``fine_done < fine_total`` models an in-flight file (the 57.1 PR #184 mid-flight
     ``fine_windows_analyzed/total`` signal); ``fine_done == fine_total`` models a completed
-    file's full window coverage (WORK-04).
+    file's full window coverage (WORK-04). Phase 90 (PR-A): the workspace's ``completed`` flag now
+    DERIVES from ``analysis_completed_at`` (``done_clause(ANALYZE)``), not ``files.state == ANALYZED`` --
+    so pass ``completed=True`` to stamp the completion timestamp on a done row.
     """
     result = AnalysisResult(
         file_id=file_id,
         fine_windows_analyzed=fine_done,
         fine_windows_total=fine_total,
+        analysis_completed_at=datetime.now(UTC) if completed else None,
     )
     session.add(result)
     await session.commit()
@@ -480,7 +486,7 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     """
     # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
     done = await _seed_file(session, state=FileState.ANALYZED, original_filename="done.mp3")
-    await _seed_analysis(session, done.id, fine_done=41, fine_total=41)
+    await _seed_analysis(session, done.id, fine_done=41, fine_total=41, completed=True)
     # IN-FLIGHT file: a partial 57.1 analysis row (fine_done < fine_total), NOT yet ANALYZED.
     inflight = await _seed_file(session, state=FileState.FINGERPRINTED, original_filename="inflight.mp3")
     await _seed_analysis(session, inflight.id, fine_done=14, fine_total=41)

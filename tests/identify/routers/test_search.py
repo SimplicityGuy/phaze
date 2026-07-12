@@ -169,13 +169,19 @@ async def test_search_bpm_filter(client: AsyncClient, session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
-async def test_search_file_state_filter(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /search/?q=deadmau5&file_state=approved narrows results."""
+async def test_search_ignores_removed_file_state_param(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 90 (PR-A, D-11): the ``file_state`` facet is removed; a stale/legacy param is harmlessly ignored.
+
+    The endpoint no longer declares a ``file_state`` Query param, so a bookmarked ⌘K URL carrying it must
+    NOT 422 -- FastAPI ignores the unknown param and the palette renders the full (un-narrowed) match set.
+    """
     await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", state=FileState.APPROVED)
     await create_searchable_file(session, original_filename="deadmau5 - FML.mp3", state=FileState.DISCOVERED)
     response = await client.get("/search/", params={"q": "deadmau5", "file_state": "approved"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
+    # The removed facet no longer narrows -- BOTH deadmau5 files render under the palette Files group.
     assert "Strobe" in response.text
+    assert "FML" in response.text
 
 
 @pytest.mark.asyncio
