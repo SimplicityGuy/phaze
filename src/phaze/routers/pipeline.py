@@ -80,6 +80,7 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
+from phaze.services.stage_status import failed_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -1033,11 +1034,13 @@ async def trigger_backfill_cloud(
             },
         )
 
-    # D-09 / RESEARCH Open-Q3: seed a ledger row ONLY for files the router HELD in AWAITING_CLOUD
-    # (every backfill candidate is long, so the router never produces local/skipped here). The router
-    # mutates ``file.state`` in place for held files, so the held set is detectable on the in-memory
-    # candidate records (expire_on_commit=False preserves attribute values across its commit).
-    held_files = [file for file, _ in candidates if file.state == FileState.AWAITING_CLOUD]
+    # D-09 / RESEARCH Open-Q3: seed a ledger row for every file the router HELD for the cloud path
+    # (every backfill candidate is long, so the router never produces local/skipped here -- the
+    # candidate set IS the held set). Phase 90 (PR-A): the redundant in-memory
+    # ``file.state == AWAITING_CLOUD`` sub-filter is DROPPED -- ``get_cloud_staging_candidates`` already
+    # scopes to ``awaiting_candidate_clause()``, so every returned candidate is awaiting-held by
+    # construction; re-checking the (soon-removed) ``files.state`` column here was a no-op guard.
+    held_files = [file for file, _ in candidates]
     for file in held_files:
         await insert_ledger_if_absent(
             session,
@@ -1244,7 +1247,10 @@ async def retry_analysis_failed_file(
     free-text crosses into Jinja (T-d79-04).
     """
     file = (
-        await session.execute(select(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.ANALYSIS_FAILED))
+        # Phase 90 (PR-A, D-09): scope on the DERIVED terminal analyze-failure marker
+        # (``failed_clause(Stage.ANALYZE)`` -- an analysis row with ``failed_at`` set), no longer the
+        # retired ``files.state == ANALYSIS_FAILED`` column. A non-failed (or unknown) file is a safe no-op.
+        await session.execute(select(FileRecord).where(FileRecord.id == file_id, failed_clause(Stage.ANALYZE)))
     ).scalar_one_or_none()
     if file is None:
         return templates.TemplateResponse(

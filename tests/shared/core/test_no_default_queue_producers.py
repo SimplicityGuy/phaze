@@ -295,15 +295,15 @@ async def test_submit_cloud_job_routes_to_controller_queue() -> None:
 def test_k8s_backfill_query_is_ledger_scoped_not_whole_backlog() -> None:
     """KROUTE-04 / L4: the backfill candidate query is the bounded ledger-scoped filter.
 
-    A static guard over the real ``_backfill_candidates_stmt`` source: it must filter on
-    ``ANALYSIS_FAILED`` AND the duration threshold AND an ``EXISTS`` predicate against
-    ``SchedulingLedger`` -- i.e. it is NOT a bare ``state == ANALYSIS_FAILED`` whole-backlog
-    sweep. A future edit that drops the ledger ``EXISTS`` predicate (re-opening the v4.0.6 / v5.0
-    over-enqueue class) fails here.
+    A static guard over the real ``_backfill_candidates_stmt`` source: it must filter on the DERIVED
+    terminal analyze-failure (Phase 90 PR-A: ``failed_clause(Stage.ANALYZE)`` -- an ``analysis.failed_at``
+    marker, no longer ``files.state``) AND the duration threshold AND an ``EXISTS`` predicate against
+    ``SchedulingLedger`` -- i.e. it is NOT a bare whole-backlog sweep. A future edit that drops the ledger
+    ``EXISTS`` predicate (re-opening the v4.0.6 / v5.0 over-enqueue class) fails here.
     """
     src = _backfill_candidates_stmt_source()
 
-    assert "FileState.ANALYSIS_FAILED" in src  # the failure filter
+    assert "failed_clause(Stage.ANALYZE)" in src  # the DERIVED failure filter (Phase 90 PR-A)
     assert "FileMetadata.duration" in src  # the duration threshold bound
     # the ledger-scoped EXISTS predicate -- the property that makes this NOT a whole-backlog sweep
     assert "exists(" in src

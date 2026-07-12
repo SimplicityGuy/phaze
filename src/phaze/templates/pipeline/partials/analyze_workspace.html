@@ -80,8 +80,9 @@
            running · pending (quota) · complete), NEVER a raw FileRecord.state render -- so the raw-enum
            "State" surface the anti-feature table forbids does not live here. Renamed "State" -> "Progress"
            to make that explicit; the canonical per-stage status pill matrix is on the files table. The
-           `f.state == '...'` lines below are pure COMPARISONS driving friendly words (WORK-04 mid-flight
-           signal), not raw-enum renders -- test_no_raw_state_render.py filters those out. #}
+           `f.awaiting_cloud` / `f.analysis_failed` / `f.completed` lines below are DERIVED boolean flags
+           (Phase 90 PR-A: sourced from the cloud_job sidecar + the analysis markers, never the retired
+           FileRecord.state column) driving friendly words (WORK-04 mid-flight signal), not raw-enum renders. #}
         {% set columns = ["File", "Duration", "Lane", "Progress"] %}
         {% set lane_badges = {
             'local': ('🖥️ local', 'text-emerald-600 dark:text-emerald-300'),
@@ -96,10 +97,10 @@
                 {# Completed (ANALYZED): full window coverage from the aggregate. #}
                 {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
                 {% set state_color = 'text-emerald-600 dark:text-emerald-300' %}
-            {% elif f.state == 'awaiting_cloud' %}
+            {% elif f.awaiting_cloud %}
                 {% set state_text = 'pending (quota)' %}
                 {% set state_color = 'text-amber-600 dark:text-amber-300' %}
-            {% elif f.state == 'analysis_failed' %}
+            {% elif f.analysis_failed %}
                 {% set state_text = 'failed' %}
                 {% set state_color = 'text-rose-600 dark:text-rose-400' %}
             {% elif f.fine_total %}

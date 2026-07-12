@@ -101,6 +101,22 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
     )
 
 
+async def _seed_analysis_failed(session: AsyncSession, n: int) -> list[FileRecord]:
+    """Seed ``n`` analyze-FAILED files, each with the DERIVED ``analysis.failed_at`` marker (Phase 90 PR-A).
+
+    The failed-count/list readers now derive terminality from ``failed_clause(Stage.ANALYZE)`` (an
+    ``analysis`` row with ``failed_at`` set), not ``files.state`` -- so a bare ``state=ANALYSIS_FAILED``
+    file is invisible to them. This helper seeds BOTH the (still-present) legacy state and the marker so
+    the corpus is consistent.
+    """
+    files = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(n)]
+    session.add_all(files)
+    await session.flush()
+    session.add_all([AnalysisResult(id=uuid.uuid4(), file_id=f.id, failed_at=datetime.now(UTC), error_message="timed out") for f in files])
+    await session.commit()
+    return files
+
+
 def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[FileRecord, AnalysisResult, FileMetadata]:
     """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
     uid = uuid.uuid4()
@@ -698,6 +714,7 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
 
     files: list[FileRecord] = []
     mds: list[FileMetadata] = []
+    markers: list[AnalysisResult] = []
     for dur in specs:
         uid = uuid.uuid4()
         files.append(
@@ -713,10 +730,15 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
                 state=FileState.ANALYSIS_FAILED,
             )
         )
+        # Phase 90 (PR-A): the backfill candidate query now DERIVES the terminal analyze-failure from
+        # the ``analysis.failed_at`` marker (``failed_clause(ANALYZE)``), not ``files.state`` -- so seed
+        # the marker alongside the (still-present) legacy state to keep the corpus consistent.
+        markers.append(AnalysisResult(id=uuid.uuid4(), file_id=uid, failed_at=datetime.now(UTC), error_message="timed out"))
         if dur is not None:
             mds.append(FileMetadata(file_id=uid, duration=dur))
     session.add_all(files)
     await session.flush()
+    session.add_all(markers)
     if mds:
         session.add_all(mds)
     if with_ledger:
@@ -897,6 +919,34 @@ async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, sess
     held_after = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
     assert len(held_after) == 2  # unchanged — no over-enqueue
     assert "No timed-out long files" in r2.text
+
+
+@pytest.mark.asyncio
+async def test_backfill_seeds_a_ledger_row_for_every_held_candidate(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 90 (PR-A): the held-files ledger seed covers EVERY candidate after the state sub-filter drop.
+
+    The endpoint used to build its held set with an in-memory ``if file.state == AWAITING_CLOUD`` filter.
+    That guard is DROPPED (the ``files.state`` column is going away) -- every backfill candidate is long,
+    so ``_route_discovered_by_duration`` HOLDS all of them, i.e. the candidate set IS the held set. This
+    test proves the drop is behavior-preserving: after one backfill of THREE long-failed files, every one
+    carries its ``process_file:<id>`` scheduling-ledger row (durable scheduled work for the staging cron),
+    with no row missing and none doubled.
+    """
+    files = await _persist_failed_with_duration(session, [_LONG, _LONG, _LONG])
+    await seed_active_agent(session, "cloud", kind="compute")
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+    assert capture == []  # held, never directly enqueued
+
+    # Every candidate was held (state flipped to AWAITING_CLOUD) AND seeded exactly one ledger row.
+    for f in files:
+        await session.refresh(f)
+        assert f.state == FileState.AWAITING_CLOUD
+        rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{f.id}"))).scalars().all()
+        assert len(rows) == 1, f"held file {f.id} must carry exactly one ledger row (filter-drop kept the held set)"
 
 
 @pytest.mark.asyncio
@@ -1304,9 +1354,7 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
     and every file is now FINGERPRINTED (0 remain ANALYSIS_FAILED). The ack reports N.
     """
-    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(3)]
-    session.add_all(failed)
-    await session.commit()
+    failed = await _seed_analysis_failed(session, 3)
     failed_ids = {str(f.id) for f in failed}
     await seed_active_agent(session)
     _, task_router = install_fake_queues(client)
@@ -1340,9 +1388,7 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
 @pytest.mark.asyncio
 async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: AsyncClient, session: AsyncSession) -> None:
     """No active agent -> zero enqueues, files STAY ANALYSIS_FAILED, ack surfaces "no active agent" (Phase-30 guard)."""
-    failed = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)]
-    session.add_all(failed)
-    await session.commit()
+    failed = await _seed_analysis_failed(session, 2)
     failed_ids = {str(f.id) for f in failed}
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -1386,8 +1432,7 @@ async def test_retry_button_renders_only_when_count_positive(client: AsyncClient
     assert "analysis-failed/retry" not in zero.text
 
     # count > 0: button with the confirm gate appears.
-    session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)])
-    await session.commit()
+    await _seed_analysis_failed(session, 2)
     positive = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert positive.status_code == 200
     assert "analysis-failed/retry" in positive.text
@@ -2465,8 +2510,7 @@ async def test_dashboard_renders_straggler_failed_card(client: AsyncClient) -> N
 @pytest.mark.asyncio
 async def test_dashboard_seeds_analysis_failed_count(client: AsyncClient, session: AsyncSession) -> None:
     """A file in ANALYSIS_FAILED bumps analysis_failed_count into the dashboard card render."""
-    session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(3)])
-    await session.commit()
+    await _seed_analysis_failed(session, 3)
 
     response = await client.get("/pipeline/stats", headers={"HX-Request": "true"})
     assert response.status_code == 200
@@ -2488,8 +2532,7 @@ async def test_stats_partial_seeds_counts_and_oob_card(client: AsyncClient, sess
     card with hx-swap-oob="true" (it lives outside #pipeline-stats, so the innerHTML swap can
     never reach it). A seeded ANALYSIS_FAILED file proves the failed count rides the poll.
     """
-    session.add_all([_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(2)])
-    await session.commit()
+    await _seed_analysis_failed(session, 2)
 
     response = await client.get("/pipeline/stats")
     assert response.status_code == 200
