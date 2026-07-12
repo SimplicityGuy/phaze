@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from phaze.database import get_session
 from phaze.main import create_app
-from phaze.models.agent import LEGACY_AGENT_ID, Agent
+from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -197,19 +197,21 @@ def backends_toml_env(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
 
 @pytest_asyncio.fixture
 async def async_engine():  # type: ignore[no-untyped-def]
-    """Create async engine, set up tables, seed the legacy agent, yield, then tear down.
+    """Create async engine, set up tables, seed the shared test fileserver, yield, then tear down.
 
-    Seeds a ``legacy-application-server`` Agent row after table creation so tests
-    that construct ``FileRecord`` / ``ScanBatch`` without explicitly setting
-    ``agent_id`` (relying on the model-level default added in phase 24) satisfy
-    the NOT NULL + FK constraint.
+    Seeds a real ``kind='fileserver'`` Agent row (``test-fileserver``) after table
+    creation so tests that flush ``FileRecord`` / ``ScanBatch`` rows have a valid FK
+    target for ``agent_id`` (ON DELETE RESTRICT). Phase 89 (LEGACY-03, D-08) dropped the
+    ``agent_id`` model-level default, so every construction now supplies ``agent_id``
+    explicitly (pointing at this seed) rather than relying on the removed
+    ``legacy-application-server`` sentinel default.
     """
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session_factory() as setup_session:
-        setup_session.add(Agent(id=LEGACY_AGENT_ID, name=LEGACY_AGENT_ID, scan_roots=[]))
+        setup_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
         await setup_session.commit()
     yield engine
     async with engine.begin() as conn:
@@ -423,6 +425,7 @@ def make_file(session: AsyncSession):  # type: ignore[no-untyped-def]
     ) -> FileRecord:
         # Unique path segment so the (agent_id, original_path) unique index never collides.
         record = FileRecord(
+            agent_id="test-fileserver",
             id=uuid.uuid4(),
             sha256_hash=sha256 or (uuid.uuid4().hex + uuid.uuid4().hex),  # 64 hex chars
             original_path=f"/test/music/{uuid.uuid4().hex}/{original_filename}",

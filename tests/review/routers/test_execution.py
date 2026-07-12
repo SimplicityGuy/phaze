@@ -33,6 +33,7 @@ async def create_test_execution_log(
     # Create prerequisite file and proposal
     file_id = uuid.uuid4()
     file_record = FileRecord(
+        agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path=f"/music/{uuid.uuid4().hex}/test.mp3",

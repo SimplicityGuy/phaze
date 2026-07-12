@@ -55,6 +55,7 @@ async def _executed_file(
     would reject it, so the audit genuinely exercises the ``proposals.status`` predicate.
     """
     file = FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=sha256 or (uuid.uuid4().hex + uuid.uuid4().hex),
         original_path=f"/dest/{uuid.uuid4().hex}/{filename}",

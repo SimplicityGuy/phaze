@@ -30,6 +30,7 @@ def _music_file() -> FileRecord:
     """Build a discovered music FileRecord that (absent a skip marker) is metadata-pending."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

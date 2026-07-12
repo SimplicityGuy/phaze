@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: "Phase 88 shipped — PR #234"
-last_updated: "2026-07-11T18:20:24.307Z"
-last_activity: 2026-07-11
+status: ready_to_plan
+last_updated: 2026-07-11T22:51:45.823Z
+last_activity: 2026-07-11 -- Phase 89 execution started
 progress:
   total_phases: 52
-  completed_phases: 26
-  total_plans: 111
-  completed_plans: 56
-  percent: 50
+  completed_phases: 27
+  total_plans: 113
+  completed_plans: 58
+  percent: 52
+stopped_at: Phase 89 complete (2/2) — ready to discuss Phase 90
 ---
 
 # Project State
@@ -20,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 89 — legacy scan path deletion & sentinel reattribution
+**Current focus:** Phase 90 — destructive migration & writer removal
 
 ## Current Position
 
-Phase: 89
+Phase: 90
 Plan: Not started
-Status: Phase 88 shipped — PR #234
+Status: Ready to plan
 Last activity: 2026-07-11
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 234
+- Total plans completed: 236
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -289,9 +290,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-11T15:04:36.967Z
-Stopped at: Phase 88 UI-SPEC approved
-Resume file: .planning/phases/88-lane-agent-drill-in/88-UI-SPEC.md
+Last session: 2026-07-11T19:14:33.740Z
+Stopped at: Phase 89 context gathered
+Resume file: .planning/phases/89-legacy-scan-path-deletion-sentinel-reattribution/89-CONTEXT.md
 
 ## Operator Next Steps
 

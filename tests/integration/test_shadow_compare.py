@@ -74,7 +74,7 @@ if not _TARGET_DB.endswith("_test"):
         allow_module_level=True,
     )
 
-_LEGACY_AGENT_ID = "legacy-application-server"
+_LEGACY_AGENT_ID = "test-fileserver"
 
 # The non-soft (gated) invariants -- each gets a non-vacuous divergent RED cell + a consistent GREEN cell.
 HARD_INVARIANTS: list[Invariant] = [inv for inv in INVARIANTS if not inv.soft]
@@ -118,6 +118,7 @@ async def _new_file(session: AsyncSession, *, state: str) -> uuid.UUID:
     fid = uuid.uuid4()
     session.add(
         FileRecord(
+            agent_id="test-fileserver",
             id=fid,
             sha256_hash=uuid.uuid4().hex,
             original_path=f"/media/{fid}.mp3",
@@ -347,6 +348,7 @@ async def _cli_commit_file(*, state: str) -> uuid.UUID:
         async with factory() as session:
             session.add(
                 FileRecord(
+                    agent_id="test-fileserver",
                     id=fid,
                     sha256_hash=uuid.uuid4().hex,
                     original_path=f"/media/{fid}.mp3",

@@ -12,7 +12,6 @@ from sqlalchemy import select
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
-from phaze.models.agent import LEGACY_AGENT_ID
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord, FileState
@@ -90,6 +89,7 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
     """Create a FileRecord with the given state."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",
@@ -105,6 +105,7 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
     """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
     uid = uuid.uuid4()
     file_rec = FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",
@@ -405,6 +406,7 @@ def _make_file_with_duration(duration: float | None, *, state: str = FileState.D
     """
     uid = uuid.uuid4()
     file_rec = FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",
@@ -700,6 +702,7 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
         uid = uuid.uuid4()
         files.append(
             FileRecord(
+                agent_id="test-fileserver",
                 id=uid,
                 sha256_hash=uid.hex,
                 original_path=f"/music/{uid.hex}.mp3",
@@ -2308,7 +2311,7 @@ async def _seed_running_scan(session: AsyncSession, *, seconds_quiet: int, scan_
     batch_id = uuid.uuid4()
     batch = ScanBatch(
         id=batch_id,
-        agent_id=LEGACY_AGENT_ID,
+        agent_id="test-fileserver",
         scan_path=scan_path,
         status=ScanStatus.RUNNING.value,
         total_files=0,

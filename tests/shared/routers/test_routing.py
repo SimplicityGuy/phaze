@@ -122,6 +122,7 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
 
     uid = uuid.uuid4()
     long_file = FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

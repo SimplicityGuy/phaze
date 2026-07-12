@@ -41,11 +41,11 @@ async def test_ensure_dev_agent_seeds_when_table_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty agents table + dev_seed_agent=true -> exactly one agent row created."""
-    # The shared `async_engine` fixture seeds LEGACY_AGENT_ID; remove it so the
-    # "fresh DB" precondition holds.
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    # The shared `async_engine` fixture seeds the `test-fileserver` agent; remove
+    # it so the "fresh DB" (empty agents table) precondition holds.
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
 
     monkeypatch.setattr(settings, "dev_seed_agent", True)
@@ -79,9 +79,9 @@ async def test_ensure_dev_agent_noop_when_usable_agent_exists(
 ) -> None:
     """A pre-existing USABLE agent (non-revoked, with token_hash) blocks seeding."""
     # Replace conftest's tokenless legacy seed with a usable agent under test
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
     session.add(Agent(id="some-real-agent", name="some-real-agent", token_hash="fakehash" * 8, scan_roots=["/data/music"]))
     await session.commit()
@@ -112,9 +112,9 @@ async def test_ensure_dev_agent_seeds_past_revoked_legacy_marker(
     from datetime import UTC, datetime
 
     # Replace the tokenless test fixture legacy with the production-shaped revoked legacy
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
     session.add(
         Agent(
@@ -146,9 +146,9 @@ async def test_ensure_dev_agent_uses_env_token_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``PHAZE_DEV_AGENT_TOKEN`` overrides the random token (operator can pin it in .env)."""
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
 
     fixed_token = "phaze_agent_test-fixed-token-12345"
@@ -176,9 +176,9 @@ async def test_ensure_dev_agent_uses_phaze_agent_scan_roots_env_when_set(
     scan_roots column and the watcher then crashes with FileNotFoundError
     when its watchdog Observer tries to schedule the non-existent path.
     """
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
 
     monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/data/music,/data/concerts")
@@ -202,9 +202,9 @@ async def test_ensure_dev_agent_disabled_in_prod(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``settings.dev_seed_agent=false`` short-circuits before any DB read."""
-    legacy = await session.get(Agent, LEGACY_AGENT_ID)
-    if legacy is not None:
-        await session.delete(legacy)
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
         await session.commit()
 
     monkeypatch.setattr(settings, "dev_seed_agent", False)

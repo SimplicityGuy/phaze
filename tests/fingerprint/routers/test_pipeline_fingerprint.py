@@ -33,6 +33,7 @@ def _make_file(*, state: str = FileState.METADATA_EXTRACTED) -> FileRecord:
     """Create a FileRecord with the given state."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

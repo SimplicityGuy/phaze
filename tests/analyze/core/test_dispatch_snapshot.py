@@ -121,6 +121,7 @@ def _make_file(*, file_type: str = "mp3") -> FileRecord:
     """Build a fully-populated AWAITING_CLOUD FileRecord row."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.{file_type}",

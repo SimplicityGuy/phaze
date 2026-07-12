@@ -196,6 +196,7 @@ async def _seed_awaiting_file(session: AsyncSession, *, attempts: int = 0) -> Fi
     """Seed ONE held file: ``state=AWAITING_CLOUD`` + a ``cloud_job(status='awaiting')`` sidecar row."""
     uid = uuid.uuid4()
     file = FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.flac",

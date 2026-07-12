@@ -76,6 +76,7 @@ def _make_file(batch_id: uuid.UUID | None, suffix: str, file_type: str = "mp3") 
     """Build a FileRecord with a unique path (uq_files_agent_id_original_path)."""
     path = f"/data/music/{uuid.uuid4().hex}-{suffix}.{file_type}"
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex[:32],
         original_path=path,
@@ -98,7 +99,7 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
     """
     batch = ScanBatch(
         id=uuid.uuid4(),
-        agent_id="legacy-application-server",
+        agent_id="test-fileserver",
         scan_path=f"/data/music/{uuid.uuid4().hex}",
         status=ScanStatus.COMPLETED.value,
         total_files=2,
@@ -228,8 +229,8 @@ async def test_cascade_does_not_touch_sibling_batch(session: AsyncSession) -> No
 @pytest.mark.asyncio
 async def test_cross_batch_companion_join_dies_but_other_file_survives(session: AsyncSession) -> None:
     """Deleting batch A removes a cross-batch file_companions row but NOT the batch-B file."""
-    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/a", status=ScanStatus.COMPLETED.value)
-    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/b", status=ScanStatus.COMPLETED.value)
+    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/a", status=ScanStatus.COMPLETED.value)
+    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/b", status=ScanStatus.COMPLETED.value)
     session.add_all([batch_a, batch_b])
     await session.flush()
 
@@ -269,8 +270,8 @@ async def test_cascade_removes_dedup_resolution_and_cloud_job_sidecars(session: 
     row whose ``file_id`` is in a DIFFERENT batch but whose ``canonical_file_id``
     points into the deleted batch must also be removed.
     """
-    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/a", status=ScanStatus.COMPLETED.value)
-    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="legacy-application-server", scan_path="/b", status=ScanStatus.COMPLETED.value)
+    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/a", status=ScanStatus.COMPLETED.value)
+    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/b", status=ScanStatus.COMPLETED.value)
     session.add_all([batch_a, batch_b])
     await session.flush()
 

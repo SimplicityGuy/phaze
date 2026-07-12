@@ -20,6 +20,7 @@ def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -
     """Create a test FileRecord."""
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash="a" * 64,
         original_path=original_path,

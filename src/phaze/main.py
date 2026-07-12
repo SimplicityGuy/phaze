@@ -40,7 +40,6 @@ from phaze.routers import (
     proposals,
     record,
     routing,
-    scan,
     search,
     shell,
     tags,
@@ -190,7 +189,6 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="Phaze", version="0.1.0", lifespan=lifespan)
     app.include_router(health.router)
-    app.include_router(scan.router)
     app.include_router(companion.router)
     app.include_router(proposals.router)
     app.include_router(execution.router)

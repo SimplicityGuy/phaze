@@ -30,7 +30,6 @@ class ScanBatch(TimestampMixin, Base):
         String(64),
         ForeignKey("agents.id", ondelete="RESTRICT"),
         nullable=False,
-        default="legacy-application-server",
     )
     scan_path: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ScanStatus.RUNNING)
@@ -43,7 +42,7 @@ class ScanBatch(TimestampMixin, Base):
     # elapsed_seconds docstring in routers/pipeline_scans.py).
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Per-progress heartbeat: stamped every time the scan makes real progress
-    # (agent PATCH applying a non-no-op change, both create paths, run_scan's
+    # (agent PATCH applying a non-no-op change, both create paths, the batch's
     # terminal updates). Drives the admin UI's "live activity" indicator (green
     # pulsing dot + "·Ns ago") and the control-side stall reaper, which marks a
     # RUNNING batch FAILED once this heartbeat is older than scan_stall_seconds.

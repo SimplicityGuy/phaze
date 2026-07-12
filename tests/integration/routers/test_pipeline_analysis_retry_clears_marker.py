@@ -50,6 +50,7 @@ def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
     """A FileRecord parked in the terminal analyze-failed bucket."""
     uid = uuid.uuid4()
     return FileRecord(
+        agent_id="test-fileserver",
         id=uid,
         sha256_hash=uid.hex,
         original_path=f"/music/{uid.hex}.mp3",

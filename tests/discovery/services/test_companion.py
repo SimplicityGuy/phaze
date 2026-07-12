@@ -22,6 +22,7 @@ def _make_file(
         sha256_hash = uuid.uuid4().hex + uuid.uuid4().hex[:32]  # 64 hex chars
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
+        agent_id="test-fileserver",
         id=uuid.uuid4(),
         sha256_hash=sha256_hash,
         original_path=original_path,
