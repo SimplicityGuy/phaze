@@ -49,8 +49,15 @@ design §5), or re-litigating the derivation layer (Phase 78) / markers (Phase 8
 >     `services/search_queries.py` facet (see D-11), the dedup-undo `previous_state` capture
 >     (`services/dedup.py:270`→`:346`), `_backfill_candidates_stmt` (`pipeline.py:1569`),
 >     `held_files` (`routers/pipeline.py:1040`), `retry_analysis_failed` (`routers/pipeline.py:1247`),
->     `get_proposal_pending_batches` (`pipeline.py:1707` — see Pitfall 4: re-add `~exists(proposals)`),
->     plus the two CAS-guard reads embedded in writers #2/#10.
+>     `get_proposal_pending_batches` (`pipeline.py:1707` — see Pitfall 4: re-add `~exists(proposals)`).
+>   - **CAS-guard reads clarification (refines D-09, resolves plan-checker Blocker 1, 2026-07-12):** the two
+>     CAS-guard `state==` reads embedded in writers #2 (`agent_metadata:106`) and #10 (`agent_s3:128`) are
+>     **NOT standalone reader surfaces** — each is the `.where(state==X)` guard of a single `update(...).values(state=Y)`
+>     **write** statement. They are therefore removed **atomically with their write in PR-B**, not converted in PR-A
+>     (converting only the where-clause of a write is contorted and buys nothing). Idempotency after removal comes
+>     from the already-idempotent marker/`ON CONFLICT` path — this **MUST be proven by a concrete idempotency
+>     regression test in PR-B** (calling the metadata + s3-push callbacks twice and asserting no duplicate/incorrect
+>     effect), not merely asserted in a threat model.
 >   - **PR-B — Writer removal.** Remove all ~17 writers (now truly unconsumed).
 >   - **PR-C — Destructive.** The `039` migration (archive + delta-backfill + drop index/column) + delete
 >     the `FileState` class + final cleanup.

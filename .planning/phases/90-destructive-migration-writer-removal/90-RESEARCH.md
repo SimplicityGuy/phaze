@@ -333,12 +333,14 @@ Derived-target signatures (verified in `services/stage_status.py`) — the exact
 | A6 | `env.py` savepoint-retry works under the repo's alembic transaction mode | Pattern 1 | If the outer txn is left aborted between attempts, retry fails — verify `env.py` at plan time. |
 | A7 | `FINGERPRINTED` / `DISCOVERED` writes have no live reader (safe for a writers-first first-PR subset) | Pitfall 1 | Must be grep-verified before relying on it; a missed reader breaks. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **PR ordering (A1).** Escalate the falsified D-01/D-02 premise — readers-first vs a carefully-subsetted writers-first. Recommendation: readers-first.
-2. **Archive vs derived downgrade (A2).** Does `downgrade()` prefer `files_state_archive` for exact restore, or stay purely derived per D-03/MIG-04?
-3. **SEARCH facet (A4).** Drop the `file_state` search facet, or map it to derived buckets?
-4. **PUSHING/PUSHED card mapping (A5).** Pin the `cloud_job.status`→card mapping, or collapse the two cards.
+*All four resolved during plan-phase (2026-07-12) via AskUserQuestion → recorded in CONTEXT.md D-09..D-12.*
+
+1. **PR ordering (A1).** RESOLVED: see **D-09** — readers-first (PR-A readers → PR-B writers → PR-C destructive).
+2. **Archive vs derived downgrade (A2).** RESOLVED: see **D-10** — lossless archive-restore is the primary `downgrade()` path; the derived reconstruction (D-04/D-05) is the fallback for post-039 rows only.
+3. **SEARCH facet (A4).** RESOLVED: see **D-11** — drop the `file_state` search facet (filter + result column + route/template surfaces).
+4. **PUSHING/PUSHED card mapping (A5).** RESOLVED: see **D-12** — two cards, `pushing = cloud_job.status IN ('uploading','submitted')`, `pushed = cloud_job.status IN ('uploaded','running')`.
 
 ## Environment Availability
 
