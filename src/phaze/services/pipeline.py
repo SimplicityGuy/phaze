@@ -27,7 +27,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.enqueue_router import LANES
-from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, stage_status_case
+from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, failed_clause, stage_status_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -1303,7 +1303,10 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.ANALYSIS_FAILED),
+        # Phase 90 (PR-A, D-09): DERIVED from the analyze-failure marker (analysis.failed_at NOT NULL)
+        # via the LOCKED ``failed_clause`` builder -- no longer the ``files.state`` column. Composes the
+        # clause verbatim (never re-spells the inner exists) so the DERIV-04 equivalence guarantee holds.
+        select(func.count(FileRecord.id)).where(failed_clause(Stage.ANALYZE)),
         node="analysis_failed",
     )
 
@@ -1459,10 +1462,12 @@ async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
 
 
 async def get_pushing_count(session: AsyncSession) -> int:
-    """Return COUNT of files in ``FileState.PUSHING`` (staged, rsync in progress), degrading to 0 (D-09).
+    """Return COUNT of the "pushing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
 
-    Drives the dashboard "Staged (pushing)" card -- the left half of the bounded cloud window
-    (files mid-rsync to the compute agent's scratch dir). Poll-safe via :func:`_safe_count`
+    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploading','submitted')`` -- no longer the
+    retired ``files.state == PUSHING`` column. Drives the dashboard "Staged (pushing)" card -- the left
+    half of the bounded cloud window (files mid-upload / just handed to remote submit). Poll-safe via
+    :func:`_safe_count`
     (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0 and rolls back
     the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is the
     OBSERVATIONAL per-card count -- the load-bearing backpressure is now per-backend
@@ -1471,22 +1476,31 @@ async def get_pushing_count(session: AsyncSession) -> int:
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHING),
+        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushing" half of the
+        # bounded cloud window is a cloud_job mid-upload (``uploading``) or handed to the remote submit
+        # but not yet landed (``submitted``). Mirrors :func:`get_inadmissible_count`'s cloud_job read;
+        # no longer the ``files.state == PUSHING`` column.
+        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADING.value, CloudJobStatus.SUBMITTED.value])),
         node="pushing",
     )
 
 
 async def get_pushed_count(session: AsyncSession) -> int:
-    """Return COUNT of files in ``FileState.PUSHED`` (landed on compute, within analysis), degrading to 0 (D-09).
+    """Return COUNT of the "pushed / analyzing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
 
-    Drives the dashboard "Analyzing (cloud)" card -- the right half of the bounded cloud window
-    (files that finished rsync and are awaiting/within remote analysis). Poll-safe via
+    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploaded','running')`` -- no longer the retired
+    ``files.state == PUSHED`` column. Drives the dashboard "Analyzing (cloud)" card -- the right half of
+    the bounded cloud window (files that finished upload and are awaiting/within remote analysis). Poll-safe via
     :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the per-backend
     cap itself is enforced by ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHED),
+        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushed / analyzing"
+        # half of the bounded cloud window is a cloud_job that finished upload (``uploaded``) or is
+        # actively analyzing on the remote (``running``). Mirrors :func:`get_pushing_count`; no longer
+        # the ``files.state == PUSHED`` column.
+        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADED.value, CloudJobStatus.RUNNING.value])),
         node="analyzing_cloud",
     )
 

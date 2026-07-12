@@ -106,10 +106,40 @@ def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRe
     )
 
 
+def _failed_analysis_for(file_id: uuid.UUID) -> AnalysisResult:
+    """Build an analyze-FAILURE marker (analysis row, ``failed_at`` set) for ``file_id`` (Phase 90 D-09).
+
+    This is the DERIVED source the cutover reads via ``failed_clause(Stage.ANALYZE)`` -- an
+    ``analysis`` row whose ``failed_at`` is non-NULL. Distinct from a completed row (``failed_at``
+    NULL, ``analysis_completed_at`` set); the XOR CHECK forbids both being set.
+    """
+    return AnalysisResult(id=uuid.uuid4(), file_id=file_id, failed_at=datetime.now(UTC), error_message="boom")
+
+
+def _completed_analysis_for(file_id: uuid.UUID, fine_done: int | None = None, fine_total: int | None = None) -> AnalysisResult:
+    """Build a completed analyze marker (``analysis_completed_at`` set, ``failed_at`` NULL) for ``file_id``."""
+    return AnalysisResult(
+        id=uuid.uuid4(),
+        file_id=file_id,
+        analysis_completed_at=datetime.now(UTC),
+        fine_windows_analyzed=fine_done,
+        fine_windows_total=fine_total,
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_analysis_failed_count_happy_path(session: AsyncSession) -> None:
-    """Counts exactly the files in ANALYSIS_FAILED; other states are excluded."""
-    session.add_all([_failed_file(0), _failed_file(1), _failed_file(2, FileState.ANALYZED)])
+    """DERIVED count (Phase 90 D-09): counts files with an analyze-failure marker, not ``files.state``.
+
+    Seeds a consistent corpus (legacy ``state`` AND the derived ``analysis.failed_at`` marker agree),
+    then asserts the derived count equals the legacy count of 2 -- proving the reader now sources from
+    ``failed_clause(Stage.ANALYZE)``. The ANALYZED file carries a completed marker (no ``failed_at``)
+    and is excluded.
+    """
+    a, b, done = _failed_file(0), _failed_file(1), _failed_file(2, FileState.ANALYZED)
+    session.add_all([a, b, done])
+    await session.flush()
+    session.add_all([_failed_analysis_for(a.id), _failed_analysis_for(b.id), _completed_analysis_for(done.id)])
     await session.commit()
     assert await get_analysis_failed_count(session) == 2
 
@@ -1406,17 +1436,25 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
     assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
 
+async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus) -> None:
+    """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12)."""
+    f = _file(file_index, FileState.DISCOVERED)
+    session.add(f)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))
+
+
 @pytest.mark.asyncio
 async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
-    """Counts exactly the files in PUSHING; other states (incl. PUSHED) are excluded (D-09)."""
-    session.add_all(
-        [
-            _file(40, FileState.PUSHING),
-            _file(41, FileState.PUSHING),
-            _file(42, FileState.PUSHED),
-            _file(43, FileState.AWAITING_CLOUD),
-        ]
-    )
+    """DERIVED "pushing" count (Phase 90 D-12): cloud_job status IN (uploading, submitted).
+
+    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHING``. An ``uploaded`` (pushed)
+    and an ``awaiting`` cloud_job are excluded, proving the status membership.
+    """
+    await _seed_cloud_job(session, 40, CloudJobStatus.UPLOADING)
+    await _seed_cloud_job(session, 41, CloudJobStatus.SUBMITTED)
+    await _seed_cloud_job(session, 42, CloudJobStatus.UPLOADED)
+    await _seed_cloud_job(session, 43, CloudJobStatus.AWAITING)
     await session.commit()
 
     assert await get_pushing_count(session) == 2
@@ -1424,15 +1462,15 @@ async def test_get_pushing_count_happy_path(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_get_pushed_count_happy_path(session: AsyncSession) -> None:
-    """Counts exactly the files in PUSHED; other states (incl. PUSHING) are excluded (D-09)."""
-    session.add_all(
-        [
-            _file(44, FileState.PUSHED),
-            _file(45, FileState.PUSHED),
-            _file(46, FileState.PUSHED),
-            _file(47, FileState.PUSHING),
-        ]
-    )
+    """DERIVED "pushed / analyzing" count (Phase 90 D-12): cloud_job status IN (uploaded, running).
+
+    Sources from the ``cloud_job`` sidecar, NOT ``files.state == PUSHED``. An ``uploading`` (pushing)
+    cloud_job is excluded, proving the status membership.
+    """
+    await _seed_cloud_job(session, 44, CloudJobStatus.UPLOADED)
+    await _seed_cloud_job(session, 45, CloudJobStatus.RUNNING)
+    await _seed_cloud_job(session, 46, CloudJobStatus.UPLOADED)
+    await _seed_cloud_job(session, 47, CloudJobStatus.UPLOADING)
     await session.commit()
 
     assert await get_pushed_count(session) == 3
