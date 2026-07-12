@@ -26,7 +26,6 @@ async def search_page(
     date_to: str | None = Query(None),
     bpm_min: float | None = Query(None),
     bpm_max: float | None = Query(None),
-    file_state: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=10, le=100),
     session: AsyncSession = Depends(get_session),
@@ -55,7 +54,6 @@ async def search_page(
             date_to=date_to,
             bpm_min=bpm_min,
             bpm_max=bpm_max,
-            file_state=file_state,
             page=page,
             page_size=page_size,
         )
