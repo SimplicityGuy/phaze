@@ -79,15 +79,15 @@ design §5), or re-litigating the derivation layer (Phase 78) / markers (Phase 8
 >   traffic after drain lifts.)
 
 ### PR / Blast-Radius Structure (the milestone's hard "one shippable PR per seam" rule)
-- **D-01 [SUPERSEDED by D-09]:** ~~Ship Phase 90 as THREE sequential PRs, writers-first~~:
+- **D-01 [SUPERSEDED by D-09] [informational]:** ~~Ship Phase 90 as THREE sequential PRs, writers-first~~:
   - ~~**PR-1 — Pure writer removal.** Delete ONLY the ~9 `.state=` write statements. Behavior-preserving.~~
   - ~~**PR-2 — Reader cutover.**~~ · ~~**PR-3 — Destructive.**~~
   *(Falsified: readers are coupled to writers — see D-09. Reordered to readers-first.)*
-- **D-02 [SUPERSEDED by D-09]:** All reader cutovers MUST land before the destructive drop — **still true**,
-  now enforced by the readers-first ordering (PR-A before PR-C).
+- **D-02 [SUPERSEDED by D-09] [informational]:** All reader cutovers MUST land before the destructive drop —
+  **still true**, now enforced by the readers-first ordering (PR-A before PR-C; tracked via D-09).
 
 ### Downgrade Strategy for `039` (MIG-04: "reconstruct the enum from derived sources + document lossiness")
-- **D-03 [SUPERSEDED as PRIMARY by D-10; retained as FALLBACK]:** Best-effort derived backfill —
+- **D-03 [SUPERSEDED as PRIMARY by D-10; retained as FALLBACK] [informational]:** Best-effort derived backfill —
   `downgrade()` recreates the column + `ix_files_state` and backfills a representative `FileState` per file
   from the derived markers. **Now the fallback path only** (for rows absent from `files_state_archive`); the
   primary `downgrade()` path is D-10's lossless archive-restore. D-04/D-05 govern this fallback's collapse.
