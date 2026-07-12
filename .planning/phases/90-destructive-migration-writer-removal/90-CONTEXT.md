@@ -34,25 +34,56 @@ design §5), or re-litigating the derivation layer (Phase 78) / markers (Phase 8
 <decisions>
 ## Implementation Decisions
 
+> **⚠️ RESEARCH-DRIVEN REVISIONS (2026-07-12, after `90-RESEARCH.md`).** Research falsified D-01/D-02's
+> "writers-first is behavior-preserving" premise and completed the inventory. The following **supersede**
+> the originals where noted — **D-09..D-12 are the authoritative decisions**; D-01/D-02/D-03 are kept for
+> history but marked SUPERSEDED. See `90-RESEARCH.md` Pitfall 1 for the full ~17-writer / ~11-reader
+> inventory and coupling evidence.
+>
+> - **D-09 (supersedes D-01/D-02) — READERS-FIRST 3-PR sequence.** Verified reality: **~17 writers** (not 9)
+>   and **~11 live `FileRecord.state` readers**, several *read-coupled* to the writers (removing the
+>   `AWAITING_CLOUD` writer `backends.py:124` while the column exists silently breaks the live `held_files`
+>   ledger-seed reader `routers/pipeline.py:1040`). Reorder to:
+>   - **PR-A — Reader cutover.** Convert **every** live `FileRecord.state` reader to derived sources while
+>     the column is fully intact (reversible, no DDL). Includes the surfaces CONTEXT missed:
+>     `services/search_queries.py` facet (see D-11), the dedup-undo `previous_state` capture
+>     (`services/dedup.py:270`→`:346`), `_backfill_candidates_stmt` (`pipeline.py:1569`),
+>     `held_files` (`routers/pipeline.py:1040`), `retry_analysis_failed` (`routers/pipeline.py:1247`),
+>     `get_proposal_pending_batches` (`pipeline.py:1707` — see Pitfall 4: re-add `~exists(proposals)`),
+>     plus the two CAS-guard reads embedded in writers #2/#10.
+>   - **PR-B — Writer removal.** Remove all ~17 writers (now truly unconsumed).
+>   - **PR-C — Destructive.** The `039` migration (archive + delta-backfill + drop index/column) + delete
+>     the `FileState` class + final cleanup.
+>   - Each PR independently green & shippable; all reader cutovers land before the drop.
+> - **D-10 (supersedes D-03 as the PRIMARY downgrade path) — ARCHIVE-RESTORE (lossless).** `039` snapshots
+>   `files.state` verbatim into `files_state_archive` (ROADMAP success-criterion 1's "archives files.state").
+>   `downgrade()` restores the column **exactly** from that archive — no lossiness. The D-04/D-05
+>   furthest-along + marker-override derived reconstruction is retained ONLY as the **fallback** for rows
+>   absent from the archive (rows created after `039`). Docstring still documents the derived fallback's
+>   lossiness per MIG-04.
+> - **D-11 — DROP the `search_queries.py` `file_state` facet.** Remove the `file_state` filter AND the
+>   `FileRecord.state` result column from `search_files_and_tracklists` (`services/search_queries.py:66,88`),
+>   plus the search route + template surfaces that pass/render it. No derived replacement (appropriate for a
+>   single-user admin tool).
+> - **D-12 — TWO cloud dashboard cards, pinned status mapping.** Keep the separate "Staged (pushing)" /
+>   "Analyzing (cloud)" cards; convert `get_pushing_count`/`get_pushed_count` off `state` to `cloud_job.status`
+>   with **`pushing = cloud_job.status IN ('uploading','submitted')`**, **`pushed = cloud_job.status IN
+>   ('uploaded','running')`**. (Under `--profile drain` both are ~0 at migration time; they run on live
+>   traffic after drain lifts.)
+
 ### PR / Blast-Radius Structure (the milestone's hard "one shippable PR per seam" rule)
-- **D-01:** Ship Phase 90 as **THREE sequential PRs**, each independently green & shippable, destructive
-  change isolated last:
-  - **PR-1 — Pure writer removal.** Delete ONLY the ~9 `.state=` write statements (plus any now-unused
-    `FileState` imports / dead branches those writes fed). The column, `ix_files_state` index, ORM
-    mapping, and `FileState` enum class stay **100% intact**. Behavior-preserving (no reader consumes
-    `state`). Cleanest bisect boundary; nothing irreversible.
-  - **PR-2 — Reader cutover.** Convert every surviving live `FileRecord.state` reader (see SCOPE
-    DISCOVERY in `<code_context>`) to derived sources while the column is still present, so the dashboard
-    stays green. Reversible; no DDL.
-  - **PR-3 — Destructive.** The `039` migration + `op.drop_index` + `op.drop_column` + delete the
-    `FileState` class + final cleanup.
-- **D-02:** **All reader cutovers (PR-2) MUST land before the destructive drop (PR-3).** Any surviving
-  `FileRecord.state` read is a hard blocker for `op.drop_column` — it breaks at ORM-mapping/query time.
+- **D-01 [SUPERSEDED by D-09]:** ~~Ship Phase 90 as THREE sequential PRs, writers-first~~:
+  - ~~**PR-1 — Pure writer removal.** Delete ONLY the ~9 `.state=` write statements. Behavior-preserving.~~
+  - ~~**PR-2 — Reader cutover.**~~ · ~~**PR-3 — Destructive.**~~
+  *(Falsified: readers are coupled to writers — see D-09. Reordered to readers-first.)*
+- **D-02 [SUPERSEDED by D-09]:** All reader cutovers MUST land before the destructive drop — **still true**,
+  now enforced by the readers-first ordering (PR-A before PR-C).
 
 ### Downgrade Strategy for `039` (MIG-04: "reconstruct the enum from derived sources + document lossiness")
-- **D-03:** **Best-effort backfill** (not the Phase-89 `NotImplementedError` posture). `downgrade()`
-  recreates the column + `ix_files_state`, then backfills a representative `FileState` per file from the
-  derived markers (metadata / analysis / proposals / dedup / cloud sidecar). Honors MIG-04 literally.
+- **D-03 [SUPERSEDED as PRIMARY by D-10; retained as FALLBACK]:** Best-effort derived backfill —
+  `downgrade()` recreates the column + `ix_files_state` and backfills a representative `FileState` per file
+  from the derived markers. **Now the fallback path only** (for rows absent from `files_state_archive`); the
+  primary `downgrade()` path is D-10's lossless archive-restore. D-04/D-05 govern this fallback's collapse.
 - **D-04:** **Collapse precedence = furthest-along linear pipeline stage.** Because derivation is *more*
   informative than the scalar (a file can be metadata-done AND analyze-done AND have a proposal at once),
   walk the original linear order
