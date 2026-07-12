@@ -22,7 +22,7 @@
 | `routers/pipeline.py:1040` `held_files` (PR-A) | route | request-response | `get_cloud_staging_candidates` candidate set (`:1503`) | role-match (drop redundant in-mem filter) |
 | `routers/pipeline.py:1247` `retry_analysis_failed` reader (PR-A) | route | request-response | `failed_clause(Stage.ANALYZE)` | role-match |
 | `services/search_queries.py:66,88` facet (PR-A, D-11) | service | CRUD (search) | (deletion — no derived analog; see No Analog) | delete |
-| `services/dedup.py:270→346` `previous_state` (PR-A/PR-B) | service | event-driven (undo) | `dedup_resolved_clause()` (`stage_status.py:94`) | role-match |
+| `services/dedup.py:270→346` `previous_state` (PR-A decouples `undo_resolve` gate; `:270`/`:274`/`:346` removed together in PR-B — see dedup section, do NOT drop `:270` in PR-A) | service | event-driven (undo) | `dedup_resolved_clause()` (`stage_status.py:94`) | role-match |
 | ~17 writer sites (PR-B) | service/route | (deletion) | n/a — pure deletion of dual-writes | exact (delete) |
 | `models/file.py` (PR-C) — drop `state` col, `ix_files_state`, `FileState` class | model | schema | `models/file.py:86,97` + `alembic/versions/012*` index-drop precedent | exact |
 | `models/__init__.py` (PR-C) — drop `FileState` re-export | model | config | `models/__init__.py:9,36` | exact |
@@ -235,7 +235,7 @@ file_states.append({"id": str(f.id), "previous_state": f.state})   # :270 captur
 f.state = FileState.DUPLICATE_RESOLVED                             # :274 WRITER (dies PR-B)
 ... update(...).values(state=restore_by_id[...])                   # :346 WRITER (undo restore, dies PR-B)
 ```
-**Cutover:** the dedup marker (`DedupResolution` row) is created/deleted independently; the `previous_state` capture + restore is pure `state` dual-write bookkeeping. Drop the `previous_state` capture from the undo payload (PR-A reader side) and the two writers (PR-B). The undo already DELETEs the marker (`:296` comment) — that is the real authority.
+**Cutover (CORRECTED 2026-07-12 — the naive "drop :270 in PR-A" premise below was the plan-checker's silent-break blocker; do NOT follow it):** the `:270` `previous_state` capture and the `:274`/`:346` state writers are a **matched set removed together in PR-B**. `:270` MUST stay alive through PR-A. **Why:** `undo_resolve` (`dedup.py:311-343`) builds `restore_by_id` from `previous_state`, then `if not restore_by_id: return 0` runs **before** the marker `DELETE` (`:337-342`), and the DELETE is scoped to `restore_by_id` — so dropping `:270` in PR-A empties the gate and the marker is **never deleted → undo silently no-ops** (existing tests hand-craft payloads containing `previous_state`, so they stay green). **PR-A's only dedup work (Plan 90-01 Task 4):** decouple `undo_resolve`'s DELETE id-set + early-return gate to key on `entry["id"]` **alone** (independent of `previous_state`/`FileState`), keeping `:270`/`:274` intact, and add a real `/resolve`→`/undo` round-trip test (single + bulk) that extracts the server-rendered payload and asserts the `DedupResolution` marker IS deleted. The `:270` capture + `:274`/`:346` writers then die together in PR-B.
 
 ---
 
