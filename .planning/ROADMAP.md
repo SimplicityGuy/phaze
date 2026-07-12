@@ -645,7 +645,13 @@ Plans:
   3. The destructive migration's `downgrade()` documents the enum reconstruction from derived sources and its lossiness; a migration rehearsal against a restore of the real corpus passes.
 
 **Gate**: shadow-compare (Phase 79) green on the live corpus + cloud-push lanes drained (`--profile drain`).
-**Plans**: TBD
+**Plans**: 3 plans (readers-first D-09; one shippable PR per plan)
+
+Plans:
+
+- [ ] 90-01-PLAN.md — PR-A: reader cutover — convert every live FileRecord.state reader to derived sources (stage_status.py builders + cloud_job) while the column is intact; two cloud cards (D-12), proposal-batch Pitfall-4 fix, held_files ledger-seed coverage, search facet deletion (D-11) [Wave 1]
+- [ ] 90-02-PLAN.md — PR-B: writer removal — delete all ~17 FileState writers (incl. the two CAS-guard reads) now that readers are derived; equivalence + full suite green [Wave 2]
+- [ ] 90-03-PLAN.md — PR-C: destructive — 039 migration (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade) + delete FileState/state column/ix_files_state + D-08 mutation-tested anti-drift guard [Wave 3]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
