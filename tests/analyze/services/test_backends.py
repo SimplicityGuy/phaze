@@ -452,11 +452,12 @@ async def test_kueue_in_flight_count_filters_by_backend_id(session: AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_compute_dispatch_flips_pushing_and_writes_cloud_job_in_txn(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """D-03: compute dispatch flips PUSHING AND upserts a non-terminal cloud_job in the SAME session.
+async def test_compute_dispatch_writes_cloud_job_in_txn(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-03: compute dispatch upserts a non-terminal cloud_job in the SAME session.
 
-    The row must be visible (via autoflush) within the uncommitted transaction -- there is never a
-    committed in-flight FileState without a live cloud_job row (Pitfall 4 limbo guard).
+    Phase 90 (D-09): the paired PUSHING files.state flip was removed; the cloud_job row is the sole
+    in-flight authority. The row must be visible (via autoflush) within the uncommitted transaction --
+    there is never a committed in-flight dispatch without a live cloud_job row (Pitfall 4 limbo guard).
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
@@ -468,7 +469,6 @@ async def test_compute_dispatch_flips_pushing_and_writes_cloud_job_in_txn(sessio
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
 
-    assert file.state == FileState.PUSHING
     from sqlalchemy import select
 
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
@@ -659,12 +659,12 @@ async def test_local_dispatch_writes_no_cloud_job_row(session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
-async def test_local_dispatch_flips_to_local_analyzing(session: AsyncSession) -> None:
-    """CR-01: LocalBackend.dispatch flips an AWAITING_CLOUD file to LOCAL_ANALYZING in the caller session.
+async def test_local_dispatch_writes_no_state_and_no_cloud_job(session: AsyncSession) -> None:
+    """CR-01 / Phase 90 (D-09): LocalBackend.dispatch no longer writes files.state and creates no cloud_job.
 
-    Mirrors the compute/kueue ``FileState -> PUSHING`` flip (backends.py:252/:316): a locally-spilled
-    file must leave the ``AWAITING_CLOUD`` candidate predicate atomically so it is not re-selected on a
-    later drain tick and double-dispatched to a cloud backend while its ``process_file`` is in flight.
+    The former LOCAL_ANALYZING flip was removed; a locally-spilled file leaves the AWAITING_CLOUD
+    candidate set via its ``process_file:<id>`` scheduling-ledger row (proven in
+    test_local_dispatch_excluded_from_staging_candidates), NOT a state write.
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
@@ -675,7 +675,12 @@ async def test_local_dispatch_flips_to_local_analyzing(session: AsyncSession) ->
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
 
-    assert file.state == FileState.LOCAL_ANALYZING
+    # Phase 90 (D-09): files.state is left untouched, and local dispatch writes no cloud_job row.
+    assert file.state == FileState.AWAITING_CLOUD
+    from sqlalchemy import select
+
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
+    assert job is None
 
 
 @pytest.mark.asyncio
@@ -1108,21 +1113,21 @@ def test_kube_models_pvc_name_round_trips_from_backends_toml(backends_toml_env: 
 
 
 @pytest.mark.asyncio
-async def test_hold_awaiting_cloud_fresh_hold_writes_one_row_and_flips_state(session: AsyncSession) -> None:
-    """D-02/D-00c: a fresh hold stamps ``AWAITING_CLOUD`` + inserts exactly one ``awaiting`` cloud_job row.
+async def test_hold_awaiting_cloud_fresh_hold_writes_one_awaiting_row(session: AsyncSession) -> None:
+    """D-02: a fresh hold inserts exactly one ``awaiting`` cloud_job row.
 
-    The row and the state flip are both visible WITHIN the uncommitted caller session (the helper never
-    commits -- the caller owns the commit boundary), so the assertions see them without any commit.
+    Phase 90 (D-09): the paired AWAITING_CLOUD files.state flip was removed; the cloud_job row is the sole
+    authority. The row is visible WITHIN the uncommitted caller session (the helper never commits -- the
+    caller owns the commit boundary), so the assertions see it without any commit.
     """
     from sqlalchemy import select
 
-    file = _make_file(state=FileState.FINGERPRINTED)  # pre-hold state so the flip is genuinely observable
+    file = _make_file(state=FileState.FINGERPRINTED)
     session.add(file)
     await session.flush()
 
     await backends.hold_awaiting_cloud(session, file)
 
-    assert file.state == FileState.AWAITING_CLOUD
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalars().all()
     assert len(rows) == 1
     assert rows[0].status == CloudJobStatus.AWAITING.value
@@ -1166,8 +1171,7 @@ async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSessio
 
     result = await backends.hold_awaiting_cloud(session, file)
 
-    assert result is True
-    assert file.state == FileState.AWAITING_CLOUD
+    assert result is True  # Phase 90 (D-09): the hold writes the cloud_job row (no files.state flip)
 
 
 @pytest.mark.asyncio
@@ -1266,13 +1270,13 @@ def test_awaiting_status_is_not_in_the_in_flight_set() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_dispatch_leaves_awaiting_row_present_and_flips_state(session: AsyncSession) -> None:
-    """D-13: LocalBackend.dispatch flips a held file to LOCAL_ANALYZING and NEITHER writes NOR deletes its row.
+async def test_local_dispatch_leaves_awaiting_row_present(session: AsyncSession) -> None:
+    """D-13: LocalBackend.dispatch NEITHER writes NOR deletes a held file's inert awaiting cloud_job row.
 
     A held file carries an ``awaiting`` cloud_job row. LocalBackend stays a no-``cloud_job``-row
     writer/deleter (D-05 chose the drain predicate conjunct over row deletion), so after a local dispatch
     the inert ``awaiting`` row is still present, still ``status='awaiting'`` (it is reaped later by D-14, not
-    here) while ``file.state`` becomes ``LOCAL_ANALYZING``.
+    here). Phase 90 (D-09): the former LOCAL_ANALYZING files.state flip was removed.
     """
     from sqlalchemy import select
 
@@ -1280,13 +1284,12 @@ async def test_local_dispatch_leaves_awaiting_row_present_and_flips_state(sessio
     file = _make_file(state=FileState.FINGERPRINTED)
     session.add(file)
     await session.flush()
-    await backends.hold_awaiting_cloud(session, file)  # held: awaiting row present, state AWAITING_CLOUD
+    await backends.hold_awaiting_cloud(session, file)  # held: awaiting cloud_job row present
     await session.commit()
 
     backend = _local()
     await backend.dispatch(file, session, DedupFakeTaskRouter())
 
-    assert file.state == FileState.LOCAL_ANALYZING
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
     assert job is not None  # LocalBackend did NOT delete the inert awaiting row (D-13)
     assert job.status == CloudJobStatus.AWAITING.value  # nor re-write it

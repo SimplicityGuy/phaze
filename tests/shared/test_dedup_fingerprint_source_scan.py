@@ -7,10 +7,9 @@ tests never touch.
 
 Invariants enforced:
 
-* ``services/dedup.py`` may reference ``FileState.DUPLICATE_RESOLVED`` in EXACTLY ONE place -- the RHS of
-  the surviving dual-writer assignment ``f.state = FileState.DUPLICATE_RESOLVED`` (D-00a; retired Phase 90).
-  It may appear NOWHERE in a read position: not inside an ``ast.Compare`` and not as ANY argument
-  (positional OR keyword) of a ``.where()`` / ``.filter()`` / ``.filter_by()`` / ``.having()`` call.
+* ``services/dedup.py`` may reference ``FileState.DUPLICATE_RESOLVED`` ZERO times. Phase 90 (D-09, PR-B)
+  removed the last dual-writer ``f.state = FileState.DUPLICATE_RESOLVED`` (the DedupResolution marker is now
+  the sole authority), so neither a write NOR a read of that state may exist -- clean absence.
 * ``services/fingerprint.py`` may reference ``FileState.FINGERPRINTED`` ZERO times (there is no writer of
   that state in that file -- clean absence).
 
@@ -122,27 +121,32 @@ def _classify(source: str, member: str) -> tuple[list[ast.Attribute], list[ast.A
 # ---------------------------------------------------------------------------
 
 
-def test_dedup_has_exactly_one_writer_and_no_reads() -> None:
-    """``dedup.py``: exactly one ``FileState.DUPLICATE_RESOLVED`` WRITE (D-00a), zero reads."""
+def test_dedup_has_zero_duplicate_resolved() -> None:
+    """``dedup.py``: ZERO ``FileState.DUPLICATE_RESOLVED`` attribute accesses.
+
+    Phase 90 (D-09, PR-B) removed the last ``f.state = FileState.DUPLICATE_RESOLVED`` dual-writer -- the
+    DedupResolution marker (``dedup_resolved_clause``) is the sole authority. Neither a write nor a read of
+    that state may exist (a reintroduced read was already forbidden by READ-04; a reintroduced write would
+    resurrect the dead column dependency PR-C is about to drop).
+    """
     occurrences, writes, reads, other = _classify(_DEDUP.read_text(encoding="utf-8"), "DUPLICATE_RESOLVED")
 
     assert len(reads) == 0, (
         f"services/dedup.py reintroduced a FileState.DUPLICATE_RESOLVED READ ({len(reads)} found) at "
         f"lines {[getattr(n, 'lineno', '?') for n in reads]}. The cutover replaced every read with "
-        "~dedup_resolved_clause() (READ-04 / D-14). Reads are forbidden inside a Compare or as any "
-        "argument of .where()/.filter()/.filter_by()/.having()."
+        "~dedup_resolved_clause() (READ-04 / D-14)."
     )
-    assert len(writes) == 1, (
-        f"services/dedup.py must contain EXACTLY ONE FileState.DUPLICATE_RESOLVED write -- the surviving "
-        f"dual-writer f.state = FileState.DUPLICATE_RESOLVED (D-00a, retired Phase 90). Found {len(writes)} "
-        f"at lines {[getattr(n, 'lineno', '?') for n in writes]}."
+    assert len(writes) == 0, (
+        f"services/dedup.py reintroduced a FileState.DUPLICATE_RESOLVED WRITE ({len(writes)} found) at "
+        f"lines {[getattr(n, 'lineno', '?') for n in writes]}. Phase 90 PR-B removed the last dual-writer; "
+        "the DedupResolution marker is the sole authority."
     )
     assert len(other) == 0, (
         f"services/dedup.py has a FileState.DUPLICATE_RESOLVED occurrence in an unrecognised position at "
-        f"lines {[getattr(n, 'lineno', '?') for n in other]}. Only the single .state dual-writer is allowed."
+        f"lines {[getattr(n, 'lineno', '?') for n in other]}. It must be absent entirely."
     )
-    # Belt-and-suspenders: total count == the single writer, nothing else.
-    assert len(occurrences) == 1
+    # Belt-and-suspenders: total count == 0 (clean absence, mirroring fingerprint.py).
+    assert len(occurrences) == 0
 
 
 def test_fingerprint_has_zero_fingerprinted() -> None:
