@@ -12,7 +12,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | Table                 | Description                                                            |
 |-----------------------|-----------------------------------------------------------------------|
 | `agents`              | Distributed worker (file-server) identities that own files and scans  |
-| `files`               | Central file records with a `FileState` state machine                 |
+| `files`               | Central file records; per-stage status is derived on read (no `state` column) |
 | `scan_batches`        | Scan operation progress and status (`ScanStatus`)                     |
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
 | `analysis`            | BPM, key, mood, style results (1:1 with `files`)                       |
@@ -77,43 +77,43 @@ scoped to `status = 'pending'`, rows in any other state (`approved`, `executed`,
 `failed`) fall outside the index and are never a conflict target — human approvals are
 structurally protected from being overwritten by a re-run.
 
-### State enums
+### Derived per-stage status
 
-- `FileState` (`src/phaze/models/file.py`, 17 states): `discovered`, `metadata_extracted`,
-  `fingerprinted`, `analyzed`, `analysis_failed`, `awaiting_cloud`, `pushing`, `pushed`,
-  `local_analyzing`, `proposal_generated`, `approved`, `rejected`, `executed`, `failed`,
-  `duplicate_resolved`, `moved`, `unchanged`. The 5 cloud-pipeline states (`analysis_failed`,
-  `awaiting_cloud`, `pushing`, `pushed`, `local_analyzing`) are code-only `StrEnum` members over
-  the existing `String(30)` `state` column — no enum migration is needed.
+There is **no `files.state` column and no file-level state enum** — Phase 90 dropped the
+`state` column, the file-level state `StrEnum`, and the `ix_files_state` index (migration
+`039_drop_files_state_column`). A file's status is instead **derived on read**, per stage,
+from its output tables (`metadata`, `fingerprint_results`, `analysis`, `proposals`,
+`execution_log`), the `cloud_job` sidecar, and the `dedup_resolution` marker.
+
+- `Stage` (`src/phaze/enums/stage.py`, 7 stages): `metadata`, `fingerprint`, `analyze`,
+  `tracklist`, `propose`, `review`, `apply`.
+- `Status` (`src/phaze/enums/stage.py`, 5 states): `not_started`, `in_flight`, `done`,
+  `skipped`, `failed`, resolved under the precedence ladder
+  `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`. The durable `scheduling_ledger` is the
+  authoritative `in_flight` source. The DB-free resolver `resolve_status` and its SQL twin
+  `services/stage_status.py` (`stage_status_case`) are locked 1:1 by an equivalence test.
+- `CloudJobStatus` (`cloud_job.py`): `awaiting`, `uploading`, `uploaded`, `submitted`,
+  `running`, `succeeded`, `failed` — tracks the long-file cloud-burst / tiered-drain detour
+  off `analyze` on the standalone `cloud_job` sidecar row (not a file state).
 - `ScanStatus` (`scan_batch.py`): `running`, `completed`, `failed`, `live`.
 - `ProposalStatus` (`proposal.py`): `pending`, `approved`, `rejected`, `executed`, `failed`.
 - `TagWriteStatus` (`tag_write_log.py`): `completed`, `failed`, `discrepancy`.
 - `ExecutionStatus` is defined in `src/phaze/enums/execution.py` and re-exported from
   `models/execution.py`.
 
-The 17-state `FileState` pipeline, including the cloud-burst detour off `analyzed`:
+The conceptual per-file stage progression (each node's status is derived, never stored):
 
 ```mermaid
-stateDiagram-v2
-    [*] --> discovered
-    discovered --> metadata_extracted
-    metadata_extracted --> fingerprinted
-    fingerprinted --> analyzed
-    fingerprinted --> analysis_failed
-    fingerprinted --> awaiting_cloud : long file → cloud burst
-    awaiting_cloud --> pushing
-    pushing --> pushed
-    pushed --> analyzed
-    awaiting_cloud --> local_analyzing : drain spill → on-prem
-    local_analyzing --> analyzed
-    analyzed --> proposal_generated
-    proposal_generated --> approved
-    proposal_generated --> rejected
-    approved --> executed
-    executed --> moved
-    executed --> unchanged
-    fingerprinted --> duplicate_resolved
-    analyzed --> failed
+flowchart TD
+    discovered --> metadata
+    metadata --> fingerprint
+    fingerprint --> analyze
+    fingerprint -.long file, cloud/compute routed.-> cloud_job[(cloud_job sidecar)]
+    cloud_job --> analyze
+    analyze --> propose
+    propose --> review
+    propose -.duplicate.-> dedup_resolution[(dedup_resolution)]
+    review --> apply
 ```
 
 ### Full-text search

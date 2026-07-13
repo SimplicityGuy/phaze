@@ -194,3 +194,83 @@ class TestTracklistScraperScrape:
         assert result.tracks[2].is_mashup is True
         # First track is not a mashup
         assert result.tracks[0].is_mashup is False
+
+    @pytest.mark.asyncio
+    async def test_scrape_title_falls_back_to_title_tag_when_no_h1(self):
+        """With no <h1>, the title is taken from <title> with the site suffix stripped."""
+        html = "<html><head><title>Zeds Dead @ EDC 2025 | 1001Tracklists</title></head><body></body></html>"
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, html))
+
+        scraper = TracklistScraper(client=client)
+        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/zd99/zeds-dead.html")
+
+        assert result.title == "Zeds Dead @ EDC 2025"
+        assert result.external_id == "zd99"
+
+
+class TestTracklistScraperSearchEdgeCases:
+    """Search error/parse branches and result-item skip paths."""
+
+    @pytest.mark.asyncio
+    async def test_search_http_error_returns_empty(self):
+        """A transport error during the search POST is logged and yields []."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(side_effect=httpx.ConnectError("boom"))
+
+        scraper = TracklistScraper(client=client)
+        assert await scraper.search("skrillex") == []
+
+    @pytest.mark.asyncio
+    async def test_search_parse_failure_returns_empty(self):
+        """A parser exception on a 200 body is swallowed and yields []."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
+
+        scraper = TracklistScraper(client=client)
+        with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")):
+            assert await scraper.search("skrillex") == []
+
+    def test_parse_search_results_skips_item_without_title_link(self):
+        """A .bItm with no .bItmT a link is skipped, not raised on."""
+        html = '<html><body><div class="bItm"><div class="bItmM"></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        assert scraper._parse_search_results(html) == []
+
+    def test_parse_search_results_skips_item_with_unmatched_href(self):
+        """A title link whose href is not a /tracklist/<id>/ path is skipped."""
+        html = '<html><body><div class="bItm"><div class="bItmT"><a href="/festival/edc.html">EDC</a></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        assert scraper._parse_search_results(html) == []
+
+
+class TestTracklistScraperLifecycle:
+    """__init__ client ownership + close()."""
+
+    def test_constructs_own_client_when_none_supplied(self):
+        """With no client, the scraper owns a real httpx.AsyncClient it must close."""
+        scraper = TracklistScraper()
+        assert scraper._owns_client is True
+        assert isinstance(scraper._client, httpx.AsyncClient)
+
+    def test_does_not_own_injected_client(self):
+        injected = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=injected)
+        assert scraper._owns_client is False
+        assert scraper._client is injected
+
+    @pytest.mark.asyncio
+    async def test_close_closes_owned_client(self):
+        """close() aclose()s a self-owned client exactly once."""
+        scraper = TracklistScraper()
+        with patch.object(scraper._client, "aclose", new_callable=AsyncMock) as mock_aclose:
+            await scraper.close()
+            mock_aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_leaves_injected_client_open(self):
+        """close() must NOT aclose a caller-owned client."""
+        injected = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=injected)
+        await scraper.close()
+        injected.aclose.assert_not_called()

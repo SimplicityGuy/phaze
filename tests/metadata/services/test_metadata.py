@@ -96,6 +96,56 @@ class TestSerializeTags:
         result = _serialize_tags(tags)
         assert result["artist"] == ["Artist Name"]
 
+    def test_items_raising_returns_empty_dict(self):
+        """If tags.items() raises, serialization degrades to {} rather than propagating."""
+        tags = MagicMock()
+        tags.items.side_effect = RuntimeError("mapping blew up")
+        assert _serialize_tags(tags) == {}
+
+    def test_skips_binary_items_inside_list_value(self):
+        """A list value with mixed bytes/str keeps only the string items."""
+        tags = MagicMock()
+        tags.items.return_value = [("mixed", [b"\x00cover", "keep-me", b"\xff"])]
+        result = _serialize_tags(tags)
+        assert result["mixed"] == ["keep-me"]
+
+    def test_value_str_raising_is_skipped(self):
+        """A value whose str() raises is dropped, not fatal to the whole dict."""
+
+        class _Explosive:
+            def __str__(self) -> str:
+                raise ValueError("cannot stringify")
+
+        tags = MagicMock()
+        tags.items.return_value = [("bad", _Explosive()), ("good", "ok")]
+        result = _serialize_tags(tags)
+        assert "bad" not in result
+        assert result["good"] == "ok"
+
+
+class TestParseYearRange:
+    """Boundary tests for _parse_year's sanity range (1000-9999)."""
+
+    def test_year_below_range_returns_none(self):
+        assert _parse_year("999") is None
+
+    def test_year_at_lower_bound_is_kept(self):
+        assert _parse_year("1000") == 1000
+
+
+class TestParseTrackErrorBranches:
+    """Non-integer track values across the list/tuple shapes return None."""
+
+    def test_list_of_tuple_with_non_int_first_returns_none(self):
+        assert _parse_track([("x", 12)]) is None
+
+    def test_list_first_non_tuple_falls_through_to_string(self):
+        # first element is a bare string -> reassigned to val -> parsed as "5"
+        assert _parse_track(["5"]) == 5
+
+    def test_bare_tuple_with_non_int_first_returns_none(self):
+        assert _parse_track(("x", 12)) is None
+
 
 class TestExtractTagsID3:
     """Tests for extract_tags with ID3-tagged (MP3) files."""

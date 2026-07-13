@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -11,6 +11,7 @@ import pytest
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link
 
 
 if TYPE_CHECKING:
@@ -269,3 +270,136 @@ async def test_write_tags_response_has_row_id(client: AsyncClient, session: Asyn
 
     assert response.status_code == 200
     assert f'id="row-{file_record.id}"' in response.text
+
+
+# --- helper unit tests --------------------------------------------------------
+
+
+def test_determine_file_status_pending_when_no_write_log() -> None:
+    assert _determine_file_status(None) == "pending"
+
+
+def test_determine_file_status_returns_write_log_status() -> None:
+    """A present write log surfaces its own status verbatim."""
+    log = MagicMock()
+    log.status = "completed"
+    assert _determine_file_status(log) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_get_accepted_discogs_link_returns_highest_confidence_accepted() -> None:
+    """With a resolved tracklist version, the accepted DiscogsLink is returned."""
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = uuid.uuid4()  # a real version_id
+    sentinel_link = MagicMock(name="accepted-link")
+    link_result = MagicMock()
+    link_result.scalar_one_or_none.return_value = sentinel_link
+
+    session = AsyncMock()
+    session.execute.side_effect = [version_result, link_result]
+
+    got = await _get_accepted_discogs_link(session, uuid.uuid4())
+    assert got is sentinel_link
+
+
+@pytest.mark.asyncio
+async def test_get_accepted_discogs_link_none_when_no_tracklist_version() -> None:
+    """No resolved tracklist version short-circuits to None without a link query."""
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    session = AsyncMock()
+    session.execute.return_value = version_result
+
+    got = await _get_accepted_discogs_link(session, uuid.uuid4())
+    assert got is None
+    session.execute.assert_awaited_once()  # only the version lookup ran
+
+
+# --- route not-found / invalid-field guards -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compare_tags_missing_file_404(client: AsyncClient) -> None:
+    response = await client.get(f"/tags/{uuid.uuid4()}/compare")
+    assert response.status_code == 404
+    assert "not found" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_tag_field_missing_file_404(client: AsyncClient) -> None:
+    response = await client.get(f"/tags/{uuid.uuid4()}/edit/artist")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_tag_field_invalid_field_400(client: AsyncClient) -> None:
+    """The field allow-list is checked before the file lookup -> 400, not 404."""
+    response = await client.put(f"/tags/{uuid.uuid4()}/edit/not_a_field", data={"not_a_field": "x"})
+    assert response.status_code == 400
+    assert "invalid field" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_save_tag_field_missing_file_404(client: AsyncClient) -> None:
+    """A valid field but absent file falls through to the 404 branch."""
+    response = await client.put(f"/tags/{uuid.uuid4()}/edit/artist", data={"artist": "x"})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_write_file_tags_missing_file_404(client: AsyncClient) -> None:
+    response = await client.post(f"/tags/{uuid.uuid4()}/write", data={"artist": "x"})
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_undo_tag_write_missing_file_404(client: AsyncClient) -> None:
+    response = await client.post(f"/tags/{uuid.uuid4()}/undo")
+    assert response.status_code == 404
+
+
+# --- write_file_tags status/toast branches ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_tags_discrepancy_branch(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-empty verify_write result yields a DISCREPANCY status + discrepancy toast."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"sent": "New Artist", "got": "New  Artist"}}),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+
+    assert response.status_code == 200
+    assert "discrepancy" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_write_tags_failed_branch(client: AsyncClient, session: AsyncSession) -> None:
+    """A write_tags exception yields a FAILED status + failure toast, not a 500."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("read-only file")),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+
+    assert response.status_code == 200
+    assert "failed" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncSession) -> None:
+    """A ValueError raised by execute_tag_write is caught and surfaced as a failed toast."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with patch("phaze.routers.tags.execute_tag_write", new=AsyncMock(side_effect=ValueError("boom"))):
+        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+
+    assert response.status_code == 200
+    assert "failed" in response.text.lower()
+    assert "boom" in response.text
