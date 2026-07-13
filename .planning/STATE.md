@@ -24,10 +24,11 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 
 ## Current Position
 
-Phase: 90 (destructive-migration-writer-removal) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 90
-Last activity: 2026-07-12 -- Phase 90 execution started
+Phase: 90 (destructive-migration-writer-removal) — IN PROGRESS (PR-C split; 90-04 pending)
+Plan: 90-01 ✓, 90-02 ✓, 90-03 partial (migration 039 landed), 90-04 pending
+Status: Phase 90 in progress — awaiting 90-04 (FileState/enum retirement + shadow_compare removal + ~90-test migration)
+Last activity: 2026-07-12 -- Waves 1-2 complete; Wave 3 (PR-C) split at decision checkpoint: migration 039 merged, Task 3 re-planned as 90-04
+Next: /gsd:execute-phase 90 (runs 90-04) — or /gsd:plan-phase 90 first to enrich 90-04 (esp. the shadow_compare full-removal default). One expected-RED test on branch until 90-04: test_039_autogenerate_diff_is_empty_for_dropped_objects
 
 ## Performance Metrics
 

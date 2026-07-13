@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
-| 90. Destructive Migration & Writer Removal | 2026.7.5 | 2/3 | In Progress|  |
+| 90. Destructive Migration & Writer Removal | 2026.7.5 | 3/4 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -645,7 +645,7 @@ Plans:
   3. The destructive migration's `downgrade()` documents the enum reconstruction from derived sources and its lossiness; a migration rehearsal against a restore of the real corpus passes.
 
 **Gate**: shadow-compare (Phase 79) green on the live corpus + cloud-push lanes drained (`--profile drain`).
-**Plans**: 3 plans (readers-first D-09; one shippable PR per plan)
+**Plans**: 4 plans (readers-first D-09; one shippable PR per plan). PR-C was split at a decision checkpoint: 90-03 landed the irreversible migration 039; 90-04 carries the model/enum retirement + shadow_compare removal + ~90-test migration whose blast radius (4-5x) the original 3-plan scope under-budgeted.
 Plans:
 **Wave 1**
 
@@ -657,7 +657,11 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 90-03-PLAN.md — PR-C: destructive — 039 migration (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade) + delete FileState/state column/ix_files_state + D-08 mutation-tested anti-drift guard [Wave 3]
+- [~] 90-03-PLAN.md — PR-C (partial): landed the irreversible migration 039 (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade), guarded/reversible, 13/14 tests green. Model/enum removal + D-08 guard split to 90-04 (see 90-03-SUMMARY.md). [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 90-04-PLAN.md — PR-C cont.: delete FileState enum + state column + ix_files_state from the ORM; retire the now-dead shadow_compare subsystem (invariants frozen in 039's guard); migrate ~90 dependent test files to derived sources; add the D-08 mutation-tested anti-drift guard; flip the 039 autogenerate test green [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
