@@ -3,7 +3,7 @@
 ``stage_cloud_window(ctx)`` is the SINGLE driver that introduces new push work to the compute
 agent. It tops the ≤N window up to ``cloud_max_in_flight`` by staging ``push_file`` for the oldest
 held ``AWAITING_CLOUD`` files (FIFO by ``created_at``). The window is counted from COMMITTED
-FileState truth (``state IN {PUSHING, PUSHED}``, D-08), so a 144-file backlog can never blow up the
+cloud_job truth (in-flight sidecar rows, D-08), so a 144-file backlog can never blow up the
 single compute scratch disk -- the cron stages at most ``slots = cloud_max_in_flight - window``.
 
 Gates (both wrapped in ``try/except NoActiveAgentError`` -> clean no-op, T-50-cron-raise):
@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, kube_staging, s3_staging
 from phaze.tasks.release_awaiting_cloud import push_file_job_key, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -136,7 +136,7 @@ def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller
     return {"async_session": sm, "queue": controller_queue, "task_router": router}
 
 
-def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3", created_at: datetime | None = None) -> FileRecord:
+def _make_file(*, file_type: str = "mp3", created_at: datetime | None = None) -> FileRecord:
     """Build a fully-populated FileRecord row (AWAITING_CLOUD by default)."""
     uid = uuid.uuid4()
     kwargs: dict[str, Any] = {}
@@ -151,32 +151,34 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3",
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
         **kwargs,
     )
 
 
-async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Phase 90 (D-09): derive each file's effective drain state from its ``cloud_job`` sidecar.
+# Post-MIG-04 the ``files.state`` dual-write is gone, so a file's effective drain state is DERIVED
+# purely from its ``cloud_job`` sidecar. These string labels are exactly the values the retired
+# ``_HELD`` / ``_DISPATCHED`` StrEnum members carried, so every assertion below
+# keeps its original meaning.
+_HELD = "awaiting_cloud"
+_DISPATCHED = "pushing"
 
-    The ``files.state`` dual-write (AWAITING_CLOUD held / PUSHING dispatched) was removed; the cloud_job
-    row is the sole authority. A row at ``status='awaiting'`` -> AWAITING_CLOUD (held); any other (in-flight)
-    status -> PUSHING (dispatched). A file with NO cloud_job row falls back to its seeded ``files.state``
-    (it was never a drain candidate, so it was never dispatched). This keeps every existing assertion --
-    which compares against ``FileState.AWAITING_CLOUD`` / ``FileState.PUSHING`` -- valid post-writer-removal.
+
+async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Derive each file's effective drain state from its ``cloud_job`` sidecar (the sole authority).
+
+    A file is DISPATCHED (``pushing``) iff it carries a NON-awaiting (in-flight) cloud_job row; otherwise
+    -- no cloud_job row at all, or a row still at ``status='awaiting'`` -- it is HELD (``awaiting_cloud``).
+
+    ``populate_existing`` refreshes the identity-mapped cloud_job rows (the drain mutated them in its own
+    session) WITHOUT ``expire_all()`` -- expiring the caller's FileRecords would trigger a MissingGreenlet
+    lazy-reload on the ``.id`` reads in the assertions.
     """
-    session.expire_all()
-    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
-    jobs = {r.file_id: r.status for r in (await session.execute(select(CloudJob).where(CloudJob.file_id.in_(ids)))).scalars().all()}
+    stmt = select(CloudJob).where(CloudJob.file_id.in_(ids)).execution_options(populate_existing=True)
+    jobs = {r.file_id: r.status for r in (await session.execute(stmt)).scalars().all()}
     out: dict[uuid.UUID, str] = {}
-    for f in files:
-        status = jobs.get(f.id)
-        if status is None:
-            out[f.id] = f.state
-        elif status == CloudJobStatus.AWAITING.value:
-            out[f.id] = FileState.AWAITING_CLOUD
-        else:
-            out[f.id] = FileState.PUSHING
+    for fid in ids:
+        status = jobs.get(fid)
+        out[fid] = _DISPATCHED if (status is not None and status != CloudJobStatus.AWAITING.value) else _HELD
     return out
 
 
@@ -202,7 +204,7 @@ async def _seed_in_flight(
     """Seed ``count`` in-flight cloud_job rows for ``backend_id`` (Phase 69 per-backend in_flight_count).
 
     Phase 69 (D-05) counts a backend's in-flight window from its ``cloud_job`` rows
-    (``backend_id`` + status in the in-flight set), NOT the old FileState ``{PUSHING, PUSHED}`` window.
+    (``backend_id`` + status in the in-flight set), NOT the old scalar ``{PUSHING, PUSHED}`` window.
     Each seeded row is a PUSHING file with a matching cloud_job so ``Backend.in_flight_count`` sees it.
     """
     for _ in range(count):
@@ -235,7 +237,7 @@ async def test_window_full_stages_zero(async_engine: AsyncEngine, session: Async
     assert result == {"staged": 0, "skipped": 0}
     assert router.queues == {}
     # Held files untouched.
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 # --- One free slot -> stage exactly 1 ---------------------------------------------------
@@ -268,7 +270,7 @@ async def test_one_free_slot_stages_one(async_engine: AsyncEngine, session: Asyn
     assert push_queue.captured_policy[0]["timeout"] == PUSH_FILE_SAQ_TIMEOUT_SEC
     # Exactly one held file flipped to PUSHING; the rest stay AWAITING_CLOUD.
     states = await _states_for(session, ids)
-    assert sorted(states.values()) == sorted([FileState.PUSHING, FileState.AWAITING_CLOUD, FileState.AWAITING_CLOUD])
+    assert sorted(states.values()) == sorted([_DISPATCHED, _HELD, _HELD])
 
 
 # --- No compute agent -> no-op ----------------------------------------------------------
@@ -290,7 +292,7 @@ async def test_no_compute_agent_is_noop(async_engine: AsyncEngine, session: Asyn
 
     assert result == {"staged": 0, "skipped": 0}
     assert router.queues == {}
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 # --- No fileserver agent -> no-op (compute online, fileserver absent) --------------------
@@ -317,7 +319,7 @@ async def test_no_fileserver_agent_is_noop(async_engine: AsyncEngine, session: A
     # Two slots free, two candidates locked, but no fileserver -> held, never raised.
     assert result == {"staged": 0, "skipped": 2}
     assert router.queues == {}
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 # --- WR-02: fileserver vanishes mid-tick (present at GATE-2, gone at dispatch) -> clean hold ----
@@ -368,7 +370,7 @@ async def test_fileserver_vanishes_mid_tick_holds_cleanly(
     assert result == {"staged": 0, "skipped": 2}
     assert router.queues == {}
     # The raising file (and its peers) are untouched -- dispatch gates the fileserver BEFORE mutating.
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 # --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the staging cron ---------
@@ -396,7 +398,7 @@ async def test_cloud_disabled_stages_nothing(async_engine: AsyncEngine, session:
 
     assert result == {"staged": 0, "skipped": 0}
     assert router.queues == {}
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 @pytest.mark.asyncio
@@ -425,7 +427,7 @@ async def test_forced_local_drain_noop(async_engine: AsyncEngine, session: Async
 
     assert result == {"staged": 0, "skipped": 0}
     assert router.queues == {}
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 @pytest.mark.asyncio
@@ -445,7 +447,7 @@ async def test_cloud_compute_stages_normally(async_engine: AsyncEngine, session:
 
     assert result == {"staged": 2, "skipped": 0}
     states = await _states_for(session, ids)
-    assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
+    assert sum(1 for st in states.values() if st == _DISPATCHED) == 2
 
 
 # --- Phase 55 (D-01a): the k8s S3-staging branch -----------------------------------------
@@ -494,8 +496,8 @@ async def test_k8s_branch_skips_compute_gate_and_stages_to_s3(
     assert [t for t, _ in upload_queue.captured] == ["s3_upload", "s3_upload"]
     # Exactly two held files flipped to PUSHING; the third stays AWAITING_CLOUD.
     states = await _states_for(session, ids)
-    assert sum(1 for st in states.values() if st == FileState.PUSHING) == 2
-    assert sum(1 for st in states.values() if st == FileState.AWAITING_CLOUD) == 1
+    assert sum(1 for st in states.values() if st == _DISPATCHED) == 2
+    assert sum(1 for st in states.values() if st == _HELD) == 1
 
 
 @pytest.mark.asyncio
@@ -519,7 +521,7 @@ async def test_k8s_branch_holds_with_no_fileserver(
 
     assert result == {"staged": 0, "skipped": 2}  # two slots, two candidates locked, no fileserver
     assert router.queues == {}
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
 @pytest.mark.asyncio
@@ -546,7 +548,7 @@ async def test_k8s_overlapping_ticks_never_exceed_window(
     results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
 
     states = await _states_for(session, ids)
-    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    pushing = [fid for fid, st in states.items() if st == _DISPATCHED]
     assert len(pushing) <= 2, f"k8s window overshot: {len(pushing)} files PUSHING (cap is 2)"
     assert sum(r["staged"] for r in results) <= 2, "concurrent k8s ticks staged more than the cap"
 
@@ -575,9 +577,9 @@ async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, sessi
 
     assert result == {"staged": 1, "skipped": 0}
     states = await _states_for(session, [oldest.id, middle.id, newest.id])
-    assert states[oldest.id] == FileState.PUSHING
-    assert states[middle.id] == FileState.AWAITING_CLOUD
-    assert states[newest.id] == FileState.AWAITING_CLOUD
+    assert states[oldest.id] == _DISPATCHED
+    assert states[middle.id] == _HELD
+    assert states[newest.id] == _HELD
 
 
 # --- 144-file backlog never exceeds N ---------------------------------------------------
@@ -600,9 +602,9 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
 
     assert result == {"staged": 2, "skipped": 0}
     states = await _states_for(session, ids)
-    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    pushing = [fid for fid, st in states.items() if st == _DISPATCHED]
     assert len(pushing) == 2  # never the whole backlog
-    assert sum(1 for st in states.values() if st == FileState.AWAITING_CLOUD) == 142
+    assert sum(1 for st in states.values() if st == _HELD) == 142
 
 
 # --- WR-04: overlapping ticks never overshoot the ≤N window ------------------------------
@@ -636,7 +638,7 @@ async def test_overlapping_ticks_never_exceed_window(
     results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
 
     states = await _states_for(session, ids)
-    pushing = [fid for fid, st in states.items() if st == FileState.PUSHING]
+    pushing = [fid for fid, st in states.items() if st == _DISPATCHED]
     assert len(pushing) <= 2, f"window overshot: {len(pushing)} files PUSHING (cap is 2)"
     assert sum(r["staged"] for r in results) <= 2, "concurrent ticks staged more than the cap"
 
@@ -667,7 +669,7 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
     assert result == {"staged": 0, "skipped": 1}
     # The state still flips to PUSHING (the file left the AWAITING_CLOUD scan set; the live push job
     # will land it). The window count stays honest on the next tick.
-    assert (await _states_for(session, [fid]))[fid] == FileState.PUSHING
+    assert (await _states_for(session, [fid]))[fid] == _DISPATCHED
 
 
 # --- Controller registration: function + single narrow */5 cron (replaces the drain) -----
@@ -853,7 +855,7 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
     # Beyond total capacity (1+2=3): the 4th candidate is never fetched -- its awaiting cloud_job row is
     # retained (D-05 no-deletion) with backend_id still NULL (never dispatched), and it stays AWAITING_CLOUD.
     assert backend_ids[fourth_id] is None
-    assert (await _states_for(session, [fourth_id]))[fourth_id] == FileState.AWAITING_CLOUD
+    assert (await _states_for(session, [fourth_id]))[fourth_id] == _HELD
 
 
 @pytest.mark.asyncio
@@ -939,7 +941,7 @@ async def test_held_awaiting_untouched_keeps_updated_at(
     session.expire_all()
     after = (await session.execute(select(FileRecord.updated_at).where(FileRecord.id == fid))).scalar_one()
     assert after == before, "a held AWAITING_CLOUD row must not be UPDATE-dirtied (updated_at is the staleness clock)"
-    assert (await _states_for(session, [fid]))[fid] == FileState.AWAITING_CLOUD
+    assert (await _states_for(session, [fid]))[fid] == _HELD
     # The drain never touched the cloud_job either -- attempts stays 3, status stays awaiting.
     cj = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
     assert cj.attempts == 3

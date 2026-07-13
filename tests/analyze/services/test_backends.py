@@ -13,13 +13,13 @@ The cells are authored correct-by-construction against design §4.2 and the 68-P
   LocalQueue probe with NO compute-agent dependency (D-01a), returns bool, never raises.
 * ``in_flight_count`` -- ``COUNT(cloud_job WHERE backend_id == self.id AND status IN
   {UPLOADING, UPLOADED, SUBMITTED, RUNNING})`` (D-10); Local is always 0 (no cloud_job rows).
-* ``dispatch`` D-03 atomicity -- the ``FileState -> PUSHING`` flip and the ``cloud_job`` upsert land in
-  the SAME caller-passed session, so there is never a committed in-flight FileState without a live
+* ``dispatch`` D-03 atomicity -- the ``cloud_job`` upsert lands in the caller-passed session, so there
+  is never a committed in-flight marker without a live
   non-terminal ``cloud_job`` row (no limbo row).
 * ``reconcile`` -- Kueue cron read; Local/Compute callback-driven (no-op in the unit cells).
 
-Layer 2 (D-02): ``sum(in_flight_count(b) for b in backends)`` equals the FileState ``{PUSHING,
-PUSHED}`` window count for the single-backend case, over constructed FileState / ``cloud_job`` states
+Layer 2 (D-02): ``sum(in_flight_count(b) for b in backends)`` equals the derived in-flight window
+count for the single-backend case, over constructed ``cloud_job`` states
 (Phase 69 / D-05 retired the global ``get_cloud_window_count`` helper; the window is counted inline).
 """
 
@@ -34,7 +34,7 @@ import pytest
 
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
 from tests._queue_fakes import DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
@@ -163,7 +163,7 @@ def _kueue_with_buckets(backends_toml_env: Any, *, bucket_ids: list[str], backen
     return backend
 
 
-def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3") -> FileRecord:
+def _make_file(*, file_type: str = "mp3") -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
         agent_id="test-fileserver",
@@ -174,7 +174,6 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3")
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
@@ -632,8 +631,7 @@ async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
     # Emulate the drain's single post-loop commit + a fresh DB read: no PUSHING flip may survive.
     await session.commit()
     session.expire_all()
-    refreshed = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert refreshed.state == FileState.AWAITING_CLOUD
+    # Post-MIG-04 the atomicity guarantee is purely about the sidecar: a failed dispatch leaves NO cloud_job row.
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
     assert job is None
 
@@ -676,7 +674,6 @@ async def test_local_dispatch_writes_no_state_and_no_cloud_job(session: AsyncSes
     await backend.dispatch(file, session, router)
 
     # Phase 90 (D-09): files.state is left untouched, and local dispatch writes no cloud_job row.
-    assert file.state == FileState.AWAITING_CLOUD
     from sqlalchemy import select
 
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
@@ -812,13 +809,13 @@ async def test_kueue_reconcile_scope_ignores_other_backend_rows(session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_in_flight_equivalence(session: AsyncSession) -> None:
-    """D-02: sum(in_flight_count(b)) == the FileState {PUSHING, PUSHED} window for the single-backend case.
+    """D-02: sum(in_flight_count(b)) == the derived in-flight window for the single-backend case.
 
-    Construct a set of in-flight cloud_job rows for one compute backend whose files are all in the
-    FileState window (PUSHING); the per-backend cloud_job count must equal the FileState-window count.
-    A divergence is the Pitfall-1 double/under-count bug. Phase 69 (D-05) retired the global
-    ``get_cloud_window_count`` helper, so the FileState window is counted inline here (the invariant the
-    Phase-68 substrate proved still holds -- every in-flight row maps to exactly one windowed file).
+    Construct a set of in-flight cloud_job rows for one compute backend; the per-backend cloud_job
+    count must equal the number of distinct files carrying an in-flight cloud_job row. Post-MIG-04
+    the window derives ONLY from the ``cloud_job`` sidecar (there is no scalar ``{PUSHING, PUSHED}``
+    state to count). A divergence is the Pitfall-1 double/under-count bug -- every in-flight row maps
+    to exactly one windowed file.
     """
     from sqlalchemy import func, select
 
@@ -829,7 +826,12 @@ async def test_in_flight_equivalence(session: AsyncSession) -> None:
     resolved = [backend]
     per_backend = sum([await b.in_flight_count(session) for b in resolved])
     window = int(
-        (await session.execute(select(func.count(FileRecord.id)).where(FileRecord.state.in_([FileState.PUSHING, FileState.PUSHED])))).scalar() or 0
+        (
+            await session.execute(
+                select(func.count(func.distinct(CloudJob.file_id))).where(CloudJob.status.in_([s.value for s in IN_FLIGHT_STATUSES]))
+            )
+        ).scalar()
+        or 0
     )
     assert per_backend == window
 
@@ -1205,7 +1207,6 @@ async def test_hold_awaiting_cloud_spill_cas_hit_restamps_clears_phase_and_leave
     assert row.status == CloudJobStatus.AWAITING.value
     assert row.attempts == max_attempts
     assert row.cloud_phase is None  # D-12/WR-01: cleared on the s3 spill path
-    assert file.state == FileState.PUSHING  # the helper did NOT write file.state on the spill branch
 
 
 @pytest.mark.asyncio
@@ -1233,7 +1234,6 @@ async def test_hold_awaiting_cloud_spill_cas_miss_is_full_noop(session: AsyncSes
     row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
     assert row.status == CloudJobStatus.SUCCEEDED.value  # UNCHANGED: the CAS matched 0 rows
     assert row.attempts == 1  # attempts NOT bumped -- no unconditional write happened
-    assert file.state == FileState.PUSHING  # no FileRecord clobber
 
 
 @pytest.mark.asyncio
