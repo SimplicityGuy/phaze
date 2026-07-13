@@ -176,7 +176,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
     file (or a random UUID) never re-drives an auto-retry — the manual path acts only on the failed
     bucket (behavior 8: no unscoped re-enqueue).
     """
-    healthy = _make_file(state=FileState.ANALYZED)
+    healthy = _make_file()
     session.add(healthy)
     await session.commit()
     await seed_active_agent(session)

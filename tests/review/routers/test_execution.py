@@ -10,7 +10,7 @@ import uuid
 import pytest
 
 from phaze.models.execution import ExecutionLog, ExecutionStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
@@ -41,7 +41,6 @@ async def create_test_execution_log(
         current_path=source_path,
         file_type="music",
         file_size=1_000_000,
-        state=FileState.EXECUTED,
     )
     session.add(file_record)
     await session.flush()

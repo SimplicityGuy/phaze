@@ -33,7 +33,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
@@ -84,7 +84,6 @@ def _make_file(batch_id: uuid.UUID | None, suffix: str, file_type: str = "mp3") 
         current_path=path,
         file_type=file_type,
         file_size=4096,
-        state=FileState.DISCOVERED,
         batch_id=batch_id,
     )
 

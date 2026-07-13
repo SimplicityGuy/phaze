@@ -206,7 +206,7 @@ async def _seed_in_flight(
     Each seeded row is a PUSHING file with a matching cloud_job so ``Backend.in_flight_count`` sees it.
     """
     for _ in range(count):
-        f = _make_file(state=FileState.PUSHING)
+        f = _make_file()
         session.add(f)
         await session.flush()
         session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, backend_id=backend_id, s3_key=None, status=status.value))
@@ -709,7 +709,7 @@ async def test_stage_file_to_s3_core_does_not_commit(
     the ``cloud_job`` row.
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
 
@@ -741,7 +741,7 @@ async def test_public_stage_file_to_s3_still_commits(
 ) -> None:
     """The public ``stage_file_to_s3`` wrapper still commits (the redrive_upload caller is unaffected)."""
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
 
@@ -981,7 +981,7 @@ async def test_local_spill_not_redispatched_to_cloud(
     )
     # Tick 1: only the fileserver is online; the compute agent is OFFLINE (spill-to-local immediate).
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     fid = f.id

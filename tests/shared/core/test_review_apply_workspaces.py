@@ -156,7 +156,7 @@ async def test_edit_patch_targets_own_row(
     """REVIEW-01 / D-05 -- inline Edit PATCH updates the persisted field and returns only the row.
 
     The happy path persists the submitted ``proposed`` value to ``proposed_filename``, leaves the
-    row PENDING (no LLM re-run, no FileState transition) and returns only the row markup (R-6).
+    row PENDING (no LLM re-run, no scalar-state transition) and returns only the row markup (R-6).
     Rejected inputs -- a ``..`` traversal segment, a leading ``/``, or a NUL byte -- 400 and leave
     the row unchanged (T-60-02).
     """

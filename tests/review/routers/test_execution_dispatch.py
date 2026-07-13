@@ -37,7 +37,7 @@ import redis.asyncio as redis_async
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers import execution
 
@@ -151,7 +151,6 @@ async def _seed_approved_proposal(
         current_path=f"/music/{agent_id}/{path_suffix}.mp3",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.APPROVED,
         agent_id=agent_id,
     )
     session.add(fr)
@@ -362,7 +361,6 @@ async def test_collision_short_circuits_dispatch(
         current_path="/music/agent-a/coll-1.mp3",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.APPROVED,
         agent_id="agent-a",
     )
     fr2 = FileRecord(
@@ -373,7 +371,6 @@ async def test_collision_short_circuits_dispatch(
         current_path="/music/agent-a/coll-2.mp3",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.APPROVED,
         agent_id="agent-a",
     )
     session.add_all([fr1, fr2])

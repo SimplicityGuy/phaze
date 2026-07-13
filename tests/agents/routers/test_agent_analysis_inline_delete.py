@@ -28,7 +28,7 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.routers import agent_analysis
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services import s3_staging
@@ -85,7 +85,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=1024,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()

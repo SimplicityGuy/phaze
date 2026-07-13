@@ -27,7 +27,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file() -> FileRecord:
     """Create a FileRecord with a unique id/path (mirrors the shared pipeline test helper)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -54,7 +54,6 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -141,7 +140,7 @@ async def test_retry_no_active_agent_enqueues_nothing_and_mutates_nothing(client
 
     # Nothing enqueued anywhere -- never the default queue.
     assert capture == []
-    # No mutation: the failure set is unchanged (metadata carries no FileState to flip).
+    # No mutation: the failure set is unchanged (metadata carries no scalar state to flip).
     still_failed = await get_metadata_failed_files(session)
     assert {str(f.id) for f in still_failed} == failed_ids
 

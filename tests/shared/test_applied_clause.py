@@ -61,7 +61,7 @@ async def _clause_selects(session: AsyncSession, file_id: uuid.UUID) -> bool:
 # executed -> applied (both forms agree)
 # ---------------------------------------------------------------------------------------------------
 async def test_executed_proposal_is_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.MOVED)
+    file = await make_file()
     await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 
     assert await _clause_selects(session, file.id) is True
@@ -72,7 +72,7 @@ async def test_executed_proposal_is_applied(session: AsyncSession, make_file: Ca
 # non-executed statuses -> NOT applied
 # ---------------------------------------------------------------------------------------------------
 async def test_failed_proposal_is_not_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.MOVED)
+    file = await make_file()
     await _add_proposal(session, file.id, ProposalStatus.FAILED.value)
 
     assert await _clause_selects(session, file.id) is False
@@ -80,7 +80,7 @@ async def test_failed_proposal_is_not_applied(session: AsyncSession, make_file: 
 
 
 async def test_approved_proposal_is_not_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.APPROVED)
+    file = await make_file()
     await _add_proposal(session, file.id, ProposalStatus.APPROVED.value)
 
     assert await _clause_selects(session, file.id) is False
@@ -88,7 +88,7 @@ async def test_approved_proposal_is_not_applied(session: AsyncSession, make_file
 
 
 async def test_pending_proposal_is_not_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.PROPOSAL_GENERATED)
+    file = await make_file()
     await _add_proposal(session, file.id, ProposalStatus.PENDING.value)
 
     assert await _clause_selects(session, file.id) is False
@@ -96,7 +96,7 @@ async def test_pending_proposal_is_not_applied(session: AsyncSession, make_file:
 
 
 async def test_no_proposal_is_not_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.MOVED)
+    file = await make_file()
 
     assert await _clause_selects(session, file.id) is False
     assert await is_applied(session, file.id) is False
@@ -106,7 +106,7 @@ async def test_no_proposal_is_not_applied(session: AsyncSession, make_file: Call
 # multi-proposal: a file with BOTH a failed and an executed proposal is applied (D-01)
 # ---------------------------------------------------------------------------------------------------
 async def test_failed_and_executed_proposals_is_applied(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.MOVED)
+    file = await make_file()
     await _add_proposal(session, file.id, ProposalStatus.FAILED.value)
     await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 
@@ -120,7 +120,7 @@ async def test_failed_and_executed_proposals_is_applied(session: AsyncSession, m
 # reason the phase exists (no src/ writer produces FileState.EXECUTED; the apply path sets 'moved').
 # ---------------------------------------------------------------------------------------------------
 async def test_applied_never_reads_file_state(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
-    file = await make_file(state=FileState.MOVED)  # deliberately NOT 'executed'
+    file = await make_file()  # deliberately NOT 'executed'
     assert file.state != FileState.EXECUTED.value  # guard the premise
     await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 

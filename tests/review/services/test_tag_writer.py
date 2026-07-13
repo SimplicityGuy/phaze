@@ -236,7 +236,7 @@ class TestExecuteTagWrite:
         Mutation check (recorded in SUMMARY): reverting the guard to ``file_record.state !=
         FileState.EXECUTED`` makes this fixture (``file.state == 'moved'``) RAISE and this test go RED.
         """
-        file = await make_file(state=FileState.MOVED)
+        file = await make_file()
         assert file.state != FileState.EXECUTED.value  # premise: the file's own state is NOT 'executed'
         await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 
@@ -254,7 +254,7 @@ class TestExecuteTagWrite:
     @pytest.mark.asyncio
     async def test_non_applied_file_raises(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """A file with no executed proposal (only a failed one) RAISES ``ValueError`` matching 'executed'."""
-        file = await make_file(state=FileState.MOVED)
+        file = await make_file()
         await _add_proposal(session, file.id, ProposalStatus.FAILED.value)
 
         with pytest.raises(ValueError, match="executed"):

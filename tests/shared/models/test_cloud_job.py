@@ -17,10 +17,10 @@ from sqlalchemy.exc import IntegrityError
 
 from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 
 
-def _make_file(*, file_type: str = "flac", state: str = FileState.AWAITING_CLOUD) -> FileRecord:
+def _make_file(*, file_type: str = "flac") -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
         agent_id="test-fileserver",
@@ -31,7 +31,6 @@ def _make_file(*, file_type: str = "flac", state: str = FileState.AWAITING_CLOUD
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -28,7 +28,6 @@ async def create_searchable_file(
     artist: str | None = "deadmau5",
     genre: str | None = "progressive house",
     bpm: float | None = 128.0,
-    state: str = FileState.APPROVED,
 ) -> FileRecord:
     """Create FileRecord + FileMetadata + AnalysisResult for search testing."""
     file_id = uuid.uuid4()
@@ -41,7 +40,6 @@ async def create_searchable_file(
         current_path=f"/music/{original_filename}",
         file_type="music",
         file_size=5_000_000,
-        state=state,
     )
     session.add(file_record)
     await session.flush()
@@ -175,8 +173,8 @@ async def test_search_ignores_removed_file_state_param(client: AsyncClient, sess
     The endpoint no longer declares a ``file_state`` Query param, so a bookmarked ⌘K URL carrying it must
     NOT 422 -- FastAPI ignores the unknown param and the palette renders the full (un-narrowed) match set.
     """
-    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", state=FileState.APPROVED)
-    await create_searchable_file(session, original_filename="deadmau5 - FML.mp3", state=FileState.DISCOVERED)
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3")
+    await create_searchable_file(session, original_filename="deadmau5 - FML.mp3")
     response = await client.get("/search/", params={"q": "deadmau5", "file_state": "approved"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     # The removed facet no longer narrows -- BOTH deadmau5 files render under the palette Files group.

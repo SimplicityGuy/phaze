@@ -7,7 +7,7 @@ agent down}`` and pins the observable side-effect log per cell against an INLINE
 
 The Phase-68 behavior-preserving refactor (Waves 1-3) re-homes the ``if active_cloud_kind ==
 compute/kueue`` fork into a ``Backend`` protocol. This snapshot asserts the OBSERVABLE side effects
-(gate checked-vs-skipped, staging call, FileState transition, cloud_job upsert, enqueue task, tally),
+(gate checked-vs-skipped, staging call, cloud_job upsert, enqueue task, tally),
 NOT the internal branch structure -- so it stays green across the refactor and PROVES the re-home
 changed nothing (that is the BACK-04 proof).
 
@@ -43,7 +43,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import backends as backends_mod, enqueue_router, kube_staging, s3_staging
 from phaze.tasks import release_awaiting_cloud
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -129,7 +129,6 @@ def _make_file(*, file_type: str = "mp3") -> FileRecord:
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=FileState.AWAITING_CLOUD,
     )
 
 
@@ -239,7 +238,7 @@ async def _run_cell(
     router = DedupFakeTaskRouter()
     tally = await release_awaiting_cloud.stage_cloud_window(_make_ctx(async_engine, router))
 
-    # Phase 90 (D-09): the FileState PUSHING/AWAITING_CLOUD dual-write was removed; derive the SAME
+    # Phase 90 (D-09): the PUSHING/AWAITING_CLOUD scalar-state dual-write was removed; derive the SAME
     # side-effect counts from the cloud_job sidecar (the sole authority). A dispatched file's cloud_job
     # left 'awaiting' (promoted to an in-flight status) -> pushing; a still-held file's row stays
     # 'awaiting' -> awaiting_cloud. This keeps the golden baseline byte-identical to the pre-removal run.

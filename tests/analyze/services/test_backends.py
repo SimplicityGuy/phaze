@@ -180,7 +180,7 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3")
 
 async def _seed_cloud_job(session: AsyncSession, *, backend_id: str | None, status: CloudJobStatus) -> uuid.UUID:
     """Insert one cloud_job row (with its FK file) at ``status``; return the file id."""
-    file = _make_file(state=FileState.PUSHING)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(
@@ -527,7 +527,7 @@ async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSess
     _stub_s3(monkeypatch)
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
-    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
 
@@ -555,7 +555,7 @@ async def test_kueue_dispatch_records_picked_staging_bucket_and_backend_id(
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     bucket_ids = ["staging-b", "staging-a"]  # unsorted on purpose -- pick_bucket sorts internally
     backend = _kueue_with_buckets(backends_toml_env, bucket_ids=bucket_ids, backend_id="kueue-x64")
-    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
 
@@ -583,7 +583,7 @@ async def test_kueue_dispatch_bucket_is_deterministic_per_file(
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     bucket_ids = ["staging-a", "staging-b"]
     backend = _kueue_with_buckets(backends_toml_env, bucket_ids=bucket_ids, backend_id="kueue-x64")
-    file = _make_file(state=FileState.PUSHING, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
 
@@ -621,7 +621,7 @@ async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
     _stub_s3(monkeypatch)  # unreached: the fileserver gate raises before any S3 call
     # Deliberately NO fileserver agent seeded.
     backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
-    file = _make_file(state=FileState.AWAITING_CLOUD, file_type="flac")
+    file = _make_file(file_type="flac")
     session.add(file)
     await session.commit()
     file_id = file.id  # capture before expire_all() so the re-read query builds without a lazy load
@@ -668,7 +668,7 @@ async def test_local_dispatch_writes_no_state_and_no_cloud_job(session: AsyncSes
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
-    file = _make_file(state=FileState.AWAITING_CLOUD)
+    file = _make_file()
     session.add(file)
     await session.commit()
 
@@ -700,7 +700,7 @@ async def test_local_dispatch_excluded_from_staging_candidates(session: AsyncSes
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
-    file = _make_file(state=FileState.AWAITING_CLOUD)
+    file = _make_file()
     session.add(file)
     await session.commit()
     fid = file.id
@@ -724,7 +724,7 @@ async def test_local_dispatch_returns_true_on_enqueue(session: AsyncSession) -> 
     """WR-01: a genuine ``process_file`` enqueue reports a truthy dispatch (new work staged)."""
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
-    file = _make_file(state=FileState.AWAITING_CLOUD)
+    file = _make_file()
     session.add(file)
     await session.commit()
 
@@ -744,7 +744,7 @@ async def test_local_dispatch_returns_false_on_dedup_noop(session: AsyncSession)
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _local()
-    file = _make_file(state=FileState.AWAITING_CLOUD)
+    file = _make_file()
     session.add(file)
     await session.commit()
 
@@ -1122,7 +1122,7 @@ async def test_hold_awaiting_cloud_fresh_hold_writes_one_awaiting_row(session: A
     """
     from sqlalchemy import select
 
-    file = _make_file(state=FileState.FINGERPRINTED)
+    file = _make_file()
     session.add(file)
     await session.flush()
 
@@ -1148,7 +1148,7 @@ async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_bud
     from phaze.config import get_settings
 
     max_attempts = get_settings().cloud_submit_max_attempts
-    file = _make_file(state=FileState.PUSHING)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value, attempts=max_attempts))
@@ -1165,7 +1165,7 @@ async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_bud
 @pytest.mark.asyncio
 async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSession) -> None:
     """D-02: the hold branch (``expect_status is None``) always writes, so it returns ``True``."""
-    file = _make_file(state=FileState.FINGERPRINTED)
+    file = _make_file()
     session.add(file)
     await session.flush()
 
@@ -1186,7 +1186,7 @@ async def test_hold_awaiting_cloud_spill_cas_hit_restamps_clears_phase_and_leave
     from phaze.config import get_settings
 
     max_attempts = get_settings().cloud_submit_max_attempts
-    file = _make_file(state=FileState.PUSHING)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.UPLOADING.value, attempts=0, cloud_phase="running"))
@@ -1221,7 +1221,7 @@ async def test_hold_awaiting_cloud_spill_cas_miss_is_full_noop(session: AsyncSes
     from phaze.config import get_settings
 
     max_attempts = get_settings().cloud_submit_max_attempts
-    file = _make_file(state=FileState.PUSHING)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value, attempts=1))
@@ -1244,7 +1244,7 @@ async def test_hold_awaiting_cloud_spill_preserves_cloud_phase_when_flag_omitted
     from phaze.config import get_settings
 
     max_attempts = get_settings().cloud_submit_max_attempts
-    file = _make_file(state=FileState.PUSHING)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUBMITTED.value, attempts=0, cloud_phase="running"))
@@ -1281,7 +1281,7 @@ async def test_local_dispatch_leaves_awaiting_row_present(session: AsyncSession)
     from sqlalchemy import select
 
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = _make_file(state=FileState.FINGERPRINTED)
+    file = _make_file()
     session.add(file)
     await session.flush()
     await backends.hold_awaiting_cloud(session, file)  # held: awaiting cloud_job row present

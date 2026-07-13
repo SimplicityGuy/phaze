@@ -23,7 +23,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.proposal import (
     BatchProposalResponse,
@@ -50,7 +50,6 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
             current_path="/music/orig.mp3",
             file_type="music",
             file_size=1_000_000,
-            state=FileState.ANALYZED,
         )
     )
     await session.flush()

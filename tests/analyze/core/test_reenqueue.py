@@ -151,7 +151,7 @@ async def test_pushing_orphan_redrives_to_fileserver(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -178,7 +178,7 @@ async def test_pushing_redrive_routes_to_fileserver_not_compute(
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud", kind="compute")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -204,7 +204,7 @@ async def test_pushing_redrive_skips_when_no_fileserver(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")  # only a compute agent
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -239,7 +239,7 @@ async def test_pushing_pushed_state_is_domain_completed(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_cloud_job_succeeded(session, f.id)  # landed on compute scratch (D-07)
@@ -269,8 +269,8 @@ async def test_pushing_analyzed_state_is_domain_completed(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f_done = _make_file(state=FileState.ANALYZED)
-    f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
+    f_done = _make_file()
+    f_failed = _make_file()
     session.add_all([f_done, f_failed])
     await session.commit()
     await _seed_analysis(session, f_done.id, completed=True)
@@ -301,7 +301,7 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
     this file lacks -- so recovery keeps driving its analysis. Both derivations are ledger-scoped, so a
     ledger row for the file must exist for it to appear in a done-set.
     """
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_cloud_job_succeeded(session, f.id)  # landed -> push-done via D-07

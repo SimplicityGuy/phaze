@@ -9,7 +9,7 @@ lane, never the consumer-less default). This suite pins the per-file variant:
 
 - it re-enqueues EXACTLY one file with the complete payload on ``phaze-agent-nox-meta``;
 - D-11: it LEAVES the failure row in place (no ``failed_at`` clear — a zero-metadata file with the
-  marker cleared would read DONE forever); metadata has no terminal FileState to flip;
+  marker cleared would read DONE forever); metadata has no terminal scalar state to flip;
 - it is scoped to ONE file (a non-failed / unknown id is a safe no-op ack);
 - the Phase-30 no-agent guard survives (amber ack, no enqueue, no default-queue fallthrough).
 
@@ -25,7 +25,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file() -> FileRecord:
     """Create a FileRecord with a unique id/path (mirrors the shared pipeline test helper)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -52,7 +52,6 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 

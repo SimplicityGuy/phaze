@@ -32,7 +32,7 @@ import uuid
 import pytest
 
 from phaze.models.agent import Agent
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.agent_tasks import ExecuteBatchProposalItem
 from phaze.services.execution_dispatch import (
@@ -93,7 +93,6 @@ async def _seed_proposal(
         current_path=f"/music/{agent_id}/{path_suffix}.mp3",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.APPROVED,
         agent_id=agent_id,
     )
     session.add(fr)
