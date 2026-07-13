@@ -111,8 +111,8 @@ class TestSearchResult:
             title="test.mp3",
             artist="DJ Test",
             genre="house",
-            state="discovered",
             date="2026-01-01",
+            state="discovered",
             rank=1.0,
         )
         assert r.result_type == "file"
