@@ -25,7 +25,7 @@ import uuid
 
 from sqlalchemy import select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.stage_status import applied_clause, is_applied
 
@@ -117,11 +117,10 @@ async def test_failed_and_executed_proposals_is_applied(session: AsyncSession, m
 # ---------------------------------------------------------------------------------------------------
 # LOAD-BEARING (SC#1): the predicate is independent of files.state.
 # An executed proposal on a file whose state is NOT 'executed' is still applied -- this is the whole
-# reason the phase exists (no src/ writer produces FileState.EXECUTED; the apply path sets 'moved').
+# reason the phase exists (no src/ writer produced the EXECUTED scalar state; the apply path uses proposals.status).
 # ---------------------------------------------------------------------------------------------------
 async def test_applied_never_reads_file_state(session: AsyncSession, make_file: Callable[..., Awaitable[FileRecord]]) -> None:
     file = await make_file()  # deliberately NOT 'executed'
-    assert file.state != FileState.EXECUTED.value  # guard the premise
     await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 
     # Applied purely because an executed proposal exists -- file.state is irrelevant.

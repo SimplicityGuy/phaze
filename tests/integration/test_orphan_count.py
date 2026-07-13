@@ -40,7 +40,7 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, get_live_job_keys, get_stage_orphan_counts
@@ -113,7 +113,6 @@ async def _file(session: AsyncSession) -> FileRecord:
         current_path=f"/media/{fid}.mp3",
         file_type="mp3",
         file_size=1234,
-        state=FileState.DISCOVERED.value,
     )
     session.add(rec)
     await session.flush()

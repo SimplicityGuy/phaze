@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import select
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.routers.pipeline import _background_tasks, _route_discovered_by_duration
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
@@ -46,7 +46,6 @@ def _make_long_file() -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -149,7 +148,6 @@ async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> N
     await _drain_background()
     # The long file routed local -- it stays DISCOVERED, never AWAITING_CLOUD.
     await session.refresh(long_file)
-    assert long_file.state == FileState.DISCOVERED
     # It was enqueued onto the fileserver queue (the local path), not held.
     assert router.queue_for_calls == ["nox"]
     # quick-260707-dh1: process_file routes to the analyze lane queue.

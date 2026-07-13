@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
 
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
+def _make_file() -> FileRecord:
     """A FileRecord parked in the terminal analyze-failed bucket (unique id/path)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -59,7 +59,6 @@ def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -135,18 +134,16 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     # Independent-session read: the marker clear COMMITTED for the target file only.
     independent = async_sessionmaker(async_engine, expire_on_commit=False)
     async with independent() as s:
-        target = (await s.execute(select(FileRecord).where(FileRecord.id == file.id))).scalar_one()
         # Phase 90 (D-09): retry no longer flips files.state to FINGERPRINTED (that write was removed);
         # the file leaves the failed bucket purely by clearing analysis.failed_at below.
-        assert target.state == FileState.ANALYSIS_FAILED
         arow = (await s.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
         assert arow.failed_at is None
         assert arow.error_message is None
         # The XOR CHECK holds and the row now derives not_started — a fresh re-analysis.
         assert arow.analysis_completed_at is None
-        # The OTHER failed file is untouched (scoped to one file_id).
-        untouched = (await s.execute(select(FileRecord).where(FileRecord.id == other.id))).scalar_one()
-        assert untouched.state == FileState.ANALYSIS_FAILED
+        # The OTHER failed file is untouched (scoped to one file_id): its failed marker survives.
+        other_row = (await s.execute(select(AnalysisResult).where(AnalysisResult.file_id == other.id))).scalar_one()
+        assert other_row.failed_at is not None
 
 
 @pytest.mark.asyncio
@@ -162,8 +159,6 @@ async def test_per_file_retry_no_active_agent_mutates_nothing(client: AsyncClien
     assert capture == []  # nothing enqueued anywhere, never the default queue
 
     session.expire_all()
-    reread = (await session.execute(select(FileRecord).where(FileRecord.id == fid))).scalar_one()
-    assert reread.state == FileState.ANALYSIS_FAILED
     arow = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == fid))).scalar_one()
     assert arow.failed_at is not None  # marker intact (no premature clear)
 
@@ -226,9 +221,10 @@ async def test_bulk_retry_no_active_agent_is_amber_no_enqueue(client: AsyncClien
     assert "no active agent" in response.text.lower()
     assert capture == []
 
+    # Nothing flipped: every failed marker survives (no premature clear on the amber path).
     session.expire_all()
-    rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(fids)))).scalars().all()
-    assert {r.state for r in rows} == {FileState.ANALYSIS_FAILED}
+    rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(fids)))).scalars().all()
+    assert all(r.failed_at is not None for r in rows)
 
 
 # --------------------------------------------------------------------------------------------------

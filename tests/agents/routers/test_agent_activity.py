@@ -35,7 +35,7 @@ import pytest_asyncio
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -70,7 +70,6 @@ async def _file(session: AsyncSession, *, agent_id: str = _AGENT_ID, file_type: 
         current_path=f"/media/{fid}.{file_type}",
         file_type=file_type,
         file_size=1234,
-        state=FileState.DISCOVERED.value,
         agent_id=agent_id,
     )
     session.add(rec)

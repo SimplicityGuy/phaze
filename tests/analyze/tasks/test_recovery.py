@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -103,7 +103,7 @@ def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller
     return {"async_session": sm, "queue": controller_queue, "task_router": router}
 
 
-def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file(*, file_type: str = "mp3") -> FileRecord:
     """Build a fully-populated FileRecord row for the recovery seed."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -115,7 +115,6 @@ def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> 
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
@@ -147,7 +146,7 @@ async def _seed_ledger(
     return key
 
 
-# --- Phase-80 output-table seeds (the derived done/failed source, replacing FileState reads) ------
+# --- Phase-80 output-table seeds (the derived done/failed source, replacing scalar-state reads) ---
 
 
 async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
@@ -406,7 +405,7 @@ async def test_analyze_done_row_is_excluded(
     """A process_file row whose analyze is done (completed_at) OR terminally-failed (failed_at) is excluded.
 
     Phase 80 (D-01): analyze domain-completion is ``domain_completed_clause(ANALYZE)`` == done OR
-    terminal-failed, derived from the ``analysis`` output row -- NOT a FileState read. Both a completed
+    terminal-failed, derived from the ``analysis`` output row -- NOT a scalar-state read. Both a completed
     and a terminally-failed analyze are domain-complete (FAILURE_IS_TERMINAL[analyze] -> never auto-re-driven).
     """
     _patch_settings(monkeypatch)
@@ -746,7 +745,7 @@ async def test_scan_row_is_live_keys_only(
 
     scan_live_set is live-keys-only -- its ledger row is cleared by Plan 02's terminal ack on every
     outcome, so any row that reaches recovery IS orphaned. The domain-completed predicate must NOT
-    apply to it (no FileState/pending-set exclusion), so even an ANALYZED file replays.
+    apply to it (no scalar-state/pending-set exclusion), so even an ANALYZED file replays.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1133,7 +1132,6 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
         current_path="/music/recovery-itest.mp3",
         file_type="mp3",
         file_size=2048,
-        state=FileState.DISCOVERED,
         agent_id="recovery-itest",
     )
 

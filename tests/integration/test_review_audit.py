@@ -24,7 +24,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
@@ -63,7 +63,6 @@ async def _executed_file(
         current_path=f"/dest/{filename}",
         file_type="mp3",
         file_size=file_size,
-        state=FileState.MOVED,
     )
     session.add(file)
     await session.flush()
