@@ -7,11 +7,10 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select
 
 import phaze
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers.proposals import BpmSpark, _bpm_spark
 
@@ -59,7 +58,6 @@ async def create_test_proposal(
         current_path=f"/music/{original_filename}",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.PROPOSAL_GENERATED,
     )
     session.add(file_record)
     await session.flush()
@@ -122,11 +120,7 @@ async def test_executed_badge_derives_from_proposal_status(client: AsyncClient, 
     cutover. With the pre-fix template (``proposal.file.state == 'executed'``) this badge would never
     render for this fixture; this test flips RED if the reader regresses to ``file.state``.
     """
-    proposal = await create_test_proposal(session, proposed_filename="Applied Set.mp3", status=ProposalStatus.EXECUTED)
-    # Premise (read independently -- proposal.file is lazy="raise"): file.state is NOT 'executed'.
-    file_state = await session.scalar(select(FileRecord.state).where(FileRecord.id == proposal.file_id))
-    assert file_state != FileState.EXECUTED.value
-
+    await create_test_proposal(session, proposed_filename="Applied Set.mp3", status=ProposalStatus.EXECUTED)
     response = await client.get("/proposals/?status=all", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Applied Set.mp3" in response.text

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.dedup_resolution import DedupResolution
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.dedup import (
     count_duplicate_groups,
@@ -38,7 +38,6 @@ def _make_file(
         current_path=original_path,
         file_type=file_type,
         file_size=file_size,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -426,9 +425,8 @@ async def test_find_duplicate_groups_excludes_resolved(session: AsyncSession) ->
     """Files carrying a dedup_resolution marker are excluded from grouping (marker is authority)."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/resolved.mp3", "mp3", HASH_A)
-    # Post-cutover the readers key on the marker (~dedup_resolved_clause()), NOT FileRecord.state.
-    # Seed the marker (plus the surviving dual-write state) so f2 is excluded.
-    f2.state = FileState.DUPLICATE_RESOLVED
+    # Post-cutover the readers key on the marker (~dedup_resolved_clause()) alone -- the
+    # dedup_resolution row is the sole authority; there is no scalar state to set.
     session.add_all([f1, f2])
     await session.flush()
     session.add(DedupResolution(file_id=f2.id, canonical_file_id=f1.id))

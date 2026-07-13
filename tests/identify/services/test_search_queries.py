@@ -10,7 +10,7 @@ import pytest
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.search_queries import SearchResult, get_summary_counts, search
@@ -34,7 +34,6 @@ async def create_test_file(
     album: str | None = None,
     genre: str | None = None,
     bpm: float | None = None,
-    state: str = FileState.DISCOVERED,
 ) -> FileRecord:
     """Create a FileRecord with optional FileMetadata and AnalysisResult."""
     file_id = uuid.uuid4()
@@ -47,7 +46,6 @@ async def create_test_file(
         current_path=f"/music/{original_filename}",
         file_type="music",
         file_size=1_000_000,
-        state=state,
     )
     session.add(file_record)
     await session.flush()
@@ -113,8 +111,8 @@ class TestSearchResult:
             title="test.mp3",
             artist="DJ Test",
             genre="house",
-            state="discovered",
             date="2026-01-01",
+            state="discovered",
             rank=1.0,
         )
         assert r.result_type == "file"
@@ -457,7 +455,7 @@ async def test_search_unions_all_entities_without_status_facet(session: AsyncSes
     derived replacement, so a query matching a file, a tracklist, AND a discogs release surfaces all
     three groups -- proving the union is never narrowed to files.
     """
-    await create_test_file(session, original_filename="unioned_track.mp3", artist="Unioned Artist", state=FileState.APPROVED)
+    await create_test_file(session, original_filename="unioned_track.mp3", artist="Unioned Artist")
     await create_test_tracklist(session, artist="Unioned Artist", event="Unioned Fest")
     await create_test_discogs_link(session, discogs_artist="Unioned Artist", discogs_title="Unioned Album", status="accepted")
     results, _pagination = await search(session, "unioned")

@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 import phaze.tasks.reconcile_cloud_jobs as reconcile_mod
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
@@ -102,10 +102,9 @@ class DeleteJobSpy:
             sm = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
             async with sm() as snap_session:
                 cj = (await snap_session.execute(select(CloudJob).where(CloudJob.kueue_workload == name))).scalar_one_or_none()
-                snap: dict[str, Any] = {"cloud_status": getattr(cj, "status", None), "attempts": getattr(cj, "attempts", None), "file_state": None}
-                if cj is not None:
-                    fr = (await snap_session.execute(select(FileRecord).where(FileRecord.id == cj.file_id))).scalar_one_or_none()
-                    snap["file_state"] = getattr(fr, "state", None)
+                # Post-MIG-04 there is no files.state to snapshot: reconcile's at-cap spill re-stamps ONLY
+                # the cloud_job sidecar (D-04/D-12), so the committed cloud_status + attempts are the invariant.
+                snap: dict[str, Any] = {"cloud_status": getattr(cj, "status", None), "attempts": getattr(cj, "attempts", None)}
                 self.snapshots.append(snap)
 
 
@@ -191,7 +190,7 @@ def _make_ctx(async_engine: AsyncEngine, queue: DedupFakeQueue | None = None) ->
     return {"async_session": sm, "queue": queue or DedupFakeQueue("controller"), "task_router": DedupFakeTaskRouter()}
 
 
-def _make_file(*, state: str = FileState.PUSHED) -> FileRecord:
+def _make_file() -> FileRecord:
     """Build a fully-populated FileRecord (the cloud_job FK target).
 
     Defaults to ``PUSHED`` -- the realistic state of a file whose cloud_job is in-flight
@@ -209,7 +208,6 @@ def _make_file(*, state: str = FileState.PUSHED) -> FileRecord:
         current_path=f"/music/{uid.hex}.flac",
         file_type="flac",
         file_size=1000,
-        state=state,
     )
 
 
@@ -302,8 +300,6 @@ async def test_inadmissible_never_consumes_cap(async_engine: AsyncEngine, sessio
     assert cj.attempts == 0
     assert cj.inadmissible is True
     assert cj.status == CloudJobStatus.SUBMITTED.value
-    file = await _read_file(session, fid)
-    assert file.state != FileState.ANALYSIS_FAILED
     assert dj.calls == []  # the Job is never deleted on an Inadmissible hold
 
 
@@ -401,9 +397,6 @@ async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
 
     cj = await _read_cloud_job(session, fid)
     assert cj.status == CloudJobStatus.AWAITING.value  # D-12: re-stamped 'awaiting' (NOT FAILED) -> out of in-flight
-    file = await _read_file(session, fid)
-    assert file.state == FileState.PUSHED  # D-04: reconcile writes NO FileRecord.state -> stays at seeded PUSHED
-    assert file.state != FileState.ANALYSIS_FAILED
     assert s3.calls == [fid]  # no-callback terminal deletes the staged object (D-05), after the record+commit
     assert s3.buckets == [_STAGING_BUCKET_ID]  # MKUE-02: deleted on exactly the RECORDED staging bucket
     assert dj.calls == [name]
@@ -428,7 +421,7 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
     _patch_cap(monkeypatch, cap=3)
     cap = 2
     # Two in-flight rows for the kueue backend: one will fail-terminalize, one stays RUNNING.
-    fid_fail, name_fail = await _seed(session, status=CloudJobStatus.SUBMITTED.value, attempts=3)  # at cap -> terminal
+    _fid_fail, name_fail = await _seed(session, status=CloudJobStatus.SUBMITTED.value, attempts=3)  # at cap -> terminal
     await _seed(session, status=CloudJobStatus.RUNNING.value)  # stays in-flight
 
     settings = SimpleNamespace(
@@ -457,7 +450,6 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
     after = await backend.in_flight_count(session)
     assert after == 1  # reconcile only decremented (re-stamped the failed row to 'awaiting', out of in-flight)
     assert after <= cap  # cap-safe: never overshoots
-    assert (await _read_file(session, fid_fail)).state == FileState.PUSHED  # D-04: no state write -> stays at seeded PUSHED
 
 
 # --- D-04/D-12: at-cap spill re-stamps the sidecar 'awaiting', writes NO FileRecord.state -----------
@@ -496,13 +488,11 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
     sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with sm() as indep:
         cj = (await indep.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
-        fr = (await indep.execute(select(FileRecord).where(FileRecord.id == fid))).scalar_one()
 
     # (1) re-stamped 'awaiting', NOT FAILED (mutation b: re-adding status=FAILED / the AWAITING_CLOUD write -> RED).
     assert cj.status == CloudJobStatus.AWAITING.value
     assert cj.status != CloudJobStatus.FAILED.value
     # (2) FileRecord.state UNCHANGED -- reconcile wrote no state (D-04): stays at the seeded PUSHED.
-    assert fr.state == FileState.PUSHED
     # (3) attempts NOT incremented (attempts=cap is a set, not += 1) -> select_backend routes to local.
     assert cj.attempts == 3
     # (4) terminal-row hygiene: alert flag cleared, staged bucket cleared, cloud_phase cleared (clear_cloud_phase=True).
@@ -514,7 +504,6 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
     assert events.index("s3_delete") < events.index("commit") < events.index("delete_job")
     # Shadow invariant: the spilled row is at PUSHED (not AWAITING_CLOUD), so the HARD
     # `state==AWAITING_CLOUD => cloud_job.status=='awaiting'` implication is not even engaged -> no violation.
-    assert fr.state != FileState.AWAITING_CLOUD
     assert tally["failed"] == 1
 
 
@@ -537,7 +526,7 @@ async def test_delete_after_record_ordering(async_engine: AsyncEngine, session: 
     assert events == ["s3_delete", "delete_job"]
     # The outcome was already committed when the Job delete fired (the snapshot reads committed state):
     # cloud_job re-stamped 'awaiting' (D-12), attempts NOT incremented (still cap=3), FileRecord UNTOUCHED (PUSHED, D-04).
-    assert dj.snapshots == [{"cloud_status": CloudJobStatus.AWAITING.value, "attempts": 3, "file_state": FileState.PUSHED}]
+    assert dj.snapshots == [{"cloud_status": CloudJobStatus.AWAITING.value, "attempts": 3}]
 
 
 # --- S3 delete only on the no-callback terminal ----------------------------------------------------
@@ -751,7 +740,6 @@ async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(
     await reconcile_cloud_jobs(_make_ctx(async_engine))
 
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.AWAITING.value  # D-12: 'awaiting', not FAILED
-    assert (await _read_file(session, fid)).state == FileState.PUSHED  # D-04: no FileRecord.state write
     assert s3.calls == [fid]
 
 
@@ -1013,7 +1001,6 @@ async def test_drain_reconcile_concurrency_delete_runs_under_advisory_lock(
     assert s3.calls == [fid]
     # Single-owner: staging_bucket cleared, no double assignment. The FileRecord is UNTOUCHED (D-04): the
     # sidecar re-stamp to 'awaiting' is what makes the file a drain candidate, not a FileRecord.state write.
-    assert (await _read_file(session, fid)).state == FileState.PUSHED
     assert (await _read_cloud_job(session, fid)).staging_bucket is None
 
 
@@ -1041,7 +1028,6 @@ async def test_clean_before_flip_delete_is_best_effort(async_engine: AsyncEngine
 
     # The raising delete was attempted but swallowed -> the spill still committed and the Job still deleted.
     assert s3.calls == [fid]
-    assert (await _read_file(session, fid)).state == FileState.PUSHED  # D-04: no FileRecord.state write
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.AWAITING.value  # D-12: 'awaiting', not FAILED
     assert dj.calls == [name]  # Job delete stays post-commit and still runs despite the swallowed S3 error
     assert tally["failed"] == 1

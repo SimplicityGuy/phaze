@@ -102,7 +102,6 @@ async def _new_file(session: AsyncSession) -> uuid.UUID:
             current_path=f"/media/{fid}.mp3",
             file_type="mp3",
             file_size=1234,
-            state="discovered",
         )
     )
     await session.flush()

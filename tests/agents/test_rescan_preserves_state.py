@@ -36,7 +36,7 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import agent_files
 
@@ -108,11 +108,10 @@ async def test_agent_upsert_rescan_preserves_analyzed_state_and_analysis_row(
     assert r1.json()["inserted"] == 1
 
     file = (await session.execute(select(FileRecord).where(FileRecord.original_path == _RESCAN_PATH))).scalar_one()
-    assert file.state == FileState.DISCOVERED
     assert file.agent_id == agent.id  # AUTH-01: stamped from auth dep, never the body
 
-    # 2. Advance it to ANALYZED and create its 1:1 analysis output row.
-    file.state = FileState.ANALYZED
+    # 2. Advance it to ANALYZED by creating its 1:1 analysis output row (post-MIG-04 the derived
+    #    "analyzed" status IS this row -- there is no scalar files.state to set).
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, bpm=128.0, musical_key="Am"))
     await session.commit()
 
@@ -123,10 +122,10 @@ async def test_agent_upsert_rescan_preserves_analyzed_state_and_analysis_row(
     assert body["upserted"] == 1
     assert body["inserted"] == 0, "rescan of an existing file must report an UPDATE (xmax != 0), not an insert"
 
-    # 4. Invariant (D-08): state survives AND the analysis output row survives.
+    # 4. Invariant (D-08, post-MIG-04): the derived progress survives -- the analysis output row (the
+    #    sole "analyzed" authority now) must NOT be wiped by the rescan upsert.
     session.expire_all()
     reloaded = (await session.execute(select(FileRecord).where(FileRecord.original_path == _RESCAN_PATH))).scalar_one()
-    assert reloaded.state == FileState.ANALYZED, "agent rescan wiped the file's state back to DISCOVERED (MIG-03 regression)"
 
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == reloaded.id))).scalar_one_or_none()
-    assert analysis is not None, "the file's analysis output row must survive an agent rescan"
+    assert analysis is not None, "the file's analysis output row must survive an agent rescan (MIG-03 regression)"

@@ -14,7 +14,7 @@ from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.route_control import RouteControl
@@ -85,7 +85,7 @@ def _cloud_compute_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
 
 
-def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file() -> FileRecord:
     """Create a FileRecord with the given state."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -97,7 +97,6 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -109,7 +108,7 @@ async def _seed_analysis_failed(session: AsyncSession, n: int) -> list[FileRecor
     file is invisible to them. This helper seeds BOTH the (still-present) legacy state and the marker so
     the corpus is consistent.
     """
-    files = [_make_file(state=FileState.ANALYSIS_FAILED) for _ in range(n)]
+    files = [_make_file() for _ in range(n)]
     session.add_all(files)
     await session.flush()
     session.add_all([AnalysisResult(id=uuid.uuid4(), file_id=f.id, failed_at=datetime.now(UTC), error_message="timed out") for f in files])
@@ -133,7 +132,7 @@ async def _awaiting_cloud_ids(session: AsyncSession) -> set[uuid.UUID]:
     return set(rows)
 
 
-def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[FileRecord, AnalysisResult, FileMetadata]:
+def _make_file_with_convergence() -> tuple[FileRecord, AnalysisResult, FileMetadata]:
     """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
     uid = uuid.uuid4()
     file_rec = FileRecord(
@@ -145,7 +144,6 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
     # Phase 57.1: a COMPLETED analysis row carries analysis_completed_at -- the tightened
     # proposal-convergence gate (analysis_completed_at IS NOT NULL) excludes in-progress partial rows.
@@ -157,7 +155,7 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
 @pytest.mark.asyncio
 async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze enqueues process_file onto phaze-agent-nox (not default)."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    session.add_all([_make_file() for _ in range(3)])
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -184,7 +182,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     FileRecord / selected-agent / settings.models_path values, and that the exact
     kwargs the worker receives validate cleanly against ``ProcessFilePayload``.
     """
-    file_rec = _make_file(state=FileState.DISCOVERED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     # expire_on_commit=False (conftest) -- these stay readable after commit.
@@ -243,7 +241,7 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     class as the v4.0.8 payload incident). This pins all four required fields and that the
     exact kwargs validate cleanly.
     """
-    file_rec = _make_file(state=FileState.DISCOVERED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_id = str(file_rec.id)
@@ -284,7 +282,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     locked 1-2 band so apply_project_job_defaults does NOT clobber it to
     worker_max_retries (the retries==1 -> 4 churn).
     """
-    file_rec = _make_file(state=FileState.DISCOVERED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
@@ -328,7 +326,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     in-flight file to a no-op (32-CONTEXT "Dedup"; 32-RESEARCH §Q4). Each enqueue's
     ``captured_policy["key"]`` must equal ``process_file:`` + that enqueue's payload file_id.
     """
-    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    files = [_make_file() for _ in range(3)]
     session.add_all(files)
     await session.commit()
     expected_keys = {f"process_file:{f.id}" for f in files}
@@ -352,7 +350,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
 @pytest.mark.asyncio
 async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClient, session: AsyncSession) -> None:
     """Phase 43: the HTMX /pipeline/analyze path also enqueues with timeout=7200 + retries=2."""
-    file_rec = _make_file(state=FileState.DISCOVERED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
@@ -390,7 +388,7 @@ async def test_process_file_enqueue_policy_survives_project_defaults_hook() -> N
 @pytest.mark.asyncio
 async def test_analyze_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze with files but no active agent surfaces a visible empty-state."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    session.add_all([_make_file() for _ in range(3)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -429,7 +427,7 @@ _LONG = 6000.0  # >= cloud_route_threshold_sec default (5400)
 _SHORT = 100.0  # < threshold
 
 
-def _make_file_with_duration(duration: float | None, *, state: str = FileState.DISCOVERED) -> tuple[FileRecord, FileMetadata | None]:
+def _make_file_with_duration(duration: float | None) -> tuple[FileRecord, FileMetadata | None]:
     """Build a DISCOVERED FileRecord plus an optional FileMetadata row carrying ``duration``.
 
     A ``None`` duration is modeled as the absence of a metadata row (the LEFT OUTER JOIN in
@@ -446,7 +444,6 @@ def _make_file_with_duration(duration: float | None, *, state: str = FileState.D
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
     md = FileMetadata(file_id=uid, duration=duration) if duration is not None else None
     return file_rec, md
@@ -522,7 +519,6 @@ async def test_analyze_long_held_even_without_fileserver(client: AsyncClient, se
     assert await _is_awaiting_cloud(session, long_file.id)
     # The short file stays DISCOVERED (skipped != held, no state change).
     await session.refresh(short_file)
-    assert short_file.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -677,10 +673,10 @@ async def test_get_awaiting_cloud_count_derives_from_the_drain_clause(session: A
     from phaze.services.pipeline import get_awaiting_cloud_count, get_cloud_staging_candidates
 
     # (1) A genuinely-parked awaiting file: awaiting row, no ledger, no analysis -> counted.
-    parked = _make_file(state=FileState.AWAITING_CLOUD)
+    parked = _make_file()
     # (2) A locally-dispatched long file: still carries its awaiting row (D-13) but is analyze-in-flight
     #     (a committed process_file:<id> ledger row) -> excluded from the count AND the drain.
-    analyzing = _make_file(state=FileState.LOCAL_ANALYZING)
+    analyzing = _make_file()
     session.add_all([parked, analyzing])
     await session.commit()
     session.add(CloudJob(id=uuid.uuid4(), file_id=parked.id, status=CloudJobStatus.AWAITING.value))
@@ -739,7 +735,6 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
                 current_path=f"/music/{uid.hex}.mp3",
                 file_type="mp3",
                 file_size=1000,
-                state=FileState.ANALYSIS_FAILED,
             )
         )
         # Phase 90 (PR-A): the backfill candidate query now DERIVES the terminal analyze-failure from
@@ -833,9 +828,7 @@ async def test_backfill_selects_long_failed_resets_and_holds_awaiting_cloud(clie
 
     # The short failed file stays ANALYSIS_FAILED; the never-failed DISCOVERED file is untouched.
     await session.refresh(short_failed)
-    assert short_failed.state == FileState.ANALYSIS_FAILED
     await session.refresh(untouched_discovered)
-    assert untouched_discovered.state == FileState.DISCOVERED
     # The long failed file was reset out of ANALYSIS_FAILED and HELD in AWAITING_CLOUD, with an
     # explicit scheduling-ledger row (the held branch fires no before_enqueue hook).
     assert await _is_awaiting_cloud(session, long_failed.id)
@@ -999,7 +992,6 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     assert capture == []
     # The ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out, Pitfall 2).
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED
     # No scheduling-ledger row is seeded on the disabled path either.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert rows == []
@@ -1113,7 +1105,6 @@ async def test_backfill_local_redrives_nothing(client: AsyncClient, session: Asy
 
     assert seeded_keys == []
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED  # never reset on the local gate
 
 
 @pytest.mark.asyncio
@@ -1194,7 +1185,7 @@ async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClie
     The elevated (sentinel) cap reaches enqueue_process_file and lands on the resolved
     ``phaze-agent-nox`` queue — NEVER the consumer-less default queue (Phase-30 guard).
     """
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_id = str(file_rec.id)
@@ -1223,7 +1214,7 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     Assert all five required fields PLUS the two Phase-44 cap overrides are present and the
     exact kwargs validate against ProcessFilePayload.
     """
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_id = str(file_rec.id)
@@ -1271,7 +1262,7 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
     and registers the key; an immediate second deepen of the same in-flight file is a no-op
     (no second capture). After the job ``finish``-es, a third deepen re-enqueues fresh.
     """
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
@@ -1309,7 +1300,7 @@ async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, sess
 
     NoActiveAgentError must NOT fall through to the consumer-less default queue.
     """
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
@@ -1408,9 +1399,9 @@ async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: As
     await _drain_background()
     # Nothing enqueued anywhere -- never the default queue.
     assert capture == []
-    # State UNCHANGED: the flip is gated behind a successful queue resolve.
-    still_failed = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
-    assert {str(f.id) for f in still_failed} == failed_ids
+    # Derived failure markers UNCHANGED: the no-op retry clears nothing (the marker is the sole authority).
+    still_failed = (await session.execute(select(AnalysisResult.file_id).where(AnalysisResult.failed_at.is_not(None)))).scalars().all()
+    assert {str(fid) for fid in still_failed} == failed_ids
 
 
 @pytest.mark.asyncio
@@ -1465,7 +1456,7 @@ _CVZ_REQUESTED_AT = datetime.fromtimestamp(_CVZ_SINCE, tz=UTC)
 @pytest.mark.asyncio
 async def test_deepen_progress_queued_state_polls(client: AsyncClient, session: AsyncSession) -> None:
     """A stale pre-click result with equal counts renders the queued fragment and keeps polling."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.flush()
     session.add(
@@ -1491,7 +1482,7 @@ async def test_deepen_progress_queued_state_polls(client: AsyncClient, session: 
 @pytest.mark.asyncio
 async def test_deepen_progress_running_state_shows_counts_and_polls(client: AsyncClient, session: AsyncSession) -> None:
     """fine_done < fine_total renders the live 'N/M windows' running fragment and keeps polling."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.flush()
     session.add(
@@ -1516,7 +1507,7 @@ async def test_deepen_progress_running_state_shows_counts_and_polls(client: Asyn
 @pytest.mark.asyncio
 async def test_deepen_progress_complete_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
     """A completed_at strictly AFTER since renders the terminal complete fragment with NO poll trigger."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.flush()
     session.add(
@@ -1550,7 +1541,7 @@ async def test_deepen_progress_gone_state_halts_poll(client: AsyncClient, sessio
 @pytest.mark.asyncio
 async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncClient, session: AsyncSession) -> None:
     """A stale sampled result completed at exactly `since` is NOT shown as complete (> boundary, not >=)."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.flush()
     session.add(
@@ -1574,7 +1565,7 @@ async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncCl
 @pytest.mark.asyncio
 async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, session: AsyncSession) -> None:
     """A non-numeric `since` query param is rejected by the typed float param (T-cvz-01), never rendered raw."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
 
@@ -1585,7 +1576,7 @@ async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, ses
 @pytest.mark.asyncio
 async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient, session: AsyncSession) -> None:
     """The deepen POST success branch now emits the self-polling bootstrap span, not the old static line."""
-    file_rec = _make_file(state=FileState.ANALYZED)
+    file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
     await seed_active_agent(session)
@@ -1607,7 +1598,7 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     files = []
     related = []
     for _ in range(15):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -1660,7 +1651,7 @@ async def test_search_tracklists_routes_to_controller_queue(client: AsyncClient,
     {("controller","search_tracklist")} — a routing regression that sent it to the consumer-less
     default queue is caught here.
     """
-    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    files = [_make_file() for _ in range(3)]
     session.add_all(files)
     await session.commit()
     capture = wire_fakes(client)
@@ -1679,8 +1670,8 @@ async def test_search_tracklists_routes_to_controller_queue(client: AsyncClient,
 @pytest.mark.asyncio
 async def test_search_tracklists_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
     """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
-    matched = _make_file(state=FileState.DISCOVERED)
-    unmatched = _make_file(state=FileState.DISCOVERED)
+    matched = _make_file()
+    unmatched = _make_file()
     session.add_all([matched, unmatched])
     await session.flush()
     session.add(_link_tracklist(matched))
@@ -1724,7 +1715,7 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
     COMPLETE ScanLiveSetPayload (file_id, original_path, agent_id) so no job dead-letters on the
     extra="forbid" validation (T-40-DL, the v4.0.8 payload-incident class).
     """
-    files = [_make_file(state=FileState.DISCOVERED) for _ in range(3)]
+    files = [_make_file() for _ in range(3)]
     session.add_all(files)
     await session.commit()
     await seed_active_agent(session)
@@ -1748,8 +1739,8 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
 @pytest.mark.asyncio
 async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
     """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
-    matched = _make_file(state=FileState.DISCOVERED)
-    unmatched = _make_file(state=FileState.DISCOVERED)
+    matched = _make_file()
+    unmatched = _make_file()
     session.add_all([matched, unmatched])
     await session.flush()
     session.add(_link_tracklist(matched))
@@ -1769,7 +1760,7 @@ async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: Asy
 @pytest.mark.asyncio
 async def test_scan_live_sets_no_active_agent_renders_empty_state(client: AsyncClient, session: AsyncSession) -> None:
     """Eligible files but NO online agent → 200, nothing enqueued, no-active-agent copy (never 500)."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -2006,7 +1997,7 @@ async def test_dashboard_renders_recover_button_end_to_end(client: AsyncClient) 
 @pytest.mark.asyncio
 async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession) -> None:
     """GET /pipeline/stats returns 200 with HTML containing count values."""
-    session.add(_make_file(state=FileState.DISCOVERED))
+    session.add(_make_file())
     await session.commit()
 
     response = await client.get("/pipeline/stats")
@@ -2020,9 +2011,9 @@ async def test_pipeline_stats_partial(client: AsyncClient, session: AsyncSession
 @pytest.mark.asyncio
 async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, session: AsyncSession) -> None:
     """The dashboard renders the awaiting-cloud count in the #awaiting-cloud-card (Phase 83, D-15)."""
-    awaiting = [_make_file(state=FileState.AWAITING_CLOUD) for _ in range(3)]
+    awaiting = [_make_file() for _ in range(3)]
     session.add_all(awaiting)
-    session.add(_make_file(state=FileState.DISCOVERED))
+    session.add(_make_file())
     await session.commit()
     # Phase 83: the card counts genuinely-parked cloud_job(status='awaiting') rows, not FileRecord.state.
     for f in awaiting:
@@ -2045,7 +2036,7 @@ async def test_dashboard_renders_awaiting_cloud_card(client: AsyncClient, sessio
 @pytest.mark.asyncio
 async def test_stats_partial_emits_awaiting_cloud_card_oob(client: AsyncClient, session: AsyncSession) -> None:
     """The 5s /pipeline/stats poll re-pushes the awaiting-cloud card OUT-OF-BAND (hx-swap-oob)."""
-    awaiting = [_make_file(state=FileState.AWAITING_CLOUD) for _ in range(2)]
+    awaiting = [_make_file() for _ in range(2)]
     session.add_all(awaiting)
     await session.commit()
     # Phase 83: the card counts genuinely-parked cloud_job(status='awaiting') rows, not FileRecord.state.
@@ -2067,7 +2058,7 @@ async def test_stats_partial_emits_awaiting_cloud_card_oob(client: AsyncClient, 
 @pytest.mark.asyncio
 async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/analyze enqueues process_file onto phaze-agent-nox + renders the fragment."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -2088,7 +2079,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
 @pytest.mark.asyncio
 async def test_trigger_analysis_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/analyze with files but no active agent renders the no-active-agent copy."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -2114,7 +2105,7 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     files = []
     related = []
     for _ in range(5):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -2144,7 +2135,7 @@ async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/analyze enqueues a complete ProcessFilePayload in the background."""
-    session.add(_make_file(state=FileState.DISCOVERED))
+    session.add(_make_file())
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -2181,7 +2172,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     files = []
     related = []
     for _ in range(5):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -2203,7 +2194,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
 @pytest.mark.asyncio
 async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    session.add_all([_make_file() for _ in range(3)])
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -2221,7 +2212,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
 @pytest.mark.asyncio
 async def test_extract_metadata_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /api/v1/extract-metadata with files but no active agent surfaces empty-state."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(3)])
+    session.add_all([_make_file() for _ in range(3)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -2247,7 +2238,7 @@ async def test_extract_metadata_no_files(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -2265,7 +2256,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
 @pytest.mark.asyncio
 async def test_trigger_extraction_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/extract-metadata with files but no active agent renders the empty-state."""
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -2288,7 +2279,7 @@ async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/fingerprint enqueues fingerprint_file onto phaze-agent-nox."""
-    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     await seed_active_agent(session)
     capture = wire_fakes(client)
@@ -2312,7 +2303,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
     scope. A file in ANALYZED state (NOT METADATA_EXTRACTED, NOT FINGERPRINTED) carrying a failed
     FingerprintResult must now be enqueued. This locks the intended consistency fix.
     """
-    failed = _make_file(state=FileState.ANALYZED)
+    failed = _make_file()
     session.add(failed)
     await session.flush()
     session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed.id, engine="audfprint", status="failed"))
@@ -2333,7 +2324,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
 @pytest.mark.asyncio
 async def test_trigger_fingerprint_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
     """POST /pipeline/fingerprint with files but no active agent renders the empty-state."""
-    session.add_all([_make_file(state=FileState.METADATA_EXTRACTED) for _ in range(2)])
+    session.add_all([_make_file() for _ in range(2)])
     await session.commit()
     capture = wire_fakes(client)  # no active agent seeded
 
@@ -2592,7 +2583,7 @@ def test_queue_progress_percent_formula() -> None:
 
 async def _seed_cloud_phase(session: AsyncSession, *, cloud_phase: str | None) -> None:
     """Seed one file + its cloud_job row in the given cloud_phase (NULL for a1/local) and commit."""
-    file = _make_file(state=FileState.PUSHED)
+    file = _make_file()
     session.add(file)
     await session.flush()
     session.add(
@@ -2833,7 +2824,6 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     assert capture == []
     # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED
     # Signal 3: the forced-local no-op neither seeds a duplicate nor drops the pre-existing scheduled-work
     # ledger row -- it stays exactly one process_file:<id> row (the with_ledger=True seed), untouched.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()

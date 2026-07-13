@@ -9,7 +9,7 @@ from httpx import AsyncClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 
 
@@ -50,7 +50,6 @@ def _make_file(
         current_path=original_path,
         file_type=file_type,
         file_size=file_size,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -178,7 +177,7 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     assert resolve_response.status_code == 200
 
     # Construct file_states for undo
-    file_states = [{"id": str(f2.id), "previous_state": FileState.DISCOVERED}]
+    file_states = [{"id": str(f2.id)}]
 
     # Undo
     undo_response = await client.post(
@@ -190,7 +189,6 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
     # Verify file restored
     await session.refresh(f2)
-    assert f2.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -228,7 +226,7 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
     await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
 
     # Build undo states
-    file_states = [{"id": str(f2.id), "previous_state": FileState.DISCOVERED}]
+    file_states = [{"id": str(f2.id)}]
 
     response = await client.post(
         "/duplicates/undo-all",
@@ -243,7 +241,6 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
 
     # Verify file restored
     await session.refresh(f2)
-    assert f2.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -340,7 +337,7 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
     assert resolve.status_code == 200
 
-    payload = json.dumps([{"id": str(dup.id), "previous_state": FileState.DISCOVERED.value}])
+    payload = json.dumps([{"id": str(dup.id)}])
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
     assert undo.status_code == 200
 
@@ -349,12 +346,9 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
         remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
         assert remaining == 0, "undo did not COMMIT the marker DELETE"
 
-        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
-        assert state == FileState.DISCOVERED, "undo did not COMMIT the previous_state restore"
-
 
 # ---------------------------------------------------------------------------
-# Phase 90 (PR-A, BLOCKER FIX): dedup-undo is DECOUPLED from FileState. The marker DELETE + early-return
+# Phase 90 (PR-A, BLOCKER FIX): dedup-undo is DECOUPLED from any scalar state. The marker DELETE + early-return
 # gate derive from the payload id-set ALONE, so PR-B stripping previous_state can NEVER no-op the undo.
 # These round-trips use the ACTUAL server-rendered file_states payload (never a hand-crafted dict).
 # ---------------------------------------------------------------------------

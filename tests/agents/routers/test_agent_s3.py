@@ -34,7 +34,7 @@ from phaze.config import ControlSettings
 from phaze.database import get_session
 from phaze.main import create_app
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_s3 import router as agent_s3_router
 from phaze.services import cloud_staging, s3_staging
@@ -180,7 +180,7 @@ def _make_client(
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers)
 
 
-async def _seed_file(session: AsyncSession, agent_id: str, *, state: str = FileState.AWAITING_CLOUD) -> uuid.UUID:
+async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     file_id = uuid.uuid4()
     session.add(
         FileRecord(
@@ -192,16 +192,10 @@ async def _seed_file(session: AsyncSession, agent_id: str, *, state: str = FileS
             current_path=f"/test/music/{file_id}.flac",
             file_type="flac",
             file_size=4096,
-            state=state,
         )
     )
     await session.commit()
     return file_id
-
-
-async def _file_state(session: AsyncSession, file_id: uuid.UUID) -> str:
-    stmt = select(FileRecord).where(FileRecord.id == file_id).execution_options(populate_existing=True)
-    return (await session.execute(stmt)).scalar_one().state
 
 
 async def _seed_cloud_job(
@@ -405,7 +399,7 @@ async def test_uploaded_k8s_enqueues_submit_no_state_flip(
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
 
@@ -440,7 +434,7 @@ async def test_uploaded_two_kueue_enqueues_submit_no_state_flip(
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="two_kueue")
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
 
@@ -477,7 +471,7 @@ async def test_s3_push_status_transition_idempotent_after_cas_removal(
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
 
@@ -509,7 +503,7 @@ async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
     """Non-kueue target (compute): the defensive guard preserves today's cloud_job-only flow (no PUSHED, no submit)."""
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="compute")
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
 
@@ -520,7 +514,6 @@ async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
 
     assert r.status_code == 200, r.text
     # No FileRecord PUSHED flip, no submit enqueue -- only the cloud_job UPLOADED flip.
-    assert await _file_state(session, file_id) == FileState.PUSHING
     assert controller_queue.captured == []
     job = await _cloud_job(session, file_id)
     assert job is not None
@@ -660,7 +653,7 @@ async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     settings = ControlSettings()  # push_max_attempts=3, cloud_submit_max_attempts=3 (router defaults)
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
+    file_id = await _seed_file(session, agent.id)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
     await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds the cap
     abort = AsyncMock()
@@ -710,7 +703,7 @@ async def test_upload_failed_cas_noop_on_advanced_cloud_job(
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
     for advanced in (CloudJobStatus.RUNNING, CloudJobStatus.SUCCEEDED):
-        file_id = await _seed_file(session, agent.id, state=FileState.ANALYZED)
+        file_id = await _seed_file(session, agent.id)
         await _seed_cloud_job(session, file_id, status=advanced)
         await _seed_ledger(session, file_id, attempt=3)  # next attempt (4) exceeds push_max_attempts=3 -> over-cap branch
         abort = AsyncMock()
@@ -728,7 +721,6 @@ async def test_upload_failed_cas_noop_on_advanced_cloud_job(
         job = await _cloud_job(session, file_id)
         assert job is not None
         assert job.status == advanced.value, "the advanced cloud_job must be UNCHANGED (CAS matched 0 rows)"
-        assert await _file_state(session, file_id) == FileState.ANALYZED, "the advanced file must NOT be clobbered to AWAITING_CLOUD"
         abort.assert_not_awaited()  # D-10: no multipart abort on the no-op
         delete.assert_not_awaited()  # D-10: no delete_staged_object -- a live Kueue job may be mid-download
         redrive.assert_not_awaited()

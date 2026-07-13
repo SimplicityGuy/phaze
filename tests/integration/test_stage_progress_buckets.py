@@ -44,7 +44,7 @@ from phaze.enums.stage import Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -120,7 +120,6 @@ async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:
         current_path=f"/media/{fid}.{file_type}",
         file_type=file_type,
         file_size=1234,
-        state=FileState.DISCOVERED.value,
     )
     session.add(rec)
     await session.flush()

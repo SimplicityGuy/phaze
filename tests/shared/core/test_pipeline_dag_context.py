@@ -22,7 +22,7 @@ import uuid
 import pytest
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 
 
@@ -169,7 +169,6 @@ def _make_file_with_metadata() -> tuple[FileRecord, FileMetadata]:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.METADATA_EXTRACTED,
     )
     metadata = FileMetadata(file_id=uid, artist="Test", title="Track")
     return file_rec, metadata
@@ -366,7 +365,7 @@ async def test_stats_poll_degrades_to_200_without_counter_source(client: AsyncCl
 # ---------------------------------------------------------------------------
 
 
-def _window_file(i: int, state: FileState) -> FileRecord:
+def _window_file(i: int) -> FileRecord:
     """A FileRecord seed in the given state (unique hash/path per ``i``)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -378,7 +377,6 @@ def _window_file(i: int, state: FileState) -> FileRecord:
         current_path=f"/music/win{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -388,7 +386,7 @@ async def _seed_window(session: AsyncSession, i: int, status: CloudJobStatus) ->
     The pushing / analyzing-cloud counts now DERIVE from ``cloud_job.status`` (pushing = uploading /
     submitted; analyzing-cloud = uploaded / running), NOT ``files.state`` -- so seed the sidecar row.
     """
-    f = _window_file(i, FileState.DISCOVERED)
+    f = _window_file(i)
     session.add(f)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))

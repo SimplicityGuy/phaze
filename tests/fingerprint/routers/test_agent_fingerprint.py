@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_fingerprint import router as agent_fingerprint_router
@@ -49,7 +49,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=100,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()

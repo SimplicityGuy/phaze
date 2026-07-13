@@ -8,7 +8,7 @@ function body, not at module scope. Hoisting any one of them to a top-level impo
 at import time.
 
 Before this guard existed the contract was honoured in source but locked by nothing: the Phase-84 AST
-source scan (``test_dedup_fingerprint_source_scan.py``) only inspects ``FileState`` attribute access,
+source scan (``test_dedup_fingerprint_source_scan.py``) only inspects scalar-state attribute access,
 and 84-04's "sys.modules leak spot-check" was performed once by hand and never committed. A refactor
 moving an import to module scope would have shipped green and taken down the worker in production.
 That is the "mitigation exists in source but nothing tests it" failure mode.

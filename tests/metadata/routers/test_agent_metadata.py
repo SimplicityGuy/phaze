@@ -7,16 +7,18 @@ does not depend on Plans 03/05/06 landing in any particular order.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from phaze.database import get_session
-from phaze.models.file import FileRecord, FileState
+from phaze.models.analysis import AnalysisResult
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_metadata import router as agent_metadata_router
@@ -52,7 +54,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=100,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()
@@ -300,7 +301,7 @@ async def test_metadata_put_writes_marker_without_touching_state(
     PR-B removed that write; the derived marker is the sole authority.
     """
     agent, raw_token = seed_test_agent
-    file_id = await _seed_file(session, agent.id)  # seeded in FileState.DISCOVERED
+    file_id = await _seed_file(session, agent.id)
 
     app = _make_smoke_app(session)
     headers = {"Authorization": f"Bearer {raw_token}"}
@@ -314,21 +315,20 @@ async def test_metadata_put_writes_marker_without_touching_state(
     meta_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
     assert meta_row.artist == "A"
     assert meta_row.failed_at is None
-    # ...and files.state is left untouched -- the raw column is dead as of Phase 90 PR-B.
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.DISCOVERED, "metadata PUT must not write files.state after PR-B"
+    # ...and post-MIG-04 there is no scalar files.state for the metadata PUT to write at all.
 
 
 @pytest.mark.asyncio
-async def test_metadata_put_does_not_downgrade_later_state(
+async def test_metadata_put_does_not_disturb_later_derived_progress(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """A metadata PUT for a file already ANALYZED must NOT downgrade its state; the metadata row is still upserted."""
+    """A metadata PUT for an already-ANALYZED file must NOT disturb its analysis marker; the metadata row is still upserted."""
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
-    # Advance the file past DISCOVERED before the PUT (mirrors a parallel fingerprint/analyze callback).
-    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.ANALYZED))
+    # Advance the file's DERIVED progress past metadata before the PUT (mirrors a parallel analyze callback):
+    # a completed analysis row is the sole "analyzed" authority post-MIG-04.
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id, analysis_completed_at=datetime.now(UTC)))
     await session.commit()
 
     app = _make_smoke_app(session)
@@ -339,10 +339,10 @@ async def test_metadata_put_does_not_downgrade_later_state(
     assert r.status_code == 200, r.text
 
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED, "guard failed: later state was downgraded by the metadata PUT"
+    arow = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert arow.analysis_completed_at is not None, "guard failed: the file's derived analyze progress was disturbed by the metadata PUT"
     meta_row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
-    assert meta_row.artist == "A", "metadata row must still be upserted regardless of the file's current state"
+    assert meta_row.artist == "A", "metadata row must still be upserted regardless of the file's derived progress"
 
 
 # ---------------------------------------------------------------------------

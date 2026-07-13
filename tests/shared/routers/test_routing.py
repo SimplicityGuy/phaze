@@ -18,7 +18,7 @@ import pytest
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.route_control import RouteControl
 from phaze.services.route_control import get_route_control
@@ -130,7 +130,6 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.DISCOVERED,
     )
     session.add(long_file)
     await session.flush()
@@ -148,7 +147,6 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
     assert data["awaiting_cloud"] == 0
 
     await session.refresh(long_file)
-    assert long_file.state != FileState.AWAITING_CLOUD
 
 
 # --- Plan 04: force-local write endpoint + header pill -----------------------------------

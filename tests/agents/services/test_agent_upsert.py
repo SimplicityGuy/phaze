@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import literal_column
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 
 
 if TYPE_CHECKING:
@@ -38,7 +38,6 @@ async def test_xmax_inserted_flag(session: AsyncSession, seed_test_agent: tuple[
         "current_path": "/test/music/x.mp3",
         "file_type": "mp3",
         "file_size": 100,
-        "state": FileState.DISCOVERED,
     }
 
     # 1. First UPSERT: brand-new key -> inserted=True

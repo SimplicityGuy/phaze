@@ -34,7 +34,7 @@ from sqlalchemy import select
 
 from phaze.enums.stage import Stage, Status, domain_completed
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from tests._queue_fakes import install_fake_queues, seed_active_agent
 
 
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
+def _make_file() -> FileRecord:
     """A FileRecord parked in the terminal analyze-failed bucket."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -58,7 +58,6 @@ def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -111,13 +110,11 @@ async def test_retry_clears_marker_without_touching_state(client: AsyncClient, s
 
     session.expire_all()
     ids = [uuid.UUID(i) for i in failed_ids]
-    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(ids)))).scalars().all()
 
     # The derived failure marker is cleared for every retried file (the sole authority now).
     assert all(r.failed_at is None for r in rows)
     # files.state is left untouched -- the raw column is dead as of Phase 90 PR-B.
-    assert {f.state for f in files} == {FileState.ANALYSIS_FAILED}
 
 
 @pytest.mark.asyncio
@@ -149,7 +146,5 @@ async def test_retry_with_no_active_agent_mutates_nothing(client: AsyncClient, s
 
     session.expire_all()
     ids = [uuid.UUID(i) for i in failed_ids]
-    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(ids)))).scalars().all()
-    assert {f.state for f in files} == {FileState.ANALYSIS_FAILED}
     assert all(r.failed_at is not None for r in rows)

@@ -18,7 +18,7 @@ Two concerns, two task groups:
 * ``idempotent`` -- prove a file killed mid-analysis re-runs cleanly via the
   existing ``put_analysis`` ``file_id``-UQ replace path (PROG-02 / RESEARCH Q3):
   the final ``analysis`` row + ``analysis_window`` set is identical to an
-  uninterrupted control run, ``FileState`` reaches ``ANALYZED`` exactly once, and
+  uninterrupted control run, the file reaches the ``ANALYZED`` derived status exactly once, and
   no duplicate/orphaned window rows remain. The Phase 32 re-enqueue done-predicate
   is state-only, so the partial row cannot mis-drive recovery.
 """
@@ -42,7 +42,7 @@ from sqlalchemy import func, select
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.tasks.reenqueue import _select_done_analyze_ids
 
@@ -346,7 +346,7 @@ def _make_client(session: AsyncSession, token: str) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": f"Bearer {token}"})
 
 
-async def _seed_file(session: AsyncSession, agent_id: str, state: FileState) -> uuid.UUID:
+async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     """Seed a FileRecord so the AnalysisResult.file_id FK is satisfiable."""
     file_id = uuid.uuid4()
     session.add(
@@ -359,7 +359,6 @@ async def _seed_file(session: AsyncSession, agent_id: str, state: FileState) -> 
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=4096,
-            state=state,
         )
     )
     await session.commit()
@@ -413,20 +412,20 @@ async def test_idempotent_crash_midrun_rerun_matches_control(seed_test_agent: tu
           on_conflict_do_update overwrote the partial row);
       (b) the analysis_window set == the control set, matched by (tier, window_index),
           with NO duplicate and NO orphaned rows (delete-then-insert replace ran);
-      (c) FileState reaches ANALYZED exactly once (one analysis row, terminal state);
+      (c) the file reaches ANALYZED (derived) exactly once (one analysis row, terminal state);
       (d) the state-only re-enqueue done-predicate classifies the file as done ONLY
           after the terminal re-run.
     """
     agent, raw_token = seed_test_agent
 
     # --- The CONTROL: a fresh file, single clean put_analysis (uninterrupted). ---
-    control_id = await _seed_file(session, agent.id, FileState.DISCOVERED)
+    control_id = await _seed_file(session, agent.id)
     async with _make_client(session, raw_token) as ac:
         resp = await ac.put(f"/api/internal/agent/analysis/{control_id}", json=_CONTROL_PAYLOAD)
     assert resp.status_code == 200, resp.text
 
     # --- The INTERRUPTED file: a non-terminal file carrying LEFTOVER partial state. ---
-    crashed_id = await _seed_file(session, agent.id, FileState.DISCOVERED)
+    crashed_id = await _seed_file(session, agent.id)
     # Mimic "previous completed-then-killed": a partial aggregate row (NULL bpm,
     # analyzed < total) + 3 stale fine windows, written WITHOUT flipping state.
     session.add(
@@ -500,7 +499,7 @@ async def test_idempotent_repeat_rerun_no_duplicate_windows(seed_test_agent: tup
     idempotent under replay.
     """
     agent, raw_token = seed_test_agent
-    file_id = await _seed_file(session, agent.id, FileState.DISCOVERED)
+    file_id = await _seed_file(session, agent.id)
 
     async with _make_client(session, raw_token) as ac:
         first = await ac.put(f"/api/internal/agent/analysis/{file_id}", json=_CONTROL_PAYLOAD)

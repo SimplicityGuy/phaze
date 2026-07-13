@@ -19,7 +19,7 @@ from sqlalchemy import select
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _make_file(i: int, *, file_type: str = "mp3", state: FileState = FileState.DISCOVERED) -> FileRecord:
+def _make_file(i: int, *, file_type: str = "mp3") -> FileRecord:
     """Build a FileRecord with a unique path/hash (agent_id defaults to the seeded legacy agent)."""
     return FileRecord(
         agent_id="test-fileserver",
@@ -42,7 +42,6 @@ def _make_file(i: int, *, file_type: str = "mp3", state: FileState = FileState.D
         current_path=f"/music/f{i}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
@@ -65,7 +64,7 @@ async def test_analyzed_but_no_metadata_counts_independently(session: AsyncSessi
     A single ``FileRecord.state`` enum could never report this: the parallel stages must
     read their OWN output tables, not the linear state machine.
     """
-    f = _make_file(1, state=FileState.ANALYZED)
+    f = _make_file(1)
     session.add(f)
     await session.flush()
     # done(analyze) is the canonical derivation-layer clause: analysis_completed_at IS NOT NULL
@@ -192,7 +191,7 @@ async def test_scrape_and_match_count_distinct_tracklist_id(session: AsyncSessio
 @pytest.mark.asyncio
 async def test_execute_counts_completed_execution_log(session: AsyncSession):
     """execute.done = DISTINCT file_id with a completed execution_log row; total = approved-proposal count."""
-    f = _make_file(1, state=FileState.APPROVED)
+    f = _make_file(1)
     session.add(f)
     await session.flush()
     proposal = RenameProposal(id=uuid.uuid4(), file_id=f.id, proposed_filename="x.mp3", status=ProposalStatus.APPROVED)
