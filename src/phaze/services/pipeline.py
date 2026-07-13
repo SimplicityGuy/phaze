@@ -18,7 +18,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
@@ -77,19 +77,6 @@ _ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
 )
 
 
-# The pipeline stages in order, for display
-PIPELINE_STAGES = [
-    FileState.DISCOVERED,
-    FileState.METADATA_EXTRACTED,
-    FileState.FINGERPRINTED,
-    FileState.ANALYZED,
-    FileState.PROPOSAL_GENERATED,
-    FileState.APPROVED,
-    FileState.DUPLICATE_RESOLVED,
-    FileState.EXECUTED,
-]
-
-
 # NOTE (Phase 82, D-05/READ-02): ``get_pipeline_stats`` -- the linear per-``FileRecord.state`` grouped
 # counter -- was REMOVED here. The stats path no longer groups by (or reads) ``FileRecord.state``: its
 # three former callers
@@ -97,9 +84,9 @@ PIPELINE_STAGES = [
 # ``pipeline_stats_partial``) now derive the seven consumed keys from :func:`get_stage_progress`'s
 # output-table counts (``discovered→discovery.done``, ``metadata_extracted→metadata.done``,
 # ``fingerprinted→fingerprint.done``, ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
-# ``approved→execute.total``, ``executed→execute.done``). ``PIPELINE_STAGES`` (above) is retained: it is
-# still consumed by the ANALYSIS_FAILED-bucket invariant test + the ``get_analysis_failed_count``
-# docstring, and does NOT read state on the hot poll path.
+# ``approved→execute.total``, ``executed→execute.done``). Phase 90 (MIG-04) then removed the
+# ``FileState`` enum + ``files.state`` column entirely, so the former linear ``PIPELINE_STAGES`` list
+# (which enumerated the enum members) is gone -- stage membership derives from the output tables.
 
 
 # --- Scanned / deduped / unique reconciliation (quick 260622-i0w) -----------------------
