@@ -1,8 +1,8 @@
 ---
 phase: 92
 slug: milestone-close-tech-debt-cleanup
-status: draft
-nyquist_compliant: false
+status: planned
+nyquist_compliant: true
 wave_0_complete: false
 created: 2026-07-13
 ---
@@ -40,7 +40,15 @@ created: 2026-07-13
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 92-XX-XX | XX | X | CLEAN-0X | — | N/A (behavior-preserving cleanup) | unit/integration | `uv run pytest ...` | ⬜ per plan | ⬜ pending |
+| 92-01-1 | 01 | 1 | CLEAN-03 | T-92-01-CMT | N/A (comment-only) | static/lint | `grep -c "thread THIS backend's KubeConfig" ...` + `uv run ruff check ...` | ✅ | ⬜ pending |
+| 92-02-1 | 02 | 1 | CLEAN-01 | T-92-02-DoS | Perf-DB routing confirmed; before baseline | manual-bench | `PHAZE_DATABASE_URL=<perf> just perf-explain ITER=20` | ✅ (Phase 82) | ⬜ pending |
+| 92-02-2 | 02 | 1 | CLEAN-01 | T-92-02-DoS/SKEW | Semaphore(4) + acquisition-degrade | integration | `uv run pytest tests/analyze/core/test_stage_progress.py tests/shared/routers/test_pipeline.py tests/integration/test_stage_progress_buckets.py -q` | ✅ | ⬜ pending |
+| 92-02-3 | 02 | 1 | CLEAN-01 | T-92-02-SKEW | Before/after + DENORM-01 verdict (D-05) | manual-bench | `PHAZE_DATABASE_URL=<perf> just perf-explain ITER=20` → 92-VERIFICATION.md | ✅ | ⬜ pending |
+| 92-03-1 | 03 | 2 | CLEAN-02 | T-92-03-ISO | create_savepoint isolation + verify fixture | infra | `just test-bucket shared` | ✅ (rewire) | ⬜ pending |
+| 92-03-2 | 03 | 2 | CLEAN-02 | T-92-03-ISO | Mutation-safe hermeticity proof (Wave 0) | infra | `uv run pytest tests/shared/test_conftest_hermeticity.py -q` | ❌ NEW (Wave 0) | ⬜ pending |
+| 92-04-1 | 04 | 3 | CLEAN-02 | T-92-04-VIS | verify reads share outer-txn connection | infra | `just test-bucket analyze` | ✅ (migrate) | ⬜ pending |
+| 92-04-2 | 04 | 3 | CLEAN-02 | T-92-04-VIS | review/agents/discovery migrated + integration exclusion grep | infra | `just test-bucket review agents discovery` | ✅ (migrate) | ⬜ pending |
+| 92-05-1 | 05 | 4 | CLEAN-02 | T-92-05-GATE | [BLOCKING] D-08 full-suite per-bucket green | acceptance | `just test-bucket <all 9 buckets>` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 

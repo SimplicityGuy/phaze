@@ -684,7 +684,7 @@ Plans:
 
 **Goal**: Pay down the tech debt surfaced by the 2026.7.5 milestone audit (`.planning/2026.7.5-MILESTONE-AUDIT.md`) before completing the milestone. Behavior-preserving except the PERF-02 latency win; small blast radius per item.
 **Depends on**: Phase 90
-**Requirements**: assigned at discuss-phase (candidate IDs CLEAN-01..03)
+**Requirements**: CLEAN-01 (PERF-02 asyncio.gather parallelization + 200K re-measurement), CLEAN-02 (test-suite hermeticity under per-bucket CI isolation — 83-01/83-03 flake class), CLEAN-03 (two cosmetic doc fixes)
 **Success Criteria** (what must be TRUE):
 
   1. The three `_safe_bucket_counts` reads in `get_stage_progress` run concurrently via `asyncio.gather`, measurably reducing `/pipeline/stats` poll latency at 200K-file scale (the PERF-02 follow-up; DENORM-01 remains v2-deferred, revisited only if this proves insufficient).
@@ -692,7 +692,15 @@ Plans:
   3. The stale `agent_files.py` DISCOVERED-stamp comment and the duplicated `backends.py` `KueueBackend.reconcile` comment block are removed (doc hygiene; zero runtime change).
 
 **Out of scope**: DENORM-01 (v2-deferred), P85 WR-01..04 (accepted-deferred per operator decision 2026-07-10), P81 WR-01/02, and the live-corpus deploy rehearsal (a separate operator gate).
-**Plans**: TBD (created by `/gsd:plan-phase 92`)
+**Plans**: 5 plans in 4 waves
+
+Plans:
+
+- [ ] 92-01-PLAN.md — CLEAN-03 cosmetic doc fixes: de-dup backends.py KubeConfig comment (D-09) + reword stale agent_files.py ON-CONFLICT comment (D-10) [Wave 1]
+- [ ] 92-02-PLAN.md — CLEAN-01 PERF-02: parallelize get_stage_progress via asyncio.gather over per-task sessions bounded by Semaphore(4) + before/after 200K measurement → 92-VERIFICATION.md (D-05) [Wave 1]
+- [ ] 92-03-PLAN.md — CLEAN-02 core: rewire conftest to session-scoped engine + create_savepoint per-test rollback + shared verify fixture + mutation-safe hermeticity contract test [Wave 2]
+- [ ] 92-04-PLAN.md — CLEAN-02 migration: rebind the 23 independent-verify-session call sites (14 files, analyze/review/agents/discovery) to the shared connection-bound verify fixture [Wave 3]
+- [ ] 92-05-PLAN.md — CLEAN-02 D-08 gate: [BLOCKING] full ~1750-test suite green under per-bucket isolation for all 9 buckets → recorded in 92-VERIFICATION.md [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
