@@ -13,6 +13,7 @@ from phaze.tasks.tracklist import _store_scraped_tracklist, refresh_tracklists, 
 def _make_ctx() -> dict[str, Any]:
     """Create a minimal SAQ context dict with async_session factory."""
     mock_session = AsyncMock()
+    mock_session.add = MagicMock()  # AsyncSession.add is sync; keep it non-async so no un-awaited-coroutine warning
     mock_session_factory = MagicMock()
     mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -284,6 +285,7 @@ async def test_refresh_tracklists(mock_sleep: AsyncMock, mock_scrape: AsyncMock)
 async def test_store_scraped_tracklist_creates_new_when_absent() -> None:
     """With no existing external_id match, a fresh Tracklist is created at version 1."""
     session = AsyncMock()
+    session.add = MagicMock()  # AsyncSession.add is sync; keep it non-async so no un-awaited-coroutine warning
     no_match = MagicMock()
     no_match.scalar_one_or_none.return_value = None
     session.execute.return_value = no_match
@@ -304,6 +306,7 @@ async def test_store_scraped_tracklist_creates_new_when_absent() -> None:
 async def test_store_scraped_tracklist_swallows_non_valueerror_date() -> None:
     """A date value that makes strptime raise a non-ValueError (e.g. a non-str) is caught, leaving date None."""
     session = AsyncMock()
+    session.add = MagicMock()  # AsyncSession.add is sync; keep it non-async so no un-awaited-coroutine warning
     no_match = MagicMock()
     no_match.scalar_one_or_none.return_value = None
     session.execute.return_value = no_match
