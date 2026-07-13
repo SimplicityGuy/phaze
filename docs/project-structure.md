@@ -26,7 +26,7 @@ phaze/
 │   ├── static/                 # Static assets (favicons, web manifest, OG image)
 │   ├── models/                 # SQLAlchemy ORM models
 │   │   ├── base.py             #   DeclarativeBase + TimestampMixin
-│   │   ├── file.py             #   FileRecord + FileState enum
+│   │   ├── file.py             #   FileRecord (no state column; per-stage status derived on read)
 │   │   ├── scan_batch.py       #   ScanBatch progress tracking
 │   │   ├── metadata.py         #   FileMetadata (audio tags)
 │   │   ├── analysis.py         #   AnalysisResult (BPM, key, mood, style) + AnalysisWindow (per-window rows)

@@ -98,46 +98,43 @@ reachability (DIST-04).
 
 ## 🔄 File-Processing Pipeline
 
-Each `FileRecord` advances through a state machine defined by the `FileState` enum in
-`src/phaze/models/file.py`. The states below match the enum exactly.
+There is **no single `state` column** on `files` and **no file-level state enum** — both were
+dropped in Phase 90 (migration `039_drop_files_state_column`). Instead a file's per-stage
+status is **DERIVED on read** from its output tables (`metadata`, `fingerprint_results`,
+`analysis`, `proposals`, `execution_log`), the `cloud_job` sidecar, and the
+`dedup_resolution` marker. Two twin resolvers own that derivation and are locked 1:1 by an
+equivalence test so they can never drift: the DB-free `phaze.enums.stage.resolve_status`
+(`Stage` × output-table scalars → `Status`) and its SQL `ColumnElement` counterpart
+`services/stage_status.py` (`stage_status_case`), the single place every later reader drops a
+per-stage predicate into a `.where(...)`.
+
+A file moves conceptually through seven **stages** (`Stage` StrEnum): `metadata`,
+`fingerprint`, `analyze`, `tracklist`, `propose`, `review`, `apply`. Each stage resolves to
+one of five **statuses** (`Status` StrEnum) under the precedence ladder
+`in_flight ≻ done ≻ skipped ≻ failed ≻ not_started` — the durable `SchedulingLedger` is the
+authoritative `in_flight` source (guarding the 2026-06-18 over-enqueue class). Because status
+is derived **per stage**, a file that is BOTH fingerprinted and analyzed reads `done` for
+both stages at once — something the retired single-valued state column could never express.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> DISCOVERED
-    DISCOVERED --> METADATA_EXTRACTED : mutagen
-    METADATA_EXTRACTED --> FINGERPRINTED : audfprint + Panako
-    FINGERPRINTED --> ANALYZED : essentia (short files)
-    FINGERPRINTED --> AWAITING_CLOUD : long file, cloud routed
-    FINGERPRINTED --> LOCAL_ANALYZING : drain spill to local
-    AWAITING_CLOUD --> PUSHING : rsync to cloud scratch
-    PUSHING --> PUSHED : landed on compute
-    PUSHED --> ANALYZED : cloud/Kueue result PUT
-    PUSHED --> ANALYSIS_FAILED : timeout / crash
-    LOCAL_ANALYZING --> ANALYZED : local essentia PUT
-    LOCAL_ANALYZING --> ANALYSIS_FAILED : timeout / crash
-    ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
-    PROPOSAL_GENERATED --> APPROVED : human review
-    PROPOSAL_GENERATED --> REJECTED : human review
-    PROPOSAL_GENERATED --> DUPLICATE_RESOLVED : dedup
-    APPROVED --> EXECUTED : copy-verify-delete
-    APPROVED --> FAILED : execution error
-    EXECUTED --> [*]
-    REJECTED --> [*]
+flowchart TD
+    DISC[discovered] --> META[metadata: mutagen]
+    META --> FP[fingerprint: audfprint + Panako]
+    FP --> AN[analyze: essentia]
+    FP -.long file, cloud/compute routed.-> CLOUD[(cloud_job sidecar)]
+    CLOUD --> AN
+    AN --> PROP[propose: LLM via litellm]
+    PROP --> REV[review: human approve / reject]
+    PROP -.duplicate.-> DUP[(dedup_resolution)]
+    REV --> APPLY[apply: copy-verify-delete]
 ```
 
-`FileState` also defines `MOVED` and `UNCHANGED` (added in Phase 26). Conceptually `MOVED`
-records a successful copy-verify-delete and `UNCHANGED` records a failed/cancelled execution
-where the file stayed at its original path; these are set jointly with the matching
-`ProposalStatus` via the internal `PATCH .../proposals/{id}/state` endpoint as batch
-execution adopts them. `EXECUTED` / `FAILED` are the original Phase 25 names retained for
-compatibility with the existing execution-log emit paths. Five further states carry the
-cloud-burst / tiered-drain subsystem (all code-only over the existing `String(30)` state
-column, no enum migration): `ANALYSIS_FAILED` (Phase 43 — windowed analysis timed out or
-crashed), `AWAITING_CLOUD` (Phase 49 — a long file held for cloud/compute analysis),
-`PUSHING` / `PUSHED` (Phase 50 — rsync-to-cloud-scratch in progress / landed), and
-`LOCAL_ANALYZING` (Phase 69 — a long file the drain spilled to the local backend, analyzing
-on-prem). That is **17** members in all. The full enum list, plus the `ProposalStatus` and
-`ScanStatus` enums, is documented in [Database](database.md).
+The long-file cloud-burst / tiered-drain detour off `analyze` is **not** a set of file-state
+members anymore — it is tracked by the standalone `cloud_job` sidecar row, whose
+`CloudJobStatus` progresses `awaiting → uploading → uploaded → submitted → running →
+succeeded` (or `failed`), while a `dedup_resolution` row records a duplicate-resolved
+outcome. The `Stage` / `Status` vocabulary, the `cloud_job` sidecar, and the `ProposalStatus`
+and `ScanStatus` enums are documented in [Database](database.md).
 
 ## 🌊 Data Flow
 
@@ -256,8 +253,9 @@ counts `COUNT(DISTINCT file_id / tracklist_id)` against each stage's OUTPUT tabl
 (`metadata`, `fingerprint_results` with `status='completed'`, `analysis`, `tracklists`,
 `tracklist_versions`, `discogs_links`, `proposals`, and completed `execution_log`), so a
 file that is BOTH fingerprinted and analyzed contributes to both node counts — impossible
-to express through the single-valued `FileRecord.state` enum that `get_pipeline_stats`
-groups on. Each stage is wrapped in `_safe_count` (degrade-to-0 + session rollback) so one
+to express through a single-valued per-file state column (the retired `state` column /
+file-state enum, dropped in Phase 90) that only one status could occupy at a time. Each stage
+is wrapped in `_safe_count` (degrade-to-0 + session rollback) so one
 failing stage never 500s the 5-second poll. The Scan/Search node is counter-only
 (`total=None`, rendered `done / —`): no table defines "should get a tracklist", so no
 denominator is fabricated.
@@ -533,7 +531,9 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| `FileRecord` + `FileState` | `file.py` | Central record + 17-state pipeline machine |
+| `FileRecord` | `file.py` | Central file record; **no** stored state column — per-stage status is derived on read (Phase 90 dropped the `state` column / file-state enum in migration `039`) |
+| `Stage` + `Status` / `resolve_status` | `enums/stage.py` | 7-stage × 5-status derived per-stage status resolver (DB-free twin of `services/stage_status.py`) |
+| `CloudJob` + `CloudJobStatus` | `cloud_job.py` | Cloud-burst / tiered-drain sidecar row tracking the long-file detour off `analyze` |
 | `RenameProposal` + `ProposalStatus` | `proposal.py` | AI rename proposal (one active PENDING row, upserted in place) + approval status; partial unique index `uq_proposals_file_id_pending` |
 | `ExecutionLog` | `execution.py` | Append-only copy-verify-delete audit trail |
 | `Agent` | `agent.py` | File-server identity (token, scan roots, liveness) |
@@ -545,7 +545,7 @@ model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 | ----------- | ---- | ---- |
 | `run_scan` / `discover_and_hash_files` | `ingestion.py` | Directory walk, hash, bulk upsert (rows only; no auto-enqueue) |
 | `ProposalService` / `store_proposals` | `proposal.py` | LLM calling, context build, confidence clamp, idempotent partial-index proposal upsert |
-| `get_pipeline_stats` / `get_stage_progress` | `pipeline.py` | Linear state counts + per-DAG-node DB-truth `COUNT(DISTINCT)` reconcile (the rendering authority) |
+| `get_stage_progress` / `_derive_stats` | `pipeline.py` / `routers/pipeline.py` | Per-DAG-node DB-truth `COUNT(DISTINCT)` off each stage's output table (the rendering authority); `_derive_stats` re-expresses the former state-grouped `get_pipeline_stats` keys off this derived source (Phase 82, D-05) |
 | `get_global_reconciliation` / `get_agent_reconciliations` | `pipeline.py` | Scanned-vs-file-row dedup reconciliation (latest completed batch per agent); degrade-safe, hidden when `deduped == 0` |
 | `incr_*` / `read_counters` | `pipeline_counters.py` | Durable Redis per-function enqueued/completed counters (non-authoritative cache) |
 | `execute_approved_batch` | `tasks/execution.py` | Per-agent copy → verify → delete with write-ahead log + containment guard |
