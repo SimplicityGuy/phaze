@@ -13,7 +13,7 @@
 # Build (native arm64 host — ubuntu-24.04-arm in CI, or Apple Silicon / colima):
 #   docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t <ghcr>/phaze:<tag>-arm64 .
 
-FROM python:3.13-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # TF version (override with --build-arg). 2.20.0 is the spike-proven combo: 2.19 has
 # NO cp313 aarch64 wheel — only 2.20.0 / 2.21.0 do; 2.20.0 is the one essentia's glue
