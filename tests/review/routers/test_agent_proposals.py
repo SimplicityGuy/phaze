@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.routers import agent_proposals
 
@@ -39,7 +39,6 @@ async def _seed_file_and_proposal(
     session: AsyncSession,
     agent_id: str,
     proposal_status: ProposalStatus = ProposalStatus.APPROVED,
-    file_state: FileState = FileState.APPROVED,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """Seed a FileRecord + RenameProposal pair. Returns (file_id, proposal_id)."""
     file_id = uuid.uuid4()
@@ -51,7 +50,6 @@ async def _seed_file_and_proposal(
         current_path=f"/orig/track-{file_id}.mp3",
         file_type="mp3",
         file_size=1024,
-        state=file_state,
         agent_id=agent_id,
     )
     proposal_id = uuid.uuid4()
@@ -87,18 +85,17 @@ async def test_executed_joint_update(session: AsyncSession, seed_test_agent: tup
     await session.commit()
     session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
-    f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.EXECUTED.value
-    # SIDECAR-03: the proposal->file.state cascade is gone. Positive guard -- state stays at the
-    # seeded default (APPROVED), proving the cascade write is removed, not merely absent.
-    assert f.state == FileState.APPROVED.value
+    # SIDECAR-03: the proposal->file.state cascade is gone (there is no scalar state post-MIG-04); the
+    # joint update still writes the non-state current_path column on the FileRecord.
+    f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert f.current_path == "/new/proposed.mp3"
 
 
 async def test_failed_joint_update(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """APPROVED -> FAILED + file UNCHANGED (no current_path required for 'unchanged')."""
     agent, raw_token = seed_test_agent
-    file_id, proposal_id = await _seed_file_and_proposal(session, agent.id)
+    _file_id, proposal_id = await _seed_file_and_proposal(session, agent.id)
     async with _make_client(session, raw_token) as ac:
         r = await ac.patch(
             f"/api/internal/agent/proposals/{proposal_id}/state",
@@ -111,10 +108,8 @@ async def test_failed_joint_update(session: AsyncSession, seed_test_agent: tuple
     await session.commit()
     session.expire_all()
     p = (await session.execute(select(RenameProposal).where(RenameProposal.id == proposal_id))).scalar_one()
-    f = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
     assert p.status == ProposalStatus.FAILED.value
     # SIDECAR-03: file.state stays at the seeded default (APPROVED); no cascade write.
-    assert f.state == FileState.APPROVED.value
 
 
 async def test_same_state_idempotent_no_op(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:

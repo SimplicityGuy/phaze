@@ -29,7 +29,7 @@ from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
@@ -62,7 +62,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=1024,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()
@@ -84,14 +83,6 @@ async def _ledger_present(session: AsyncSession, file_id: uuid.UUID) -> bool:
 async def _analysis_row(session: AsyncSession, file_id: uuid.UUID) -> AnalysisResult | None:
     session.expire_all()
     return (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
-
-
-async def _file_state(session: AsyncSession, file_id: uuid.UUID) -> FileState:
-    session.expire_all()
-    # Selecting the column directly can yield the raw enum VALUE (a str); normalize to the member so
-    # callers can compare by identity regardless of the column's native/non-native enum representation.
-    raw = (await session.execute(select(FileRecord.state).where(FileRecord.id == file_id))).scalar_one()
-    return FileState(raw)
 
 
 async def _no_mixed_row_exists(session: AsyncSession) -> bool:
@@ -299,7 +290,6 @@ async def test_report_failed_oversized_error_rejected_and_no_row_persisted(seed_
 
     row = await _analysis_row(session, file_id)
     assert row is None, "a rejected (422) failure POST must not persist an analysis failure row"
-    assert await _file_state(session, file_id) is FileState.DISCOVERED, "a rejected failure POST must not flip files.state"
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -49,7 +49,6 @@ async def _create_approved_tracklist_with_file(
         current_path=f"/dest/{artist} - Live @ {event}.mp3",
         file_type="mp3",
         file_size=50_000_000,
-        state=FileState.MOVED,
     )
     session.add(file_record)
     await session.flush()
@@ -179,11 +178,10 @@ async def test_generate_cue_admits_applied_file_not_executed_state(client: Async
     The file's ``state`` is ``'moved'`` (NEVER ``'executed'`` -- no prod writer sets that), yet the CUE
     is written because ``is_applied`` reads ``proposals.status == 'executed'``. This is the behavior that
     was dead before READ-05 (the old ``state == EXECUTED`` guard rejected every real applied file).
-    Mutation guard: revert ``generate_cue`` to ``file_record.state != FileState.EXECUTED`` and this test
-    goes RED (the fixture's ``state='moved'`` file would be rejected).
+    Mutation guard: revert ``generate_cue`` to a scalar executed-state check and this test goes RED
+    (the fixture is applied via an executed proposal, not a scalar state).
     """
     tracklist, file_record = await _create_approved_tracklist_with_file(session, applied=True)
-    assert file_record.state == FileState.MOVED  # applied-ness is NOT carried by files.state
 
     audio_path = tmp_path / f"{file_record.original_filename}"
     audio_path.write_text("fake audio")
@@ -425,7 +423,6 @@ async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSess
         current_path=str(tmp_path / "test.mp3"),
         file_type="mp3",
         file_size=50_000_000,
-        state=FileState.MOVED,
     )
     session.add(file_record)
     session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))
@@ -506,7 +503,6 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
         current_path=str(tmp_path / "test.mp3"),
         file_type="mp3",
         file_size=50_000_000,
-        state=FileState.MOVED,
     )
     session.add(file_record)
     session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))

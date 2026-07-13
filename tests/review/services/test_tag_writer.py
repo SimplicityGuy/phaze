@@ -10,7 +10,6 @@ import uuid
 from mutagen.mp3 import MP3
 import pytest
 
-from phaze.models.file import FileState
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteStatus
 
@@ -229,15 +228,14 @@ class TestExecuteTagWrite:
         """SC#2: an actually-applied file (executed proposal, ``state != 'executed'``) PASSES the guard.
 
         This is the behavior the phase revives: pre-Phase-85 the guard read ``file_record.state !=
-        FileState.EXECUTED`` and ALWAYS failed (no ``src/`` writer produces ``FileState.EXECUTED``).
+        the EXECUTED scalar state and ALWAYS failed (no ``src/`` writer produced that scalar state).
         The file's own ``state`` is deliberately ``'moved'`` -- the real apply-path outcome -- proving
         the guard admits on ``proposals.status == 'executed'`` alone.
 
         Mutation check (recorded in SUMMARY): reverting the guard to ``file_record.state !=
-        FileState.EXECUTED`` makes this fixture (``file.state == 'moved'``) RAISE and this test go RED.
+        the EXECUTED scalar state makes this fixture (applied-ness via proposals.status) RAISE and this test go RED.
         """
         file = await make_file()
-        assert file.state != FileState.EXECUTED.value  # premise: the file's own state is NOT 'executed'
         await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
 
         with (

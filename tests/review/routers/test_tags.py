@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
@@ -23,7 +23,6 @@ async def _create_executed_file(
     *,
     filename: str = "Artist - Test Track.mp3",
     file_type: str = "mp3",
-    state: str = FileState.MOVED,
     applied: bool = True,
     artist: str | None = "Old Artist",
     title: str | None = "Old Title",
@@ -50,7 +49,6 @@ async def _create_executed_file(
         current_path=f"/dest/{filename}",
         file_type=file_type,
         file_size=5_000_000,
-        state=state,
     )
     session.add(file_record)
     await session.flush()
@@ -204,7 +202,7 @@ async def test_write_tags_non_integer_year_and_track_number_kept_as_string(clien
 @pytest.mark.asyncio
 async def test_write_tags_non_executed_rejected(client: AsyncClient, session: AsyncSession) -> None:
     """POST /tags/{file_id}/write for a non-applied file (no executed proposal) returns error."""
-    file_record, _ = await _create_executed_file(session, state=FileState.DISCOVERED, applied=False)
+    file_record, _ = await _create_executed_file(session, applied=False)
     response = await client.post(
         f"/tags/{file_record.id}/write",
         data={"artist": "Test"},

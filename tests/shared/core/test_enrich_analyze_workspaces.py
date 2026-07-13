@@ -33,7 +33,7 @@ import pytest
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 
 
 if TYPE_CHECKING:
@@ -57,7 +57,6 @@ _WORKSPACE_STAGES = ["discover", "metadata", "fingerprint", "analyze"]
 async def _seed_file(
     session: AsyncSession,
     *,
-    state: str = FileState.ANALYZED,
     original_filename: str = "set.mp3",
     file_type: str = "mp3",
     file_size: int = 1024,
@@ -76,7 +75,6 @@ async def _seed_file(
         current_path=f"/test/music/{original_filename}",
         file_type=file_type,
         file_size=file_size,
-        state=state,
     )
     session.add(record)
     await session.commit()
@@ -378,7 +376,7 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
 
     # Seed a k8s cloud_job flagged Inadmissible (status RUNNING so get_inadmissible_count counts it) so the
     # GLOBAL inadmissible fault card renders (role="alert"), AND its cloud_phase makes the admission card render.
-    fault = await _seed_file(session, state=FileState.PUSHED, original_filename="fault.mp3")
+    fault = await _seed_file(session, original_filename="fault.mp3")
     await _seed_cloud_job(
         session,
         fault.id,
@@ -456,7 +454,7 @@ async def test_lane_grid_subcount_is_lane_count_agnostic(client: AsyncClient, se
 
     monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
     # A file must exist or the analyze node swaps to the first-run empty-state (shell.py:176) instead of lanes.
-    await _seed_file(session, state=FileState.PUSHED, original_filename="held.mp3")
+    await _seed_file(session, original_filename="held.mp3")
 
     resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert resp.status_code == 200
@@ -485,16 +483,16 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     full-record slide-in (``hx-get="/record/{file_id}"`` + a ``record:open`` dispatch).
     """
     # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
-    done = await _seed_file(session, state=FileState.ANALYZED, original_filename="done.mp3")
+    done = await _seed_file(session, original_filename="done.mp3")
     await _seed_analysis(session, done.id, fine_done=41, fine_total=41, completed=True)
     # IN-FLIGHT file: a partial 57.1 analysis row (fine_done < fine_total), NOT yet ANALYZED.
-    inflight = await _seed_file(session, state=FileState.FINGERPRINTED, original_filename="inflight.mp3")
+    inflight = await _seed_file(session, original_filename="inflight.mp3")
     await _seed_analysis(session, inflight.id, fine_done=14, fine_total=41)
     # A1 lane: cloud_job with cloud_phase NULL.
-    a1 = await _seed_file(session, state=FileState.PUSHED, original_filename="a1.mp3")
+    a1 = await _seed_file(session, original_filename="a1.mp3")
     await _seed_cloud_job(session, a1.id, None)
     # k8s lane: cloud_job with cloud_phase set.
-    k8s = await _seed_file(session, state=FileState.PUSHED, original_filename="k8s.mp3")
+    k8s = await _seed_file(session, original_filename="k8s.mp3")
     await _seed_cloud_job(session, k8s.id, CloudPhase.RUNNING.value)
 
     resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
