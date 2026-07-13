@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services import kube_staging
 import phaze.tasks.submit_cloud_job as submit_mod
@@ -81,7 +81,7 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch) -> Any:
     return kube
 
 
-def _make_file(*, state: str = FileState.AWAITING_CLOUD) -> FileRecord:
+def _make_file() -> FileRecord:
     """Build a fully-populated FileRecord (the cloud_job FK target)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -93,7 +93,6 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD) -> FileRecord:
         current_path=f"/music/{uid.hex}.flac",
         file_type="flac",
         file_size=1000,
-        state=state,
     )
 
 

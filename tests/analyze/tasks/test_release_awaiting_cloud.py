@@ -32,7 +32,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services.enqueue_router import NoActiveAgentError
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -81,10 +81,11 @@ class _StubBackend:
             raise RuntimeError(f"{self.id}: kube submit / S3 stage blew up")
         if self._raise_on == "dispatch_noagent":
             raise NoActiveAgentError("fileserver")
-        file.state = FileState.PUSHING
-        # Post Phase-83 the held file already carries an awaiting cloud_job row (the sidecar drain's INNER
-        # join requires it), so PROMOTE it (mirrors ComputeAgentBackend/KueueBackend's on_conflict_do_update)
-        # rather than INSERTing a second row -- a fresh INSERT would violate uq_cloud_job_file_id.
+        # Post-MIG-04 there is no ``files.state`` dual-write: the file's push status is DERIVED from the
+        # cloud_job sidecar alone. The held file already carries an awaiting cloud_job row (the sidecar
+        # drain's INNER join requires it), so PROMOTE it (mirrors ComputeAgentBackend/KueueBackend's
+        # on_conflict_do_update) rather than INSERTing a second row -- a fresh INSERT would violate
+        # uq_cloud_job_file_id.
         await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, status=CloudJobStatus.SUBMITTED.value))
         return True
 
@@ -133,7 +134,6 @@ def _make_file() -> FileRecord:
         current_path=f"/music/{uid.hex}.flac",
         file_type="flac",
         file_size=1000,
-        state=FileState.AWAITING_CLOUD,
     )
 
 
@@ -149,9 +149,14 @@ async def _seed_awaiting_rows(session: AsyncSession, files: list[FileRecord]) ->
 
 
 async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """Derive each file's push status from its cloud_job sidecar row (post-MIG-04 authority).
+
+    ``awaiting`` = still held (AWAITING_CLOUD); ``submitted`` = dispatched to a cloud backend
+    (the old PUSHING). There is no scalar ``files.state`` to read anymore.
+    """
     session.expire_all()
-    rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
-    return {r.id: r.state for r in rows}
+    rows = (await session.execute(select(CloudJob.file_id, CloudJob.status).where(CloudJob.file_id.in_(ids)))).all()
+    return dict(rows)
 
 
 async def _backend_ids_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str | None]:
@@ -194,7 +199,7 @@ async def test_stage_cloud_window_isolation_is_available_raise_does_not_poison_t
     # Both candidates landed on the HEALTHY backend; the flaky one contributed nothing.
     backend_ids = await _backend_ids_for(session, ids)
     assert set(backend_ids.values()) == {"kueue-b"}
-    assert set((await _states_for(session, ids)).values()) == {FileState.PUSHING}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.SUBMITTED.value}
     assert flaky.dispatch_calls == 0  # a 0-slot flaky backend is never selected
 
 
@@ -263,7 +268,7 @@ async def test_mcomp05_flaky_compute_backend_degrades_to_zero_slots_healthy_comp
     assert result == {"staged": 2, "skipped": 0}
     # Every candidate landed on the HEALTHY compute lane; the flaky one contributed nothing.
     assert set((await _backend_ids_for(session, ids)).values()) == {"compute-b"}
-    assert set((await _states_for(session, ids)).values()) == {FileState.PUSHING}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.SUBMITTED.value}
     assert flaky_compute.dispatch_calls == 0  # a 0-slot flaky lane is never selected
 
 
@@ -302,7 +307,7 @@ async def test_stage_cloud_window_isolation_generic_dispatch_raise_holds_candida
     # The loop CONTINUED past the first raise (both candidates attempted), never broke.
     assert raiser.dispatch_calls == 2
     # Both files stay AWAITING_CLOUD and grow NO cloud_job row (the raising path mutated nothing).
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.AWAITING.value}
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
@@ -339,7 +344,7 @@ async def test_stage_cloud_window_isolation_dispatch_noactiveagent_holds_all_and
     assert result == {"staged": 0, "skipped": 2}
     # BREAK semantics: the fileserver-vanish path holds ALL remaining after ONE failing dispatch.
     assert vanish.dispatch_calls == 1
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.AWAITING.value}
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
@@ -385,7 +390,7 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     assert result == {"staged": 0, "skipped": 2}
     assert healthy.dispatch_calls == 0  # the raise fired before any dispatch was attempted
     # Whole tick rolled back: no file flipped AWAITING_CLOUD -> PUSHING, no cloud_job row written.
-    assert set((await _states_for(session, ids)).values()) == {FileState.AWAITING_CLOUD}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.AWAITING.value}
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}

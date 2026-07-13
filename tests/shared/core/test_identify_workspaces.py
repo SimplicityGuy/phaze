@@ -34,7 +34,7 @@ import uuid
 import pytest
 from sqlalchemy import update
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pipeline import get_trackid_stage_files, get_tracklist_set_rows
@@ -59,7 +59,6 @@ _WORKSPACE_STAGES = ["trackid", "tracklist"]
 async def _seed_file(
     session: AsyncSession,
     *,
-    state: str = FileState.FINGERPRINTED,
     original_filename: str = "set.mp3",
     file_type: str = "mp3",
     file_size: int = 1024,
@@ -78,7 +77,6 @@ async def _seed_file(
         current_path=f"/test/music/{original_filename}",
         file_type=file_type,
         file_size=file_size,
-        state=state,
     )
     session.add(record)
     await session.commit()

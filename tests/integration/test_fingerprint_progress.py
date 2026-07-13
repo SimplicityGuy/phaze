@@ -20,7 +20,7 @@ down; ``Base.metadata.create_all`` + a seeded ``legacy-application-server`` Agen
 (ephemeral PG ``:5433``).
 
 MUTATION EVIDENCE (recorded in 84-04-SUMMARY.md): reverting ``completed`` to
-``state == FileState.FINGERPRINTED`` drops ``completed`` from 2 to 0 (RED); reverting ``failed`` to a
+a scalar ``state == 'fingerprinted'`` read drops ``completed`` from 2 to 0 (RED); reverting ``failed`` to a
 ``fingerprint_results`` ROW count over ``status='failed'`` lifts ``failed`` from 1 to 2 (RED).
 """
 
@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from phaze.models.agent import Agent
 from phaze.models.base import Base
 from phaze.models.dedup_resolution import DedupResolution
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.services.fingerprint import get_fingerprint_progress
 
@@ -100,7 +100,7 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
     await engine.dispose()
 
 
-async def _new_file(session: AsyncSession, *, file_type: str, state: str = FileState.DISCOVERED.value) -> uuid.UUID:
+async def _new_file(session: AsyncSession, *, file_type: str) -> uuid.UUID:
     """Seed a bare FileRecord of ``file_type`` at ``state`` with NO backing rows; return its id."""
     fid = uuid.uuid4()
     session.add(
@@ -113,7 +113,6 @@ async def _new_file(session: AsyncSession, *, file_type: str, state: str = FileS
             current_path=f"/media/{fid}.{file_type}",
             file_type=file_type,
             file_size=1234,
-            state=state,
         )
     )
     await session.flush()
@@ -144,9 +143,9 @@ async def test_get_fingerprint_progress_derives_from_output_tables(db_session: A
     db_session.add(DedupResolution(file_id=f_marked))
     await db_session.flush()
 
-    # (5) music file at state='duplicate_resolved' but NO marker -> INCLUDED in total. This is the
-    #     marker-not-state proof: a state read would exclude it; the derivation includes it.
-    await _new_file(db_session, file_type="mp3", state=FileState.DUPLICATE_RESOLVED.value)
+    # (5) a music file with NO dedup marker -> INCLUDED in total (D-10: only a marker excludes; post-MIG-04
+    #     there is no scalar state that could ever exclude it -- membership derives from the marker alone).
+    await _new_file(db_session, file_type="mp3")
 
     # (6) one engine success + one engine failure -> completed, NOT failed (DERIV-05: one success wins).
     f_mixed = await _new_file(db_session, file_type="mp3")

@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services.pipeline import get_cloud_phase_counts, get_inadmissible_count
 
 
@@ -33,7 +33,6 @@ def _file(i: int) -> FileRecord:
         current_path=f"/music/cloud{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.PUSHED,
     )
 
 

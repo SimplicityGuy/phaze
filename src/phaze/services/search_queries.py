@@ -44,7 +44,6 @@ async def search(
     date_to: str | None = None,
     bpm_min: float | None = None,
     bpm_max: float | None = None,
-    file_state: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[SearchResult], Pagination]:
@@ -63,7 +62,11 @@ async def search(
             FileRecord.original_filename.label("title"),
             FileMetadata.artist.label("artist"),
             FileMetadata.genre.label("genre"),
-            FileRecord.state.label("state"),
+            # Phase 90 (PR-A, D-11): the file branch no longer exposes the file pipeline-status column --
+            # the search status facet is removed with no derived replacement. The union ``state`` SLOT is
+            # kept (a neutral NULL literal here) purely for column-parity so the tracklist/discogs branches
+            # can still surface their own ``status`` in that slot.
+            literal_column("NULL").label("state"),
             cast(FileRecord.created_at, String).label("date"),
             func.ts_rank(file_tsvector, ts_query).label("rank"),
         )
@@ -84,10 +87,8 @@ async def search(
         file_q = file_q.where(AnalysisResult.bpm >= bpm_min)
     if bpm_max is not None:
         file_q = file_q.where(AnalysisResult.bpm <= bpm_max)
-    if file_state:
-        file_q = file_q.where(FileRecord.state == file_state)
 
-    # Tracklist subquery (excluded when file_state filter is active)
+    # Tracklist subquery
     tracklist_tsvector = func.to_tsvector(
         "simple",
         func.concat_ws(" ", Tracklist.artist, Tracklist.event),
@@ -133,8 +134,8 @@ async def search(
     if artist:
         discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(f"%{artist}%"))
 
-    # When file_state filter is active, exclude tracklists and Discogs results entirely
-    combined = file_q.subquery() if file_state else union_all(file_q, tracklist_q, discogs_q).subquery()
+    # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
+    combined = union_all(file_q, tracklist_q, discogs_q).subquery()
 
     # Count total
     count_q = select(func.count()).select_from(combined)

@@ -18,7 +18,7 @@ import pytest
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.schemas.agent_analysis import PresignDownloadResponse
 
 
@@ -95,7 +95,6 @@ async def _seed_file(session: AsyncSession, agent: Agent, *, sha256: str = _SHA)
         current_path="/test/music/song.mp3",
         file_type="mp3",
         file_size=4096,
-        state=FileState.AWAITING_CLOUD,
         agent_id=agent.id,
     )
     session.add(file)

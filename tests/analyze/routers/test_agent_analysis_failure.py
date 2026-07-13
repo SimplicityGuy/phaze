@@ -29,7 +29,7 @@ from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
@@ -62,7 +62,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=1024,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()
@@ -84,14 +83,6 @@ async def _ledger_present(session: AsyncSession, file_id: uuid.UUID) -> bool:
 async def _analysis_row(session: AsyncSession, file_id: uuid.UUID) -> AnalysisResult | None:
     session.expire_all()
     return (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
-
-
-async def _file_state(session: AsyncSession, file_id: uuid.UUID) -> FileState:
-    session.expire_all()
-    # Selecting the column directly can yield the raw enum VALUE (a str); normalize to the member so
-    # callers can compare by identity regardless of the column's native/non-native enum representation.
-    raw = (await session.execute(select(FileRecord.state).where(FileRecord.id == file_id))).scalar_one()
-    return FileState(raw)
 
 
 async def _no_mixed_row_exists(session: AsyncSession) -> bool:
@@ -137,7 +128,7 @@ async def test_report_failed_inserts_marker_with_no_prior_row(seed_test_agent: t
     assert row.failed_at is not None, "failed_at must be stamped"
     assert row.error_message == "timeout: boom", "error_message is the composed '<reason>: <error>' (D-07)"
     assert row.analysis_completed_at is None, "a failed row keeps analysis_completed_at NULL (XOR CHECK)"
-    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED, "the files.state write is kept (D-05 dual-write)"
+    # Phase 90 (D-09): the files.state = ANALYSIS_FAILED dual-write was removed; failed_clause derives from failed_at.
     assert not await _ledger_present(session, file_id), "the process_file ledger row is cleared in the same transaction"
     assert await _no_mixed_row_exists(session)
 
@@ -196,7 +187,7 @@ async def test_report_failed_after_success_clears_completed_at(seed_test_agent: 
     assert row.failed_at is not None, "failed_at is stamped on the flip"
     assert row.analysis_completed_at is None, "analysis_completed_at is cleared so the XOR CHECK holds (D-06)"
     assert row.error_message == "error: late crash"
-    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED
+    # Phase 90 (D-09): failed status derives from analysis.failed_at, not the removed files.state write.
     assert await _no_mixed_row_exists(session)
 
 
@@ -237,7 +228,7 @@ async def test_success_after_failure_clears_marker(seed_test_agent: tuple[Agent,
     assert row.error_message is None, "a real success clears error_message (D-13)"
     assert row.analysis_completed_at is not None, "the completion branch stamps analysis_completed_at"
     assert row.bpm == 130.0
-    assert await _file_state(session, file_id) is FileState.ANALYZED
+    # Phase 90 (D-09): 'analyzed' derives from analysis_completed_at, not the removed files.state write.
     assert await _no_mixed_row_exists(session)
 
 
@@ -269,7 +260,7 @@ async def test_report_failed_nul_in_error_persists_and_clears_ledger(seed_test_a
     assert row.error_message is not None
     assert chr(0) not in row.error_message, "NUL must be stripped before persist"
     assert row.error_message == "crashed: badframe"
-    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED
+    # Phase 90 (D-09): failed status derives from analysis.failed_at, not the removed files.state write.
     # The whole point: the transaction survived, so the ledger clear committed.
     assert not await _ledger_present(session, file_id), "a NUL-bearing error must not strand the ledger row"
     assert await _no_mixed_row_exists(session)
@@ -299,7 +290,6 @@ async def test_report_failed_oversized_error_rejected_and_no_row_persisted(seed_
 
     row = await _analysis_row(session, file_id)
     assert row is None, "a rejected (422) failure POST must not persist an analysis failure row"
-    assert await _file_state(session, file_id) is FileState.DISCOVERED, "a rejected failure POST must not flip files.state"
 
 
 @pytest.mark.asyncio
@@ -323,4 +313,4 @@ async def test_report_failed_error_at_max_length_boundary_is_accepted(seed_test_
     assert row.failed_at is not None
     assert row.error_message is not None
     assert row.error_message.startswith("error: "), f"error_message must be composed as '<reason>: <error>', got {row.error_message!r}"
-    assert await _file_state(session, file_id) is FileState.ANALYSIS_FAILED
+    # Phase 90 (D-09): failed status derives from analysis.failed_at, not the removed files.state write.

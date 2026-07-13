@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -103,7 +103,7 @@ def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller
     return {"async_session": sm, "queue": controller_queue, "task_router": router}
 
 
-def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file(*, file_type: str = "mp3") -> FileRecord:
     """Build a fully-populated FileRecord row for the recovery seed."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -115,7 +115,6 @@ def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> 
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
@@ -147,7 +146,7 @@ async def _seed_ledger(
     return key
 
 
-# --- Phase-80 output-table seeds (the derived done/failed source, replacing FileState reads) ------
+# --- Phase-80 output-table seeds (the derived done/failed source, replacing scalar-state reads) ---
 
 
 async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed: bool = False, failed: bool = False) -> None:
@@ -211,7 +210,7 @@ async def test_never_scheduled_files_are_left_alone(
     _patch_inflight(monkeypatch, 0)  # genuine queue-loss
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    session.add_all([_make_file(state=FileState.DISCOVERED) for _ in range(11)])
+    session.add_all([_make_file() for _ in range(11)])
     await session.commit()
 
     router = DedupFakeTaskRouter()
@@ -238,7 +237,7 @@ async def test_no_op_on_durable_restart(
     _patch_inflight(monkeypatch, 5)  # durable Phase-36 restart: jobs survived
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id)
@@ -271,7 +270,7 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)  # NOT analyze-done
+    f = _make_file()  # NOT analyze-done
     session.add(f)
     await session.commit()
     key = await _seed_ledger(session, function="process_file", file_id=f.id)
@@ -303,7 +302,7 @@ async def test_replay_preserves_stored_timeout_and_retries(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id, timeout=7200, retries=2)
@@ -330,7 +329,7 @@ async def test_replay_omits_policy_when_ledger_has_none(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id)  # no timeout/retries
@@ -380,7 +379,7 @@ async def test_live_key_row_is_excluded(
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     key = await _seed_ledger(session, function="process_file", file_id=f.id)
@@ -406,15 +405,15 @@ async def test_analyze_done_row_is_excluded(
     """A process_file row whose analyze is done (completed_at) OR terminally-failed (failed_at) is excluded.
 
     Phase 80 (D-01): analyze domain-completion is ``domain_completed_clause(ANALYZE)`` == done OR
-    terminal-failed, derived from the ``analysis`` output row -- NOT a FileState read. Both a completed
+    terminal-failed, derived from the ``analysis`` output row -- NOT a scalar-state read. Both a completed
     and a terminally-failed analyze are domain-complete (FAILURE_IS_TERMINAL[analyze] -> never auto-re-driven).
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f_done = _make_file(state=FileState.ANALYZED)
-    f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
+    f_done = _make_file()
+    f_failed = _make_file()
     session.add_all([f_done, f_failed])
     await session.commit()
     await _seed_analysis(session, f_done.id, completed=True)
@@ -445,7 +444,7 @@ async def test_metadata_done_row_is_excluded(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id)  # failed_at NULL -> metadata done
@@ -469,7 +468,7 @@ async def test_metadata_pending_row_replays(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)  # music file -> in metadata pending set
+    f = _make_file()  # music file -> in metadata pending set
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
@@ -496,7 +495,7 @@ async def test_fingerprint_done_row_is_excluded(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f_done = _make_file(state=FileState.ANALYZED)
+    f_done = _make_file()
     session.add(f_done)
     await session.commit()
     await _seed_fingerprint(session, f_done.id, status="success")  # a success engine -> fingerprint done
@@ -520,7 +519,7 @@ async def test_fingerprint_pending_row_replays(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.METADATA_EXTRACTED)  # in fingerprint pending set
+    f = _make_file()  # in fingerprint pending set
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
@@ -553,7 +552,7 @@ async def test_cleared_metadata_row_is_not_reenqueued(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)  # music file -> still in metadata pending set
+    f = _make_file()  # music file -> still in metadata pending set
     session.add(f)
     await session.commit()
     key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
@@ -586,7 +585,7 @@ async def test_cleared_fingerprint_row_is_not_reenqueued(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.METADATA_EXTRACTED)  # still in fingerprint pending set
+    f = _make_file()  # still in fingerprint pending set
     session.add(f)
     await session.commit()
     key = await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
@@ -629,7 +628,7 @@ async def test_skipped_analyze_row_is_excluded_from_recovery(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)  # would-be orphan absent the marker
+    f = _make_file()  # would-be orphan absent the marker
     session.add(f)
     await session.commit()
     await _seed_stage_skip(session, f.id, stage="analyze")
@@ -659,7 +658,7 @@ async def test_skipped_analyze_row_is_excluded_on_manual_force(
     _patch_inflight(monkeypatch, 3)  # queue NOT empty: force=True is the only way past the detect gate
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_stage_skip(session, f.id, stage="analyze")
@@ -691,7 +690,7 @@ async def test_skipped_metadata_row_is_excluded_from_recovery(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_stage_skip(session, f.id, stage="metadata")
@@ -723,7 +722,7 @@ async def test_skipped_fingerprint_row_is_excluded_from_recovery(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.METADATA_EXTRACTED)  # in fingerprint pending set absent the marker
+    f = _make_file()  # in fingerprint pending set absent the marker
     session.add(f)
     await session.commit()
     await _seed_stage_skip(session, f.id, stage="fingerprint")
@@ -746,13 +745,13 @@ async def test_scan_row_is_live_keys_only(
 
     scan_live_set is live-keys-only -- its ledger row is cleared by Plan 02's terminal ack on every
     outcome, so any row that reaches recovery IS orphaned. The domain-completed predicate must NOT
-    apply to it (no FileState/pending-set exclusion), so even an ANALYZED file replays.
+    apply to it (no scalar-state/pending-set exclusion), so even an ANALYZED file replays.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.ANALYZED)  # would be "done" for analyze, but irrelevant to scan
+    f = _make_file()  # would be "done" for analyze, but irrelevant to scan
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="scan_live_set", file_id=f.id)
@@ -781,7 +780,7 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
     analyze done-set. This test guards the omission so a future derivation edit cannot silently mark a
     held file complete.
     """
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
@@ -824,7 +823,7 @@ async def test_held_file_with_process_file_seed_is_in_the_held_set(
     MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` (e.g. reusing ``awaiting_candidate_clause()``)
     drops this file from the set -> RED.
     """
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
@@ -845,7 +844,7 @@ async def test_genuinely_parked_awaiting_file_is_in_held_set(
     MUTATION: reverting to a bare ``FileRecord.state == AWAITING_CLOUD`` read (dropping the cloud_job
     INNER join) would keep passing here but re-include the inflight file above -> the pair is the lock.
     """
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)  # parked, no process_file ledger row
@@ -873,7 +872,7 @@ async def test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
@@ -906,7 +905,7 @@ async def test_held_process_file_orphan_routes_to_a_compute_agent(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")  # a compute agent online
-    f = _make_file(state=FileState.AWAITING_CLOUD)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
@@ -935,7 +934,7 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")  # only a fileserver online
-    normal = _make_file(state=FileState.DISCOVERED)  # not AWAITING_CLOUD, not analyze-done
+    normal = _make_file()  # not AWAITING_CLOUD, not analyze-done
     session.add(normal)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=normal.id)
@@ -1004,7 +1003,7 @@ async def test_dedup_skip_backstop_for_a_slipped_live_item(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())  # stale: reports nothing live
     agent = await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     key = await _seed_ledger(session, function="process_file", file_id=f.id)
@@ -1035,7 +1034,7 @@ async def test_force_bypasses_gate_not_dedup(
     _patch_inflight(monkeypatch, 5)  # live queue -> the gate WOULD short-circuit without force
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id)
@@ -1064,7 +1063,7 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     # NO active agent seeded -> select_active_agent raises NoActiveAgentError.
-    f = _make_file(state=FileState.DISCOVERED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id)  # agent-routed
@@ -1133,7 +1132,6 @@ async def test_count_inflight_jobs_reads_real_saq_jobs() -> None:
         current_path="/music/recovery-itest.mp3",
         file_type="mp3",
         file_size=2048,
-        state=FileState.DISCOVERED,
         agent_id="recovery-itest",
     )
 
@@ -1322,7 +1320,7 @@ async def test_single_owner_in_flight_cloud_job_skips_ledger_recovery(
     _patch_inflight(monkeypatch, 0)  # genuine queue-loss
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")
-    burst = _make_file(state=FileState.AWAITING_CLOUD)
+    burst = _make_file()
     session.add(burst)
     await session.commit()
     await _seed_cloud_job(session, burst.id, status=CloudJobStatus.SUBMITTED)  # in-flight -> owned by its callback
@@ -1353,7 +1351,7 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")
-    held = _make_file(state=FileState.AWAITING_CLOUD)
+    held = _make_file()
     session.add(held)
     await session.commit()
     await _seed_cloud_job(session, held.id, status=CloudJobStatus.FAILED)  # terminal -> NOT in-flight
@@ -1383,7 +1381,7 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")
-    held = _make_file(state=FileState.AWAITING_CLOUD)
+    held = _make_file()
     session.add(held)
     await session.commit()
     # No cloud_job row seeded -- genuinely orphaned.
@@ -1422,7 +1420,7 @@ async def test_sc2_never_scheduled_discovered_file_with_no_ledger_row_is_not_rec
     _patch_inflight(monkeypatch, 0)  # genuine queue-loss
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    orphan = _make_file(state=FileState.DISCOVERED)  # never scheduled -> no ledger row
+    orphan = _make_file()  # never scheduled -> no ledger row
     session.add(orphan)
     await session.commit()
 
@@ -1453,7 +1451,7 @@ async def test_sc3_failed_analyze_with_surviving_ledger_row_is_terminal_never_re
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file(state=FileState.ANALYSIS_FAILED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_analysis(session, f.id, failed=True)  # terminal analyze failure (failed_at set)
@@ -1485,7 +1483,7 @@ async def test_d10_cell_a_orphaned_operator_retry_redrives_metadata(session: Asy
     MUTATION: flipping the gate comparison to ``>=`` / ``<`` (or dropping it) makes this domain-complete -> RED.
     """
     failed_at = datetime.now(UTC)
-    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
@@ -1510,7 +1508,7 @@ async def test_d10_cell_b_callback_partial_failure_stays_terminal(session: Async
     turns Cell A RED -- the pair proves the gate is non-vacuous.
     """
     failed_at = datetime.now(UTC)
-    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
@@ -1536,7 +1534,7 @@ async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSessi
     (``TypeError: can't compare offset-naive and offset-aware datetimes``).
     """
     failed_at = datetime.now(UTC)
-    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
@@ -1584,7 +1582,7 @@ async def test_d11_inflight_clause_is_not_in_domain_completed_clause(session: As
     MUTATION: adding ``~inflight_clause(stage)`` to ``domain_completed_clause`` makes this row re-drive -> RED.
     """
     failed_at = datetime.now(UTC)
-    f = _make_file(state=FileState.METADATA_EXTRACTED)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED

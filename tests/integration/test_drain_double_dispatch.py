@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.backends import LocalBackend
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
@@ -122,8 +122,9 @@ class _LocalStub(LocalBackend):
 
     ``ledger_engine`` set => commit the ledger row in a SEPARATE session (models the hook's OWN
     independent commit that survives a rolled-back drain tick, case (b)); unset => write it in the
-    caller's drain session so it commits WITH the tick (case (a)). Flips ``file.state`` to
-    ``LOCAL_ANALYZING`` (D-13 dual-write) and never commits the drain session (dispatch discipline).
+    caller's drain session so it commits WITH the tick (case (a)). Never commits the drain session
+    (dispatch discipline). Post-MIG-04 there is no ``files.state`` dual-write -- the ledger row alone
+    is the exactly-once authority the next tick's ``~inflight_clause`` reads.
     """
 
     def __init__(self, *, id: str = "local", rank: int = 99, cap: int = 100, ledger_engine: AsyncEngine | None = None) -> None:
@@ -154,7 +155,6 @@ class _LocalStub(LocalBackend):
         else:
             # Case (a): write in the drain session -> committed WITH the tick's single post-loop commit.
             session.add(ledger)
-        file.state = FileState.LOCAL_ANALYZING  # D-13 dual-write (rolled back in case (b), stands in case (a))
         return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002
@@ -185,7 +185,6 @@ class _CloudStub:
         self.dispatched_ids.append(file.id)
         # Promote the existing awaiting row (uq_cloud_job_file_id -> UPDATE, not a second INSERT).
         await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(status=CloudJobStatus.SUBMITTED.value, backend_id=self.id))
-        file.state = FileState.PUSHING
         return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002
@@ -193,7 +192,11 @@ class _CloudStub:
 
 
 async def _seed_awaiting_file(session: AsyncSession, *, attempts: int = 0) -> FileRecord:
-    """Seed ONE held file: ``state=AWAITING_CLOUD`` + a ``cloud_job(status='awaiting')`` sidecar row."""
+    """Seed ONE held file whose awaiting status is carried by a ``cloud_job(status='awaiting')`` row.
+
+    Post-MIG-04 there is no ``files.state`` column: "held/awaiting-cloud" is derived solely from the
+    ``cloud_job`` sidecar, so the seed writes the sidecar row (below) and nothing on the FileRecord.
+    """
     uid = uuid.uuid4()
     file = FileRecord(
         agent_id="test-fileserver",
@@ -204,7 +207,6 @@ async def _seed_awaiting_file(session: AsyncSession, *, attempts: int = 0) -> Fi
         current_path=f"/music/{uid.hex}.flac",
         file_type="flac",
         file_size=1000,
-        state=FileState.AWAITING_CLOUD,
         created_at=_SEEDED_AT,
         updated_at=_SEEDED_AT,
     )
@@ -290,8 +292,8 @@ async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
     assert tick1 == {"staged": 0, "skipped": 1}  # rolled back -> reported held
 
     # The drain's own writes were discarded, but the hook's ledger row survives, and the awaiting row stands.
-    state = (await session.execute(select(FileRecord.state).where(FileRecord.id == file.id))).scalar_one()
-    assert state == FileState.AWAITING_CLOUD  # LOCAL_ANALYZING flip rolled back
+    # (Post-MIG-04 the awaiting status lives ONLY in the cloud_job sidecar -- the retained awaiting row IS
+    # the "still held" fact the old LOCAL_ANALYZING-vs-AWAITING_CLOUD state assertion used to check.)
     assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
 
     cloud.available = True  # ONLINE: a re-pick on tick 2 would dispatch to CLOUD

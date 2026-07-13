@@ -3,10 +3,11 @@
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.dedup_resolution import DedupResolution
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.dedup import (
     count_duplicate_groups,
@@ -37,7 +38,6 @@ def _make_file(
         current_path=original_path,
         file_type=file_type,
         file_size=file_size,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -425,9 +425,8 @@ async def test_find_duplicate_groups_excludes_resolved(session: AsyncSession) ->
     """Files carrying a dedup_resolution marker are excluded from grouping (marker is authority)."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/resolved.mp3", "mp3", HASH_A)
-    # Post-cutover the readers key on the marker (~dedup_resolved_clause()), NOT FileRecord.state.
-    # Seed the marker (plus the surviving dual-write state) so f2 is excluded.
-    f2.state = FileState.DUPLICATE_RESOLVED
+    # Post-cutover the readers key on the marker (~dedup_resolved_clause()) alone -- the
+    # dedup_resolution row is the sole authority; there is no scalar state to set.
     session.add_all([f1, f2])
     await session.flush()
     session.add(DedupResolution(file_id=f2.id, canonical_file_id=f1.id))
@@ -490,7 +489,7 @@ async def test_get_duplicate_stats(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_group(session: AsyncSession) -> None:
-    """resolve_group marks non-canonical files as DUPLICATE_RESOLVED."""
+    """resolve_group writes the DedupResolution marker for non-canonical files (Phase 90 D-09: no files.state write)."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/dup1.mp3", "mp3", HASH_A)
     f3 = _make_file("/dir/dup2.mp3", "mp3", HASH_A)
@@ -501,38 +500,31 @@ async def test_resolve_group(session: AsyncSession) -> None:
 
     assert count == 2
     assert len(file_states) == 2
-    # Check states changed
-    await session.refresh(f2)
-    await session.refresh(f3)
-    assert f2.state == FileState.DUPLICATE_RESOLVED
-    assert f3.state == FileState.DUPLICATE_RESOLVED
-    # Canonical file untouched
-    await session.refresh(f1)
-    assert f1.state == FileState.DISCOVERED
+    # Phase 90 (D-09): the returned payload is id-only (no previous_state).
+    assert all(set(entry.keys()) == {"id"} for entry in file_states)
+    # The DedupResolution marker (the sole derived authority) was written for the two non-canonical files;
+    # the canonical file has none.
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == {f2.id, f3.id}
 
 
 @pytest.mark.asyncio
 async def test_undo_resolve(session: AsyncSession) -> None:
-    """undo_resolve DELETEs the markers and restores previous_state for the returned ids (D-05/D-06)."""
+    """undo_resolve DELETEs the markers keyed on the payload id-set -- the sole undo authority (D-05/D-06)."""
     f1 = _make_file("/dir/a.mp3", "mp3", HASH_A)
-    f1.state = FileState.DUPLICATE_RESOLVED
     f2 = _make_file("/dir/b.mp3", "mp3", HASH_A)
-    f2.state = FileState.DUPLICATE_RESOLVED
     session.add_all([f1, f2])
     await session.flush()
-    # Post-cutover undo is a marker DELETE...RETURNING CAS: the ids must carry a marker to be restored.
+    # Undo is a marker DELETE...RETURNING CAS: the ids must carry a marker to be undone.
     session.add_all([DedupResolution(file_id=f1.id), DedupResolution(file_id=f2.id)])
     await session.flush()
 
-    file_states = [
-        {"id": str(f1.id), "previous_state": FileState.DISCOVERED},
-        {"id": str(f2.id), "previous_state": FileState.METADATA_EXTRACTED},
-    ]
+    # Phase 90 (D-09): the payload is id-only; no previous_state is captured or restored.
+    file_states = [{"id": str(f1.id)}, {"id": str(f2.id)}]
 
     count = await undo_resolve(session, file_states)
 
     assert count == 2
-    await session.refresh(f1)
-    await session.refresh(f2)
-    assert f1.state == FileState.DISCOVERED
-    assert f2.state == FileState.METADATA_EXTRACTED
+    # Both markers were deleted -> the files derive ~dedup_resolved_clause() again.
+    remaining = (await session.execute(select(DedupResolution.file_id))).scalars().all()
+    assert remaining == []

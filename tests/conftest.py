@@ -18,7 +18,7 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -418,11 +418,14 @@ def make_file(session: AsyncSession):  # type: ignore[no-untyped-def]
 
     async def _make(
         *,
-        state: str = FileState.DISCOVERED,
         original_filename: str = "set.mp3",
         file_type: str = "mp3",
         sha256: str | None = None,
     ) -> FileRecord:
+        # Phase 90 (MIG-04): the ``files.state`` column is gone; a file's stage/status is DERIVED
+        # from its output rows (AnalysisResult / RenameProposal / CloudJob / DedupResolution markers).
+        # Callers needing a specific derived status seed the corresponding marker themselves (the
+        # sibling factories below do exactly that).
         # Unique path segment so the (agent_id, original_path) unique index never collides.
         record = FileRecord(
             agent_id="test-fileserver",
@@ -433,7 +436,6 @@ def make_file(session: AsyncSession):  # type: ignore[no-untyped-def]
             current_path=f"/test/music/{original_filename}",
             file_type=file_type,
             file_size=1024,
-            state=state,
         )
         session.add(record)
         await session.commit()
@@ -458,7 +460,7 @@ def seed_pending_proposal(session: AsyncSession, make_file):  # type: ignore[no-
         proposed_path: str | None = None,
         original_filename: str = "orig.mp3",
     ) -> RenameProposal:
-        file = await make_file(state=FileState.PROPOSAL_GENERATED, original_filename=original_filename)
+        file = await make_file(original_filename=original_filename)
         proposal = RenameProposal(
             id=uuid.uuid4(),
             file_id=file.id,
@@ -494,7 +496,7 @@ def seed_executed_file_with_metadata(session: AsyncSession, make_file):  # type:
         genre: str | None = None,
         track_number: int | None = None,
     ) -> tuple[FileRecord, FileMetadata]:
-        file = await make_file(state=FileState.MOVED, original_filename=original_filename)
+        file = await make_file(original_filename=original_filename)
         session.add(
             RenameProposal(
                 id=uuid.uuid4(),
@@ -529,7 +531,7 @@ def seed_duplicate_group(session: AsyncSession, make_file):  # type: ignore[no-u
         shared = sha256 or (uuid.uuid4().hex + uuid.uuid4().hex)
         files: list[FileRecord] = []
         for i in range(count):
-            files.append(await make_file(state=FileState.EXECUTED, original_filename=f"dupe-{i}.mp3", sha256=shared))
+            files.append(await make_file(original_filename=f"dupe-{i}.mp3", sha256=shared))
         return files
 
     return _make
@@ -549,7 +551,7 @@ def seed_cue_set(session: AsyncSession, make_file):  # type: ignore[no-untyped-d
 
     async def _make(*, eligible: bool = True, original_filename: str | None = None) -> tuple[FileRecord, Tracklist, TracklistVersion]:
         fname = original_filename or ("cue-eligible.mp3" if eligible else "cue-ineligible.mp3")
-        file = await make_file(state=FileState.MOVED, original_filename=fname)
+        file = await make_file(original_filename=fname)
         session.add(
             RenameProposal(
                 id=uuid.uuid4(),
@@ -611,7 +613,7 @@ def seed_file_with_windows(session: AsyncSession, make_file):  # type: ignore[no
         coarse_count: int = 2,
         original_filename: str = "analyzed-set.mp3",
     ) -> tuple[FileRecord, AnalysisResult, list[AnalysisWindow]]:
-        file = await make_file(state=FileState.ANALYZED, original_filename=original_filename)
+        file = await make_file(original_filename=original_filename)
         result = AnalysisResult(
             id=uuid.uuid4(),
             file_id=file.id,
@@ -676,7 +678,7 @@ def seed_distinct_artists(session: AsyncSession, make_file):  # type: ignore[no-
         # FileMetadata artists (one shared, one unique, one None).
         meta_artists: list[str | None] = [shared, "Four Tet", None]
         for artist in meta_artists:
-            file = await make_file(state=FileState.EXECUTED, original_filename="meta.mp3")
+            file = await make_file(original_filename="meta.mp3")
             session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, artist=artist, title="t"))
         # Tracklist artists (one shared with metadata, one unique, one None).
         tl_artists: list[str | None] = [shared, "Caribou", None]
@@ -709,7 +711,7 @@ def seed_cloud_jobs(session: AsyncSession, make_file):  # type: ignore[no-untype
     async def _make(*, running: int = 0, submitted_inadmissible: int = 0) -> list[CloudJob]:
         jobs: list[CloudJob] = []
         for _ in range(running):
-            file = await make_file(state=FileState.AWAITING_CLOUD, original_filename="cloud-run.mp3")
+            file = await make_file(original_filename="cloud-run.mp3")
             jobs.append(
                 CloudJob(
                     id=uuid.uuid4(),
@@ -719,7 +721,7 @@ def seed_cloud_jobs(session: AsyncSession, make_file):  # type: ignore[no-untype
                 )
             )
         for _ in range(submitted_inadmissible):
-            file = await make_file(state=FileState.AWAITING_CLOUD, original_filename="cloud-wait.mp3")
+            file = await make_file(original_filename="cloud-wait.mp3")
             jobs.append(
                 CloudJob(
                     id=uuid.uuid4(),

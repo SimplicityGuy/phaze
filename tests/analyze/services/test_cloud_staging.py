@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
 from phaze.services.enqueue_router import NoActiveAgentError
 from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
@@ -108,7 +108,6 @@ async def _seed_file(session: AsyncSession, agent_id: str, *, file_size: int) ->
         current_path="/test/music/song.flac",
         file_type="flac",
         file_size=file_size,
-        state=FileState.AWAITING_CLOUD,
     )
     session.add(file)
     await session.commit()

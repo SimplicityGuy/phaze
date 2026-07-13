@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.companion import associate_companions
 
@@ -30,7 +30,6 @@ def _make_file(
         current_path=original_path,
         file_type=file_type,
         file_size=file_size,
-        state=FileState.DISCOVERED,
     )
 
 

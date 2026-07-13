@@ -1,5 +1,5 @@
 """Unit tests for the Phase 49 `cloud_route_threshold_sec` config knob (D-07)
-and the code-only `FileState.AWAITING_CLOUD` held-state member (D-01).
+(the held-state concept is now the `cloud_job.status == 'awaiting'` sidecar, not a scalar enum).
 
 `cloud_route_threshold_sec` mirrors `straggler_threshold_sec`: a bounded pydantic
 int Field (gt=0, lt=86400) on `ControlSettings`, bound from
@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from phaze.config import ControlSettings
-from phaze.models.file import FileState
 
 
 if TYPE_CHECKING:
@@ -44,11 +43,3 @@ def test_cloud_route_threshold_rejects_too_large() -> None:
     """A value at/above the one-day cap fails validation (lt=86400)."""
     with pytest.raises(ValueError, match="cloud_route_threshold_sec"):
         ControlSettings(cloud_route_threshold_sec=86400)
-
-
-def test_awaiting_cloud_state_member() -> None:
-    """AWAITING_CLOUD is a valid StrEnum member with value 'awaiting_cloud' (D-01)."""
-    assert FileState.AWAITING_CLOUD == "awaiting_cloud"
-    assert FileState("awaiting_cloud") is FileState.AWAITING_CLOUD
-    # 'awaiting_cloud' is 14 chars — fits String(30), so it is code-only (no migration).
-    assert len(FileState.AWAITING_CLOUD.value) <= 30

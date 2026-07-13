@@ -34,7 +34,7 @@ from sqlalchemy import select
 
 from phaze.enums.stage import Stage, Status, domain_completed
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from tests._queue_fakes import install_fake_queues, seed_active_agent
 
 
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
+def _make_file() -> FileRecord:
     """A FileRecord parked in the terminal analyze-failed bucket."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -58,7 +58,6 @@ def _make_file(*, state: str = FileState.ANALYSIS_FAILED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -98,8 +97,11 @@ async def test_retry_clears_analysis_failure_marker(client: AsyncClient, session
 
 
 @pytest.mark.asyncio
-async def test_retry_flips_state_and_marker_together(client: AsyncClient, session: AsyncSession) -> None:
-    """Both halves of the FAIL-01 dual-write move as one: no file ends up fingerprinted-yet-failed."""
+async def test_retry_clears_marker_without_touching_state(client: AsyncClient, session: AsyncSession) -> None:
+    """Phase 90 (D-09): the FAIL-01 dual-write collapsed to a single authority. Retry clears
+    analysis.failed_at (the derived failed_clause source) for every file and NO LONGER writes
+    files.state -- so a file can never end up in the old contradictory fingerprinted-yet-failed pair.
+    """
     failed_ids = await _seed_failed(session, 2)
     await seed_active_agent(session)
     install_fake_queues(client)
@@ -108,14 +110,11 @@ async def test_retry_flips_state_and_marker_together(client: AsyncClient, sessio
 
     session.expire_all()
     ids = [uuid.UUID(i) for i in failed_ids]
-    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(ids)))).scalars().all()
 
-    assert {f.state for f in files} == {FileState.FINGERPRINTED}
+    # The derived failure marker is cleared for every retried file (the sole authority now).
     assert all(r.failed_at is None for r in rows)
-    # The contradictory pair the shadow-compare gate flags must not exist for any file.
-    stale = [f.id for f in files if f.state == FileState.FINGERPRINTED and any(r.file_id == f.id and r.failed_at is not None for r in rows)]
-    assert stale == []
+    # files.state is left untouched -- the raw column is dead as of Phase 90 PR-B.
 
 
 @pytest.mark.asyncio
@@ -147,7 +146,5 @@ async def test_retry_with_no_active_agent_mutates_nothing(client: AsyncClient, s
 
     session.expire_all()
     ids = [uuid.UUID(i) for i in failed_ids]
-    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
     rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(ids)))).scalars().all()
-    assert {f.state for f in files} == {FileState.ANALYSIS_FAILED}
     assert all(r.failed_at is not None for r in rows)

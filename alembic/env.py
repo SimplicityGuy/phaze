@@ -56,12 +56,25 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _include_object(_obj: object, name: str | None, type_: str, _reflected: bool, _compare_to: object) -> bool:
+    """Exclude migration-managed non-ORM tables from autogenerate so ``alembic check`` stays empty.
+
+    ``files_state_archive`` is the forensic state snapshot created by migration 039 (Phase 90, D-10):
+    it must PERSIST after the ``files.state`` drop so ``039.downgrade()`` can restore the column
+    verbatim, yet it has no ORM model (by design). Without this exclusion autogenerate would forever
+    want to ``DROP TABLE files_state_archive`` and ``alembic check`` would never be empty. Alembic calls
+    this with a fixed 5-arg signature -- only ``name``/``type_`` are consulted.
+    """
+    return not (type_ == "table" and name == "files_state_archive")
+
+
 def do_run_migrations(connection: Connection) -> None:
     """Configure context and run migrations within a connection."""
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=_include_object,
     )
 
     with context.begin_transaction():

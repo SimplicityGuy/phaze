@@ -29,7 +29,7 @@ import uuid
 import pytest
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import get_stage_progress
 
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _music_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
+def _music_file() -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
         agent_id="test-fileserver",
@@ -50,7 +50,6 @@ def _music_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -63,11 +62,11 @@ async def _seed_state_derived_divergent_corpus(session: AsyncSession) -> None:
     ``get_stage_progress`` is RED against the state-derived code and GREEN once derived.
     """
     for _ in range(2):
-        f = _music_file(state=FileState.METADATA_EXTRACTED)
+        f = _music_file()
         session.add(f)
         await session.flush()  # persist the FK parent before adding the child metadata row
         session.add(FileMetadata(file_id=f.id, failed_at=None))  # metadata done (row + failed_at NULL)
-    session.add(_music_file(state=FileState.DISCOVERED))  # bare -> metadata not_started
+    session.add(_music_file())  # bare -> metadata not_started
     await session.commit()
 
 
@@ -126,7 +125,7 @@ async def test_not_yet_enriched_is_metadata_total_minus_done(client: AsyncClient
 @pytest.mark.asyncio
 async def test_pipeline_stats_partial_emits_stable_oob_store_ids(client: AsyncClient, session: AsyncSession) -> None:
     """The ``/pipeline/stats`` poll partial still emits the three OOB store writes into the STABLE Alpine keys (Pitfall 4)."""
-    session.add(_music_file(state=FileState.DISCOVERED))
+    session.add(_music_file())
     await session.commit()
 
     response = await client.get("/pipeline/stats")
@@ -145,7 +144,7 @@ async def test_pipeline_stats_partial_emits_stable_oob_store_ids(client: AsyncCl
 @pytest.mark.asyncio
 async def test_pipeline_stats_partial_renders_derived_card_labels(client: AsyncClient, session: AsyncSession) -> None:
     """The stats bar still renders its six visible cards (the derived dict feeds the same template keys)."""
-    f = _music_file(state=FileState.METADATA_EXTRACTED)
+    f = _music_file()
     session.add(f)
     await session.flush()  # persist the FK parent before adding child rows
     session.add(FileMetadata(file_id=f.id, failed_at=None))

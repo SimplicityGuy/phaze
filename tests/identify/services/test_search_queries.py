@@ -10,7 +10,7 @@ import pytest
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.search_queries import SearchResult, get_summary_counts, search
@@ -34,7 +34,6 @@ async def create_test_file(
     album: str | None = None,
     genre: str | None = None,
     bpm: float | None = None,
-    state: str = FileState.DISCOVERED,
 ) -> FileRecord:
     """Create a FileRecord with optional FileMetadata and AnalysisResult."""
     file_id = uuid.uuid4()
@@ -47,7 +46,6 @@ async def create_test_file(
         current_path=f"/music/{original_filename}",
         file_type="music",
         file_size=1_000_000,
-        state=state,
     )
     session.add(file_record)
     await session.flush()
@@ -113,8 +111,8 @@ class TestSearchResult:
             title="test.mp3",
             artist="DJ Test",
             genre="house",
-            state="discovered",
             date="2026-01-01",
+            state="discovered",
             rank=1.0,
         )
         assert r.result_type == "file"
@@ -235,16 +233,6 @@ async def test_search_bpm_filter_excludes_partial_analysis_row(session: AsyncSes
 
     results, _pagination = await search(session, "dj", bpm_min=120.0, bpm_max=130.0)
     assert not any("partial" in r.title.lower() for r in results), "a NULL-bpm partial row must not surface in a bpm-filtered search"
-
-
-@pytest.mark.asyncio
-async def test_search_file_state_filter(session: AsyncSession) -> None:
-    """Passing file_state='approved' narrows to that state."""
-    await create_test_file(session, original_filename="approved_track.mp3", artist="DJ App", state=FileState.APPROVED)
-    await create_test_file(session, original_filename="discovered_track.mp3", artist="DJ Disc", state=FileState.DISCOVERED)
-    results, _pagination = await search(session, "dj", file_state="approved")
-    assert len(results) >= 1
-    assert all(r.state == "approved" for r in results)
 
 
 @pytest.mark.asyncio
@@ -460,13 +448,21 @@ async def test_discogs_artist_filter(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_discogs_excluded_with_file_state_filter(session: AsyncSession) -> None:
-    """When file_state filter is active, Discogs results are excluded."""
-    await create_test_discogs_link(session, discogs_artist="Filtered Artist", discogs_title="Filtered Album")
-    await create_test_file(session, original_filename="filtered_artist.mp3", artist="Filtered Artist", state=FileState.APPROVED)
-    results, _pagination = await search(session, "filtered", file_state="approved")
-    discogs_results = [r for r in results if r.result_type == "discogs_release"]
-    assert len(discogs_results) == 0
+async def test_search_unions_all_entities_without_status_facet(session: AsyncSession) -> None:
+    """Phase 90 (PR-A, D-11): with the pipeline-status facet removed, a query ALWAYS unions all entities.
+
+    The old ``file_state`` facet, when active, excluded tracklists + discogs. It is deleted with no
+    derived replacement, so a query matching a file, a tracklist, AND a discogs release surfaces all
+    three groups -- proving the union is never narrowed to files.
+    """
+    await create_test_file(session, original_filename="unioned_track.mp3", artist="Unioned Artist")
+    await create_test_tracklist(session, artist="Unioned Artist", event="Unioned Fest")
+    await create_test_discogs_link(session, discogs_artist="Unioned Artist", discogs_title="Unioned Album", status="accepted")
+    results, _pagination = await search(session, "unioned")
+    types = {r.result_type for r in results}
+    assert "file" in types
+    assert "tracklist" in types
+    assert "discogs_release" in types
 
 
 @pytest.mark.asyncio

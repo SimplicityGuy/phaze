@@ -21,7 +21,8 @@ import uuid
 
 import pytest
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 
 
@@ -168,7 +169,6 @@ def _make_file_with_metadata() -> tuple[FileRecord, FileMetadata]:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.METADATA_EXTRACTED,
     )
     metadata = FileMetadata(file_id=uid, artist="Test", title="Track")
     return file_rec, metadata
@@ -365,7 +365,7 @@ async def test_stats_poll_degrades_to_200_without_counter_source(client: AsyncCl
 # ---------------------------------------------------------------------------
 
 
-def _window_file(i: int, state: FileState) -> FileRecord:
+def _window_file(i: int) -> FileRecord:
     """A FileRecord seed in the given state (unique hash/path per ``i``)."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -377,8 +377,19 @@ def _window_file(i: int, state: FileState) -> FileRecord:
         current_path=f"/music/win{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
+
+
+async def _seed_window(session: AsyncSession, i: int, status: CloudJobStatus) -> None:
+    """Seed a ``(FileRecord, cloud_job)`` pair for the bounded-window count cards (Phase 90 D-12).
+
+    The pushing / analyzing-cloud counts now DERIVE from ``cloud_job.status`` (pushing = uploading /
+    submitted; analyzing-cloud = uploaded / running), NOT ``files.state`` -- so seed the sidecar row.
+    """
+    f = _window_file(i)
+    session.add(f)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))
 
 
 async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch, path: str) -> dict[str, object]:
@@ -411,14 +422,10 @@ async def _capture_context(client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
 
 @pytest.mark.asyncio
 async def test_dashboard_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """GET /pipeline/ context carries pushing_count (PUSHING) + analyzing_cloud_count (PUSHED)."""
-    session.add_all(
-        [
-            _window_file(1, FileState.PUSHING),
-            _window_file(2, FileState.PUSHING),
-            _window_file(3, FileState.PUSHED),
-        ]
-    )
+    """GET /pipeline/ context carries pushing_count + analyzing_cloud_count (Phase 90 D-12: derived)."""
+    await _seed_window(session, 1, CloudJobStatus.UPLOADING)
+    await _seed_window(session, 2, CloudJobStatus.SUBMITTED)
+    await _seed_window(session, 3, CloudJobStatus.UPLOADED)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/s/analyze")
@@ -429,13 +436,9 @@ async def test_dashboard_context_carries_window_counts(client: AsyncClient, sess
 @pytest.mark.asyncio
 async def test_stats_poll_context_carries_window_counts(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /pipeline/stats context re-pushes pushing_count + analyzing_cloud_count on the 5s poll."""
-    session.add_all(
-        [
-            _window_file(4, FileState.PUSHING),
-            _window_file(5, FileState.PUSHED),
-            _window_file(6, FileState.PUSHED),
-        ]
-    )
+    await _seed_window(session, 4, CloudJobStatus.UPLOADING)
+    await _seed_window(session, 5, CloudJobStatus.UPLOADED)
+    await _seed_window(session, 6, CloudJobStatus.RUNNING)
     await session.commit()
 
     ctx = await _capture_context(client, monkeypatch, "/pipeline/stats")

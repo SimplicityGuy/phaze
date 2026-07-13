@@ -33,7 +33,7 @@ from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans, shell
 
@@ -1133,7 +1133,6 @@ def _make_discovered_file() -> FileRecord:
         current_path=path,
         file_type="mp3",
         file_size=2048,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -1178,7 +1177,6 @@ def _make_batch_file(batch_id: uuid.UUID, suffix: str) -> FileRecord:
         current_path=path,
         file_type="mp3",
         file_size=2048,
-        state=FileState.DISCOVERED,
         batch_id=batch_id,
     )
 

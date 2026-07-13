@@ -33,7 +33,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 87: Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority** — per-file derived stage matrix (paginated), per-stage failure visibility + retry, the "why not eligible?" trace, force-done/skip, orphaned-work count, and the restored per-stage priority stepper (UI-01..05, PRIO-01) (completed 2026-07-11)
 - [x] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03) (completed 2026-07-11)
 - [x] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03) (completed 2026-07-11)
-- [ ] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04)
+- [x] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04) (completed 2026-07-13)
 
 <details>
 <summary>✅ 2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends) (Phases 72-76) — SHIPPED 2026-07-06</summary>
@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
-| 90. Destructive Migration & Writer Removal | 2026.7.5 | 0/0 | Not started | - |
+| 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -645,7 +645,23 @@ Plans:
   3. The destructive migration's `downgrade()` documents the enum reconstruction from derived sources and its lossiness; a migration rehearsal against a restore of the real corpus passes.
 
 **Gate**: shadow-compare (Phase 79) green on the live corpus + cloud-push lanes drained (`--profile drain`).
-**Plans**: TBD
+**Plans**: 4 plans (readers-first D-09; one shippable PR per plan). PR-C was split at a decision checkpoint: 90-03 landed the irreversible migration 039; 90-04 carries the model/enum retirement + shadow_compare removal + ~90-test migration whose blast radius (4-5x) the original 3-plan scope under-budgeted.
+Plans:
+**Wave 1**
+
+- [x] 90-01-PLAN.md — PR-A: reader cutover — convert every live FileRecord.state reader to derived sources (stage_status.py builders + cloud_job) while the column is intact; two cloud cards (D-12), proposal-batch Pitfall-4 fix, held_files ledger-seed coverage, search facet deletion (D-11) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 90-02-PLAN.md — PR-B: writer removal — delete all ~17 FileState writers (incl. the two CAS-guard reads) now that readers are derived; equivalence + full suite green [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 90-03-PLAN.md — PR-C (migration): landed the irreversible migration 039 (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade), guarded/reversible. Model/enum removal + D-08 guard were split to 90-04 at a decision checkpoint and completed there (see 90-03-SUMMARY.md). [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 90-04-PLAN.md — PR-C cont.: delete FileState enum + state column + ix_files_state from the ORM; retire the now-dead shadow_compare subsystem (invariants frozen in 039's guard); migrate ~90 dependent test files to derived sources; add the D-08 mutation-tested anti-drift guard; flip the 039 autogenerate test green [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 

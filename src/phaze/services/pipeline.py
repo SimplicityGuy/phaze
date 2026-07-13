@@ -18,7 +18,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
@@ -27,7 +27,15 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.enqueue_router import LANES
-from phaze.services.stage_status import awaiting_candidate_clause, dedup_resolved_clause, eligible_clause, stage_status_case
+from phaze.services.stage_status import (
+    awaiting_candidate_clause,
+    dedup_resolved_clause,
+    done_clause,
+    eligible_clause,
+    failed_clause,
+    inflight_clause,
+    stage_status_case,
+)
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -69,19 +77,6 @@ _ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
 )
 
 
-# The pipeline stages in order, for display
-PIPELINE_STAGES = [
-    FileState.DISCOVERED,
-    FileState.METADATA_EXTRACTED,
-    FileState.FINGERPRINTED,
-    FileState.ANALYZED,
-    FileState.PROPOSAL_GENERATED,
-    FileState.APPROVED,
-    FileState.DUPLICATE_RESOLVED,
-    FileState.EXECUTED,
-]
-
-
 # NOTE (Phase 82, D-05/READ-02): ``get_pipeline_stats`` -- the linear per-``FileRecord.state`` grouped
 # counter -- was REMOVED here. The stats path no longer groups by (or reads) ``FileRecord.state``: its
 # three former callers
@@ -89,9 +84,9 @@ PIPELINE_STAGES = [
 # ``pipeline_stats_partial``) now derive the seven consumed keys from :func:`get_stage_progress`'s
 # output-table counts (``discovered→discovery.done``, ``metadata_extracted→metadata.done``,
 # ``fingerprinted→fingerprint.done``, ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
-# ``approved→execute.total``, ``executed→execute.done``). ``PIPELINE_STAGES`` (above) is retained: it is
-# still consumed by the ANALYSIS_FAILED-bucket invariant test + the ``get_analysis_failed_count``
-# docstring, and does NOT read state on the hot poll path.
+# ``approved→execute.total``, ``executed→execute.done``). Phase 90 (MIG-04) then removed the
+# ``FileState`` enum + ``files.state`` column entirely, so the former linear ``PIPELINE_STAGES`` list
+# (which enumerated the enum members) is gone -- stage membership derives from the output tables.
 
 
 # --- Scanned / deduped / unique reconciliation (quick 260622-i0w) -----------------------
@@ -968,35 +963,14 @@ async def count_active_agents(session: AsyncSession, kind: str | None = None) ->
     return int(count or 0)
 
 
-async def get_files_by_state(session: AsyncSession, state: FileState) -> list[FileRecord]:
-    """Get all files in a given pipeline state.
-
-    Args:
-        session: Async database session.
-        state: The FileState to filter by.
-
-    Returns:
-        List of FileRecord objects in the given state.
-    """
-    stmt = select(FileRecord).where(FileRecord.state == state)
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
 # --- Phase 58 (58-04, WORK-04 / D-03) all-in-stage Analyze file table read ----------------
 #
-# The states surfaced in the D-03 "one table of ALL in-stage Analyze files" table: the done
-# bucket (ANALYZED), the three cloud lanes (AWAITING_CLOUD / PUSHING / PUSHED), and the
-# terminal-failure bucket (ANALYSIS_FAILED). In-flight files (a partial 57.1 analysis row,
-# not yet ANALYZED) are captured separately by the analysis-row-presence predicate below, so
-# a running file appears even while still in its pre-analyze state.
-_ANALYZE_STAGE_STATES = [
-    FileState.ANALYZED,
-    FileState.AWAITING_CLOUD,
-    FileState.PUSHING,
-    FileState.PUSHED,
-    FileState.ANALYSIS_FAILED,
-]
+# The rows surfaced in the D-03 "one table of ALL in-stage Analyze files" table are now DERIVED
+# (Phase 90 PR-A, no ``files.state`` read): any analysis row (``AnalysisResult.id IS NOT NULL`` --
+# which by the builders' definitions covers the done + failed + partial-57.1 buckets), the analyze
+# in-flight ledger (``inflight_clause(ANALYZE)``), and the active ``cloud_job`` lanes
+# (awaiting / pushing / pushed, D-12), so a running or cloud-held file appears even before it has an
+# analysis row.
 
 
 async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]:
@@ -1028,18 +1002,48 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
                     FileRecord.id,
                     FileRecord.original_filename,
                     FileRecord.original_path,
-                    FileRecord.state,
                     CloudJob.id,
                     CloudJob.cloud_phase,
+                    CloudJob.status,
                     AnalysisResult.fine_windows_analyzed,
                     AnalysisResult.fine_windows_total,
+                    AnalysisResult.analysis_completed_at,
+                    AnalysisResult.failed_at,
                     FileMetadata.duration,
                 )
                 .select_from(FileRecord)
                 .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
                 .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
                 .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
-                .where(or_(FileRecord.state.in_(_ANALYZE_STAGE_STATES), AnalysisResult.id.is_not(None)))
+                # Phase 90 (PR-A): the analyze-stage membership is DERIVED, not ``files.state``. A file is in
+                # the Analyze stage iff it carries ANY (possibly partial 57.1) analysis row -- which by the
+                # LOCKED builders' own definitions SUPERSETS done_clause (``analysis_completed_at IS NOT NULL``,
+                # stage_status.py:179) AND failed_clause (``failed_at IS NOT NULL``, :230) -- OR its analyze is
+                # in-flight (``inflight_clause(ANALYZE)`` over ``scheduling_ledger``, composed VERBATIM), OR it
+                # carries an ACTIVE ``cloud_job`` sidecar (awaiting / pushing / pushed lanes, D-12).
+                #
+                # NOTE (Phase 90 blocking-fix): the AnalysisResult/CloudJob-correlated builders (done_clause /
+                # failed_clause / awaiting_candidate_clause) are NOT composed here -- because those same tables
+                # are OUTER-JOINED into this query for the display columns, SQLAlchemy would auto-correlate them
+                # out of the builders' inner ``exists(...)`` ("no FROM clauses" InvalidRequestError). Instead the
+                # membership is spelled against the already-joined columns using the builders' EXACT semantics,
+                # so the derived set stays byte-equivalent while ``inflight_clause`` (over the un-joined
+                # scheduling_ledger) is still composed verbatim.
+                .where(
+                    or_(
+                        AnalysisResult.id.is_not(None),
+                        inflight_clause(Stage.ANALYZE),
+                        CloudJob.status.in_(
+                            [
+                                CloudJobStatus.AWAITING.value,
+                                CloudJobStatus.UPLOADING.value,
+                                CloudJobStatus.SUBMITTED.value,
+                                CloudJobStatus.UPLOADED.value,
+                                CloudJobStatus.RUNNING.value,
+                            ]
+                        ),
+                    )
+                )
                 .order_by(FileRecord.created_at.desc())
             )
             rows = (await session.execute(stmt)).all()
@@ -1048,7 +1052,7 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
         return []
 
     files: list[dict[str, Any]] = []
-    for file_id, filename, path, state, cloud_job_id, cloud_phase, fine_done, fine_total, duration in rows:
+    for file_id, filename, path, cloud_job_id, cloud_phase, cloud_status, fine_done, fine_total, completed_at, failed_at, duration in rows:
         if cloud_job_id is None:
             lane = "local"
         elif cloud_phase is None:
@@ -1062,12 +1066,16 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
                 "file_id": str(file_id),
                 "filename": filename,
                 "path": path,
-                "state": state,
+                # Phase 90 (PR-A): derived boolean flags REPLACE the raw ``state`` key -- the template
+                # renders off these, never a FileState string.
+                "awaiting_cloud": cloud_status == CloudJobStatus.AWAITING.value,
+                "analysis_failed": failed_at is not None,
                 "lane": lane,
                 "fine_done": fine_done,
                 "fine_total": fine_total,
                 "duration": duration,
-                "completed": state == FileState.ANALYZED,
+                # completed derives from the joined analysis_completed_at (done_clause(ANALYZE)), not state==ANALYZED.
+                "completed": completed_at is not None,
             }
         )
     return files
@@ -1282,14 +1290,16 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
 
 
 async def get_analysis_failed_files(session: AsyncSession) -> list[FileRecord]:
-    """Return the FileRecords in ``FileState.ANALYSIS_FAILED`` (the analysis-gave-up bucket).
+    """Return the FileRecords with a terminal analyze-failure marker (the analysis-gave-up bucket).
 
-    A one-liner reuse of :func:`get_files_by_state` (D-02): the failed list reads the indexed
-    ``files.state = 'analysis_failed'`` directly. Distinct from the STRAGGLER bucket
+    Phase 90 (PR-A, D-09): DERIVED from ``failed_clause(Stage.ANALYZE)`` (an ``analysis`` row whose
+    ``failed_at`` is non-NULL) -- no longer the retired ``files.state = 'analysis_failed'`` column.
+    Composes the LOCKED clause verbatim. Distinct from the STRAGGLER bucket
     (:func:`get_straggler_count`, still-running jobs from ``saq_jobs``) -- these files have
     terminally failed and carry no live job.
     """
-    return await get_files_by_state(session, FileState.ANALYSIS_FAILED)
+    result = await session.execute(select(FileRecord).where(failed_clause(Stage.ANALYZE)))
+    return list(result.scalars().all())
 
 
 async def get_analysis_failed_count(session: AsyncSession) -> int:
@@ -1303,7 +1313,10 @@ async def get_analysis_failed_count(session: AsyncSession) -> int:
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.ANALYSIS_FAILED),
+        # Phase 90 (PR-A, D-09): DERIVED from the analyze-failure marker (analysis.failed_at NOT NULL)
+        # via the LOCKED ``failed_clause`` builder -- no longer the ``files.state`` column. Composes the
+        # clause verbatim (never re-spells the inner exists) so the DERIV-04 equivalence guarantee holds.
+        select(func.count(FileRecord.id)).where(failed_clause(Stage.ANALYZE)),
         node="analysis_failed",
     )
 
@@ -1459,10 +1472,12 @@ async def get_cloud_phase_counts(session: AsyncSession) -> dict[str, int]:
 
 
 async def get_pushing_count(session: AsyncSession) -> int:
-    """Return COUNT of files in ``FileState.PUSHING`` (staged, rsync in progress), degrading to 0 (D-09).
+    """Return COUNT of the "pushing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
 
-    Drives the dashboard "Staged (pushing)" card -- the left half of the bounded cloud window
-    (files mid-rsync to the compute agent's scratch dir). Poll-safe via :func:`_safe_count`
+    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploading','submitted')`` -- no longer the
+    retired ``files.state == PUSHING`` column. Drives the dashboard "Staged (pushing)" card -- the left
+    half of the bounded cloud window (files mid-upload / just handed to remote submit). Poll-safe via
+    :func:`_safe_count`
     (mirrors :func:`get_awaiting_cloud_count`): a DB hiccup degrades this node to 0 and rolls back
     the aborted transaction rather than 500ing the hot 5s /pipeline/stats poll. This is the
     OBSERVATIONAL per-card count -- the load-bearing backpressure is now per-backend
@@ -1471,22 +1486,31 @@ async def get_pushing_count(session: AsyncSession) -> int:
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHING),
+        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushing" half of the
+        # bounded cloud window is a cloud_job mid-upload (``uploading``) or handed to the remote submit
+        # but not yet landed (``submitted``). Mirrors :func:`get_inadmissible_count`'s cloud_job read;
+        # no longer the ``files.state == PUSHING`` column.
+        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADING.value, CloudJobStatus.SUBMITTED.value])),
         node="pushing",
     )
 
 
 async def get_pushed_count(session: AsyncSession) -> int:
-    """Return COUNT of files in ``FileState.PUSHED`` (landed on compute, within analysis), degrading to 0 (D-09).
+    """Return COUNT of the "pushed / analyzing" half of the bounded cloud window, degrading to 0 (D-09/D-12).
 
-    Drives the dashboard "Analyzing (cloud)" card -- the right half of the bounded cloud window
-    (files that finished rsync and are awaiting/within remote analysis). Poll-safe via
+    Phase 90 (PR-A): DERIVED from ``cloud_job.status IN ('uploaded','running')`` -- no longer the retired
+    ``files.state == PUSHED`` column. Drives the dashboard "Analyzing (cloud)" card -- the right half of
+    the bounded cloud window (files that finished upload and are awaiting/within remote analysis). Poll-safe via
     :func:`_safe_count`, exactly like :func:`get_pushing_count`. Observational only; the per-backend
     cap itself is enforced by ``Backend.in_flight_count`` (Phase 69, D-05) from committed cloud_job rows.
     """
     return await _safe_count(
         session,
-        select(func.count(FileRecord.id)).where(FileRecord.state == FileState.PUSHED),
+        # Phase 90 (PR-A, D-12): DERIVED from the ``cloud_job`` sidecar -- the "pushed / analyzing"
+        # half of the bounded cloud window is a cloud_job that finished upload (``uploaded``) or is
+        # actively analyzing on the remote (``running``). Mirrors :func:`get_pushing_count`; no longer
+        # the ``files.state == PUSHED`` column.
+        select(func.count(CloudJob.id)).where(CloudJob.status.in_([CloudJobStatus.UPLOADED.value, CloudJobStatus.RUNNING.value])),
         node="analyzing_cloud",
     )
 
@@ -1566,9 +1590,19 @@ def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
         select(FileRecord, FileMetadata.duration)
         .join(FileMetadata, FileMetadata.file_id == FileRecord.id)
         .where(
-            FileRecord.state == FileState.ANALYSIS_FAILED,
+            # Phase 90 (PR-A, D-09): DERIVED terminal analyze-failure via ``failed_clause(ANALYZE)`` (an
+            # analysis row with ``failed_at`` set), no longer ``files.state == ANALYSIS_FAILED``.
+            failed_clause(Stage.ANALYZE),
             FileMetadata.duration >= threshold_sec,
             exists(select(SchedulingLedger.key).where(SchedulingLedger.key == "process_file:" + cast(FileRecord.id, String))),
+            # Phase 90 (PR-A) idempotency guard: exclude a file already routed to the cloud path (it
+            # carries an ACTIVE ``cloud_job`` sidecar). The retired ``state == ANALYSIS_FAILED`` gate WAS
+            # the double-click guard -- a held file's state flipped ANALYSIS_FAILED -> AWAITING_CLOUD, so
+            # a second backfill re-selected nothing. The derived ``failed_clause`` marker does NOT
+            # transition when a file is held (the backfill routes to cloud without clearing it), so this
+            # ``~exists(active cloud_job)`` conjunct restores the D-10 no-whole-backlog-sweep idempotency,
+            # mirroring the identical guard in :func:`get_discovered_files_with_duration`.
+            ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
         )
     )
 
@@ -1691,9 +1725,11 @@ async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
 async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -> list[list[str]]:
     """Return the ``generate_proposals`` pending set as deterministic, sorted file-id batches.
 
-    Runs the convergence query (files in ``{ANALYZED, METADATA_EXTRACTED}`` with BOTH a
-    ``FileMetadata`` AND an ``AnalysisResult`` row -- the EXACT set the manual proposals
+    Runs the convergence query (files NOT yet proposed -- ``~done_clause(PROPOSE)`` -- with BOTH a
+    ``FileMetadata`` AND a COMPLETED ``AnalysisResult`` row -- the EXACT set the manual proposals
     triggers use), then SORTS the file-id strings before chunking into ``batch_size`` groups.
+    Phase 90 (PR-A, Pitfall 4): the propose-exclusion replaces the retired ``files.state`` membership,
+    so an already-proposed file is never re-batched.
 
     Sorting BEFORE chunking is load-bearing (D-04, 42-RESEARCH Pitfall 2): ``generate_proposals``
     is keyed on ``generate_proposals:<sha256(sorted file_ids)>`` (an order-independent SET hash),
@@ -1704,7 +1740,11 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     """
     stmt = (
         select(FileRecord)
-        .where(FileRecord.state.in_([FileState.ANALYZED, FileState.METADATA_EXTRACTED]))
+        # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
+        # REPLACED by ``~done_clause(Stage.PROPOSE)`` -- a file with an existing proposal is a done
+        # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two EXISTS
+        # convergence clauses below (metadata present AND a COMPLETED analysis row) still bound the set.
+        .where(~done_clause(Stage.PROPOSE))
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
         # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
         # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)

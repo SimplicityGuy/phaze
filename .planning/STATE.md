@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: ready_to_plan
-last_updated: 2026-07-11T22:51:45.823Z
-last_activity: 2026-07-11 -- Phase 89 execution started
+status: milestone_complete
+last_updated: 2026-07-13T15:17:59.657Z
+last_activity: 2026-07-13 -- Phase 90 shipped (PR #238)
 progress:
   total_phases: 52
-  completed_phases: 27
-  total_plans: 113
-  completed_plans: 58
-  percent: 52
-stopped_at: Phase 89 complete (2/2) — ready to discuss Phase 90
+  completed_phases: 28
+  total_plans: 117
+  completed_plans: 62
+  percent: 54
+stopped_at: Milestone complete (Phase 90 was final phase)
 ---
 
 # Project State
@@ -21,20 +21,21 @@ stopped_at: Phase 89 complete (2/2) — ready to discuss Phase 90
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 90 — destructive migration & writer removal
+**Current focus:** Milestone complete
 
 ## Current Position
 
 Phase: 90
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-11
+Status: Milestone complete
+Last activity: 2026-07-13
+Next: /gsd:execute-phase 90 (runs 90-04) — or /gsd:plan-phase 90 first to enrich 90-04 (esp. the shadow_compare full-removal default). One expected-RED test on branch until 90-04: test_039_autogenerate_diff_is_empty_for_dropped_objects
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 236
+- Total plans completed: 240
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -290,9 +291,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-11T19:14:33.740Z
-Stopped at: Phase 89 context gathered
-Resume file: .planning/phases/89-legacy-scan-path-deletion-sentinel-reattribution/89-CONTEXT.md
+Last session: 2026-07-12T19:14:59.647Z
+Stopped at: Phase 90 context gathered
+Resume file: .planning/phases/90-destructive-migration-writer-removal/90-CONTEXT.md
 
 ## Operator Next Steps
 

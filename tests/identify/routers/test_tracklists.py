@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.discogs_link import DiscogsLink
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
@@ -28,7 +28,6 @@ def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -
         current_path=original_path,
         file_type=file_type,
         file_size=1000,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -36,7 +35,7 @@ def _make_executed_proposal(file_id: uuid.UUID) -> RenameProposal:
     """Seed an ``executed`` RenameProposal so ``applied()`` (READ-05/D-01) admits the file.
 
     The cue-version guards now read ``await is_applied(session, fr.id)`` (an executed proposal),
-    NOT ``fr.state == FileState.EXECUTED``. Fixtures that expect a CUE badge must carry an executed
+    NOT a scalar ``fr.state``. Fixtures that expect a CUE badge must carry an executed
     proposal; the file is left at ``state='moved'`` so the badge proves the guard reads the proposal.
     """
     return RenameProposal(
@@ -1211,9 +1210,7 @@ async def test_undo_link_preserves_cue_version(session: AsyncSession, client: As
     """POST /tracklists/{id}/undo-link list response includes CUE version badge for other tracklists."""
     # READ-05/D-01: applied-ness comes from an executed proposal, not file.state (kept at 'moved').
     file1 = _make_file(original_path="/music/set1.mp3")
-    file1.state = FileState.MOVED
     file2 = _make_file(original_path="/music/set2.mp3")
-    file2.state = FileState.MOVED
     session.add_all([file1, file2])
     await session.flush()
     session.add_all([_make_executed_proposal(file1.id), _make_executed_proposal(file2.id)])
@@ -1283,9 +1280,7 @@ async def test_render_tracklist_list_no_version_no_candidates(session: AsyncSess
 async def test_render_tracklist_list_approved_non_executed_cue_zero(session: AsyncSession, client: AsyncClient) -> None:
     """Undo-link list view shows cue_version=0 for approved tracklist with non-EXECUTED file."""
     file_exec = _make_file(original_path="/music/exec.mp3")
-    file_exec.state = FileState.EXECUTED
     file_disc = _make_file(original_path="/music/disc.mp3")
-    file_disc.state = FileState.DISCOVERED
     session.add_all([file_exec, file_disc])
     await session.flush()
 
@@ -1306,7 +1301,6 @@ async def test_render_tracklist_list_approved_non_executed_cue_zero(session: Asy
 async def test_render_tracklist_list_cue_version_not_approved(session: AsyncSession, client: AsyncClient) -> None:
     """Undo-link list view shows cue_version=0 for non-approved tracklist."""
     file = _make_file()
-    file.state = FileState.EXECUTED
     session.add(file)
     await session.flush()
 
@@ -1329,7 +1323,6 @@ async def test_list_tracklists_cue_version_executed(session: AsyncSession, clien
     from ``proposals.status``, not ``files.state``.
     """
     file = _make_file()
-    file.state = FileState.MOVED
     session.add(file)
     await session.flush()
     session.add(_make_executed_proposal(file.id))
