@@ -12,11 +12,11 @@
 - ✅ **2026.7.0 Engineering Improvements** — Phases 63-66 (shipped 2026-07-03)
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
 - ✅ **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-76 (shipped 2026-07-06)
-- 🔵 **2026.7.5 Parallel Enrich DAG (Retire Linear FileState)** — Phases 77-90 (active, started 2026-07-08)
+- 🔵 **2026.7.5 Parallel Enrich DAG (Retire Linear FileState)** — Phases 77-92 (active, started 2026-07-08)
 
 ## Phases
 
-### 🔵 Active — 2026.7.5 Parallel Enrich DAG (Retire Linear `FileState`) (Phases 77-90)
+### 🔵 Active — 2026.7.5 Parallel Enrich DAG (Retire Linear `FileState`) (Phases 77-92)
 
 Retire the linear `FileState` enum and derive per-file, per-stage status (`not_started` / `in_flight` / `done` / `failed`) from the output tables that already exist, so metadata / fingerprint / analyze become genuinely per-file parallel (every `discovered` file lights up in all three enrich tabs, workable in any order). This is a **live-corpus data-model migration** touching ~23 source files: additive `032` → a standing shadow-compare gate → readers-before-writers cutover, seam by seam → the destructive migration (number assigned at plan time). **Small blast-radius per phase (one shippable PR per seam)** is a hard requirement. Phase numbering **continues from 76**. 42 requirements mapped 1:1, 0 orphans, 0 duplicates. Zero new dependencies. Design contract: `.planning/milestones/PARALLEL-ENRICH-DAG-DESIGN.md`; research: `.planning/research/SUMMARY.md`.
 
@@ -34,6 +34,8 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 88: Lane / Agent Drill-In** — clickable lane-detail + agent-detail views (the agent-activity view groups owned files by derived `stage_status`), poll-swap-surviving + keyboard-accessible (DRILL-01..03) (completed 2026-07-11)
 - [x] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03) (completed 2026-07-11)
 - [x] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04) (completed 2026-07-13)
+- [x] **Phase 91: Milestone-Close Hygiene** — milestone-close hardening shipped outside the formal GSD phase pipeline, documented retroactively for numbering continuity: HYG-01 bounded the orphan-count hot poll via an O(1) module cache + lifespan refresh (PR #239); HYG-02/03/04 = coverage uplift to 100% on four files, a vulture dead-code sweep (zero dead src), a `FileState` docs scrub, plus a queue-activity connect-before-count fix (PR #241). No GSD plans/requirements (post-42-req hygiene). (completed 2026-07-13)
+- [ ] **Phase 92: Milestone-Close Tech-Debt Cleanup** — the tech-debt items surfaced by the 2026.7.5 milestone audit: the PERF-02 follow-up (parallelize the three `get_stage_progress` bucket-count reads via `asyncio.gather`), fix the non-hermetic test flakes 83-01/83-03 for per-bucket CI isolation, and cosmetic doc fixes (stale `agent_files.py` DISCOVERED-stamp comment + duplicated `backends.py` `KueueBackend.reconcile` comment block). DENORM-01 stays v2-deferred; P85 WR-01..04 stays accepted-deferred (requirements assigned at discuss-phase)
 
 <details>
 <summary>✅ 2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends) (Phases 72-76) — SHIPPED 2026-07-06</summary>
@@ -279,6 +281,8 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
+| 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 0/0 | Not Started | — |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -662,6 +666,33 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 90-04-PLAN.md — PR-C cont.: delete FileState enum + state column + ix_files_state from the ORM; retire the now-dead shadow_compare subsystem (invariants frozen in 039's guard); migrate ~90 dependent test files to derived sources; add the D-08 mutation-tested anti-drift guard; flip the 039 autogenerate test green [Wave 4]
+
+### Phase 91: Milestone-Close Hygiene
+
+**Goal**: Milestone-close hardening that shipped outside the formal GSD phase pipeline (documented retroactively for phase-numbering continuity — see the 2026.7.5 milestone audit).
+**Depends on**: Phase 90
+**Requirements**: none (post-42-req hygiene; not part of the milestone's mapped requirement set)
+**Status**: Complete — shipped as PRs #239 and #241.
+
+  1. HYG-01 (PR #239): bounded the orphan-count hot poll via an O(1) module cache + lifespan refresh.
+  2. HYG-02 (PR #241): coverage uplift to 100% on four files (enforced floor stays 90%).
+  3. HYG-03 (PR #241): vulture dead-code sweep — zero dead source found.
+  4. HYG-04 (PR #241): `FileState` docs scrub.
+  5. queue-activity connect-before-count fix (PR #241).
+
+### Phase 92: Milestone-Close Tech-Debt Cleanup
+
+**Goal**: Pay down the tech debt surfaced by the 2026.7.5 milestone audit (`.planning/2026.7.5-MILESTONE-AUDIT.md`) before completing the milestone. Behavior-preserving except the PERF-02 latency win; small blast radius per item.
+**Depends on**: Phase 90
+**Requirements**: assigned at discuss-phase (candidate IDs CLEAN-01..03)
+**Success Criteria** (what must be TRUE):
+
+  1. The three `_safe_bucket_counts` reads in `get_stage_progress` run concurrently via `asyncio.gather`, measurably reducing `/pipeline/stats` poll latency at 200K-file scale (the PERF-02 follow-up; DENORM-01 remains v2-deferred, revisited only if this proves insufficient).
+  2. The non-hermetic test flakes 83-01 / 83-03 (`pk_agents` / bucket-pollution) pass under per-bucket CI isolation (`just test-bucket`), matching the project's isolation standard.
+  3. The stale `agent_files.py` DISCOVERED-stamp comment and the duplicated `backends.py` `KueueBackend.reconcile` comment block are removed (doc hygiene; zero runtime change).
+
+**Out of scope**: DENORM-01 (v2-deferred), P85 WR-01..04 (accepted-deferred per operator decision 2026-07-10), P81 WR-01/02, and the live-corpus deploy rehearsal (a separate operator gate).
+**Plans**: TBD (created by `/gsd:plan-phase 92`)
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 

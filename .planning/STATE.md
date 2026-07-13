@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: milestone_complete
+status: in_progress
 last_updated: 2026-07-13T15:17:59.657Z
-last_activity: 2026-07-13 -- Phase 90 shipped (PR #238)
+last_activity: 2026-07-13 -- Milestone audit (tech_debt); Phase 91 documented, Phase 92 cleanup inserted
 progress:
-  total_phases: 52
-  completed_phases: 28
-  total_plans: 117
+  total_phases: 16
+  completed_phases: 15
+  total_plans: 62
   completed_plans: 62
-  percent: 54
-stopped_at: Milestone complete (Phase 90 was final phase)
+  percent: 94
+stopped_at: Phase 92 (audit-surfaced tech-debt cleanup) inserted; awaiting discuss/plan/execute before milestone close
 ---
 
 # Project State
@@ -21,15 +21,15 @@ stopped_at: Milestone complete (Phase 90 was final phase)
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Milestone complete
+**Current focus:** Phase 92 — milestone-close tech-debt cleanup (audit-surfaced), before milestone close
 
 ## Current Position
 
-Phase: 90
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-07-13 - Completed quick task 260713-kg6: Document essentia usage analysis & replacement research under docs/
-Next: /gsd:execute-phase 90 (runs 90-04) — or /gsd:plan-phase 90 first to enrich 90-04 (esp. the shadow_compare full-removal default). One expected-RED test on branch until 90-04: test_039_autogenerate_diff_is_empty_for_dropped_objects
+Phase: 92 (milestone-close tech-debt cleanup)
+Plan: Not planned yet
+Status: In progress — core milestone (42/42 reqs, phases 77-90) delivered + Phase 91 hygiene shipped; Phase 92 pays down audit-surfaced debt before close
+Last activity: 2026-07-13 - Milestone audit (tech_debt verdict, .planning/2026.7.5-MILESTONE-AUDIT.md); documented Phase 91 (shipped hygiene) + inserted Phase 92 (cleanup)
+Next: /gsd:discuss-phase 92 → /gsd:plan-phase 92 → /gsd:execute-phase 92, then /gsd:complete-milestone 2026.7.5. Pre-DEPLOY operator gate remains (039 real-corpus rehearsal + drained-corpus shadow-compare, tracked in 79/84/90-HUMAN-UAT.md) — blocking for prod deploy only.
 
 ## Performance Metrics
 
