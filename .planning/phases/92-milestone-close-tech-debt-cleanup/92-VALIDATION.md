@@ -29,7 +29,7 @@ created: 2026-07-13
 
 - **After every task commit:** Run the targeted `uv run pytest` for the touched module/test.
 - **After every plan wave:** Run affected bucket(s) via `just test-bucket <bucket>`.
-- **Before `/gsd:verify-work`:** Full suite green under per-bucket isolation (D-08); both PERF-02 before/after latency numbers recorded in `92-VERIFICATION.md` (D-05).
+- **Before `/gsd:verify-work`:** Full suite green under per-bucket isolation (D-08); both PERF-02 before/after latency numbers recorded in `92-VERIFICATION.md` (D-05); CLEAN-01/02/03 registered in REQUIREMENTS.md (DOCS-01 guard green).
 - **Max feedback latency:** targeted run seconds; full per-bucket gate on wave close.
 
 ---
@@ -42,13 +42,15 @@ created: 2026-07-13
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
 | 92-01-1 | 01 | 1 | CLEAN-03 | T-92-01-CMT | N/A (comment-only) | static/lint | `grep -c "thread THIS backend's KubeConfig" ...` + `uv run ruff check ...` | ✅ | ⬜ pending |
 | 92-02-1 | 02 | 1 | CLEAN-01 | T-92-02-DoS | Perf-DB routing confirmed; before baseline | manual-bench | `PHAZE_DATABASE_URL=<perf> just perf-explain ITER=20` | ✅ (Phase 82) | ⬜ pending |
-| 92-02-2 | 02 | 1 | CLEAN-01 | T-92-02-DoS/SKEW | Semaphore(4) + acquisition-degrade | integration | `uv run pytest tests/analyze/core/test_stage_progress.py tests/shared/routers/test_pipeline.py tests/integration/test_stage_progress_buckets.py -q` | ✅ | ⬜ pending |
+| 92-02-2 | 02 | 1 | CLEAN-01 | T-92-02-DoS/SKEW | Semaphore(4) + acquisition-degrade; fan-out seam patchable | integration | `uv run pytest tests/analyze/core/test_stage_progress.py tests/shared/routers/test_pipeline.py tests/integration/test_stage_progress_buckets.py -q` | ✅ | ⬜ pending |
 | 92-02-3 | 02 | 1 | CLEAN-01 | T-92-02-SKEW | Before/after + DENORM-01 verdict (D-05) | manual-bench | `PHAZE_DATABASE_URL=<perf> just perf-explain ITER=20` → 92-VERIFICATION.md | ✅ | ⬜ pending |
-| 92-03-1 | 03 | 2 | CLEAN-02 | T-92-03-ISO | create_savepoint isolation + verify fixture | infra | `just test-bucket shared` | ✅ (rewire) | ⬜ pending |
-| 92-03-2 | 03 | 2 | CLEAN-02 | T-92-03-ISO | Mutation-safe hermeticity proof (Wave 0) | infra | `uv run pytest tests/shared/test_conftest_hermeticity.py -q` | ❌ NEW (Wave 0) | ⬜ pending |
-| 92-04-1 | 04 | 3 | CLEAN-02 | T-92-04-VIS | verify reads share outer-txn connection | infra | `just test-bucket analyze` | ✅ (migrate) | ⬜ pending |
-| 92-04-2 | 04 | 3 | CLEAN-02 | T-92-04-VIS | review/agents/discovery migrated + integration exclusion grep | infra | `just test-bucket review agents discovery` | ✅ (migrate) | ⬜ pending |
-| 92-05-1 | 05 | 4 | CLEAN-02 | T-92-05-GATE | [BLOCKING] D-08 full-suite per-bucket green | acceptance | `just test-bucket <all 9 buckets>` | ✅ | ⬜ pending |
+| 92-03-1 | 03 | 2 | CLEAN-02 | T-92-03-ISO | create_savepoint isolation + verify fixture | infra | `uv run pytest tests/shared -q -k "conftest or dsn"` | ✅ (rewire) | ⬜ pending |
+| 92-03-2 | 03 | 2 | CLEAN-02 | T-92-03-VIS | [BLOCKER-1 FIX] route get_stage_progress production fan-out → per-test connection (async_session monkeypatch + Semaphore(1)) | infra | `just test-bucket shared` (incl. seed-then-/pipeline/stats) | ✅ (conftest) | ⬜ pending |
+| 92-03-3 | 03 | 2 | CLEAN-02 | T-92-03-ISO/VIS | Mutation-safe hermeticity proof: rollback + seed-then-get_stage_progress visibility (Wave 0) | infra | `uv run pytest tests/shared/test_conftest_hermeticity.py -q` | ❌ NEW (Wave 0) | ⬜ pending |
+| 92-04-1 | 04 | 3 | CLEAN-02 | T-92-04-VIS | analyze verify reads share outer-txn connection (9 files/12 sites) | infra | `just test-bucket analyze` | ✅ (migrate) | ⬜ pending |
+| 92-04-2 | 04 | 3 | CLEAN-02 | T-92-04-VIS | review/agents/discovery migrated (4 files/9 sites) + integration exclusion grep | infra | `just test-bucket review agents discovery` | ✅ (migrate) | ⬜ pending |
+| 92-05-1 | 05 | 4 | CLEAN-01/02/03 | — (bookkeeping) | Register CLEAN-01/02/03 in REQUIREMENTS.md; DOCS-01 guard green | static | `uv run pytest tests/shared/core/test_requirements_traceability.py -q` | ✅ | ⬜ pending |
+| 92-05-2 | 05 | 4 | CLEAN-02 | T-92-05-GATE | [BLOCKING] D-08 full-suite per-bucket green | acceptance | `just test-bucket <all 9 buckets>` | ✅ | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -59,7 +61,15 @@ created: 2026-07-13
 - [ ] **Fixture-contract test** (CLEAN-02) — a mutation-safe test that PROVES the new transactional
       fixture rolls back committed rows between tests (a green suite alone does not prove hermeticity
       for an intermittent flake — research landmine). Deliberately commit a row in test A, assert it is
-      absent in test B.
+      absent in test B. **AND** assert seed-then-`get_stage_progress` (or `/pipeline/stats`) sees the
+      seeded row — guarding the BLOCKER-1 production-fan-out regression. (92-03 Task 3.)
+- [ ] **Production-fan-out routing** (CLEAN-01/02 boundary) — under the create_savepoint fixture, route
+      `get_stage_progress`'s own `phaze.database.async_session` fan-out onto the per-test `_db_connection`
+      (monkeypatch + `_STATS_FANOUT`→`Semaphore(1)`), so seed-then-read tests (`test_stage_progress.py`,
+      `test_pipeline.py`) don't read zero/stale. This MUST land in 92-03 (Task 2) before the `shared`
+      bucket is claimed green — the collision is invisible when 92-02 is verified in isolation (wave 1,
+      old conftest still commits) and only manifests at the wave-1→wave-2 boundary. Depends on the
+      patchable fan-out seam from 92-02 Task 2.
 - [ ] **Overlap/latency instrument** (CLEAN-01) — reuse `time_stage_progress()` + the Phase-82
       harness (`scripts/seed_perf_corpus.py`, `just perf-db-up / perf-seed / perf-explain`) to capture
       before/after `/pipeline/stats` poll latency at 200K scale. Confirm the bench points at the perf DSN
@@ -84,7 +94,7 @@ created: 2026-07-13
 
 - [ ] All tasks have `<automated>` verify or Wave 0 dependencies
 - [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
+- [ ] Wave 0 covers all MISSING references (fixture-contract test + production-fan-out routing)
 - [ ] No watch-mode flags
 - [ ] Feedback latency acceptable
 - [ ] `nyquist_compliant: true` set in frontmatter

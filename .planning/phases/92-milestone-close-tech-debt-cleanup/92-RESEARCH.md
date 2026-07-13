@@ -247,16 +247,20 @@ src/phaze/routers/agent_files.py   # CLEAN-03 (D-10): fix stale DISCOVERED-stamp
 | A3 | `time_stage_progress()`/`time_endpoint()` route the new internal `async_session()` to the perf DB via `PHAZE_DATABASE_URL` | D-05 Harness | If the bench measures the wrong DB, the number is meaningless — planner MUST verify the bench binds the module-level engine to the perf DSN (concrete integration point flagged) |
 | A4 | No migration/integration test consumes the `session`/`async_engine` fixtures | Pitfall 3 | If one does, the session-scoped/create_savepoint change could break it — planner must grep-verify before landing |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Both questions are answered downstream and are operationalized in the plans; retained here with resolution pointers per the project's literal-match gate precedent (MEMORY project_decision_coverage_gate_literal).
 
 1. **Does the perf bench correctly route `get_stage_progress`'s new internal sessions to the perf DB?**
    - What we know: current `perf_explain.py` uses `dependency_overrides[get_session]` + a local engine; the parallelized code will call `phaze.database.async_session` directly, which binds to `settings.database_url`.
    - What's unclear: whether exporting `PHAZE_DATABASE_URL=<perf dsn>` for the bench run is sufficient (module-level `engine` is built at import time from `settings`).
    - Recommendation: run the bench as `PHAZE_DATABASE_URL=<perf dsn> just perf-explain`; if `settings` is already imported before the env is set, the harness may need a tiny tweak to construct the engine against the perf DSN. Plan a Wave-0 check.
+   - **RESOLVED:** operationalized as **92-02 Task 1** (Wave-0 gate) — a small-N smoke confirms `PHAZE_DATABASE_URL` routes the internal `async_session()` fan-out to the perf DB before AFTER numbers are captured. The test-fixture analog of the same routing problem is resolved by **92-03 Task 2** (monkeypatch `phaze.database.async_session` onto the per-test connection so seed-then-read tests see their rows).
 
 2. **Should the incoming `session` param of `get_stage_progress` be removed or kept?**
    - What we know: callers pass their request session; the reads no longer use it.
    - Recommendation: keep the parameter for signature stability (least blast radius), document it as unused-by-design, OR remove it and update the ~2 callers. Claude's discretion — keeping it is the lower-risk default for a behavior-preserving phase.
+   - **RESOLVED:** keep the param — operationalized in **92-02 Task 2** (signature kept for stability, documented unused-by-design).
 
 ## Environment Availability
 
@@ -366,9 +370,9 @@ No missing dependencies. All tooling is pre-existing.
 | Fixture mechanism (CLEAN-02) | HIGH | `create_savepoint` is the purpose-built 2.0 feature |
 | Pitfalls | HIGH | Grounded in verified source + project memory |
 
-### Open Questions
-1. Does `perf_explain.py` route the parallelized internal sessions to the perf DB? (Wave-0 smoke check — export `PHAZE_DATABASE_URL`.)
-2. Keep vs remove the now-unused `session` param of `get_stage_progress`? (Recommend keep for minimal blast radius.)
+### Open Questions (RESOLVED)
+1. Does `perf_explain.py` route the parallelized internal sessions to the perf DB? (Wave-0 smoke check — export `PHAZE_DATABASE_URL`.) — **RESOLVED: 92-02 Task 1** (Wave-0 gate) + **92-03 Task 2** (test-fixture routing analog).
+2. Keep vs remove the now-unused `session` param of `get_stage_progress`? (Recommend keep for minimal blast radius.) — **RESOLVED: keep**, per **92-02 Task 2**.
 
 ### Ready for Planning
 Research complete. Planner can now create PLAN.md files. Note the Wave-0 gaps (fixture-contract test; perf-DB routing check; migration-test fixture-usage grep) and the D-08 full-suite / D-05 measurement gates.

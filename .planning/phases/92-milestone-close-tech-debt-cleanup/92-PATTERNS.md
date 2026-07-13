@@ -112,7 +112,7 @@ committed ONCE in the session-scoped engine setup (durably, OUTSIDE per-test txn
 that id.
 
 > ### 🔴 LOAD-BEARING LANDMINE — the independent-verify-session tests (planner MUST resolve)
-> **23 call sites across 15 files** build an INDEPENDENT session with
+> **21 call sites across 13 non-integration files** (grep-verified 2026-07-13; excludes conftest.py's own fixture def + tests/integration) build an INDEPENDENT session with
 > `async_sessionmaker(async_engine)` to prove a router/task actually COMMITTED (reading committed rows
 > from a *different* connection). Canonical example — `tests/review/routers/test_duplicates.py:314-317`:
 > ```python
@@ -139,6 +139,12 @@ that id.
 > a real broker DB and does NOT consume the `async_engine`/`session` fixtures — leave those untouched
 > (they're auto-marked `integration` at `conftest.py:145-164` and manage their own DB). Grep-verify
 > per RESEARCH A4 before landing.
+>
+> **SEPARATE, BROADER failure class (NOT a verify-session site):** `tests/analyze/core/test_stage_progress.py` and
+> `tests/shared/routers/test_pipeline.py` seed via `session.commit()` then read counts from **`get_stage_progress`**,
+> whose PRODUCTION fan-out (92-02) opens its OWN `phaze.database.async_session` on a DIFFERENT pool connection — so it
+> reads ZERO/STALE under create_savepoint. This is fixed by **plan 92-03 Task 2** (route the fan-out through the per-test
+> connection), NOT by rebinding a verify session. Do NOT migrate those two files in 92-04.
 
 **Integration/migration exclusion is already structural** — `conftest.py:145-164`
 (`pytest_collection_modifyitems`) auto-marks anything consuming `DB_FIXTURES`
@@ -253,5 +259,5 @@ None. Every file has an in-repo analog. The only genuinely NEW mechanism —
 
 **Analog search scope:** `src/phaze/{services,tasks,routers,database.py}`, `tests/{shared,review,agents,
 analyze,discovery,integration}/`, `scripts/`, `tests/buckets.json`.
-**Files scanned:** ~20 read/grepped; 23 independent-verify-session call sites enumerated.
+**Files scanned:** ~20 read/grepped; 21 independent-verify-session call sites (13 non-integration files) enumerated.
 **Pattern extraction date:** 2026-07-13
