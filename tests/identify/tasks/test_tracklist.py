@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+from phaze.tasks.tracklist import _store_scraped_tracklist, refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
 def _make_ctx() -> dict[str, Any]:
@@ -279,6 +279,77 @@ async def test_refresh_tracklists(mock_sleep: AsyncMock, mock_scrape: AsyncMock)
     assert result["errors"] == 0
     assert mock_scrape.await_count == 2
     assert mock_sleep.await_count == 2
+
+
+async def test_store_scraped_tracklist_creates_new_when_absent() -> None:
+    """With no existing external_id match, a fresh Tracklist is created at version 1."""
+    session = AsyncMock()
+    no_match = MagicMock()
+    no_match.scalar_one_or_none.return_value = None
+    session.execute.return_value = no_match
+
+    scraped = _make_scraped_tracklist(external_id="brand-new")
+    result = await _store_scraped_tracklist(session, scraped)
+
+    # The create branch was taken: the new Tracklist carries the scraped metadata ...
+    assert result.external_id == "brand-new"
+    assert result.artist == "Artist"
+    assert result.event == "Coachella"
+    assert result.date == date(2024, 4, 14)
+    # ... and both the tracklist and its first version were flushed (add called for tl + version + 2 tracks).
+    assert session.add.call_count == 4
+    assert session.flush.await_count == 2
+
+
+async def test_store_scraped_tracklist_swallows_non_valueerror_date() -> None:
+    """A date value that makes strptime raise a non-ValueError (e.g. a non-str) is caught, leaving date None."""
+    session = AsyncMock()
+    no_match = MagicMock()
+    no_match.scalar_one_or_none.return_value = None
+    session.execute.return_value = no_match
+
+    scraped = _make_scraped_tracklist(external_id="bad-date")
+    scraped.date = 20240414  # int -> strptime raises TypeError -> outer except -> date stays None
+
+    result = await _store_scraped_tracklist(session, scraped)
+
+    assert result.date is None
+
+
+@patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_counts_per_item_failures(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
+    """A scrape failure on one tracklist increments errors but does not abort the sweep."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_tl_ok = MagicMock(id=uuid.uuid4())
+    mock_tl_bad = MagicMock(id=uuid.uuid4())
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_tl_ok, mock_tl_bad]
+    session.execute.return_value = mock_result
+
+    mock_scrape.side_effect = [{"tracklist_id": "ok"}, RuntimeError("scrape blew up")]
+
+    result = await refresh_tracklists(ctx)
+
+    assert result == {"refreshed": 1, "errors": 1}
+    assert mock_scrape.await_count == 2
+    # jitter sleep still runs after each attempt, success or failure
+    assert mock_sleep.await_count == 2
+
+
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_swallows_outer_failure(mock_sleep: AsyncMock) -> None:
+    """A failure loading the stale set is logged and yields zero counts, not a raise."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    session.execute.side_effect = RuntimeError("db unreachable")
+
+    result = await refresh_tracklists(ctx)
+
+    assert result == {"refreshed": 0, "errors": 0}
+    mock_sleep.assert_not_awaited()
 
 
 async def test_search_tracklist_file_not_found() -> None:
