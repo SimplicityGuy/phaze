@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
-| 90. Destructive Migration & Writer Removal | 2026.7.5 | 1/3 | In Progress|  |
+| 90. Destructive Migration & Writer Removal | 2026.7.5 | 2/3 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -653,7 +653,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 90-02-PLAN.md — PR-B: writer removal — delete all ~17 FileState writers (incl. the two CAS-guard reads) now that readers are derived; equivalence + full suite green [Wave 2]
+- [x] 90-02-PLAN.md — PR-B: writer removal — delete all ~17 FileState writers (incl. the two CAS-guard reads) now that readers are derived; equivalence + full suite green [Wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
