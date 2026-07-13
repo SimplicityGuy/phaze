@@ -693,13 +693,22 @@ Plans:
 
 **Out of scope**: DENORM-01 (v2-deferred), P85 WR-01..04 (accepted-deferred per operator decision 2026-07-10), P81 WR-01/02, and the live-corpus deploy rehearsal (a separate operator gate).
 **Plans**: 5 plans in 4 waves
-
 Plans:
+**Wave 1**
 
 - [ ] 92-01-PLAN.md — CLEAN-03 cosmetic doc fixes: de-dup backends.py KubeConfig comment (D-09) + reword stale agent_files.py ON-CONFLICT comment (D-10) [Wave 1]
 - [ ] 92-02-PLAN.md — CLEAN-01 PERF-02: parallelize get_stage_progress via asyncio.gather over per-task sessions bounded by Semaphore(4) + before/after 200K measurement → 92-VERIFICATION.md (D-05) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 92-03-PLAN.md — CLEAN-02 core: rewire conftest to session-scoped engine + create_savepoint per-test rollback + shared verify fixture + route get_stage_progress's production fan-out through the per-test connection + mutation-safe hermeticity contract test [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 92-04-PLAN.md — CLEAN-02 migration: rebind the 21 independent-verify-session call sites (13 files, analyze/review/agents/discovery) to the shared connection-bound verify fixture [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 92-05-PLAN.md — CLEAN-02 D-08 gate: register CLEAN-01/02/03 in REQUIREMENTS.md traceability + [BLOCKING] full ~1750-test suite green under per-bucket isolation for all 9 buckets → recorded in 92-VERIFICATION.md [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
