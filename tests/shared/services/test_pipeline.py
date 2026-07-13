@@ -236,6 +236,61 @@ async def test_get_queue_activity_controller_independent_of_agents(session: Asyn
     assert activity["controller_busy"] == 0
 
 
+@pytest.mark.asyncio
+async def test_get_queue_activity_connects_runtime_registered_agent(session: AsyncSession):
+    """A per-agent queue not pre-connected at startup is connected before counting.
+
+    Regression (#217): ``main.py`` only opens pools for agents present at boot. A compute
+    agent registered at runtime (``phaze agents add --kind compute``) has an unopened psycopg
+    pool, so ``count`` raised ``PoolClosed`` and the whole agent source degraded to 0 (and
+    logged ``queue_activity_degraded`` every 5s) until the api restarted. The reader must
+    ``connect()`` (idempotent) before ``count`` -- mirroring ``enqueue_for_agent``.
+    """
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "k8s-vox")
+    router = FakeTaskRouter()
+    router.set_counts("nox", queued=3, active=2)
+    # k8s-vox models the runtime agent: its base-queue count raises until connect() opens the pool.
+    router.queue_for("k8s-vox").require_connect().set_counts(queued=4, active=1)
+    controller = FakeQueue("controller")
+    controller.set_counts(queued=5, active=0)
+    app_state = SimpleNamespace(task_router=router, controller_queue=controller)
+
+    activity = await get_queue_activity(app_state, session)
+
+    # Both agents counted (7 queued, 3 active) -- NOT degraded to 0 by the unopened pool.
+    assert activity["agent_queued"] == 7
+    assert activity["agent_active"] == 3
+    assert activity["agent_busy"] == 10
+    assert activity["controller_busy"] == 5
+
+
+@pytest.mark.asyncio
+async def test_get_queue_activity_isolates_one_failing_agent(session: AsyncSession):
+    """One agent's count failure zeroes only that agent, not the whole agent source.
+
+    A single dead/unconnectable agent queue must not wipe every other agent's live depth
+    from the 5s dashboard poll (the pathology that made a single runtime agent degrade the
+    entire metric). Per-agent failure isolation, alongside the existing per-source split. (#217)
+    """
+    await seed_active_agent(session, "nox")
+    await seed_active_agent(session, "k8s-vox")
+    router = FakeTaskRouter()
+    router.set_counts("nox", queued=3, active=2)
+    router.queue_for("k8s-vox").set_counts(queued=99, active=99).fail_count()
+    controller = FakeQueue("controller")
+    controller.set_counts(queued=5, active=0)
+    app_state = SimpleNamespace(task_router=router, controller_queue=controller)
+
+    activity = await get_queue_activity(app_state, session)
+
+    # nox's real depth survives; only the failing k8s-vox contributes 0.
+    assert activity["agent_queued"] == 3
+    assert activity["agent_active"] == 2
+    assert activity["agent_busy"] == 5
+    assert activity["controller_busy"] == 5
+
+
 # ---------------------------------------------------------------------------
 # get_stage_busy_counts (t7k FIX2) — per-stage in-flight gate, degrade-safe
 # ---------------------------------------------------------------------------
