@@ -278,7 +278,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 87. Operator UI — Stage Matrix, Failure Retry, Eligibility Trace & Priority | 2026.7.5 | 9/8 | Complete    | 2026-07-11 |
 | 88. Lane / Agent Drill-In | 2026.7.5 | 3/3 | Complete    | 2026-07-11 |
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
-| 90. Destructive Migration & Writer Removal | 2026.7.5 | 3/4 | In Progress|  |
+| 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete   | 2026-07-13 |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -657,11 +657,11 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [~] 90-03-PLAN.md — PR-C (partial): landed the irreversible migration 039 (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade), guarded/reversible, 13/14 tests green. Model/enum removal + D-08 guard split to 90-04 (see 90-03-SUMMARY.md). [Wave 3]
+- [x] 90-03-PLAN.md — PR-C (migration): landed the irreversible migration 039 (archive + delta top-up + lock_timeout/savepoint-retry drop + D-06/D-07 inline guard + D-10 archive-restore downgrade), guarded/reversible. Model/enum removal + D-08 guard were split to 90-04 at a decision checkpoint and completed there (see 90-03-SUMMARY.md). [Wave 3]
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 90-04-PLAN.md — PR-C cont.: delete FileState enum + state column + ix_files_state from the ORM; retire the now-dead shadow_compare subsystem (invariants frozen in 039's guard); migrate ~90 dependent test files to derived sources; add the D-08 mutation-tested anti-drift guard; flip the 039 autogenerate test green [Wave 4]
+- [x] 90-04-PLAN.md — PR-C cont.: delete FileState enum + state column + ix_files_state from the ORM; retire the now-dead shadow_compare subsystem (invariants frozen in 039's guard); migrate ~90 dependent test files to derived sources; add the D-08 mutation-tested anti-drift guard; flip the 039 autogenerate test green [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
