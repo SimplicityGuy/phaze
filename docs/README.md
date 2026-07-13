@@ -20,6 +20,7 @@ This is the documentation index for the `docs/` directory. For the project overv
 | **[API Reference](api.md)** | 🔌 REST and HTMX UI endpoints, plus the distributed Agent API |
 | **[Database Schema & Migrations](database.md)** | 🗄️ PostgreSQL schema and Alembic migrations |
 | **[Project Structure](project-structure.md)** | 📁 Codebase layout and module organization |
+| **[Essentia Analysis & Replacement](essentia-analysis.md)** | 🔬 Where essentia is used, its true compute profile (DSP/decode-bound), the feature surface to preserve, and why no lighter drop-in replacement exists |
 
 ## 🚀 Operations
 
