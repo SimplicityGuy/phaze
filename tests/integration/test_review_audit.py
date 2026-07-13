@@ -145,10 +145,13 @@ async def test_tag_undo_missing_log_returns_404(client: AsyncClient, session: As
 async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncClient, session: AsyncSession) -> None:
     """(c) Resolve marks exactly one non-canonical file; undo round-trips the file_states blob.
 
-    The dedupe "audit row" is the ``FileRecord`` state transition itself (D-07): exactly one
-    non-canonical file moves to DUPLICATE_RESOLVED per resolve, and the existing undo restores it
-    from the round-tripped ``file_states`` JSON -- reversibility with zero new logic.
+    The dedupe "audit row" is the durable ``DedupResolution`` marker (D-07 / Phase 90 D-09: the
+    ``FileRecord.state`` dual-write was removed, so the marker is the sole authority): exactly one
+    non-canonical file gets a marker per resolve, and undo DELETEs it from the round-tripped
+    ``file_states`` JSON -- reversibility with zero new logic.
     """
+    from phaze.models.dedup_resolution import DedupResolution
+
     shared = uuid.uuid4().hex + uuid.uuid4().hex
     canonical = await _executed_file(session, filename="keep.mp3", sha256=shared, file_size=1000)
     other = await _executed_file(session, filename="dupe.mp3", sha256=shared, file_size=2000)
@@ -156,15 +159,14 @@ async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncC
     resolve = await client.post(f"/duplicates/{shared}/resolve", data={"canonical_id": str(canonical.id)})
     assert resolve.status_code == 200
 
-    resolved_stmt = (
-        select(func.count()).select_from(FileRecord).where(FileRecord.sha256_hash == shared, FileRecord.state == FileState.DUPLICATE_RESOLVED)
-    )
-    assert (await session.execute(resolved_stmt)).scalar_one() == 1, "exactly one resolution per resolve"
+    resolved_stmt = select(func.count()).select_from(DedupResolution).where(DedupResolution.file_id == other.id)
+    assert (await session.execute(resolved_stmt)).scalar_one() == 1, "exactly one resolution marker per resolve"
 
-    # Undo round-trips the file_states blob the resolve response carries.
-    file_states = json.dumps([{"id": str(other.id), "previous_state": FileState.MOVED.value}])
+    # Undo round-trips the file_states blob the resolve response carries (id-only DELETE of the marker).
+    file_states = json.dumps([{"id": str(other.id)}])
     undo = await client.post(f"/duplicates/{shared}/undo", data={"file_states": file_states})
     assert undo.status_code == 200
 
-    await session.refresh(other)
-    assert other.state == FileState.MOVED.value, "undo restores the non-canonical file's prior state"
+    # The marker is gone -> the file derives ~dedup_resolved_clause() again (Phase 90 D-09).
+    remaining = (await session.execute(select(func.count()).select_from(DedupResolution).where(DedupResolution.file_id == other.id))).scalar_one()
+    assert remaining == 0, "undo DELETEs the resolution marker"

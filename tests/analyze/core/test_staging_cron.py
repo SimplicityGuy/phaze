@@ -157,10 +157,27 @@ def _make_file(*, state: str = FileState.AWAITING_CLOUD, file_type: str = "mp3",
 
 
 async def _states_for(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Re-read the persisted state for ``ids`` from the DB (expiring the identity map first)."""
+    """Phase 90 (D-09): derive each file's effective drain state from its ``cloud_job`` sidecar.
+
+    The ``files.state`` dual-write (AWAITING_CLOUD held / PUSHING dispatched) was removed; the cloud_job
+    row is the sole authority. A row at ``status='awaiting'`` -> AWAITING_CLOUD (held); any other (in-flight)
+    status -> PUSHING (dispatched). A file with NO cloud_job row falls back to its seeded ``files.state``
+    (it was never a drain candidate, so it was never dispatched). This keeps every existing assertion --
+    which compares against ``FileState.AWAITING_CLOUD`` / ``FileState.PUSHING`` -- valid post-writer-removal.
+    """
     session.expire_all()
-    rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
-    return {r.id: r.state for r in rows}
+    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
+    jobs = {r.file_id: r.status for r in (await session.execute(select(CloudJob).where(CloudJob.file_id.in_(ids)))).scalars().all()}
+    out: dict[uuid.UUID, str] = {}
+    for f in files:
+        status = jobs.get(f.id)
+        if status is None:
+            out[f.id] = f.state
+        elif status == CloudJobStatus.AWAITING.value:
+            out[f.id] = FileState.AWAITING_CLOUD
+        else:
+            out[f.id] = FileState.PUSHING
+    return out
 
 
 async def _seed_awaiting_rows(session: AsyncSession, files: list[FileRecord]) -> None:
@@ -973,9 +990,13 @@ async def test_local_spill_not_redispatched_to_cloud(
     router = DedupFakeTaskRouter()
     result1 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
 
-    # The file spilled to local: dispatched exactly once, now LOCAL_ANALYZING.
+    # The file spilled to local: dispatched exactly once. Phase 90 (D-09): the LOCAL_ANALYZING files.state
+    # flip was removed, so the derived proof is that its cloud_job row was NOT promoted to a compute row --
+    # it stays 'awaiting' with no backend_id (D-05 retains it; LocalBackend writes no cloud_job).
     assert result1 == {"staged": 1, "skipped": 0}
-    assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
+    spilled = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert spilled.status == CloudJobStatus.AWAITING.value
+    assert spilled.backend_id is None
     # Seed the committed process_file:<id> ledger row the before_enqueue hook would have written (the
     # DedupFakeQueue does not run that hook) -- the ~inflight_clause fact that excludes it on tick 2.
     from phaze.models.scheduling_ledger import SchedulingLedger
@@ -987,9 +1008,8 @@ async def test_local_spill_not_redispatched_to_cloud(
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     result2 = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
 
-    # No candidate remains (~inflight_clause excludes the locally-dispatched file): still LOCAL_ANALYZING.
+    # No candidate remains (~inflight_clause excludes the locally-dispatched file).
     assert result2 == {"staged": 0, "skipped": 0}
-    assert (await _states_for(session, [fid]))[fid] == FileState.LOCAL_ANALYZING
     # It grew no COMPUTE cloud_job row -- its awaiting row is retained (D-05 no-deletion), never promoted
     # to a compute SUBMITTED row (no cross-backend double-dispatch, no leaked compute cap slot).
     session.expire_all()
