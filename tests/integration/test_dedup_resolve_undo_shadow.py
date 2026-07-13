@@ -120,26 +120,20 @@ async def test_resolve_undo_reresolve_keeps_shadow_green(db_session: AsyncSessio
     keeper = await _file(db_session)
     dup = await _file(db_session)
 
-    # resolve: marker inserted for the non-canonical dup, state dual-written.
+    # resolve: marker inserted for the non-canonical dup (Phase 90 D-09: marker-only, no files.state write).
     _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
     assert dup.id in await _marker_file_ids(db_session)
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DUPLICATE_RESOLVED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
-    # undo: marker DELETEd, previous_state restored for the returned id.
+    # undo: marker DELETEd (the sole undo authority; no state restore).
     restored = await undo_resolve(db_session, payload)
     assert restored == 1
     assert dup.id not in await _marker_file_ids(db_session)
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DISCOVERED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
-    # re-resolve: marker re-inserted, state dual-written again.
+    # re-resolve: marker re-inserted.
     _count2, _payload2 = await resolve_group(db_session, HASH_A, keeper.id)
     assert dup.id in await _marker_file_ids(db_session)
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DUPLICATE_RESOLVED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
 
@@ -156,27 +150,21 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
     _count, stale_payload = await resolve_group(db_session, HASH_A, f_c.id)
     assert {e["id"] for e in stale_payload} == {str(f_b.id)}
 
-    # (2) undo P → marker B gone, B restored to DISCOVERED.
+    # (2) undo P → marker B gone (Phase 90 D-09: marker DELETE is the sole undo authority; no state restore).
     await undo_resolve(db_session, stale_payload)
     assert f_b.id not in await _marker_file_ids(db_session)
 
     # (3) re-resolve with the OTHER canonical=B → now C is the resolved duplicate (marker on C),
     #     B is the keeper (no marker).
     await resolve_group(db_session, HASH_A, f_b.id)
-    await db_session.refresh(f_c)
-    assert f_c.state == FileState.DUPLICATE_RESOLVED
     assert await _marker_file_ids(db_session) == {f_c.id}
 
     # (4) STALE replay of P (targets B, now a keeper with no marker) → CAS matches 0 rows → no-op.
     restored = await undo_resolve(db_session, stale_payload)
-    assert restored == 0  # nothing restored: B held no marker at replay time
+    assert restored == 0  # nothing undone: B held no marker at replay time
 
-    # The re-resolution is intact: C still marked + duplicate_resolved, B untouched, gate green.
+    # The re-resolution is intact: C still marked, B untouched, gate green.
     assert await _marker_file_ids(db_session) == {f_c.id}
-    await db_session.refresh(f_c)
-    await db_session.refresh(f_b)
-    assert f_c.state == FileState.DUPLICATE_RESOLVED
-    assert f_b.state == FileState.DISCOVERED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
 
@@ -303,8 +291,6 @@ async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: As
     assert count == 1  # B believed it resolved the file...
     markers = await _marker_file_ids(db_session)
     assert markers == {dup.id}  # ...but first-writer-wins: still exactly one marker, no IntegrityError
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DUPLICATE_RESOLVED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
 
@@ -316,21 +302,20 @@ async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: As
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_undo_accepts_uuid_typed_id(db_session: AsyncSession) -> None:
-    """A payload whose `id` is a real UUID object (not a str) restores normally (dedup.py:315)."""
+    """A payload whose `id` is a real UUID object (not a str) undoes normally (dedup.py:315)."""
     keeper = await _file(db_session)
     dup = await _file(db_session)
     await db_session.flush()
 
     _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
-    # The browser sends strings; internal callers may pass UUID objects. Both must work.
-    uuid_typed = [{"id": uuid.UUID(entry["id"]), "previous_state": entry["previous_state"]} for entry in payload]
+    # The browser sends strings; internal callers may pass UUID objects. Both must work. Phase 90 (D-09):
+    # the payload is id-only (no previous_state key).
+    uuid_typed = [{"id": uuid.UUID(entry["id"])} for entry in payload]
 
     restored = await undo_resolve(db_session, uuid_typed)
 
     assert restored == 1
     assert dup.id not in await _marker_file_ids(db_session)
-    await db_session.refresh(dup)
-    assert dup.state == FileState.DISCOVERED
     assert (await run_shadow_compare(db_session)).hard_fail_total == 0
 
 

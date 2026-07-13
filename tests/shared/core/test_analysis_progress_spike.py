@@ -479,14 +479,12 @@ async def test_idempotent_crash_midrun_rerun_matches_control(seed_test_agent: tu
     ).scalar_one()
     assert stale == 0
 
-    # (c) FileState ANALYZED, and exactly one analysis row (file_id UQ -> never duplicated).
+    # (c) Phase 90 (D-09): completion derives from analysis_completed_at (not files.state), and there is
+    #     exactly one analysis row (file_id UQ -> never duplicated).
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == crashed_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED
-    analysis_count = (
-        await session.execute(select(func.count()).select_from(AnalysisResult).where(AnalysisResult.file_id == crashed_id))
-    ).scalar_one()
-    assert analysis_count == 1
+    analysis_rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == crashed_id))).scalars().all()
+    assert len(analysis_rows) == 1
+    assert analysis_rows[0].analysis_completed_at is not None
 
     # (d) AFTER the terminal re-run the file is analyze-done.
     assert await _analyze_is_done(session, crashed_id) is True

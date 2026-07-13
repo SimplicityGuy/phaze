@@ -117,6 +117,22 @@ async def _seed_analysis_failed(session: AsyncSession, n: int) -> list[FileRecor
     return files
 
 
+async def _is_awaiting_cloud(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """Phase 90 (D-09): a file is HELD in the cloud-staging queue when it carries a cloud_job row with
+    status='awaiting'. The former ``files.state = AWAITING_CLOUD`` dual-write was removed; the cloud_job
+    sidecar is the sole derived authority PR-A reads. (A fresh ``execute`` always hits the DB, so no
+    ``expire_all`` is needed -- and expiring here would break the caller's later ORM attribute reads.)
+    """
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    return job is not None and job.status == CloudJobStatus.AWAITING.value
+
+
+async def _awaiting_cloud_ids(session: AsyncSession) -> set[uuid.UUID]:
+    """The set of file_ids currently HELD in AWAITING_CLOUD, derived from the cloud_job sidecar (Phase 90 D-09)."""
+    rows = (await session.execute(select(CloudJob.file_id).where(CloudJob.status == CloudJobStatus.AWAITING.value))).scalars().all()
+    return set(rows)
+
+
 def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[FileRecord, AnalysisResult, FileMetadata]:
     """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
     uid = uuid.uuid4()
@@ -477,8 +493,7 @@ async def test_analyze_long_file_held_awaiting_cloud_even_with_compute_online(cl
     await _drain_background()
     # No direct-to-compute (or any) enqueue: the file holds for the staging cron.
     assert capture == []
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_file.id)
 
 
 @pytest.mark.asyncio
@@ -504,8 +519,7 @@ async def test_analyze_long_held_even_without_fileserver(client: AsyncClient, se
     await _drain_background()
     # Nothing is enqueued (the long file is held; the short file is skipped, never enqueued).
     assert capture == []
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_file.id)
     # The short file stays DISCOVERED (skipped != held, no state change).
     await session.refresh(short_file)
     assert short_file.state == FileState.DISCOVERED
@@ -528,8 +542,7 @@ async def test_analyze_long_file_no_compute_holds_awaiting_cloud(client: AsyncCl
     await _drain_background()
     # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
     assert capture == []
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_file.id)
 
 
 @pytest.mark.asyncio
@@ -643,9 +656,8 @@ async def test_analyze_ui_no_agents_surfaces_held_count(client: AsyncClient, ses
     assert "1 held awaiting cloud" in text
     assert "0 files enqueued" not in text
 
-    # The file really is held in AWAITING_CLOUD.
-    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert len(held) == 1
+    # The file really is held in AWAITING_CLOUD (derived from the cloud_job sidecar, Phase 90 D-09).
+    assert len(await _awaiting_cloud_ids(session)) == 1
 
     await _drain_background()
     assert capture == []
@@ -826,8 +838,7 @@ async def test_backfill_selects_long_failed_resets_and_holds_awaiting_cloud(clie
     assert untouched_discovered.state == FileState.DISCOVERED
     # The long failed file was reset out of ANALYSIS_FAILED and HELD in AWAITING_CLOUD, with an
     # explicit scheduling-ledger row (the held branch fires no before_enqueue hook).
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert len(rows) == 1
     assert rows[0].function == "process_file"
@@ -864,8 +875,7 @@ async def test_backfill_no_compute_holds_awaiting_cloud_with_ledger_row(client: 
     await _drain_background()
     # The held file is NEVER enqueued (the load-bearing CLOUDROUTE-02 safety invariant).
     assert capture == []
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
 
     # The held branch fires no before_enqueue hook, so the endpoint seeds the ledger row explicitly.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
@@ -891,8 +901,7 @@ async def test_backfill_with_compute_online_still_holds_and_writes_single_ledger
 
     await _drain_background()
     assert capture == []  # no direct compute enqueue
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert len(rows) == 1
 
@@ -908,16 +917,14 @@ async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, sess
     assert r1.status_code == 200
     await _drain_background()
     assert capture == []  # held, never directly enqueued
-    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert len(held) == 2  # both long failed files held once
+    assert len(await _awaiting_cloud_ids(session)) == 2  # both long failed files held once (cloud_job awaiting)
 
-    # After the first backfill the candidates are AWAITING_CLOUD (no longer ANALYSIS_FAILED), so the
-    # explicit filter selects nothing on the second click -> zero new held files.
+    # After the first backfill the candidates carry an active cloud_job (the derived idempotency guard in
+    # _backfill_candidates_stmt excludes them, Phase 90 PR-A), so the second click selects nothing new.
     r2 = await client.post("/pipeline/backfill-cloud")
     assert r2.status_code == 200
     await _drain_background()
-    held_after = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert len(held_after) == 2  # unchanged — no over-enqueue
+    assert len(await _awaiting_cloud_ids(session)) == 2  # unchanged — no over-enqueue
     assert "No timed-out long files" in r2.text
 
 
@@ -941,12 +948,14 @@ async def test_backfill_seeds_a_ledger_row_for_every_held_candidate(client: Asyn
     await _drain_background()
     assert capture == []  # held, never directly enqueued
 
-    # Every candidate was held (state flipped to AWAITING_CLOUD) AND seeded exactly one ledger row.
-    for f in files:
-        await session.refresh(f)
-        assert f.state == FileState.AWAITING_CLOUD
-        rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{f.id}"))).scalars().all()
-        assert len(rows) == 1, f"held file {f.id} must carry exactly one ledger row (filter-drop kept the held set)"
+    # Every candidate was held (Phase 90 D-09: a cloud_job awaiting row, not a files.state flip) AND
+    # seeded exactly one ledger row.
+    file_ids = [f.id for f in files]  # capture before _awaiting_cloud_ids() expires the ORM objects
+    held_ids = await _awaiting_cloud_ids(session)
+    for fid in file_ids:
+        assert fid in held_ids
+        rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{fid}"))).scalars().all()
+        assert len(rows) == 1, f"held file {fid} must carry exactly one ledger row (filter-drop kept the held set)"
 
 
 @pytest.mark.asyncio
@@ -1008,8 +1017,7 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
 
     await _drain_background()
     assert capture == []  # held, never directly enqueued
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
 
 
 # --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on the active cloud kind ---------
@@ -1054,8 +1062,7 @@ async def test_backfill_a1_seeds_process_file_ledger_row(client: AsyncClient, se
 
     # The a1 branch DID seed the held file's process_file ledger row.
     assert f"process_file:{long_failed.id}" in seeded_keys
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert len(rows) == 1  # exactly the one row (idempotent over the prior candidacy row)
 
@@ -1085,8 +1092,7 @@ async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
     # L3: the k8s branch never seeded a process_file ledger row.
     assert seeded_keys == []
     # The candidate was still reset out of ANALYSIS_FAILED and HELD for the staging cron.
-    await session.refresh(long_failed)
-    assert long_failed.state == FileState.AWAITING_CLOUD
+    assert await _is_awaiting_cloud(session, long_failed.id)
     # No NEW process_file row was added: exactly the one prior candidacy row remains.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert len(rows) == 1
@@ -1352,10 +1358,12 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
 
     All N failed files land on ``phaze-agent-nox`` (never the default queue) carrying the COMPLETE
     ProcessFilePayload with NO cap override (fine_cap/coarse_cap None -- the retry-vs-deepen guard),
-    and every file is now FINGERPRINTED (0 remain ANALYSIS_FAILED). The ack reports N.
+    and every file's derived analyze-failure marker is cleared (0 remain in failed_clause). Phase 90
+    (D-09): retry NO LONGER writes files.state. The ack reports N.
     """
     failed = await _seed_analysis_failed(session, 3)
-    failed_ids = {str(f.id) for f in failed}
+    failed_uuids = [f.id for f in failed]  # capture before any expire_all() (avoids async lazy reload)
+    failed_ids = {str(fid) for fid in failed_uuids}
     await seed_active_agent(session)
     _, task_router = install_fake_queues(client)
 
@@ -1378,11 +1386,12 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
         captured_ids.add(payload["file_id"])
     assert captured_ids == failed_ids
 
-    # Every failed file left the terminal bucket -> FINGERPRINTED (committed before enqueue).
-    remaining = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
-    assert remaining == []
-    fingerprinted = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.FINGERPRINTED))).scalars().all()
-    assert {str(f.id) for f in fingerprinted} == failed_ids
+    # Phase 90 (D-09): retry clears the derived failure marker (analysis.failed_at), committed before
+    # enqueue, so every retried file leaves failed_clause(Stage.ANALYZE). files.state is NOT written.
+    session.expire_all()
+    marker_rows = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id.in_(failed_uuids)))).scalars().all()
+    assert len(marker_rows) == 3
+    assert all(r.failed_at is None for r in marker_rows), "every retried file's analyze-failure marker must be cleared"
 
 
 @pytest.mark.asyncio
@@ -2713,7 +2722,7 @@ async def test_force_local_analyze_api_routes_local_no_hold(client: AsyncClient,
     """
     session.add(RouteControl(id="global", force_local=True))
     await session.commit()
-    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await _persist_files_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
 
@@ -2725,12 +2734,10 @@ async def test_force_local_analyze_api_routes_local_no_hold(client: AsyncClient,
     assert data["awaiting_cloud"] == 0
 
     await _drain_background()
-    # Anti-cheat: ZERO AWAITING_CLOUD rows (not a bare enqueue count) -- fails if the
-    # `and not await get_route_control(session)` clause were dropped from gate L396.
-    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert held == []
-    await session.refresh(long_file)
-    assert long_file.state != FileState.AWAITING_CLOUD
+    # Anti-cheat: ZERO cloud_job awaiting rows (not a bare enqueue count) -- fails if the
+    # `and not await get_route_control(session)` clause were dropped from gate L396. Phase 90 (D-09):
+    # "held" derives from the cloud_job sidecar, not files.state.
+    assert await _awaiting_cloud_ids(session) == set()
 
 
 @pytest.mark.asyncio
@@ -2743,7 +2750,7 @@ async def test_force_local_analyze_ui_routes_local_no_hold(client: AsyncClient, 
     """
     session.add(RouteControl(id="global", force_local=True))
     await session.commit()
-    (long_file,) = await _persist_files_with_duration(session, [_LONG])
+    await _persist_files_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
 
@@ -2755,11 +2762,9 @@ async def test_force_local_analyze_ui_routes_local_no_hold(client: AsyncClient, 
     assert "0 awaiting cloud" in text
 
     await _drain_background()
-    # Anti-cheat: ZERO AWAITING_CLOUD rows -- fails if the force-local clause were dropped from gate L718.
-    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert held == []
-    await session.refresh(long_file)
-    assert long_file.state != FileState.AWAITING_CLOUD
+    # Anti-cheat: ZERO cloud_job awaiting rows -- fails if the force-local clause were dropped from gate
+    # L718. Phase 90 (D-09): "held" derives from the cloud_job sidecar, not files.state.
+    assert await _awaiting_cloud_ids(session) == set()
 
 
 @pytest.mark.asyncio
@@ -2786,10 +2791,7 @@ async def test_force_local_analyze_api_false_control_still_holds(client: AsyncCl
     await _drain_background()
     # The long file IS held (nothing enqueued from here -- the staging cron is the sole compute entry).
     assert capture == []
-    held = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.AWAITING_CLOUD))).scalars().all()
-    assert len(held) == 1
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _awaiting_cloud_ids(session) == {long_file.id}
 
 
 @pytest.mark.asyncio

@@ -134,12 +134,12 @@ async def test_put_analysis_with_cloud_job_deletes_object(
     assert delete_mock.await_args.args[0] == file_id  # file_id (bucket is the 2nd arg, MKUE-02)
     assert delete_mock.await_args.args[1].id == "staging"  # acted on the RECORDED staging bucket
 
-    # Result is durably recorded and the file advanced to ANALYZED (record-first holds).
+    # Result is durably recorded and marked complete (record-first holds). Phase 90 (D-09): the derived
+    # 'analyzed' authority is analysis_completed_at, not files.state (that write was removed).
     session.expire_all()
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert row.bpm == 128.0
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED
+    assert row.analysis_completed_at is not None
 
 
 @pytest.mark.asyncio
@@ -169,9 +169,10 @@ async def test_report_failed_with_cloud_job_deletes_object(
     assert delete_mock.await_args.args[0] == file_id
     assert delete_mock.await_args.args[1].id == "staging"
 
+    # Phase 90 (D-09): the derived analyze-failure authority is analysis.failed_at, not files.state.
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYSIS_FAILED
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None
 
 
 @pytest.mark.asyncio
@@ -266,5 +267,5 @@ async def test_delete_error_does_not_corrupt_recorded_result(
     session.expire_all()
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert row.bpm == 140.0
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED
+    # Phase 90 (D-09): completion derives from analysis_completed_at, not the removed files.state write.
+    assert row.analysis_completed_at is not None

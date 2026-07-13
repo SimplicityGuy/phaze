@@ -21,7 +21,7 @@ from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, St
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -158,7 +158,7 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
 def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
     """Re-express the seven former ``get_pipeline_stats`` keys off ``get_stage_progress`` (Phase 82, D-05/READ-02).
 
-    The stats path no longer reads ``FileRecord.state``: each of the seven keys ``stats_bar.html``
+    The stats path no longer reads the raw ``files.state`` column: each of the seven keys ``stats_bar.html``
     consumes maps to a derived :func:`get_stage_progress` output-table count --
     ``discovered→discovery.done``, ``metadata_extracted→metadata.done``, ``fingerprinted→fingerprint.done``,
     ``analyzed→analyze.done``, ``proposal_generated→proposals.done``, ``approved→execute.total``,
@@ -853,7 +853,7 @@ async def pipeline_files(
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
 
     The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
-    derived per page (never the raw ``FileRecord.state`` string, never a whole-corpus scan per poll
+    derived per page (never the raw ``files.state`` column string, never a whole-corpus scan per poll
     -- see :func:`phaze.services.pipeline.get_files_page`). The ``stage``+``bucket`` query params are
     validated against the ``Stage`` / ``Status`` allowlists (T-87-14 -- an unknown value degrades to
     an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
@@ -996,12 +996,10 @@ async def trigger_backfill_cloud(
         )
 
     candidates = await get_backfill_candidates(session, threshold)
-    for file, _duration in candidates:
-        file.state = FileState.DISCOVERED
-    # RESEARCH Pitfall 3: explicit commit of the DISCOVERED reset BEFORE routing/backgrounding the
-    # enqueues (get_session does NOT auto-commit). The UPDATE is a bounded set (the filtered candidates).
-    await session.commit()
-
+    # Phase 90 (D-09): the per-candidate `file.state = DISCOVERED` reset (and its explicit pre-routing
+    # commit) was removed. files.state no longer drives routing -- _route_discovered_by_duration writes
+    # the cloud_job/marker authority PR-A reads, and _backfill_candidates_stmt already excludes files
+    # with an active cloud_job (the derived idempotency guard added in PR-A), so no state reset is needed.
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
@@ -1120,16 +1118,12 @@ async def retry_analysis_failed(
     # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
     # red count drops on the next 5s poll regardless of the enqueue outcome.
     #
-    # Both halves of the FAIL-01 dual-write must clear together. `state` alone is no longer the
-    # truth: `report_analysis_failed` also stamps a durable `analysis.failed_at` marker, and
-    # `put_analysis` only clears it on a SUCCESSFUL re-analysis. Leaving it set here would strand
-    # every retried file as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` -- a row the
-    # Phase 79 shadow-compare gate reads as divergent and `domain_completed(ANALYZE)` reads as
-    # "un-processable, do not re-run", so Phase 80 recovery would skip the very files we just
-    # re-enqueued. Clearing is safe: the XOR CHECK guarantees `analysis_completed_at IS NULL` on a
-    # failed row, so the file derives `not_started` -- exactly what a fresh re-analysis should see.
-    for f in files:
-        f.state = FileState.FINGERPRINTED
+    # Clear the durable `analysis.failed_at` marker and COMMIT before any enqueue so the red count
+    # drops on the next 5s poll. Phase 90 (D-09): the paired `files.state = FINGERPRINTED` reset was
+    # removed -- `analysis.failed_at` is now the sole failure authority (`failed_clause(Stage.ANALYZE)`,
+    # readers cut over in PR-A). Clearing it moves the row off the failed disjunct so it derives
+    # `not_started` -- exactly what a fresh re-analysis should see (the XOR CHECK guarantees
+    # `analysis_completed_at IS NULL` on a failed row).
     await session.execute(
         update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in files])).values(failed_at=None, error_message=None),
     )
@@ -1272,11 +1266,10 @@ async def retry_analysis_failed_file(
     # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
     agent_id = cast("str", routed.agent_id)
 
-    # CR-01 (Phase 81): clear BOTH halves of the FAIL-01 dual-write and COMMIT before the enqueue, so
-    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis) rather than
-    # stranding as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` (a shadow-compare
-    # divergence + a domain_completed(ANALYZE) "un-processable" that Phase 80 recovery would skip).
-    file.state = FileState.FINGERPRINTED
+    # CR-01 (Phase 81): clear the durable `analysis.failed_at` marker and COMMIT before the enqueue so
+    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis). Phase 90 (D-09):
+    # the paired `files.state = FINGERPRINTED` reset was removed -- `analysis.failed_at` is now the sole
+    # failure authority (`failed_clause(Stage.ANALYZE)`, readers cut over in PR-A).
     await session.execute(
         update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(failed_at=None, error_message=None),
     )

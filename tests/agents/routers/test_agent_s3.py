@@ -391,13 +391,18 @@ async def test_uploaded_unauthenticated_returns_401(session: AsyncSession) -> No
 # --- Phase 55 (D-01b): k8s post-staging -- PUSHING->PUSHED flip + routed submit_cloud_job ----
 
 
-async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
+async def test_uploaded_k8s_enqueues_submit_no_state_flip(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """kueue first /uploaded: FileRecord PUSHING->PUSHED + ONE routed submit_cloud_job (deterministic key)."""
+    """kueue first /uploaded: cloud_job UPLOADING->UPLOADED + ONE routed submit_cloud_job (deterministic key).
+
+    Phase 90 (D-09): the FileRecord PUSHING->PUSHED flip was removed from this seam -- files.state is no
+    longer written or read; the cloud_job sidecar is the sole derived authority. The enqueue behaviour is
+    unchanged.
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
     file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
@@ -410,28 +415,28 @@ async def test_uploaded_k8s_flips_pushed_and_enqueues_submit(
         r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
 
     assert r.status_code == 200, r.text
-    # FileRecord advanced PUSHING -> PUSHED (frees a window slot, RESEARCH Pitfall 1).
-    assert await _file_state(session, file_id) == FileState.PUSHED
     # Exactly one submit_cloud_job routed onto the CONTROLLER queue with the deterministic key.
     assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
     assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
-    # The existing cloud_job UPLOADING -> UPLOADED flip still happened.
+    # The cloud_job UPLOADING -> UPLOADED flip (now the sole authority) still happened.
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
-async def test_uploaded_two_kueue_flips_pushed_and_enqueues_submit(
+async def test_uploaded_two_kueue_enqueues_submit_no_state_flip(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """MKUE-01: with TWO Kueue backends declared, report_uploaded flips PUSHING->PUSHED + enqueues submit.
+    """MKUE-01: with TWO Kueue backends declared, report_uploaded enqueues submit (no state flip).
 
     The literal N-cluster scenario: before Phase 70 the ``resolved_non_local_kind`` >1-non-local raise
     500'd this hot-path callback (stalling every Kueue file's upload completion). The generalized
-    (any-kueue -> "kueue") helper makes it degrade gracefully -- no 500 / no ValueError.
+    (any-kueue -> "kueue") helper makes it degrade gracefully -- no 500 / no ValueError. Phase 90
+    (D-09): the FileRecord PUSHING->PUSHED flip was removed; only the cloud_job UPLOADED flip + submit
+    enqueue remain.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="two_kueue")
@@ -445,7 +450,6 @@ async def test_uploaded_two_kueue_flips_pushed_and_enqueues_submit(
         r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
 
     assert r.status_code == 200, r.text  # NOT a 500 despite 2 Kueue backends
-    assert await _file_state(session, file_id) == FileState.PUSHED
     assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
     assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
     job = await _cloud_job(session, file_id)
@@ -453,28 +457,47 @@ async def test_uploaded_two_kueue_flips_pushed_and_enqueues_submit(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
-async def test_uploaded_k8s_duplicate_is_idempotent_no_resubmit(
+async def test_s3_push_status_transition_idempotent_after_cas_removal(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """A duplicate/late kueue /uploaded (file already PUSHED) is an idempotent no-op -- no second submit."""
+    """Phase 90 (D-09, CAS-guard clarification): the FileRecord PUSHING->PUSHED CAS flip was removed
+    from the kueue post-staging seam (the ``.where(state==PUSHING)`` READ + ``.values(state=PUSHED)``
+    WRITE deleted ATOMICALLY in PR-B). This test PROVES the removal preserved idempotency by driving the
+    PUSHING->PUSHED transition endpoint TWICE with the same payload:
+
+    - 1st /uploaded: cloud_job UPLOADING -> UPLOADED (the sole surviving CAS) + ONE routed submit_cloud_job.
+    - 2nd /uploaded: the cloud_job is already UPLOADED, so the status pre-check short-circuits to an
+      idempotent 200 BEFORE the (now state-flip-free) kueue enqueue block -> NO second submit, no error.
+
+    The removed FileRecord PUSHING guard was therefore NOT load-bearing: the cloud_job sidecar (the
+    marker PR-A reads) plus the deterministic submit key are the idempotency authority.
+    """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
-    file_id = await _seed_file(session, agent.id, state=FileState.PUSHED)  # already advanced
+    file_id = await _seed_file(session, agent.id, state=FileState.PUSHING)
     await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
     monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
 
     controller_queue = FakeQueue("controller")
     body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
     async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=controller_queue) as ac:
-        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+        r1 = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+        r2 = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
 
-    assert r.status_code == 200, r.text
-    # PUSHED-flip rowcount==0 -> NO re-enqueue.
-    assert controller_queue.captured == []
-    assert await _file_state(session, file_id) == FileState.PUSHED
+    # Both calls succeed; the SECOND is an idempotent no-op (no error), not a duplicate effect.
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    # Exactly ONE submit_cloud_job routed across the double call -- the second short-circuited at the
+    # cloud_job status pre-check before reaching the enqueue block.
+    assert controller_queue.captured == [("submit_cloud_job", {"file_id": str(file_id)})]
+    assert controller_queue.captured_policy[0]["key"] == submit_cloud_job_key(file_id)
+    # The cloud_job sidecar (the sole derived authority) is terminal exactly once.
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
 
 
 async def test_uploaded_non_k8s_preserves_cloud_job_only_behavior(
@@ -660,7 +683,8 @@ async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     assert job.status == CloudJobStatus.AWAITING.value  # D-03: re-stamped to awaiting (NOT failed) so AWAITING_CLOUD => status='awaiting'
     assert job.cloud_phase is None  # WR-01: no longer counts toward the "Running" tile
     assert job.attempts >= settings.cloud_submit_max_attempts  # SCHED-03/D-04: cloud budget spent -> local next tick
-    assert await _file_state(session, file_id) == FileState.AWAITING_CLOUD  # SCHED-03: spill, never ANALYSIS_FAILED
+    # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; the cloud_job re-stamp
+    # to 'awaiting' above is the sole derived spill authority.
     assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
 
 

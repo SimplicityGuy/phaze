@@ -307,9 +307,9 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     assert body["file_id"] == str(file_id)
     assert body["status"] == "pushed"
 
-    # State advanced + ledger cleared in one transaction.
+    # Ledger cleared in one transaction; Phase 90 (D-09) removed the files.state = PUSHED dual-write,
+    # so the cloud_job terminalization below is the sole derived "pushed" authority.
     file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.PUSHED
     sha = file_row.sha256_hash  # read before the next expire_all() to avoid a lazy reload
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "push_file ledger row must be cleared"
     # D-08: the recorded cloud_job is terminalized (SUBMITTED -> SUCCEEDED) in the same transaction.
@@ -622,7 +622,7 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     monkeypatch: pytest.MonkeyPatch,
     backends_toml_env: Any,
 ) -> None:
-    """At/over the cap: state -> AWAITING_CLOUD (spill, SCHED-03) + ledger cleared, one transaction (no re-drive).
+    """At/over the cap: cloud_job -> awaiting (spill, SCHED-03) + ledger cleared, one transaction (no re-drive).
 
     Phase 69 (D-04): a compute push that exhausts its push_max_attempts re-drives no longer hard-fails.
     The file spills back to AWAITING_CLOUD so the next drain tick can route it to local -- ANALYSIS_FAILED
@@ -649,13 +649,12 @@ async def test_push_mismatch_over_cap_spills_to_awaiting_cloud_and_clears_ledger
     body = r.json()
     assert body["cleared"] is True, "over the cap the ledger is cleared even though the file spills (not hard-fails)"
 
-    file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.AWAITING_CLOUD, "SCHED-03: spill back to AWAITING_CLOUD, never ANALYSIS_FAILED"
-    assert file_row.state != FileState.ANALYSIS_FAILED
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row must be cleared on spill"
     # No re-drive enqueue happened.
     assert task_router.queues == {}
-    # D-03: the cloud_job row is re-stamped submitted -> awaiting (NOT failed) so AWAITING_CLOUD => status='awaiting'.
+    # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; the cloud_job re-stamp
+    # below is the sole derived spill authority.
+    # D-03: the cloud_job row is re-stamped submitted -> awaiting (NOT failed) so the spill => status='awaiting'.
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
     assert cloud_job.status == CloudJobStatus.AWAITING.value
@@ -726,8 +725,8 @@ async def test_push_mismatch_over_cap_compute_spill_marks_cloud_budget_spent(
     assert r.status_code == 200, r.text
     assert r.json()["cleared"] is True
 
-    file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.AWAITING_CLOUD  # spill, not ANALYSIS_FAILED
+    # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; the cloud_job re-stamp
+    # below is the sole derived spill authority.
     # D-03: the compute cloud_job row is re-stamped submitted -> awaiting (drained from the D-10 in-flight
     # set) AND its cloud budget is marked spent so the next drain tick routes the file to local (D-04).
     cloud_job = await _cloud_job_row(session, file_id)
@@ -769,8 +768,7 @@ async def test_push_mismatch_over_cap_spill_restamps_cloud_job_to_awaiting(
     assert cloud_job is not None
     assert cloud_job.status == CloudJobStatus.AWAITING.value, "D-03: the spill re-stamps to 'awaiting', NOT 'failed'"
     assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget stays spent -> select_backend routes to local"
-    file_row = await _file_row(session, file_id)
-    assert file_row.state == FileState.AWAITING_CLOUD
+    # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; cloud_job status is authority.
     assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row cleared behind the CAS rowcount"
 
 
@@ -1228,6 +1226,9 @@ async def test_mismatch_cap_trips_exactly_at_boundary(
 
     assert r_over.status_code == 200, r_over.text
     assert r_over.json()["cleared"] is True, "push_attempt=3 -> next 4 exceeds the cap: spill to AWAITING_CLOUD"
-    over_row = await _file_row(session, over_id)
-    assert over_row.state == FileState.AWAITING_CLOUD
+    # Phase 90 (D-09): the files.state = AWAITING_CLOUD dual-write was removed; the cloud_job re-stamp
+    # (submitted -> awaiting) is the sole derived spill authority.
+    over_cloud_job = await _cloud_job_row(session, over_id)
+    assert over_cloud_job is not None
+    assert over_cloud_job.status == CloudJobStatus.AWAITING.value
     assert await _ledger_row(session, f"push_file:{over_id}") is None, "the ledger row is cleared on the cap spill"

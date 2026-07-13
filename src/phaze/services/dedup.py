@@ -3,12 +3,12 @@
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.dedup_resolution import DedupResolution
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.stage_status import dedup_resolved_clause
 
@@ -252,9 +252,11 @@ async def get_duplicate_stats(session: AsyncSession) -> dict[str, Any]:
 
 
 async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uuid_mod.UUID) -> tuple[int, list[dict[str, Any]]]:
-    """Mark non-canonical files in a duplicate group as DUPLICATE_RESOLVED.
+    """Mark non-canonical files in a duplicate group as resolved via the durable DedupResolution marker.
 
-    Returns (count_resolved, [{id, previous_state}]) for undo tracking.
+    Returns (count_resolved, [{id}]) for undo tracking. Phase 90 (D-09): the DUPLICATE_RESOLVED
+    files.state dual-write was removed -- the DedupResolution marker (dedup_resolved_clause) is the sole
+    derived authority, so the returned payload no longer carries a previous_state.
     """
     # Find all files in this group except the canonical one
     stmt = select(FileRecord).where(
@@ -265,13 +267,9 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     result = await session.execute(stmt)
     files = result.scalars().all()
 
-    file_states: list[dict[str, Any]] = []
-    for f in files:
-        file_states.append({"id": str(f.id), "previous_state": f.state})
-        # D-00a: dual-write the dying FileState (retired Phase 90) alongside the durable marker.
-        # Only *reliance* on state is removed this phase; the write survives so services/proposal.py
-        # (Phase 86) keeps excluding resolved duplicates and this phase's shadow-compare gate stays green.
-        f.state = FileState.DUPLICATE_RESOLVED
+    # Phase 90 (D-09): the per-file DUPLICATE_RESOLVED files.state write (and its previous_state capture)
+    # was removed as a matched set; the DedupResolution marker below is the sole resolution authority.
+    file_states: list[dict[str, Any]] = [{"id": str(f.id)} for f in files]
 
     # D-01/D-02/D-03/D-07: the go-forward dedup_resolution writer that has not existed since 032's
     # one-shot backfill. One bulk pg_insert for every non-canonical file in the group, ON CONFLICT
@@ -289,26 +287,21 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
 
 
 async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]]) -> int:
-    """Undo a group resolution: DELETE the dedup markers (keyed on the payload id-set) and restore state.
+    """Undo a group resolution: DELETE the dedup markers, keyed on the payload id-set.
 
-    Accepts the browser-held ``[{id, previous_state}]`` payload. Phase 90 (PR-A, BLOCKER FIX): the marker
-    DELETE and its early-return gate now derive from ``entry["id"]`` ALONE -- NOT from parsed
-    ``previous_state``. This DECOUPLES the undo from ``FileState`` so that when PR-B removes the
-    ``previous_state`` capture / dual-write / restore as a matched set, an id-only ``[{id}]`` payload STILL
-    deletes the marker. (The old code built the DELETE id-set from parsed ``previous_state`` and early-returned
-    on an empty parsed map -- so an id-only payload skipped the DELETE entirely and undo silently no-op'd.)
+    Accepts the browser-held ``[{id}]`` payload. The marker DELETE and its early-return gate derive from
+    ``entry["id"]`` ALONE. Phase 90: PR-A decoupled this gate from ``previous_state``; PR-B (D-09) then
+    removed the ``previous_state`` capture / DUPLICATE_RESOLVED dual-write / state-restore as a matched set,
+    so an id-only ``[{id}]`` payload is now the ONLY shape and it still deletes the marker.
 
     The dedup marker is the CAS anchor (D-05/D-06): one ``DELETE ... RETURNING file_id`` removes the markers
     for the payload's ids; a stale-tab replay against a file re-resolved since finds no marker, returns zero
-    rows, and no-ops. The legacy ``FileRecord.state`` restore (dual-write bookkeeping that dies PR-B) is a
-    SEPARATE best-effort concern applied only to the ids the DELETE actually returned. Returns the count
-    actually undone (callers do not use it for control flow).
+    rows, and no-ops. The marker DELETE is the SOLE undo authority now -- there is no files.state to restore.
+    Returns the count actually undone (callers do not use it for control flow).
 
     Threat mitigation (T-84-03-01/02 / T-90A-04): the DELETE is scoped ``WHERE file_id IN (payload ids)``,
     so it can only remove markers for ids the operator's own payload names; a malformed id is dropped (no
-    HTTP 500); and the attacker-supplied ``previous_state`` is coerced to a real ``FileState`` member before
-    it reaches ``FileRecord.state``, with unknown values neutralised to ``FileState.DISCOVERED`` (never left
-    as ``duplicate_resolved`` without a marker -- the HARD divergence shadow_compare.py:135 forbids).
+    HTTP 500).
     """
     # (1) DERIVED AUTHORITY: build the DELETE id-set from ``entry["id"]`` ALONE (accept UUID-or-str, drop
     #     non-UUIDs, dedupe). A malformed id must not escape as an unhandled ValueError/KeyError (HTTP 500).
@@ -323,33 +316,12 @@ async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]])
             except ValueError:
                 continue
 
-    # (2) The gate is now id-set based -- an id-only (PR-B) payload still passes and deletes the marker.
+    # (2) The gate is id-set based -- an id-only payload passes and deletes the marker.
     if not ids:
         return 0
 
-    # (4) SEPARATE best-effort restore map parsed from previous_state (retains the T-84-03-02 non-member
-    #     rejection). This feeds ONLY the legacy state restore below; it does NOT gate the DELETE.
-    previous_by_id: dict[uuid_mod.UUID, FileState] = {}
-    for entry in file_states:
-        raw_id = entry.get("id")
-        file_id = raw_id if isinstance(raw_id, uuid_mod.UUID) else None
-        if file_id is None and isinstance(raw_id, str):
-            try:
-                file_id = uuid_mod.UUID(raw_id)
-            except ValueError:
-                file_id = None
-        if file_id is None:
-            continue
-        raw_state = entry.get("previous_state")
-        if not isinstance(raw_state, str):
-            continue
-        try:
-            previous_by_id[file_id] = FileState(raw_state)  # T-84-03-02: reject non-members.
-        except ValueError:
-            continue
-
     # (3) CAS anchor: DELETE the markers scoped to the payload id-set, RETURNING the file_ids that actually
-    #     held one (scan_deletion.py:119 async ORM-DELETE hygiene). This is the derived authority.
+    #     held one (scan_deletion.py:119 async ORM-DELETE hygiene). This is the sole derived undo authority.
     result = await session.execute(
         delete(DedupResolution)
         .where(DedupResolution.file_id.in_(list(ids)))
@@ -357,12 +329,5 @@ async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]])
         .execution_options(synchronize_session=False)
     )
     returned: set[uuid_mod.UUID] = set(result.scalars().all())
-
-    # (5) Legacy state restore (dual-write bookkeeping). PR-B: delete with resolve_group :270 capture +
-    #     :274 dual-write -- this whole block dies as the matched write-side set. For each RETURNED id, a
-    #     parseable previous_state wins; otherwise neutralise to the vacuous FileState.DISCOVERED so a
-    #     returned id never lingers as `state='duplicate_resolved'` with no marker (shadow invariant green).
-    for file_id in returned:
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=previous_by_id.get(file_id, FileState.DISCOVERED)))
     await session.flush()
     return len(returned)

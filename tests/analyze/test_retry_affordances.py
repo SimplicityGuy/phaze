@@ -132,11 +132,13 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     ProcessFilePayload.model_validate(payload)
     assert payload["file_id"] == str(file.id)
 
-    # Independent-session read: the manual flip + marker clear COMMITTED for the target file only.
+    # Independent-session read: the marker clear COMMITTED for the target file only.
     independent = async_sessionmaker(async_engine, expire_on_commit=False)
     async with independent() as s:
         target = (await s.execute(select(FileRecord).where(FileRecord.id == file.id))).scalar_one()
-        assert target.state == FileState.FINGERPRINTED
+        # Phase 90 (D-09): retry no longer flips files.state to FINGERPRINTED (that write was removed);
+        # the file leaves the failed bucket purely by clearing analysis.failed_at below.
+        assert target.state == FileState.ANALYSIS_FAILED
         arow = (await s.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
         assert arow.failed_at is None
         assert arow.error_message is None

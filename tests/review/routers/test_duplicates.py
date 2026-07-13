@@ -135,7 +135,15 @@ async def test_compare_endpoint(session: AsyncSession, client: AsyncClient) -> N
 
 @pytest.mark.asyncio
 async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /duplicates/{hash}/resolve marks non-canonical files as DUPLICATE_RESOLVED."""
+    """POST /duplicates/{hash}/resolve writes the DedupResolution marker for non-canonical files.
+
+    Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; the marker
+    (dedup_resolved_clause) is the sole derived authority.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
@@ -149,11 +157,9 @@ async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None
     assert response.status_code == 200
     assert "Group resolved" in response.text
 
-    # Verify DB state
-    await session.refresh(f2)
-    assert f2.state == FileState.DUPLICATE_RESOLVED
-    await session.refresh(f1)
-    assert f1.state == FileState.DISCOVERED
+    # Verify the marker was written for the non-canonical file only (the canonical keeper has none).
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == {f2.id}
 
 
 @pytest.mark.asyncio
@@ -293,8 +299,8 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
 # tests assert from an INDEPENDENT session, which by definition sees only committed data.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_resolve_endpoint_commits_marker_and_state(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
-    """After POST /resolve, a SEPARATE session sees the marker and the dual-written state."""
+async def test_resolve_endpoint_commits_marker(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """After POST /resolve, a SEPARATE session sees the committed DedupResolution marker (the sole authority)."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -315,9 +321,7 @@ async def test_resolve_endpoint_commits_marker_and_state(async_engine, session: 
 
         canonical = (await verify.execute(select(DedupResolution.canonical_file_id))).scalar_one()
         assert canonical == keeper.id, "canonical_file_id must carry the operator's pick (D-03)"
-
-        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
-        assert state == FileState.DUPLICATE_RESOLVED, "resolve did not COMMIT the dual-written state"
+        # Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; only the marker persists.
 
 
 @pytest.mark.asyncio

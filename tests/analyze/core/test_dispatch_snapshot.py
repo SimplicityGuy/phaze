@@ -239,14 +239,19 @@ async def _run_cell(
     router = DedupFakeTaskRouter()
     tally = await release_awaiting_cloud.stage_cloud_window(_make_ctx(async_engine, router))
 
-    # Re-read committed FileState truth for the seeded rows.
+    # Phase 90 (D-09): the FileState PUSHING/AWAITING_CLOUD dual-write was removed; derive the SAME
+    # side-effect counts from the cloud_job sidecar (the sole authority). A dispatched file's cloud_job
+    # left 'awaiting' (promoted to an in-flight status) -> pushing; a still-held file's row stays
+    # 'awaiting' -> awaiting_cloud. This keeps the golden baseline byte-identical to the pre-removal run.
     session.expire_all()
-    rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
+    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
+    jobs = {r.file_id: r.status for r in (await session.execute(select(CloudJob).where(CloudJob.file_id.in_(ids)))).scalars().all()}
     state_counts = {"pushing": 0, "awaiting_cloud": 0}
-    for r in rows:
-        if r.state == FileState.PUSHING:
+    for f in files:
+        status = jobs.get(f.id)
+        if status is not None and status != CloudJobStatus.AWAITING.value:
             state_counts["pushing"] += 1
-        elif r.state == FileState.AWAITING_CLOUD:
+        else:
             state_counts["awaiting_cloud"] += 1
 
     # Distinct enqueue task names that landed on any per-agent queue (push_file vs s3_upload).

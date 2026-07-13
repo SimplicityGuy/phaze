@@ -42,7 +42,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
@@ -145,10 +145,9 @@ async def report_pushed(
             agent_id=agent.id,
         )
         return PushedResponse(file_id=file_id)
-    # rowcount != 0: gate the FileRecord dual-write (D-00c -- a PLAIN write, NOT a state == PUSHING predicate,
-    # which would re-introduce the FileRecord.state routing read SC#1 removes) + ledger clear + process_file
-    # enqueue behind the cloud_job CAS.
-    await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.PUSHED))
+    # rowcount != 0: gate the ledger clear + process_file enqueue behind the cloud_job CAS.
+    # Phase 90 (D-09): the former PUSHED FileRecord.state dual-write was removed; the cloud_job
+    # sidecar (terminalized SUBMITTED -> SUCCEEDED above) is the sole derived authority PR-A reads.
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
@@ -298,12 +297,12 @@ async def report_push_mismatch(
                 agent_id=agent.id,
             )
             return PushMismatchResponse(file_id=file_id, cleared=False)
-        # cleared (helper CAS hit): gate the FileRecord dual-write (D-00c -- a PLAIN write, NOT a state == PUSHING
-        # predicate, which would re-introduce the FileRecord.state routing read SC#1 removes) + the ledger
-        # clear behind the cloud_job CAS. The submitted -> awaiting re-stamp above already drained the row
-        # from the D-10 in-flight set so in_flight_count(compute) stays honest and the backend's cap slot is
-        # released (Phase 69, D-05); 'awaiting' is not in IN_FLIGHT (D-03).
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
+        # cleared (helper CAS hit): gate the ledger clear behind the cloud_job CAS. The submitted ->
+        # awaiting re-stamp above already drained the row from the D-10 in-flight set so
+        # in_flight_count(compute) stays honest and the backend's cap slot is released (Phase 69, D-05);
+        # 'awaiting' is not in IN_FLIGHT (D-03).
+        # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the
+        # cloud_job sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
         logger.warning(
