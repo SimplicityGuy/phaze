@@ -50,6 +50,7 @@ from phaze.services.pipeline import (
     get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
+    get_cached_stage_orphan_counts,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
     get_files_page,
@@ -71,7 +72,6 @@ from phaze.services.pipeline import (
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
-    get_stage_orphan_counts,
     get_stage_progress,
     get_straggler_count,
     get_untracked_files,
@@ -249,11 +249,12 @@ async def _build_dag_context(
 
     # Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck (recovery-candidate) count --
     # the exact number recover_orphaned_work would re-enqueue for the stage (ledger minus live minus
-    # domain-completed minus in-flight-cloud). get_stage_orphan_counts owns the never-500 SAVEPOINT degrade
-    # (all-zeros on any DB error), so NO try/except here; the ints ride the same dag.items() OOB seed
-    # loop onto the amber rail badges (no self-poll, no stats_bar.html edit -- the badge just needs the
-    # store key present, seeded to 0 in base.html so x-show reads a number before the first poll).
-    orphans = await get_stage_orphan_counts(session)
+    # domain-completed minus in-flight-cloud). Phase 91 (HYG-01 / WR-02): the hot 5s /pipeline/stats
+    # poll now reads the O(1) process-scope cache (get_cached_stage_orphan_counts -- no session, no
+    # await) instead of materializing the full scheduling_ledger inline per tick; the FastAPI lifespan
+    # _orphan_refresh_loop refreshes that cache off-request (D-01/D-02/D-04). The parity meaning is
+    # unchanged: the cached ints ride the same dag.items() OOB seed loop onto the amber rail badges.
+    orphans = get_cached_stage_orphan_counts()
     dag["metadataOrphan"] = int(orphans["metadata"])
     dag["analyzeOrphan"] = int(orphans["analyze"])
     dag["fingerprintOrphan"] = int(orphans["fingerprint"])
