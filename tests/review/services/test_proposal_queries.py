@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.proposal_queries import (
     Pagination,
@@ -44,7 +44,6 @@ async def _create_proposal(
         current_path=f"/music/{original_filename}",
         file_type="music",
         file_size=1_000_000,
-        state=FileState.PROPOSAL_GENERATED,
     )
     session.add(file_record)
     await session.flush()

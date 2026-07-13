@@ -22,7 +22,7 @@ import pytest
 
 from phaze.config_backends import ComputeBackend as ComputeEntry
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import backends as backends_mod
 from phaze.services.backends import (
     ComputeAgentBackend,
@@ -55,7 +55,6 @@ def _file(i: int) -> FileRecord:
         current_path=f"/music/lane{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.PUSHED,
     )
 
 

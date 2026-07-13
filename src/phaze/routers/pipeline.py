@@ -21,7 +21,7 @@ from phaze.enums.stage import ELIGIBILITY_DAG, ELIGIBLE_AFTER_FAILURE, Stage, St
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -50,6 +50,7 @@ from phaze.services.pipeline import (
     get_analyze_stage_files,
     get_awaiting_cloud_count,
     get_backfill_candidates,
+    get_cached_stage_orphan_counts,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
     get_files_page,
@@ -71,7 +72,6 @@ from phaze.services.pipeline import (
     get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
-    get_stage_orphan_counts,
     get_stage_progress,
     get_straggler_count,
     get_untracked_files,
@@ -80,6 +80,7 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import insert_ledger_if_absent
+from phaze.services.stage_status import failed_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -157,7 +158,7 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
 def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
     """Re-express the seven former ``get_pipeline_stats`` keys off ``get_stage_progress`` (Phase 82, D-05/READ-02).
 
-    The stats path no longer reads ``FileRecord.state``: each of the seven keys ``stats_bar.html``
+    The stats path no longer reads the raw ``files.state`` column: each of the seven keys ``stats_bar.html``
     consumes maps to a derived :func:`get_stage_progress` output-table count --
     ``discovered→discovery.done``, ``metadata_extracted→metadata.done``, ``fingerprinted→fingerprint.done``,
     ``analyzed→analyze.done``, ``proposal_generated→proposals.done``, ``approved→execute.total``,
@@ -248,11 +249,12 @@ async def _build_dag_context(
 
     # Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck (recovery-candidate) count --
     # the exact number recover_orphaned_work would re-enqueue for the stage (ledger minus live minus
-    # domain-completed minus in-flight-cloud). get_stage_orphan_counts owns the never-500 SAVEPOINT degrade
-    # (all-zeros on any DB error), so NO try/except here; the ints ride the same dag.items() OOB seed
-    # loop onto the amber rail badges (no self-poll, no stats_bar.html edit -- the badge just needs the
-    # store key present, seeded to 0 in base.html so x-show reads a number before the first poll).
-    orphans = await get_stage_orphan_counts(session)
+    # domain-completed minus in-flight-cloud). Phase 91 (HYG-01 / WR-02): the hot 5s /pipeline/stats
+    # poll now reads the O(1) process-scope cache (get_cached_stage_orphan_counts -- no session, no
+    # await) instead of materializing the full scheduling_ledger inline per tick; the FastAPI lifespan
+    # _orphan_refresh_loop refreshes that cache off-request (D-01/D-02/D-04). The parity meaning is
+    # unchanged: the cached ints ride the same dag.items() OOB seed loop onto the amber rail badges.
+    orphans = get_cached_stage_orphan_counts()
     dag["metadataOrphan"] = int(orphans["metadata"])
     dag["analyzeOrphan"] = int(orphans["analyze"])
     dag["fingerprintOrphan"] = int(orphans["fingerprint"])
@@ -852,7 +854,7 @@ async def pipeline_files(
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
 
     The scannable "where's this file at?" overview: each row carries the six-pill stage matrix
-    derived per page (never the raw ``FileRecord.state`` string, never a whole-corpus scan per poll
+    derived per page (never the raw ``files.state`` column string, never a whole-corpus scan per poll
     -- see :func:`phaze.services.pipeline.get_files_page`). The ``stage``+``bucket`` query params are
     validated against the ``Stage`` / ``Status`` allowlists (T-87-14 -- an unknown value degrades to
     an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
@@ -995,12 +997,10 @@ async def trigger_backfill_cloud(
         )
 
     candidates = await get_backfill_candidates(session, threshold)
-    for file, _duration in candidates:
-        file.state = FileState.DISCOVERED
-    # RESEARCH Pitfall 3: explicit commit of the DISCOVERED reset BEFORE routing/backgrounding the
-    # enqueues (get_session does NOT auto-commit). The UPDATE is a bounded set (the filtered candidates).
-    await session.commit()
-
+    # Phase 90 (D-09): the per-candidate `file.state = DISCOVERED` reset (and its explicit pre-routing
+    # commit) was removed. files.state no longer drives routing -- _route_discovered_by_duration writes
+    # the cloud_job/marker authority PR-A reads, and _backfill_candidates_stmt already excludes files
+    # with an active cloud_job (the derived idempotency guard added in PR-A), so no state reset is needed.
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
@@ -1033,11 +1033,13 @@ async def trigger_backfill_cloud(
             },
         )
 
-    # D-09 / RESEARCH Open-Q3: seed a ledger row ONLY for files the router HELD in AWAITING_CLOUD
-    # (every backfill candidate is long, so the router never produces local/skipped here). The router
-    # mutates ``file.state`` in place for held files, so the held set is detectable on the in-memory
-    # candidate records (expire_on_commit=False preserves attribute values across its commit).
-    held_files = [file for file, _ in candidates if file.state == FileState.AWAITING_CLOUD]
+    # D-09 / RESEARCH Open-Q3: seed a ledger row for every file the router HELD for the cloud path
+    # (every backfill candidate is long, so the router never produces local/skipped here -- the
+    # candidate set IS the held set). Phase 90 (PR-A): the redundant in-memory
+    # ``file.state == AWAITING_CLOUD`` sub-filter is DROPPED -- ``get_cloud_staging_candidates`` already
+    # scopes to ``awaiting_candidate_clause()``, so every returned candidate is awaiting-held by
+    # construction; re-checking the (soon-removed) ``files.state`` column here was a no-op guard.
+    held_files = [file for file, _ in candidates]
     for file in held_files:
         await insert_ledger_if_absent(
             session,
@@ -1117,16 +1119,12 @@ async def retry_analysis_failed(
     # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
     # red count drops on the next 5s poll regardless of the enqueue outcome.
     #
-    # Both halves of the FAIL-01 dual-write must clear together. `state` alone is no longer the
-    # truth: `report_analysis_failed` also stamps a durable `analysis.failed_at` marker, and
-    # `put_analysis` only clears it on a SUCCESSFUL re-analysis. Leaving it set here would strand
-    # every retried file as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` -- a row the
-    # Phase 79 shadow-compare gate reads as divergent and `domain_completed(ANALYZE)` reads as
-    # "un-processable, do not re-run", so Phase 80 recovery would skip the very files we just
-    # re-enqueued. Clearing is safe: the XOR CHECK guarantees `analysis_completed_at IS NULL` on a
-    # failed row, so the file derives `not_started` -- exactly what a fresh re-analysis should see.
-    for f in files:
-        f.state = FileState.FINGERPRINTED
+    # Clear the durable `analysis.failed_at` marker and COMMIT before any enqueue so the red count
+    # drops on the next 5s poll. Phase 90 (D-09): the paired `files.state = FINGERPRINTED` reset was
+    # removed -- `analysis.failed_at` is now the sole failure authority (`failed_clause(Stage.ANALYZE)`,
+    # readers cut over in PR-A). Clearing it moves the row off the failed disjunct so it derives
+    # `not_started` -- exactly what a fresh re-analysis should see (the XOR CHECK guarantees
+    # `analysis_completed_at IS NULL` on a failed row).
     await session.execute(
         update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in files])).values(failed_at=None, error_message=None),
     )
@@ -1244,7 +1242,10 @@ async def retry_analysis_failed_file(
     free-text crosses into Jinja (T-d79-04).
     """
     file = (
-        await session.execute(select(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.ANALYSIS_FAILED))
+        # Phase 90 (PR-A, D-09): scope on the DERIVED terminal analyze-failure marker
+        # (``failed_clause(Stage.ANALYZE)`` -- an analysis row with ``failed_at`` set), no longer the
+        # retired ``files.state == ANALYSIS_FAILED`` column. A non-failed (or unknown) file is a safe no-op.
+        await session.execute(select(FileRecord).where(FileRecord.id == file_id, failed_clause(Stage.ANALYZE)))
     ).scalar_one_or_none()
     if file is None:
         return templates.TemplateResponse(
@@ -1266,11 +1267,10 @@ async def retry_analysis_failed_file(
     # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
     agent_id = cast("str", routed.agent_id)
 
-    # CR-01 (Phase 81): clear BOTH halves of the FAIL-01 dual-write and COMMIT before the enqueue, so
-    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis) rather than
-    # stranding as `state='fingerprinted' AND analysis.failed_at IS NOT NULL` (a shadow-compare
-    # divergence + a domain_completed(ANALYZE) "un-processable" that Phase 80 recovery would skip).
-    file.state = FileState.FINGERPRINTED
+    # CR-01 (Phase 81): clear the durable `analysis.failed_at` marker and COMMIT before the enqueue so
+    # the row leaves the failed disjunct and derives not_started (a fresh re-analysis). Phase 90 (D-09):
+    # the paired `files.state = FINGERPRINTED` reset was removed -- `analysis.failed_at` is now the sole
+    # failure authority (`failed_clause(Stage.ANALYZE)`, readers cut over in PR-A).
     await session.execute(
         update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(failed_at=None, error_message=None),
     )

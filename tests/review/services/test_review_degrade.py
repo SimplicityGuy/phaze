@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -135,7 +135,7 @@ async def _seed_applied_tagwrite_file(session: AsyncSession, *, completed_log: b
             current_path=f"/dest/{filename}",
             file_type="mp3",
             file_size=5_000_000,
-            state=FileState.MOVED,  # NOT 'executed' — applied-ness is carried by the proposal, not files.state
+            # NOT 'executed' — applied-ness is carried by the proposal, not files.state
         )
     )
     await session.flush()

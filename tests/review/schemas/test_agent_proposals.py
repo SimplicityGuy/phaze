@@ -7,7 +7,6 @@ import uuid
 import pydantic
 import pytest
 
-from phaze.models.file import FileState
 from phaze.models.proposal import ProposalStatus
 from phaze.schemas.agent_proposals import ProposalStatePatch, ProposalStateResponse
 
@@ -94,9 +93,6 @@ def test_proposal_state_patch_literal_values_match_enum_values() -> None:
     # Match Plan-01 ProposalStatus enum lowercase values
     assert ProposalStatus.EXECUTED.value == "executed"
     assert ProposalStatus.FAILED.value == "failed"
-    # Match Plan-01 FileState enum lowercase values
-    assert FileState.MOVED.value == "moved"
-    assert FileState.UNCHANGED.value == "unchanged"
 
     # Round-trip both literal values
     for ps in ("executed", "failed"):

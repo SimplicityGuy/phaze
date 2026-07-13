@@ -17,7 +17,7 @@ from sqlalchemy import func as sa_func, select
 
 from phaze.database import get_session
 from phaze.models.execution import ExecutionLog, ExecutionStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.proposal import RenameProposal
 from phaze.routers.agent_execution import router as agent_execution_router
 
@@ -87,7 +87,6 @@ async def _seed_proposal_chain(session: AsyncSession, agent_id: str) -> tuple[uu
             current_path=f"/test/exec-{uuid.uuid4()}.mp3",
             file_type="mp3",
             file_size=1234,
-            state=FileState.DISCOVERED,
         )
     )
     await session.flush()

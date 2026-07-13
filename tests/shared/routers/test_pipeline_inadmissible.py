@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 
 
 if TYPE_CHECKING:
@@ -37,7 +37,6 @@ def _file(i: int) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.PUSHED,
     )
 
 

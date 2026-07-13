@@ -1,18 +1,36 @@
 """Integration tests for duplicate resolution router."""
 
+import html as html_mod
 import json
+import re
 import uuid
 
 from httpx import AsyncClient
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 
 
 HASH_A = "a" * 64
 HASH_B = "b" * 64
+
+# Extract the server-rendered ``name="file_states"`` hidden-input value from a resolve response.
+# The value is Jinja-autoescaped JSON (``&#34;`` for the quotes), so it never contains a raw ``"`` --
+# the regex stops at the closing attribute quote, and ``html.unescape`` recovers the real JSON string.
+_FILE_STATES_RE = re.compile(r'name="file_states"\s+value="([^"]*)"')
+
+
+def _extract_server_file_states(response_text: str) -> str:
+    """Return the ACTUAL server-rendered ``file_states`` payload (HTML-unescaped), never a hand-crafted dict.
+
+    This is the exact value the browser would POST back on Undo. The round-trip tests extract THIS so a
+    regression in the resolve->undo payload contract (or the PR-B id-only shape) is caught end-to-end.
+    """
+    match = _FILE_STATES_RE.search(response_text)
+    assert match is not None, "resolve response did not render a file_states hidden input"
+    return html_mod.unescape(match.group(1))
 
 
 def _make_file(
@@ -32,7 +50,6 @@ def _make_file(
         current_path=original_path,
         file_type=file_type,
         file_size=file_size,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -117,7 +134,15 @@ async def test_compare_endpoint(session: AsyncSession, client: AsyncClient) -> N
 
 @pytest.mark.asyncio
 async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /duplicates/{hash}/resolve marks non-canonical files as DUPLICATE_RESOLVED."""
+    """POST /duplicates/{hash}/resolve writes the DedupResolution marker for non-canonical files.
+
+    Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; the marker
+    (dedup_resolved_clause) is the sole derived authority.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
@@ -131,11 +156,9 @@ async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None
     assert response.status_code == 200
     assert "Group resolved" in response.text
 
-    # Verify DB state
-    await session.refresh(f2)
-    assert f2.state == FileState.DUPLICATE_RESOLVED
-    await session.refresh(f1)
-    assert f1.state == FileState.DISCOVERED
+    # Verify the marker was written for the non-canonical file only (the canonical keeper has none).
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == {f2.id}
 
 
 @pytest.mark.asyncio
@@ -154,7 +177,7 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     assert resolve_response.status_code == 200
 
     # Construct file_states for undo
-    file_states = [{"id": str(f2.id), "previous_state": FileState.DISCOVERED}]
+    file_states = [{"id": str(f2.id)}]
 
     # Undo
     undo_response = await client.post(
@@ -166,7 +189,6 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
     # Verify file restored
     await session.refresh(f2)
-    assert f2.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -204,7 +226,7 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
     await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
 
     # Build undo states
-    file_states = [{"id": str(f2.id), "previous_state": FileState.DISCOVERED}]
+    file_states = [{"id": str(f2.id)}]
 
     response = await client.post(
         "/duplicates/undo-all",
@@ -219,7 +241,6 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
 
     # Verify file restored
     await session.refresh(f2)
-    assert f2.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -275,8 +296,8 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
 # tests assert from an INDEPENDENT session, which by definition sees only committed data.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_resolve_endpoint_commits_marker_and_state(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
-    """After POST /resolve, a SEPARATE session sees the marker and the dual-written state."""
+async def test_resolve_endpoint_commits_marker(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """After POST /resolve, a SEPARATE session sees the committed DedupResolution marker (the sole authority)."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -297,9 +318,7 @@ async def test_resolve_endpoint_commits_marker_and_state(async_engine, session: 
 
         canonical = (await verify.execute(select(DedupResolution.canonical_file_id))).scalar_one()
         assert canonical == keeper.id, "canonical_file_id must carry the operator's pick (D-03)"
-
-        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
-        assert state == FileState.DUPLICATE_RESOLVED, "resolve did not COMMIT the dual-written state"
+        # Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; only the marker persists.
 
 
 @pytest.mark.asyncio
@@ -318,7 +337,7 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
     assert resolve.status_code == 200
 
-    payload = json.dumps([{"id": str(dup.id), "previous_state": FileState.DISCOVERED.value}])
+    payload = json.dumps([{"id": str(dup.id)}])
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
     assert undo.status_code == 200
 
@@ -327,5 +346,104 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
         remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
         assert remaining == 0, "undo did not COMMIT the marker DELETE"
 
-        state = (await verify.execute(select(FileRecord.state).where(FileRecord.id == dup.id))).scalar_one()
-        assert state == FileState.DISCOVERED, "undo did not COMMIT the previous_state restore"
+
+# ---------------------------------------------------------------------------
+# Phase 90 (PR-A, BLOCKER FIX): dedup-undo is DECOUPLED from any scalar state. The marker DELETE + early-return
+# gate derive from the payload id-set ALONE, so PR-B stripping previous_state can NEVER no-op the undo.
+# These round-trips use the ACTUAL server-rendered file_states payload (never a hand-crafted dict).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_undo_roundtrip_deletes_marker_from_server_payload(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """Real /resolve -> extract server file_states -> /undo: the DedupResolution marker is DELETED.
+
+    Mirrors ``test_undo_endpoint_commits_marker_delete_and_restore`` but the undo payload is the ACTUAL
+    value the resolve response rendered into ``name="file_states"`` (HTML-unescaped), NOT a literal dict.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper = _make_file("/m/keeper.mp3", "mp3", HASH_A)
+    dup = _make_file("/m/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, dup])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert resolve.status_code == 200
+    payload = _extract_server_file_states(resolve.text)
+    # Sanity: the extracted payload is the real server JSON naming the resolved dup.
+    assert str(dup.id) in payload
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
+    assert undo.status_code == 200
+
+    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_factory() as verify:
+        remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
+        assert remaining == 0, "round-trip undo (server payload) did not delete the DedupResolution marker"
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """Real /resolve-all -> extract server file_states -> /undo-all: every DedupResolution marker DELETED."""
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper_a = _make_file("/m/keepA.mp3", "mp3", HASH_A)
+    dup_a = _make_file("/m/dupA.mp3", "mp3", HASH_A)
+    keeper_b = _make_file("/m/keepB.mp3", "mp3", HASH_B)
+    dup_b = _make_file("/m/dupB.mp3", "mp3", HASH_B)
+    session.add_all([keeper_a, dup_a, keeper_b, dup_b])
+    await session.flush()
+
+    resolve = await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
+    assert resolve.status_code == 200
+    payload = _extract_server_file_states(resolve.text)
+
+    undo = await client.post("/duplicates/undo-all", data={"file_states": payload, "page": "1", "page_size": "20"})
+    assert undo.status_code == 200
+
+    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_factory() as verify:
+        remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
+        assert remaining == 0, "bulk round-trip undo (server payload) did not delete every DedupResolution marker"
+
+
+@pytest.mark.asyncio
+async def test_undo_roundtrip_id_only_payload_still_deletes_marker(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+    """THE BLOCKER GUARD: an id-only payload (PR-B shape, no previous_state) STILL deletes the marker.
+
+    Take the real server-rendered payload, STRIP ``previous_state`` from every entry (emulating the shape
+    PR-B produces once the capture is removed), POST to /undo, and assert the marker is deleted. Under the
+    OLD ``if not restore_by_id: return 0`` gate this no-op'd silently; the decoupled gate must delete it.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper = _make_file("/m/keeper.mp3", "mp3", HASH_A)
+    dup = _make_file("/m/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, dup])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert resolve.status_code == 200
+
+    # Strip previous_state from every entry -> the PR-B id-only shape [{"id": ...}].
+    server_payload = json.loads(_extract_server_file_states(resolve.text))
+    id_only = [{"id": entry["id"]} for entry in server_payload]
+    assert all("previous_state" not in e for e in id_only)
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": json.dumps(id_only)})
+    assert undo.status_code == 200
+
+    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with verify_factory() as verify:
+        remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
+        assert remaining == 0, "id-only (PR-B shape) undo did NOT delete the marker -- the blocker regressed"

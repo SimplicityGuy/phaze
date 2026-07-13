@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
+from sqlalchemy import select
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord
 from phaze.routers.pipeline import _background_tasks, _route_discovered_by_duration
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
@@ -44,7 +46,6 @@ def _make_long_file() -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.DISCOVERED,
     )
 
 
@@ -52,6 +53,16 @@ async def _drain_background() -> None:
     """Await any backgrounded enqueue tasks the router spawned (mirrors the router-test harness)."""
     for task in list(_background_tasks):
         await task
+
+
+async def _is_held_awaiting_cloud(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """Phase 90 (D-09): a long file is HELD when it carries a cloud_job row with status='awaiting'.
+
+    The former ``files.state = AWAITING_CLOUD`` dual-write was removed; the cloud_job sidecar is the sole
+    derived authority PR-A reads.
+    """
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    return job is not None and job.status == CloudJobStatus.AWAITING.value
 
 
 @pytest.mark.asyncio
@@ -76,8 +87,7 @@ async def test_long_file_routes_to_awaiting_cloud_not_compute(session: AsyncSess
     assert result["local"] == 0
     await _drain_background()
     # The long file is HELD in AWAITING_CLOUD ...
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_held_awaiting_cloud(session, long_file.id)
     # ... and NO queue was ever resolved/enqueued for it (no direct-to-compute path).
     assert router.captures == []
     assert "cloud" not in router.queue_for_calls
@@ -106,8 +116,7 @@ async def test_no_direct_to_compute_enqueue_path(session: AsyncSession) -> None:
     # Nothing enqueued anywhere; the file is held for the staging cron.
     assert router.captures == []
     assert router.queue_for_calls == []
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_held_awaiting_cloud(session, long_file.id)
 
 
 # --- Phase 67 (REG-04, D-14): the registry cloud_enabled gate on the routing seam ---------
@@ -139,7 +148,6 @@ async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> N
     await _drain_background()
     # The long file routed local -- it stays DISCOVERED, never AWAITING_CLOUD.
     await session.refresh(long_file)
-    assert long_file.state == FileState.DISCOVERED
     # It was enqueued onto the fileserver queue (the local path), not held.
     assert router.queue_for_calls == ["nox"]
     # quick-260707-dh1: process_file routes to the analyze lane queue.
@@ -162,8 +170,7 @@ async def test_cloud_enabled_holds_long_file(session: AsyncSession) -> None:
     assert result["awaiting"] == 1
     assert result["local"] == 0
     await _drain_background()
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_held_awaiting_cloud(session, long_file.id)
     assert router.captures == []
 
 
@@ -197,6 +204,5 @@ async def test_kueue_registry_resolves_to_cloud_on(session: AsyncSession) -> Non
     assert result["awaiting"] == 1
     assert result["local"] == 0
     await _drain_background()
-    await session.refresh(long_file)
-    assert long_file.state == FileState.AWAITING_CLOUD
+    assert await _is_held_awaiting_cloud(session, long_file.id)
     assert router.captures == []

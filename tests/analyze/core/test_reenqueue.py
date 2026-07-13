@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
@@ -79,7 +79,7 @@ def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller
     return {"async_session": sm, "queue": controller_queue, "task_router": router}
 
 
-def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file(*, file_type: str = "mp3") -> FileRecord:
     uid = uuid.uuid4()
     return FileRecord(
         agent_id="test-fileserver",
@@ -90,7 +90,6 @@ def _make_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> 
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
@@ -118,7 +117,7 @@ async def _seed_cloud_job_succeeded(session: AsyncSession, file_id: uuid.UUID) -
     Phase 80 cut push-done from ``FileRecord.state == PUSHED`` to
     ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (D-07). A landed-but-not-yet-analyzed
     file is now represented by a SUCCEEDED compute cloud_job row (SUCCEEDED = 'pushed and analyzing' on
-    the compute lane), NOT the retired ``PUSHED`` FileState.
+    the compute lane), NOT the retired ``PUSHED`` scalar state.
     """
     session.add(CloudJob(id=uuid.uuid4(), file_id=file_id, backend_id="oci-a1", s3_key=None, status=CloudJobStatus.SUCCEEDED.value))
     await session.commit()
@@ -151,7 +150,7 @@ async def test_pushing_orphan_redrives_to_fileserver(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -178,7 +177,7 @@ async def test_pushing_redrive_routes_to_fileserver_not_compute(
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud", kind="compute")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -204,7 +203,7 @@ async def test_pushing_redrive_skips_when_no_fileserver(
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="cloud", kind="compute")  # only a compute agent
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_push_ledger(session, file_id=f.id)
@@ -233,13 +232,13 @@ async def test_pushing_pushed_state_is_domain_completed(
 
     D-07: push-done is now ``cloud_job.status='succeeded' OR domain_completed(analyze)`` (sidecar-derived,
     no FileRecord.state read). A SUCCEEDED compute cloud_job row is the 'pushed and landed' signal that
-    replaced the retired ``FileState.PUSHED``.
+    replaced the retired ``PUSHED`` scalar state.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_cloud_job_succeeded(session, f.id)  # landed on compute scratch (D-07)
@@ -263,14 +262,14 @@ async def test_pushing_analyzed_state_is_domain_completed(
 
     D-07's second disjunct: ``domain_completed(analyze)`` covers the onward advance past PUSHED. Derived
     from the ``analysis`` output row (completed_at / failed_at), not the retired ANALYZED / ANALYSIS_FAILED
-    FileState.
+    the scalar state.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    f_done = _make_file(state=FileState.ANALYZED)
-    f_failed = _make_file(state=FileState.ANALYSIS_FAILED)
+    f_done = _make_file()
+    f_failed = _make_file()
     session.add_all([f_done, f_failed])
     await session.commit()
     await _seed_analysis(session, f_done.id, completed=True)
@@ -301,7 +300,7 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
     this file lacks -- so recovery keeps driving its analysis. Both derivations are ledger-scoped, so a
     ledger row for the file must exist for it to appear in a done-set.
     """
-    f = _make_file(state=FileState.PUSHING)
+    f = _make_file()
     session.add(f)
     await session.commit()
     await _seed_cloud_job_succeeded(session, f.id)  # landed -> push-done via D-07
@@ -327,6 +326,6 @@ async def test_pushed_file_is_not_analyze_done_for_process_file(
 
 
 def test_push_file_is_predicate_covered() -> None:
-    """push_file joins the domain-predicate-covered set (it is keyed and FileState-classifiable)."""
+    """push_file joins the domain-predicate-covered set (it is keyed and stage-classifiable)."""
     assert "push_file" in _DOMAIN_COMPLETED_STAGES
     assert "push_file" in _KEY_BUILDERS

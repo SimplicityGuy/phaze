@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.stage_skip import StageSkip
 from phaze.services.pipeline import get_fingerprint_pending_files
 
@@ -39,7 +39,6 @@ def _music_file() -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.DISCOVERED,
     )
 
 

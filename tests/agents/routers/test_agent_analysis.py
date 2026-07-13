@@ -21,7 +21,7 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
@@ -63,7 +63,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=1024,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()
@@ -384,7 +383,8 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """Phase 43: a non-empty PUT advances files.state to 'analyzed' and lands coverage in dedicated columns (not features)."""
+    """Phase 43 / Phase 90 (D-09): a non-empty PUT marks analysis complete (analysis_completed_at, the
+    derived 'analyzed' authority -- the files.state write was removed) and lands coverage in dedicated columns."""
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
 
@@ -404,10 +404,9 @@ async def test_analysis_put_advances_state_and_persists_coverage_columns(
     assert response.status_code == 200, response.text
     session.expire_all()
 
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYZED, "non-empty PUT must advance state to analyzed"
-
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    # Phase 90 (D-09): done(analyze) derives from analysis_completed_at, not files.state.
+    assert row.analysis_completed_at is not None, "non-empty PUT must stamp the derived 'analyzed' completion marker"
     # Coverage landed in dedicated columns (Pitfall 3 -- NOT the features JSONB).
     assert row.fine_windows_analyzed == 10
     assert row.fine_windows_total == 40
@@ -432,8 +431,9 @@ async def test_analysis_empty_put_does_not_advance_state(
 
     assert r.status_code == 200, r.text
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.DISCOVERED, "empty PUT must NOT advance state"
+    # Derived non-advance: an empty PUT writes no completed analysis row.
+    arow = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert arow is None or arow.analysis_completed_at is None, "empty PUT must NOT complete analysis"
 
 
 @pytest.mark.asyncio
@@ -443,7 +443,7 @@ async def test_analysis_put_stamps_completed_at(
 ) -> None:
     """Phase 57.1 KEY RISK: a non-empty PUT stamps analysis_completed_at (the completion discriminator).
 
-    The discriminator is set in the SAME dumped-guarded txn that flips FileState.ANALYZED, so a
+    The discriminator is set in the SAME dumped-guarded txn that writes the completed analysis row, so a
     completed analysis row is distinguishable from an in-flight partial row (which leaves it NULL).
     It is server-set via func.now() -- never wire-set -- so a client cannot forge completion.
     """
@@ -627,10 +627,7 @@ async def test_progress_post_has_no_completion_side_effects(
     assert r.status_code == 200, r.text
     session.expire_all()
 
-    # FileState NEVER flips (KEY RISK -- completion stays solely on put_analysis).
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.DISCOVERED, "progress POST must NOT advance FileState"
-
+    # Derived analyze status NEVER advances on a progress POST (KEY RISK -- completion stays solely on put_analysis).
     # analysis_completed_at stays NULL -> the convergence gate keeps the partial row out of proposals.
     row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
     assert row.analysis_completed_at is None, "progress POST must leave analysis_completed_at NULL"
@@ -675,8 +672,9 @@ async def test_progress_post_forged_body_key_422(seed_test_agent: tuple[Agent, s
 
 
 @pytest.mark.asyncio
-async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
-    """POST /{file_id}/failed advances files.state to 'analysis_failed' and echoes agent_id/file_id."""
+async def test_analysis_failed_sets_marker(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST /{file_id}/failed stamps the derived analyze-failure marker (analysis.failed_at, the sole
+    authority after Phase 90 D-09 removed the files.state = ANALYSIS_FAILED write) and echoes agent_id/file_id."""
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
 
@@ -692,8 +690,10 @@ async def test_analysis_failed_sets_state(seed_test_agent: tuple[Agent, str], se
     assert body["file_id"] == str(file_id)
 
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.ANALYSIS_FAILED
+    # Phase 90 (D-09): failed_clause(Stage.ANALYZE) derives from analysis.failed_at, not files.state.
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.failed_at is not None
+    assert row.analysis_completed_at is None, "a failure marker must not also read as complete (XOR CHECK)"
 
 
 @pytest.mark.asyncio
@@ -710,8 +710,9 @@ async def test_analysis_failed_bad_reason_422(seed_test_agent: tuple[Agent, str]
 
     assert response.status_code == 422
     session.expire_all()
-    file_row = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
-    assert file_row.state == FileState.DISCOVERED, "a 422 body must not advance state"
+    # Derived non-advance: a 422 body writes no failure marker.
+    arow = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert arow is None or arow.failed_at is None, "a 422 body must not write a failure marker"
 
 
 @pytest.mark.asyncio

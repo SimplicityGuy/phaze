@@ -48,7 +48,6 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileState
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
@@ -98,9 +97,8 @@ async def hold_awaiting_cloud(
     ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (``shadow_compare.py:131``) holds for every
     go-forward hold instead of three hand-copied writers. ``expect_status`` selects one of two modes:
 
-    * **Hold mode** (``expect_status is None``): the unconditional upsert. Dual-writes
-      ``file.state = FileState.AWAITING_CLOUD`` (D-00c -- the ``state`` write survives to Phase 90, only
-      *reliance* on it is retired), then upserts the sidecar row keyed on ``file_id``
+    * **Hold mode** (``expect_status is None``): the unconditional upsert. Phase 90 (D-09) removed the
+      former AWAITING_CLOUD files.state dual-write, so this upserts ONLY the sidecar row keyed on ``file_id``
       (``uq_cloud_job_file_id``) INSERTing ``status='awaiting'`` / ``attempts=0`` (or ``on_conflict``
       re-stamping an existing row). Always returns ``True`` (the hold always writes).
     * **Spill mode** (``expect_status`` a non-empty status set): a rowcount-guarded CAS ONLY. UPDATEs the
@@ -120,8 +118,9 @@ async def hold_awaiting_cloud(
     ``pg_advisory_xact_lock`` and re-open the over-stage class, Landmine L1).
     """
     if expect_status is None:
-        # Hold mode: the unconditional upsert + D-00c dual-write; always writes -> return True.
-        file.state = FileState.AWAITING_CLOUD  # D-00c dual-write; the state write dies in Phase 90
+        # Hold mode: the unconditional cloud_job upsert; always writes -> return True.
+        # Phase 90 (D-09): the AWAITING_CLOUD files.state dual-write was removed; the cloud_job row
+        # (status='awaiting') is the sole derived authority PR-A reads.
         stmt = pg_insert(CloudJob).values(
             # Stamp the PK explicitly (CR-01 defensive; mirrors ComputeAgentBackend.dispatch).
             id=uuid.uuid4(),
@@ -285,9 +284,9 @@ class LocalBackend(_BaseBackend):
         matching the cron no-op discipline -- never a raise.
 
         CR-01 (SCHED-01/03): AFTER the fileserver gate (so an absent agent leaves the file untouched) and
-        BEFORE the enqueue, flip ``file.state = FileState.LOCAL_ANALYZING`` in the caller-passed session --
-        mirroring ``ComputeAgentBackend``/``KueueBackend``'s ``FileState -> PUSHING`` flip. This removes the
-        file from ``get_cloud_staging_candidates`` (which selects ``state == AWAITING_CLOUD``), so a
+        BEFORE the enqueue, the file is enqueued for local analysis in the caller-passed session. Phase 90
+        (D-09) removed the former LOCAL_ANALYZING files.state flip; the file leaves the cloud-staging
+        candidate set via its ``process_file:<id>`` scheduling-ledger row (the derived inflight source), so a
         locally-spilled file is no longer a drain candidate and can NOT be double-dispatched to a cloud
         backend while its ``process_file`` is in flight (the Backend.dispatch contract: dispatch "removes
         the file from further drain consideration"). NEVER commits -- the drain owns the single post-loop
@@ -300,8 +299,9 @@ class LocalBackend(_BaseBackend):
         except NoActiveAgentError:
             logger.info("LocalBackend.dispatch hold: no fileserver agent online", file_id=str(file.id))
             return False
-        # CR-01: leave the AWAITING_CLOUD candidate set in the SAME session, before the enqueue, no commit.
-        file.state = FileState.LOCAL_ANALYZING
+        # Phase 90 (D-09): the LOCAL_ANALYZING files.state dual-write was removed. The file leaves the
+        # AWAITING_CLOUD candidate set via the process_file:<id> scheduling-ledger row that
+        # enqueue_process_file's before_enqueue hook writes (the derived inflight_clause source PR-A reads).
         queue = task_router.queue_for(agent.id, lane_for_task("process_file"))
         job = await enqueue_process_file(queue, file, agent.id, cfg.models_path)
         # WR-01: a deterministic-key ``process_file:<id>`` dedup returns None (the file is already being
@@ -391,8 +391,8 @@ class ComputeAgentBackend(_BaseBackend):
         # Gate on the fileserver agent (the push initiator) BEFORE mutating: absent -> clean hold, nothing written.
         fileserver_agent = await select_active_agent(session, kind="fileserver")
 
-        # D-03: flip PUSHING + upsert the cloud_job row in the SAME session, before/with the flip.
-        file.state = FileState.PUSHING
+        # D-03: upsert the cloud_job row in the SAME session, before the enqueue. Phase 90 (D-09): the
+        # paired PUSHING files.state dual-write was removed; the cloud_job (status=SUBMITTED) is authority.
         stmt = pg_insert(CloudJob).values(
             # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
             id=uuid.uuid4(),
@@ -504,8 +504,8 @@ class KueueBackend(_BaseBackend):
         # Gate (fileserver agent) + stage BEFORE the state flip: _stage_file_to_s3 reads no file.state, so a
         # NoActiveAgentError / pre-upsert S3 raise touches nothing (CR-01 Pitfall 4 limbo guard).
         await _stage_file_to_s3(session, file, task_router, bucket)
-        # D-03: flip PUSHING only now that staging succeeded -- the file has genuinely left AWAITING_CLOUD.
-        file.state = FileState.PUSHING
+        # Phase 90 (D-09): the PUSHING files.state dual-write was removed; the cloud_job row (updated
+        # below with backend_id + staging_bucket) is the sole derived authority now that staging succeeded.
         # Record backend_id + the D-06 staging_bucket in the SAME uncommitted session (MKUE-02/D-01):
         # in_flight_count is backend_id-scoped, and presign/cleanup read staging_bucket authoritatively.
         await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, staging_bucket=bucket_id))

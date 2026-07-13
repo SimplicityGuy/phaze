@@ -30,7 +30,7 @@ import pytest
 from sqlalchemy import event
 
 from phaze.models.analysis import AnalysisResult
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.stage_skip import StageSkip
 
 
@@ -52,7 +52,6 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
             current_path=f"/test/music/{file_id}.mp3",
             file_type="mp3",
             file_size=1024,
-            state=FileState.DISCOVERED,
         )
     )
     await session.commit()

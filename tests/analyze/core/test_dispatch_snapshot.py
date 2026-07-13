@@ -7,7 +7,7 @@ agent down}`` and pins the observable side-effect log per cell against an INLINE
 
 The Phase-68 behavior-preserving refactor (Waves 1-3) re-homes the ``if active_cloud_kind ==
 compute/kueue`` fork into a ``Backend`` protocol. This snapshot asserts the OBSERVABLE side effects
-(gate checked-vs-skipped, staging call, FileState transition, cloud_job upsert, enqueue task, tally),
+(gate checked-vs-skipped, staging call, cloud_job upsert, enqueue task, tally),
 NOT the internal branch structure -- so it stays green across the refactor and PROVES the re-home
 changed nothing (that is the BACK-04 proof).
 
@@ -43,7 +43,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.services import backends as backends_mod, enqueue_router, kube_staging, s3_staging
 from phaze.tasks import release_awaiting_cloud
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
@@ -129,7 +129,6 @@ def _make_file(*, file_type: str = "mp3") -> FileRecord:
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=FileState.AWAITING_CLOUD,
     )
 
 
@@ -239,14 +238,19 @@ async def _run_cell(
     router = DedupFakeTaskRouter()
     tally = await release_awaiting_cloud.stage_cloud_window(_make_ctx(async_engine, router))
 
-    # Re-read committed FileState truth for the seeded rows.
+    # Phase 90 (D-09): the PUSHING/AWAITING_CLOUD scalar-state dual-write was removed; derive the SAME
+    # side-effect counts from the cloud_job sidecar (the sole authority). A dispatched file's cloud_job
+    # left 'awaiting' (promoted to an in-flight status) -> pushing; a still-held file's row stays
+    # 'awaiting' -> awaiting_cloud. This keeps the golden baseline byte-identical to the pre-removal run.
     session.expire_all()
-    rows = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
+    files = (await session.execute(select(FileRecord).where(FileRecord.id.in_(ids)))).scalars().all()
+    jobs = {r.file_id: r.status for r in (await session.execute(select(CloudJob).where(CloudJob.file_id.in_(ids)))).scalars().all()}
     state_counts = {"pushing": 0, "awaiting_cloud": 0}
-    for r in rows:
-        if r.state == FileState.PUSHING:
+    for f in files:
+        status = jobs.get(f.id)
+        if status is not None and status != CloudJobStatus.AWAITING.value:
             state_counts["pushing"] += 1
-        elif r.state == FileState.AWAITING_CLOUD:
+        else:
             state_counts["awaiting_cloud"] += 1
 
     # Distinct enqueue task names that landed on any per-agent queue (push_file vs s3_upload).

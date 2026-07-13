@@ -14,7 +14,7 @@ import redis.asyncio as redis_async
 from sqlalchemy import select
 
 from phaze.database import get_session
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers import agent_tracklists
@@ -81,7 +81,6 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
         current_path=f"/test/{file_id}.mp3",
         file_type="mp3",
         file_size=10_000_000,
-        state=FileState.DISCOVERED,
         agent_id=agent_id,
     )
     session.add(file_record)

@@ -37,7 +37,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse, UploadFailedRequest, UploadFailedResponse
@@ -120,25 +120,18 @@ async def report_uploaded(
     # so a non-kueue target keeps today's cloud_job-only flow. (``settings`` resolved above.)
     # Phase 68 (D-09): registry-derived kind via the Backend registry helper (was the retired ≤1-non-local accessor).
     if resolved_non_local_kind(settings) == "kueue":
-        # Rowcount-guarded idempotent flip (mirrors agent_push.report_pushed): a duplicate/late
-        # callback whose file already advanced past PUSHING matches 0 rows -> NO re-enqueue (T-55-SEAM-05).
-        flip = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                update(FileRecord).where(FileRecord.id == file_id, FileRecord.state == FileState.PUSHING).values(state=FileState.PUSHED)
-            ),
-        )
-        if flip.rowcount == 0:
-            await session.commit()
-            logger.info("report_uploaded: idempotent no-op (file no longer PUSHING)", file_id=str(file_id), agent_id=agent.id)
-            return UploadedResponse(file_id=file_id)
+        # Phase 90 (D-09): the FileRecord PUSHING -> PUSHED CAS flip was removed here (read + write
+        # deleted atomically in PR-B). Idempotency is preserved by the OUTER cloud_job CAS above
+        # (UPLOADING -> UPLOADED, rowcount==0 early-returns before reaching this block) PLUS the
+        # deterministic submit_cloud_job key -- a duplicate/late callback is already a no-op at the
+        # cloud_job sidecar (the sole derived authority PR-A reads), so no state guard is load-bearing.
         # Route submit_cloud_job onto the CONTROLLER queue via the single Phase-30 seam (never a raw
         # controller_queue.enqueue / the default queue -- KROUTE-04, T-55-SEAM-03). Deterministic key
         # dedups a replayed submit (KSUBMIT-01). submit_cloud_job stays staging-free (rejected coupling).
         routed = await resolve_queue_for_task("submit_cloud_job", request.app.state, session)
         await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
         await session.commit()
-        logger.info("report_uploaded: FileRecord -> PUSHED + submit_cloud_job routed", file_id=str(file_id), agent_id=agent.id)
+        logger.info("report_uploaded: submit_cloud_job routed", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
     await session.commit()
@@ -228,8 +221,9 @@ async def report_upload_failed(
                 agent_id=agent.id,
             )
             return UploadFailedResponse(file_id=file_id, cleared=False)
-        # cleared (helper CAS hit): gate the FileRecord dual-write (D-00c) + S3 cleanup + ledger clear behind the CAS.
-        await session.execute(update(FileRecord).where(FileRecord.id == file_id).values(state=FileState.AWAITING_CLOUD))
+        # cleared (helper CAS hit): gate S3 cleanup + ledger clear behind the CAS.
+        # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the
+        # cloud_job sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
         # Cleanup PRESERVED on the spill path: abort the multipart + delete the staged object so no orphaned
         # in-flight upload / leaked object survives (KSTAGE-04 / T-53-17) even though the file lives on locally.
         # MKUE-02: act on the RECORDED staging bucket; a bucketless row (no S3 object) skips the S3 ops cleanly.
