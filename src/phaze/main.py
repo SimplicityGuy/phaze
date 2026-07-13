@@ -1,6 +1,8 @@
 """FastAPI application factory with lifespan management."""
 
+import asyncio
 from collections.abc import AsyncGenerator
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis_async
 from sqlalchemy import select, text
+import structlog
 
 from phaze.config import settings
 from phaze.database import async_session, engine, run_migrations
@@ -47,8 +50,34 @@ from phaze.routers import (
 )
 from phaze.services.agent_bootstrap import ensure_dev_agent
 from phaze.services.agent_task_router import AgentTaskRouter
+from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.web.saq_mount import build_saq_app
+
+
+logger = structlog.get_logger(__name__)
+
+
+async def _orphan_refresh_loop() -> None:
+    """Background loop: refresh the orphan-count cache off-request (HYG-01 / WR-02).
+
+    Mirrors the agent heartbeat loop discipline (:func:`phaze.tasks.heartbeat._heartbeat_loop`):
+    launched as an asyncio task in the FastAPI lifespan so the potentially-large
+    ``scheduling_ledger`` materialization runs OUTSIDE the hot 5s /pipeline/stats request path
+    (D-01/D-02). Each iteration recomputes via :func:`refresh_stage_orphan_counts` (which rebinds
+    the module cache on success ONLY -- D-03); a single failed refresh logs + keeps the last-good
+    value and never kills the loop, and ``asyncio.CancelledError`` is re-raised so shutdown can
+    cancel + await cleanly before ``engine.dispose()``.
+    """
+    while True:
+        try:
+            await refresh_stage_orphan_counts()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # One bad refresh must not kill the loop -- log and keep the last-good cache value.
+            logger.warning("orphan refresh loop iteration failed; keeping last-good", exc_info=True)
+        await asyncio.sleep(_ORPHAN_TTL_SECONDS)
 
 
 @asynccontextmanager
@@ -172,8 +201,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             await q.connect()
         _app.mount("/saq", build_saq_app([_app.state.controller_queue, *agent_queues]))
 
+    # HYG-01 (WR-02): launch the off-request orphan-count refresher AFTER DB connectivity is
+    # established and BEFORE yield. It runs OUTSIDE the hot 5s /pipeline/stats poll so the amber
+    # badge read is O(1) and can never block on scheduling_ledger size (the 2026-06-18 ~44.5K-row
+    # incident). Cancelled + awaited on shutdown BEFORE engine.dispose() (below).
+    _app.state.orphan_task = asyncio.create_task(_orphan_refresh_loop())
+
     yield
     # Shutdown in reverse construction order.
+    # HYG-01: stop the orphan refresher FIRST so no in-flight refresh touches a disposed engine;
+    # cancel-then-await under suppress absorbs the expected CancelledError (mirrors the heartbeat
+    # cancel discipline). This runs BEFORE engine.dispose() at the end of this block.
+    _app.state.orphan_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _app.state.orphan_task
     await _app.state.task_router.close()
     await _app.state.redis.aclose()
     # Phase 36 (WR-01): close the factory-attached cache_redis before the pool — disconnect()

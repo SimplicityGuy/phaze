@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 from saq.utils import now as saq_now
@@ -719,36 +720,100 @@ async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     FUNCTION-LOCAL: ``reenqueue`` imports :func:`get_live_job_keys` FROM this module, so a top-level
     import would be circular; deferring it also keeps the agent-worker import boundary intact
     (``reenqueue`` is control-only and must never be loaded merely by importing ``services.pipeline``).
-    """
-    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
-    try:
-        async with session.begin_nested():
-            # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
-            # preserve the control-only boundary (tests/test_task_split.py).
-            from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
-            from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
-                _build_done_sets,
-                _in_flight_cloud_job_ids,
-                _ledger_fids,
-                _natural_id,
-                is_domain_completed,
-            )
 
-            rows = await get_ledger_rows(session)
-            live = await get_live_job_keys(session)
-            done_sets = await _build_done_sets(session, _ledger_fids(rows))
-            in_flight = await _in_flight_cloud_job_ids(session)
-            for row in rows:
-                stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
-                if stage is None:
-                    continue  # push_file / scan_live_set / controller rows are not enrich badges
-                if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
-                    continue
-                out[stage] += 1
+    This is the DEGRADE-SAFE public wrapper (HYG-01 / D-05): it is retained UNCHANGED as the parity
+    anchor + tested public surface -- delegating to the RAISING :func:`_compute_stage_orphan_counts`
+    core and swallowing any error into the all-zero default. The parity guard
+    (``test_orphan_count.py::test_orphan_count_matches_recovery_candidate_set``) targets this contract.
+    """
+    try:
+        return await _compute_stage_orphan_counts(session)
     except Exception:
         logger.warning("stage_orphan_counts_degraded", exc_info=True)
         return {"metadata": 0, "analyze": 0, "fingerprint": 0}
+
+
+async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
+    """Raising core of :func:`get_stage_orphan_counts` (HYG-01, D-03/D-05).
+
+    Returns the same ``{metadata, analyze, fingerprint}`` dict the wrapper returns on success, but
+    RAISES on ANY DB error (it does NOT swallow) -- so the off-request refresher
+    (:func:`refresh_stage_orphan_counts`) can distinguish a real success from a degrade and thereby
+    keep the last-good cache value on failure instead of poisoning it with all-zeros (D-03).
+
+    The classification predicate is REUSED verbatim from recovery
+    (:func:`phaze.tasks.reenqueue.is_domain_completed` + ``_build_done_sets`` + ``_in_flight_cloud_job_ids``);
+    parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
+    / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
+    preserve the control-only agent-worker boundary (``tests/test_task_split.py``); do NOT hoist.
+    """
+    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    async with session.begin_nested():
+        # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
+        # preserve the control-only boundary (tests/test_task_split.py).
+        from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
+        from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
+            _build_done_sets,
+            _in_flight_cloud_job_ids,
+            _ledger_fids,
+            _natural_id,
+            is_domain_completed,
+        )
+
+        rows = await get_ledger_rows(session)
+        live = await get_live_job_keys(session)
+        done_sets = await _build_done_sets(session, _ledger_fids(rows))
+        in_flight = await _in_flight_cloud_job_ids(session)
+        for row in rows:
+            stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
+            if stage is None:
+                continue  # push_file / scan_live_set / controller rows are not enrich badges
+            if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
+                continue
+            out[stage] += 1
     return out
+
+
+# HYG-01 / WR-02 orphan-count cache (Phase 91). The amber /pipeline/stats badge polls every 5s; the
+# full derivation above materializes the whole ``scheduling_ledger`` (~44.5K rows in the 2026-06-18
+# incident) + the per-stage done-sets, which must NEVER run inline on that hot request path (D-01/D-02).
+# A process/module-scope cache (NOT request-scoped -- D-04) is refreshed off-request by the FastAPI
+# lifespan's ``_orphan_refresh_loop`` on a short TTL; the request-scoped /pipeline/stats read is O(1).
+# NO ``asyncio.Lock`` is needed: a single event loop runs the refresher and the readers, and a whole-
+# dict rebind (``_orphan_cache = ...``) between awaits is atomic -- readers see either the old dict or
+# the new one, never a torn partial (per RESEARCH "Don't Hand-Roll" -- no manual locking).
+_ORPHAN_TTL_SECONDS: float = 4.0  # D-01 discretion: < the 5s poll so the cache is at most one tick stale
+_orphan_cache: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}  # seeded safe until first success
+_orphan_cache_expires_at: float = 0.0
+
+
+def get_cached_stage_orphan_counts() -> dict[str, int]:
+    """Return an O(1) COPY of the module-scope orphan-count cache (D-04). No session, no DB.
+
+    Returns a distinct ``dict`` so a caller mutating the return can never corrupt the module cache.
+    This is the hot-path reader the /pipeline/stats poll uses instead of the full derivation.
+    """
+    return dict(_orphan_cache)
+
+
+async def refresh_stage_orphan_counts() -> dict[str, int]:
+    """Recompute the orphan counts off-request and rebind the module cache on SUCCESS ONLY (D-03).
+
+    Opens its OWN ``async_session`` (independent of any request session), runs the RAISING
+    :func:`_compute_stage_orphan_counts`, and rebinds ``_orphan_cache`` (+ its TTL stamp) only when
+    the compute succeeds. On ANY exception it propagates the error -- the background
+    ``_orphan_refresh_loop`` swallows + logs it -- leaving the prior known-good value intact so a
+    transient DB hiccup never poisons the badge to all-zeros (D-03).
+    """
+    global _orphan_cache, _orphan_cache_expires_at
+    from phaze.database import async_session  # noqa: PLC0415 -- deferred: keeps the agent-worker import boundary intact
+
+    async with async_session() as session:
+        computed = await _compute_stage_orphan_counts(session)
+    # Whole-dict rebind is atomic between awaits (no Lock needed -- see module comment above).
+    _orphan_cache = computed
+    _orphan_cache_expires_at = time.monotonic() + _ORPHAN_TTL_SECONDS
+    return computed
 
 
 # Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
