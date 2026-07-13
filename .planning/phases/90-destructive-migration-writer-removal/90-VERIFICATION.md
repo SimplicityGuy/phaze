@@ -1,9 +1,14 @@
 ---
 phase: 90-destructive-migration-writer-removal
 verified: 2026-07-13T05:58:55Z
-status: human_needed
+status: passed
 score: 9/9 must-haves verified
 overrides_applied: 0
+# Code goal achieved and verified 9/9. The sole outstanding item — the migration-039
+# real-corpus rehearsal — is an operator runbook step against production data that cannot
+# run in-repo; it is externalized to 90-HUMAN-UAT.md as a PRE-DEPLOY gate (blocks deploy,
+# not merge), matching the established Phase 79 / Phase 85 convention (VERIFICATION passed +
+# HUMAN-UAT for the live/operator item). Retained below for traceability.
 human_verification:
   - test: "Migration rehearsal against a real-corpus restore (ROADMAP success criterion 3)"
     expected: "Restore a real prod snapshot, apply 032-038, run shadow-compare green on the drained corpus, run 039, assert files.state/ix_files_state gone and files_state_archive row count matches the pre-drop file count, downgrade, assert durable states restored verbatim, record lock-acquisition/DDL timing."
@@ -14,7 +19,7 @@ human_verification:
 
 **Phase Goal:** The gated, last, highest-risk step — after the shadow-compare is green on the live corpus and the cloud-push lanes are drained/quiesced, drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, and remove the remaining `.state=` writers (readers before writers, always).
 **Verified:** 2026-07-13T05:58:55Z
-**Status:** human_needed
+**Status:** passed — code goal achieved 9/9; the one operator rehearsal (migration-039 real-corpus restore) is externalized to `90-HUMAN-UAT.md` as a pre-deploy gate (blocks deploy, not merge), per the Phase 79 / Phase 85 convention.
 **Re-verification:** No — initial verification
 
 This phase was delivered across four plans: 90-01 (PR-A, readers-first cutover), 90-02 (PR-B, writer removal), 90-03 (PR-C migration, partial — Task 3 split), 90-04 (PR-C finale — model/enum retirement + shadow_compare removal + test migration + D-08 guard). Verified as a combined unit per the phase's declared execution shape.
