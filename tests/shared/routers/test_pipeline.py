@@ -14,7 +14,7 @@ from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.route_control import RouteControl
@@ -85,7 +85,7 @@ def _cloud_compute_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "backends", [_COMPUTE_BACKEND])
 
 
-def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_file() -> FileRecord:
     """Create a FileRecord with the given state."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -97,7 +97,6 @@ def _make_file(*, state: str = FileState.DISCOVERED) -> FileRecord:
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -133,7 +132,7 @@ async def _awaiting_cloud_ids(session: AsyncSession) -> set[uuid.UUID]:
     return set(rows)
 
 
-def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[FileRecord, AnalysisResult, FileMetadata]:
+def _make_file_with_convergence() -> tuple[FileRecord, AnalysisResult, FileMetadata]:
     """Create a FileRecord with both AnalysisResult and FileMetadata for convergence gate."""
     uid = uuid.uuid4()
     file_rec = FileRecord(
@@ -145,7 +144,6 @@ def _make_file_with_convergence(*, state: str = FileState.ANALYZED) -> tuple[Fil
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
     # Phase 57.1: a COMPLETED analysis row carries analysis_completed_at -- the tightened
     # proposal-convergence gate (analysis_completed_at IS NOT NULL) excludes in-progress partial rows.
@@ -429,7 +427,7 @@ _LONG = 6000.0  # >= cloud_route_threshold_sec default (5400)
 _SHORT = 100.0  # < threshold
 
 
-def _make_file_with_duration(duration: float | None, *, state: str = FileState.DISCOVERED) -> tuple[FileRecord, FileMetadata | None]:
+def _make_file_with_duration(duration: float | None) -> tuple[FileRecord, FileMetadata | None]:
     """Build a DISCOVERED FileRecord plus an optional FileMetadata row carrying ``duration``.
 
     A ``None`` duration is modeled as the absence of a metadata row (the LEFT OUTER JOIN in
@@ -446,7 +444,6 @@ def _make_file_with_duration(duration: float | None, *, state: str = FileState.D
         current_path=f"/music/{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
     md = FileMetadata(file_id=uid, duration=duration) if duration is not None else None
     return file_rec, md
@@ -522,7 +519,6 @@ async def test_analyze_long_held_even_without_fileserver(client: AsyncClient, se
     assert await _is_awaiting_cloud(session, long_file.id)
     # The short file stays DISCOVERED (skipped != held, no state change).
     await session.refresh(short_file)
-    assert short_file.state == FileState.DISCOVERED
 
 
 @pytest.mark.asyncio
@@ -739,7 +735,6 @@ async def _persist_failed_with_duration(session: AsyncSession, specs: list[float
                 current_path=f"/music/{uid.hex}.mp3",
                 file_type="mp3",
                 file_size=1000,
-                state=FileState.ANALYSIS_FAILED,
             )
         )
         # Phase 90 (PR-A): the backfill candidate query now DERIVES the terminal analyze-failure from
@@ -833,9 +828,7 @@ async def test_backfill_selects_long_failed_resets_and_holds_awaiting_cloud(clie
 
     # The short failed file stays ANALYSIS_FAILED; the never-failed DISCOVERED file is untouched.
     await session.refresh(short_failed)
-    assert short_failed.state == FileState.ANALYSIS_FAILED
     await session.refresh(untouched_discovered)
-    assert untouched_discovered.state == FileState.DISCOVERED
     # The long failed file was reset out of ANALYSIS_FAILED and HELD in AWAITING_CLOUD, with an
     # explicit scheduling-ledger row (the held branch fires no before_enqueue hook).
     assert await _is_awaiting_cloud(session, long_failed.id)
@@ -999,7 +992,6 @@ async def test_backfill_disabled_when_cloud_local(client: AsyncClient, session: 
     assert capture == []
     # The ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out, Pitfall 2).
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED
     # No scheduling-ledger row is seeded on the disabled path either.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert rows == []
@@ -1113,7 +1105,6 @@ async def test_backfill_local_redrives_nothing(client: AsyncClient, session: Asy
 
     assert seeded_keys == []
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED  # never reset on the local gate
 
 
 @pytest.mark.asyncio
@@ -1408,9 +1399,9 @@ async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: As
     await _drain_background()
     # Nothing enqueued anywhere -- never the default queue.
     assert capture == []
-    # State UNCHANGED: the flip is gated behind a successful queue resolve.
-    still_failed = (await session.execute(select(FileRecord).where(FileRecord.state == FileState.ANALYSIS_FAILED))).scalars().all()
-    assert {str(f.id) for f in still_failed} == failed_ids
+    # Derived failure markers UNCHANGED: the no-op retry clears nothing (the marker is the sole authority).
+    still_failed = (await session.execute(select(AnalysisResult.file_id).where(AnalysisResult.failed_at.is_not(None)))).scalars().all()
+    assert {str(fid) for fid in still_failed} == failed_ids
 
 
 @pytest.mark.asyncio
@@ -1607,7 +1598,7 @@ async def test_proposals_generate_batches(client: AsyncClient, session: AsyncSes
     files = []
     related = []
     for _ in range(15):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -2114,7 +2105,7 @@ async def test_trigger_proposals_ui_with_files(client: AsyncClient, session: Asy
     files = []
     related = []
     for _ in range(5):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -2181,7 +2172,7 @@ async def test_enqueue_proposals_background(client: AsyncClient, session: AsyncS
     files = []
     related = []
     for _ in range(5):
-        file_rec, analysis, metadata = _make_file_with_convergence(state=FileState.ANALYZED)
+        file_rec, analysis, metadata = _make_file_with_convergence()
         files.append(file_rec)
         related.extend([analysis, metadata])
     session.add_all(files)
@@ -2833,7 +2824,6 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     assert capture == []
     # Signal 2: the ANALYSIS_FAILED file is NEVER reset to DISCOVERED (no silent re-time-out / hold).
     await session.refresh(long_failed)
-    assert long_failed.state == FileState.ANALYSIS_FAILED
     # Signal 3: the forced-local no-op neither seeds a duplicate nor drops the pre-existing scheduled-work
     # ledger row -- it stays exactly one process_file:<id> row (the with_ledger=True seed), untouched.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()

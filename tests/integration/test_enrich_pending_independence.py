@@ -29,9 +29,9 @@ assertion proves the derived reader IGNORES it. Run with real PG via ``just test
 on port 5433 (export ``TEST_DATABASE_URL``).
 
 NOTE (cloud status vocabulary, execution finding): the plan's A1 cells named cloud statuses
-``'pushing'``/``'pushed'``; those are ``FileState`` members, NOT ``cloud_job`` statuses (the
+``'pushing'``/``'pushed'``; those were scalar state names, NOT ``cloud_job`` statuses (the
 ``ck_cloud_job_status_enum`` CHECK forbids them). The real ``cloud_job`` lifecycle for a compute burst
-is ``awaiting -> submitted (state PUSHING) -> succeeded (state PUSHED)``; the Kueue burst adds
+is ``awaiting -> submitted -> succeeded``; the Kueue burst adds
 ``uploading/uploaded/running``. This file seeds the REAL active statuses (every non-``failed`` member)
 so the CHECK constraint accepts the rows.
 """
@@ -54,7 +54,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import (
@@ -88,23 +88,15 @@ _LEGACY_AGENT_ID = "test-fileserver"
 
 _STAGES = ("metadata", "fingerprint", "analyze")
 
-# The dual-write ``state`` the real writer would stamp for each completed stage -- written alongside the
-# output row so every assertion proves the derived reader IGNORES ``state`` (independence from state).
-_STAGE_STATE: dict[str, FileState] = {
-    "metadata": FileState.METADATA_EXTRACTED,
-    "fingerprint": FileState.FINGERPRINTED,
-    "analyze": FileState.ANALYZED,
-}
-
 # Every ACTIVE (non-terminal-failed) cloud_job status: a file carrying one of these is being handled by
 # the cloud path and must NEVER be a local analyze candidate (A1 double-dispatch guard).
 _ACTIVE_CLOUD_STATUSES = [
     CloudJobStatus.AWAITING.value,
     CloudJobStatus.UPLOADING.value,
     CloudJobStatus.UPLOADED.value,
-    CloudJobStatus.SUBMITTED.value,  # FileState PUSHING
+    CloudJobStatus.SUBMITTED.value,  # (compute: dispatched / in-flight)
     CloudJobStatus.RUNNING.value,
-    CloudJobStatus.SUCCEEDED.value,  # FileState PUSHED (compute: analysis still running on the agent)
+    CloudJobStatus.SUCCEEDED.value,  # (compute: analysis still running on the agent)
 ]
 
 
@@ -139,7 +131,7 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
     await engine.dispose()
 
 
-async def _file(session: AsyncSession, *, file_type: str = "mp3", state: str = FileState.DISCOVERED.value) -> FileRecord:
+async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:
     """Seed a bare FileRecord (``file_type`` music by default); return the ORM object (id is set)."""
     fid = uuid.uuid4()
     rec = FileRecord(
@@ -151,7 +143,6 @@ async def _file(session: AsyncSession, *, file_type: str = "mp3", state: str = F
         current_path=f"/media/{fid}.{file_type}",
         file_type=file_type,
         file_size=1234,
-        state=state,
     )
     session.add(rec)
     await session.flush()
@@ -168,7 +159,6 @@ async def _complete(session: AsyncSession, stage: str, file: FileRecord) -> None
         session.add(AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC)))  # DERIV-03
     else:  # pragma: no cover - guarded by _STAGES
         raise AssertionError(stage)
-    file.state = _STAGE_STATE[stage].value  # dual-write reality: the derived reader must ignore this
     await session.flush()
 
 
@@ -213,7 +203,6 @@ async def test_enrich_pending_sets_are_independent(db_session: AsyncSession, ord
 async def test_metadata_done_state_advanced_still_in_analyze_set(db_session: AsyncSession) -> None:
     file = await _file(db_session)
     db_session.add(FileMetadata(file_id=file.id, failed_at=None))
-    file.state = FileState.METADATA_EXTRACTED.value  # dual-write reality
     await db_session.flush()
 
     sets = await _pending_ids(db_session)
@@ -230,7 +219,6 @@ async def test_analyzed_but_unfingerprinted_still_in_fingerprint_set(db_session:
     file = await _file(db_session)
     db_session.add(FileMetadata(file_id=file.id, failed_at=None))
     db_session.add(AnalysisResult(file_id=file.id, analysis_completed_at=datetime.now(UTC)))
-    file.state = FileState.ANALYZED.value  # dual-write reality: state advanced past METADATA_EXTRACTED
     await db_session.flush()
 
     sets = await _pending_ids(db_session)
@@ -244,7 +232,7 @@ async def test_analyzed_but_unfingerprinted_still_in_fingerprint_set(db_session:
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("status", _ACTIVE_CLOUD_STATUSES)
 async def test_cloud_dispatched_file_absent_from_analyze_set(db_session: AsyncSession, status: str) -> None:
-    file = await _file(db_session, state=FileState.PUSHING.value)  # dual-write reality (cloud in-flight state)
+    file = await _file(db_session)  # membership is driven by the active cloud_job row seeded below
     db_session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=status))
     await db_session.flush()
 

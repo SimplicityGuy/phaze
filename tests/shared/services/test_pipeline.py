@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
-from phaze.models.file import FileRecord, FileState
+from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRecord:
+def _failed_file(i: int) -> FileRecord:
     """Build a FileRecord seed in the given state (default ANALYSIS_FAILED)."""
     return FileRecord(
         agent_id="test-fileserver",
@@ -71,7 +71,6 @@ def _failed_file(i: int, state: FileState = FileState.ANALYSIS_FAILED) -> FileRe
         current_path=f"/music/failed{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -105,7 +104,7 @@ async def test_get_analysis_failed_count_happy_path(session: AsyncSession) -> No
     ``failed_clause(Stage.ANALYZE)``. The ANALYZED file carries a completed marker (no ``failed_at``)
     and is excluded.
     """
-    a, b, done = _failed_file(0), _failed_file(1), _failed_file(2, FileState.ANALYZED)
+    a, b, done = _failed_file(0), _failed_file(1), _failed_file(2)
     session.add_all([a, b, done])
     await session.flush()
     session.add_all([_failed_analysis_for(a.id), _failed_analysis_for(b.id), _completed_analysis_for(done.id)])
@@ -122,7 +121,7 @@ async def test_get_analysis_failed_files_returns_failed_rows(session: AsyncSessi
     """
     a = _failed_file(0)
     b = _failed_file(1)
-    c = _failed_file(2, FileState.DISCOVERED)
+    c = _failed_file(2)
     session.add_all([a, b, c])
     await session.flush()
     session.add_all([_failed_analysis_for(a.id), _failed_analysis_for(b.id)])
@@ -147,14 +146,6 @@ async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
             return None
 
     assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_analysis_failed_not_in_pipeline_stages() -> None:
-    """ANALYSIS_FAILED is its OWN bucket — never added to the linear PIPELINE_STAGES (D-02)."""
-    from phaze.services.pipeline import PIPELINE_STAGES
-
-    assert FileState.ANALYSIS_FAILED not in PIPELINE_STAGES
 
 
 @pytest.mark.asyncio
@@ -767,7 +758,7 @@ async def test_get_match_pending_tracklists_excludes_discogs_reachable(session: 
 # ---------------------------------------------------------------------------
 
 
-def _make_pipeline_file(*, file_type: str = "mp3", state: str = FileState.DISCOVERED) -> FileRecord:
+def _make_pipeline_file(*, file_type: str = "mp3") -> FileRecord:
     """Build a fully-populated FileRecord row for the pending-set helper tests."""
     uid = uuid.uuid4()
     return FileRecord(
@@ -779,15 +770,14 @@ def _make_pipeline_file(*, file_type: str = "mp3", state: str = FileState.DISCOV
         current_path=f"/music/{uid.hex}.{file_type}",
         file_type=file_type,
         file_size=1000,
-        state=state,
     )
 
 
 @pytest.mark.asyncio
 async def test_get_metadata_pending_files_returns_only_music_video(session: AsyncSession) -> None:
     """Metadata pending = every music/video file (any state); a non-music file_type is excluded."""
-    music = _make_pipeline_file(file_type="mp3", state=FileState.DISCOVERED)
-    other = _make_pipeline_file(file_type="txt", state=FileState.DISCOVERED)
+    music = _make_pipeline_file(file_type="mp3")
+    other = _make_pipeline_file(file_type="txt")
     session.add_all([music, other])
     await session.flush()
 
@@ -823,7 +813,7 @@ async def test_get_proposal_pending_batches_sorts_then_chunks(session: AsyncSess
     between the manual trigger and recovery (42-RESEARCH Pitfall 2). Insert in arbitrary order and
     assert the batches are globally sorted and chunked by batch_size.
     """
-    files = [_make_pipeline_file(state=FileState.ANALYZED) for _ in range(3)]
+    files = [_make_pipeline_file() for _ in range(3)]
     session.add_all(files)
     await session.flush()
     related: list[object] = []
@@ -846,7 +836,7 @@ async def test_get_proposal_pending_batches_sorts_then_chunks(session: AsyncSess
 @pytest.mark.asyncio
 async def test_get_proposal_pending_batches_excludes_files_missing_metadata_or_analysis(session: AsyncSession) -> None:
     """Convergence gate: a file with ONLY metadata (no analysis) is NOT batched."""
-    only_metadata = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    only_metadata = _make_pipeline_file()
     session.add(only_metadata)
     await session.flush()
     session.add(FileMetadata(file_id=only_metadata.id, artist="A", title="T"))
@@ -868,7 +858,7 @@ async def test_get_proposal_pending_batches_excludes_partial_analysis_row(sessio
     Positive control: once analysis_completed_at is stamped, the SAME file appears -- proving the
     tighten did not over-exclude legitimate completed files.
     """
-    pending = _make_pipeline_file(state=FileState.METADATA_EXTRACTED)
+    pending = _make_pipeline_file()
     session.add(pending)
     await session.flush()
     session.add(FileMetadata(file_id=pending.id, artist="A", title="T"))
@@ -899,8 +889,8 @@ async def test_get_proposal_pending_batches_excludes_already_proposed_file(sessi
     it still carries its converging metadata + completed-analysis rows. A twin file with no proposal is
     the positive control that appears.
     """
-    proposed = _make_pipeline_file(state=FileState.ANALYZED)
-    unproposed = _make_pipeline_file(state=FileState.ANALYZED)
+    proposed = _make_pipeline_file()
+    unproposed = _make_pipeline_file()
     session.add_all([proposed, unproposed])
     await session.flush()
     for f in (proposed, unproposed):
@@ -926,10 +916,10 @@ async def test_get_analyze_stage_files_derives_flags_from_markers(session: Async
     file with NO analysis/cloud_job (must be absent). Asserts membership + the derived ``completed`` /
     ``analysis_failed`` / ``awaiting_cloud`` flags, and that no raw ``state`` key is exposed.
     """
-    done_f = _make_pipeline_file(state=FileState.DISCOVERED)
-    failed_f = _make_pipeline_file(state=FileState.DISCOVERED)
-    awaiting_f = _make_pipeline_file(state=FileState.DISCOVERED)
-    off_stage = _make_pipeline_file(state=FileState.DISCOVERED)
+    done_f = _make_pipeline_file()
+    failed_f = _make_pipeline_file()
+    awaiting_f = _make_pipeline_file()
+    off_stage = _make_pipeline_file()
     session.add_all([done_f, failed_f, awaiting_f, off_stage])
     await session.flush()
     session.add(_completed_analysis_for(done_f.id, fine_done=40, fine_total=40))
@@ -941,7 +931,7 @@ async def test_get_analyze_stage_files_derives_flags_from_markers(session: Async
     by_id = {r["file_id"]: r for r in rows}
 
     assert str(off_stage.id) not in by_id, "a file with no analysis/cloud_job marker is not in the Analyze stage"
-    assert "state" not in by_id[str(done_f.id)], "the raw FileState key must be gone (derived flags replace it)"
+    assert "state" not in by_id[str(done_f.id)], "the raw scalar-state key must be gone (derived flags replace it)"
 
     assert by_id[str(done_f.id)]["completed"] is True
     assert by_id[str(done_f.id)]["analysis_failed"] is False
@@ -1162,7 +1152,6 @@ def _recon_file(agent_id: str, i: int) -> FileRecord:
         current_path=f"/music/{agent_id}/{i}-{uid.hex}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=FileState.DISCOVERED,
         agent_id=agent_id,
     )
 
@@ -1371,7 +1360,7 @@ async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> 
 # ---------------------------------------------------------------------------
 
 
-def _file(i: int, state: FileState) -> FileRecord:
+def _file(i: int) -> FileRecord:
     """Build a FileRecord seed in the given state (unique hash/path per ``i``)."""
     return FileRecord(
         agent_id="test-fileserver",
@@ -1382,7 +1371,6 @@ def _file(i: int, state: FileState) -> FileRecord:
         current_path=f"/music/dur{i}.mp3",
         file_type="mp3",
         file_size=1000,
-        state=state,
     )
 
 
@@ -1416,7 +1404,7 @@ async def _seed_process_file_ledger(session: AsyncSession, *files: FileRecord) -
 @pytest.mark.asyncio
 async def test_get_discovered_files_with_duration_joins_duration(session: AsyncSession) -> None:
     """Each DISCOVERED file is paired with its joined FileMetadata.duration."""
-    f = _file(0, FileState.DISCOVERED)
+    f = _file(0)
     session.add(f)
     await session.flush()
     session.add(_metadata_for(f.id, 6000.0))
@@ -1433,7 +1421,7 @@ async def test_get_discovered_files_with_duration_joins_duration(session: AsyncS
 @pytest.mark.asyncio
 async def test_get_discovered_files_with_duration_outerjoin_null(session: AsyncSession) -> None:
     """A DISCOVERED file with no metadata row still appears, with duration None (LEFT JOIN)."""
-    f = _file(1, FileState.DISCOVERED)
+    f = _file(1)
     session.add(f)
     await session.commit()
 
@@ -1448,7 +1436,7 @@ async def test_get_discovered_files_with_duration_outerjoin_null(session: AsyncS
 @pytest.mark.asyncio
 async def test_get_awaiting_cloud_count_happy_path(session: AsyncSession) -> None:
     """Counts exactly the genuinely-parked awaiting cloud_job rows; other states are excluded (Phase 83, D-15)."""
-    a, b, discovered = _file(4, FileState.AWAITING_CLOUD), _file(5, FileState.AWAITING_CLOUD), _file(6, FileState.DISCOVERED)
+    a, b, discovered = _file(4), _file(5), _file(6)
     session.add_all([a, b, discovered])
     await session.commit()
     # Phase 83: the count derives from cloud_job(status='awaiting'), not FileRecord.state -- the two held
@@ -1480,7 +1468,7 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
 
 async def _seed_cloud_job(session: AsyncSession, file_index: int, status: CloudJobStatus) -> None:
     """Seed a ``(FileRecord, cloud_job)`` pair; the cloud_job carries ``status`` (Phase 90 D-12)."""
-    f = _file(file_index, FileState.DISCOVERED)
+    f = _file(file_index)
     session.add(f)
     await session.flush()
     session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, status=status.value))
@@ -1556,10 +1544,10 @@ async def test_backfill_candidates_filters_by_state_and_duration(session: AsyncS
     """
     threshold = 5400
 
-    long_failed = _file(7, FileState.ANALYSIS_FAILED)
-    short_failed = _file(8, FileState.ANALYSIS_FAILED)
-    null_failed = _file(9, FileState.ANALYSIS_FAILED)
-    long_other = _file(10, FileState.DISCOVERED)
+    long_failed = _file(7)
+    short_failed = _file(8)
+    null_failed = _file(9)
+    long_other = _file(10)
     session.add_all([long_failed, short_failed, null_failed, long_other])
     await session.flush()
     session.add_all(
@@ -1590,7 +1578,7 @@ async def test_backfill_candidates_filters_by_state_and_duration(session: AsyncS
 async def test_backfill_candidates_boundary_is_inclusive(session: AsyncSession) -> None:
     """A file exactly at the threshold qualifies (>=, not >)."""
     threshold = 5400
-    at_threshold = _file(11, FileState.ANALYSIS_FAILED)
+    at_threshold = _file(11)
     session.add(at_threshold)
     await session.flush()
     session.add(_metadata_for(at_threshold.id, float(threshold)))
