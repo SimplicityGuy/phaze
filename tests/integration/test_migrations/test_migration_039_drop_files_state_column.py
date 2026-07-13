@@ -34,6 +34,7 @@ migration harness silently talks to the wrong (5432) DB and the test fails like 
 import asyncio
 import importlib.util
 from pathlib import Path
+import re
 
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
@@ -151,11 +152,18 @@ def test_migration_does_not_import_phaze() -> None:
 
 
 def test_no_f_string_interpolated_sql() -> None:
-    """All operands are fixed literals bound in ``sa.text`` constants -- never an f-string SQL surface (T-90-sqli)."""
+    """All SQL operands are fixed literals in ``sa.text`` constants -- never an f-string SQL surface (T-90-sqli).
+
+    Precise, not a blunt f-string ban: error-message f-strings are legitimate. This flags a triple-quoted
+    f-string (a multi-line SQL f-string) OR a single-line f-string that embeds a SQL command keyword (an
+    interpolated-operand SQL surface). Every syntactic form is covered (multi-line + single-line).
+    """
     body = _MIGRATION_PATH.read_text(encoding="utf-8")
-    assert "f'''" not in body and 'f"""' not in body
-    # No single/double-quoted f-string opens a SQL literal either.
-    assert 'f"' not in body.replace('f"""', "") or "SELECT" not in body  # defensive: no f"...SELECT..." forms
+    assert "f'''" not in body and 'f"""' not in body, "no triple-quoted f-string SQL"
+    sql_kw = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|SET LOCAL)\b")
+    fstring = re.compile(r"""f(?:"|')""")
+    offenders = [ln.strip() for ln in body.splitlines() if fstring.search(ln) and sql_kw.search(ln)]
+    assert not offenders, f"f-string SQL surface (interpolated operand) found: {offenders}"
 
 
 def test_archive_table_named_consistently() -> None:
