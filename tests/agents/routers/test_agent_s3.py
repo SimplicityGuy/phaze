@@ -20,7 +20,6 @@ S3 backend; the FakeTaskRouter stands in for the per-agent queue.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -28,7 +27,6 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -46,7 +44,7 @@ from tests._queue_fakes import FakeQueue, FakeTaskRouter
 
 if TYPE_CHECKING:
     import pytest
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.agent import Agent
 
@@ -763,77 +761,10 @@ async def test_upload_failed_over_cap_null_guard_no_file_is_full_noop(
     assert await _ledger_row(session, f"s3_upload:{file_id}") is not None  # no ledger clear on the no-op
 
 
-async def test_failed_concurrent_under_cap_no_lost_update(
-    seed_test_agent: tuple[Agent, str],
-    session: AsyncSession,
-    async_engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
-    backends_toml_env: Any,
-) -> None:
-    """D-11 (T-83-02): two concurrent under-cap /upload-failed increment ``s3_upload_attempt`` to EXACTLY 2.
-
-    Mirrors the /mismatch T-73-13 donor. The attempt RMW on the ``s3_upload:<file_id>`` ledger payload
-    must be serialized by a ``pg_advisory_xact_lock(hashtext(ledger_key))`` (NOT a row lock -- that would
-    self-deadlock against ``stage_file_to_s3``'s ``before_enqueue`` hook upserting the same row). Request A
-    holds the advisory lock across its transaction (parked at ``redrive_upload``) while request B blocks on
-    it, so B reads A's committed value and adds the second increment. Without the advisory lock both read 0
-    and write 1 (a lost update -> final 1); with it the persisted counter is exactly 2, so no file can
-    silently exceed its bounded upload budget.
-    """
-    agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, backends_toml_env)
-    file_id = await _seed_file(session, agent.id)
-    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
-    await _seed_ledger(session, file_id, attempt=0)  # both requests take the under-cap re-drive path (cap 3)
-    # End the seeding session's snapshot so the final read sees the concurrent commits.
-    await session.rollback()
-
-    reached = asyncio.Event()  # set once request A is parked mid-transaction (advisory lock held)
-    proceed = asyncio.Event()  # released by the test to let request A finish + drop the lock
-
-    async def _gated_redrive(_sess: AsyncSession, _file: FileRecord, router: Any) -> None:
-        # Park ONLY request A (its router carries the events) so A holds the advisory lock open while B
-        # is launched; request B's plain router runs straight through once it acquires the lock.
-        park_reached = getattr(router, "park_reached", None)
-        park_proceed = getattr(router, "park_proceed", None)
-        if park_reached is not None and park_proceed is not None:
-            park_reached.set()
-            await park_proceed.wait()
-
-    monkeypatch.setattr(cloud_staging, "redrive_upload", _gated_redrive)
-
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as session_a, factory() as session_b:
-        router_a = FakeTaskRouter()
-        router_a.park_reached = reached  # type: ignore[attr-defined]
-        router_a.park_proceed = proceed  # type: ignore[attr-defined]
-        client_a = _make_client(session_a, router_a, raw_token)
-        router_b = FakeTaskRouter()
-        client_b = _make_client(session_b, router_b, raw_token)
-
-        async with client_a, client_b:
-            task_a = asyncio.create_task(client_a.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "a"}))
-            # Wait until A is parked at redrive_upload with the advisory lock held in its open transaction.
-            await asyncio.wait_for(reached.wait(), timeout=10.0)
-
-            # Launch B: it must block on A's advisory lock at the attempt-RMW read (fixed code). Give it
-            # time to reach and queue on the lock (or, on unfixed code, to read the stale 0 and race ahead).
-            task_b = asyncio.create_task(client_b.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "b"}))
-            await asyncio.sleep(0.25)
-
-            # Release A: it writes s3_upload_attempt=1 and commits, dropping the lock so B reads 1 -> writes 2.
-            proceed.set()
-            resp_a, resp_b = await asyncio.gather(task_a, task_b)
-
-    assert resp_a.status_code == 200, resp_a.text
-    assert resp_b.status_code == 200, resp_b.text
-    assert resp_a.json()["cleared"] is False
-    assert resp_b.json()["cleared"] is False
-
-    # The advisory-locked RMW applied each increment exactly once: no lost update.
-    row = await _ledger_row(session, f"s3_upload:{file_id}")
-    assert row is not None
-    assert row.payload.get("s3_upload_attempt") == 2, "two concurrent under-cap /upload-failed must increment s3_upload_attempt to exactly 2"
+# NOTE (92-04): test_failed_concurrent_under_cap_no_lost_update moved to
+# tests/integration/test_agent_s3_concurrency.py — its advisory-locked RMW needs two INDEPENDENT
+# committed-visible connections, which the hermetic single-connection create_savepoint `session`
+# fixture cannot provide.
 
 
 async def test_failed_unauthenticated_returns_401(session: AsyncSession) -> None:
