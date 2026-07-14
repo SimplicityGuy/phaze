@@ -136,3 +136,70 @@ The returned dict is byte-identical on a QUIESCENT DB (all tests + this quiescen
 identical shape/values). Under concurrent writes the independent per-read sessions may reflect MVCC
 snapshots microseconds apart — acceptable for a 5 s dashboard poll. This is NOT a claim of strict
 byte-identity under live writes; the T-92-02-SKEW disposition (accept) documents it.
+
+---
+
+## CLEAN-02 D-08 per-bucket gate
+
+The CLEAN-02 acceptance gate (D-08): the whole suite must pass GREEN under the project's per-bucket
+CI isolation standard — every bucket in `tests/buckets.json` run cold, in its own process. This proves
+the 92-03 `create_savepoint` rewrite + 92-04 verify-site migration + production fan-out routing +
+CLEAN-01 parallelization + CLEAN-03 comment edits all coexist hermetically, with no cross-test state
+leak, `pk_agents` collision, or zero/stale fan-out read.
+
+### Environment (reproducible)
+
+| Item | Value |
+|------|-------|
+| Test DB (SQLAlchemy) | `postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_test` (`TEST_DATABASE_URL`) |
+| Migrations test DB | `postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_migrations_test` (`MIGRATIONS_TEST_DATABASE_URL`) |
+| Redis (SAQ cache/broker handle) | `redis://localhost:6380/0` (`PHAZE_REDIS_URL`) |
+| Containers | `phaze-test-db` (host port 5433), `phaze-test-redis` (host port 6380) |
+| Runner | `just test-bucket <name>` (== `pytest tests/<name>`), each bucket cold in its own process |
+
+Note the **5433** test-DB port (not the 5432 default, not the 5545 perf-DB port) — RESEARCH Pitfall 5.
+No `--lf`/watch-mode/`-p no:logging` flags were used (each bucket ran clean from cold).
+
+### Per-bucket results
+
+| Bucket | Result | Verdict |
+|--------|--------|---------|
+| discovery | 172 passed | ✅ green |
+| metadata | 93 passed | ✅ green |
+| fingerprint | 84 passed | ✅ green |
+| analyze | 571 passed | ✅ green |
+| identify | 242 passed | ✅ green |
+| review | 444 passed | ✅ green |
+| agents | 460 passed | ✅ green |
+| integration | 248 passed | ✅ green |
+| shared | 1084 passed | ✅ green |
+
+**All 9 buckets exit 0. D-08 gate SATISFIED.**
+
+### Failure classes exercised (and fixed) to reach green
+
+The gate did NOT pass on the first pass — the 92-03 session-scoped-engine conversion exposed four
+latent hermeticity defects (backlogged as DI-92-04-01 / DI-92-04-02, close-out owned by this plan):
+
+1. **`tests/agents` — 5 failures (leaked committed rows).** `tests/agents/cli/test_agents_add.py`'s
+   `test_main_*` cells commit agent rows via a real `create_async_engine` CLI path; under the
+   session-scoped engine (no per-test `drop_all`) they survived into `test_agent_bootstrap.py` and made
+   `ensure_dev_agent` see a non-empty table. Fixed with a self-cleaning `_cleanup_committed_agents`
+   fixture that deletes every agent except the `test-fileserver` FK parent in teardown.
+2. **`tests/integration` — 3 `test_drain_double_dispatch` failures (invisible seed).** The cells seeded
+   via the single-connection `create_savepoint` `session` but `stage_cloud_window` reads through its own
+   pool connections → zero candidates. Migrated to the `committed_db` fixture (committed seed, visible
+   cross-connection), mirroring the 92-04 concurrency-cell move.
+3. **`tests/integration` — `test_lifespan_orphan_task` (unreachable engine).** The module-level `engine`
+   binds to the docker `postgres:5432` default at import (`socket.gaierror` at the lifespan `SELECT 1`);
+   `TEST_DATABASE_URL` never steered it. Fixed by rebinding `phaze.main.engine`/`async_session` to the
+   reachable test DB in the test.
+4. **`tests/integration` — 74 `test_stage_status_equivalence` errors + an ordering cascade (blind FK
+   seed).** The session-scoped `async_engine` seed and several `db_session` fixtures blind-INSERT
+   `test-fileserver`, which collides once `committed_db` re-seeds a committed parent before the seeder
+   runs. Made every such seed idempotent (get-or-insert), matching the guard three sibling fixtures
+   already carried — the suite is now order-independent.
+
+No residual `pk_agents` collision, no surviving-seed-row, and no zero/stale fan-out read remains in any
+bucket. No colima VM-pressure flake was encountered (per-bucket isolation sidesteps whole-suite VM
+pressure, RESEARCH Pitfall 6).
