@@ -128,11 +128,11 @@ async def upsert_files(
         set_={
             "sha256_hash": base_stmt.excluded.sha256_hash,
             "file_size": base_stmt.excluded.file_size,
-            # Phase 77 (MIG-03 / D-08): NEVER overwrite `state` on conflict -- mirror of the
-            # services/ingestion.py fix. An agent rescan of an already-advanced file must not
-            # regress its pipeline progress to DISCOVERED. New-file INSERT still stamps
-            # state=DISCOVERED via the record dict above (data["state"]); only the ON CONFLICT
-            # overwrite is removed. AUTH-01 unchanged (agent_id still from the auth dep).
+            # An agent rescan of an existing file refreshes only its content facts
+            # (hash/size/batch/file_type); identity columns are never touched -- the
+            # conflict target (agent_id, original_path) and the server-generated `id`
+            # are preserved, so a rescan can never re-key or duplicate a known file.
+            # AUTH-01 unchanged (agent_id still stamped from the auth dep, never body).
             "batch_id": base_stmt.excluded.batch_id,
             "file_type": base_stmt.excluded.file_type,
         },

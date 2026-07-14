@@ -562,8 +562,6 @@ class KueueBackend(_BaseBackend):
                 tally["reconciled"] += 1
                 # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/
                 # delete_job inside reconcile targets the file's own cluster.
-                # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/
-                # delete_job inside reconcile targets the file's own cluster.
                 await _reconcile_one(reconcile_ctx, session, cloud_job, cap, tally, self._kube())
             except Exception:
                 # Per-row guard: a single bad row never aborts the tick; roll back the partial mutation.
