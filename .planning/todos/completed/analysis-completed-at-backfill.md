@@ -48,3 +48,6 @@ SELECT count(*) FROM files f WHERE f.state='analyzed'
                   WHERE a.file_id=f.id AND a.analysis_completed_at IS NOT NULL);
 COMMIT;
 ```
+
+---
+**RESOLVED (2026-07-14):** already shipped as migration `036_backfill_analysis_completed_at.py` (Phase 80, READ-03/D-13), live in prod at Alembic 039. Stamps `analysis.analysis_completed_at = updated_at` for `state=analyzed` NULL rows, NAND-guarded + idempotent. Retired from pending during /gsd-new-milestone 2026.7.7 scoping.
