@@ -282,7 +282,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
-| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 3/5 | In Progress|  |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 4/5 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -705,7 +705,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 92-04-PLAN.md — CLEAN-02 migration: rebind the 21 independent-verify-session call sites (13 files, analyze/review/agents/discovery) to the shared connection-bound verify fixture [Wave 3]
+- [x] 92-04-PLAN.md — CLEAN-02 migration: rebind the 21 independent-verify-session call sites (13 files, analyze/review/agents/discovery) to the shared connection-bound verify fixture [Wave 3]
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
