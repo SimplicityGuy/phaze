@@ -100,9 +100,16 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
-        # The files.agent_id FK (ON DELETE RESTRICT) needs the default agent to exist.
-        session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
-        await session.flush()
+        # The files.agent_id FK (ON DELETE RESTRICT) needs the default agent to exist. Seed it
+        # IDEMPOTENTLY: under 92-03's session-scoped engine the shared ``async_engine`` fixture (and
+        # ``committed_db``'s teardown re-seed) COMMIT a ``test-fileserver`` Agent for the whole session,
+        # so a blind ``INSERT`` collided on ``pk_agents`` whenever an earlier bucket cell instantiated
+        # that fixture -- the 74 setup ERRORs seen only in the FULL integration bucket (the file passes
+        # 59/59 in isolation, where no committed row exists). Get-or-insert satisfies the FK either way:
+        # reuse the committed parent when present, else seed our own within this rolled-back transaction.
+        if await session.get(Agent, _LEGACY_AGENT_ID) is None:
+            session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+            await session.flush()
         try:
             yield session
         finally:

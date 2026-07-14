@@ -225,8 +225,17 @@ async def async_engine():  # type: ignore[no-untyped-def]
         await conn.run_sync(Base.metadata.create_all)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session_factory() as setup_session:
-        setup_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
-        await setup_session.commit()
+        # Seed the FK-parent fileserver IDEMPOTENTLY. In the ``integration`` bucket the ``committed_db``
+        # fixture (tests/integration/conftest.py) re-seeds a COMMITTED ``test-fileserver`` at teardown by
+        # design (92-04, commit 46d554c4) so later hermetic ``make_file`` calls keep their FK parent. If a
+        # ``committed_db`` test runs BEFORE this session-scoped fixture is first instantiated, that row
+        # already exists and a blind INSERT collides on ``pk_agents`` -- which errored EVERY hermetic
+        # (`session`/`client`) test in the bucket once 92-05 shifted collection order. Get-or-insert makes
+        # the seed order-independent: reuse the committed parent when present, else create it. In every
+        # other (DB-free-of-committed_db) bucket the row never pre-exists, so behaviour is unchanged.
+        if await setup_session.get(Agent, "test-fileserver") is None:
+            setup_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
+            await setup_session.commit()
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

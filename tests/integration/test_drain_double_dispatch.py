@@ -43,6 +43,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
@@ -54,6 +55,21 @@ from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+pytestmark = pytest.mark.integration
+
+
+async def _seed_fk_fileserver(session: AsyncSession) -> None:
+    """Seed the ``test-fileserver`` FK-parent agent that ``_seed_awaiting_file`` targets.
+
+    In the hermetic suite this row is seeded once by the session-scoped ``async_engine`` fixture; here the
+    ``committed_db`` fixture TRUNCATEs at setup (clean slate) and re-seeds it only at teardown, so each test
+    seeds its own committed FK parent. Left INACTIVE (no ``last_seen_at``) so ``select_active_agent`` picks
+    the ``nox`` routing fileserver.
+    """
+    session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
+    await session.commit()
 
 
 # A fixed naive lane-entry timestamp: create_all yields NAIVE created_at/updated_at (models/base.py
@@ -228,8 +244,7 @@ async def _cloud_job_status(session: AsyncSession, file_id: uuid.UUID) -> str | 
 
 @pytest.mark.asyncio
 async def test_sc3_case_a_local_dispatch_not_repicked_on_second_tick(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
+    committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """(a) A held file dispatched to local on tick 1 is excluded on tick 2 by its committed ledger row.
@@ -238,25 +253,35 @@ async def test_sc3_case_a_local_dispatch_not_repicked_on_second_tick(
     to CLOUD). The ``cloud_job(status='awaiting')`` row is NEVER deleted (D-05 conjunct, not deletion),
     yet ``~inflight_clause(ANALYZE)`` -- backed by the committed ``process_file:<id>`` ledger row --
     keeps the file out of the tick-2 candidate set. Dispatched exactly once, to local, never cloud.
+
+    92-05 (DI-92-04-02): migrated from the hermetic ``session``/``async_engine`` fixtures to the
+    ``committed_db`` fixture. ``stage_cloud_window`` reads through ctx-opened pool connections (its own
+    sessionmaker), so under 92-03's single-connection ``create_savepoint`` ``session`` the seeded rows
+    (uncommitted, on the per-test connection) were INVISIBLE to the drain -> zero candidates -> RED. With
+    ``committed_db`` the seed COMMITS and every drain tick's fresh connection reads it, exactly like prod.
     """
+    engine, session_factory = committed_db
     local = _LocalStub(id="local", rank=99, cap=100)  # ledger written in the drain session (commits with the tick)
     cloud = _CloudStub(id="kueue-a", rank=10, cap=50, available=False)
     _patch_backends(monkeypatch, [cloud, local])
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = await _seed_awaiting_file(session)
+    async with session_factory() as session:
+        await _seed_fk_fileserver(session)
+        await seed_active_agent(session, agent_id="nox", kind="fileserver")
+        file = await _seed_awaiting_file(session)
 
     router = DedupFakeTaskRouter()
-    tick1 = await stage_cloud_window(_make_ctx(async_engine, router))
+    tick1 = await stage_cloud_window(_make_ctx(engine, router))
     assert tick1 == {"staged": 1, "skipped": 0}  # dispatched to local this tick
 
     cloud.available = True  # bring cloud ONLINE: a re-pick on tick 2 would land on cloud (rank 10 < 99)
-    tick2 = await stage_cloud_window(_make_ctx(async_engine, router))
+    tick2 = await stage_cloud_window(_make_ctx(engine, router))
     assert tick2 == {"staged": 0, "skipped": 0}  # excluded -> no candidate, nothing dispatched
 
     assert local.dispatched_ids == [file.id]  # exactly once, to local
     assert cloud.dispatched_ids == []  # NEVER cloud
     # The awaiting sidecar row is retained (the conjunct excludes by ~inflight, it does not delete).
-    assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
+    async with session_factory() as session:
+        assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
 
 
 # --- Case (b): rolled-back tick with a committed ledger row (the row-deletion FAILURE case) --------
@@ -264,8 +289,7 @@ async def test_sc3_case_a_local_dispatch_not_repicked_on_second_tick(
 
 @pytest.mark.asyncio
 async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
+    committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """(b) A locally-dispatched file whose drain tick ROLLS BACK is still excluded on tick 2 by the
@@ -277,16 +301,23 @@ async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
     AWAITING_CLOUD, the awaiting row stays). Tick 2 brings cloud ONLINE: the deletion variant would
     have restored a deleted awaiting row and re-picked the file to CLOUD, but the committed ledger row
     alone re-excludes it (``~inflight_clause``). This is the load-bearing D-05 case.
+
+    92-05 (DI-92-04-02): migrated to the ``committed_db`` fixture (see case (a)). The independently-
+    committed ledger row is now a REAL cross-connection commit on the shared engine, exactly as the
+    ``before_enqueue`` hook's own session commits in production.
     """
-    local = _LocalStub(id="local", rank=99, cap=100, ledger_engine=async_engine)  # ledger committed in a SEPARATE session
+    engine, session_factory = committed_db
+    local = _LocalStub(id="local", rank=99, cap=100, ledger_engine=engine)  # ledger committed in a SEPARATE session
     cloud = _CloudStub(id="kueue-a", rank=10, cap=50, available=False)
     _patch_backends(monkeypatch, [cloud, local])
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = await _seed_awaiting_file(session)
+    async with session_factory() as session:
+        await _seed_fk_fileserver(session)
+        await seed_active_agent(session, agent_id="nox", kind="fileserver")
+        file = await _seed_awaiting_file(session)
 
     router = DedupFakeTaskRouter()
     # Tick 1: the drain session's post-loop commit raises -> whole-tick rollback (clean hold).
-    poisoned_ctx = _make_ctx(async_engine, router)
+    poisoned_ctx = _make_ctx(engine, router)
     poisoned_ctx["async_session"] = _CommitRaisesSessionmaker(poisoned_ctx["async_session"])
     tick1 = await stage_cloud_window(poisoned_ctx)
     assert tick1 == {"staged": 0, "skipped": 1}  # rolled back -> reported held
@@ -294,10 +325,11 @@ async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
     # The drain's own writes were discarded, but the hook's ledger row survives, and the awaiting row stands.
     # (Post-MIG-04 the awaiting status lives ONLY in the cloud_job sidecar -- the retained awaiting row IS
     # the "still held" fact the old LOCAL_ANALYZING-vs-AWAITING_CLOUD state assertion used to check.)
-    assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
+    async with session_factory() as session:
+        assert await _cloud_job_status(session, file.id) == CloudJobStatus.AWAITING.value
 
     cloud.available = True  # ONLINE: a re-pick on tick 2 would dispatch to CLOUD
-    tick2 = await stage_cloud_window(_make_ctx(async_engine, router))
+    tick2 = await stage_cloud_window(_make_ctx(engine, router))
     assert tick2 == {"staged": 0, "skipped": 0}  # committed ledger row excludes -> no candidate
 
     assert local.dispatched_ids == [file.id]  # dispatched exactly once (tick 1), to local
@@ -309,8 +341,7 @@ async def test_sc3_case_b_rolled_back_tick_committed_ledger_not_repicked(
 
 @pytest.mark.asyncio
 async def test_sc3_case_c_terminally_failed_analyze_never_dispatched(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
+    committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """(c) A file whose local analyze terminally FAILED carries its awaiting row but is excluded by
@@ -320,19 +351,25 @@ async def test_sc3_case_c_terminally_failed_analyze_never_dispatched(
     ``analysis_completed_at`` NULL) makes the file ``domain_completed`` -- it must not be re-driven. A
     cloud backend is ONLINE both ticks (rank 10), so the state-based drain would dispatch it to CLOUD;
     the sidecar drain must exclude it entirely.
+
+    92-05 (DI-92-04-02): migrated to the ``committed_db`` fixture (see case (a)) so the seeded terminal
+    ``analysis`` row is a real cross-connection commit the drain's own connections read.
     """
+    engine, session_factory = committed_db
     local = _LocalStub(id="local", rank=99, cap=100)
     cloud = _CloudStub(id="kueue-a", rank=10, cap=50, available=True)
     _patch_backends(monkeypatch, [cloud, local])
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    file = await _seed_awaiting_file(session)
-    # Terminal analyze failure: domain_completed(ANALYZE) True (FAILED ∧ FAILURE_IS_TERMINAL[ANALYZE]).
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, failed_at=_SEEDED_AT, analysis_completed_at=None))
-    await session.commit()
+    async with session_factory() as session:
+        await _seed_fk_fileserver(session)
+        await seed_active_agent(session, agent_id="nox", kind="fileserver")
+        file = await _seed_awaiting_file(session)
+        # Terminal analyze failure: domain_completed(ANALYZE) True (FAILED ∧ FAILURE_IS_TERMINAL[ANALYZE]).
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, failed_at=_SEEDED_AT, analysis_completed_at=None))
+        await session.commit()
 
     router = DedupFakeTaskRouter()
-    tick1 = await stage_cloud_window(_make_ctx(async_engine, router))
-    tick2 = await stage_cloud_window(_make_ctx(async_engine, router))
+    tick1 = await stage_cloud_window(_make_ctx(engine, router))
+    tick2 = await stage_cloud_window(_make_ctx(engine, router))
 
     assert tick1 == {"staged": 0, "skipped": 0}  # excluded -> no candidate
     assert tick2 == {"staged": 0, "skipped": 0}
