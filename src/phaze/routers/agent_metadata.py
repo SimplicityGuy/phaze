@@ -120,7 +120,12 @@ async def report_metadata_failed(
        FAILED -- never DONE -- making a terminally-failed metadata file visible in derivation
        and counts. Before Phase 81 this endpoint wrote nothing (the latent bug FAIL-02 closes).
        Metadata deliberately has NO backfill (D-03): no historical source ever persisted a
-       marker, so this is the go-forward writer only.
+       marker, so this is the go-forward writer only. **WR-01 guard (81-REVIEW):** the
+       ``ON CONFLICT DO UPDATE`` carries a ``WHERE metadata.failed_at IS NOT NULL`` predicate so it
+       only REFRESHES an already-failed row -- it never stamps ``failed_at`` onto a row that already
+       reads DONE (a prior successful extraction with real tags, re-enqueued by
+       ``POST /api/v1/extract-metadata`` and then timed out). A DONE row keeps its usable metadata;
+       the marker (and thus the payload-NULL invariant this contract rests on) is untouched.
     2. **Clear the scheduling-ledger row (CR-02):** ``put_metadata`` clears on SUCCESS; this
        endpoint closes the terminal-failure hole so EVERY run clears
        ``extract_file_metadata:<file_id>`` exactly once. Without it, a terminally-failed file
@@ -152,7 +157,21 @@ async def report_metadata_failed(
     # explicitly because `FileMetadata.id` has a Python-only default that `pg_insert` bypasses.
     now = func.now()
     stmt = pg_insert(FileMetadata).values([{"file_id": file_id, "id": uuid.uuid4(), "failed_at": now, "error_message": error_message}])
-    stmt = stmt.on_conflict_do_update(index_elements=["file_id"], set_={"failed_at": now, "error_message": error_message})
+    # WR-01 (81-REVIEW): guard the failure stamp so it NEVER downgrades a row that already reads DONE.
+    # `POST /api/v1/extract-metadata` re-enqueues ALL music/video files regardless of state, so a file
+    # that already succeeded (a `metadata` row with populated payload columns AND `failed_at IS NULL`)
+    # can be re-extracted; a timeout on that re-run would otherwise stamp `failed_at` onto the good row,
+    # deriving FAILED and losing `propose` eligibility. The `WHERE metadata.failed_at IS NOT NULL`
+    # conflict predicate means the UPDATE fires ONLY on a row that is ALREADY a failure row (refresh the
+    # marker); a DONE row is left untouched (a benign no-op, not an error). This preserves the
+    # "a failure row has NULL payload columns" invariant `done(metadata) = EXISTS metadata WHERE failed_at
+    # IS NULL` (D-02, stage_status.py) rests on -- `failed_at` still only ever coexists with NULL payload:
+    # the INSERT path creates a payload-NULL failure row, and the UPDATE path only touches an
+    # already-payload-NULL failure row. The ledger clear below stays UNCONDITIONAL either way (the run
+    # terminated, so the row must clear to avoid the CR-02 unbounded recovery loop).
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["file_id"], set_={"failed_at": now, "error_message": error_message}, where=FileMetadata.failed_at.isnot(None)
+    )
     await session.execute(stmt)
     # CR-02: clear the ledger row in the SAME transaction. Key from the PATH file_id ONLY (T-45-05).
     await clear_ledger_entry(session, f"extract_file_metadata:{file_id}")

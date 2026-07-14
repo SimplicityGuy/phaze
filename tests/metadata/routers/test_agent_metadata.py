@@ -643,6 +643,61 @@ async def test_metadata_field_put_after_failure_clears_marker(
 
 
 @pytest.mark.asyncio
+async def test_metadata_failed_does_not_clobber_populated_success_row(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """WR-01 (81-REVIEW): a terminal-failure POST must NOT downgrade a row that already carries real tags.
+
+    Repro of the bug: ``POST /api/v1/extract-metadata`` re-enqueues ALL music/video files regardless of
+    state, so a file that already succeeded (a ``metadata`` row with populated payload columns AND
+    ``failed_at IS NULL`` -> DONE) can be re-extracted; if that re-run times out, the agent POSTs the
+    terminal ack. Before the fix ``report_metadata_failed``'s unconditional ``ON CONFLICT DO UPDATE``
+    stamped ``failed_at`` onto the good row, so it derived FAILED and lost ``propose`` eligibility
+    (done(metadata) = EXISTS metadata WHERE failed_at IS NULL is a ``propose`` upstream conjunct).
+
+    The fix guards the upsert so the marker is only refreshed on a row that is ALREADY a failure row
+    (``metadata.failed_at IS NOT NULL``); a DONE row is never downgraded. The ledger clear stays
+    UNCONDITIONAL (the run terminated -- the row must clear to avoid the CR-02 unbounded recovery loop),
+    so the file keeps its usable metadata AND does not strand a ledger row.
+    """
+    from phaze.enums.stage import Stage, Status, resolve_status
+
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    # A prior successful extraction re-enqueued by POST /extract-metadata carries a fresh ledger row.
+    key = f"extract_file_metadata:{file_id}"
+    await _seed_ledger(session, key, "extract_file_metadata", file_id)
+    assert await _ledger_present(session, key)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        # 1. A successful extraction writes real tags -> the row reads DONE.
+        r_ok = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "Aphex Twin", "title": "Xtal", "year": 1992})
+        # 2. A re-extraction of the SAME file then fails terminally (the WR-01 trigger).
+        r_fail = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "timeout", "error": "boom"})
+
+    assert r_ok.status_code == 200, r_ok.text
+    assert r_fail.status_code == 200, r_fail.text
+    assert r_fail.json()["cleared"] is True
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    # The good metadata survives: real tags retained, NO failure stamp applied.
+    assert row.artist == "Aphex Twin", "WR-01: the terminal ack clobbered the real tags"
+    assert row.title == "Xtal"
+    assert row.year == 1992
+    assert row.failed_at is None, "WR-01: a fully-populated DONE metadata row was downgraded to FAILED"
+    assert row.error_message is None
+    # The file STILL derives DONE (not FAILED) -> its propose upstream conjunct stays satisfied.
+    status = resolve_status(Stage.METADATA, {"row_present": True, "failed_at": row.failed_at, "inflight": False})
+    assert status is Status.DONE, f"WR-01: a populated metadata row must stay DONE after a stray failure ack, got {status}"
+    # The terminal ack STILL clears the ledger (unbounded-loop guard, CR-02) even though it skipped the stamp.
+    assert not await _ledger_present(session, key), "WR-01 fix must not regress the unconditional ledger clear"
+
+
+@pytest.mark.asyncio
 async def test_metadata_failed_nul_in_error_persists_and_clears_ledger(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
