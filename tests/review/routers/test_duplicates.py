@@ -296,10 +296,9 @@ async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -
 # tests assert from an INDEPENDENT session, which by definition sees only committed data.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_resolve_endpoint_commits_marker(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+async def test_resolve_endpoint_commits_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """After POST /resolve, a SEPARATE session sees the committed DedupResolution marker (the sole authority)."""
     from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.dedup_resolution import DedupResolution
 
@@ -311,21 +310,20 @@ async def test_resolve_endpoint_commits_marker(async_engine, session: AsyncSessi
     response = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
     assert response.status_code == 200
 
-    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with verify_factory() as verify:
-        markers = (await verify.execute(select(DedupResolution.file_id))).scalars().all()
-        assert list(markers) == [dup.id], "resolve did not COMMIT the dedup marker"
+    # 92-04 (CLEAN-02): read through the shared ``verify`` fixture -- an INDEPENDENT session bound to the
+    # per-test ``_db_connection`` -- so it sees the router's in-test commit under create_savepoint isolation.
+    markers = (await verify.execute(select(DedupResolution.file_id))).scalars().all()
+    assert list(markers) == [dup.id], "resolve did not COMMIT the dedup marker"
 
-        canonical = (await verify.execute(select(DedupResolution.canonical_file_id))).scalar_one()
-        assert canonical == keeper.id, "canonical_file_id must carry the operator's pick (D-03)"
-        # Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; only the marker persists.
+    canonical = (await verify.execute(select(DedupResolution.canonical_file_id))).scalar_one()
+    assert canonical == keeper.id, "canonical_file_id must carry the operator's pick (D-03)"
+    # Phase 90 (D-09): the DUPLICATE_RESOLVED files.state dual-write was removed; only the marker persists.
 
 
 @pytest.mark.asyncio
-async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+async def test_undo_endpoint_commits_marker_delete_and_restore(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """After POST /undo, a SEPARATE session sees the marker gone and previous_state restored."""
     from sqlalchemy import func, select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.dedup_resolution import DedupResolution
 
@@ -341,10 +339,9 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
     assert undo.status_code == 200
 
-    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with verify_factory() as verify:
-        remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
-        assert remaining == 0, "undo did not COMMIT the marker DELETE"
+    # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees the undo's committed DELETE.
+    remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
+    assert remaining == 0, "undo did not COMMIT the marker DELETE"
 
 
 # ---------------------------------------------------------------------------
@@ -355,14 +352,13 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(async_engine, ses
 
 
 @pytest.mark.asyncio
-async def test_undo_roundtrip_deletes_marker_from_server_payload(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+async def test_undo_roundtrip_deletes_marker_from_server_payload(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """Real /resolve -> extract server file_states -> /undo: the DedupResolution marker is DELETED.
 
     Mirrors ``test_undo_endpoint_commits_marker_delete_and_restore`` but the undo payload is the ACTUAL
     value the resolve response rendered into ``name="file_states"`` (HTML-unescaped), NOT a literal dict.
     """
     from sqlalchemy import func, select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.dedup_resolution import DedupResolution
 
@@ -380,17 +376,15 @@ async def test_undo_roundtrip_deletes_marker_from_server_payload(async_engine, s
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
     assert undo.status_code == 200
 
-    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with verify_factory() as verify:
-        remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
-        assert remaining == 0, "round-trip undo (server payload) did not delete the DedupResolution marker"
+    # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees the committed marker DELETE.
+    remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
+    assert remaining == 0, "round-trip undo (server payload) did not delete the DedupResolution marker"
 
 
 @pytest.mark.asyncio
-async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """Real /resolve-all -> extract server file_states -> /undo-all: every DedupResolution marker DELETED."""
     from sqlalchemy import func, select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.dedup_resolution import DedupResolution
 
@@ -408,14 +402,13 @@ async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(async_eng
     undo = await client.post("/duplicates/undo-all", data={"file_states": payload, "page": "1", "page_size": "20"})
     assert undo.status_code == 200
 
-    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with verify_factory() as verify:
-        remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
-        assert remaining == 0, "bulk round-trip undo (server payload) did not delete every DedupResolution marker"
+    # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees every committed marker DELETE.
+    remaining = (await verify.execute(select(func.count(DedupResolution.id)))).scalar_one()
+    assert remaining == 0, "bulk round-trip undo (server payload) did not delete every DedupResolution marker"
 
 
 @pytest.mark.asyncio
-async def test_undo_roundtrip_id_only_payload_still_deletes_marker(async_engine, session: AsyncSession, client: AsyncClient) -> None:  # type: ignore[no-untyped-def]
+async def test_undo_roundtrip_id_only_payload_still_deletes_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """THE BLOCKER GUARD: an id-only payload (PR-B shape, no previous_state) STILL deletes the marker.
 
     Take the real server-rendered payload, STRIP ``previous_state`` from every entry (emulating the shape
@@ -423,7 +416,6 @@ async def test_undo_roundtrip_id_only_payload_still_deletes_marker(async_engine,
     OLD ``if not restore_by_id: return 0`` gate this no-op'd silently; the decoupled gate must delete it.
     """
     from sqlalchemy import func, select
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from phaze.models.dedup_resolution import DedupResolution
 
@@ -443,7 +435,6 @@ async def test_undo_roundtrip_id_only_payload_still_deletes_marker(async_engine,
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": json.dumps(id_only)})
     assert undo.status_code == 200
 
-    verify_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with verify_factory() as verify:
-        remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
-        assert remaining == 0, "id-only (PR-B shape) undo did NOT delete the marker -- the blocker regressed"
+    # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees the committed marker DELETE.
+    remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
+    assert remaining == 0, "id-only (PR-B shape) undo did NOT delete the marker -- the blocker regressed"
