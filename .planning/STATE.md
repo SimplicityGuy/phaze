@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: milestone_complete
-last_updated: 2026-07-14T03:43:30.015Z
-last_activity: 2026-07-13 -- Phase 92 complete + verified (8/8); milestone audited (tech_debt); milestone-close debt paydown in progress on the phase-92 branch
+status: Awaiting next milestone
+last_updated: "2026-07-14T15:29:06.078Z"
+last_activity: 2026-07-14 — Milestone 2026.7.5 completed and archived
 progress:
-  total_phases: 16
-  completed_phases: 16
-  total_plans: 67
-  completed_plans: 67
-  percent: 100
-stopped_at: Milestone complete (Phase 92 was final phase). Milestone audit PASSED as tech_debt (45/45 reqs, 16/16 phases, 5/5 integration seams). Extra audit-debt paydown (P81/P83/P85 + P92 review items) landing on the phase-92 branch before PR.
+  total_phases: 54
+  completed_phases: 15
+  total_plans: 66
+  completed_plans: 68
+  percent: 28
 ---
 
 # Project State
@@ -25,11 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents 
 
 ## Current Position
 
-Phase: 92
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-07-14
-Next: open the Phase-92 PR (SimplicityGuy/phase-92, off main), then /gsd:complete-milestone 2026.7.5. Milestone is feature-complete + integration-verified; audit-surfaced tech-debt is being paid down on this branch (P92 review WR-03/04 + perf seeder; P81 WR-01/02; P85 WR-01..04 review-builder starvation; P83-06 backfill stranding — the last consciously REVERSES locked D-09 per operator decision). Pre-DEPLOY operator gate remains (039 real-corpus rehearsal + drained-corpus shadow-compare + executed-gate live UAT, tracked in 79/84/85/90-HUMAN-UAT.md) — blocking for prod deploy only, NOT milestone close.
+Phase: Milestone 2026.7.5 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-14 — Milestone 2026.7.5 completed and archived
 
 ## Performance Metrics
 
@@ -230,6 +228,18 @@ None.
 | Phase 81 P02 | 22min | 3 tasks | 8 files |
 
 ## Deferred Items
+
+Items acknowledged and deferred at the **2026.7.5** milestone close on 2026-07-14. All are
+**deployment-gated** — they unblock on the live `032→039` migration rollout against the drained prod corpus (prod is at Alembic 031). None block the milestone record; all 45 requirements are satisfied.
+
+| Category | Item | Status | Why deferred |
+|----------|------|--------|--------------|
+| uat | 79-HUMAN-UAT | partial | Live-corpus shadow-compare on the DRAINED corpus before migration 039 deploys (MIG-02 / SC-3); committed gate green on synthetic corpus |
+| uat | 90-HUMAN-UAT | partial | Migration 039 real-corpus rehearsal: restore prod snapshot → 032→038 → shadow green → run 039 → assert archive+column-drop → downgrade verbatim → record lock/DDL timing (MIG-04) |
+| uat | 85-HUMAN-UAT | partial | On a real deploy an actually-applied file surfaces in Tag-write/CUE workspaces and write/generate produce real filesystem output (READ-05); filesystem-mutating, verify live |
+| todo | analysis-completed-at-backfill | deploy-gated | The `analyzed` hard invariant is red until the first deploy carrying migration ≥036 backfills `analysis.analysis_completed_at`; clears on deploy, no code remaining |
+
+Known deferred items at close: 4 deployment-gated (surfaced by the pre-close artifact audit as 8 UAT-gap rows across phases 79/85/90 + 1 todo; the phase-80/87 rows were `passed`, not gaps). The 15 completed prior-milestone quick-tasks flagged by the same audit were reconciled (renamed to `SUMMARY.md` + `status: complete`), not deferred.
 
 Items acknowledged and deferred at the v5.0 milestone close on 2026-06-26. All three are
 **deployment-gated** — they unblock on the live OCI A1 + Tailscale rollout (see

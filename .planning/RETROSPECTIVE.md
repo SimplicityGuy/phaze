@@ -333,6 +333,38 @@ Finished the 2026.7.1 registry's deliberate compute-side descope: **N cloud-comp
 
 ---
 
+## Milestone: 2026.7.5 — Parallel Enrich DAG (Retire Linear FileState)
+
+**Shipped:** 2026-07-14
+**Phases:** 16 (77-92) | **Plans:** 66
+
+### What Was Built
+Retired the linear `FileState` enum and derived per-file per-stage status (`not_started`/`in_flight`/`done`/`failed`) from the output tables via a single-source predicate layer, executed as a live-corpus data-model migration seam-by-seam: additive `032` → standing shadow-compare gate → readers-before-writers cutover (recovery → counts/pending → dedup/fingerprint → executed-gate → proposals → UI → drill-in) → destructive `039` drop. The cross-stage enrich deadlock dissolved. Plus per-stage failure persistence + retry, the operator stage-matrix/trace/force-skip/drill-in console, legacy-sentinel retirement, and a milestone-close cleanup phase.
+
+### What Worked
+- **Dependency-strict, small-blast-radius seams.** One reader cutover per phase kept each destructive step reversible and shadow-gated; the deadlock only dissolved once, cleanly, at Phase 82.
+- **Anti-drift guards as first-class deliverables.** SQL⇔Python equivalence tests + tokenize-based source scans, every one mutation-verified — they caught real regressions during execution, not just at review.
+- **Executors escalating instead of forcing.** The Phase-92 debt paydown surfaced two locked-decision collisions (D-11, D-09); executors checkpointed rather than silently breaking them, turning a wrong audit-note framing (P83-06 "mis-route") into a correct diagnosis (stranding) before any code changed.
+
+### What Was Inefficient
+- **Naming-drift artifact debt.** 15 completed quick-tasks blocked the milestone-close audit purely because the executor wrote `<slug>-SUMMARY.md` while audit-open scans for exact `SUMMARY.md` — a tooling inconsistency that cost a reverse-engineering detour at close.
+- **STATE.md counter corruption at `phase.complete`.** Recomputed project-wide (54/30/56%) instead of milestone-scoped; had to restore from `git show main:` (a recurring GSD footgun).
+- **Audit under-scoped the create_savepoint blast radius.** Phase 92's conftest conversion exposed ~a dozen more non-hermetic tests than the 21 planned verify sites; budget a discovery/fix wave when converting to a session-scoped engine.
+
+### Patterns Established
+- **Derived-status predicate layer** as the single source of truth, consumed by every reader, guarded against drift both structurally (AST) and behaviorally (equivalence).
+- **Sequential inline debt executors** on a shared branch (no worktree isolation in the Orca env) — dispatched one-at-a-time to avoid index races, each with RED→GREEN TDD + a bucket re-verify.
+- **`committed_db` real-engine fixture** in `tests/integration/` as the home for genuine cross-connection concurrency tests that hermetic `create_savepoint` cannot serve.
+
+### Key Lessons
+- A locked decision revealed as obstructive to a fix is a human checkpoint, not an executor call — even during "cleanup."
+- Audit-note framings can be factually wrong; empirical isolation (drive the real endpoint + drain + recovery) beats trusting the deferred-item text.
+- Never pass `-p no:logging` to diagnose a bucket — it strips the `caplog` fixture and manufactures false errors.
+
+### Cost Observations
+- Model mix: Opus main-loop orchestration; Sonnet verifier/integration-checker; executors on Opus.
+- Notable: the post-audit debt paydown (10 commits across 4 groups) ran as sequential background subagents with orchestrator-side spot-checks + full-suite re-gates, keeping the main context lean across a very long close-out session.
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
