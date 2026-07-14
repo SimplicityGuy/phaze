@@ -282,7 +282,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
-| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 2/5 | In Progress|  |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 3/5 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -701,7 +701,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 92-03-PLAN.md — CLEAN-02 core: rewire conftest to session-scoped engine + create_savepoint per-test rollback + shared verify fixture + route get_stage_progress's production fan-out through the per-test connection + mutation-safe hermeticity contract test [Wave 2]
+- [x] 92-03-PLAN.md — CLEAN-02 core: rewire conftest to session-scoped engine + create_savepoint per-test rollback + shared verify fixture + route get_stage_progress's production fan-out through the per-test connection + mutation-safe hermeticity contract test [Wave 2]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
