@@ -301,16 +301,32 @@ async def test_request_download_url_returns_tuple_and_injects_auth_header(client
     route = respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
         return_value=httpx.Response(
             200,
-            json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA},
+            json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA, "audio_ext": "mp3"},
         ),
     )
-    url, sha = await client.request_download_url(file_id)
+    url, sha, audio_ext = await client.request_download_url(file_id)
     assert url == "https://s3.example/obj?sig=xyz"
     assert sha == _PRESIGN_SHA
+    # cloud-analyze-empty-no-ext: the file's real audio extension is threaded to the pod.
+    assert audio_ext == "mp3"
     assert route.call_count == 1
     sent = route.calls.last.request
     assert sent.headers["Authorization"] == f"Bearer {_TOKEN}"
     assert sent.url.path == f"/api/internal/agent/files/{file_id}/presign-download"
+
+
+@respx.mock
+async def test_request_download_url_absent_audio_ext_is_none(client):  # type: ignore[no-untyped-def]
+    """An older control plane that omits ``audio_ext`` yields ``None`` (URL-suffix fallback on the pod)."""
+    file_id = uuid.uuid4()
+    respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(
+            200,
+            json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA},
+        ),
+    )
+    _url, _sha, audio_ext = await client.request_download_url(file_id)
+    assert audio_ext is None
 
 
 @respx.mock

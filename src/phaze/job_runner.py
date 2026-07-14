@@ -87,6 +87,28 @@ def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
+def _temp_suffix(audio_ext: str | None, url: str) -> str:
+    """Pick the downloaded temp file's suffix so essentia can decode it.
+
+    essentia detects the audio format from the FILE EXTENSION (``es.MetadataReader``),
+    so the temp file MUST carry the file's real extension. The staged S3 key
+    (``phaze-staging/<file_id>``) has no extension, so deriving the suffix from the
+    presign URL path yields nothing and the old ``.audio`` fallback produced an
+    undecodable file → duration 0 → 0 windows → a silent empty-but-"successful"
+    analysis (cloud-analyze-empty-no-ext).
+
+    Prefer the server-threaded ``audio_ext`` (``FileRecord.file_type``, dotless);
+    fall back to the URL path suffix (older control plane omits ``audio_ext``); and
+    only as a last resort keep the historical ``.audio`` sentinel.
+    """
+    if audio_ext:
+        ext = audio_ext.strip().lstrip(".")
+        if ext:
+            return f".{ext}"
+    url_suffix = Path(urlparse(url).path).suffix
+    return url_suffix or ".audio"
+
+
 def _load_analyze_file() -> Any:
     """Defer the essentia-bound ``analyze_file`` import to call time.
 
@@ -222,14 +244,16 @@ async def run() -> None:
         # (1) presign — fail-fast, no extra retry loop (D-02).
         t_presign = time.monotonic()
         try:
-            url, expected_sha256 = await client.request_download_url(file_id)
+            url, expected_sha256, audio_ext = await client.request_download_url(file_id)
         except Exception:
             log.exception("job_runner_presign_failed", file_id=fid, step="presign")
             sys.exit(EXIT_DOWNLOAD)
         log.info("job_runner_step_ok", file_id=fid, step="presign", elapsed_ms=_elapsed_ms(t_presign))
 
         # (2) download — stream to a temp file; bearer never attached (T-52-04).
-        suffix = Path(urlparse(url).path).suffix or ".audio"
+        # The temp file MUST carry the file's REAL audio extension: essentia detects
+        # format by extension, and the staged S3 key has none (cloud-analyze-empty-no-ext).
+        suffix = _temp_suffix(audio_ext, url)
         tmp_path = Path(tempfile.gettempdir()) / f"{fid}{suffix}"
         t_download = time.monotonic()
         try:
@@ -281,6 +305,26 @@ async def run() -> None:
             # exit-code contract). Mirrors the process_file dict-guard.
             if not isinstance(result, dict):
                 log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
+                sys.exit(EXIT_ANALYSIS)
+            # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
+            # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
+            # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
+            # previously recorded a NULL-everything "success". A real audio file always
+            # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
+            # reads it as failed_at instead of a false completion. SystemExit is BaseException,
+            # so it bypasses the `except Exception` below (same as the non-dict guard above).
+            fine_total = result.get("fine_windows_total") or 0
+            coarse_total = result.get("coarse_windows_total") or 0
+            if fine_total == 0 and coarse_total == 0:
+                log.error(
+                    "job_runner_empty_analysis",
+                    file_id=fid,
+                    step="analyze",
+                    reason="zero_windows",
+                    suffix=suffix,
+                    fine_windows_total=fine_total,
+                    coarse_windows_total=coarse_total,
+                )
                 sys.exit(EXIT_ANALYSIS)
             payload = _build_payload(result)
         except Exception:

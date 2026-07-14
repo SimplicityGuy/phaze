@@ -268,6 +268,37 @@ def test_presign_download_response_accepts_valid_sha256() -> None:
 
     assert resp.download_url == "https://s3.example/obj?sig=xyz"
     assert resp.expected_sha256 == "a" * 64
+    # cloud-analyze-empty-no-ext: audio_ext is optional and defaults to None (URL-suffix fallback).
+    assert resp.audio_ext is None
+
+
+def test_presign_download_response_carries_audio_ext() -> None:
+    """audio_ext threads the file's real dotless extension for the pod's temp-file naming."""
+    resp = PresignDownloadResponse(download_url="https://s3.example/obj", expected_sha256="a" * 64, audio_ext="mp3")
+
+    assert resp.audio_ext == "mp3"
+
+
+def test_presign_download_response_tolerates_unknown_extra_field() -> None:
+    """Forward-compat (cloud-analyze-empty-no-ext review): a NEWER control plane may add
+    additive keys while an OLDER pod runs the previous schema. This response model uses
+    ``extra='ignore'`` so such unknown fields are dropped, NOT rejected -- otherwise an
+    old pod would ValidationError -> EXIT_DOWNLOAD (10) and permanently fail every file
+    during the rolling-deploy window."""
+    resp = PresignDownloadResponse.model_validate(
+        {
+            "download_url": "https://s3.example/obj",
+            "expected_sha256": "a" * 64,
+            "audio_ext": "mp3",
+            "some_future_additive_field": "ignored-by-old-pod",
+        }
+    )
+
+    assert resp.download_url == "https://s3.example/obj"
+    assert resp.expected_sha256 == "a" * 64
+    assert resp.audio_ext == "mp3"
+    # The unknown additive key is dropped, not surfaced as an attribute.
+    assert not hasattr(resp, "some_future_additive_field")
 
 
 @pytest.mark.parametrize(
