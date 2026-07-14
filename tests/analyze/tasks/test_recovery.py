@@ -49,9 +49,9 @@ from phaze.services.scheduling_ledger import clear_ledger_entry, get_ledger_rows
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 from phaze.tasks.reenqueue import (
     _DOMAIN_COMPLETED_STAGES,
+    _awaiting_cloud_job_ids,
     _build_done_sets,
     _DoneSets,
-    _get_awaiting_cloud_ids,
     _ledger_fids,
     is_domain_completed,
     recover_orphaned_work,
@@ -781,11 +781,11 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
 ) -> None:
     """D-04: a parked (cloud_job='awaiting') file with no analysis row is NOT analyze-domain-completed.
 
-    A held (duration-routed) file must keep being re-driven by recovery/release until it is genuinely
-    analyzed, so it must NEVER be classified as done. Phase 80 derives analyze-done from the ``analysis``
-    output row via ``domain_completed_clause(ANALYZE)``; a parked file has none, so it is ABSENT from the
-    analyze done-set. This test guards the omission so a future derivation edit cannot silently mark a
-    held file complete.
+    A held (duration-routed) file must keep being driven to completion by the ``stage_cloud_window`` drain
+    (83-06: the drain is its single owner) until it is genuinely analyzed, so it must NEVER be classified
+    as done. Phase 80 derives analyze-done from the ``analysis`` output row via
+    ``domain_completed_clause(ANALYZE)``; a parked file has none, so it is ABSENT from the analyze done-set.
+    This test guards the omission so a future derivation edit cannot silently mark a held file complete.
     """
     f = _make_file()
     session.add(f)
@@ -799,81 +799,60 @@ async def test_awaiting_cloud_file_stays_pending_in_recovery(
     # The parked file has no analysis row -> NOT in the analyze done-set.
     assert str(f.id) not in done_sets.analyze_done
 
-    # A process_file ledger row for the held file is NOT domain-completed -> recovery would replay it.
+    # It is NOT domain-completed, so it would not be dropped by the done-set filter -- but 83-06's
+    # awaiting-cloud exclusion in recover_orphaned_work keeps the drain its single owner (not the ledger).
     assert is_domain_completed(rows[0], done_sets) is False
 
 
-# --- Phase 80 D-08: the awaiting-candidate set is the single-source clause, ~inflight-guarded --------
+# --- 83-06 (CONSCIOUSLY REVERSES D-09): the drain is the SINGLE owner of held AWAITING_CLOUD files ----
 #
-# Phase 80 (CR-01 fix): ``_get_awaiting_cloud_ids`` is the RECOVERY-specific held-file predicate --
-# ``cloud_job(status='awaiting') AND NOT domain_completed(ANALYZE)``. It deliberately does NOT reuse the
-# drain/card's ``awaiting_candidate_clause()``: that clause conjoins ``~inflight_clause(ANALYZE)``, and
-# every held compute file ALREADY carries a ``process_file:<id>`` ledger row (the D-09 held-file backfill
-# seed at ``routers/pipeline.py`` inserts it for every file the duration router parks in AWAITING_CLOUD on
-# the compute path). Reusing that clause therefore made ``held_agent_rows`` provably empty -- the held long
-# file fell into ``other_agent_rows`` and was routed kind-agnostically to a fileserver and analyzed LOCALLY,
-# re-introducing the Phase-49 CR-01 CLOUDROUTE-02 bug. Recovery is safe WITHOUT the in-flight exclusion
-# because ``recover_orphaned_work`` already drops any file whose ``process_file`` key is LIVE
-# (``r.key not in live``), so a genuinely mid-local-analysis file never reaches this set's consumers.
+# 83-06 reversed D-09: the backfill no longer SEEDS a ``process_file:<id>`` ledger row for a held compute
+# file (it CLEARS ``analysis.failed_at`` and DELETES the orphaned row, keeping only the awaiting
+# ``cloud_job`` row). So no held file carries a process_file ledger row any more, and the former
+# ``_get_awaiting_cloud_ids`` + ``held_agent_rows`` compute-only recovery partition became unreachable and
+# was REMOVED. ``recover_orphaned_work`` now EXCLUDES any file with an awaiting ``cloud_job`` row from the
+# orphan set (:func:`_awaiting_cloud_job_ids`) -- the ``stage_cloud_window`` drain is the single owner --
+# which preserves the CLOUDROUTE-02 invariant ROBUSTLY (a held long file is never routed kind-agnostically
+# to a fileserver and analyzed locally), even for a LEGACY pre-83-06 row that still carries a process_file
+# ledger row.
 
 
 @pytest.mark.asyncio
-async def test_held_file_with_process_file_seed_is_in_the_held_set(
+async def test_awaiting_cloud_exclusion_set_surfaces_held_files(
     session: AsyncSession,
 ) -> None:
-    """CR-01: a held file (``awaiting`` cloud_job + the D-09 ``process_file`` seed) IS in the held set.
+    """83-06: every file with an awaiting ``cloud_job`` row is in the drain-owned exclusion set.
 
-    The D-09 held-file backfill seeds a ``process_file`` ledger row for every compute-path file parked in
-    AWAITING_CLOUD, so ``inflight_clause(ANALYZE)`` is True by construction for exactly the held files this
-    partition must catch. ``_get_awaiting_cloud_ids`` must therefore NOT conjoin ``~inflight_clause`` --
-    otherwise the file self-excludes, ``held_agent_rows`` is empty, and CLOUDROUTE-02 is violated.
-    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` (e.g. reusing ``awaiting_candidate_clause()``)
-    drops this file from the set -> RED.
+    ``_awaiting_cloud_job_ids`` is the recovery exclusion the single-owner drain relies on: a genuinely
+    parked file (no process_file ledger row) AND a legacy held file (still carrying a process_file ledger
+    row) are BOTH surfaced, so recovery never re-drives either onto an agent.
+    MUTATION: narrowing the query to also require ``~inflight_clause(ANALYZE)`` would drop the legacy
+    file below -> re-opening the CLOUDROUTE-02 local-analysis hole -> this test goes RED.
     """
-    f = _make_file()
-    session.add(f)
+    parked = _make_file()
+    legacy = _make_file()
+    session.add_all([parked, legacy])
     await session.commit()
-    await _seed_awaiting_cloud_job(session, f.id)
-    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
+    await _seed_awaiting_cloud_job(session, parked.id)  # parked, no process_file ledger row
+    await _seed_awaiting_cloud_job(session, legacy.id)
+    await _seed_ledger(session, function="process_file", file_id=legacy.id)  # a legacy pre-83-06 held row
 
-    assert str(f.id) in await _get_awaiting_cloud_ids(session)
+    awaiting = await _awaiting_cloud_job_ids(session)
+    assert {str(parked.id), str(legacy.id)} <= awaiting
 
 
 @pytest.mark.asyncio
-async def test_genuinely_parked_awaiting_file_is_in_held_set(
-    session: AsyncSession,
-) -> None:
-    """D-08: a genuinely-parked file (``awaiting`` cloud_job, NO process_file ledger row) IS an awaiting candidate.
-
-    A held file that carries no in-flight analyze ledger row is a real cloud candidate the drain/release
-    owns; ``_get_awaiting_cloud_ids`` must surface it (and it correctly has NO process_file orphan for
-    recovery to route, since the hold path parks without enqueuing).
-    MUTATION: reverting to a bare ``FileRecord.state == AWAITING_CLOUD`` read (dropping the cloud_job
-    INNER join) would keep passing here but re-include the inflight file above -> the pair is the lock.
-    """
-    f = _make_file()
-    session.add(f)
-    await session.commit()
-    await _seed_awaiting_cloud_job(session, f.id)  # parked, no process_file ledger row
-
-    assert str(f.id) in await _get_awaiting_cloud_ids(session)
-
-
-@pytest.mark.asyncio
-async def test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver(
+async def test_held_awaiting_cloud_file_is_not_recovered_with_only_a_fileserver(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CR-01 (CLOUDROUTE-02): a held AWAITING_CLOUD orphan is NEVER routed to a fileserver for local analysis.
+    """83-06 (CLOUDROUTE-02): a held AWAITING_CLOUD file is NEVER re-driven onto a fileserver for local analysis.
 
-    A held long file carries an ``awaiting`` cloud_job + the D-09 ``process_file`` seed. With only a
-    FILESERVER online, the compute-only partition finds no compute agent and SKIPS the file (the */5
-    ``release_awaiting_cloud`` cron drains the AWAITING_CLOUD set -- the file is not lost). It must NOT be
-    re-enqueued onto the fileserver's analyze lane. This is the exact Phase-49 CR-01 regression the cutover
-    re-opened by reusing ``awaiting_candidate_clause()`` for ``held_ids``.
-    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` in ``_get_awaiting_cloud_ids`` empties
-    ``held_agent_rows`` -> the file falls to ``other_agent_rows`` -> ``nox-analyze`` -> RED.
+    A held long file carries an ``awaiting`` cloud_job (+ possibly a LEGACY process_file ledger row). The
+    drain owns it, so recovery EXCLUDES it -- it must never land on the fileserver's analyze lane.
+    MUTATION: dropping the ``awaiting_cloud`` exclusion in ``recover_orphaned_work`` lets the legacy row
+    fall into ``other_agent_rows`` -> ``nox-analyze`` -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -883,30 +862,30 @@ async def test_held_process_file_orphan_is_not_analyzed_locally_on_a_fileserver(
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
-    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # a legacy pre-83-06 held row
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Held + no compute agent -> skipped for the release cron, NEVER analyzed locally on the fileserver.
+    # Held awaiting-cloud file -> owned by the drain, excluded from recovery, NEVER analyzed locally.
     assert "nox-analyze" not in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 0
 
 
 @pytest.mark.asyncio
-async def test_held_process_file_orphan_routes_to_a_compute_agent(
+async def test_held_awaiting_cloud_file_is_not_recovered_even_with_a_compute_agent(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CR-01 (CLOUDROUTE-02): a held AWAITING_CLOUD orphan routes to a COMPUTE agent when one is online.
+    """83-06 (reverses D-09): a held AWAITING_CLOUD file is NOT recovered even when a COMPUTE agent is online.
 
-    Companion to the fileserver-skip case: with a compute agent online, the held file's ``process_file``
-    orphan re-drives onto the COMPUTE agent's analyze lane (never a fileserver).
-    MUTATION: reintroducing ``~inflight_clause(ANALYZE)`` empties ``held_agent_rows``; the file would still
-    reach ``cloud-analyze`` here (only a compute agent is online) but the fileserver-skip twin above turns
-    RED -- the pair is the lock.
+    Under the old D-09 model recovery re-drove the held file onto the compute agent; 83-06 makes the
+    ``stage_cloud_window`` drain the SINGLE owner, so recovery excludes the held file regardless of which
+    agent kind is online (the drain, not the ledger, dispatches it). Companion lock to the fileserver case.
+    MUTATION: dropping the ``awaiting_cloud`` exclusion re-drives the legacy row onto ``cloud-analyze`` ->
+    a second owner -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -916,14 +895,15 @@ async def test_held_process_file_orphan_routes_to_a_compute_agent(
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
-    await _seed_ledger(session, function="process_file", file_id=f.id)  # the D-09 held-file seed
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # a legacy pre-83-06 held row
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert "cloud-analyze" in router.queues
-    assert result["stages"]["process_file"]["reenqueued"] == 1
+    # The drain owns the held file: recovery re-drives NOTHING (no second owner, no compute re-enqueue).
+    assert "cloud-analyze" not in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 0
 
 
 @pytest.mark.asyncio

@@ -309,31 +309,23 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), or_(succeeded, domain_completed_clause(Stage.ANALYZE)))
 
 
-async def _get_awaiting_cloud_ids(session: AsyncSession) -> set[str]:
-    """File-id strings for held AWAITING_CLOUD long files, for the compute-only recovery partition (CLOUDROUTE-02).
+async def _awaiting_cloud_job_ids(session: AsyncSession) -> set[str]:
+    """File-id strings for files HELD in AWAITING_CLOUD (a ``cloud_job(status='awaiting')`` sidecar row).
 
-    Recovery-SPECIFIC predicate: a held long file is one with an ``cloud_job(status='awaiting')`` sidecar
-    row that has NOT domain-completed its analyze. It deliberately does NOT reuse the drain/card's
-    :func:`~phaze.services.stage_status.awaiting_candidate_clause`, because that clause conjoins
-    ``~inflight_clause(ANALYZE)`` and every held compute file ALREADY carries a ``process_file:<id>``
-    scheduling-ledger row -- the D-09 held-file backfill seed at ``routers/pipeline.py`` inserts it for
-    every file the duration router parks in ``AWAITING_CLOUD`` on the compute path. So
-    ``~inflight_clause(ANALYZE)`` is False by construction for exactly the held files this partition
-    exists to catch, and reusing ``awaiting_candidate_clause`` here made ``held_agent_rows`` provably
-    empty -- re-introducing the Phase-49 CR-01 CLOUDROUTE-02 bug (held long files routed kind-agnostically
-    to a fileserver and analyzed locally). The drain/card KEEP ``~inflight_clause`` (they route NEW work
-    and must skip a locally-analyzing file); recovery does not, because it operates only on ALREADY-orphaned
-    rows -- ``recover_orphaned_work`` has already excluded any file whose ``process_file`` key is live
-    (``r.key not in live``), so a genuinely mid-local-analysis file never reaches this set's consumers.
-    The INNER join supplies the ``FileRecord`` the correlated builder references. Read ONCE per run.
+    83-06 (CONSCIOUSLY REVERSES D-09): a held awaiting-cloud file is owned SOLELY by the
+    :func:`~phaze.tasks.release_awaiting_cloud.stage_cloud_window` drain (via its awaiting ``cloud_job``
+    row), so ``recover_orphaned_work`` EXCLUDES it -- exactly as it excludes an in-flight cloud file
+    (:func:`_in_flight_cloud_job_ids`). This REPLACES the former ``_get_awaiting_cloud_ids`` +
+    ``held_agent_rows`` compute-only partition, which existed only because the D-09 held-file backfill
+    SEEDED a ``process_file:<id>`` ledger row for every held compute file. 83-06 removed that seed (and
+    deletes the orphaned row), so no held file carries a ``process_file`` ledger row any more; the
+    partition became unreachable. Excluding awaiting-cloud files here preserves the CLOUDROUTE-02 safety
+    invariant ROBUSTLY (a held long file is NEVER routed kind-agnostically to a fileserver and analyzed
+    locally) even for a LEGACY row seeded by the pre-83-06 backfill -- the drain, not the ledger, re-drives
+    it. ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so the two exclusion sets are disjoint and
+    each is read ONCE per recovery run.
     """
-    stmt = (
-        select(FileRecord.id)
-        .select_from(FileRecord)
-        .join(CloudJob, CloudJob.file_id == FileRecord.id)
-        .where(CloudJob.status == CloudJobStatus.AWAITING.value, ~domain_completed_clause(Stage.ANALYZE))
-    )
-    return {str(fid) for fid in (await session.scalars(stmt)).all()}
+    return {str(fid) for fid in (await session.scalars(select(CloudJob.file_id).where(CloudJob.status == CloudJobStatus.AWAITING.value))).all()}
 
 
 async def _in_flight_cloud_job_ids(session: AsyncSession) -> set[str]:
@@ -344,12 +336,15 @@ async def _in_flight_cloud_job_ids(session: AsyncSession) -> set[str]:
     reconcile/``/pushed`` callback and this ledger recovery could otherwise claim ownership of that
     file's re-drive -- a double-owner vector that is exactly the 44.5k over-enqueue incident class.
     Excluding every file with a live ``cloud_job`` row from the ledger orphan set makes the backend
-    reconcile/callback the SINGLE owner for cloud-backed files, while a file with NO in-flight
-    ``cloud_job`` (a genuinely-orphaned held AWAITING_CLOUD file) keeps its existing recovery path.
+    reconcile/callback the SINGLE owner for cloud-backed files. 83-06 (reverses D-09): a HELD
+    AWAITING_CLOUD file (``'awaiting'`` ∉ ``IN_FLIGHT``) is likewise excluded, but via the disjoint
+    :func:`_awaiting_cloud_job_ids` set -- the ``stage_cloud_window`` drain owns it. A file with NEITHER
+    an in-flight NOR an awaiting ``cloud_job`` row (a genuinely-orphaned local re-drive) keeps its
+    recovery path.
 
     ``IN_FLIGHT`` = {UPLOADING, UPLOADED, SUBMITTED, RUNNING} (terminal SUCCEEDED/FAILED excluded);
     the set is small and bounded (in-flight rows only), read ONCE per recovery run alongside the
-    done-sets. Mirrors :func:`_get_awaiting_cloud_ids`.
+    done-sets. Mirrors :func:`_awaiting_cloud_job_ids`.
     """
     return {str(fid) for fid in (await session.scalars(select(CloudJob.file_id).where(CloudJob.status.in_([s.value for s in IN_FLIGHT])))).all()}
 
@@ -498,8 +493,22 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # per backend kind, so a compute-backed cloud file gains no second recovery path (no replay
         # of the 44.5k over-enqueue incident class). Read ONCE, alongside live/done_sets.
         in_flight = await _in_flight_cloud_job_ids(session)
+        # 83-06 (CONSCIOUSLY REVERSES D-09): a file HELD in AWAITING_CLOUD is owned SOLELY by the
+        # stage_cloud_window drain (via its awaiting cloud_job row) -- exclude it so recovery never
+        # re-drives it (and never routes a held long file kind-agnostically to a fileserver for LOCAL
+        # analysis, the CLOUDROUTE-02 invariant). This REPLACES the former _get_awaiting_cloud_ids +
+        # held_agent_rows compute-only partition, which was reachable only via the removed D-09 held-file
+        # ledger seed. Read ONCE, alongside in_flight (the two sets are disjoint -- 'awaiting' ∉ IN_FLIGHT).
+        awaiting_cloud = await _awaiting_cloud_job_ids(session)
 
-        orphaned = [r for r in rows if r.key not in live and not is_domain_completed(r, done_sets) and _natural_id(r) not in in_flight]
+        orphaned = [
+            r
+            for r in rows
+            if r.key not in live
+            and not is_domain_completed(r, done_sets)
+            and _natural_id(r) not in in_flight
+            and _natural_id(r) not in awaiting_cloud
+        ]
 
         # Initialize every keyed function to zero so the return shape is TOTAL (and a stage with no
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).
@@ -508,39 +517,23 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         controller_rows = [r for r in orphaned if r.routing == "controller"]
         agent_rows = [r for r in orphaned if r.routing == "agent"]
 
-        # Phase 49 (CR-01): a ``process_file`` row whose file is HELD in AWAITING_CLOUD is a LONG file
-        # that must NEVER be analyzed locally (CLOUDROUTE-02). Backfill (D-09) gives such held files an
-        # agent-routed ledger row, and they are NOT analyze-done, so they reach here as orphaned. The
-        # kind-agnostic ``select_active_agent`` below would route them to the most-recently-seen agent --
-        # typically a fileserver, since "no compute agent online" is the exact condition that held the
-        # file -- so partition them out and route them to a COMPUTE agent ONLY. With no compute agent
-        # online they are skipped (the */5 ``release_awaiting_cloud`` cron drains the AWAITING_CLOUD
-        # state-set, so the file is not lost). Non-held process_file rows stay on the kind-agnostic path.
-        held_ids = await _get_awaiting_cloud_ids(session)
-        held_agent_rows = [r for r in agent_rows if r.function == "process_file" and _natural_id(r) in held_ids]
+        # 83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
+        # It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
+        # COMPUTE agent only (CLOUDROUTE-02: never a fileserver -> never local analysis). That partition was
+        # reachable ONLY because the D-09 held-file backfill SEEDED a ``process_file:<id>`` ledger row for
+        # every held compute file. 83-06 removed that seed (backfill now DELETES the orphaned row and keeps
+        # only the awaiting ``cloud_job`` row as the sole registry), so no held file carries a process_file
+        # ledger row any more -- the partition was provably empty. The CLOUDROUTE-02 invariant is now held
+        # ROBUSTLY (even for a LEGACY pre-83-06 row) by the ``awaiting_cloud`` orphan-set exclusion above:
+        # a held awaiting-cloud file never reaches ANY agent partition, so it can never be analyzed locally.
         # Phase 50 (D-10): a re-driven push_file reads the media mount, so it MUST route to a FILESERVER
         # agent (the rsync initiator), never the compute agent -- partition push rows onto their own path.
         push_rows = [r for r in agent_rows if r.function == "push_file"]
-        other_agent_rows = [r for r in agent_rows if r.function != "push_file" and not (r.function == "process_file" and _natural_id(r) in held_ids)]
+        other_agent_rows = [r for r in agent_rows if r.function != "push_file"]
 
         # Controller rows replay regardless of agent presence (D-05).
         for row in controller_rows:
             await _replay_row(ctx["queue"], row, stages[row.function])
-
-        # Held (AWAITING_CLOUD) rows need an online COMPUTE agent; with none, skip for the release cron.
-        if held_agent_rows:
-            try:
-                compute_agent = await select_active_agent(session, kind="compute")
-            except NoActiveAgentError:
-                logger.warning(
-                    "recover_orphaned_work: no compute agent -- AWAITING_CLOUD rows left for release cron (CLOUDROUTE-02)",
-                    held_agent_rows=len(held_agent_rows),
-                )
-            else:
-                # quick-260707-dh1: held rows are all process_file -> the analyze lane.
-                compute_queue = ctx["task_router"].queue_for(compute_agent.id, lane_for_task("process_file"))
-                for row in held_agent_rows:
-                    await _replay_row(compute_queue, row, stages[row.function])
 
         # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
         # the rsync); with no fileserver online, skip with a WARNING (the next staging-cron tick / a

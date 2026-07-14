@@ -364,9 +364,11 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
         ``and_(CloudJob.status == 'awaiting', ~inflight_clause(ANALYZE), ~domain_completed_clause(ANALYZE))``
 
     -- the same three conjuncts, in the same order, as the two inline spellings this builder REPLACES
-    (``get_awaiting_cloud_count`` + ``get_cloud_staging_candidates`` in ``services/pipeline.py``).
-    Plan 80-04's ``_get_awaiting_cloud_ids`` becomes the third consumer, so the card, the drain, and
-    recovery derive from ONE source and can NEVER disagree (D-08).
+    (``get_awaiting_cloud_count`` + ``get_cloud_staging_candidates`` in ``services/pipeline.py``), so the
+    card and the drain derive from ONE source and can NEVER disagree (D-08). (Plan 80-04 had added a third
+    consumer, ``recover_orphaned_work``'s ``_get_awaiting_cloud_ids``; 83-06 reversed D-09 and made the
+    drain the single owner of held files, so recovery now EXCLUDES awaiting-cloud files via a plain
+    ``cloud_job.status == 'awaiting'`` set rather than reusing this candidacy clause.)
 
     Composed ENTIRELY from the LOCKED :func:`inflight_clause` / :func:`domain_completed_clause`
     builders verbatim (no re-spelled predicate) so the DERIV-04 equivalence guarantee holds. A file
