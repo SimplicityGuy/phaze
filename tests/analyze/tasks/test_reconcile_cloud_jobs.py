@@ -184,7 +184,7 @@ def _patch_seam(
     return get_job, gw, dj, s3
 
 
-def _make_ctx(async_engine: AsyncEngine, queue: DedupFakeQueue | None = None) -> dict[str, Any]:
+def _make_ctx(queue: DedupFakeQueue | None = None) -> dict[str, Any]:
     """Build a controller-shaped ctx: async_session + controller queue + (unused) task router.
 
     92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
@@ -254,13 +254,13 @@ async def _read_file(session: AsyncSession, file_id: uuid.UUID) -> FileRecord:
 
 
 @pytest.mark.asyncio
-async def test_pending_is_silent(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pending_is_silent(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Healthy Pending waits indefinitely: no attempts change, no inadmissible flag, no delete/enqueue."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(PENDING))
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+    tally = await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.status == CloudJobStatus.SUBMITTED.value
@@ -275,13 +275,13 @@ async def test_pending_is_silent(async_engine: AsyncEngine, session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_alerts_without_cap(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_alerts_without_cap(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Inadmissible sets the alert flag + holds; attempts UNCHANGED, Job untouched (D-06/D-07)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(INADMISSIBLE))
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+    tally = await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.inadmissible is True
@@ -293,12 +293,12 @@ async def test_inadmissible_alerts_without_cap(async_engine: AsyncEngine, sessio
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_never_consumes_cap(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_never_consumes_cap(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Across MANY ticks an Inadmissible Workload never increments attempts nor marks ANALYSIS_FAILED."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session)
     _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(INADMISSIBLE))
-    ctx = _make_ctx(async_engine)
+    ctx = _make_ctx()
 
     for _ in range(8):  # well over the cap of 3
         await reconcile_cloud_jobs(ctx)
@@ -314,11 +314,11 @@ async def test_inadmissible_never_consumes_cap(async_engine: AsyncEngine, sessio
 
 
 @pytest.mark.asyncio
-async def test_admission_to_success_sequence(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_admission_to_success_sequence(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pending -> Admitted(RUNNING) -> still RUNNING -> Succeeded reconciles correctly each tick."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
-    ctx = _make_ctx(async_engine)
+    ctx = _make_ctx()
     events: list[str] = []
     dj = DeleteJobSpy(events)
     s3 = S3DeleteSpy(events)
@@ -353,12 +353,12 @@ async def test_admission_to_success_sequence(async_engine: AsyncEngine, session:
 
 
 @pytest.mark.asyncio
-async def test_eviction_triggers_redrive(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_eviction_triggers_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """An Evicted Workload is a no-callback terminal: delete the Job, confirm gone, re-drive submit."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=0)
     queue = DedupFakeQueue("controller")
-    ctx = _make_ctx(async_engine, queue)
+    ctx = _make_ctx(queue)
     # get_job: initial read (non-terminal), then confirm-gone returns None.
     get_job, _, dj, _ = _patch_seam(
         monkeypatch,
@@ -384,9 +384,7 @@ async def test_eviction_triggers_redrive(async_engine: AsyncEngine, session: Asy
 
 
 @pytest.mark.asyncio
-async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """SCHED-03/D-04/D-12: at the cloud cap a no-callback terminal re-stamps the cloud_job sidecar to 'awaiting', writing NO FileRecord.state.
 
     The cloud_job is re-stamped ``status='awaiting'`` via the single spill-mode writer (NOT ``FAILED``) so
@@ -397,7 +395,7 @@ async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=3)  # next_attempt = 4 > cap 3
     queue = DedupFakeQueue("controller")
-    ctx = _make_ctx(async_engine, queue)
+    ctx = _make_ctx(queue)
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)))
 
     tally = await reconcile_cloud_jobs(ctx)
@@ -412,9 +410,7 @@ async def test_max_attempts_cap_then_spill_back_to_awaiting_cloud(
 
 
 @pytest.mark.asyncio
-async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """SCHED-02: a reconcile decrement keeps ``sum(in_flight) <= sum(cap)`` (reconcile only ever decrements).
 
     The cap-safety proof (RESEARCH reconcile-only-decrements): reconcile NEVER claims an in-flight slot,
@@ -451,7 +447,7 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
     assert before == 2 == cap  # start exactly at cap
 
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name_fail)))
-    await backend.reconcile(session, _make_ctx(async_engine))
+    await backend.reconcile(session, _make_ctx())
 
     session.expire_all()
     after = await backend.in_flight_count(session)
@@ -473,7 +469,7 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("seed_status", [CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value])
 async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, seed_status: str, verify: AsyncSession
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, seed_status: str, verify: AsyncSession
 ) -> None:
     """D-04/D-12: the at-cap terminal re-stamps cloud_job 'awaiting' (NOT FAILED), writes NO FileRecord.state, does not increment attempts.
 
@@ -489,7 +485,7 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)), delete_job=dj, s3_delete=s3)
     _patch_commit_marker(monkeypatch, events)
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+    tally = await reconcile_cloud_jobs(_make_ctx())
 
     # 92-04 (CLEAN-02): read via the shared ``verify`` fixture (per-test connection) -> sees only what reconcile COMMITTED.
     cj = (await verify.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
@@ -522,19 +518,19 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
 
 
 @pytest.mark.asyncio
-async def test_s3_delete_only_on_no_callback_terminal(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_s3_delete_only_on_no_callback_terminal(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The success path makes ZERO S3 calls; the no-callback (at-cap) terminal deletes the object."""
     _patch_cap(monkeypatch, cap=3)
     # Success path: a Succeeded Job -> no S3 delete.
     _fid_ok, name_ok = await _seed(session)
     _, _, _, s3_ok = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(succeeded=1, name=name_ok)))
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
     assert s3_ok.calls == []
 
     # No-callback terminal (at cap): a Failed Job -> exactly one S3 delete for that file.
     fid_fail, name_fail = await _seed(session, attempts=3)
     _, _, _, s3_fail = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name_fail)))
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
     assert s3_fail.calls == [fid_fail]
 
 
@@ -542,7 +538,7 @@ async def test_s3_delete_only_on_no_callback_terminal(async_engine: AsyncEngine,
 
 
 @pytest.mark.asyncio
-async def test_reconcile_never_writes_result(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reconcile_never_writes_result(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A Complete Job whose callback already landed only cleans up -- reconcile writes no result row."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
@@ -551,7 +547,7 @@ async def test_reconcile_never_writes_result(async_engine: AsyncEngine, session:
     complete_job.status["conditions"] = [{"type": "Complete", "status": "True", "reason": ""}]
     _patch_seam(monkeypatch, get_job=GetJobSpy(complete_job))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     # No AnalysisResult row written by reconcile (the callback is the sole result writer).
     results = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == fid))).scalars().all()
@@ -586,9 +582,7 @@ def test_reconcile_module_calls_no_result_writer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_redrive_confirms_prior_job_gone_before_resubmit(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_redrive_confirms_prior_job_gone_before_resubmit(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The under-cap re-drive re-submits ONLY after confirming the prior Job is gone (race guard, D-08).
 
     Case A (gone): ``get_job`` returns None on the confirm-gone read -> attempts increments + a fresh
@@ -606,7 +600,7 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(
         get_job=GetJobSpy(fake_job(name=name_a), None),
         get_workload=GetWorkloadSpy(EVICTED),
     )
-    await reconcile_cloud_jobs(_make_ctx(async_engine, queue_a))
+    await reconcile_cloud_jobs(_make_ctx(queue_a))
     cj_a = await _read_cloud_job(session, fid_a)
     assert cj_a.attempts == 1
     assert dj_a.calls == [name_a]
@@ -624,7 +618,7 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(
         get_job=GetJobSpy(fake_job(name=name_b), fake_job(failed=1, name=name_b)),
         get_workload=GetWorkloadSpy(EVICTED),
     )
-    await reconcile_cloud_jobs(_make_ctx(async_engine, queue_b))
+    await reconcile_cloud_jobs(_make_ctx(queue_b))
     cj_b = await _read_cloud_job(session, fid_b)
     assert cj_b.attempts == 0  # NO extra attempt burned
     assert cj_b.status == CloudJobStatus.SUBMITTED.value
@@ -637,11 +631,11 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_clears_on_admission(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_clears_on_admission(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """Inadmissible tick sets the flag; a later Admitted tick clears it (CR-01 -- the alert must recover)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
-    ctx = _make_ctx(async_engine)
+    ctx = _make_ctx()
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
 
     # Tick 1: Inadmissible -> flag set.
@@ -658,11 +652,11 @@ async def test_inadmissible_clears_on_admission(async_engine: AsyncEngine, sessi
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_clears_on_pending(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_clears_on_pending(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A recovered Workload that returns to a healthy Pending wait clears the stale alert flag (CR-01)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
-    ctx = _make_ctx(async_engine)
+    ctx = _make_ctx()
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
 
     monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(INADMISSIBLE))
@@ -675,11 +669,11 @@ async def test_inadmissible_clears_on_pending(async_engine: AsyncEngine, session
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_clears_on_success(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_clears_on_success(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A transiently-Inadmissible row that then succeeds ends with the flag cleared (CR-01)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
-    ctx = _make_ctx(async_engine)
+    ctx = _make_ctx()
     monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
 
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
@@ -699,7 +693,7 @@ async def test_inadmissible_clears_on_success(async_engine: AsyncEngine, session
 
 
 @pytest.mark.asyncio
-async def test_vanished_job_routes_to_terminal_redrive(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_vanished_job_routes_to_terminal_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """An in-flight row whose Job has vanished (get_job -> None) re-drives under cap instead of sticking (WR-01)."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=0)
@@ -707,7 +701,7 @@ async def test_vanished_job_routes_to_terminal_redrive(async_engine: AsyncEngine
     # get_job returns None on every call: the initial read (gone) AND the confirm-gone read.
     _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine, queue))
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
 
     cj = await _read_cloud_job(session, fid)
     assert cj.attempts == 1
@@ -718,15 +712,13 @@ async def test_vanished_job_routes_to_terminal_redrive(async_engine: AsyncEngine
 
 
 @pytest.mark.asyncio
-async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """At the cap a vanished Job is a terminal no-callback -> re-stamp the sidecar 'awaiting', never an eternal skip (WR-01/SCHED-03/D-12)."""
     _patch_cap(monkeypatch, cap=3)
     fid, _name = await _seed(session, attempts=3)  # next_attempt = 4 > cap
     _, _, _, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.AWAITING.value  # D-12: 'awaiting', not FAILED
     assert s3.calls == [fid]
@@ -736,7 +728,7 @@ async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(
 
 
 @pytest.mark.asyncio
-async def test_one_bad_row_does_not_abort_tick(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_one_bad_row_does_not_abort_tick(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A row whose kube read raises is logged + skipped; the remaining rows still reconcile."""
     _patch_cap(monkeypatch)
     fid_bad, name_bad = await _seed(session)
@@ -750,7 +742,7 @@ async def test_one_bad_row_does_not_abort_tick(async_engine: AsyncEngine, sessio
 
     _, _, dj, _ = _patch_seam(monkeypatch, get_job=_Flaky())  # type: ignore[arg-type]
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+    tally = await reconcile_cloud_jobs(_make_ctx())
 
     # The good row still reconciled to success despite the bad row raising.
     assert (await _read_cloud_job(session, fid_ok)).status == CloudJobStatus.SUCCEEDED.value
@@ -764,27 +756,25 @@ async def test_one_bad_row_does_not_abort_tick(async_engine: AsyncEngine, sessio
 
 
 @pytest.mark.asyncio
-async def test_pending_sets_cloud_phase_queued_behind_quota(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_pending_sets_cloud_phase_queued_behind_quota(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A healthy-Pending Workload stamps cloud_phase=queued_behind_quota on a NULL-phase row (D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)  # seeded cloud_phase is NULL (a fresh in-flight row)
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(PENDING))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     assert (await _read_cloud_job(session, fid)).cloud_phase == CloudPhase.QUEUED_BEHIND_QUOTA.value
 
 
 @pytest.mark.asyncio
-async def test_quota_reserved_sets_cloud_phase_admitted(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_quota_reserved_sets_cloud_phase_admitted(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """QuotaReserved=True (not yet Admitted) advances cloud_phase to admitted (D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(QUOTA_RESERVED))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.cloud_phase == CloudPhase.ADMITTED.value
@@ -792,13 +782,13 @@ async def test_quota_reserved_sets_cloud_phase_admitted(async_engine: AsyncEngin
 
 
 @pytest.mark.asyncio
-async def test_admitted_sets_cloud_phase_running(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_admitted_sets_cloud_phase_running(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """An Admitted=True Workload advances cloud_phase to running alongside the SUBMITTED->RUNNING status write (D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.cloud_phase == CloudPhase.RUNNING.value
@@ -806,14 +796,14 @@ async def test_admitted_sets_cloud_phase_running(async_engine: AsyncEngine, sess
 
 
 @pytest.mark.asyncio
-async def test_success_sets_cloud_phase_finished(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_success_sets_cloud_phase_finished(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A Succeeded Job writes cloud_phase=finished before its commit (D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)
     monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(succeeded=1, name=name)))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.status == CloudJobStatus.SUCCEEDED.value
@@ -821,13 +811,13 @@ async def test_success_sets_cloud_phase_finished(async_engine: AsyncEngine, sess
 
 
 @pytest.mark.asyncio
-async def test_inadmissible_does_not_touch_cloud_phase(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_inadmissible_does_not_touch_cloud_phase(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The Inadmissible branch sets only the fault flag -- cloud_phase stays untouched (orthogonality, D-04)."""
     _patch_cap(monkeypatch)
     fid, name = await _seed(session)  # cloud_phase starts NULL
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(INADMISSIBLE))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     cj = await _read_cloud_job(session, fid)
     assert cj.inadmissible is True
@@ -863,9 +853,7 @@ def _patch_commit_marker(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> 
 
 
 @pytest.mark.asyncio
-async def test_clean_before_flip_ordering_delete_precedes_commit_precedes_job(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_clean_before_flip_ordering_delete_precedes_commit_precedes_job(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """At cap the S3 delete of the old object is recorded BEFORE the AWAITING_CLOUD commit and BEFORE delete_job (D-01/MKUE-04)."""
     _patch_cap(monkeypatch, cap=3)
     _fid, name = await _seed(session, attempts=3)  # next_attempt = 4 > cap -> the at-cap clean terminal
@@ -875,7 +863,7 @@ async def test_clean_before_flip_ordering_delete_precedes_commit_precedes_job(
     _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)), delete_job=dj, s3_delete=s3)
     _patch_commit_marker(monkeypatch, events)
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     # The delete runs under the still-held lock, before the flip commit; the Job delete stays post-commit.
     assert events == ["s3_delete", "commit", "delete_job"]
@@ -883,15 +871,13 @@ async def test_clean_before_flip_ordering_delete_precedes_commit_precedes_job(
 
 
 @pytest.mark.asyncio
-async def test_clean_before_flip_deletes_recorded_bucket_and_clears_it(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_clean_before_flip_deletes_recorded_bucket_and_clears_it(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The delete targets the RECORDED staging_bucket (captured pre-mutation), and the row's staging_bucket is cleared to None (D-01/D-06)."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=3)
     _, _, _, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)))
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     # Deleted on exactly the recorded staging bucket -- never a re-derived one.
     assert s3.calls == [fid]
@@ -903,9 +889,7 @@ async def test_clean_before_flip_deletes_recorded_bucket_and_clears_it(
 
 
 @pytest.mark.asyncio
-async def test_spillover_same_bucket_redispatch_preserves_new_object(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_spillover_same_bucket_redispatch_preserves_new_object(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A same-bucket re-dispatch that re-stages a NEW object under the same file_id key survives (Pitfall 9).
 
     Model: a tiny object store keyed by presence. The reconcile's delete runs BEFORE the AWAITING_CLOUD
@@ -935,7 +919,7 @@ async def test_spillover_same_bucket_redispatch_preserves_new_object(
     monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
     _patch_commit_marker(monkeypatch, events)
 
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
+    await reconcile_cloud_jobs(_make_ctx())
 
     # The delete ran BEFORE the commit that releases the file to the drain.
     assert events.index("s3_delete") < events.index("commit")
@@ -953,7 +937,7 @@ async def test_spillover_same_bucket_redispatch_preserves_new_object(
 
 
 @pytest.mark.asyncio
-async def test_clean_before_flip_delete_is_best_effort(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_clean_before_flip_delete_is_best_effort(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising delete_staged_object is swallowed and does NOT block the spill / re-dispatch (D-03, T-70-04-02)."""
     _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, attempts=3)
@@ -972,7 +956,7 @@ async def test_clean_before_flip_delete_is_best_effort(async_engine: AsyncEngine
     monkeypatch.setattr("phaze.services.kube_staging.delete_job", dj)
     monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
 
-    tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
+    tally = await reconcile_cloud_jobs(_make_ctx())
 
     # The raising delete was attempted but swallowed -> the spill still committed and the Job still deleted.
     assert s3.calls == [fid]
