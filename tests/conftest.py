@@ -10,7 +10,8 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from phaze.database import get_session
 from phaze.main import create_app
@@ -42,7 +43,7 @@ def _coerce_async_dsn(dsn: str) -> str:
 
 TEST_DATABASE_URL = _coerce_async_dsn(os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"))
 
-DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
+DB_FIXTURES = {"async_engine", "_db_connection", "session", "verify", "client", "authenticated_client", "seed_test_agent"}
 
 
 @pytest.fixture(autouse=True)
@@ -195,18 +196,30 @@ def backends_toml_env(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     get_settings.cache_clear()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def async_engine():  # type: ignore[no-untyped-def]
-    """Create async engine, set up tables, seed the shared test fileserver, yield, then tear down.
+    """Session-scoped engine: create the schema ONCE, seed the FK-parent fileserver ONCE (D-06/D-07).
 
-    Seeds a real ``kind='fileserver'`` Agent row (``test-fileserver``) after table
-    creation so tests that flush ``FileRecord`` / ``ScanBatch`` rows have a valid FK
-    target for ``agent_id`` (ON DELETE RESTRICT). Phase 89 (LEGACY-03, D-08) dropped the
-    ``agent_id`` model-level default, so every construction now supplies ``agent_id``
-    explicitly (pointing at this seed) rather than relying on the removed
-    ``legacy-application-server`` sentinel default.
+    CLEAN-02 (92-03): the former function-scoped ``create_all``/``drop_all``-per-test fixture that
+    committed a ``test-fileserver`` seed EVERY test was the shared root of the 83-01/83-03 flake class
+    -- a committed row that survived a failed teardown collided on ``pk_agents`` in the next test. The
+    fix (D-06 global) is to make the suite hermetic BY CONSTRUCTION: build the schema exactly once for
+    the whole session and let each test run inside a per-test outer transaction that is ROLLED BACK at
+    teardown (see :func:`session`), so no committed row ever survives.
+
+    The stable ``kind='fileserver'`` Agent row (``test-fileserver``) is seeded ONCE here, committed for
+    real OUTSIDE any per-test transaction, so ``make_file``'s hardcoded ``agent_id="test-fileserver"``
+    FK target (ON DELETE RESTRICT) survives across every test without being re-seeded (Phase 89
+    LEGACY-03 dropped the model-level ``agent_id`` default, so the explicit FK target must exist).
+
+    ``poolclass=NullPool``: pytest-asyncio (asyncio_mode=auto) runs each TEST in its own function-scoped
+    event loop while this engine lives in the session loop. An asyncpg connection binds to the loop that
+    created it, so a POOLED connection would raise "attached to a different loop" when a later test's
+    ``_db_connection`` checkout reuses it. NullPool opens a FRESH connection per ``connect()`` (in the
+    caller's own loop) and closes it on release -- no cross-loop reuse -- which is exactly what the
+    per-test ``_db_connection`` fixture needs.
     """
-    engine = create_async_engine(TEST_DATABASE_URL)
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -217,25 +230,65 @@ async def async_engine():  # type: ignore[no-untyped-def]
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
-    # CLEAN-01 (92-02): get_stage_progress now fans out its reads from the module-level
-    # ``phaze.database.async_session``, whose asyncpg pool binds each connection to the event loop that
-    # first used it. pytest-asyncio (asyncio_mode=auto) runs every test in a FRESH loop, so a
-    # connection pooled by a prior test raises "Event loop is closed" / "got Future attached to a
-    # different loop" when the next test's fan-out reuses it -> the reads silently degrade to zero.
-    # Dispose the module pool here -- in the SAME loop that created those connections -- so the next
-    # test opens fresh connections bound to its own loop. (92-03 supersedes this by monkeypatching
-    # ``phaze.database.async_session`` to route the fan-out through the per-test connection.)
-    from phaze.database import engine as module_engine
-
-    await module_engine.dispose()
 
 
 @pytest_asyncio.fixture
-async def session(async_engine) -> AsyncGenerator[AsyncSession]:  # type: ignore[no-untyped-def]
-    """Yield an async database session for testing."""
-    async_session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with async_session_factory() as session:
-        yield session
+async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # type: ignore[no-untyped-def]
+    """Yield ONE per-test connection -- the single connection every session in the test binds to (D-07).
+
+    The ``create_savepoint`` hermeticity contract (RESEARCH CRITICAL wiring corollary) holds only if the
+    test's :func:`session`, the app's ``get_session`` override, the shared :func:`verify` read session,
+    AND the routed production fan-out (92-03 Task 2) ALL bind to this ONE connection -- a session on a
+    different pool connection would be in a different transaction and, because the per-test outer
+    transaction is never committed, would read ZERO/STALE under read-committed isolation.
+    """
+    async with async_engine.connect() as conn:
+        yield conn
+
+
+@pytest_asyncio.fixture
+async def session(_db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+    """Yield the per-test session: an outer transaction + ``create_savepoint`` join mode (D-07).
+
+    Begins a per-test OUTER transaction on the shared ``_db_connection`` and constructs an
+    ``AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint")``. In this SQLAlchemy
+    2.0 built-in mode the Session's root is always a SAVEPOINT nested inside the outer transaction, so
+    when a mutating router calls ``await session.commit()`` (the ``get_session``-never-commits invariant
+    -- ``project_get_session_never_commits``) the SAVEPOINT is released and a new one opened: the rows
+    become visible WITHIN the outer transaction to any sibling session bound to the same connection, yet
+    nothing is durably committed. Teardown ``await outer.rollback()`` discards ALL in-test commits
+    (including the savepoint-release commits), so nothing survives into the next test -- no ``pk_agents``
+    collision, hermetic by construction. Do NOT hand-roll the ``after_transaction_end`` listener:
+    ``create_savepoint`` IS that recipe (RESEARCH / docs.sqlalchemy.org session_transaction.html).
+    """
+    outer = await _db_connection.begin()
+    s = AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    try:
+        yield s
+    finally:
+        await s.close()
+        await outer.rollback()
+
+
+@pytest_asyncio.fixture
+async def verify(_db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+    """Yield an INDEPENDENT read session bound to the same per-test ``_db_connection`` (D-07).
+
+    This is the migration target for plan 92-04's 21 independent-verify call sites (which today build
+    their own ``async_sessionmaker(async_engine)`` on a DIFFERENT connection and will go RED after this
+    rewrite lands). Because it shares the ONE outer-transaction connection with :func:`session`, a read
+    through this session SEES rows an in-test ``session.commit()`` made -- proving "commit visible to a
+    sibling on the same connection" -- while remaining a distinct ``Session`` object (its own identity
+    map) so it exercises a genuine round-trip to the DB rather than returning the writer's cached ORM
+    instances. It, too, uses ``join_transaction_mode="create_savepoint"`` so it joins the outer
+    transaction without disturbing it; teardown just closes it (the outer rollback in :func:`session`
+    discards everything).
+    """
+    s = AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    try:
+        yield s
+    finally:
+        await s.close()
 
 
 @pytest_asyncio.fixture
