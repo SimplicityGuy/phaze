@@ -98,9 +98,16 @@ def _patch_live_keys(monkeypatch: pytest.MonkeyPatch, keys: set[str]) -> None:
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
-    """Build a controller-shaped ctx: async_session + controller queue + per-agent dedup router."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": controller_queue, "task_router": router}
+    """Build a controller-shaped ctx: async_session + controller queue + per-agent dedup router.
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint), exactly as the production controller wires ``ctx["async_session"]``. This lets the task
+    SEE seeded rows and makes its commits visible to sibling reads under create_savepoint isolation.
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": controller_queue, "task_router": router}
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:

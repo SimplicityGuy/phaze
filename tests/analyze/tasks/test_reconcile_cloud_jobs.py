@@ -185,9 +185,16 @@ def _patch_seam(
 
 
 def _make_ctx(async_engine: AsyncEngine, queue: DedupFakeQueue | None = None) -> dict[str, Any]:
-    """Build a controller-shaped ctx: async_session + controller queue + (unused) task router."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": queue or DedupFakeQueue("controller"), "task_router": DedupFakeTaskRouter()}
+    """Build a controller-shaped ctx: async_session + controller queue + (unused) task router.
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint), exactly as the production controller wires ``ctx["async_session"]``. This lets reconcile
+    SEE seeded rows and makes its commits visible to sibling reads under create_savepoint isolation.
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": queue or DedupFakeQueue("controller"), "task_router": DedupFakeTaskRouter()}
 
 
 def _make_file() -> FileRecord:
@@ -466,12 +473,12 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("seed_status", [CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value])
 async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, seed_status: str
+    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch, seed_status: str, verify: AsyncSession
 ) -> None:
     """D-04/D-12: the at-cap terminal re-stamps cloud_job 'awaiting' (NOT FAILED), writes NO FileRecord.state, does not increment attempts.
 
     Parametrized over BOTH in-flight statuses to exercise the spill CAS's ``expect_status=(SUBMITTED,
-    RUNNING)`` domain. Asserted from a brand-new INDEPENDENT session so only the committed effect is read.
+    RUNNING)`` domain. Asserted from the shared ``verify`` session so only the committed effect is read.
     """
     _patch_cap(monkeypatch, cap=3)
     # A file at PUSHED (the realistic in-flight state) with its cloud_job at cap (attempts == cap -> next > cap).
@@ -484,10 +491,8 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
 
     tally = await reconcile_cloud_jobs(_make_ctx(async_engine))
 
-    # Independent session -> reads only what reconcile COMMITTED on its own session.
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sm() as indep:
-        cj = (await indep.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    # 92-04 (CLEAN-02): read via the shared ``verify`` fixture (per-test connection) -> sees only what reconcile COMMITTED.
+    cj = (await verify.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
 
     # (1) re-stamped 'awaiting', NOT FAILED (mutation b: re-adding status=FAILED / the AWAITING_CLOUD write -> RED).
     assert cj.status == CloudJobStatus.AWAITING.value

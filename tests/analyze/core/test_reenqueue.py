@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -42,7 +41,7 @@ from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 _MODELS_PATH = "/models"
@@ -75,8 +74,13 @@ def _patch_live_keys(monkeypatch: pytest.MonkeyPatch, keys: set[str]) -> None:
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": controller_queue, "task_router": router}
+    # 92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by
+    # the ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    # (create_savepoint), exactly as the production controller wires ``ctx["async_session"]`` -- so the task
+    # SEES seeded rows and its commits are visible to sibling reads under create_savepoint isolation.
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": controller_queue, "task_router": router}
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:

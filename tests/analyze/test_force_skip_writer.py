@@ -29,7 +29,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
@@ -61,9 +60,16 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
 
 
 async def _read_skip(async_engine: AsyncEngine, file_id: uuid.UUID, stage: str) -> StageSkip | None:
-    """Read the stage_skip marker from an INDEPENDENT session (proves the writer COMMITTED)."""
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as independent:
+    """Read the stage_skip marker from an INDEPENDENT session (proves the writer COMMITTED).
+
+    92-04 (CLEAN-02): the read session is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint) -- so it shares the one outer-transaction connection and SEES in-test commits (a fresh
+    ``async_sessionmaker(async_engine)`` would open a DIFFERENT pool connection and read ZERO/STALE).
+    """
+    from phaze.database import async_session
+
+    async with async_session() as independent:
         return (await independent.execute(select(StageSkip).where(StageSkip.file_id == file_id, StageSkip.stage == stage))).scalar_one_or_none()
 
 
@@ -160,7 +166,9 @@ async def test_nul_in_reason_is_sanitized_and_round_trips(client: AsyncClient, s
 
 
 @pytest.mark.asyncio
-async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_skip_never_clears_analysis_failed_at(
+    client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine, verify: AsyncSession
+) -> None:
     """ADDITIVE-ONLY (behavior 6, T-87-20): a terminally-failed analyze keeps ``failed_at`` after a skip."""
     file_id = await _seed_file(session)
     failed_at = datetime.now(UTC)
@@ -171,9 +179,8 @@ async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session
     assert response.status_code == 200
 
     # The skip marker exists AND the failure marker is untouched -- read both from an independent session.
+    # 92-04 (CLEAN-02): the failure-marker read goes through the shared ``verify`` fixture (per-test connection).
     assert await _read_skip(async_engine, file_id, "analyze") is not None
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as independent:
-        row = (await independent.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).first()
+    row = (await verify.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).first()
     assert row is not None
     assert row[0] is not None  # failed_at was NOT cleared by the additive writer
