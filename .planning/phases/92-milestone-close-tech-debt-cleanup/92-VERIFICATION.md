@@ -1,4 +1,145 @@
-# Phase 92 Verification
+---
+phase: 92-milestone-close-tech-debt-cleanup
+verified: 2026-07-13T21:00:00Z
+status: passed
+score: 8/8 must-haves verified
+overrides_applied: 0
+---
+
+# Phase 92: Milestone-Close Tech-Debt Cleanup Verification Report
+
+**Phase Goal:** Pay down the tech debt surfaced by the 2026.7.5 milestone audit before completing
+the milestone. Behavior-preserving except the PERF-02 latency win; small blast radius per item.
+CLEAN-01 = parallelize `get_stage_progress` bucket-count reads via `asyncio.gather` (PERF-02
+follow-up) + re-measure 200K poll latency. CLEAN-02 = fix the non-hermetic test flakes (83-01/83-03
+class) so the full suite passes green under per-bucket CI isolation for EVERY bucket in
+`tests/buckets.json` (D-08). CLEAN-03 = two comment-only doc fixes.
+
+**Verified:** 2026-07-13T21:00:00Z
+**Status:** passed
+**Re-verification:** No — initial verification
+
+## Goal Achievement
+
+### Observable Truths
+
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 1 | `get_stage_progress` fans its independent reads out concurrently via `asyncio.gather`, each in its own `AsyncSession`, bounded by a per-poll `Semaphore(4)` | ✓ VERIFIED | `src/phaze/services/pipeline.py:499-672` — `_stats_fanout()` builds a fresh loop-bound `Semaphore(4)` per poll; `_read_in_own_session` wraps every read; a single `asyncio.gather(...)` call at :657-672 dispatches all 13 independent reads. Code-reviewed (92-REVIEW.md): "gather-order matches unpacking order 1:1... asyncio.gather cannot propagate because every task swallows Exception." |
+| 2 | The fan-out is degrade-safe — a pool-timeout on session acquisition returns the safe default rather than aborting the poll | ✓ VERIFIED | `_read_in_own_session` (pipeline.py:518-543) catches the acquisition `TimeoutError` outside `fn` and returns `default`; `_safe_count`/`_safe_bucket_counts` reused verbatim (never raise). Confirmed by code review (no BLOCKER: "the one behavior that could crash the hot poll (pool saturation) is degrade-safe by construction"). |
+| 3 | Before/after 200K `/pipeline/stats` poll latency is recorded, and the DENORM-01 disposition follows from the measured numbers (D-05) | ✓ VERIFIED | 92-VERIFICATION.md "PERF-02 Re-measurement" section (preserved below): DIRECT p50 1468.9→860.6 ms (−41%), endpoint p50 1737.5→1072.2 ms (−38%); DENORM-01 stays deferred/killed with reasoning recorded. |
+| 4 | The returned dict shape/key order/derived `done` buckets are unchanged on a quiescent DB (no observable behavior regression from the parallelization, aside from the latency win) | ✓ VERIFIED | `tests/analyze/core/test_stage_progress.py` and `tests/shared/routers/test_pipeline.py` (part of the 1084-passed `shared` bucket, independently re-run — see below) assert the 9-key dict shape; `tests/shared/test_conftest_hermeticity.py::test_production_fanout_sees_in_test_seeded_row` independently re-asserts `analyze.done==1`/`total==1`/`metadata.done==0` against the real fan-out. |
+| 5 | The 83-01/83-03 non-hermetic test-flake class is fixed at the shared conftest root (session-scoped engine + per-test `create_savepoint` outer transaction), not patched per-bucket | ✓ VERIFIED | `tests/conftest.py:246-332` — session-scoped `_db_connection`/`async_engine`, per-test `session` fixture using `AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint")`, `verify` sibling fixture, and `_route_stats_fanout` routing the production fan-out onto the same connection. Mutation-safe contract test `tests/shared/test_conftest_hermeticity.py` proves both rollback isolation and production-fan-out visibility with documented mutation recipes (not a toothless guard) — independently re-run GREEN in this verification pass. |
+| 6 | The full suite passes green under per-bucket CI isolation for EVERY bucket in `tests/buckets.json` (D-08) | ✓ VERIFIED | 92-VERIFICATION.md "CLEAN-02 D-08 per-bucket gate" section (preserved below) records all 9 buckets green. **Independently re-run in this verification pass** (see Behavioral Spot-Checks) — every count matches exactly: discovery 172, fingerprint 84, analyze 571, identify 242, review 444 (combined run: 1513), agents 460, integration 248, shared 1084, plus `tests/metadata` 93 + hermeticity/traceability tests (combined run: 106). Total independently observed: 3,411 passed, 0 failed. |
+| 7 | The duplicated `backends.py` KubeConfig comment appears exactly once (D-09), and the stale `agent_files.py` DISCOVERED-stamp/`files.state` comment is corrected (D-10), with zero runtime behavior change | ✓ VERIFIED | `grep -c "thread THIS backend's KubeConfig" src/phaze/services/backends.py` → 1 (confirmed directly). `agent_files.py:126-134` — comment now describes the current `set_` dict (hash/size/batch/file_type refresh only); no `files.state`/`DISCOVERED`/`data["state"]` reference found via direct grep. `git diff main...HEAD` on both files touches comment lines only (per 92-01-SUMMARY and independently confirmed no `set_=` key or logic-line changes in the diff). |
+| 8 | CLEAN-01/CLEAN-02/CLEAN-03 are registered in `.planning/REQUIREMENTS.md` with no orphaned requirement IDs for Phase 92 | ✓ VERIFIED | `.planning/REQUIREMENTS.md:104-106` (checkboxes) and `:180-182` (Traceability rows, `Phase 92 | Pending`). All 3 IDs map to a plan's `requirements:` frontmatter (92-01→CLEAN-03, 92-02→CLEAN-01, 92-04/92-05→CLEAN-02); no unclaimed Phase-92 ID found in REQUIREMENTS.md. `Pending`/unchecked is the CORRECT state at verification time — per 92-05-SUMMARY and the DOCS-01 guard's documented in-flight tolerance (D-05), the checkbox/status flip to `[x]`/`Complete` happens downstream at milestone-close, not during phase verification. Traceability guard test (`tests/shared/core/test_requirements_traceability.py`) independently re-run GREEN in this pass. |
+
+**Score:** 8/8 truths verified
+
+### Required Artifacts
+
+| Artifact | Expected | Status | Details |
+|----------|----------|--------|---------|
+| `src/phaze/services/pipeline.py` | Parallelized `get_stage_progress` fan-out | ✓ VERIFIED | Contains `asyncio.gather` over `_read_in_own_session`, bounded `_stats_fanout()` seam; wired (called by `/pipeline/stats` router and covered by 3 test files). |
+| `.planning/phases/92-milestone-close-tech-debt-cleanup/92-VERIFICATION.md` | Recorded before/after 200K perf numbers + D-08 gate | ✓ VERIFIED | Both sections present and preserved (see below); this file is the same file being extended, not discarded. |
+| `src/phaze/services/backends.py` | De-duplicated KubeConfig comment | ✓ VERIFIED | `grep -c` confirms exactly 1 occurrence. |
+| `src/phaze/routers/agent_files.py` | Corrected ON-CONFLICT comment | ✓ VERIFIED | Direct read confirms comment matches current `set_` dict; no stale `files.state` reference. |
+| `tests/conftest.py` | Session-scoped engine + per-test `create_savepoint` session + `verify` fixture + fan-out routing | ✓ VERIFIED | All four elements present at the cited line ranges; exercised by the mutation-safe contract test. |
+| `tests/shared/test_conftest_hermeticity.py` | Mutation-safe hermeticity contract test | ✓ VERIFIED | 107-line file; 3 tests, documented mutation recipes; independently re-run GREEN. |
+| `.planning/REQUIREMENTS.md` | CLEAN-01/02/03 checkboxes + Traceability rows | ✓ VERIFIED | Present at lines 104-106 and 180-182; no orphaned Phase-92 IDs. |
+| 13 migrated verify-site test files (92-04) | Verify reads via shared per-test connection fixture | ✓ VERIFIED | `tests/review/routers/test_duplicates.py` and siblings pass under per-bucket isolation (review 444 passed, independently re-run). |
+
+### Key Link Verification
+
+| From | To | Via | Status | Details |
+|------|-----|-----|--------|---------|
+| `get_stage_progress` reads | `phaze.database.async_session` | per-task session acquisition (`_read_in_own_session`) | ✓ WIRED | Confirmed by grep + code review; production callers (`/pipeline/stats` router) unchanged signature. |
+| `tests/conftest.py` `_route_stats_fanout` | `phaze.database.async_session` | `monkeypatch.setattr` to a `_db_connection`-bound `create_savepoint` sessionmaker + `Semaphore(1)` | ✓ WIRED | `tests/conftest.py:260-287`; directly exercised and proven by `test_production_fanout_sees_in_test_seeded_row` (independently re-run GREEN). |
+| `tests/conftest.py` `session`/`client` override | `get_session` | single-connection funnel | ✓ WIRED | Session-scoped `_db_connection` + per-test `session`/`verify` both bind to it; commit-visibility proven by the two `_probe_agent_*` tests. |
+
+### Data-Flow Trace (Level 4)
+
+Not applicable in the strict sense (no UI-rendered dynamic data component in this phase), but the
+production-fan-out data path was traced end-to-end and independently confirmed non-hollow:
+`test_production_fanout_sees_in_test_seeded_row` seeds a real `AnalysisResult` row, calls the REAL
+(unmocked) `get_stage_progress`, and asserts `analyze.done == 1` / `total == 1` / `metadata.done == 0`
+— proving the routed fan-out reads real per-test data, not a static/degraded default. Independently
+re-run GREEN as part of the `shared` bucket (1084 passed).
+
+### Behavioral Spot-Checks
+
+All 9 `tests/buckets.json` buckets were independently re-run against the live test DB
+(`localhost:5433`) in this verification pass (not merely re-read from SUMMARY claims):
+
+| Bucket | Command | Result | Status |
+|--------|---------|--------|--------|
+| shared conftest hermeticity + traceability guard + metadata | `pytest tests/shared/test_conftest_hermeticity.py tests/shared/core/test_requirements_traceability.py tests/metadata` | 106 passed | ✓ PASS |
+| agents | `pytest tests/agents` | 460 passed | ✓ PASS (matches claimed 460 exactly) |
+| integration | `pytest tests/integration` | 248 passed | ✓ PASS (matches claimed 248 exactly) |
+| shared | `pytest tests/shared` | 1084 passed | ✓ PASS (matches claimed 1084 exactly) |
+| discovery + fingerprint + analyze + identify + review | `pytest tests/discovery tests/fingerprint tests/analyze tests/identify tests/review` | 1513 passed | ✓ PASS (sum of claimed 172+84+571+242+444=1513, exact match) |
+| ruff check (touched src files) | `uv run ruff check src/phaze/services/pipeline.py src/phaze/services/backends.py src/phaze/routers/agent_files.py tests/conftest.py` | All checks passed | ✓ PASS |
+| mypy (touched src files) | `uv run mypy src/phaze/services/pipeline.py src/phaze/services/backends.py src/phaze/routers/agent_files.py` | Success: no issues found in 3 source files | ✓ PASS |
+| anti-pattern scan (TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER) on touched files | `grep -n -E "TBD\|FIXME\|XXX\|TODO\|HACK\|PLACEHOLDER"` on pipeline.py, backends.py, agent_files.py, conftest.py, test_conftest_hermeticity.py | none found | ✓ PASS |
+
+**Independently observed total: 3,411 tests passed, 0 failed, across all 9 buckets** — this is a live
+re-run in this verification session, not a re-statement of SUMMARY.md's claim. Every per-bucket count
+matches the SUMMARY/prior-VERIFICATION claim exactly.
+
+### Probe Execution
+
+No `scripts/*/tests/probe-*.sh` probes are declared by this phase's PLAN/SUMMARY files, and none exist
+under `scripts/`. Step 7c: SKIPPED (no declared or conventional probes for this phase).
+
+### Requirements Coverage
+
+| Requirement | Source Plan | Description | Status | Evidence |
+|--------------|-------------|--------------|--------|----------|
+| CLEAN-01 | 92-02 | Parallelize `get_stage_progress` via `asyncio.gather`, re-measure 200K poll latency | ✓ SATISFIED | Code + perf numbers verified above. |
+| CLEAN-02 | 92-03, 92-04, 92-05 | Fix non-hermetic test flakes; full suite green under per-bucket CI isolation (D-08) | ✓ SATISFIED | All 9 buckets independently re-run green; mutation-safe contract test passes. |
+| CLEAN-03 | 92-01 | Two comment-only doc fixes (D-09, D-10) | ✓ SATISFIED | Both comments confirmed corrected; zero logic-line diff. |
+
+No orphaned requirements: `.planning/REQUIREMENTS.md` Phase-92 rows (CLEAN-01/02/03) all map to a plan
+that claims them in its `requirements:` frontmatter; no additional Phase-92 ID appears in
+REQUIREMENTS.md without a claiming plan.
+
+### Anti-Patterns Found
+
+None blocking. Code review (92-REVIEW.md, independently read and cross-checked) found 0
+Critical/Blocker, 4 Warning, 2 Info — all advisory:
+
+- **WR-01** (pool-checkout headroom, `Semaphore(4)` raises peak poll checkout to ~5 against the lean
+  10-conn pool) — degrade-safe by construction, accepted design trade-off per REVIEW.
+- **WR-02** (independent per-read snapshots can transiently break `done <= total` under concurrent
+  writes) — documented, self-correcting for a 5s single-user poll, accepted per REVIEW.
+- **WR-03** (`verify` fixture correctness relies on call-site parameter order rather than an explicit
+  `session` dependency) — a real but low-risk latent footgun for future test authors; does not affect
+  current suite hermeticity (proven GREEN + mutation-tested). Not a phase-goal blocker.
+- **WR-04** (dead `async_engine` parameter retained in several test helpers after the routing rewrite)
+  — cosmetic, test-only, does not affect goal achievement.
+- **IN-01, IN-02** — informational, no action required for phase-goal achievement.
+
+None of these are BLOCKER-class per the code reviewer, and none contradict any of the 8 observable
+truths verified above. WR-03 and WR-04 are legitimate follow-up polish items but do not block the
+phase goal (test suite is green, hermetic, and mutation-tested regardless of parameter-order fragility
+that has not yet manifested).
+
+### Human Verification Required
+
+None. All truths are verified programmatically (live test execution against a running Postgres/Redis
+test stack + direct code/diff inspection). No UI, visual, or subjective-judgment truths exist in this
+phase's scope.
+
+### Gaps Summary
+
+No gaps. All 8 must-have truths (roadmap goal decomposed: CLEAN-01 parallelization + perf verdict,
+CLEAN-02 hermeticity fix + D-08 gate, CLEAN-03 comment fixes, requirements bookkeeping) are VERIFIED
+against the live codebase and a live re-run of the full 9-bucket suite (3,411 tests, 0 failures,
+independently reproduced in this verification session — not merely re-stated from SUMMARY.md). The two
+prior-recorded sections (PERF-02 re-measurement, CLEAN-02 D-08 per-bucket gate) are preserved unchanged
+below and corroborated by this session's independent re-run.
+
+---
 
 ## PERF-02 Re-measurement (D-05)
 
@@ -176,6 +317,12 @@ No `--lf`/watch-mode/`-p no:logging` flags were used (each bucket ran clean from
 
 **All 9 buckets exit 0. D-08 gate SATISFIED.**
 
+**Independently re-confirmed by the verifier** in this verification pass (2026-07-13, live re-run
+against `phaze-test-db`/`phaze-test-redis`, not a re-statement of the SUMMARY claim): every count above
+matches exactly, combined into 5 verification runs totaling 3,411 passed / 0 failed:
+`agents`=460, `integration`=248, `shared`=1084, `discovery+fingerprint+analyze+identify+review`=1513
+(=172+84+571+242+444), `metadata`+hermeticity-contract-test+traceability-guard=106.
+
 ### Failure classes exercised (and fixed) to reach green
 
 The gate did NOT pass on the first pass — the 92-03 session-scoped-engine conversion exposed four
@@ -203,3 +350,8 @@ latent hermeticity defects (backlogged as DI-92-04-01 / DI-92-04-02, close-out o
 No residual `pk_agents` collision, no surviving-seed-row, and no zero/stale fan-out read remains in any
 bucket. No colima VM-pressure flake was encountered (per-bucket isolation sidesteps whole-suite VM
 pressure, RESEARCH Pitfall 6).
+
+---
+
+_Verified: 2026-07-13T21:00:00Z_
+_Verifier: Claude (gsd-verifier)_

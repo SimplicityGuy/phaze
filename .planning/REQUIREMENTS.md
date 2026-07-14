@@ -101,9 +101,9 @@
 
 *Surfaced by the 2026.7.5 milestone-close audit (Phase 92). Tech-debt cleanup that must ship before the milestone closes; registered here so the DOCS-01 traceability guard gates them.*
 
-- [ ] **CLEAN-01**: PERF-02 follow-up — parallelize the independent reads in get_stage_progress via asyncio.gather and re-measure /pipeline/stats poll latency at 200K scale (drives the DENORM-01 revisit).
-- [ ] **CLEAN-02**: The test suite is hermetic under per-bucket CI isolation — the 83-01/83-03 flake class fixed at its shared conftest root (session-scoped engine + create_savepoint rollback).
-- [ ] **CLEAN-03**: Doc hygiene — remove the duplicated backends.py KubeConfig comment and the stale agent_files.py DISCOVERED-stamp comment (zero runtime change).
+- [x] **CLEAN-01**: PERF-02 follow-up — parallelize the independent reads in get_stage_progress via asyncio.gather and re-measure /pipeline/stats poll latency at 200K scale (drives the DENORM-01 revisit).
+- [x] **CLEAN-02**: The test suite is hermetic under per-bucket CI isolation — the 83-01/83-03 flake class fixed at its shared conftest root (session-scoped engine + create_savepoint rollback).
+- [x] **CLEAN-03**: Doc hygiene — remove the duplicated backends.py KubeConfig comment and the stale agent_files.py DISCOVERED-stamp comment (zero runtime change).
 
 ---
 
@@ -177,9 +177,9 @@
 | DRILL-03 | Phase 88 | Complete |
 | PROV-01 | — | Deferred (v2) |
 | DENORM-01 | — | Deferred (v2) — PERF-02 (Phase 82) measured over budget, NO-GO/deferred; revisit after asyncio.gather parallelization |
-| CLEAN-01 | Phase 92 | Pending |
-| CLEAN-02 | Phase 92 | Pending |
-| CLEAN-03 | Phase 92 | Pending |
+| CLEAN-01 | Phase 92 | Complete |
+| CLEAN-02 | Phase 92 | Complete |
+| CLEAN-03 | Phase 92 | Complete |
 
 **Coverage:**
 - v1 requirements: 42 total *(the initial "41 total" was an off-by-one; the traceability table has always listed 42 distinct IDs)*
