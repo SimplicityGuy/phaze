@@ -282,7 +282,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
-| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 0/0 | Not Started | — |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 2/5 | In Progress|  |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -696,8 +696,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 92-01-PLAN.md — CLEAN-03 cosmetic doc fixes: de-dup backends.py KubeConfig comment (D-09) + reword stale agent_files.py ON-CONFLICT comment (D-10) [Wave 1]
-- [ ] 92-02-PLAN.md — CLEAN-01 PERF-02: parallelize get_stage_progress via asyncio.gather over per-task sessions bounded by Semaphore(4) + before/after 200K measurement → 92-VERIFICATION.md (D-05) [Wave 1]
+- [x] 92-01-PLAN.md — CLEAN-03 cosmetic doc fixes: de-dup backends.py KubeConfig comment (D-09) + reword stale agent_files.py ON-CONFLICT comment (D-10) [Wave 1]
+- [x] 92-02-PLAN.md — CLEAN-01 PERF-02: parallelize get_stage_progress via asyncio.gather over per-task sessions bounded by Semaphore(4) + before/after 200K measurement → 92-VERIFICATION.md (D-05) [Wave 1]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
