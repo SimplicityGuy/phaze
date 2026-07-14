@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
@@ -513,25 +513,9 @@ async def test_at_cap_spill_restamps_cloud_job_awaiting_not_failed(
 
 
 # --- Delete-after-record ordering (D-04) -----------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_delete_after_record_ordering(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No-callback terminal ordering: outcome committed BEFORE Job delete; S3 delete BEFORE Job delete."""
-    _patch_cap(monkeypatch, cap=3)
-    _fid, name = await _seed(session, attempts=3)  # at cap -> the clean terminal ordering path
-    events: list[str] = []
-    dj = DeleteJobSpy(events, engine=async_engine)
-    s3 = S3DeleteSpy(events)
-    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)), delete_job=dj, s3_delete=s3)
-
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
-
-    # S3 delete precedes Job delete.
-    assert events == ["s3_delete", "delete_job"]
-    # The outcome was already committed when the Job delete fired (the snapshot reads committed state):
-    # cloud_job re-stamped 'awaiting' (D-12), attempts NOT incremented (still cap=3), FileRecord UNTOUCHED (PUSHED, D-04).
-    assert dj.snapshots == [{"cloud_status": CloudJobStatus.AWAITING.value, "attempts": 3}]
+# NOTE (92-04): ``test_delete_after_record_ordering`` moved to
+# ``tests/integration/test_reconcile_concurrency.py`` -- its ``DeleteJobSpy(engine=...)`` snapshot reads
+# COMMITTED state on a SEPARATE connection, which the hermetic create_savepoint fixture cannot provide.
 
 
 # --- S3 delete only on the no-callback terminal ----------------------------------------------------
@@ -858,7 +842,8 @@ async def test_inadmissible_does_not_touch_cloud_phase(async_engine: AsyncEngine
 # making the file a drain candidate. Deleting before the flip guarantees the old object is gone before
 # any concurrent drain tick can re-dispatch + re-stage a NEW object under the same file_id-scoped key.
 
-_DRAIN_ADVISORY_LOCK_KEY = 5_000_504
+# NOTE (92-04): the cross-connection advisory-lock probe cell that read _DRAIN_ADVISORY_LOCK_KEY
+# (5_000_504) moved to tests/integration/test_reconcile_concurrency.py, so the constant is gone from here.
 
 
 def _patch_commit_marker(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:
@@ -961,52 +946,10 @@ async def test_spillover_same_bucket_redispatch_preserves_new_object(
     assert store["present"] is True
 
 
-@pytest.mark.asyncio
-async def test_drain_reconcile_concurrency_delete_runs_under_advisory_lock(
-    async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The clean-before-flip delete executes WHILE reconcile holds pg_advisory_xact_lock(5_000_504) (Pitfall 2/9).
-
-    Proof that a concurrent drain cannot claim the file until reconcile commits: from a SEPARATE session,
-    ``pg_try_advisory_xact_lock`` on the drain's key must FAIL during the delete (reconcile holds it),
-    then SUCCEED after the txn commits. Since the drain takes the same lock across its whole candidate
-    claim, no file can end assigned to two backends and no object the new pod needs is deleted.
-    """
-    _patch_cap(monkeypatch, cap=3)
-    fid, name = await _seed(session, attempts=3)
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    probe_states: dict[str, bool] = {}
-
-    class _LockProbingS3Delete:
-        def __init__(self) -> None:
-            self.calls: list[uuid.UUID] = []
-
-        async def __call__(self, file_id: uuid.UUID, bucket: Any = None) -> None:  # noqa: ARG002 -- seam signature
-            self.calls.append(file_id)
-            # From a distinct connection, try to grab the drain lock reconcile is currently holding.
-            async with sm() as probe:
-                got = (await probe.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _DRAIN_ADVISORY_LOCK_KEY})).scalar()
-                probe_states["during_delete"] = bool(got)
-                await probe.rollback()
-
-    s3 = _LockProbingS3Delete()
-    monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(failed=1, name=name)))
-    monkeypatch.setattr("phaze.services.kube_staging.delete_job", DeleteJobSpy([]))
-    monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
-
-    await reconcile_cloud_jobs(_make_ctx(async_engine))
-
-    # During the delete the lock was held by reconcile -> the concurrent probe could NOT acquire it.
-    assert probe_states["during_delete"] is False
-    # After the reconcile txn commits, the lock is free again.
-    async with sm() as probe:
-        got = (await probe.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _DRAIN_ADVISORY_LOCK_KEY})).scalar()
-        assert bool(got) is True
-        await probe.rollback()
-    assert s3.calls == [fid]
-    # Single-owner: staging_bucket cleared, no double assignment. The FileRecord is UNTOUCHED (D-04): the
-    # sidecar re-stamp to 'awaiting' is what makes the file a drain candidate, not a FileRecord.state write.
-    assert (await _read_cloud_job(session, fid)).staging_bucket is None
+# NOTE (92-04): ``test_drain_reconcile_concurrency_delete_runs_under_advisory_lock`` moved to
+# ``tests/integration/test_reconcile_concurrency.py`` -- its cross-connection
+# ``pg_try_advisory_xact_lock`` probe needs a genuinely independent transaction, which the hermetic
+# single-connection create_savepoint fixture cannot provide.
 
 
 @pytest.mark.asyncio
