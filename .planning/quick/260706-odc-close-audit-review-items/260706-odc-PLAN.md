@@ -3,7 +3,7 @@ quick_id: 260706-odc
 slug: close-audit-review-items
 description: Close the four carried review items surfaced by the 2026.7.2 milestone audit
 created: 2026-07-07
-status: in-progress
+status: complete
 ---
 
 # Quick Task 260706-odc: Close 2026.7.2 carried review items

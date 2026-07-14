@@ -30,6 +30,7 @@ must_haves:
     - from: "deepen_progress GET endpoint"
       to: "AnalysisResult.analysis_completed_at / fine_windows_analyzed / fine_windows_total"
       via: "select on file_id, timestamp-gated completion predicate"
+status: complete
 ---
 
 <objective>

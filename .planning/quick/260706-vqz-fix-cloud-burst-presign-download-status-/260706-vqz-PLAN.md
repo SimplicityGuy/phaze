@@ -28,6 +28,7 @@ must_haves:
       to: "phaze.models.cloud_job.CloudJobStatus"
       via: "module-level downloadable-status frozenset"
       pattern: "CloudJobStatus\\.(UPLOADED|SUBMITTED|RUNNING)"
+status: complete
 ---
 
 <objective>

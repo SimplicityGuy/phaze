@@ -29,6 +29,7 @@ metrics:
   tasks: 2
   files: 2
 requirements_completed: [RC4-STATE-ADVANCE]
+status: complete
 ---
 
 # Phase quick-260707-rc4 Plan 01: Advance FileRecord state to METADATA_EXTRACTED Summary
