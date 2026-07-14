@@ -355,3 +355,18 @@ pressure, RESEARCH Pitfall 6).
 
 _Verified: 2026-07-13T21:00:00Z_
 _Verifier: Claude (gsd-verifier)_
+
+---
+
+## Post-Audit Debt Paydown (2026-07-14)
+
+After the milestone audit (`2026.7.5-MILESTONE-AUDIT.md`) flagged remaining code-level tech debt, the operator directed a full paydown on the phase-92 branch. 10 atomic commits, TDD (RED→GREEN) on every correctness fix, full 9-bucket D-08 re-gate GREEN afterward (**3,409 tests, 0 failed**):
+
+| Group | Items | Result | Commits |
+|-------|-------|--------|---------|
+| A (P92 review) | perf seeder drops dropped `files.state` write; WR-04 dead `async_engine` params; WR-03 `verify` depends on `session` | fixed | 4057bbf0, 7b2c95f7, 5288edad |
+| B (P81) | WR-01 metadata failure upsert guarded against clobbering a DONE row (+test); WR-02 = **test blind spot** (D-11 respected, NOT reopened; twin-divergence test doubles as D-11 mutation guard) | fixed | a14e8b50, 9fe72f8e |
+| C (P85) | WR-01 review-builder starvation → keyset paging (read) + migration-free `NO_OP` `TagWriteLog` eviction (write); WR-02 single-tally count; WR-03 SQL-bounded cue eligible half; WR-04 documented | fixed | 995f80fc, 1b3dc323 |
+| D (P83-06) | root cause was **STRANDING** (worse than the note's "mis-route") + the note's suggested fix was insufficient; operator-approved **Option A reverses locked D-09** — backfill produces a clean drainable held file, `stage_cloud_window` is single owner | fixed | 89f291b4, fa9df92d, 032fc711 |
+
+Full D-08 re-gate: discovery 172 · metadata 94 · fingerprint 84 · analyze 570 · identify 242 · review 448 · agents 460 · integration 252 · shared 1087. The D-09 reversal is recorded in STATE.md Decisions.
