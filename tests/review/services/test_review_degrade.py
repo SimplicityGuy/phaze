@@ -187,3 +187,118 @@ async def test_get_tagwrite_review_rows_admits_applied_excludes_completed(sessio
     assert admitted_id in offered_ids
     # D-02: the completed_subq anti-join excludes the already-written file (idempotency preserved).
     assert completed_id not in offered_ids
+
+
+# ---------------------------------------------------------------------------
+# WR-01 (85-REVIEW): the SQL cap must bound QUALIFYING rows, not raw candidates.
+#
+# The old builder applied ``.limit(_MAX_REVIEW_ROWS)`` to a filename-ordered candidate set
+# BEFORE the Python ">= 1 change" filter. A wall of zero-change applied files that sort
+# alphabetically first fully consumed the capped window, so a qualifying file behind them was
+# never surfaced (silent false-empty). These assert the qualifying file IS surfaced even when
+# it sorts behind >_MAX zero-change applied files.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_zero_change_applied_file(session: AsyncSession, *, filename: str) -> uuid.UUID:
+    """Insert an APPLIED file whose server-computed proposal has ZERO changes (nothing to write).
+
+    The filename has no parseable ``artist - title`` structure, so ``compute_proposed_tags`` draws
+    solely from ``FileMetadata`` -- the proposed tags exactly equal the current tags and
+    ``changed_count == 0``. Such a file never qualifies, so (pre-WR-01) it permanently re-occupied the
+    alphabetically-first ``.limit()`` slots without ever earning a terminal log.
+    """
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/dest/{uuid.uuid4().hex}/{filename}",
+            original_filename=filename,
+            current_path=f"/dest/{filename}",
+            file_type="mp3",
+            file_size=5_000_000,
+        )
+    )
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, artist="Static Artist", title="Static Title"))
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename=filename,
+            status=ProposalStatus.EXECUTED.value,
+        )
+    )
+    await session.commit()
+    return file_id
+
+
+async def _seed_qualifying_applied_file(session: AsyncSession, *, filename: str) -> uuid.UUID:
+    """Insert an APPLIED file with a ``>= 1`` change (title parsed from the filename, NULL in metadata)."""
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/dest/{uuid.uuid4().hex}/{filename}",
+            original_filename=filename,
+            current_path=f"/dest/{filename}",
+            file_type="mp3",
+            file_size=5_000_000,
+        )
+    )
+    await session.flush()
+    # artist matches the filename-parsed artist; title is NULL so the filename title is a real change.
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, artist=filename.split(" - ", 1)[0], title=None))
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename=filename,
+            status=ProposalStatus.EXECUTED.value,
+        )
+    )
+    await session.commit()
+    return file_id
+
+
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_surfaces_qualifying_behind_zero_change_wall(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-01: a qualifying file behind >_MAX zero-change applied files is still surfaced.
+
+    Three zero-change applied files (``aaa_noop_*``) sort alphabetically before the qualifying
+    ``aaa_qual - Title.mp3``. With the old cap-before-filter, ``.limit(_MAX_REVIEW_ROWS)`` (patched
+    to 2) selected only the first two zero-change files, which then filtered to nothing -- the
+    qualifying file was never returned. The fix accumulates QUALIFYING rows up to the cap, so it
+    surfaces regardless of the alphabetical wall.
+    """
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 2)
+    for i in range(3):  # > the patched cap of 2, all sorting before the qualifying file
+        await _seed_zero_change_applied_file(session, filename=f"aaa_noop_{i}.mp3")
+    qual_id = await _seed_qualifying_applied_file(session, filename="aaa_qual - Title.mp3")
+
+    offered = {row["file_id"] for row in await get_tagwrite_review_rows(session)}
+
+    assert qual_id in offered, "the qualifying file must not be starved behind a wall of zero-change files"
+
+
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_pages_across_scan_batches(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-01: keyset paging finds a qualifying file that sits beyond a single scan batch.
+
+    With the scan batch patched to 2, the three zero-change files span two full batches before the
+    qualifying file in a third -- proving the builder keyset-pages the whole candidate set (bounded
+    memory per batch) rather than materializing it all or stopping at the first batch.
+    """
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_ROWS", 2)
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 2)
+    for i in range(3):
+        await _seed_zero_change_applied_file(session, filename=f"aaa_noop_{i}.mp3")
+    qual_id = await _seed_qualifying_applied_file(session, filename="aaa_qual - Title.mp3")
+
+    offered = {row["file_id"] for row in await get_tagwrite_review_rows(session)}
+
+    assert qual_id in offered

@@ -24,6 +24,13 @@ class TagWriteStatus(enum.StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     DISCREPANCY = "discrepancy"
+    # WR-01: a terminal marker for an applied file whose server-computed proposal has ZERO changes
+    # (nothing to write). It is NOT an audio write -- it records that the file was inspected and
+    # needs no tag write, so the idempotency anti-join (``completed``/terminal subquery) EVICTS it
+    # from the candidate window and it can never re-occupy the alphabetically-first ``.limit()``
+    # slots and starve qualifying files. The ``status`` column is a ``String(20)`` (no PG enum /
+    # CHECK constraint), so adding this value needs no migration.
+    NO_OP = "no_op"
 
 
 class TagWriteLog(TimestampMixin, Base):

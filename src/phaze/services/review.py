@@ -22,12 +22,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.models.file import FileRecord
-from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
 from phaze.routers.tags import (
@@ -35,6 +34,7 @@ from phaze.routers.tags import (
     _count_changes,
     _get_accepted_discogs_link,
     _get_tracklist_for_file,
+    _terminal_tagwrite_subq,
 )
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
@@ -55,6 +55,16 @@ logger = structlog.get_logger(__name__)
 # ``Query(le=100)`` bound: the now-populating applied() backlog (READ-05) can never blow up the render
 # at 200K scale. Chosen low-thousands, consistent with the in-tree page bounds and ``_MAX_BULK_TAG_WRITE``.
 _MAX_REVIEW_ROWS = 2000
+
+# WR-01: the keyset scan page size for ``get_tagwrite_review_rows``. The qualifying-change filter is
+# Python (``compute_proposed_tags`` over metadata+tracklist+discogs), so it cannot be pushed into SQL
+# and a plain ``.limit(_MAX_REVIEW_ROWS)`` on raw candidates would cap NON-qualifying rows -- a wall of
+# zero-change applied files that sort first would silently truncate the qualifying files behind them.
+# Instead we keyset-page the candidate set (bounded to this many rows per DB round-trip, so the render
+# never materializes the 200K applied backlog -- the D-03 memory bound is preserved) and accumulate
+# only QUALIFYING rows until ``_MAX_REVIEW_ROWS``. The bulk-write path additionally marks zero-change
+# files NO_OP so ``_terminal_tagwrite_subq`` evicts them, keeping this scan cheap in steady state.
+_REVIEW_SCAN_BATCH = 500
 
 
 async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any]]:
@@ -113,35 +123,50 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
     """
     try:
         async with session.begin_nested():
-            completed_subq = select(TagWriteLog.file_id).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
-            stmt = (
-                select(FileRecord)
-                .options(selectinload(FileRecord.file_metadata))
-                .where(applied_clause(), FileRecord.id.not_in(completed_subq))
-                .order_by(FileRecord.original_filename)
-                .limit(_MAX_REVIEW_ROWS)
-            )
-            file_records = list((await session.execute(stmt)).scalars().all())
-
+            terminal_subq = _terminal_tagwrite_subq()
             rows: list[dict[str, Any]] = []
-            for fr in file_records:
-                tracklist = await _get_tracklist_for_file(session, fr.id)
-                discogs_link = await _get_accepted_discogs_link(session, fr.id)
-                proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-                comparison = _build_comparison(fr.file_metadata, proposed)
-                changed_count = _count_changes(comparison)
-                if changed_count < 1:
-                    continue
-                rows.append(
-                    {
-                        "file_id": fr.id,
-                        "filename": fr.original_filename,
-                        "before_summary": _summarize_tags(comparison, "current"),
-                        "after_summary": _summarize_tags(comparison, "proposed"),
-                        "changed_count": changed_count,
-                        "has_blanking": any(c["current"] is not None and c["proposed"] is None for c in comparison),
-                    }
+            # WR-01: accumulate QUALIFYING rows up to the cap by keyset-paging the candidate set on
+            # ``(original_filename, id)`` (id breaks ties on the non-unique filename), instead of
+            # ``.limit(_MAX_REVIEW_ROWS)``-ing raw candidates and dropping the non-qualifying majority.
+            # This surfaces a qualifying file even when it sorts behind a wall of zero-change files,
+            # while bounding memory to ``_REVIEW_SCAN_BATCH`` rows per round-trip (D-03).
+            last_key: tuple[str, Any] | None = None
+            while len(rows) < _MAX_REVIEW_ROWS:
+                stmt = (
+                    select(FileRecord)
+                    .options(selectinload(FileRecord.file_metadata))
+                    .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
+                    .order_by(FileRecord.original_filename, FileRecord.id)
+                    .limit(_REVIEW_SCAN_BATCH)
                 )
+                if last_key is not None:
+                    stmt = stmt.where(tuple_(FileRecord.original_filename, FileRecord.id) > last_key)
+                batch = list((await session.execute(stmt)).scalars().all())
+                if not batch:
+                    break
+                last_key = (batch[-1].original_filename, batch[-1].id)
+                for fr in batch:
+                    tracklist = await _get_tracklist_for_file(session, fr.id)
+                    discogs_link = await _get_accepted_discogs_link(session, fr.id)
+                    proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+                    comparison = _build_comparison(fr.file_metadata, proposed)
+                    changed_count = _count_changes(comparison)
+                    if changed_count < 1:
+                        continue
+                    rows.append(
+                        {
+                            "file_id": fr.id,
+                            "filename": fr.original_filename,
+                            "before_summary": _summarize_tags(comparison, "current"),
+                            "after_summary": _summarize_tags(comparison, "proposed"),
+                            "changed_count": changed_count,
+                            "has_blanking": any(c["current"] is not None and c["proposed"] is None for c in comparison),
+                        }
+                    )
+                    if len(rows) >= _MAX_REVIEW_ROWS:
+                        break
+                if len(batch) < _REVIEW_SCAN_BATCH:
+                    break  # candidate set exhausted
             return rows
     except Exception:
         logger.warning("tagwrite_review_rows_degraded", exc_info=True)
@@ -215,8 +240,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
     """Return eligible + gated cue cards for the Cue preview workspace (degrade-safe, NO disk write).
 
     Surfaces two sets, both approved tracklists on an applied file (READ-05/D-01 -- an ``executed``
-    ``RenameProposal`` exists, via ``applied_clause()``; the file's ``state`` column is NEVER read),
-    each set bounded by ``_MAX_REVIEW_ROWS`` (D-03):
+    ``RenameProposal`` exists, via ``applied_clause()``; the file's ``state`` column is NEVER read).
+    WR-04: ``_MAX_REVIEW_ROWS`` is a PER-SET cap, not a single render budget -- the eligible and gated
+    halves are each independently bounded by it, so the returned list holds up to ``2 *
+    _MAX_REVIEW_ROWS`` cards (the intentional total ceiling, both halves SQL-bounded per WR-03):
 
     * **eligible** -- ``>= 1`` timestamped track (``_get_eligible_tracklist_query``). For each, the ``.cue``
       preview text is built ENTIRELY IN MEMORY via ``_build_cue_tracks`` + ``generate_cue_content`` -- the
@@ -234,7 +261,9 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
         async with session.begin_nested():
             cards: list[dict[str, Any]] = []
 
-            for tracklist, file_record in await _get_eligible_tracklist_query(session):
+            # WR-03: bound the eligible half at the SQL level so the DB never returns more than the
+            # render cap (the loop-break below no longer sits on top of a fully-materialized result).
+            for tracklist, file_record in await _get_eligible_tracklist_query(session, limit=_MAX_REVIEW_ROWS):
                 if len(cards) >= _MAX_REVIEW_ROWS:  # D-03: cap the eligible half at the same bound.
                     break
                 cue_text: str | None = None
@@ -268,7 +297,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                     Tracklist.id.not_in(has_timestamp_subq),
                 )
                 .order_by(Tracklist.artist, Tracklist.event)
-                .limit(_MAX_REVIEW_ROWS)
+                .limit(_MAX_REVIEW_ROWS)  # WR-04: the gated half's own per-set cap (total ceiling = 2 * _MAX_REVIEW_ROWS)
             )
             for tracklist, file_record in (await session.execute(gated_stmt)).tuples().all():
                 cards.append(

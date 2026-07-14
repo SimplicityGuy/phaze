@@ -29,8 +29,15 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/cue", tags=["cue"])
 
 
-async def _get_eligible_tracklist_query(session: AsyncSession) -> list[tuple[Tracklist, FileRecord]]:
-    """Query approved tracklists with EXECUTED files that have at least one timestamped track."""
+async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | None = None) -> list[tuple[Tracklist, FileRecord]]:
+    """Query approved tracklists with EXECUTED files that have at least one timestamped track.
+
+    Pass ``limit`` to bound the result set at the SQL level. WR-03: the review-card consumer
+    (``services.review.get_cue_review_cards``) passes ``limit=_MAX_REVIEW_ROWS`` so the DB never
+    returns more than the render cap -- the eligible half is then genuinely memory-bounded, not just
+    loop-capped after materializing every eligible pair. The count/pagination callers
+    (``_get_cue_stats``, ``list_cue``) still call with no ``limit`` and get the full set.
+    """
     # Subquery: tracklist IDs that have at least one track with a timestamp
     has_timestamp_subq = (
         select(TracklistVersion.tracklist_id)
@@ -56,6 +63,8 @@ async def _get_eligible_tracklist_query(session: AsyncSession) -> list[tuple[Tra
             Tracklist.event,
         )
     )
+    if limit is not None:
+        stmt = stmt.limit(limit)
 
     result = await session.execute(stmt)
     return list(result.tuples().all())
