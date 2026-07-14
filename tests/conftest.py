@@ -1,5 +1,6 @@
 """Shared test fixtures for Phaze test suite."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import hashlib
@@ -247,7 +248,37 @@ async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # ty
 
 
 @pytest_asyncio.fixture
-async def session(_db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+async def _route_stats_fanout(_db_connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route ``get_stage_progress``'s PRODUCTION fan-out sessions through the per-test connection (92-03 Task 2).
+
+    THE FAILURE CLASS THIS FIXES: after 92-02, ``get_stage_progress`` no longer reads via the passed-in
+    ``session``; it opens its OWN per-task sessions from the module-level ``phaze.database.async_session``
+    (the production engine, its own pool connection). Under the ``create_savepoint`` fixture, seeded rows
+    live ONLY in the UNCOMMITTED per-test outer transaction on ``_db_connection``; a fan-out session on a
+    DIFFERENT pool connection is a different transaction -> read-committed -> it reads ZERO/STALE. That
+    breaks every seed-then-read test (``tests/analyze/core/test_stage_progress.py`` + the
+    ``tests/shared/routers/test_pipeline.py`` seed-then-``GET /pipeline/stats`` cases).
+
+    FIX (RESEARCH option a -- smallest blast radius): monkeypatch the production sessionmaker so its
+    sessions bind to the SAME per-test connection. ``_read_in_own_session`` resolves ``async_session`` via
+    a DEFERRED ``from phaze.database import async_session`` at CALL time (the agent-worker import-boundary
+    convention), so patching the SOURCE attribute ``phaze.database.async_session`` is picked up by every
+    fan-out read with no ``pipeline.py`` edit. ``_STATS_FANOUT = asyncio.Semaphore(1)`` serializes the
+    fan-out onto the ONE shared asyncpg connection (a single connection cannot run concurrent statements),
+    preserving VISIBILITY of the per-test savepoint state while avoiding the concurrency collision.
+    Production is UNCHANGED: the module default ``_STATS_FANOUT`` stays ``None`` (fresh ``Semaphore(4)``
+    per poll, one pool connection per task) outside the test run; ``monkeypatch`` reverts both per test.
+
+    Scoped to DB-fixture tests via the fixture chain (``session`` depends on this) -- deliberately NOT
+    ``autouse=True`` global, which would force ``_db_connection`` (and a DB) for DB-free tests.
+    """
+    fanout_factory = async_sessionmaker(bind=_db_connection, class_=AsyncSession, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    monkeypatch.setattr("phaze.database.async_session", fanout_factory)
+    monkeypatch.setattr("phaze.services.pipeline._STATS_FANOUT", asyncio.Semaphore(1))
+
+
+@pytest_asyncio.fixture
+async def session(_db_connection: AsyncConnection, _route_stats_fanout: None) -> AsyncGenerator[AsyncSession]:
     """Yield the per-test session: an outer transaction + ``create_savepoint`` join mode (D-07).
 
     Begins a per-test OUTER transaction on the shared ``_db_connection`` and constructs an
