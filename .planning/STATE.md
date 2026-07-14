@@ -142,7 +142,10 @@ Last activity: 2026-07-14 — Completed quick task 260714-hb3: Bump version to 2
 
 ### Pending Todos
 
-None.
+3 pending (`.planning/todos/pending/`):
+- `analysis-completed-at-backfill.md` — analyzed ⇒ analysis_completed_at: 1001 prod rows fail the shadow gate (Phase 84 UAT)
+- `2026-07-14-analysis-pod-progress-post-connecttimeout-spam-event-loop-st.md` — cloud analysis pod progress-POST ConnectTimeout spam (in-pod GIL/event-loop starvation, not the API); minor, log-noise + dead progress bar only (2026.7.6 drain)
+- `2026-07-14-human-friendly-analysis-pod-console-logs-with-file-context-a.md` — pretty-ify pod console logs: file identity, source path, live progress indicator (2026.7.6 drain, operator request)
 
 ### Blockers/Concerns
 
