@@ -29,8 +29,9 @@ Distribution (D-06, fractions of N, deterministic by ``i % 100`` so a re-run rep
 * ~3% get a non-media ``file_type`` (``txt``) so the ``file_type IN MUSIC_VIDEO_TYPES`` scope is exercised.
 
 Idempotency: row ids are deterministic ``uuid5`` values and every INSERT is ``ON CONFLICT DO NOTHING``, so a
-re-run without ``--reseed`` is a no-op (never duplicates / corrupts). ``FileRecord.state`` is stamped to the
-furthest reached stage (dual-write realism) so a downstream shadow-compare stays representative.
+re-run without ``--reseed`` is a no-op (never duplicates / corrupts). The seeder targets the post-039 schema
+(``files.state`` was dropped in migration 039), so a fresh perf DB reaches HEAD in a single ``alembic upgrade
+head`` and the derived readers -- which never consulted ``state`` -- see the correct per-stage distribution.
 
 Usage::
 
@@ -95,7 +96,6 @@ class _Plan:
         "ledger_stage",
         "metadata_failed",
         "metadata_present",
-        "state",
     )
 
     def __init__(self, i: int, n_ledger: int) -> None:
@@ -112,23 +112,6 @@ class _Plan:
         self.dedup = b in (98, 99)  # ~2%
         # A few-thousand in-flight ledger rows over the FIRST n_ledger files, cycling the three stages.
         self.ledger_stage = _STAGE_FUNCS[i % 3] if i < n_ledger else None
-        self.state = self._state()
-
-    def _state(self) -> str:
-        # Dual-write realism: stamp state to the furthest stage the file reached (derived readers IGNORE it).
-        if self.dedup:
-            return "duplicate_resolved"
-        if self.cloud:
-            return "awaiting_cloud"
-        if self.analysis_completed:
-            return "analyzed"
-        if self.analysis_failed:
-            return "analysis_failed"
-        if self.fp_success:
-            return "fingerprinted"
-        if self.metadata_present and not self.metadata_failed:
-            return "metadata_extracted"
-        return "discovered"
 
     def cloud_status(self, i: int) -> str:
         # Cycle the ACTIVE cloud_job statuses (+ terminal failed) so the awaiting partial index is exercised.
@@ -194,7 +177,7 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
             fid = _fid(i)
             ext = _MUSIC_VIDEO[i % len(_MUSIC_VIDEO)] if p.is_media else _NON_MEDIA
             path = f"/music/perf/{i:07d}.{ext}"
-            files.append((fid, f"{i:064x}"[:64], path, f"{i:07d}.{ext}", path, ext, 4_000_000 + i, p.state, _LEGACY_AGENT))
+            files.append((fid, f"{i:064x}"[:64], path, f"{i:07d}.{ext}", path, ext, 4_000_000 + i, _LEGACY_AGENT))
 
             if p.metadata_present:
                 metadata.append((_rid("md", i), fid, 210.5, "failed extraction" if p.metadata_failed else None))
@@ -217,8 +200,8 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
         counts["files"] = await _copy_unnest(
             conn,
             "files",
-            ["id", "sha256_hash", "original_path", "original_filename", "current_path", "file_type", "file_size", "state", "agent_id"],
-            ["uuid", "text", "text", "text", "text", "text", "int8", "text", "text"],
+            ["id", "sha256_hash", "original_path", "original_filename", "current_path", "file_type", "file_size", "agent_id"],
+            ["uuid", "text", "text", "text", "text", "text", "int8", "text"],
             files,
         )
         # metadata: (id, file_id, duration, failed_at?) -- failed_at is now() when the 4th arg is non-NULL.
