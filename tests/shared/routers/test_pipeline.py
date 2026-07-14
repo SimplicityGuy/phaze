@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -130,6 +130,16 @@ async def _awaiting_cloud_ids(session: AsyncSession) -> set[uuid.UUID]:
     """The set of file_ids currently HELD in AWAITING_CLOUD, derived from the cloud_job sidecar (Phase 90 D-09)."""
     rows = (await session.execute(select(CloudJob.file_id).where(CloudJob.status == CloudJobStatus.AWAITING.value))).scalars().all()
     return set(rows)
+
+
+async def _analysis_failed_at(session: AsyncSession, file_id: uuid.UUID) -> datetime | None:
+    """Return the file's ``analysis.failed_at`` marker (83-06: a clean cloud-hold clears it to None)."""
+    return (await session.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).scalar_one()
+
+
+async def _process_file_ledger_rows(session: AsyncSession, file_id: uuid.UUID) -> list[SchedulingLedger]:
+    """Return the ``process_file:<id>`` scheduling-ledger rows for a file (83-06: a clean hold deletes them)."""
+    return list((await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{file_id}"))).scalars().all())
 
 
 def _make_file_with_convergence() -> tuple[FileRecord, AnalysisResult, FileMetadata]:
@@ -829,13 +839,13 @@ async def test_backfill_selects_long_failed_resets_and_holds_awaiting_cloud(clie
     # The short failed file stays ANALYSIS_FAILED; the never-failed DISCOVERED file is untouched.
     await session.refresh(short_failed)
     await session.refresh(untouched_discovered)
-    # The long failed file was reset out of ANALYSIS_FAILED and HELD in AWAITING_CLOUD, with an
-    # explicit scheduling-ledger row (the held branch fires no before_enqueue hook).
+    assert await _analysis_failed_at(session, short_failed.id) is not None  # short file still failed
+    # 83-06 (reverses D-09): the long failed file leaves ANALYSIS_FAILED and becomes a CLEAN
+    # AWAITING_CLOUD hold -- its failed_at marker is cleared and its orphaned process_file ledger
+    # row is deleted (the awaiting cloud_job row is the sole registry the drain now owns).
     assert await _is_awaiting_cloud(session, long_failed.id)
-    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].function == "process_file"
-    assert rows[0].routing == "agent"
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
 
 
 @pytest.mark.asyncio
@@ -856,8 +866,12 @@ async def test_backfill_response_reports_count_and_split(client: AsyncClient, se
 
 
 @pytest.mark.asyncio
-async def test_backfill_no_compute_holds_awaiting_cloud_with_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
-    """With no compute agent online, a backfilled long file is HELD in AWAITING_CLOUD with an explicit ledger row (D-09)."""
+async def test_backfill_no_compute_holds_a_clean_awaiting_cloud_file(client: AsyncClient, session: AsyncSession) -> None:
+    """83-06 (reverses D-09): with no compute agent online, a backfilled long file becomes a CLEAN AWAITING_CLOUD hold.
+
+    The held file is NEVER enqueued (CLOUDROUTE-02), and it leaves ANALYSIS_FAILED cleanly: failed_at
+    cleared + the orphaned process_file ledger row deleted, only the awaiting cloud_job row kept.
+    """
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # fileserver only, no compute
     capture = wire_fakes(client)
@@ -870,20 +884,18 @@ async def test_backfill_no_compute_holds_awaiting_cloud_with_ledger_row(client: 
     assert capture == []
     assert await _is_awaiting_cloud(session, long_failed.id)
 
-    # The held branch fires no before_enqueue hook, so the endpoint seeds the ledger row explicitly.
-    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].function == "process_file"
-    assert rows[0].routing == "agent"
+    # 83-06: the marker is cleared and the orphaned ledger row deleted -- a clean drainable hold.
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
 
 
 @pytest.mark.asyncio
-async def test_backfill_with_compute_online_still_holds_and_writes_single_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 50: even with a compute agent online the backfilled file is held with exactly ONE ledger row.
+async def test_backfill_with_compute_online_still_holds_a_clean_awaiting_cloud_file(client: AsyncClient, session: AsyncSession) -> None:
+    """83-06 (reverses D-09): even with a compute agent online the backfilled file is a CLEAN AWAITING_CLOUD hold.
 
-    The reshape removed the direct-to-compute backfill branch, so every candidate is held in
-    AWAITING_CLOUD and the endpoint seeds its scheduling-ledger row explicitly — exactly one row,
-    never a double-write (T-50-bypass + D-09 idempotency).
+    Phase 50 removed the direct-to-compute backfill branch (every candidate is held for the drain);
+    83-06 removes the held-file ledger SEED so the hold is clean -- failed_at cleared, the orphaned
+    process_file ledger row deleted, only the awaiting cloud_job row kept (no direct compute enqueue).
     """
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "cloud", kind="compute")
@@ -895,8 +907,8 @@ async def test_backfill_with_compute_online_still_holds_and_writes_single_ledger
     await _drain_background()
     assert capture == []  # no direct compute enqueue
     assert await _is_awaiting_cloud(session, long_failed.id)
-    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert len(rows) == 1
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
 
 
 @pytest.mark.asyncio
@@ -922,15 +934,14 @@ async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, sess
 
 
 @pytest.mark.asyncio
-async def test_backfill_seeds_a_ledger_row_for_every_held_candidate(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 90 (PR-A): the held-files ledger seed covers EVERY candidate after the state sub-filter drop.
+async def test_backfill_makes_every_candidate_a_clean_awaiting_cloud_hold(client: AsyncClient, session: AsyncSession) -> None:
+    """83-06 (reverses D-09): EVERY backfill candidate becomes a clean AWAITING_CLOUD hold.
 
-    The endpoint used to build its held set with an in-memory ``if file.state == AWAITING_CLOUD`` filter.
-    That guard is DROPPED (the ``files.state`` column is going away) -- every backfill candidate is long,
-    so ``_route_discovered_by_duration`` HOLDS all of them, i.e. the candidate set IS the held set. This
-    test proves the drop is behavior-preserving: after one backfill of THREE long-failed files, every one
-    carries its ``process_file:<id>`` scheduling-ledger row (durable scheduled work for the staging cron),
-    with no row missing and none doubled.
+    Every backfill candidate is long, so ``_route_discovered_by_duration`` HOLDS all of them (the
+    candidate set IS the held set). 83-06 then strips both exclusion markers from every held file: after
+    one backfill of THREE long-failed files, each one carries an awaiting cloud_job row, has its
+    ``analysis.failed_at`` cleared, and has its orphaned ``process_file:<id>`` ledger row DELETED -- so
+    the bounded drain owns all three (none missing, none left excluded).
     """
     files = await _persist_failed_with_duration(session, [_LONG, _LONG, _LONG])
     await seed_active_agent(session, "cloud", kind="compute")
@@ -941,14 +952,12 @@ async def test_backfill_seeds_a_ledger_row_for_every_held_candidate(client: Asyn
     await _drain_background()
     assert capture == []  # held, never directly enqueued
 
-    # Every candidate was held (Phase 90 D-09: a cloud_job awaiting row, not a files.state flip) AND
-    # seeded exactly one ledger row.
     file_ids = [f.id for f in files]  # capture before _awaiting_cloud_ids() expires the ORM objects
     held_ids = await _awaiting_cloud_ids(session)
     for fid in file_ids:
         assert fid in held_ids
-        rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{fid}"))).scalars().all()
-        assert len(rows) == 1, f"held file {fid} must carry exactly one ledger row (filter-drop kept the held set)"
+        assert await _analysis_failed_at(session, fid) is None, f"held file {fid} must have its failed_at marker cleared"
+        assert await _process_file_ledger_rows(session, fid) == [], f"held file {fid} must have its orphaned ledger row deleted"
 
 
 @pytest.mark.asyncio
@@ -1012,99 +1021,206 @@ async def test_backfill_enabled_resets_and_holds(client: AsyncClient, session: A
     assert await _is_awaiting_cloud(session, long_failed.id)
 
 
-# --- Phase 55 Plan 04 Task 2 (L3 / CLOUDROUTE-02): backfill forks on the active cloud kind ---------
-# The backfill endpoint resets ledger-scoped failed long files to DISCOVERED and routes them to
-# AWAITING_CLOUD for BOTH cloud kinds. The ONLY difference is the held-file ledger seed:
-#   - compute : seeds a process_file:<id> row (insert_ledger_if_absent) -- the held file's durable
-#               "was scheduled" fact (D-09).
-#   - kueue   : seeds NO process_file:<id> row -- a ledger row would let recover_orphaned_work replay
-#               the held file onto a LOCAL agent queue (the cloud_job row, NOT the ledger, is the k8s
-#               in-flight registry). The seed call must NOT fire on the kueue branch.
-# Both forks converge on exactly the prior candidacy row, so the fork is asserted at the
-# insert_ledger_if_absent call boundary (spy), which is the only observable difference.
-
-
-def _spy_on_ledger_seed(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
-    """Patch routers.pipeline.insert_ledger_if_absent to record the keys it is called with."""
-    import phaze.routers.pipeline as pipeline_mod
-
-    seeded_keys: list[str | None] = []
-    original = pipeline_mod.insert_ledger_if_absent
-
-    async def _recording(*args: object, **kwargs: object) -> None:
-        seeded_keys.append(kwargs.get("key"))  # type: ignore[arg-type]
-        await original(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(pipeline_mod, "insert_ledger_if_absent", _recording)
-    return seeded_keys
+# --- Phase 55 Plan 04 Task 2 (CLOUDROUTE-02): backfill converges the cloud kinds (83-06 reverses D-09) --
+# The backfill endpoint routes ledger-scoped failed long files to AWAITING_CLOUD for BOTH cloud kinds.
+# 83-06 removed the per-kind held-file ledger seed fork (compute SEED / kueue SKIP): NEITHER branch seeds
+# a ledger row now -- both CLEAR analysis.failed_at and DELETE the orphaned process_file:<id> row, so the
+# held file is a clean drainable AWAITING_CLOUD candidate whose SOLE registry is the awaiting cloud_job
+# row. The compute and kueue paths are therefore behavior-identical; each is asserted directly.
 
 
 @pytest.mark.asyncio
-async def test_backfill_a1_seeds_process_file_ledger_row(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """compute fork: the held-file branch calls insert_ledger_if_absent for the process_file:<id> key (D-09)."""
+async def test_backfill_compute_clears_marker_and_deletes_ledger_row(client: AsyncClient, session: AsyncSession) -> None:
+    """compute branch (83-06): the held file is a clean AWAITING_CLOUD hold -- failed_at cleared, ledger row deleted."""
     # A single compute backend is the autouse default.
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> held in AWAITING_CLOUD
     wire_fakes(client)
-    seeded_keys = _spy_on_ledger_seed(monkeypatch)
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
     await _drain_background()
 
-    # The a1 branch DID seed the held file's process_file ledger row.
-    assert f"process_file:{long_failed.id}" in seeded_keys
     assert await _is_awaiting_cloud(session, long_failed.id)
-    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert len(rows) == 1  # exactly the one row (idempotent over the prior candidacy row)
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
 
 
 @pytest.mark.asyncio
-async def test_backfill_k8s_holds_awaiting_cloud_without_ledger_seed(
+async def test_backfill_kueue_clears_marker_and_deletes_ledger_row(
     client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """k8s fork (L3): the held file is reset->routed to AWAITING_CLOUD but NO ledger seed fires.
+    """kueue branch (83-06): identical to compute -- the held file is a clean AWAITING_CLOUD hold.
 
-    A process_file:<id> ledger seed on the kueue branch would let recover_orphaned_work replay the
-    held file onto a LOCAL agent queue (CLOUDROUTE-02). The kueue branch therefore SKIPS
-    insert_ledger_if_absent entirely; the file still carries exactly its prior candidacy row (no
-    NEW row), and the cloud_job row -- seeded later by the stage_cloud_window k8s branch -- is the
-    in-flight registry.
+    The former kueue SKIP fork (no ledger seed, but ``failed_at`` retained) left the held file
+    domain-completed and un-drainable; 83-06 clears ``failed_at`` and deletes the orphaned ledger row on
+    the kueue branch too, so the held file is a clean drainable candidate the awaiting cloud_job registers.
     """
     monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")  # k8s has no compute agent -> held
     wire_fakes(client)
-    seeded_keys = _spy_on_ledger_seed(monkeypatch)
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
     await _drain_background()
 
-    # L3: the k8s branch never seeded a process_file ledger row.
-    assert seeded_keys == []
-    # The candidate was still reset out of ANALYSIS_FAILED and HELD for the staging cron.
     assert await _is_awaiting_cloud(session, long_failed.id)
-    # No NEW process_file row was added: exactly the one prior candidacy row remains.
-    rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
-    assert len(rows) == 1
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
 
 
 @pytest.mark.asyncio
 async def test_backfill_local_redrives_nothing(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """local fork: the cloud-off gate short-circuits -- no file is reset and no ledger seed fires."""
+    """local fork: the cloud-off gate short-circuits -- no file is touched (marker + ledger row untouched)."""
     monkeypatch.setattr(settings, "backends", [_LOCAL_BACKEND])
     (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
     await seed_active_agent(session, "nox", kind="fileserver")
     wire_fakes(client)
-    seeded_keys = _spy_on_ledger_seed(monkeypatch)
 
     response = await client.post("/pipeline/backfill-cloud")
     assert response.status_code == 200
     await _drain_background()
 
-    assert seeded_keys == []
-    await session.refresh(long_failed)
+    # The all-local early-return mutates nothing: the failure marker + the prior ledger row survive.
+    assert await _analysis_failed_at(session, long_failed.id) is not None
+    assert len(await _process_file_ledger_rows(session, long_failed.id)) == 1
+    assert not await _is_awaiting_cloud(session, long_failed.id)
+
+
+# --- 83-06 (reverses D-09): backfill produces a CLEAN drainable held file ---------------------
+# OPTION A: a backfill that routes a failed long file to a cloud path (compute OR kueue) now clears
+# the ``analysis.failed_at`` marker AND deletes the orphaned ``process_file:<id>`` scheduling-ledger
+# row in the same transaction, KEEPING only the awaiting ``cloud_job`` row. The held file then looks
+# identical to a normal "Run Analysis"-held file, so ``stage_cloud_window`` DISPATCHES it (the retained
+# ``failed_at`` + ledger row previously made ``awaiting_candidate_clause`` exclude it -- 83-06). This
+# CONSCIOUSLY REVERSES D-09 (the drain, via the awaiting ``cloud_job`` row, is now the single owner;
+# D-09's ledger-replay recovery purpose was already dead because ``analysis.failed_at`` put the held
+# file in the analyze domain-completed exclusion, so ``recover_orphaned_work`` never replayed it).
+
+
+class _DrainableStubBackend:
+    """A duck-typed cloud ``Backend`` (non-local, so ``select_backend`` treats it as a cloud lane).
+
+    Mirrors ``tests/analyze/tasks/test_release_awaiting_cloud._StubBackend``'s healthy path: a genuine
+    stage PROMOTES the file's existing awaiting ``cloud_job`` row to SUBMITTED + stamps ``backend_id``
+    (no commit -- the drain owns the single post-loop commit) and returns ``True``.
+    """
+
+    def __init__(self, *, id: str, rank: int = 10, cap: int = 5) -> None:
+        self.id = id
+        self.rank = rank
+        self.cap = cap
+        self.dispatch_calls = 0
+
+    async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature
+        return True
+
+    async def in_flight_count(self, session: AsyncSession) -> int:  # noqa: ARG002 -- protocol signature
+        return 0
+
+    async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: object) -> bool:  # noqa: ARG002 -- protocol signature
+        self.dispatch_calls += 1
+        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, status=CloudJobStatus.SUBMITTED.value))
+        return True
+
+    async def reconcile(self, session: AsyncSession, ctx: dict[str, object] | None = None) -> dict[str, int] | None:  # noqa: ARG002
+        return None
+
+
+class _DrainCfg:
+    """Minimal registry-derived cfg the drain reads (cloud on + the two select_backend knobs)."""
+
+    cloud_enabled = True
+    cloud_submit_max_attempts = 3
+    cloud_spill_to_local_after_seconds = 900
+
+
+async def _run_stage_cloud_window(monkeypatch: pytest.MonkeyPatch, backend: _DrainableStubBackend) -> dict[str, int]:
+    """Run the real ``stage_cloud_window`` drain against a single drainable stub backend.
+
+    Pins the drain's ``get_settings`` + deferred ``resolve_backends`` seams (mirrors the drain-suite
+    harness) and wires ``ctx["async_session"]`` from ``phaze.database.async_session`` -- the conftest
+    ``_route_stats_fanout`` binds it to the SAME per-test ``_db_connection`` (create_savepoint), so the
+    drain SEES the backfill-committed awaiting rows and its promotion is visible to a later read.
+    """
+    from phaze.database import async_session
+    from phaze.tasks.release_awaiting_cloud import stage_cloud_window
+
+    monkeypatch.setattr("phaze.tasks.release_awaiting_cloud.get_settings", lambda: _DrainCfg())
+    monkeypatch.setattr("phaze.services.backends.resolve_backends", lambda cfg: [backend])  # noqa: ARG005
+    ctx = {"async_session": async_session, "queue": DedupFakeQueue("controller"), "task_router": DedupFakeTaskRouter()}
+    return await stage_cloud_window(ctx)
+
+
+async def _cloud_job_status(session: AsyncSession, file_id: uuid.UUID) -> tuple[str, str | None]:
+    """Return ``(status, backend_id)`` for a file's cloud_job sidecar row (fresh DB read)."""
+    session.expire_all()
+    row = (await session.execute(select(CloudJob.status, CloudJob.backend_id).where(CloudJob.file_id == file_id))).one()
+    return row[0], row[1]
+
+
+@pytest.mark.asyncio
+async def test_backfill_compute_held_file_is_drainable(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """83-06 (reverses D-09): a backfilled COMPUTE-target failed long file DRAINS to the compute backend.
+
+    RED on the pre-83-06 code: backfill retained ``analysis.failed_at`` (domain-completed) AND seeded a
+    ``process_file:<id>`` ledger row (in-flight), so ``awaiting_candidate_clause`` excluded the held file
+    and ``stage_cloud_window`` staged 0. After OPTION A the held file is a clean awaiting-cloud candidate:
+    ``failed_at`` cleared + ledger row deleted, only the awaiting ``cloud_job`` row kept -> staged=1.
+    """
+    # Autouse fixture pins a single compute backend (cloud ON, active_cloud_kind 'compute').
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")  # the drain's push-initiator gate
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # The held file is now a CLEAN drainable candidate: awaiting cloud_job kept, failed_at + ledger cleared.
+    assert await _is_awaiting_cloud(session, long_failed.id)
+    marker = (await session.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == long_failed.id))).scalar_one()
+    assert marker is None  # 83-06: the failed_at marker was cleared (mirrors retry_analysis_failed)
+    ledger = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert ledger == []  # 83-06: the orphaned process_file ledger row was deleted (drain is the single owner)
+
+    # The drain now DISPATCHES it to the compute backend (staged=1, cloud_job submitted).
+    backend = _DrainableStubBackend(id="a1")
+    result = await _run_stage_cloud_window(monkeypatch, backend)
+    assert result == {"staged": 1, "skipped": 0}
+    status, backend_id = await _cloud_job_status(session, long_failed.id)
+    assert (status, backend_id) == (CloudJobStatus.SUBMITTED.value, "a1")
+
+
+@pytest.mark.asyncio
+async def test_backfill_kueue_held_file_is_drainable(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """83-06 (reverses D-09): the KUEUE twin -- a backfilled kueue-target failed long file also DRAINS.
+
+    The kueue backfill branch already seeded NO ledger row, but it left ``analysis.failed_at`` set, so the
+    held file was still domain-completed and excluded by ``awaiting_candidate_clause``. OPTION A clears
+    ``failed_at`` on BOTH cloud branches, so the kueue-held file also becomes a clean drainable candidate.
+    """
+    monkeypatch.setattr(settings, "backends", [_KUEUE_BACKEND])
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    assert await _is_awaiting_cloud(session, long_failed.id)
+    marker = (await session.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == long_failed.id))).scalar_one()
+    assert marker is None
+    ledger = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
+    assert ledger == []
+
+    backend = _DrainableStubBackend(id="k8s")
+    result = await _run_stage_cloud_window(monkeypatch, backend)
+    assert result == {"staged": 1, "skipped": 0}
+    status, backend_id = await _cloud_job_status(session, long_failed.id)
+    assert (status, backend_id) == (CloudJobStatus.SUBMITTED.value, "k8s")
 
 
 @pytest.mark.asyncio

@@ -24,14 +24,13 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.tasks.scan_reaper import reap_stalled_scans
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 class _StubCfg:
@@ -47,9 +46,16 @@ def _patch_threshold(monkeypatch: pytest.MonkeyPatch, seconds: int) -> None:
 
 
 def _make_ctx(async_engine: AsyncEngine) -> dict[str, Any]:
-    """Build a SAQ-shaped ctx whose async_session is bound to the test engine."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm}
+    """Build a SAQ-shaped ctx whose async_session is bound to the per-test connection.
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint), exactly as the production controller wires ``ctx["async_session"]``. This lets the reaper
+    SEE seeded rows and makes its commits visible to sibling reads under create_savepoint isolation.
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session}
 
 
 async def _seed(

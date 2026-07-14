@@ -100,9 +100,16 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
-        # The files.agent_id FK (ON DELETE RESTRICT) needs the default agent to exist.
-        session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
-        await session.flush()
+        # The files.agent_id FK (ON DELETE RESTRICT) needs the default agent to exist. Seed it
+        # IDEMPOTENTLY: under 92-03's session-scoped engine the shared ``async_engine`` fixture (and
+        # ``committed_db``'s teardown re-seed) COMMIT a ``test-fileserver`` Agent for the whole session,
+        # so a blind ``INSERT`` collided on ``pk_agents`` whenever an earlier bucket cell instantiated
+        # that fixture -- the 74 setup ERRORs seen only in the FULL integration bucket (the file passes
+        # 59/59 in isolation, where no committed row exists). Get-or-insert satisfies the FK either way:
+        # reuse the committed parent when present, else seed our own within this rolled-back transaction.
+        if await session.get(Agent, _LEGACY_AGENT_ID) is None:
+            session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+            await session.flush()
         try:
             yield session
         finally:
@@ -215,6 +222,23 @@ async def seed_metadata_failed_only(session: AsyncSession) -> uuid.UUID:
 async def seed_metadata_inflight(session: AsyncSession) -> uuid.UUID:
     fid = await _new_file(session)
     await _seed_ledger(session, Stage.METADATA, fid)
+    return fid
+
+
+async def seed_metadata_failed_inflight(session: AsyncSession) -> uuid.UUID:
+    """WR-02: the exact state ``retry_metadata_failed`` leaves -- ``metadata.failed_at`` RETAINED (81 D-11) + re-enqueued.
+
+    A failure row (``failed_at`` set) PLUS a scheduling-ledger row on the deterministic key. Every
+    bulk-retried metadata file now occupies this ``in_flight ∧ failed`` cell (it was unreachable before
+    FAIL-03, which is why the ``DOMAIN_COMPLETED_CASES`` equivalence matrix excluded it). ``resolve_status``
+    ranks the ledger above the failure (precedence ``in_flight ≻ ... ≻ failed``) and derives IN_FLIGHT,
+    while the raw ``domain_completed_clause`` -- deliberately inflight-orthogonal (D-11) -- still sees the
+    terminal ``failed`` disjunct. See ``DOMAIN_COMPLETED_INFLIGHT_CASES``.
+    """
+    fid = await _new_file(session)
+    session.add(FileMetadata(file_id=fid, failed_at=datetime.now(UTC)))  # D-03: failure marker retained on retry
+    await session.flush()
+    await _seed_ledger(session, Stage.METADATA, fid)  # re-enqueue -> ledger row -> inflight wins the ladder
     return fid
 
 
@@ -498,6 +522,25 @@ async def test_sql_equals_python(
 # RED. Keep the ``*_inflight`` exclusion (it is what makes this test correctly ledger-agnostic); do NOT
 # "harden" it by adding in-flight cells here to try to catch the trap -- that responsibility lives at the
 # recovery layer, by design.
+#
+# WR-02 (81-REVIEW) COVERAGE-GAP CLOSURE: the exclusion above kept ``test_domain_completed_sql_equals_python``
+# correctly ledger-agnostic, but it ALSO left the now-reachable ``in_flight ∧ failed`` cell a SILENT blind
+# spot. FAIL-03's ``retry_metadata_failed`` RETAINS ``metadata.failed_at`` then re-enqueues (81 D-11), so
+# every bulk-retried metadata file now occupies that cell (``seed_metadata_failed_inflight``). The literal
+# WR-02 suggested fix ("add an inflight term to the SQL twin and un-exclude the seeds") is the D-11
+# REJECTED OPTION and is OFF LIMITS. Instead, ``DOMAIN_COMPLETED_INFLIGHT_CASES`` +
+# ``test_domain_completed_inflight_twins_are_defined_on_different_inputs`` below un-excludes those seeds in
+# a SEPARATE test that asserts the CORRECT, D-11-consistent per-twin values -- WITHOUT forcing the two
+# twins to agree (they legitimately do not on this cell) and WITHOUT touching production. The two twins are
+# defined on DIFFERENT INPUTS by design: the Python ``domain_completed`` reads a RESOLVED ``status_map``
+# where the precedence ladder already collapsed ``in_flight ∧ failed`` -> IN_FLIGHT (inflight won), so it
+# returns False; the SQL ``domain_completed_clause`` is a RAW terminal-state predicate, deliberately
+# inflight-orthogonal (D-11), so a metadata/analyze failure row still reads True. The pipeline reconciles
+# the two at the RECOVERY CALL SITE (``tasks/reenqueue.py::is_domain_completed``): liveness is handled by
+# ``r.key not in live`` and the terminal-vs-orphaned-retry distinction by the D-10 ``enqueued_at <=
+# failed_at`` gate -- NOT by folding inflight into ``domain_completed_clause``. The new test doubles as a
+# D-11 mutation guard at THIS layer: adding ``~inflight_clause`` to ``domain_completed_clause`` flips the
+# SQL twin to False on the failed-inflight cell and turns it RED.
 DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
     # analyze -- terminal failure: DONE and FAILED both count as domain-complete.
     (Stage.ANALYZE, seed_analysis_none, False),
@@ -540,6 +583,70 @@ async def test_domain_completed_sql_equals_python(
     py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
     py_complete = domain_completed({stage: py_status}, stage)
     assert sql_complete == py_complete == expected
+
+
+# WR-02 coverage-gap closure (see the block above ``DOMAIN_COMPLETED_CASES``): the now-reachable
+# ``*_inflight`` cells, asserted per-twin because the two ``domain_completed`` twins are defined on
+# DIFFERENT INPUTS and legitimately DIVERGE on the ``in_flight ∧ failed`` cell (D-11). Each tuple is
+# ``(stage, seed_fn, resolved_status, sql_complete, py_complete)``:
+#   - ``resolved_status``: what ``resolve_status`` derives (the ledger wins the ladder -> IN_FLIGHT),
+#     proving WHY the Python twin operates on a different input than the raw SQL clause.
+#   - ``sql_complete``: the RAW inflight-orthogonal ``domain_completed_clause`` (D-11). True on the
+#     failed-inflight cells (metadata/analyze failure is terminal); False on the ledger-only cells (no
+#     terminal output row exists yet).
+#   - ``py_complete``: ``domain_completed({stage: IN_FLIGHT}, stage)`` -- always False (IN_FLIGHT is
+#     neither DONE/SKIPPED nor FAILED), because the ladder already ranked inflight above the failure.
+# The failed-inflight rows (SQL True / Python False) are the divergence WR-02 flagged; the ledger-only
+# rows (both False) show the exclusion also hid genuinely-agreeing cells. Either way the cell is no longer
+# a silent blind spot.
+DOMAIN_COMPLETED_INFLIGHT_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str, bool, bool]] = [
+    # metadata: the exact FAIL-03 retry state (failed_at retained + re-enqueued) -> the D-11 divergence cell.
+    (Stage.METADATA, seed_metadata_failed_inflight, "in_flight", True, False),
+    # metadata: ledger-only (no output row) -> both twins agree at False (no terminal state reached).
+    (Stage.METADATA, seed_metadata_inflight, "in_flight", False, False),
+    # analyze: failed + ledger -> SQL sees the terminal failure (True), Python resolves IN_FLIGHT (False).
+    (Stage.ANALYZE, seed_analysis_failed_inflight, "in_flight", True, False),
+    # fingerprint: ledger-only -> both False (a FAILED fingerprint is not terminal anyway, FAILURE_IS_TERMINAL False).
+    (Stage.FINGERPRINT, seed_fp_inflight, "in_flight", False, False),
+]
+
+
+@pytest.mark.parametrize("stage,seed_fn,resolved_status,sql_complete_expected,py_complete_expected", DOMAIN_COMPLETED_INFLIGHT_CASES)
+async def test_domain_completed_inflight_twins_are_defined_on_different_inputs(
+    db_session: AsyncSession,
+    stage: Stage,
+    seed_fn: Callable[[AsyncSession], Awaitable[uuid.UUID]],
+    resolved_status: str,
+    sql_complete_expected: bool,
+    py_complete_expected: bool,
+) -> None:
+    """WR-02: the now-reachable ``in_flight ∧ failed`` cell -- assert each ``domain_completed`` twin on its OWN input.
+
+    Closes the ``*_inflight`` blind spot that FAIL-03 made reachable WITHOUT the D-11 REJECTED-OPTION
+    change (adding ``~inflight_clause`` to ``domain_completed_clause``). The two twins are defined on
+    different inputs: the Python twin reads a RESOLVED status (the ledger already won the ladder ->
+    IN_FLIGHT) and returns False; the SQL clause is a RAW terminal predicate, inflight-orthogonal by
+    design, and still reads True on a metadata/analyze failure row. Production reconciles the two at the
+    recovery call site (``is_domain_completed``: ``r.key not in live`` + the D-10 ``enqueued_at <=
+    failed_at`` gate), never inside the clause. Doubles as a D-11 mutation guard: adding
+    ``~inflight_clause`` to ``domain_completed_clause`` flips ``sql_complete`` False on the failed-inflight
+    cells and turns this RED.
+    """
+    file_id = await seed_fn(db_session)
+    # Premise: the ledger wins the precedence ladder, so the RESOLVED status is IN_FLIGHT -- this is
+    # precisely why the Python twin's input differs from the raw SQL clause's.
+    py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
+    assert py_status.value == resolved_status, f"premise: {stage} inflight cell must resolve {resolved_status}, got {py_status}"
+
+    sql_complete = await eval_sql_domain_completed(db_session, stage, file_id)
+    py_complete = domain_completed({stage: py_status}, stage)
+
+    # Raw, inflight-orthogonal SQL predicate (D-11): terminal-failed rows stay True even while inflight.
+    assert sql_complete is sql_complete_expected, (
+        f"domain_completed_clause({stage}) must stay inflight-orthogonal (D-11): expected {sql_complete_expected}, got {sql_complete}"
+    )
+    # Python twin over the RESOLVED status_map: IN_FLIGHT is never domain-complete.
+    assert py_complete is py_complete_expected, f"domain_completed({stage}: IN_FLIGHT) must be {py_complete_expected}, got {py_complete}"
 
 
 # --------------------------------------------------------------------------------------------------

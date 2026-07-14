@@ -524,3 +524,23 @@ async def test_generate_cue_no_latest_version(client: AsyncClient, session: Asyn
     response = await client.post(f"/cue/{tracklist.id}/generate")
     assert response.status_code == 200
     assert "timestamps" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSession) -> None:
+    """WR-03: ``limit=`` bounds the eligible set at the SQL level; no ``limit`` returns the full set.
+
+    ``get_cue_review_cards`` passes ``limit=_MAX_REVIEW_ROWS`` so the DB never materializes more than
+    the render cap (the D-03 memory bound). The count/pagination callers pass no ``limit`` and still
+    see every eligible pair.
+    """
+    from phaze.routers.cue import _get_eligible_tracklist_query
+
+    for i in range(4):  # four eligible (approved + applied + timestamped) tracklists
+        await _create_approved_tracklist_with_file(session, artist=f"Artist {i}", event=f"Event {i}")
+
+    bounded = await _get_eligible_tracklist_query(session, limit=2)
+    assert len(bounded) == 2, "the SQL .limit(2) bounds the eligible half (WR-03)"
+
+    unbounded = await _get_eligible_tracklist_query(session)
+    assert len(unbounded) == 4, "no limit -> the full eligible set (count/pagination callers)"

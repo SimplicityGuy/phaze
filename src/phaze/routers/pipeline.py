@@ -11,7 +11,7 @@ import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uui
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import exists, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -29,7 +29,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ProcessFilePayload, ScanLiveSetPayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.backends import (
@@ -38,7 +38,6 @@ from phaze.services.backends import (
     get_lane_queue_depths,
     get_lane_recent_completions,
     hold_awaiting_cloud,
-    resolved_non_local_kind,
 )
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pg_text import sanitize_pg_text
@@ -79,7 +78,6 @@ from phaze.services.pipeline import (
 )
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
-from phaze.services.scheduling_ledger import insert_ledger_if_absent
 from phaze.services.stage_status import failed_clause
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
@@ -932,44 +930,41 @@ async def trigger_analysis_ui(
     )
 
 
-def _held_backfill_ledger_payload(file: FileRecord, models_path: str) -> dict[str, Any]:
-    """Build the ``process_file`` payload stored on a backfill-HELD file's scheduling-ledger row.
-
-    A held file has NO compute agent assigned yet (that is the reason it is held), so ``agent_id``
-    is recorded empty: the real agent is stamped at RELEASE time by ``enqueue_process_file``'s
-    ``before_enqueue`` ON CONFLICT DO UPDATE (the Plan-04 release cron). All five required
-    ``ProcessFilePayload`` fields are present so a forced ``recover_orphaned_work`` replay
-    re-validates cleanly under ``extra="forbid"`` rather than dead-lettering (T-45-10).
-    """
-    return ProcessFilePayload(
-        file_id=file.id,
-        original_path=file.original_path,
-        file_type=file.file_type,
-        agent_id="",
-        models_path=models_path,
-    ).model_dump(mode="json")
-
-
 @router.post("/pipeline/backfill-cloud", response_class=HTMLResponse)
 async def trigger_backfill_cloud(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: backfill the timed-out long files to the cloud (Phase 49, D-08/D-09/D-10).
+    """HTMX endpoint: backfill the timed-out long files to the cloud (Phase 49, D-08/D-10; 83-06 REVERSES D-09).
 
     Selects EXACTLY the timed-out long set — ``ANALYSIS_FAILED ∧ duration >= cloud_route_threshold_sec``
     (the explicit :func:`count_backfill_candidates` / :func:`get_backfill_candidates` filter, NOT a
-    whole-backlog ``ANALYSIS_FAILED`` sweep) — resets each row to ``DISCOVERED`` (committed BEFORE any
-    enqueue, RESEARCH Pitfall 3), and routes the candidates through the SAME per-file duration router
-    (:func:`_route_discovered_by_duration`) "Run Analysis" uses, so the two paths cannot drift: a
-    compute agent online -> the compute queue (``cloud``); none online -> held in ``AWAITING_CLOUD``.
+    whole-backlog ``ANALYSIS_FAILED`` sweep), and routes the candidates through the SAME per-file
+    duration router (:func:`_route_discovered_by_duration`) "Run Analysis" uses, so the two paths cannot
+    drift: every candidate is long, so the router HOLDS it in ``AWAITING_CLOUD`` (an awaiting
+    ``cloud_job`` sidecar row), never a direct enqueue.
 
-    For the HELD branch ONLY (never enqueued, so no ``before_enqueue`` hook fired) an explicit
-    :func:`insert_ledger_if_absent` row is seeded (D-09) so the held file is durable scheduled work;
-    the enqueued branch's row is owned by the hook (no double-write — RESEARCH Open-Q3). The
-    deterministic ``process_file:<id>`` key plus the explicit ANALYSIS_FAILED filter close the
-    over-enqueue class (D-10): a double-click is a no-op (the candidates have already left the
-    ANALYSIS_FAILED state), and short / never-failed files are never touched.
+    83-06 (OPTION A, CONSCIOUSLY REVERSES D-09 — accepted by the phase owner): the held file is made a
+    CLEAN drainable candidate for BOTH cloud targets (compute AND kueue; the all-local case early-returns
+    below). After the hold, in one transaction, the endpoint (1) CLEARS the ``analysis.failed_at`` /
+    ``error_message`` marker (mirrors :func:`retry_analysis_failed`) and (2) DELETES the orphaned
+    ``process_file:<id>`` scheduling-ledger row, KEEPING only the awaiting ``cloud_job`` row as the SOLE
+    in-flight/recovery registry (exactly like a normal "Run Analysis"-held file and the k8s path). The
+    former D-09 held-file ledger SEED (compute) / SKIP (kueue) fork is GONE — neither branch seeds a
+    ledger row now, so the compute/kueue paths are unified.
+
+    WHY the reversal is safe (net over-enqueue REDUCTION): a RETAINED ``failed_at`` made the held file
+    analyze-domain-completed and a RETAINED ledger row made it analyze-in-flight, so
+    ``awaiting_candidate_clause`` (``~inflight ∧ ~domain_completed``) EXCLUDED it and
+    :func:`stage_cloud_window` never drained it (83-06). Clearing both markers lets the bounded drain
+    dispatch it to the compute/kueue backend — the single owner. D-09's stated ledger-replay recovery
+    purpose was ALREADY dead: ``analysis.failed_at`` put the held file in ``recover_orphaned_work``'s
+    analyze domain-completed exclusion, so the seeded row was never replayed.
+
+    The explicit ``failed_clause(ANALYZE)`` filter plus the ``~exists(active cloud_job)`` idempotency
+    guard in :func:`_backfill_candidates_stmt` still close the over-enqueue class (D-10): a double-click
+    selects nothing new (the held files now carry an awaiting ``cloud_job`` row), and short / never-failed
+    files are never touched.
     """
     # Phase 51 (D-03, Pitfall 2 / T-51-02): explicit cloud on/off guard BEFORE the candidate query.
     # Gating only the routing seam is insufficient -- backfill would still reset the 144
@@ -1013,43 +1008,34 @@ async def trigger_backfill_cloud(
         settings.models_path,
     )
 
-    # Phase 55 (L3 / CLOUDROUTE-02): the held-file ledger seed forks on the cloud target.
-    #   - k8s: SKIP the seed entirely. A ``process_file:<id>`` ledger row would let
-    #     ``recover_orphaned_work`` replay the held file onto a LOCAL agent queue -- the ``cloud_job``
-    #     row (seeded by the ``stage_cloud_window`` k8s branch), NOT the ledger, is the k8s in-flight
-    #     registry. The k8s held file is advanced purely by the duration router + staging cron.
-    #   - compute (resolved kind != "kueue"; all-local already returned early above): seed the row
-    #     (D-09) so the held file -- never enqueued, so no ``before_enqueue`` hook fired -- is durable
-    #     scheduled work.
-    if resolved_non_local_kind(settings) == "kueue":
-        return templates.TemplateResponse(
-            request=request,
-            name="pipeline/partials/backfill_response.html",
-            context={
-                "request": request,
-                "count": count,
-                "cloud": counts["cloud"],
-                "awaiting": counts["awaiting"],
-            },
+    # 83-06 (OPTION A, CONSCIOUSLY REVERSES D-09): make every cloud-routed backfill candidate a CLEAN
+    # drainable held file, for BOTH the compute AND the kueue target (the all-local case already
+    # returned early above -- the former ``resolved_non_local_kind(settings) == "kueue"`` fork is GONE
+    # because neither branch seeds a ledger row now). ``_route_discovered_by_duration`` HELD every
+    # candidate (every backfill candidate is long, so the candidate set IS the held set) via
+    # ``hold_awaiting_cloud`` -> an awaiting ``cloud_job`` row, already committed. Now, in one
+    # transaction, strip the two markers that made ``awaiting_candidate_clause`` EXCLUDE the held file
+    # from :func:`stage_cloud_window` (83-06):
+    #   1. Clear ``analysis.failed_at`` / ``error_message`` (mirrors :func:`retry_analysis_failed`): a
+    #      RETAINED marker made the held file analyze-domain-completed, so ``~domain_completed_clause``
+    #      was False and the drain skipped it.
+    #   2. DELETE the orphaned ``process_file:<id>`` ledger row (the backfill candidate query REQUIRES
+    #      it -- Phase 55 previously-scheduled scope): its presence made the file analyze-in-flight, so
+    #      ``~inflight_clause`` was False, the SECOND exclusion conjunct.
+    # The awaiting ``cloud_job`` row is KEPT as the SOLE in-flight/recovery registry for the held file
+    # (like a normal-hold file + the k8s path). With both markers cleared the file satisfies
+    # ``awaiting_candidate_clause`` and the bounded drain dispatches it to the compute/kueue backend --
+    # the single owner. D-09's ledger-replay recovery purpose was ALREADY dead (``analysis.failed_at``
+    # kept the held file in ``recover_orphaned_work``'s analyze domain-completed exclusion), so deleting
+    # the row + making the drain the single owner REDUCES the over-enqueue surface rather than growing it.
+    candidate_ids = [file.id for file, _ in candidates]
+    if candidate_ids:
+        await session.execute(
+            update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
         )
-
-    # D-09 / RESEARCH Open-Q3: seed a ledger row for every file the router HELD for the cloud path
-    # (every backfill candidate is long, so the router never produces local/skipped here -- the
-    # candidate set IS the held set). Phase 90 (PR-A): the redundant in-memory
-    # ``file.state == AWAITING_CLOUD`` sub-filter is DROPPED -- ``get_cloud_staging_candidates`` already
-    # scopes to ``awaiting_candidate_clause()``, so every returned candidate is awaiting-held by
-    # construction; re-checking the (soon-removed) ``files.state`` column here was a no-op guard.
-    held_files = [file for file, _ in candidates]
-    for file in held_files:
-        await insert_ledger_if_absent(
-            session,
-            key=process_file_job_key(file.id),
-            function="process_file",
-            kwargs=_held_backfill_ledger_payload(file, settings.models_path),
-            timeout=7200,
-            retries=2,
+        await session.execute(
+            delete(SchedulingLedger).where(SchedulingLedger.key.in_([process_file_job_key(fid) for fid in candidate_ids])),
         )
-    if held_files:
         await session.commit()
 
     return templates.TemplateResponse(

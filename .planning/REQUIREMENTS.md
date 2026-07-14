@@ -97,6 +97,14 @@
 - [x] **MIG-03**: Rescanning a file no longer resets pipeline progress — with `FileRecord.state` gone, the `ON CONFLICT DO UPDATE SET state = excluded.state` progress-wipe is structurally impossible (fixes the rescan-wipe bug).
 - [x] **MIG-04**: The destructive migration (number assigned at plan time) is destructive and lands last — after the shadow-compare passes on the live corpus and cloud-push lanes are drained/quiesced, it drops `ix_files_state`, drops `files.state`, and deletes the `FileState` enum; its `downgrade()` documents the enum reconstruction from derived sources (and its lossiness).
 
+### Milestone-Close Tech Debt (CLEAN)
+
+*Surfaced by the 2026.7.5 milestone-close audit (Phase 92). Tech-debt cleanup that must ship before the milestone closes; registered here so the DOCS-01 traceability guard gates them.*
+
+- [x] **CLEAN-01**: PERF-02 follow-up — parallelize the independent reads in get_stage_progress via asyncio.gather and re-measure /pipeline/stats poll latency at 200K scale (drives the DENORM-01 revisit).
+- [x] **CLEAN-02**: The test suite is hermetic under per-bucket CI isolation — the 83-01/83-03 flake class fixed at its shared conftest root (session-scoped engine + create_savepoint rollback).
+- [x] **CLEAN-03**: Doc hygiene — remove the duplicated backends.py KubeConfig comment and the stale agent_files.py DISCOVERED-stamp comment (zero runtime change).
+
 ---
 
 ## v2 Requirements
@@ -169,9 +177,13 @@
 | DRILL-03 | Phase 88 | Complete |
 | PROV-01 | — | Deferred (v2) |
 | DENORM-01 | — | Deferred (v2) — PERF-02 (Phase 82) measured over budget, NO-GO/deferred; revisit after asyncio.gather parallelization |
+| CLEAN-01 | Phase 92 | Complete |
+| CLEAN-02 | Phase 92 | Complete |
+| CLEAN-03 | Phase 92 | Complete |
 
 **Coverage:**
 - v1 requirements: 42 total *(the initial "41 total" was an off-by-one; the traceability table has always listed 42 distinct IDs)*
+- Milestone-close tech-debt: +3 (CLEAN-01..03, Phase 92) — registered at milestone close so the DOCS-01 guard gates them; `Pending` + unchecked under the in-flight tolerance (D-05) until Phase 92 verification passes.
 - Mapped to phases: 42 (100%)
 - Unmapped: 0 ✓ — every v1 requirement maps to exactly one phase, no orphans, no duplicates
 

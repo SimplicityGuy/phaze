@@ -1,3 +1,5 @@
+> **RESOLVED 2026-07-14** (Phase 92 post-audit debt paydown — operator-directed). See `.planning/2026.7.5-MILESTONE-AUDIT.md` `debt_paydown_2026_07_14` + STATE.md Decisions.
+
 # Phase 83 — Deferred / Out-of-Scope Items
 
 Discoveries logged during execution that are NOT the discovering plan's responsibility.

@@ -214,6 +214,13 @@ environments = [
     "sys_platform == 'darwin' and platform_machine == 'x86_64'",  # macOS Intel
     "sys_platform == 'darwin' and platform_machine == 'arm64'",   # macOS Apple Silicon
 ]
+constraint-dependencies = [
+    # setuptools 82.0.1 carries PYSEC-2026-3447 (macOS APFS/HFS+ NFD filename bypasses an NFC
+    # MANIFEST.in exclude when packing an sdist); fixed in 83.0.0 (published 2026-07-04, already
+    # past the 7-day cooldown). setuptools is only a transitive test dependency (via moto), so
+    # floor it here to keep pip-audit clean without promoting it to a direct dependency.
+    "setuptools>=83.0.0",
+]
 
 [dependency-groups]
 dev = [

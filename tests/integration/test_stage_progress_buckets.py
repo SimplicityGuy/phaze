@@ -30,6 +30,8 @@ and the sum invariant fails) until then, which is the intended TDD RED state.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC, datetime
 import os
 from typing import TYPE_CHECKING
@@ -79,8 +81,19 @@ _FOUR_BUCKETS = (Status.NOT_STARTED.value, Status.IN_FLIGHT.value, Status.DONE.v
 
 
 @pytest_asyncio.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
-    """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent (copied from the pending harness)."""
+async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncSession]:
+    """Yield a real-PG ``AsyncSession`` with all ORM tables + the FK agent (copied from the pending harness).
+
+    CLEAN-01 routing (92-02): the tests here seed rows via ``flush`` (NOT ``commit``) and roll back at
+    teardown, relying on the reads seeing the flushed-but-uncommitted rows. Post-parallelization,
+    :func:`get_stage_progress` opens its reads from the module-level ``phaze.database.async_session``
+    (a SEPARATE pool connection that CANNOT see this session's uncommitted rows under read-committed
+    isolation). So route the fan-out through the ``_STATS_FANOUT`` / ``async_session`` seam back onto
+    THIS session: monkeypatch ``phaze.database.async_session`` to yield this very session and cap the
+    fan-out at ``Semaphore(1)`` (a single session/connection cannot run concurrent statements). This is
+    the 92-03 routing seam applied locally so the flush+rollback isolation still works. (92-03
+    generalizes this to the whole suite via ``join_transaction_mode='create_savepoint'``.)
+    """
     import psycopg
 
     try:
@@ -101,6 +114,17 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
         if await session.get(Agent, _LEGACY_AGENT_ID) is None:
             session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
             await session.flush()
+
+        @contextlib.asynccontextmanager
+        async def _yield_shared_session() -> AsyncGenerator[AsyncSession]:
+            # Yield the ONE test session (never closing it) so the fan-out reads see the flushed rows.
+            yield session
+
+        # Route get_stage_progress's fan-out back onto this session, serialized (Semaphore(1) built in
+        # the test's own event loop so it never crosses loops).
+        monkeypatch.setattr("phaze.database.async_session", _yield_shared_session)
+        monkeypatch.setattr("phaze.services.pipeline._STATS_FANOUT", asyncio.Semaphore(1))
+
         try:
             yield session
         finally:

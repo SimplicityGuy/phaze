@@ -16,6 +16,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
@@ -24,6 +25,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services import pipeline as pipeline_mod
 from phaze.services.pipeline import _safe_count, get_stage_progress
 
 
@@ -217,8 +219,16 @@ async def test_execute_counts_completed_execution_log(session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_single_source_db_error_degrades_to_zero(session: AsyncSession):
-    """A forced DB error on ONE stage source degrades that stage to done=0; others stay intact, no raise."""
+async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, monkeypatch: pytest.MonkeyPatch):
+    """A forced error on ONE stage's read degrades that stage to its safe default; siblings intact, no raise.
+
+    Post-CLEAN-01, ``get_stage_progress`` no longer reads the passed ``session`` -- every independent
+    read runs in its OWN ``async_session`` via ``_read_in_own_session``. So the degrade is exercised at
+    the fan-out seam: force the FINGERPRINT enrich-bucket read to RAISE (simulating a mid-read/
+    acquisition failure that escapes ``_safe_bucket_counts``) and assert ``_read_in_own_session`` catches
+    it -> fingerprint degrades to the all-zero bucket (``done == 0``) while the independently-sessioned
+    metadata/analyze reads stay correct (no cross-node poisoning; the poll never raises).
+    """
     f = _make_file(1)
     session.add(f)
     await session.flush()
@@ -228,23 +238,22 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession):
     session.add(FingerprintResult(id=uuid.uuid4(), file_id=f.id, engine="chromaprint", status="completed"))
     await session.commit()
 
-    orig_execute = session.execute
+    orig_buckets = pipeline_mod._safe_bucket_counts
 
-    async def failing_execute(statement, *args, **kwargs):  # type: ignore[no-untyped-def]
-        # Force only the fingerprint output-table query to fail.
-        if "fingerprint_results" in str(statement):
+    async def failing_buckets(read_session, stage):  # type: ignore[no-untyped-def]
+        # Force ONLY the fingerprint enrich-bucket read to fail. The raise escapes _safe_bucket_counts
+        # and must be caught by _read_in_own_session's acquisition-degrade belt (RESEARCH Pitfall 2).
+        if stage is Stage.FINGERPRINT:
             raise RuntimeError("forced fingerprint source error")
-        return await orig_execute(statement, *args, **kwargs)
+        return await orig_buckets(read_session, stage)
 
-    session.execute = failing_execute  # type: ignore[method-assign]
-    try:
-        progress = await get_stage_progress(session)
-    finally:
-        session.execute = orig_execute  # type: ignore[method-assign]
+    monkeypatch.setattr(pipeline_mod, "_safe_bucket_counts", failing_buckets)
 
-    # The poisoned source degrades to 0 without raising...
+    progress = await get_stage_progress(session)
+
+    # The poisoned source degrades to its all-zero bucket (done=0) without raising...
     assert progress["fingerprint"]["done"] == 0
-    # ...while sibling stages computed before and after it stay correct.
+    # ...while sibling stages in their OWN sessions stay correct.
     assert progress["metadata"]["done"] == 1
     assert progress["analyze"]["done"] == 1
 

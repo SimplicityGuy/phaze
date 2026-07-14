@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
@@ -42,7 +41,7 @@ from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 _MODELS_PATH = "/models"
@@ -74,9 +73,14 @@ def _patch_live_keys(monkeypatch: pytest.MonkeyPatch, keys: set[str]) -> None:
     monkeypatch.setattr("phaze.tasks.reenqueue.get_live_job_keys", _fake)
 
 
-def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": controller_queue, "task_router": router}
+def _make_ctx(router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
+    # 92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by
+    # the ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    # (create_savepoint), exactly as the production controller wires ``ctx["async_session"]`` -- so the task
+    # SEES seeded rows and its commits are visible to sibling reads under create_savepoint isolation.
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": controller_queue, "task_router": router}
 
 
 def _make_file(*, file_type: str = "mp3") -> FileRecord:
@@ -141,7 +145,6 @@ async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed
 
 @pytest.mark.asyncio
 async def test_pushing_orphan_redrives_to_fileserver(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,7 +160,7 @@ async def test_pushing_orphan_redrives_to_fileserver(
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
     assert result["stages"]["push_file"] == {"reenqueued": 1, "skipped": 0}
     assert "nox-io" in router.queues
@@ -167,7 +170,6 @@ async def test_pushing_orphan_redrives_to_fileserver(
 
 @pytest.mark.asyncio
 async def test_pushing_redrive_routes_to_fileserver_not_compute(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,7 +186,7 @@ async def test_pushing_redrive_routes_to_fileserver_not_compute(
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
     assert "nox-io" in router.queues  # the fileserver got the push (io lane)
     assert not any(k.startswith("cloud") for k in router.queues)  # never the compute agent
@@ -193,7 +195,6 @@ async def test_pushing_redrive_routes_to_fileserver_not_compute(
 
 @pytest.mark.asyncio
 async def test_pushing_redrive_skips_when_no_fileserver(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -211,7 +212,7 @@ async def test_pushing_redrive_skips_when_no_fileserver(
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
-        result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+        result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
     # The push must NOT land on the compute queue -- it is left for the next staging tick.
     assert "cloud" not in router.queues
@@ -224,7 +225,6 @@ async def test_pushing_redrive_skips_when_no_fileserver(
 
 @pytest.mark.asyncio
 async def test_pushing_pushed_state_is_domain_completed(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -246,7 +246,7 @@ async def test_pushing_pushed_state_is_domain_completed(
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
     assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0}
     assert router.queues == {}
@@ -254,7 +254,6 @@ async def test_pushing_pushed_state_is_domain_completed(
 
 @pytest.mark.asyncio
 async def test_pushing_analyzed_state_is_domain_completed(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -279,7 +278,7 @@ async def test_pushing_analyzed_state_is_domain_completed(
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+    result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
     assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0}
     assert router.queues == {}
@@ -290,7 +289,6 @@ async def test_pushing_analyzed_state_is_domain_completed(
 
 @pytest.mark.asyncio
 async def test_pushed_file_is_not_analyze_done_for_process_file(
-    async_engine: AsyncEngine,
     session: AsyncSession,
 ) -> None:
     """D-07: a landed (cloud_job='succeeded') file is push-done but NOT analyze-done, so its process_file row re-drives.

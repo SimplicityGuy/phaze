@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from sqlalchemy import NullPool, select
+from sqlalchemy import NullPool, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -12,6 +12,36 @@ from phaze.cli import add_agent, derive_queue_name, validate_agent_id, validate_
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 from tests.conftest import TEST_DATABASE_URL
+
+
+@pytest.fixture
+def _cleanup_committed_agents(async_engine: object) -> "object":  # type: ignore[misc]
+    """Delete any agent this module COMMITTED (via the CLI `agents add` path), preserving the FK parent.
+
+    CLEAN-02 (92-05, deferred item DI-92-04-01): the ``test_main_*`` cells drive ``cli.main`` through a
+    real ``create_async_engine(TEST_DATABASE_URL)`` sessionmaker that COMMITS agent rows (``cli-ok``,
+    ``oci-a1``, ``oci-tok``, ``cli-dup``). Under 92-03's session-scoped engine there is no per-test
+    ``drop_all``/``create_all``, so those committed rows survived into ``tests/agents/services/
+    test_agent_bootstrap.py`` and made ``ensure_dev_agent`` see a non-empty agents table (5 spurious
+    failures in the combined ``tests/agents`` bucket; the cells passed in isolation). This teardown wipes
+    every agent EXCEPT the session-scoped ``test-fileserver`` FK parent (seeded once by ``async_engine``,
+    the target of every hermetic ``make_file``), restoring the empty-table precondition the bootstrap
+    cells rely on. Uses its OWN NullPool engine because the hermetic ``session`` fixture is rolled back at
+    teardown and cannot delete a COMMITTED row. Depends on ``async_engine`` so the schema (and the
+    ``agents`` table) is guaranteed to exist; only the committing ``test_main_*`` cells request it, so the
+    pure-function/``main``-exit cells that never touch the DB are untouched.
+    """
+    yield
+
+    async def _clean() -> None:
+        engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(delete(Agent).where(Agent.id != "test-fileserver"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_clean())
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +137,7 @@ def test_main_relative_scan_root_exits_before_db(capsys: pytest.CaptureFixture[s
 
 def test_main_success_inserts_and_prints(
     async_engine,  # type: ignore[no-untyped-def] — ensures schema exists in the test DB
+    _cleanup_committed_agents: object,  # wipes the committed agent so it never leaks into a later bucket cell
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -127,6 +158,7 @@ def test_main_success_inserts_and_prints(
 
 def test_main_compute_no_scan_roots_succeeds(
     async_engine,  # type: ignore[no-untyped-def] — ensures schema exists in the test DB
+    _cleanup_committed_agents: object,  # wipes the committed agent so it never leaks into a later bucket cell
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -153,6 +185,7 @@ def test_main_fileserver_without_scan_roots_fails(capsys: pytest.CaptureFixture[
 
 def test_main_compute_token_not_logged(
     async_engine,  # type: ignore[no-untyped-def]
+    _cleanup_committed_agents: object,  # wipes the committed agent so it never leaks into a later bucket cell
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
@@ -174,6 +207,7 @@ def test_main_compute_token_not_logged(
 
 def test_main_duplicate_id_exits_nonzero(
     async_engine,  # type: ignore[no-untyped-def]
+    _cleanup_committed_agents: object,  # wipes the committed agent so it never leaks into a later bucket cell
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:

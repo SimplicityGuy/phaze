@@ -32,6 +32,7 @@ import contextlib
 import os
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.config import settings
 from phaze.main import create_app
@@ -45,6 +46,8 @@ pytestmark = pytest.mark.integration
 _BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
     "postgresql+asyncpg://", "postgresql://"
 )
+# SQLAlchemy async DSN for the rebind below (test DB, port 5433 locally / 5432 in CI).
+_SA_DSN = (os.environ.get("TEST_DATABASE_URL") or _BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
 _CACHE_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
 
 
@@ -56,6 +59,17 @@ async def test_lifespan_launches_and_cleanly_cancels_orphan_task(monkeypatch: py
     monkeypatch.setattr(settings, "enable_saq_ui", False)
     monkeypatch.setattr(settings, "queue_url", _BROKER_DSN)
     monkeypatch.setattr(settings, "redis_url", _CACHE_REDIS_URL)
+
+    # 92-05 (DI-92-04-02): the module-level ``engine`` / ``async_session`` bind to
+    # ``settings.database_url`` -- the docker ``postgres:5432`` default -- AT IMPORT, which does not
+    # resolve locally (``socket.gaierror`` at the lifespan's ``engine.begin(); SELECT 1`` probe, line
+    # 121). Setting ``TEST_DATABASE_URL`` only steers the test FIXTURES, never this already-built engine,
+    # so the test crashed before ever reaching the orphan-task assertions. Rebind both to the reachable
+    # integration test DB so the connectivity probe (and the shutdown ``engine.dispose()``) succeed.
+    test_engine = create_async_engine(_SA_DSN)
+    test_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr("phaze.main.engine", test_engine)
+    monkeypatch.setattr("phaze.main.async_session", test_session)
 
     app = create_app()
 

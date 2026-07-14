@@ -40,7 +40,6 @@ import uuid
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
@@ -51,7 +50,7 @@ from tests.kube_fakes import fake_local_queue
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 # --- registry-derived settings stub (matches what the CURRENT drain reads) --------------
@@ -132,10 +131,17 @@ def _make_file(*, file_type: str = "mp3") -> FileRecord:
     )
 
 
-def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter) -> dict[str, Any]:
-    """Build the controller-shaped ctx the cron consumes (async_session + task_router)."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": DedupFakeQueue("controller"), "task_router": router}
+def _make_ctx(router: DedupFakeTaskRouter) -> dict[str, Any]:
+    """Build the controller-shaped ctx the cron consumes (async_session + task_router).
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint), exactly as the production controller wires ``ctx["async_session"]``. This lets the task
+    SEE seeded rows and makes its commits visible to sibling reads under create_savepoint isolation.
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": DedupFakeQueue("controller"), "task_router": router}
 
 
 def _spy_select_active_agent(calls: list[str]) -> Any:
@@ -180,7 +186,6 @@ def _spy_backends_gate1(calls: list[str]) -> Any:
 
 
 async def _run_cell(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -236,7 +241,7 @@ async def _run_cell(
     ids = [f.id for f in files]
 
     router = DedupFakeTaskRouter()
-    tally = await release_awaiting_cloud.stage_cloud_window(_make_ctx(async_engine, router))
+    tally = await release_awaiting_cloud.stage_cloud_window(_make_ctx(router))
 
     # Phase 90 (D-09): the PUSHING/AWAITING_CLOUD scalar-state dual-write was removed; derive the SAME
     # side-effect counts from the cloud_job sidecar (the sole authority). A dispatched file's cloud_job
@@ -330,18 +335,16 @@ async def test_dispatch_snapshot_matches_golden(
     kind: str | None,
     compute_up: bool,
     expected: dict[str, Any],
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The observed side-effect log for each matrix cell equals its inline golden baseline."""
-    observed = await _run_cell(async_engine, session, monkeypatch, kind=kind, compute_up=compute_up)
+    observed = await _run_cell(session, monkeypatch, kind=kind, compute_up=compute_up)
     assert observed == expected
 
 
 @pytest.mark.asyncio
 async def test_d01a_gate_asymmetry_is_explicit(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,7 +354,7 @@ async def test_d01a_gate_asymmetry_is_explicit(
     kind="compute")`` and holds ({"staged": 0}); the kueue cell never requests ``kind="compute"`` and
     proceeds to stage (GATE-1 deliberately skipped for ephemeral Kueue pods).
     """
-    compute = await _run_cell(async_engine, session, monkeypatch, kind="compute", compute_up=False)
+    compute = await _run_cell(session, monkeypatch, kind="compute", compute_up=False)
     assert compute["compute_gate_checked"] is True
     assert "compute" in compute["gate_kinds"]
     assert compute["tally"] == {"staged": 0, "skipped": 0}
@@ -359,12 +362,11 @@ async def test_d01a_gate_asymmetry_is_explicit(
 
 @pytest.mark.asyncio
 async def test_d01a_kueue_skips_compute_gate_and_proceeds(
-    async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The kueue half of the D-01a asymmetry: no compute gate, stages even with the compute agent down."""
-    kueue = await _run_cell(async_engine, session, monkeypatch, kind="kueue", compute_up=False)
+    kueue = await _run_cell(session, monkeypatch, kind="kueue", compute_up=False)
     assert kueue["compute_gate_checked"] is False
     assert "compute" not in kueue["gate_kinds"]
     assert kueue["tally"]["staged"] == 2

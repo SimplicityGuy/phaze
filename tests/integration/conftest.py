@@ -35,8 +35,10 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from phaze.models.base import Base
 from phaze.tasks._shared import stage_control as stage_control_module
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from saq.queue.postgres import PostgresQueue
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 # Raw libpq broker DSN (NOT the ``+asyncpg`` dialect form psycopg3 cannot parse). Derived
@@ -142,3 +145,71 @@ async def stage_env() -> AsyncGenerator[tuple[PostgresQueue, async_sessionmaker[
         await queue.disconnect()
         await engine.dispose()
         _reset_hook_cache()
+
+
+@pytest_asyncio.fixture
+async def committed_db() -> AsyncGenerator[tuple[AsyncEngine, async_sessionmaker[AsyncSession]]]:
+    """Yield ``(engine, session_factory)`` on the real port-5433 test DB for the CROSS-CONNECTION concurrency tests (92-04).
+
+    A distinct home from the suite's hermetic ``session`` fixture: the eight tests that consume this
+    fixture (advisory-lock serialization, row-lock RMW, concurrent ``asyncio.gather`` staging ticks) need
+    MULTIPLE independent connections that see each other's COMMITTED writes. The 92-03
+    ``join_transaction_mode="create_savepoint"`` ``session`` fixture binds every session in the test to
+    ONE outer-transaction connection, so a concurrent operation on a second connection would read
+    ZERO/STALE under read-committed isolation and no advisory/row lock could serialize two real
+    transactions. Here each test seeds via a COMMITTING session and races real operations that each open
+    their OWN pool connection off ``session_factory``.
+
+    Cleanup TRUNCATEs every ORM table (CASCADE) at BOTH setup (a clean slate, so the concurrency tests'
+    GLOBAL committed counts -- e.g. per-backend in-flight ``cloud_job`` rows -- are accurate regardless of
+    prior committed leftovers) and teardown (so no committed row leaks into the next test). This is safe
+    because the ``integration`` bucket runs SERIALLY in its own process against a DEDICATED ephemeral
+    Postgres (``just test-db``, port 5433) -- never a shared/parallel DB; a ``*_test`` DB guard refuses to
+    TRUNCATE anything else.
+
+    CRITICAL: the session-scoped ``async_engine`` fixture seeds ONE committed ``test-fileserver`` Agent for
+    the whole test session (the FK parent every hermetic ``make_file`` targets). A bare TRUNCATE deletes it
+    globally, which would break every LATER hermetic test in the bucket with an FK violation. So teardown
+    RE-SEEDS ``test-fileserver`` after the TRUNCATE, restoring that invariant. This fixture never seeds it
+    at setup, so a consuming test is free to seed its own ``test-fileserver`` on a clean table.
+    """
+    import psycopg
+
+    target_db = make_url(SA_DSN).database or ""
+    if not target_db.endswith("_test"):
+        pytest.skip(f"Refusing to TRUNCATE a non-test database {target_db!r}; set TEST_DATABASE_URL to a *_test DSN (run `just test-db`).")
+
+    try:
+        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres unavailable: {exc}")
+    else:
+        await probe.close()
+
+    from phaze.models.agent import Agent
+
+    engine = create_async_engine(SA_DSN)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    _table_list = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
+
+    async def _truncate() -> None:
+        async with engine.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {_table_list} RESTART IDENTITY CASCADE"))
+
+    async def _reseed_fk_fileserver() -> None:
+        # Restore the session-scoped invariant the ``async_engine`` fixture establishes (an FK parent every
+        # hermetic ``make_file`` targets), which the TRUNCATE above removed.
+        async with session_factory() as s:
+            s.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
+            await s.commit()
+
+    await _truncate()  # clean slate: accurate global committed counts for the concurrency assertions
+    try:
+        yield engine, session_factory
+    finally:
+        await _truncate()
+        await _reseed_fk_fileserver()
+        await engine.dispose()

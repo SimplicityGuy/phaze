@@ -29,7 +29,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
@@ -39,7 +38,7 @@ from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 # --- Stub backends whose snapshot/dispatch behavior is controllable ----------------------
@@ -117,9 +116,18 @@ def _patch_backends(monkeypatch: pytest.MonkeyPatch, backends: list[_StubBackend
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter) -> dict[str, Any]:
-    """Build a controller-shaped ctx: async_session sessionmaker + controller queue + dedup router."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": DedupFakeQueue("controller"), "task_router": router}
+    """Build a controller-shaped ctx: async_session + controller queue + dedup router.
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (``join_transaction_mode="create_savepoint"``), exactly as the production controller wires
+    ``ctx["async_session"]``. This lets the task SEE seeded rows and makes its commits visible to sibling
+    reads under create_savepoint isolation (a fresh ``async_sessionmaker(async_engine)`` would open a
+    DIFFERENT pool connection and read ZERO/STALE).
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": DedupFakeQueue("controller"), "task_router": router}
 
 
 def _make_file() -> FileRecord:

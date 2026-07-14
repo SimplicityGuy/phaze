@@ -29,7 +29,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
@@ -38,7 +37,7 @@ from phaze.models.stage_skip import StageSkip
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def _seed_file(session: AsyncSession) -> uuid.UUID:
@@ -60,15 +59,22 @@ async def _seed_file(session: AsyncSession) -> uuid.UUID:
     return file_id
 
 
-async def _read_skip(async_engine: AsyncEngine, file_id: uuid.UUID, stage: str) -> StageSkip | None:
-    """Read the stage_skip marker from an INDEPENDENT session (proves the writer COMMITTED)."""
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as independent:
+async def _read_skip(file_id: uuid.UUID, stage: str) -> StageSkip | None:
+    """Read the stage_skip marker from an INDEPENDENT session (proves the writer COMMITTED).
+
+    92-04 (CLEAN-02): the read session is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint) -- so it shares the one outer-transaction connection and SEES in-test commits (a fresh
+    ``async_sessionmaker(a fresh engine)`` would open a DIFFERENT pool connection and read ZERO/STALE).
+    """
+    from phaze.database import async_session
+
+    async with async_session() as independent:
         return (await independent.execute(select(StageSkip).where(StageSkip.file_id == file_id, StageSkip.stage == stage))).scalar_one_or_none()
 
 
 @pytest.mark.asyncio
-async def test_non_enrich_stage_returns_422_and_writes_nothing(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_non_enrich_stage_returns_422_and_writes_nothing(client: AsyncClient, session: AsyncSession) -> None:
     """A ``propose`` force-skip is rejected 422 before any write (D-10 enrich-only, T-87-18)."""
     file_id = await _seed_file(session)
 
@@ -76,13 +82,11 @@ async def test_non_enrich_stage_returns_422_and_writes_nothing(client: AsyncClie
 
     assert response.status_code == 422
     assert response.json()["detail"] == "stage not force-skippable"
-    assert await _read_skip(async_engine, file_id, "propose") is None
+    assert await _read_skip(file_id, "propose") is None
 
 
 @pytest.mark.asyncio
-async def test_empty_reason_returns_validation_fragment_and_writes_nothing(
-    client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine
-) -> None:
+async def test_empty_reason_returns_validation_fragment_and_writes_nothing(client: AsyncClient, session: AsyncSession) -> None:
     """A whitespace-only reason returns the inline validation fragment with NO write (D-09, T-87-22)."""
     file_id = await _seed_file(session)
 
@@ -90,26 +94,24 @@ async def test_empty_reason_returns_validation_fragment_and_writes_nothing(
 
     assert response.status_code == 422
     assert "A reason is required." in response.text
-    assert await _read_skip(async_engine, file_id, "analyze") is None
+    assert await _read_skip(file_id, "analyze") is None
 
 
 @pytest.mark.asyncio
-async def test_valid_skip_is_committed_and_readable_from_independent_session(
-    client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine
-) -> None:
+async def test_valid_skip_is_committed_and_readable_from_independent_session(client: AsyncClient, session: AsyncSession) -> None:
     """A valid reason COMMITS the marker (readable from an independent session, Pitfall 7)."""
     file_id = await _seed_file(session)
 
     response = await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "corrupt source file"})
 
     assert response.status_code == 200
-    marker = await _read_skip(async_engine, file_id, "metadata")
+    marker = await _read_skip(file_id, "metadata")
     assert marker is not None
     assert marker.reason == "corrupt source file"
 
 
 @pytest.mark.asyncio
-async def test_duplicate_force_skip_is_idempotent_not_500(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_duplicate_force_skip_is_idempotent_not_500(client: AsyncClient, session: AsyncSession) -> None:
     """CR-01: re-submitting a force-skip for the same (file, stage) is a no-op success, never a 500.
 
     ``_force_skip_dialog.html`` is not hidden after a successful skip, so a re-submit is a NORMAL path.
@@ -125,13 +127,13 @@ async def test_duplicate_force_skip_is_idempotent_not_500(client: AsyncClient, s
     assert second.status_code == 200  # would be 500 with a bare INSERT
 
     # Exactly one row survives (scalar_one_or_none raises MultipleResultsFound if the conflict duplicated).
-    marker = await _read_skip(async_engine, file_id, "fingerprint")
+    marker = await _read_skip(file_id, "fingerprint")
     assert marker is not None
     assert marker.reason == "first reason"  # do-nothing keeps the original, does not overwrite
 
 
 @pytest.mark.asyncio
-async def test_nul_only_reason_returns_422_and_writes_nothing(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_nul_only_reason_returns_422_and_writes_nothing(client: AsyncClient, session: AsyncSession) -> None:
     """WR-01: a NUL/control-only reason is empty AFTER sanitize, so it must fail the D-09 gate with NO write.
 
     ``str.strip()`` does not remove NUL, so a raw-input blank check would let ``"\\x00"`` through and then
@@ -143,24 +145,24 @@ async def test_nul_only_reason_returns_422_and_writes_nothing(client: AsyncClien
 
     assert response.status_code == 422
     assert "A reason is required." in response.text
-    assert await _read_skip(async_engine, file_id, "metadata") is None
+    assert await _read_skip(file_id, "metadata") is None
 
 
 @pytest.mark.asyncio
-async def test_nul_in_reason_is_sanitized_and_round_trips(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_nul_in_reason_is_sanitized_and_round_trips(client: AsyncClient, session: AsyncSession) -> None:
     """A NUL byte is stripped before persist (no PG txn abort) and the sanitized text round-trips (T-87-19)."""
     file_id = await _seed_file(session)
 
     response = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "corrupt\x00source"})
 
     assert response.status_code == 200
-    marker = await _read_skip(async_engine, file_id, "fingerprint")
+    marker = await _read_skip(file_id, "fingerprint")
     assert marker is not None
     assert marker.reason == "corruptsource"  # NUL removed; no lost text around it
 
 
 @pytest.mark.asyncio
-async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session: AsyncSession, async_engine: AsyncEngine) -> None:
+async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session: AsyncSession, verify: AsyncSession) -> None:
     """ADDITIVE-ONLY (behavior 6, T-87-20): a terminally-failed analyze keeps ``failed_at`` after a skip."""
     file_id = await _seed_file(session)
     failed_at = datetime.now(UTC)
@@ -171,9 +173,8 @@ async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session
     assert response.status_code == 200
 
     # The skip marker exists AND the failure marker is untouched -- read both from an independent session.
-    assert await _read_skip(async_engine, file_id, "analyze") is not None
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as independent:
-        row = (await independent.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).first()
+    # 92-04 (CLEAN-02): the failure-marker read goes through the shared ``verify`` fixture (per-test connection).
+    assert await _read_skip(file_id, "analyze") is not None
+    row = (await verify.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).first()
     assert row is not None
     assert row[0] is not None  # failed_at was NOT cleared by the additive writer

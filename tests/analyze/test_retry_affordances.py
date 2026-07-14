@@ -30,7 +30,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible
 from phaze.models.analysis import AnalysisResult
@@ -41,7 +40,7 @@ from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fake
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 pytestmark = pytest.mark.integration
@@ -104,7 +103,7 @@ def test_analyze_failure_is_never_auto_eligible() -> None:
 async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     client: AsyncClient,
     session: AsyncSession,
-    async_engine: AsyncEngine,
+    verify: AsyncSession,
 ) -> None:
     """The per-file retry routes ONE process_file through the per-agent queue (never the default).
 
@@ -131,19 +130,18 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     ProcessFilePayload.model_validate(payload)
     assert payload["file_id"] == str(file.id)
 
-    # Independent-session read: the marker clear COMMITTED for the target file only.
-    independent = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with independent() as s:
-        # Phase 90 (D-09): retry no longer flips files.state to FINGERPRINTED (that write was removed);
-        # the file leaves the failed bucket purely by clearing analysis.failed_at below.
-        arow = (await s.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
-        assert arow.failed_at is None
-        assert arow.error_message is None
-        # The XOR CHECK holds and the row now derives not_started — a fresh re-analysis.
-        assert arow.analysis_completed_at is None
-        # The OTHER failed file is untouched (scoped to one file_id): its failed marker survives.
-        other_row = (await s.execute(select(AnalysisResult).where(AnalysisResult.file_id == other.id))).scalar_one()
-        assert other_row.failed_at is not None
+    # Independent-session read via the shared ``verify`` fixture (92-04 CLEAN-02): bound to the per-test
+    # ``_db_connection``, it sees the marker clear the retry COMMITTED for the target file only.
+    # Phase 90 (D-09): retry no longer flips files.state to FINGERPRINTED (that write was removed);
+    # the file leaves the failed bucket purely by clearing analysis.failed_at below.
+    arow = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == file.id))).scalar_one()
+    assert arow.failed_at is None
+    assert arow.error_message is None
+    # The XOR CHECK holds and the row now derives not_started — a fresh re-analysis.
+    assert arow.analysis_completed_at is None
+    # The OTHER failed file is untouched (scoped to one file_id): its failed marker survives.
+    other_row = (await verify.execute(select(AnalysisResult).where(AnalysisResult.file_id == other.id))).scalar_one()
+    assert other_row.failed_at is not None
 
 
 @pytest.mark.asyncio

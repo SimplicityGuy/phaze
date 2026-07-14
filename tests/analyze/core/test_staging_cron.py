@@ -20,7 +20,6 @@ engine), ``queue`` (a controller-queue stand-in, unused) and ``task_router`` (a
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -29,7 +28,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
@@ -40,7 +38,7 @@ from tests.kube_fakes import fake_local_queue
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 class _StubCfg:
@@ -131,9 +129,16 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch, *, max_in_flight: int = 2, 
 
 
 def _make_ctx(async_engine: AsyncEngine, router: DedupFakeTaskRouter, controller_queue: DedupFakeQueue) -> dict[str, Any]:
-    """Build a controller-shaped ctx: async_session + controller queue + per-agent dedup router."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm, "queue": controller_queue, "task_router": router}
+    """Build a controller-shaped ctx: async_session + controller queue + per-agent dedup router.
+
+    92-04 (CLEAN-02): ``async_session`` is sourced from ``phaze.database.async_session`` -- monkeypatched by the
+    ``session`` fixture's ``_route_stats_fanout`` to a factory BOUND to the per-test ``_db_connection``
+    (create_savepoint), exactly as the production controller wires ``ctx["async_session"]``. This lets the task
+    SEE seeded rows and makes its commits visible to sibling reads under create_savepoint isolation.
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session, "queue": controller_queue, "task_router": router}
 
 
 def _make_file(*, file_type: str = "mp3", created_at: datetime | None = None) -> FileRecord:
@@ -524,33 +529,10 @@ async def test_k8s_branch_holds_with_no_fileserver(
     assert set((await _states_for(session, ids)).values()) == {_HELD}
 
 
-@pytest.mark.asyncio
-async def test_k8s_overlapping_ticks_never_exceed_window(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """WR-04 under the k8s branch: two concurrent ticks staging to S3 must not overshoot the ≤N cap.
-
-    The k8s branch calls the NO-COMMIT ``_stage_file_to_s3`` core (L1), so the advisory lock is held
-    across the whole tick and the committed PUSHING set never exceeds cloud_max_in_flight.
-    """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="kueue")
-    _patch_s3(monkeypatch)
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    backlog = [_make_file() for _ in range(20)]
-    session.add_all(backlog)
-    await session.commit()
-    ids = [f.id for f in backlog]
-
-    router = DedupFakeTaskRouter()
-    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
-    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
-
-    states = await _states_for(session, ids)
-    pushing = [fid for fid, st in states.items() if st == _DISPATCHED]
-    assert len(pushing) <= 2, f"k8s window overshot: {len(pushing)} files PUSHING (cap is 2)"
-    assert sum(r["staged"] for r in results) <= 2, "concurrent k8s ticks staged more than the cap"
+# NOTE (92-04): the k8s two-tick overshoot cell ``test_k8s_overlapping_ticks_never_exceed_window`` moved
+# to ``tests/integration/test_staging_cron_concurrency.py`` -- it needs two independent COMMITTED-visible
+# connections for real advisory-lock serialization, which the hermetic create_savepoint fixture cannot
+# provide.
 
 
 # --- FIFO: oldest AWAITING_CLOUD first ---------------------------------------------------
@@ -608,39 +590,8 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
 
 
 # --- WR-04: overlapping ticks never overshoot the ≤N window ------------------------------
-
-
-@pytest.mark.asyncio
-async def test_overlapping_ticks_never_exceed_window(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """WR-04: two concurrent staging ticks must not each see window=0 and stage 2x the cap.
-
-    The window COUNT reads committed truth, so without serialization two overlapping ticks could
-    SKIP LOCKED past each other's uncommitted PUSHING flips and stage up to 2 * cloud_max_in_flight.
-    A transaction-scoped advisory lock makes the count+claim atomic so the committed PUSHING set
-    never exceeds the cap, even under concurrency.
-    """
-    _patch_settings(monkeypatch, max_in_flight=2)
-    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    backlog = [_make_file() for _ in range(20)]
-    session.add_all(backlog)
-    await session.commit()
-    ids = [f.id for f in backlog]
-
-    router = DedupFakeTaskRouter()
-    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
-    # Two overlapping ticks driven concurrently on the same event loop (each opens its own session
-    # from the sessionmaker, so they race exactly like two SAQ cron runs).
-    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
-
-    states = await _states_for(session, ids)
-    pushing = [fid for fid, st in states.items() if st == _DISPATCHED]
-    assert len(pushing) <= 2, f"window overshot: {len(pushing)} files PUSHING (cap is 2)"
-    assert sum(r["staged"] for r in results) <= 2, "concurrent ticks staged more than the cap"
+# NOTE (92-04): the two-tick overshoot cell ``test_overlapping_ticks_never_exceed_window`` moved to
+# ``tests/integration/test_staging_cron_concurrency.py`` (real committed-visible independent connections).
 
 
 # --- Double-tick collapses via the deterministic push_file:<id> key ----------------------
@@ -858,47 +809,9 @@ async def test_multi_backend_tick_dispatches_rank_first_and_spills(
     assert (await _states_for(session, [fourth_id]))[fourth_id] == _HELD
 
 
-@pytest.mark.asyncio
-async def test_overlapping_ticks_never_overshoot_per_backend_cap(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SCHED-02: two overlapping ticks against the SAME backend never push its in_flight_count past cap.
-
-    Phase 69 counts a backend's in-flight window from its ``cloud_job`` rows (backend_id-scoped), so the
-    per-backend cap is the load-bearing bound. Two concurrent ticks serialize on the single advisory lock
-    (WR-04), so the committed cloud_job rows for the backend never exceed its cap even under concurrency.
-    """
-    _patch_settings(monkeypatch, max_in_flight=2, cloud_kind="compute")  # single compute-1 backend, cap 2
-    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
-    await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    backlog = [_make_file() for _ in range(20)]
-    session.add_all(backlog)
-    await session.commit()
-
-    router = DedupFakeTaskRouter()
-    ctx = _make_ctx(async_engine, router, DedupFakeQueue("controller"))
-    results = await asyncio.gather(stage_cloud_window(ctx), stage_cloud_window(ctx))
-
-    from sqlalchemy import func
-
-    session.expire_all()
-    in_flight = int(
-        (
-            await session.execute(
-                select(func.count(CloudJob.id)).where(
-                    CloudJob.backend_id == "compute-1",
-                    CloudJob.status.in_(
-                        [s.value for s in (CloudJobStatus.UPLOADING, CloudJobStatus.UPLOADED, CloudJobStatus.SUBMITTED, CloudJobStatus.RUNNING)]
-                    ),
-                )
-            )
-        ).scalar()
-        or 0
-    )
-    assert in_flight <= 2, f"per-backend cap overshot: compute-1 has {in_flight} in-flight cloud_job rows (cap is 2)"
-    assert sum(r["staged"] for r in results) <= 2, "concurrent ticks staged more than the per-backend cap"
+# NOTE (92-04): the per-backend two-tick overshoot cell
+# ``test_overlapping_ticks_never_overshoot_per_backend_cap`` moved to
+# ``tests/integration/test_staging_cron_concurrency.py`` (real committed-visible independent connections).
 
 
 @pytest.mark.asyncio

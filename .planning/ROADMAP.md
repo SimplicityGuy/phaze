@@ -35,7 +35,7 @@ Retire the linear `FileState` enum and derive per-file, per-stage status (`not_s
 - [x] **Phase 89: Legacy Scan-Path Deletion & Sentinel Reattribution** — delete the orphaned legacy scan path (removes two `FileState` writers), reattribute historical `legacy-application-server`-owned rows to a real fileserver agent, then drop the `agent_id` default + delete the sentinel row (RESTRICT-FK-ordered) (LEGACY-01..03) (completed 2026-07-11)
 - [x] **Phase 90: Destructive Migration & Writer Removal** — gated last (shadow-compare green + cloud-push lanes drained): drop `ix_files_state`, drop `files.state`, delete the `FileState` enum, remove the remaining `.state=` writers (MIG-04) (completed 2026-07-13)
 - [x] **Phase 91: Milestone-Close Hygiene** — milestone-close hardening shipped outside the formal GSD phase pipeline, documented retroactively for numbering continuity: HYG-01 bounded the orphan-count hot poll via an O(1) module cache + lifespan refresh (PR #239); HYG-02/03/04 = coverage uplift to 100% on four files, a vulture dead-code sweep (zero dead src), a `FileState` docs scrub, plus a queue-activity connect-before-count fix (PR #241). No GSD plans/requirements (post-42-req hygiene). (completed 2026-07-13)
-- [ ] **Phase 92: Milestone-Close Tech-Debt Cleanup** — the tech-debt items surfaced by the 2026.7.5 milestone audit: the PERF-02 follow-up (parallelize the three `get_stage_progress` bucket-count reads via `asyncio.gather`), fix the non-hermetic test flakes 83-01/83-03 for per-bucket CI isolation, and cosmetic doc fixes (stale `agent_files.py` DISCOVERED-stamp comment + duplicated `backends.py` `KueueBackend.reconcile` comment block). DENORM-01 stays v2-deferred; P85 WR-01..04 stays accepted-deferred (requirements assigned at discuss-phase)
+- [x] **Phase 92: Milestone-Close Tech-Debt Cleanup** — the tech-debt items surfaced by the 2026.7.5 milestone audit: the PERF-02 follow-up (parallelize the three `get_stage_progress` bucket-count reads via `asyncio.gather`), fix the non-hermetic test flakes 83-01/83-03 for per-bucket CI isolation, and cosmetic doc fixes (stale `agent_files.py` DISCOVERED-stamp comment + duplicated `backends.py` `KueueBackend.reconcile` comment block). DENORM-01 stays v2-deferred; P85 WR-01..04 stays accepted-deferred (requirements assigned at discuss-phase) (completed 2026-07-14)
 
 <details>
 <summary>✅ 2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends) (Phases 72-76) — SHIPPED 2026-07-06</summary>
@@ -282,7 +282,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
-| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 0/0 | Not Started | — |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 5/5 | Complete    | 2026-07-14 |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -684,7 +684,7 @@ Plans:
 
 **Goal**: Pay down the tech debt surfaced by the 2026.7.5 milestone audit (`.planning/2026.7.5-MILESTONE-AUDIT.md`) before completing the milestone. Behavior-preserving except the PERF-02 latency win; small blast radius per item.
 **Depends on**: Phase 90
-**Requirements**: assigned at discuss-phase (candidate IDs CLEAN-01..03)
+**Requirements**: CLEAN-01 (PERF-02 asyncio.gather parallelization + 200K re-measurement), CLEAN-02 (test-suite hermeticity under per-bucket CI isolation — 83-01/83-03 flake class), CLEAN-03 (two cosmetic doc fixes)
 **Success Criteria** (what must be TRUE):
 
   1. The three `_safe_bucket_counts` reads in `get_stage_progress` run concurrently via `asyncio.gather`, measurably reducing `/pipeline/stats` poll latency at 200K-file scale (the PERF-02 follow-up; DENORM-01 remains v2-deferred, revisited only if this proves insufficient).
@@ -692,7 +692,24 @@ Plans:
   3. The stale `agent_files.py` DISCOVERED-stamp comment and the duplicated `backends.py` `KueueBackend.reconcile` comment block are removed (doc hygiene; zero runtime change).
 
 **Out of scope**: DENORM-01 (v2-deferred), P85 WR-01..04 (accepted-deferred per operator decision 2026-07-10), P81 WR-01/02, and the live-corpus deploy rehearsal (a separate operator gate).
-**Plans**: TBD (created by `/gsd:plan-phase 92`)
+**Plans**: 5 plans in 4 waves
+Plans:
+**Wave 1**
+
+- [x] 92-01-PLAN.md — CLEAN-03 cosmetic doc fixes: de-dup backends.py KubeConfig comment (D-09) + reword stale agent_files.py ON-CONFLICT comment (D-10) [Wave 1]
+- [x] 92-02-PLAN.md — CLEAN-01 PERF-02: parallelize get_stage_progress via asyncio.gather over per-task sessions bounded by Semaphore(4) + before/after 200K measurement → 92-VERIFICATION.md (D-05) [Wave 1]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 92-03-PLAN.md — CLEAN-02 core: rewire conftest to session-scoped engine + create_savepoint per-test rollback + shared verify fixture + route get_stage_progress's production fan-out through the per-test connection + mutation-safe hermeticity contract test [Wave 2]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 92-04-PLAN.md — CLEAN-02 migration: rebind the 21 independent-verify-session call sites (13 files, analyze/review/agents/discovery) to the shared connection-bound verify fixture [Wave 3]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 92-05-PLAN.md — CLEAN-02 D-08 gate: register CLEAN-01/02/03 in REQUIREMENTS.md traceability + [BLOCKING] full ~1750-test suite green under per-bucket isolation for all 9 buckets → recorded in 92-VERIFICATION.md [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 

@@ -213,18 +213,69 @@ async def test_tag_bulk_no_discrepancy_predicate(
     resp = await client.post("/tags/bulk-write-no-discrepancies")
     assert resp.status_code == 200
 
-    async def _log_count(file_id: object) -> int:
+    async def _log_count(file_id: object, *, status: str | None = None) -> int:
         stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id)
+        if status is not None:
+            stmt = stmt.where(TagWriteLog.status == status)
         return (await session.execute(stmt)).scalar_one()
 
+    # The clean file is bulk-written exactly once (one audit row -- a real write ATTEMPT; the mutagen
+    # write is unpatched here so its status is FAILED, but it is genuinely written, not a NO_OP).
     assert await _log_count(clean.id) == 1, "a clean >=1-change file is written exactly once"
-    assert await _log_count(zero.id) == 0, "a zero-change file is not written"
+    assert await _log_count(clean.id, status="no_op") == 0, "a written file is not a NO_OP"
+    # WR-01: a zero-change file is NOT tag-written (no write attempt), but earns exactly one terminal
+    # NO_OP marker so it is evicted from the candidate window and never re-starves the queue.
+    assert await _log_count(zero.id) == 1, "a zero-change file gets exactly one log -- the NO_OP marker"
+    assert await _log_count(zero.id, status="no_op") == 1, "a zero-change file earns one terminal NO_OP marker (WR-01)"
 
     # Blank-guard clause: a comparison that would erase an existing tag never qualifies.
     blanking = [{"field": "artist", "label": "Artist", "current": "Existing", "proposed": None, "changed": True}]
     assert _qualifies_for_bulk_write(blanking) is False
     clean_cmp = [{"field": "artist", "label": "Artist", "current": None, "proposed": "New", "changed": True}]
     assert _qualifies_for_bulk_write(clean_cmp) is True
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WR-01: repeated bulk submits reach a qualifying file trapped behind a full window of zero-change files.
+
+    With the per-submit cap patched to 2, two zero-change applied files (``aaa_noop_*``) fill the
+    entire alphabetically-first window; a qualifying file (``aaa_qual - New Title.mp3``) sits just
+    past it. Pre-WR-01 the zero-change files never earned a terminal log, so every submit re-selected
+    the SAME window and the qualifying file was never written -- re-submitting made no progress. The
+    fix persists a terminal NO-OP marker for each zero-change file so ``completed_subq`` evicts it,
+    letting the next submit advance to (and write) the qualifying file.
+    """
+    monkeypatch.setattr("phaze.routers.tags._MAX_BULK_TAG_WRITE", 2)
+
+    # Two zero-change files: filename has no "artist - title", so proposed == current metadata.
+    for i in range(2):
+        await seed_executed_file_with_metadata(original_filename=f"aaa_noop_{i}.mp3", artist="Old Artist", title="Old Title")
+    # Qualifying file: filename parses a new artist+title absent from metadata (>=1 change, no blank).
+    qual, _ = await seed_executed_file_with_metadata(original_filename="aaa_qual - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    async def _completed_count(file_id: object) -> int:
+        stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id, TagWriteLog.status == "completed")
+        return (await session.execute(stmt)).scalar_one()
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        # Submit repeatedly; each submit is bounded, but forward progress must reach the qualifying file.
+        for _ in range(3):
+            resp = await client.post("/tags/bulk-write-no-discrepancies")
+            assert resp.status_code == 200
+            if await _completed_count(qual.id) == 1:
+                break
+
+    assert await _completed_count(qual.id) == 1, "the qualifying file behind the zero-change wall must eventually be written"
 
 
 @pytest.mark.asyncio

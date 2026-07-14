@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: 2026.7.5
 milestone_name: Parallel Enrich DAG
-status: in_progress
-last_updated: 2026-07-13T15:17:59.657Z
-last_activity: 2026-07-13 -- Milestone audit (tech_debt); Phase 91 documented, Phase 92 cleanup inserted
+status: milestone_complete
+last_updated: 2026-07-14T03:43:30.015Z
+last_activity: 2026-07-13 -- Phase 92 complete + verified (8/8); milestone audited (tech_debt); milestone-close debt paydown in progress on the phase-92 branch
 progress:
   total_phases: 16
-  completed_phases: 15
-  total_plans: 62
-  completed_plans: 62
-  percent: 94
-stopped_at: Phase 92 (audit-surfaced tech-debt cleanup) inserted; awaiting discuss/plan/execute before milestone close
+  completed_phases: 16
+  total_plans: 67
+  completed_plans: 67
+  percent: 100
+stopped_at: Milestone complete (Phase 92 was final phase). Milestone audit PASSED as tech_debt (45/45 reqs, 16/16 phases, 5/5 integration seams). Extra audit-debt paydown (P81/P83/P85 + P92 review items) landing on the phase-92 branch before PR.
 ---
 
 # Project State
@@ -21,21 +21,21 @@ stopped_at: Phase 92 (audit-surfaced tech-debt cleanup) inserted; awaiting discu
 See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
 
 **Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** Phase 92 — milestone-close tech-debt cleanup (audit-surfaced), before milestone close
+**Current focus:** Milestone complete
 
 ## Current Position
 
-Phase: 92 (milestone-close tech-debt cleanup)
-Plan: Not planned yet
-Status: In progress — core milestone (42/42 reqs, phases 77-90) delivered + Phase 91 hygiene shipped; Phase 92 pays down audit-surfaced debt before close
-Last activity: 2026-07-13 - Milestone audit (tech_debt verdict, .planning/2026.7.5-MILESTONE-AUDIT.md); documented Phase 91 (shipped hygiene) + inserted Phase 92 (cleanup)
-Next: /gsd:discuss-phase 92 → /gsd:plan-phase 92 → /gsd:execute-phase 92, then /gsd:complete-milestone 2026.7.5. Pre-DEPLOY operator gate remains (039 real-corpus rehearsal + drained-corpus shadow-compare, tracked in 79/84/90-HUMAN-UAT.md) — blocking for prod deploy only.
+Phase: 92
+Plan: Not started
+Status: Milestone complete
+Last activity: 2026-07-14
+Next: open the Phase-92 PR (SimplicityGuy/phase-92, off main), then /gsd:complete-milestone 2026.7.5. Milestone is feature-complete + integration-verified; audit-surfaced tech-debt is being paid down on this branch (P92 review WR-03/04 + perf seeder; P81 WR-01/02; P85 WR-01..04 review-builder starvation; P83-06 backfill stranding — the last consciously REVERSES locked D-09 per operator decision). Pre-DEPLOY operator gate remains (039 real-corpus rehearsal + drained-corpus shadow-compare + executed-gate live UAT, tracked in 79/84/85/90-HUMAN-UAT.md) — blocking for prod deploy only, NOT milestone close.
 
 ## Performance Metrics
 
 **v1.0 Velocity:**
 
-- Total plans completed: 240
+- Total plans completed: 245
 - Total phases: 11
 - Timeline: 4 days (2026-03-27 -> 2026-03-30)
 - Tests: 282 passing
@@ -139,6 +139,8 @@ Next: /gsd:discuss-phase 92 → /gsd:plan-phase 92 → /gsd:execute-phase 92, th
 - [Phase 77]: 77-03: integration test deletes ALL cloud_job rows before downgrade (029 precedent) — backfilled NULL-s3_key uploading/uploaded rows trip migration 029's s3_key NOT NULL re-imposition on the teardown walk to base; the migrations-test DB can be left poisoned by a mid-downgrade abort (reset schema to recover)
 - [Phase ?]: 81-02: migration 033 runs the mixed-row cleanup UPDATE before create_check_constraint (D-09); done wins -- failed_at cleared, analysis_completed_at retained (D-04)
 - [Phase ?]: 81-02: the destructive Phase-90 migration is renumbered 033 -> 034 in forward-looking planning docs; dated historical records keep 033 (D-08)
+- [Phase 92 post-audit debt paydown, 2026-07-14]: **D-09 REVERSED (operator-approved).** The backfill-held-compute `process_file` ledger seed is retired; `trigger_backfill_cloud` now produces a CLEAN drainable held file (clears `analysis.failed_at`/`error_message` + deletes the orphaned `process_file:<id>` ledger row + keeps the awaiting `cloud_job` row, for BOTH compute and kueue), making `stage_cloud_window` the SINGLE owner of held cloud files. Rationale: D-09's ledger-replay recovery purpose was already dead (`failed_at` kept the held file in `recover_orphaned_work`'s domain-completed exclusion → never replayed); the endpoint was STRANDING failed long files, not "mis-routing to local" as 83-06 documented. Single-owner reduces over-enqueue surface. `recover_orphaned_work` now excludes awaiting-`cloud_job` files via `_awaiting_cloud_job_ids` (robust even for legacy pre-paydown rows). The dead `_get_awaiting_cloud_ids`/`held_agent_rows` compute partition removed. Commits `89f291b4`/`fa9df92d`/`032fc711`.
+- [Phase 92 post-audit debt paydown, 2026-07-14]: milestone-audit tech_debt paid down on the phase-92 branch (10 commits): P92 review WR-03 (`verify` fixture depends on `session`) + WR-04 (dead `async_engine` params) + perf seeder drops the dropped `files.state` write; P81 WR-01 (metadata failure upsert guarded against clobbering a DONE row) + WR-02 (resolved as a TEST blind spot — D-11 respected, NOT reopened; a twin-divergence test now covers the `in_flight ∧ failed` cell and doubles as a D-11 mutation guard); P85 WR-01..04 (review-builder `.limit()`-before-filter fixed via keyset paging in the render path + a migration-free `NO_OP` `TagWriteLog` terminal marker in the write path + SQL-bounded cue eligible half + single-tally stat count). Full 9-bucket D-08 re-gate GREEN (3,409 tests, 0 failed).
 
 ### Pending Todos
 
@@ -292,9 +294,9 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-12T19:14:59.647Z
-Stopped at: Phase 90 context gathered
-Resume file: .planning/phases/90-destructive-migration-writer-removal/90-CONTEXT.md
+Last session: 2026-07-13T22:58:07.016Z
+Stopped at: Phase 92 context gathered
+Resume file: .planning/phases/92-milestone-close-tech-debt-cleanup/92-CONTEXT.md
 
 ## Operator Next Steps
 

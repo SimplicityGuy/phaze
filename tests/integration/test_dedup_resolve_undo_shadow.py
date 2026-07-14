@@ -78,8 +78,13 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
 
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
-        session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
-        await session.flush()
+        # Seed the FK-parent IDEMPOTENTLY: a committed ``test-fileserver`` may already exist (the
+        # ``committed_db`` fixture re-seeds one, and the session-scoped ``async_engine`` seeds one), so a
+        # blind INSERT collides on ``pk_agents`` under the full-bucket ordering (92-05, DI-92-04-02).
+        # Get-or-insert satisfies the FK either way and keeps this hermetic fixture order-independent.
+        if await session.get(Agent, _LEGACY_AGENT_ID) is None:
+            session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+            await session.flush()
         try:
             yield session
         finally:

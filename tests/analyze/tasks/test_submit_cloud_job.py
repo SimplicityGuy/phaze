@@ -31,7 +31,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -43,7 +42,7 @@ from phaze.tasks.submit_cloud_job import submit_cloud_job, submit_cloud_job_key
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 
 # SCHED-05 / MKUE-01: the submit resolves the file's backend via cloud_job.backend_id against the
@@ -111,9 +110,18 @@ async def _seed_cloud_job(session: AsyncSession, fid: uuid.UUID, *, backend_id: 
 
 
 def _make_ctx(async_engine: AsyncEngine) -> dict[str, Any]:
-    """Build a controller-shaped ctx: just ``async_session`` (the submit task's only ctx need)."""
-    sm = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    return {"async_session": sm}
+    """Build a controller-shaped ctx: just ``async_session`` (the submit task's only ctx need).
+
+    92-04 (CLEAN-02): the ctx ``async_session`` is sourced from ``phaze.database.async_session`` -- which the
+    ``session`` fixture's ``_route_stats_fanout`` monkeypatches to a factory BOUND to the per-test
+    ``_db_connection`` (``join_transaction_mode="create_savepoint"``), exactly as the production controller
+    worker wires ``ctx["async_session"]``. Under create_savepoint isolation this lets the task SEE seeded rows
+    and makes its own commits visible to sibling verify reads on the same connection (a fresh
+    ``async_sessionmaker(async_engine)`` would open a DIFFERENT pool connection and read ZERO/STALE).
+    """
+    from phaze.database import async_session
+
+    return {"async_session": async_session}
 
 
 @pytest.mark.asyncio

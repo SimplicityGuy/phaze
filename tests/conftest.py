@@ -1,5 +1,6 @@
 """Shared test fixtures for Phaze test suite."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import hashlib
@@ -10,7 +11,8 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from phaze.database import get_session
 from phaze.main import create_app
@@ -42,7 +44,7 @@ def _coerce_async_dsn(dsn: str) -> str:
 
 TEST_DATABASE_URL = _coerce_async_dsn(os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"))
 
-DB_FIXTURES = {"async_engine", "session", "client", "authenticated_client", "seed_test_agent"}
+DB_FIXTURES = {"async_engine", "_db_connection", "session", "verify", "client", "authenticated_client", "seed_test_agent"}
 
 
 @pytest.fixture(autouse=True)
@@ -195,24 +197,45 @@ def backends_toml_env(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
     get_settings.cache_clear()
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def async_engine():  # type: ignore[no-untyped-def]
-    """Create async engine, set up tables, seed the shared test fileserver, yield, then tear down.
+    """Session-scoped engine: create the schema ONCE, seed the FK-parent fileserver ONCE (D-06/D-07).
 
-    Seeds a real ``kind='fileserver'`` Agent row (``test-fileserver``) after table
-    creation so tests that flush ``FileRecord`` / ``ScanBatch`` rows have a valid FK
-    target for ``agent_id`` (ON DELETE RESTRICT). Phase 89 (LEGACY-03, D-08) dropped the
-    ``agent_id`` model-level default, so every construction now supplies ``agent_id``
-    explicitly (pointing at this seed) rather than relying on the removed
-    ``legacy-application-server`` sentinel default.
+    CLEAN-02 (92-03): the former function-scoped ``create_all``/``drop_all``-per-test fixture that
+    committed a ``test-fileserver`` seed EVERY test was the shared root of the 83-01/83-03 flake class
+    -- a committed row that survived a failed teardown collided on ``pk_agents`` in the next test. The
+    fix (D-06 global) is to make the suite hermetic BY CONSTRUCTION: build the schema exactly once for
+    the whole session and let each test run inside a per-test outer transaction that is ROLLED BACK at
+    teardown (see :func:`session`), so no committed row ever survives.
+
+    The stable ``kind='fileserver'`` Agent row (``test-fileserver``) is seeded ONCE here, committed for
+    real OUTSIDE any per-test transaction, so ``make_file``'s hardcoded ``agent_id="test-fileserver"``
+    FK target (ON DELETE RESTRICT) survives across every test without being re-seeded (Phase 89
+    LEGACY-03 dropped the model-level ``agent_id`` default, so the explicit FK target must exist).
+
+    ``poolclass=NullPool``: pytest-asyncio (asyncio_mode=auto) runs each TEST in its own function-scoped
+    event loop while this engine lives in the session loop. An asyncpg connection binds to the loop that
+    created it, so a POOLED connection would raise "attached to a different loop" when a later test's
+    ``_db_connection`` checkout reuses it. NullPool opens a FRESH connection per ``connect()`` (in the
+    caller's own loop) and closes it on release -- no cross-loop reuse -- which is exactly what the
+    per-test ``_db_connection`` fixture needs.
     """
-    engine = create_async_engine(TEST_DATABASE_URL)
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session_factory() as setup_session:
-        setup_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
-        await setup_session.commit()
+        # Seed the FK-parent fileserver IDEMPOTENTLY. In the ``integration`` bucket the ``committed_db``
+        # fixture (tests/integration/conftest.py) re-seeds a COMMITTED ``test-fileserver`` at teardown by
+        # design (92-04, commit 46d554c4) so later hermetic ``make_file`` calls keep their FK parent. If a
+        # ``committed_db`` test runs BEFORE this session-scoped fixture is first instantiated, that row
+        # already exists and a blind INSERT collides on ``pk_agents`` -- which errored EVERY hermetic
+        # (`session`/`client`) test in the bucket once 92-05 shifted collection order. Get-or-insert makes
+        # the seed order-independent: reuse the committed parent when present, else create it. In every
+        # other (DB-free-of-committed_db) bucket the row never pre-exists, so behaviour is unchanged.
+        if await setup_session.get(Agent, "test-fileserver") is None:
+            setup_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
+            await setup_session.commit()
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -220,11 +243,98 @@ async def async_engine():  # type: ignore[no-untyped-def]
 
 
 @pytest_asyncio.fixture
-async def session(async_engine) -> AsyncGenerator[AsyncSession]:  # type: ignore[no-untyped-def]
-    """Yield an async database session for testing."""
-    async_session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with async_session_factory() as session:
-        yield session
+async def _db_connection(async_engine) -> AsyncGenerator[AsyncConnection]:  # type: ignore[no-untyped-def]
+    """Yield ONE per-test connection -- the single connection every session in the test binds to (D-07).
+
+    The ``create_savepoint`` hermeticity contract (RESEARCH CRITICAL wiring corollary) holds only if the
+    test's :func:`session`, the app's ``get_session`` override, the shared :func:`verify` read session,
+    AND the routed production fan-out (92-03 Task 2) ALL bind to this ONE connection -- a session on a
+    different pool connection would be in a different transaction and, because the per-test outer
+    transaction is never committed, would read ZERO/STALE under read-committed isolation.
+    """
+    async with async_engine.connect() as conn:
+        yield conn
+
+
+@pytest_asyncio.fixture
+async def _route_stats_fanout(_db_connection: AsyncConnection, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route ``get_stage_progress``'s PRODUCTION fan-out sessions through the per-test connection (92-03 Task 2).
+
+    THE FAILURE CLASS THIS FIXES: after 92-02, ``get_stage_progress`` no longer reads via the passed-in
+    ``session``; it opens its OWN per-task sessions from the module-level ``phaze.database.async_session``
+    (the production engine, its own pool connection). Under the ``create_savepoint`` fixture, seeded rows
+    live ONLY in the UNCOMMITTED per-test outer transaction on ``_db_connection``; a fan-out session on a
+    DIFFERENT pool connection is a different transaction -> read-committed -> it reads ZERO/STALE. That
+    breaks every seed-then-read test (``tests/analyze/core/test_stage_progress.py`` + the
+    ``tests/shared/routers/test_pipeline.py`` seed-then-``GET /pipeline/stats`` cases).
+
+    FIX (RESEARCH option a -- smallest blast radius): monkeypatch the production sessionmaker so its
+    sessions bind to the SAME per-test connection. ``_read_in_own_session`` resolves ``async_session`` via
+    a DEFERRED ``from phaze.database import async_session`` at CALL time (the agent-worker import-boundary
+    convention), so patching the SOURCE attribute ``phaze.database.async_session`` is picked up by every
+    fan-out read with no ``pipeline.py`` edit. ``_STATS_FANOUT = asyncio.Semaphore(1)`` serializes the
+    fan-out onto the ONE shared asyncpg connection (a single connection cannot run concurrent statements),
+    preserving VISIBILITY of the per-test savepoint state while avoiding the concurrency collision.
+    Production is UNCHANGED: the module default ``_STATS_FANOUT`` stays ``None`` (fresh ``Semaphore(4)``
+    per poll, one pool connection per task) outside the test run; ``monkeypatch`` reverts both per test.
+
+    Scoped to DB-fixture tests via the fixture chain (``session`` depends on this) -- deliberately NOT
+    ``autouse=True`` global, which would force ``_db_connection`` (and a DB) for DB-free tests.
+    """
+    fanout_factory = async_sessionmaker(bind=_db_connection, class_=AsyncSession, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    monkeypatch.setattr("phaze.database.async_session", fanout_factory)
+    monkeypatch.setattr("phaze.services.pipeline._STATS_FANOUT", asyncio.Semaphore(1))
+
+
+@pytest_asyncio.fixture
+async def session(_db_connection: AsyncConnection, _route_stats_fanout: None) -> AsyncGenerator[AsyncSession]:
+    """Yield the per-test session: an outer transaction + ``create_savepoint`` join mode (D-07).
+
+    Begins a per-test OUTER transaction on the shared ``_db_connection`` and constructs an
+    ``AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint")``. In this SQLAlchemy
+    2.0 built-in mode the Session's root is always a SAVEPOINT nested inside the outer transaction, so
+    when a mutating router calls ``await session.commit()`` (the ``get_session``-never-commits invariant
+    -- ``project_get_session_never_commits``) the SAVEPOINT is released and a new one opened: the rows
+    become visible WITHIN the outer transaction to any sibling session bound to the same connection, yet
+    nothing is durably committed. Teardown ``await outer.rollback()`` discards ALL in-test commits
+    (including the savepoint-release commits), so nothing survives into the next test -- no ``pk_agents``
+    collision, hermetic by construction. Do NOT hand-roll the ``after_transaction_end`` listener:
+    ``create_savepoint`` IS that recipe (RESEARCH / docs.sqlalchemy.org session_transaction.html).
+    """
+    outer = await _db_connection.begin()
+    s = AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    try:
+        yield s
+    finally:
+        await s.close()
+        await outer.rollback()
+
+
+@pytest_asyncio.fixture
+async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+    """Yield an INDEPENDENT read session bound to the same per-test ``_db_connection`` (D-07).
+
+    This is the migration target for plan 92-04's 21 independent-verify call sites (which today build
+    their own ``async_sessionmaker(async_engine)`` on a DIFFERENT connection and will go RED after this
+    rewrite lands). Because it shares the ONE outer-transaction connection with :func:`session`, a read
+    through this session SEES rows an in-test ``session.commit()`` made -- proving "commit visible to a
+    sibling on the same connection" -- while remaining a distinct ``Session`` object (its own identity
+    map) so it exercises a genuine round-trip to the DB rather than returning the writer's cached ORM
+    instances. It, too, uses ``join_transaction_mode="create_savepoint"`` so it joins the outer
+    transaction without disturbing it; teardown just closes it (the outer rollback in :func:`session`
+    discards everything).
+
+    Depends on :func:`session` (WR-03) so the ordering is correct BY CONSTRUCTION rather than by
+    call-site parameter convention: requesting ``session`` guarantees its ``outer`` transaction is begun
+    before this fixture runs, and pins pytest's teardown to close THIS session before ``session`` fires
+    its ``await outer.rollback()`` (closing a session whose outer txn was already rolled back would
+    raise). The parameter is a pure ordering dependency -- the body still binds to ``_db_connection``.
+    """
+    s = AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
+    try:
+        yield s
+    finally:
+        await s.close()
 
 
 @pytest_asyncio.fixture

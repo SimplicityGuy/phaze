@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -43,6 +43,23 @@ VALID_FIELDS = set(CORE_FIELDS)
 # (low-thousands, consistent with in-tree page bounds) so the loop cannot blow up at 200K scale.
 _MAX_BULK_TAG_WRITE = 2000
 
+# WR-01: statuses that make an applied file TERMINAL for the tag-write queue -- it has either been
+# written (COMPLETED) or determined to need no write (NO_OP). Both are excluded from the candidate
+# window so neither can re-occupy the alphabetically-first ``.limit()`` slots and starve qualifying
+# files. DISCREPANCY is intentionally NOT terminal (the file re-appears so the operator can retry).
+_TERMINAL_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.NO_OP)
+
+
+def _terminal_tagwrite_subq() -> Select[tuple[uuid.UUID]]:
+    """Subquery of ``file_id``\\ s with a TERMINAL ``TagWriteLog`` (COMPLETED or NO_OP).
+
+    The single source of the tag-write idempotency anti-join, shared by both operator builders
+    (``bulk_write_no_discrepancies`` here and ``services.review.get_tagwrite_review_rows``): a file
+    listed here is done (written) or needs no write (zero-change NO_OP) and is dropped from the
+    candidate window (WR-01).
+    """
+    return select(TagWriteLog.file_id).where(TagWriteLog.status.in_(_TERMINAL_TAGWRITE_STATUSES))
+
 
 async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     """Count pending, completed, and discrepancy files for tag writing."""
@@ -51,17 +68,28 @@ async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     executed_result = await session.execute(executed_stmt)
     total_executed = executed_result.scalar() or 0
 
-    # Count completed writes
+    # Count completed writes (distinct files -- display cell)
     completed_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
     completed_result = await session.execute(completed_stmt)
     completed = completed_result.scalar() or 0
 
-    # Count discrepancy writes
+    # Count discrepancy writes (distinct files -- display cell)
     discrepancy_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.DISCREPANCY)
     discrepancy_result = await session.execute(discrepancy_stmt)
     discrepancies = discrepancy_result.scalar() or 0
 
-    pending = total_executed - completed - discrepancies
+    # WR-02: count each already-handled file ONCE. A single file can carry BOTH a COMPLETED and a
+    # DISCREPANCY log (a normal re-write sequence), so subtracting the two independent DISTINCT tallies
+    # (``completed`` + ``discrepancies``) double-counts it and under-reports ``pending``. Tally the
+    # union of handled statuses over DISTINCT file_id instead, so ``pending`` is exact. WR-01: a
+    # NO_OP file is terminally resolved (zero changes -- nothing to write), so it is handled too.
+    handled_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(
+        TagWriteLog.status.in_((TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.NO_OP))
+    )
+    handled_result = await session.execute(handled_stmt)
+    handled = handled_result.scalar() or 0
+
+    pending = total_executed - handled
 
     return {"pending": max(pending, 0), "completed": completed, "discrepancies": discrepancies}
 
@@ -418,11 +446,11 @@ async def bulk_write_no_discrepancies(
     :data:`_MAX_BULK_TAG_WRITE` per submit (D-03) so a large first-time-visible applied backlog cannot
     blow up the loop. Each qualifying file is written via the EXISTING :func:`execute_tag_write`.
     """
-    completed_subq = select(TagWriteLog.file_id).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
+    terminal_subq = _terminal_tagwrite_subq()
     stmt = (
         select(FileRecord)
         .options(selectinload(FileRecord.file_metadata))
-        .where(applied_clause(), FileRecord.id.not_in(completed_subq))
+        .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
         .order_by(FileRecord.original_filename)
         .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
     )
@@ -434,7 +462,24 @@ async def bulk_write_no_discrepancies(
         discogs_link = await _get_accepted_discogs_link(session, fr.id)
         proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
         comparison = _build_comparison(fr.file_metadata, proposed)
+        if _count_changes(comparison) < 1:
+            # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP marker
+            # so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same window on
+            # every submit and permanently starves the qualifying files behind it. This is the write
+            # path (it already commits below); the read-only render builder never writes.
+            session.add(
+                TagWriteLog(
+                    file_id=fr.id,
+                    before_tags={},
+                    after_tags={},
+                    source="bulk_noop",
+                    status=TagWriteStatus.NO_OP.value,
+                )
+            )
+            continue
         if not _qualifies_for_bulk_write(comparison):
+            # A >=1-change file that would blank an existing tag: never bulk-written (stays per-file
+            # Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so this is a defensive path.
             continue
         tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
         await execute_tag_write(session, fr, tags, source="proposal")

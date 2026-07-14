@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import json
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast as type_cast
 
 from saq.utils import now as saq_now
 from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, text
@@ -41,6 +42,7 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -485,7 +487,63 @@ async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit:
         return []
 
 
-async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:
+# Bounded fan-out for the get_stage_progress reads (CLEAN-01 / D-01/D-02/D-03). A single
+# AsyncSession (one asyncpg connection) CANNOT run concurrent statements -- SQLAlchemy 2.0 raises
+# IllegalStateChangeError ("another operation is in progress") -- so each concurrent read runs in
+# its OWN session. The semaphore caps the extra concurrent pool checkouts per 5s poll: cap 4 admits
+# all three heavy enrich-bucket reads at once (the serial-cost dominators) while leaving >=6 of the
+# deliberately-lean 10-conn/worker pool (pool_size=5 + max_overflow=5, post-PgBouncer-exhaustion
+# incident) for the request's own session + other request traffic + the orphan refresher (RESEARCH
+# Pool Headroom, T-92-02-DoS).
+#
+# WHY NOT a module-level pre-constructed ``asyncio.Semaphore(4)``: an asyncio primitive binds to the
+# event loop of its FIRST use, so a module-singleton raises "bound to a different event loop" under
+# pytest's per-test loops and degrades every read (a real bug, not just a test artifact). Instead
+# :func:`_stats_fanout` builds a FRESH ``asyncio.Semaphore(4)`` per poll, bound to the running loop
+# (RESEARCH's cap is explicitly PER-POLL) -- unless the ``_STATS_FANOUT`` override below is set.
+#
+# PATCHABLE SEAM -- ``_STATS_FANOUT`` is the override 92-03 Task 2 sets (per-test, in the test loop)
+# to ``asyncio.Semaphore(1)`` so the fan-out SERIALIZES onto the single shared per-test connection
+# (concurrent reads on one connection would raise IllegalStateChangeError); it also monkeypatches
+# ``phaze.database.async_session`` to route the fan-out through that connection. Both are resolved at
+# CALL time (the deferred import + this module attribute) so the routing takes effect.
+_STATS_FANOUT: asyncio.Semaphore | None = None
+
+
+def _stats_fanout() -> asyncio.Semaphore:
+    """Return the fan-out bound to the CURRENT loop: the ``_STATS_FANOUT`` test override, else a fresh cap-4."""
+    return _STATS_FANOUT if _STATS_FANOUT is not None else asyncio.Semaphore(4)
+
+
+async def _read_in_own_session[T](fanout: asyncio.Semaphore, fn: Callable[[AsyncSession], Awaitable[T]], default: T) -> T:
+    """Run one degrade-safe read in its OWN :class:`AsyncSession`, bounded by the shared ``fanout``.
+
+    ``fanout`` is the ONE semaphore from :func:`_stats_fanout` shared across all the poll's reads (so
+    the cap bounds them collectively). Resolves ``async_session`` at CALL time via a DEFERRED
+    ``from phaze.database import async_session`` (re-read every call, matching the agent-worker
+    import-boundary convention used by :func:`refresh_stage_orphan_counts`) so the single patchable
+    seam is the SOURCE module attribute ``phaze.database.async_session`` -- 92-03 Task 2 monkeypatches
+    it onto the per-test connection so seed-then-read tests see their rows.
+
+    Degrade discipline end-to-end (RESEARCH Pitfall 2 / T-92-02-DoS): the passed ``fn`` already wraps
+    :func:`_safe_count` / :func:`_safe_bucket_counts` (which never raise), but the session ACQUISITION
+    itself (``async with async_session()``) can raise ``TimeoutError`` after ``pool_timeout=10s`` on a
+    saturated pool -- a raise that happens OUTSIDE ``fn``'s try/except and, under a default
+    ``asyncio.gather``, would cancel/propagate and 500 the hot 5s poll. Catching it HERE returns the
+    node's ``default`` (0 for a count, the all-zero bucket dict for an enrich node) so a pool timeout
+    degrades that single node rather than aborting the whole fan-out.
+    """
+    from phaze.database import async_session  # noqa: PLC0415 -- deferred: keeps the agent-worker import boundary intact
+
+    try:
+        async with fanout, async_session() as s:
+            return await fn(s)
+    except Exception:
+        logger.warning("stage_progress_acquire_degraded", exc_info=True)
+        return default
+
+
+async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int | None]]:  # noqa: ARG001
     """Authoritative per-DAG-node reconcile source (D-03) -- counts each stage's OUTPUT table.
 
     The single-valued linear ``FileRecord.state`` (one enum per file) STRUCTURALLY cannot report
@@ -516,25 +574,34 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
     nodes) so a single failing stage degrades to zero and the function never raises into the 5s poll.
+
+    CLEAN-01 (D-01/D-02/D-03): every independent read now runs CONCURRENTLY via
+    :func:`asyncio.gather`, each in its OWN :class:`AsyncSession` from :func:`_read_in_own_session`
+    (bounded by :data:`_STATS_FANOUT`), collapsing the ~13 serial awaits into roughly the slowest
+    single read. The incoming ``session`` parameter is KEPT for signature stability (callers still
+    pass their request session) but is UNUSED-BY-DESIGN -- the reads run in their own sessions
+    (Open Question 2). Because each read has its own transaction/snapshot, the returned dict is
+    byte-identical on a QUIESCENT DB; under concurrent writes two nodes may reflect MVCC snapshots
+    microseconds apart -- acceptable for a 5s poll (RESEARCH Pitfall 1), NOT strict identity under
+    live writes.
     """
-    music_video_total = await _safe_count(
-        session,
-        select(func.count(FileRecord.id)).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)),
-        node="music_video_total",
-    )
-    tracklist_total = await _safe_count(session, select(func.count(Tracklist.id)), node="tracklist_total")
-
-    discovery_done = await _safe_count(session, select(func.count(FileRecord.id)), node="discovery")
-
+    # Pre-build the count statements so each gather task closes over a distinct, already-constructed
+    # Select. Statement construction is pure (no I/O) -- only the execute() inside each own session
+    # touches the pool.
+    mv_total_stmt = select(func.count(FileRecord.id)).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+    tracklist_total_stmt = select(func.count(Tracklist.id))
+    discovery_stmt = select(func.count(FileRecord.id))
     # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
     # (mirrors routers/pipeline.py:116-128, the generate_proposals ready-set).
-    convergence_total = await _safe_count(
-        session,
+    convergence_stmt = (
         select(func.count(FileRecord.id))
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id))),
-        node="proposals_total",
+        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
     )
+    scan_search_stmt = select(func.count(distinct(Tracklist.file_id)))
+    scrape_stmt = select(func.count(distinct(TracklistVersion.tracklist_id)))
+    proposals_stmt = select(func.count(distinct(RenameProposal.file_id)))
+    execute_total_stmt = select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED)
 
     # match.done: distinct tracklist_id reachable from a discogs_link, walked
     # discogs_links -> tracklist_tracks -> tracklist_versions (discogs_links carries
@@ -555,6 +622,55 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         .where(ExecutionLog.status == ExecutionStatus.COMPLETED)
     )
 
+    # The all-zero enrich-bucket default returned when a bucket read's session acquisition times out
+    # (never mutated -- only spread via {**bucket, "total": ...}).
+    bucket_default: dict[str, int] = {s.value: 0 for s in Status}
+
+    # ONE semaphore shared across every read in THIS poll so the cap bounds them collectively (fresh
+    # per poll, bound to the running loop -- see _stats_fanout).
+    fanout = _stats_fanout()
+
+    # Fan out every independent read concurrently, each in its own session (D-01/D-02/D-03). The
+    # _safe_count / _safe_bucket_counts wrappers stay VERBATIM (D-04) -- reused as the per-read body
+    # -- and _read_in_own_session adds the acquisition-degrade belt (Pitfall 2). Assemble the SAME
+    # 9-key dict in the SAME key order from the gathered values (byte-identical on a quiescent DB).
+    (
+        music_video_total,
+        tracklist_total,
+        discovery_done,
+        convergence_total,
+        metadata_b,
+        fingerprint_b,
+        analyze_b,
+        scan_search_done,
+        scrape_done,
+        match_done,
+        proposals_done,
+        execute_done,
+        execute_total,
+        # asyncio.gather with >6 awaitables of mixed return types collapses to list[object] under mypy,
+        # so pin the exact per-node tuple shape with a single cast (int counts + 3 enrich-bucket dicts).
+        # NOTE: typing.cast is aliased type_cast -- the bare `cast` name is sqlalchemy's SQL cast (used
+        # elsewhere in this module).
+    ) = type_cast(
+        "tuple[int, int, int, int, dict[str, int], dict[str, int], dict[str, int], int, int, int, int, int, int]",
+        await asyncio.gather(
+            _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.METADATA), bucket_default),
+            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.FINGERPRINT), bucket_default),
+            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, scan_search_stmt, node="scan_search"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, scrape_stmt, node="scrape"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, proposals_stmt, node="proposals"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, execute_done_stmt, node="execute"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, execute_total_stmt, node="execute_total"), 0),
+        ),
+    )
+
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
         # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the three enrich nodes are FIVE-BUCKET
@@ -562,32 +678,28 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
-        "metadata": {**await _safe_bucket_counts(session, Stage.METADATA), "total": music_video_total},
-        "fingerprint": {**await _safe_bucket_counts(session, Stage.FINGERPRINT), "total": music_video_total},
-        "analyze": {**await _safe_bucket_counts(session, Stage.ANALYZE), "total": music_video_total},
+        "metadata": {**metadata_b, "total": music_video_total},
+        "fingerprint": {**fingerprint_b, "total": music_video_total},
+        "analyze": {**analyze_b, "total": music_video_total},
         "scan_search": {
-            "done": await _safe_count(session, select(func.count(distinct(Tracklist.file_id))), node="scan_search"),
+            "done": scan_search_done,
             "total": None,  # counter-only: no table defines "should get a tracklist" (RESEARCH Q5 / UI-SPEC)
         },
         "scrape": {
-            "done": await _safe_count(session, select(func.count(distinct(TracklistVersion.tracklist_id))), node="scrape"),
+            "done": scrape_done,
             "total": tracklist_total,
         },
         "match": {
-            "done": await _safe_count(session, match_done_stmt, node="match"),
+            "done": match_done,
             "total": tracklist_total,
         },
         "proposals": {
-            "done": await _safe_count(session, select(func.count(distinct(RenameProposal.file_id))), node="proposals"),
+            "done": proposals_done,
             "total": convergence_total,
         },
         "execute": {
-            "done": await _safe_count(session, execute_done_stmt, node="execute"),
-            "total": await _safe_count(
-                session,
-                select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED),
-                node="execute_total",
-            ),
+            "done": execute_done,
+            "total": execute_total,
         },
     }
 
