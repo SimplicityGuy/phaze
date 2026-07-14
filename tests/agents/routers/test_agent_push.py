@@ -28,8 +28,6 @@ and the Phase-67 registry accessor is exercised end-to-end (REG-04).
 
 from __future__ import annotations
 
-import asyncio
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -37,7 +35,6 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -46,12 +43,11 @@ from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_push import router as agent_push_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
-from phaze.tasks._shared.deterministic_key import apply_deterministic_key
-from tests._queue_fakes import _JOB_CONTROL_FIELDS, FakeQueue, FakeTaskRouter, _lane_key, _lane_name, seed_active_agent
+from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.models.agent import Agent
 
@@ -939,220 +935,13 @@ async def test_mismatch_missing_auth_returns_401(
 # ---------------------------------------------------------------------------
 # /mismatch — HARD-02 (D-05/D-06): push_attempt RMW atomicity under concurrency
 #
-# The counter read->+1->write-back in report_push_mismatch must be serialized so
-# two concurrent /mismatch for one file cannot lose an increment (AR-73-02 /
-# T-73-13 / WR-04). Serialization uses a transaction-scoped ADVISORY lock keyed
-# by the ledger key — NOT `.with_for_update()` on the ledger row. A row lock would
-# self-deadlock: the under-cap path re-enqueues `push_file` while this transaction
-# is still open, and the `apply_deterministic_key` before_enqueue WRITE hook upserts
-# THAT SAME ledger row in its own session — which would block on a row lock we hold
-# and can't release until the enqueue returns (see test_mismatch_real_enqueue_hook_
-# does_not_deadlock below). The advisory lock lives in a different lock space, so the
-# hook's row upsert never blocks on it. These tests need REAL Postgres locking, so
-# each request runs in its OWN AsyncSession/transaction against the shared test-DB
-# engine (port 5433) — the single shared `session` fixture cannot express two
-# concurrent transactions.
+# NOTE (92-04): the two cross-connection concurrency cells that lived here —
+# test_mismatch_concurrent_no_lost_update and test_mismatch_real_enqueue_hook_does_not_deadlock,
+# plus their _GatedQueue/_GatedTaskRouter/_RealHookQueue/_RealHookTaskRouter helpers — moved to
+# tests/integration/test_agent_push_concurrency.py. They need two INDEPENDENT committed-visible
+# connections for real advisory-lock RMW serialization, which the hermetic single-connection
+# create_savepoint `session` fixture cannot provide. The boundary cell below stays (hermetic).
 # ---------------------------------------------------------------------------
-
-
-class _GatedQueue(FakeQueue):
-    """A ``FakeQueue`` whose ``connect()`` parks the request mid-transaction.
-
-    The under-cap re-drive path calls ``fileserver_queue.connect()`` AFTER it has
-    taken the advisory lock + ledger SELECT but BEFORE the counter write-back +
-    commit. Parking here holds the first request's advisory lock open while a second
-    concurrent ``/mismatch`` is launched, so the test drives genuine contention (not
-    a lucky interleaving): the second request must block on the advisory lock until
-    the first commits, then read the committed value and add the second increment.
-    """
-
-    def __init__(self, name: str, capture: Any = None, *, reached: asyncio.Event, proceed: asyncio.Event) -> None:
-        super().__init__(name, capture)
-        self._reached = reached
-        self._proceed = proceed
-
-    async def connect(self) -> None:
-        # Signal we are parked (row lock held) and wait for the test to release us.
-        self._reached.set()
-        await self._proceed.wait()
-
-
-class _GatedTaskRouter(FakeTaskRouter):
-    """A ``FakeTaskRouter`` whose per-agent queues are :class:`_GatedQueue` instances."""
-
-    def __init__(self, *, reached: asyncio.Event, proceed: asyncio.Event) -> None:
-        super().__init__()
-        self._reached = reached
-        self._proceed = proceed
-
-    def queue_for(self, agent_id: str, lane: str | None = None) -> FakeQueue:  # type: ignore[override]
-        self.queue_for_calls.append(agent_id)
-        key = _lane_key(agent_id, lane)
-        if key not in self.queues:
-            self.queues[key] = _GatedQueue(_lane_name(agent_id, lane), self.captures, reached=self._reached, proceed=self._proceed)
-        return self.queues[key]
-
-
-@pytest.mark.asyncio
-async def test_mismatch_concurrent_no_lost_update(
-    seed_test_agent: tuple[Agent, str],
-    session: AsyncSession,
-    async_engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
-    backends_toml_env: Any,
-) -> None:
-    """D-05 (AR-73-02 / T-73-13 / WR-04): two concurrent /mismatch increment push_attempt to EXACTLY 2.
-
-    Both requests take the under-cap re-drive path (push_attempt starts at 0, cap is 3), each in its own
-    DB transaction against the real port-5433 engine. The advisory-locked RMW serializes the
-    read->+1->write-back: request A holds the advisory lock across its transaction while request B blocks
-    on it, so B reads A's committed value and adds the second increment. Without the advisory lock both
-    would read 0 and write 1 (a lost update -> final 1); with it the persisted counter is exactly 2.
-    """
-    agent, raw_token = seed_test_agent
-    # Reporter registry: the compute backend's agent_ref == the reporting agent id so D-07 passes for both.
-    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
-    file_id = await _seed_file(session, agent.id)
-    await _seed_push_ledger(session, file_id, push_attempt=0)
-    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
-    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
-    # End the seeding session's snapshot so the final read sees the concurrent commits.
-    await session.rollback()
-
-    ledger_key = f"push_file:{file_id}"
-    reached = asyncio.Event()  # set once request A is parked mid-transaction (row lock held)
-    proceed = asyncio.Event()  # released by the test to let request A finish + drop the lock
-
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as session_a, factory() as session_b:
-        # Request A parks at connect() while holding the row-locked ledger SELECT.
-        router_a = _GatedTaskRouter(reached=reached, proceed=proceed)
-        client_a = _make_client(session_a, router_a, raw_token)
-        # Request B uses a plain (non-parking) router so it runs straight through once it holds the lock.
-        router_b = FakeTaskRouter()
-        client_b = _make_client(session_b, router_b, raw_token)
-
-        async with client_a, client_b:
-            task_a = asyncio.create_task(client_a.post(f"/api/internal/agent/push/{file_id}/mismatch"))
-            # Wait until A is parked at connect() with the ledger row locked in its open transaction.
-            await asyncio.wait_for(reached.wait(), timeout=10.0)
-
-            # Launch B: it must block on A's row lock at the ledger SELECT (fixed code). Give it time to
-            # reach and queue on the lock (or, on unfixed code, to read the stale 0 and race ahead).
-            task_b = asyncio.create_task(client_b.post(f"/api/internal/agent/push/{file_id}/mismatch"))
-            await asyncio.sleep(0.25)
-
-            # Release A: it writes push_attempt=1 and commits, dropping the lock so B can read 1 -> write 2.
-            proceed.set()
-            resp_a, resp_b = await asyncio.gather(task_a, task_b)
-
-    assert resp_a.status_code == 200, resp_a.text
-    assert resp_b.status_code == 200, resp_b.text
-    assert resp_a.json()["cleared"] is False
-    assert resp_b.json()["cleared"] is False
-
-    # The row-locked RMW applied each increment exactly once: no lost update.
-    row = await _ledger_row(session, ledger_key)
-    assert row is not None
-    assert row.payload.get("push_attempt") == 2, "two concurrent /mismatch must increment push_attempt to exactly 2"
-    # Both requests kept the file PUSHING (under-cap re-drive retains the slot).
-
-
-class _RealHookQueue(FakeQueue):
-    """A ``FakeQueue`` whose ``enqueue()`` runs the REAL ``apply_deterministic_key`` before_enqueue
-    WRITE hook, exactly as the control-side per-agent router queue does in production.
-
-    The hook opens its OWN session off ``ledger_sessionmaker`` and upserts the SAME
-    ``push_file:<file_id>`` ledger row (ON CONFLICT DO UPDATE) while the request's transaction is
-    still open. This is the precise interaction a ledger *row* lock would self-deadlock against —
-    the hook's row upsert would block on the lock the uncommitted request holds, and the request
-    can't commit to release it until ``enqueue()`` returns. The advisory lock lives in a different
-    lock space, so the hook's upsert proceeds and there is no hang.
-    """
-
-    def __init__(self, name: str, capture: Any = None, *, ledger_sessionmaker: async_sessionmaker) -> None:
-        super().__init__(name, capture)
-        # apply_deterministic_key reads both of these off the queue object via getattr.
-        self.ledger_sessionmaker = ledger_sessionmaker
-        self.cache_redis = None  # best-effort enqueued-counter INCR degrades to a logged no-op
-
-    async def connect(self) -> None:
-        return None
-
-    async def enqueue(self, task_name: str, **kwargs: Any) -> Any:
-        # Reconstruct the minimal SAQ Job surface apply_deterministic_key touches and run the REAL
-        # hook, reproducing the production before_enqueue ledger upsert on this same engine/pool.
-        job = SimpleNamespace(
-            function=task_name,
-            kwargs={k: v for k, v in kwargs.items() if k not in _JOB_CONTROL_FIELDS},
-            key=kwargs.get("key"),
-            timeout=kwargs.get("timeout"),
-            retries=kwargs.get("retries"),
-            queue=self,
-        )
-        await apply_deterministic_key(job)
-        return await super().enqueue(task_name, **kwargs)
-
-
-class _RealHookTaskRouter(FakeTaskRouter):
-    """A ``FakeTaskRouter`` whose per-agent queues are :class:`_RealHookQueue` instances."""
-
-    def __init__(self, *, ledger_sessionmaker: async_sessionmaker) -> None:
-        super().__init__()
-        self._sm = ledger_sessionmaker
-
-    def queue_for(self, agent_id: str, lane: str | None = None) -> FakeQueue:  # type: ignore[override]
-        self.queue_for_calls.append(agent_id)
-        key = _lane_key(agent_id, lane)
-        if key not in self.queues:
-            self.queues[key] = _RealHookQueue(_lane_name(agent_id, lane), self.captures, ledger_sessionmaker=self._sm)
-        return self.queues[key]
-
-
-@pytest.mark.asyncio
-async def test_mismatch_real_enqueue_hook_does_not_deadlock(
-    seed_test_agent: tuple[Agent, str],
-    session: AsyncSession,
-    async_engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
-    backends_toml_env: Any,
-) -> None:
-    """Regression (HARD-02): the under-cap re-drive must NOT deadlock against the real before_enqueue hook.
-
-    ``report_push_mismatch`` re-enqueues ``push_file`` while its transaction is still open; ``push_file``
-    is a registered key-builder, so ``apply_deterministic_key`` upserts the SAME ledger row in its own
-    session. The advisory-lock RMW keeps that row UNlocked, so the hook's upsert proceeds and the request
-    completes. A ``.with_for_update()`` row lock would hang here forever (no statement_timeout to break
-    it), so the request is bounded by ``asyncio.wait_for`` — a timeout is the failure signal, not a pass.
-    """
-    agent, raw_token = seed_test_agent
-    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
-    file_id = await _seed_file(session, agent.id)
-    await _seed_push_ledger(session, file_id, push_attempt=0)
-    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
-    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
-    # End the seeding snapshot so the request session AND the hook's own session see the seeded rows.
-    await session.rollback()
-
-    ledger_key = f"push_file:{file_id}"
-    factory = async_sessionmaker(async_engine, expire_on_commit=False)
-    async with factory() as req_session:
-        router = _RealHookTaskRouter(ledger_sessionmaker=factory)
-        client = _make_client(req_session, router, raw_token)
-        async with client:
-            # 15s hard bound: on the buggy row-lock version this request never returns.
-            resp = await asyncio.wait_for(
-                client.post(f"/api/internal/agent/push/{file_id}/mismatch"),
-                timeout=15.0,
-            )
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["cleared"] is False
-    # The request's post-enqueue write-back is the source of truth for the counter (it runs AFTER the
-    # hook overwrote payload without push_attempt), so a single re-drive lands push_attempt == 1.
-    row = await _ledger_row(session, ledger_key)
-    assert row is not None
-    assert row.payload.get("push_attempt") == 1
 
 
 @pytest.mark.asyncio
