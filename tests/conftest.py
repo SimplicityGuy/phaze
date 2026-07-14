@@ -311,7 +311,7 @@ async def session(_db_connection: AsyncConnection, _route_stats_fanout: None) ->
 
 
 @pytest_asyncio.fixture
-async def verify(_db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
+async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession]:
     """Yield an INDEPENDENT read session bound to the same per-test ``_db_connection`` (D-07).
 
     This is the migration target for plan 92-04's 21 independent-verify call sites (which today build
@@ -323,6 +323,12 @@ async def verify(_db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession
     instances. It, too, uses ``join_transaction_mode="create_savepoint"`` so it joins the outer
     transaction without disturbing it; teardown just closes it (the outer rollback in :func:`session`
     discards everything).
+
+    Depends on :func:`session` (WR-03) so the ordering is correct BY CONSTRUCTION rather than by
+    call-site parameter convention: requesting ``session`` guarantees its ``outer`` transaction is begun
+    before this fixture runs, and pins pytest's teardown to close THIS session before ``session`` fires
+    its ``await outer.rollback()`` (closing a session whose outer txn was already rolled back would
+    raise). The parameter is a pure ordering dependency -- the body still binds to ``_db_connection``.
     """
     s = AsyncSession(bind=_db_connection, join_transaction_mode="create_savepoint", expire_on_commit=False)
     try:
