@@ -34,6 +34,7 @@ metrics:
   files: 5
   commits: 4
 requirements_completed: [G84-01]
+status: complete
 ---
 
 # Quick 260707-g84: Fix Inert Compute-Agent Memory-Safety Cap Summary

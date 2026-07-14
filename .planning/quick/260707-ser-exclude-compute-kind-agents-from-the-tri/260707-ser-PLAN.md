@@ -28,6 +28,7 @@ must_haves:
       to: "trigger_scan_card.html"
       via: "context['agents'] -> {% for agent in agents %}"
       pattern: "Agent.kind == .fileserver."
+status: complete
 ---
 
 <objective>

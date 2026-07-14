@@ -1,3 +1,7 @@
+---
+status: complete
+---
+
 # Quick Task 260707-ser — Summary
 
 **Task:** Exclude `kind="compute"` agents (Kueue/burst backends like `k8s-vox`) from the

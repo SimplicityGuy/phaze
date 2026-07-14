@@ -26,6 +26,7 @@ metrics:
   completed: "2026-07-07"
   tasks: 2
   files: 2
+status: complete
 ---
 
 # Quick 260706-vqz: Fix Cloud-Burst Presign-Download Status Guard Summary

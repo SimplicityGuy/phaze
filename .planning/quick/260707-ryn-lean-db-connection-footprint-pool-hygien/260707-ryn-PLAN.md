@@ -45,6 +45,7 @@ must_haves:
       to: "phaze.config.get_settings"
       via: "min_size/max_size read from config dispatch knobs"
       pattern: "dispatch_queue_(min|max)_size"
+status: complete
 ---
 
 <objective>

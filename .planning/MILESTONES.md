@@ -1,5 +1,20 @@
 # Milestones
 
+## 2026.7.5 Parallel Enrich DAG (Shipped: 2026-07-14)
+
+**Phases completed:** 16 phases, 66 plans, 100 tasks
+
+**Key accomplishments:**
+
+- **Retired the linear `FileState` machine.** Per-file, per-stage status (`not_started` / `in_flight` / `done` / `failed`) is now DERIVED from the output tables via a single-source predicate layer (`enums/stage.py` + `services/stage_status.py`), drift-locked by a SQL⇔Python equivalence test and tokenize-based anti-drift guards.
+- **The cross-stage enrich deadlock dissolved.** The three enrich pending sets + `get_pipeline_stats` were cut over to the derived layer so each stage surfaces its not-done/not-in-flight set independently — readers migrated in dependency order (recovery → counts/pending → dedup/fingerprint → executed-gate → proposals → UI → drill-in).
+- **Destructive `files.state` removal, done safely.** Migration `039` drops the column + `FileState` enum after a readers-before-writers cutover, gated on a standing live-corpus shadow-compare; a mutation-tested D-08 guard proves no reader/writer survives.
+- **Per-stage failure persistence + operator surfaces.** Durable analyze/metadata failure markers with retry paths (never a permanent dead-end), plus the operator console: per-file stage matrix, per-cell failure retry, "why not eligible?" trace, force-skip, orphaned-work badge, lane/agent drill-in, and the restored priority stepper.
+- **Legacy retirement + hygiene.** Deleted the orphaned legacy scan path, reattributed historical rows to a real fileserver agent, dropped the sentinel; plus a milestone-close hygiene pass (orphan-count O(1) cache, coverage uplift, dead-code sweep).
+- **Milestone-close tech-debt cleanup (Phase 92) + full post-audit paydown.** `get_stage_progress` parallelized via bounded `asyncio.gather` (200K poll 1469→861ms, DENORM-01 obviated); test-suite made hermetic under per-bucket CI isolation (all 9 buckets green, D-08). After the audit, a full paydown of remaining debt: P81 metadata-failure guard, P85 review-builder starvation fix, and P83-06 (the cloud-backfill stranding bug — consciously reversing locked D-09). Final full-suite gate: 3,409 tests, 0 failed.
+
+Behavior-preserving except the deadlock fix + the Phase-92 latency win. Milestone audit: **passed** (45/45 requirements, 5/5 integration seams). Known deferred at close: 4 deployment-gated items (039 real-corpus rehearsal + drained shadow-compare + executed-gate live UAT + the `analyzed`-invariant backfill), see STATE.md Deferred Items — blocks deploy, not the record.
+
 ## 2026.7.2 Multi-Compute Agents (Shipped: 2026-07-07)
 
 **Delivered:** N cloud-compute agents now dispatch, route, reconcile, and fail-isolate simultaneously — the compute-side twin of the existing multi-Kueue support — with the `≤1-compute` fail-fasts retired and **zero new dependencies**.
