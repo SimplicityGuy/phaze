@@ -210,4 +210,10 @@ async def presign_download(
             detail="staged object has no resolvable staging bucket recorded",
         )
     download_url = await s3_staging.presign_get(file_id, bucket)
-    return PresignDownloadResponse(download_url=download_url, expected_sha256=file.sha256_hash)
+    # Thread the file's real audio extension so the DB-less pod can name its temp file
+    # <file_id>.<ext> (essentia detects format by extension). The staged S3 key carries
+    # no extension, so without this the pod falls back to `.audio` -> essentia decodes 0
+    # duration -> 0 windows -> a silent empty-but-"successful" analysis (cloud-analyze-
+    # empty-no-ext). `file_type` is the dotless extension (e.g. "mp3"), the same value
+    # agent_push/push use to name their scratch copies.
+    return PresignDownloadResponse(download_url=download_url, expected_sha256=file.sha256_hash, audio_ext=file.file_type)

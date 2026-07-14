@@ -141,16 +141,28 @@ class PresignDownloadResponse(BaseModel):
     returns it alongside ``expected_sha256`` -- the ONLY hash a Postgres-free pod
     can integrity-verify the download against (Pitfall 3). ``expected_sha256`` is
     sourced server-side from ``FileRecord.sha256_hash``, exactly as
-    ``ProcessFilePayload.expected_sha256`` is pinned in v5.0. The field is required
-    (``extra='forbid'``) so a response missing the integrity hash fails validation
-    rather than silently disabling the verify step.
+    ``ProcessFilePayload.expected_sha256`` is pinned in v5.0. ``expected_sha256`` is
+    required so a response missing the integrity hash fails validation rather than
+    silently disabling the verify step.
 
     NOTE: the SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)
     ships in Phase 53 (KSTAGE-03). Phase 52 defines and unit-tests the CLIENT-consumed
     shape only.
+
+    Forward-compat (cloud-analyze-empty-no-ext specialist review): this is a
+    RESPONSE-only model the pod TRUSTS from the control plane -- NOT an attacker-facing
+    request body -- so it must use ``extra='ignore'`` (Pydantic's default), NOT
+    ``extra='forbid'``. During a rolling deploy the control plane may ship a NEWER
+    schema first (e.g. an additive ``audio_ext`` key) while an OLDER Kueue Job pod
+    still runs the previous image. With ``extra='forbid'`` that additive-but-backward-
+    compatible field would raise ``ValidationError`` on ``model_validate`` -> the pod's
+    presign call fails -> EXIT_DOWNLOAD (10, fail-fast, no retry), permanently failing
+    every file for the rollout window. Tolerating unknown additive fields keeps old
+    pods forward-compatible. (The request-body models KEEP ``extra='forbid'`` -- there
+    it guards against smuggled ``agent_id``/``file_id``.)
     """
 
-    model_config = ConfigDict(extra="forbid")  # strict body parsing
+    model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
 
     download_url: str
     # Constrain to a 64-char lowercase-hex sha256 digest. ``compute_sha256``
@@ -159,3 +171,13 @@ class PresignDownloadResponse(BaseModel):
     # at the wire boundary rather than silently tripping every download as an
     # integrity mismatch (exit 11) with no diagnostic (IN-02).
     expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The file's real audio extension WITHOUT a leading dot (e.g. ``"mp3"``,
+    # ``"m4a"``, ``"ogg"``), sourced server-side from ``FileRecord.file_type``.
+    # The Postgres-less pod names its downloaded temp file ``<file_id>.<audio_ext>``
+    # so essentia's EXTENSION-BASED format detection (``es.MetadataReader``) can
+    # decode it. The staged S3 key carries no extension, so without this the pod
+    # would fall back to ``.audio`` — undecodable by essentia → duration 0 → 0
+    # windows → a silent EMPTY-but-"successful" analysis (cloud-analyze-empty-no-ext).
+    # Optional (default None) so an older control plane that omits it degrades to
+    # the URL-suffix fallback rather than failing response validation on rollout.
+    audio_ext: str | None = Field(default=None, max_length=10)

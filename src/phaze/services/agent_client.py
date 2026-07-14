@@ -283,15 +283,20 @@ class PhazeAgentClient:
         )
         return AnalysisWriteResponse.model_validate(response.json())
 
-    async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str]:
+    async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None]:
         """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (Phase 52, KJOB-02).
 
-        Returns ``(download_url, expected_sha256)``: the short-TTL presigned URL the
-        DB-less one-shot pod (Plan 02) downloads the file bytes from, and the
+        Returns ``(download_url, expected_sha256, audio_ext)``: the short-TTL presigned
+        URL the DB-less one-shot pod (Plan 02) downloads the file bytes from, the
         ``expected_sha256`` (server-sourced from ``FileRecord.sha256_hash``) it
         integrity-verifies those bytes against -- the only hash a Postgres-free pod
-        can check (Pitfall 3). A FRESH presign is requested per call at pod start, so
-        replay-after-expiry defense is the server's short-TTL minting concern (T-52-05).
+        can check (Pitfall 3) -- and ``audio_ext``, the file's real dotless audio
+        extension (server-sourced from ``FileRecord.file_type``) the pod uses to name
+        the downloaded temp file so essentia's extension-based format detection can
+        decode it (cloud-analyze-empty-no-ext). ``audio_ext`` is ``None`` against an
+        older control plane that omits it; the pod then falls back to the URL suffix.
+        A FRESH presign is requested per call at pod start, so replay-after-expiry
+        defense is the server's short-TTL minting concern (T-52-05).
 
         Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12) via the
         ``_request`` funnel -- 5xx retries up to the cap, 4xx surfaces immediately; no
@@ -308,7 +313,7 @@ class PhazeAgentClient:
             f"/api/internal/agent/files/{file_id}/presign-download",
         )
         resp = PresignDownloadResponse.model_validate(response.json())
-        return resp.download_url, resp.expected_sha256
+        return resp.download_url, resp.expected_sha256, resp.audio_ext
 
     async def report_analysis_failed(self, file_id: uuid.UUID, payload: AnalysisFailurePayload) -> AnalysisFailureResponse:
         """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report (Phase 43).

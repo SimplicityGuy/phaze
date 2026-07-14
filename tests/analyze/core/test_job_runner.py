@@ -67,6 +67,146 @@ def _fake_result() -> dict:
     }
 
 
+def _capturing_analyze(paths: list[str]):  # type: ignore[no-untyped-def]
+    """Build a fake ``analyze_file`` that records the temp-file path it was handed."""
+
+    def _analyze(path, *_a, **_k):  # type: ignore[no-untyped-def]
+        paths.append(path)
+        return _fake_result()
+
+    return _analyze
+
+
+# ---------------------------------------------------------------------------
+# cloud-analyze-empty-no-ext: the downloaded temp file MUST carry the file's REAL
+# audio extension (essentia detects format by extension). The staged S3 key has
+# none, so the pod must use the server-threaded ``audio_ext`` — never the old
+# ``.audio`` fallback, which yielded duration 0 -> 0 windows -> a silent empty
+# "success".
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_temp_file_suffix_derives_from_real_audio_ext(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """The temp file passed to analyze_file is suffixed from the threaded ``audio_ext`` (regression).
+
+    Pre-fix this used ``Path(urlparse(url).path).suffix or ".audio"`` on an extension-less
+    staged key -> ``.audio`` (undecodable) -> the empty-analysis bug. Asserting ``.mp3`` here
+    FAILS on the old fallback and PASSES once the real extension is threaded through.
+    """
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    # The download URL has NO extension (mirrors the real staged key phaze-staging/<file_id>).
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    seen: list[str] = []
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _capturing_analyze(seen))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert len(seen) == 1
+    suffix = Path(seen[0]).suffix
+    assert suffix == ".mp3", f"temp file must carry the real audio extension, got {suffix!r}"
+    # The bug's fingerprint: the extension-less staged key must NOT collapse to `.audio`.
+    assert suffix != ".audio"
+
+
+@respx.mock
+async def test_temp_file_suffix_falls_back_to_url_suffix_when_ext_absent(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """An older control plane omits ``audio_ext`` -> the pod uses the URL path suffix."""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    url_with_ext = "http://bucket.test/obj.ogg"
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": url_with_ext, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(url_with_ext).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    seen: list[str] = []
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _capturing_analyze(seen))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    assert Path(seen[0]).suffix == ".ogg"
+
+
+@pytest.mark.parametrize(
+    ("audio_ext", "url", "expected"),
+    [
+        ("mp3", "http://bucket.test/phaze-staging/abc", ".mp3"),  # real ext wins over extension-less key
+        (".m4a", "http://bucket.test/obj", ".m4a"),  # a stray leading dot is normalized, not doubled
+        ("  ogg  ", "http://bucket.test/obj", ".ogg"),  # whitespace is stripped
+        (None, "http://bucket.test/obj.flac", ".flac"),  # no ext threaded -> URL suffix
+        ("", "http://bucket.test/obj.wav", ".wav"),  # empty ext -> URL suffix
+        (None, "http://bucket.test/phaze-staging/abc", ".audio"),  # last-resort sentinel
+    ],
+)
+def test_temp_suffix_precedence(audio_ext, url, expected):  # type: ignore[no-untyped-def]
+    """``_temp_suffix`` prefers the real extension, then the URL suffix, then ``.audio``."""
+    import phaze.job_runner as jr
+
+    assert jr._temp_suffix(audio_ext, url) == expected
+
+
+@respx.mock
+async def test_zero_window_analysis_fails_loudly(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A zero-window analyze result exits EXIT_ANALYSIS (12), never a false success (hardening).
+
+    Guards against ANY future silent empty-success (e.g. a mis-suffixed download essentia
+    can't decode): both ``*_windows_total`` == 0 means duration probed 0s, so the pod must
+    fail non-zero -> Kueue reads failed_at instead of recording NULL-everything as complete.
+    """
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "audio_ext": "mp3"}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    put = respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    def _empty_result() -> dict:
+        r = _fake_result()
+        r["windows"] = []
+        r["fine_windows_analyzed"] = 0
+        r["fine_windows_total"] = 0
+        r["coarse_windows_analyzed"] = 0
+        r["coarse_windows_total"] = 0
+        return r
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _empty_result())
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS == 12
+    # The empty result must NEVER be PUT back as a completion.
+    assert not put.called
+
+
 @respx.mock
 async def test_happy_path_exits_zero(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """presign → download → verify → analyze → PUT all succeed → exit 0 (KJOB-02)."""

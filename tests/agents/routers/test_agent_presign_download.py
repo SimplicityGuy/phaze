@@ -138,6 +138,9 @@ async def test_presign_download_returns_url_and_server_sourced_sha256(
     body = resp.json()
     assert body["expected_sha256"] == _SHA  # server-sourced, from FileRecord.sha256_hash
     assert str(file.id) in body["download_url"]  # file_id-scoped key in the URL
+    # cloud-analyze-empty-no-ext: the file's real audio extension is threaded to the pod so
+    # the DB-less pod can name its temp file <file_id>.mp3 (essentia detects format by extension).
+    assert body["audio_ext"] == "mp3"  # server-sourced, from FileRecord.file_type
 
 
 async def test_presign_download_body_validates_against_response_schema(
