@@ -51,17 +51,27 @@ async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     executed_result = await session.execute(executed_stmt)
     total_executed = executed_result.scalar() or 0
 
-    # Count completed writes
+    # Count completed writes (distinct files -- display cell)
     completed_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.COMPLETED)
     completed_result = await session.execute(completed_stmt)
     completed = completed_result.scalar() or 0
 
-    # Count discrepancy writes
+    # Count discrepancy writes (distinct files -- display cell)
     discrepancy_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(TagWriteLog.status == TagWriteStatus.DISCREPANCY)
     discrepancy_result = await session.execute(discrepancy_stmt)
     discrepancies = discrepancy_result.scalar() or 0
 
-    pending = total_executed - completed - discrepancies
+    # WR-02: count each already-handled file ONCE. A single file can carry BOTH a COMPLETED and a
+    # DISCREPANCY log (a normal re-write sequence), so subtracting the two independent DISTINCT tallies
+    # (``completed`` + ``discrepancies``) double-counts it and under-reports ``pending``. Tally the
+    # union of handled statuses over DISTINCT file_id instead, so ``pending`` is exact.
+    handled_stmt = select(func.count(func.distinct(TagWriteLog.file_id))).where(
+        TagWriteLog.status.in_((TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY))
+    )
+    handled_result = await session.execute(handled_stmt)
+    handled = handled_result.scalar() or 0
+
+    pending = total_executed - handled
 
     return {"pending": max(pending, 0), "completed": completed, "discrepancies": discrepancies}
 

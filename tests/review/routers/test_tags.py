@@ -11,7 +11,8 @@ import pytest
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link, _get_tag_stats
 
 
 if TYPE_CHECKING:
@@ -403,3 +404,42 @@ async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncS
     assert response.status_code == 200
     assert "failed" in response.text.lower()
     assert "boom" in response.text
+
+
+def _add_tag_write_log(session: AsyncSession, file_id: uuid.UUID, status: TagWriteStatus) -> None:
+    """Attach one ``TagWriteLog`` of ``status`` to ``file_id`` (append-only audit row)."""
+    session.add(
+        TagWriteLog(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            before_tags={},
+            after_tags={},
+            source="review",
+            status=status.value,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_tag_stats_file_with_both_completed_and_discrepancy_counted_once(client: AsyncClient, session: AsyncSession) -> None:
+    """WR-02: a file with BOTH a COMPLETED and a DISCREPANCY log is subtracted from ``pending`` only once.
+
+    Two applied files: file A carries both a COMPLETED and a DISCREPANCY ``TagWriteLog`` (a normal
+    re-write sequence), file B is untouched (genuinely pending). The old ``pending = total_executed -
+    completed - discrepancies`` double-subtracted A (it is in both the ``completed`` and the
+    ``discrepancies`` DISTINCT tally), reporting ``pending == 0`` and eating B's real pending count.
+    The correct answer is ``pending == 1`` (file B). The separate ``completed`` / ``discrepancies``
+    display cells must still each report 1 (their own DISTINCT-file tallies are unchanged).
+    """
+    file_a, _ = await _create_executed_file(session, filename="A - handled.mp3")
+    await _create_executed_file(session, filename="B - pending.mp3")
+
+    _add_tag_write_log(session, file_a.id, TagWriteStatus.COMPLETED)
+    _add_tag_write_log(session, file_a.id, TagWriteStatus.DISCREPANCY)
+    await session.commit()
+
+    stats = await _get_tag_stats(session)
+
+    assert stats["pending"] == 1, "file B is still pending; file A must not be subtracted twice"
+    assert stats["completed"] == 1, "one distinct file has a COMPLETED write"
+    assert stats["discrepancies"] == 1, "one distinct file has a DISCREPANCY write"
