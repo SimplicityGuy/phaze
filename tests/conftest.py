@@ -217,6 +217,17 @@ async def async_engine():  # type: ignore[no-untyped-def]
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+    # CLEAN-01 (92-02): get_stage_progress now fans out its reads from the module-level
+    # ``phaze.database.async_session``, whose asyncpg pool binds each connection to the event loop that
+    # first used it. pytest-asyncio (asyncio_mode=auto) runs every test in a FRESH loop, so a
+    # connection pooled by a prior test raises "Event loop is closed" / "got Future attached to a
+    # different loop" when the next test's fan-out reuses it -> the reads silently degrade to zero.
+    # Dispose the module pool here -- in the SAME loop that created those connections -- so the next
+    # test opens fresh connections bound to its own loop. (92-03 supersedes this by monkeypatching
+    # ``phaze.database.async_session`` to route the fan-out through the per-test connection.)
+    from phaze.database import engine as module_engine
+
+    await module_engine.dispose()
 
 
 @pytest_asyncio.fixture
