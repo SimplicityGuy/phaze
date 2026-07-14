@@ -282,7 +282,7 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 89. Legacy Scan-Path Deletion & Sentinel Reattribution | 2026.7.5 | 2/2 | Complete    | 2026-07-11 |
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
-| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 4/5 | In Progress|  |
+| 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 5/5 | Complete   | 2026-07-14 |
 
 ### Phase 77: Additive Schema & Rescan-Wipe Fix (migration `032`)
 
@@ -709,7 +709,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 92-05-PLAN.md — CLEAN-02 D-08 gate: register CLEAN-01/02/03 in REQUIREMENTS.md traceability + [BLOCKING] full ~1750-test suite green under per-bucket isolation for all 9 buckets → recorded in 92-VERIFICATION.md [Wave 4]
+- [x] 92-05-PLAN.md — CLEAN-02 D-08 gate: register CLEAN-01/02/03 in REQUIREMENTS.md traceability + [BLOCKING] full ~1750-test suite green under per-bucket isolation for all 9 buckets → recorded in 92-VERIFICATION.md [Wave 4]
 
 ### Phase 30: Fix systemic control-plane SAQ queue misrouting — every manually-triggered enqueue targets the consumer-less default queue
 
