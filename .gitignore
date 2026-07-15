@@ -245,3 +245,15 @@ graphify-out/graph.html
 # never committed. Source of truth is assets/src/app.css.
 /bin/
 src/phaze/static/css/app.css
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# beads issue tracker — local Dolt-backed store, not versioned in git
+.beads/
