@@ -97,14 +97,23 @@
            (Phase 90 PR-A: sourced from the cloud_job sidecar + the analysis markers, never the retired
            FileRecord.state column) driving friendly words (WORK-04 mid-flight signal), not raw-enum renders. #}
         {% set columns = ["File", "Duration", "Lane", "Progress"] %}
-        {% set lane_badges = {
-            'local': ('🖥️ local', 'text-emerald-600 dark:text-emerald-300'),
-            'a1': ('☁️ A1', 'text-blue-600 dark:text-blue-300'),
-            'k8s': ('⎈ k8s', 'text-amber-600 dark:text-amber-300'),
-        } %}
         {% set ns = namespace(rows=[], file_ids=[]) %}
         {% for f in analyze_files %}
-            {% set badge_text, badge_color = lane_badges.get(f.lane, lane_badges['local']) %}
+            {# COMPUTE-03: the lane badge is derived from `f.lane_kind` (CloudJob.backend_id's registry
+               kind, projected server-side by get_analyze_stage_files -- never a static id->badge map).
+               Glyph/color mirrors _lane_card.html:26-50 (local 🖥️/emerald, compute ☁️/blue, kueue
+               ⎈/amber); an unattributed cloud row (or an unrecognized kind) gets the neutral gray
+               fallback -- the stale 'a1' heuristic label is gone. #}
+            {% if f.lane_kind == 'local' %}
+                {% set badge_glyph, badge_color = '🖥️', 'text-emerald-600 dark:text-emerald-300' %}
+            {% elif f.lane_kind == 'compute' %}
+                {% set badge_glyph, badge_color = '☁️', 'text-blue-600 dark:text-blue-300' %}
+            {% elif f.lane_kind == 'kueue' %}
+                {% set badge_glyph, badge_color = '⎈', 'text-amber-600 dark:text-amber-300' %}
+            {% else %}
+                {% set badge_glyph, badge_color = '▪', 'text-gray-600 dark:text-gray-300' %}
+            {% endif %}
+            {% set badge_text = badge_glyph ~ ' ' ~ f.lane %}
             {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
             {% if f.completed %}
                 {# Completed (ANALYZED): full window coverage from the aggregate. #}

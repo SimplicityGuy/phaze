@@ -13,6 +13,7 @@ from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, 
 from sqlalchemy.orm import aliased
 import structlog
 
+from phaze.config import get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.enums.stage import Stage, Status
 from phaze.models.agent import Agent
@@ -28,6 +29,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.enqueue_router import LANES
 from phaze.services.stage_status import (
     awaiting_candidate_clause,
@@ -47,6 +49,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
+
+    from phaze.config import ControlSettings
 
 
 logger = structlog.get_logger(__name__)
@@ -1176,11 +1180,15 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
     (windowed coverage / the 57.1 mid-flight signal), and ``metadata`` (duration). Returns every
     file in the Analyze stage: queued/running (in-flight analysis row), awaiting-cloud, and done.
 
-    Per-file lane is DERIVED (RESEARCH A1, confirmed against
-    :func:`phaze.services.cloud_staging.stage_file_to_s3` -- the ONLY ``cloud_job`` writer, reached
-    only on a cloud route): no ``cloud_job`` row -> ``local``; ``cloud_job`` with ``cloud_phase IS
-    NULL`` -> ``a1``; ``cloud_job`` with ``cloud_phase`` set -> ``k8s``. A local-routed file never
-    enters ``stage_file_to_s3``, so it never carries a ``cloud_job`` row and cannot be mislabeled.
+    Per-file lane is DERIVED from the stamped ``CloudJob.backend_id`` (COMPUTE-03), never a heuristic:
+    no ``cloud_job`` row -> ``lane="local"`` / ``lane_kind="local"``; a ``cloud_job`` with a
+    ``backend_id`` -> ``lane=backend_id`` / ``lane_kind`` looked up via
+    :func:`phaze.services.agent_liveness.non_local_backend_kinds` (falling back to ``"cloud"`` for a
+    backend no longer in the registry); a ``cloud_job`` with a NULL ``backend_id`` (not yet stamped) ->
+    the truthful ``lane="cloud"`` / ``lane_kind="cloud"`` unattributed fallback -- NEVER the stale
+    ``"a1"`` heuristic label. A local-routed file never enters
+    :func:`phaze.services.cloud_staging.stage_file_to_s3` (the ONLY ``cloud_job`` writer), so it
+    never carries a ``cloud_job`` row and cannot be mislabeled.
 
     Window coverage reads ``analysis.fine_windows_analyzed`` / ``fine_windows_total``: a completed
     (ANALYZED) row shows full coverage from the aggregate; an in-flight row shows the merged 57.1
@@ -1198,8 +1206,8 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
                     FileRecord.original_filename,
                     FileRecord.original_path,
                     CloudJob.id,
-                    CloudJob.cloud_phase,
                     CloudJob.status,
+                    CloudJob.backend_id,
                     AnalysisResult.fine_windows_analyzed,
                     AnalysisResult.fine_windows_total,
                     AnalysisResult.analysis_completed_at,
@@ -1246,14 +1254,20 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
         logger.warning("analyze_stage_files_degraded", exc_info=True)
         return []
 
+    # COMPUTE-03: the registry projection is looked up ONCE per call (not per row) -- a pure,
+    # session-free dict of {backend_id: kind} for every non-local registry entry.
+    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+
     files: list[dict[str, Any]] = []
-    for file_id, filename, path, cloud_job_id, cloud_phase, cloud_status, fine_done, fine_total, completed_at, failed_at, duration in rows:
+    for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration in rows:
         if cloud_job_id is None:
-            lane = "local"
-        elif cloud_phase is None:
-            lane = "a1"
+            lane, lane_kind = "local", "local"
+        elif backend_id is not None:
+            lane, lane_kind = backend_id, kinds.get(backend_id, "cloud")
         else:
-            lane = "k8s"
+            # Stamped cloud_job with no backend_id yet (not attributed to a registry cluster) --
+            # the truthful "cloud, unattributed" fallback. NEVER the stale "a1" heuristic label.
+            lane, lane_kind = "cloud", "cloud"
         files.append(
             {
                 # Phase 61 (RECORD-01): the row->record slide-in opener keys on this file_id
@@ -1266,6 +1280,7 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
                 "awaiting_cloud": cloud_status == CloudJobStatus.AWAITING.value,
                 "analysis_failed": failed_at is not None,
                 "lane": lane,
+                "lane_kind": lane_kind,
                 "fine_done": fine_done,
                 "fine_total": fine_total,
                 "duration": duration,
