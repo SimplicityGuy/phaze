@@ -609,7 +609,7 @@ async def test_scan_directory_partial_access_still_completes(
     assert "partial access" in text, f"missing partial-access warning: {text!r}"
 
 
-def test_scan_directory_registered_in_agent_worker_settings() -> None:
+def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Task 2: scan_directory must be reachable via SAQ task-name resolution on agent_worker.
 
     The settings dict is built at module-import time; the function-list registration is
@@ -620,15 +620,17 @@ def test_scan_directory_registered_in_agent_worker_settings() -> None:
 
     This test needs the same env that tests/test_task_split.py uses for the subprocess
     invocation, because phaze.tasks.agent_worker raises at module-import time if
-    PHAZE_AGENT_QUEUE is unset (Phase 26 D-16 module-import-time guard).
+    PHAZE_AGENT_QUEUE is unset (Phase 26 D-16 module-import-time guard). Uses ``monkeypatch``
+    (not a bare ``os.environ`` write) so PHAZE_AGENT_QUEUE is restored on teardown -- a raw
+    ``os.environ.setdefault`` here previously leaked into later tests in the same full-suite
+    run, poisoning tests/shared/core/test_task_split.py's subprocess-based lane assertions
+    (phaze-p3n).
     """
-    import os
-
-    os.environ.setdefault("PHAZE_ROLE", "agent")
-    os.environ.setdefault("PHAZE_AGENT_API_URL", "http://localhost:8000")
-    os.environ.setdefault("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
-    os.environ.setdefault("PHAZE_AGENT_QUEUE", "phaze-agent-test-agent")
-    os.environ.setdefault("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108  # validator only checks non-empty list
+    monkeypatch.setenv("PHAZE_ROLE", "agent")
+    monkeypatch.setenv("PHAZE_AGENT_API_URL", "http://localhost:8000")
+    monkeypatch.setenv("PHAZE_AGENT_TOKEN", "phaze_agent_test-token-1234567890abcdef")
+    monkeypatch.setenv("PHAZE_AGENT_QUEUE", "phaze-agent-test-agent")
+    monkeypatch.setenv("PHAZE_AGENT_SCAN_ROOTS", "/tmp")  # noqa: S108  # validator only checks non-empty list
 
     from phaze.tasks.agent_worker import settings as agent_settings
 
