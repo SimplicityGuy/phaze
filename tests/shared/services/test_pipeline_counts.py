@@ -1,6 +1,8 @@
-"""Tests for the Phase 54 (D-06) degrade-safe ``get_inadmissible_count`` dashboard reader.
+"""Tests for the Phase 54 (D-06) degrade-safe ``get_inadmissible_count`` dashboard reader, the
+Phase 55 ``get_cloud_phase_counts`` admission-state reader, and ``derive_cloud_hold_reason`` (the
+Cloud Routing card's truthful hold-reason sub-caption).
 
-The reader drives the Inadmissible operator alert: it returns
+``get_inadmissible_count`` drives the Inadmissible operator alert: it returns
 ``COUNT(cloud_job WHERE inadmissible = true)`` and, mirroring
 :func:`get_awaiting_cloud_count`, degrades to 0 on any DB error so the hot 5s
 ``/pipeline/stats`` poll never 500s (T-54-10).
@@ -8,14 +10,20 @@ The reader drives the Inadmissible operator alert: it returns
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
 
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
+from phaze.models.route_control import RouteControl
+from phaze.services import backends as backends_mod
+from phaze.services.backends import ComputeAgentBackend, derive_cloud_hold_reason
 from phaze.services.pipeline import get_cloud_phase_counts, get_inadmissible_count
+from tests._queue_fakes import seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -198,3 +206,115 @@ async def test_get_cloud_phase_counts_degrades_to_zero_on_db_error() -> None:
     counts = await get_cloud_phase_counts(_ExplodingSession())  # type: ignore[arg-type]
 
     assert counts == {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0}
+
+
+# ---------------------------------------------------------------------------
+# derive_cloud_hold_reason -- the Cloud Routing card's truthful hold-reason sub-caption
+# (services.backends.derive_cloud_hold_reason). Table-driven: one test per branch of the drain's
+# own gate ladder (cloud disabled -> force-local -> no lane reachable -> every lane full -> no
+# fileserver agent online -> genuinely queued), plus the degrade-to-neutral path. ``resolve_backends``
+# / ``_probe_availability`` are monkeypatched (mirrors tests/shared/services/test_lane_snapshot.py's
+# idiom) so each cell controls exactly one gate without a real registry TOML or a live probe;
+# ``get_settings`` is monkeypatched only for the ``cloud_enabled`` flag each cell needs.
+# ---------------------------------------------------------------------------
+
+
+def _cloud_hold_settings(*, cloud_enabled: bool) -> Any:
+    """A minimal ``cloud_enabled``-carrying stand-in -- derive_cloud_hold_reason reads only this."""
+    return SimpleNamespace(cloud_enabled=cloud_enabled)
+
+
+def _cloud_job_backend(file_id: uuid.UUID, *, backend_id: str, status: str) -> CloudJob:
+    """Build an in-flight ``cloud_job`` row attributed to ``backend_id`` (a compute lane, no S3 key)."""
+    return CloudJob(id=uuid.uuid4(), file_id=file_id, s3_key=None, status=status, backend_id=backend_id)
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_cloud_disabled(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GATE 1: ``cloud_enabled`` False -> "cloud routing disabled", before any DB/route-control read."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=False))
+
+    assert await derive_cloud_hold_reason(session) == "cloud routing disabled"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_force_local(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GATE 2: a persisted ``force_local`` override holds regardless of lane health."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    session.add(RouteControl(id="global", force_local=True))
+    await session.commit()
+
+    assert await derive_cloud_hold_reason(session) == "held — cloud routing paused (force-local)"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_no_lane_available(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GATE 3: every registered lane offline -> "held — no cloud backend reachable"."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [ComputeAgentBackend(id="a1", rank=10, cap=2)])
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"a1": False}))
+
+    assert await derive_cloud_hold_reason(session) == "held — no cloud backend reachable"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_all_lanes_at_capacity(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GATE 4: every AVAILABLE lane is full -> "held — all lanes at capacity (N/N slots busy)"."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [ComputeAgentBackend(id="a1", rank=10, cap=2)])
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"a1": True}))
+    file_a, file_b = _file(0), _file(1)
+    session.add_all([file_a, file_b])
+    await session.flush()
+    session.add_all(
+        [
+            _cloud_job_backend(file_a.id, backend_id="a1", status=CloudJobStatus.SUBMITTED.value),
+            _cloud_job_backend(file_b.id, backend_id="a1", status=CloudJobStatus.RUNNING.value),
+        ]
+    )
+    await session.commit()
+
+    assert await derive_cloud_hold_reason(session) == "held — all lanes at capacity (2/2 slots busy)"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_no_fileserver_agent(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GATE 5: free capacity exists but no fileserver agent is online to initiate the push."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [ComputeAgentBackend(id="a1", rank=10, cap=2)])
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"a1": True}))
+    file_a = _file(0)
+    session.add(file_a)
+    await session.flush()
+    session.add(_cloud_job_backend(file_a.id, backend_id="a1", status=CloudJobStatus.SUBMITTED.value))
+    await session.commit()
+
+    assert await derive_cloud_hold_reason(session) == "held — no fileserver agent online"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_queued_with_free_slots(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Else branch: free capacity AND a live fileserver agent -> genuinely queued, no hold."""
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(backends_mod, "resolve_backends", lambda _settings: [ComputeAgentBackend(id="a1", rank=10, cap=2)])
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"a1": True}))
+    file_a = _file(0)
+    session.add(file_a)
+    await session.flush()
+    session.add(_cloud_job_backend(file_a.id, backend_id="a1", status=CloudJobStatus.SUBMITTED.value))
+    await session.commit()
+    await seed_active_agent(session, kind="fileserver")
+
+    assert await derive_cloud_hold_reason(session) == "queued — 1 free slots, dispatching on next drain tick (~5 min)"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_degrades_to_neutral_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ANY unexpected exception collapses to the neutral "held" copy -- no causal claim, never a 500."""
+
+    def _boom() -> None:
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(backends_mod, "get_settings", _boom)
+
+    assert await derive_cloud_hold_reason(session) == "held"

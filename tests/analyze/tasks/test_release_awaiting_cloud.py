@@ -23,6 +23,7 @@ exactly the Kueue role these tests model.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -33,7 +34,8 @@ from sqlalchemy import select, update
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.tasks.release_awaiting_cloud import stage_cloud_window
+from phaze.tasks import release_awaiting_cloud
+from phaze.tasks.release_awaiting_cloud import _bounded_is_available, stage_cloud_window
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 
 
@@ -50,19 +52,28 @@ class _StubBackend:
     NOT a ``LocalBackend`` subclass, so the pure ``select_backend`` policy treats it as a cloud
     backend (``isinstance(..., LocalBackend)`` is False). ``raise_on`` selects which lifecycle call
     blows up: ``"is_available"`` / ``"in_flight_count"`` (the snapshot legs), ``"dispatch"`` (a generic
-    kube/S3 raise) or ``"dispatch_noagent"`` (a fileserver-vanish ``NoActiveAgentError``). A healthy
-    stub flips its candidate to PUSHING + writes a ``backend_id``-scoped ``cloud_job`` row (no commit --
-    the drain owns the single post-loop commit) and returns ``True`` (a genuine stage).
+    kube/S3 raise) or ``"dispatch_noagent"`` (a fileserver-vanish ``NoActiveAgentError``). ``hang_on``
+    (DRAIN-02) selects a lifecycle call that HANGS forever instead of raising -- currently only
+    ``"is_available"`` is modeled (the real hang vector: KueueBackend.is_available -> kr8s LocalQueue
+    refresh() on an httpx client built ``timeout=None``). A healthy stub flips its candidate to PUSHING +
+    writes a ``backend_id``-scoped ``cloud_job`` row (no commit -- the drain owns the single post-loop
+    commit) and returns ``True`` (a genuine stage).
     """
 
-    def __init__(self, *, id: str, rank: int, cap: int, raise_on: str | None = None) -> None:
+    def __init__(self, *, id: str, rank: int, cap: int, raise_on: str | None = None, hang_on: str | None = None) -> None:
         self.id = id
         self.rank = rank
         self.cap = cap
         self._raise_on = raise_on
+        self._hang_on = hang_on
         self.dispatch_calls = 0
 
     async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature
+        if self._hang_on == "is_available":
+            # DRAIN-02: model the real hang vector -- a probe that NEVER returns (partitioned/hung
+            # API server on a ``timeout=None`` kr8s client). Without the drain's asyncio.wait_for bound
+            # this would stall the whole tick while holding the advisory lock.
+            await asyncio.Event().wait()
         if self._raise_on == "is_available":
             raise RuntimeError(f"{self.id}: cluster reachability probe blew up")
         return True
@@ -402,3 +413,72 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     # The awaiting sidecar rows are RETAINED with backend_id NULL -- no file was dispatched to a backend
     # (D-05 keeps the row; the raising/rollback path stamps no backend_id).
     assert set((await _backend_ids_for(session, ids)).values()) == {None}
+
+
+# --- DRAIN-02 (Phase 98): a HUNG availability probe is bounded, not left to stall the tick ---------
+
+
+@pytest.mark.asyncio
+async def test_bounded_is_available_times_out_on_a_hanging_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DRAIN-02 unit (no DB): a probe that never returns raises TimeoutError within the bound; a healthy probe passes through.
+
+    Directly exercises the ``_bounded_is_available`` guard that the snapshot loop now uses. This is the
+    fails-before/passes-after crux distilled to a runnable, DB-free assertion: the UNBOUNDED baseline (a
+    direct ``await backend.is_available(session)``) never completes within the window, while the bounded
+    helper converts that same hang into a ``TimeoutError`` -- the error class the snapshot loop's existing
+    ``except Exception`` treats as "unavailable, 0 slots". ``_PROBE_TIMEOUT_SEC`` is shrunk via monkeypatch
+    so the assertion is fast.
+    """
+    # The stub's is_available ignores its session arg (ARG002), so a sentinel is sufficient here (no DB).
+    _UNUSED_SESSION: Any = object()
+    monkeypatch.setattr(release_awaiting_cloud, "_PROBE_TIMEOUT_SEC", 0.05)
+    hanging = _StubBackend(id="kueue-hung", rank=10, cap=5, hang_on="is_available")
+
+    # Baseline (the pre-fix behavior): the raw probe hangs -- it does NOT resolve within the window.
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(hanging.is_available(_UNUSED_SESSION), 0.05)
+
+    # The fix: the bounded helper turns the hang into a TimeoutError (caught downstream as 0 slots).
+    with pytest.raises(TimeoutError):
+        await _bounded_is_available(hanging, _UNUSED_SESSION)
+
+    # A healthy probe passes straight through the bound unchanged.
+    healthy = _StubBackend(id="kueue-ok", rank=20, cap=5)
+    assert await _bounded_is_available(healthy, _UNUSED_SESSION) is True
+
+
+@pytest.mark.asyncio
+async def test_stage_cloud_window_hung_probe_does_not_stall_tick_healthy_backend_still_dispatches(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DRAIN-02 end-to-end: N=2 kueue backends; backend A.is_available HANGS -> the tick still COMPLETES and healthy backend B dispatches.
+
+    Before the wait_for bound (RED): the snapshot loop's un-bounded ``await backend.is_available(session)``
+    blocks FOREVER on A -- the whole ``*/5`` tick hangs while holding pg_advisory_xact_lock, stalling every
+    later drain tick + every reconcile (they take the same lock). After: A's probe times out to
+    available=False / remaining=0 (logged), so both FIFO candidates route to healthy backend B. The outer
+    ``asyncio.wait_for`` here is the test's own dead-man's-switch: a still-unbounded drain would trip it.
+    ``_PROBE_TIMEOUT_SEC`` is shrunk so the bounded path resolves fast.
+    """
+    monkeypatch.setattr(release_awaiting_cloud, "_PROBE_TIMEOUT_SEC", 0.05)
+    hung = _StubBackend(id="kueue-a", rank=10, cap=5, hang_on="is_available")
+    healthy = _StubBackend(id="kueue-b", rank=20, cap=5)
+    _patch_backends(monkeypatch, [hung, healthy])
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    held = [_make_file() for _ in range(2)]
+    session.add_all(held)
+    await session.commit()
+    await _seed_awaiting_rows(session, held)
+    ids = [f.id for f in held]
+
+    router = DedupFakeTaskRouter()
+    # Dead-man's-switch: a still-unbounded drain would hang here and trip the outer timeout.
+    result = await asyncio.wait_for(stage_cloud_window(_make_ctx(async_engine, router)), 5.0)
+
+    assert result == {"staged": 2, "skipped": 0}
+    # Both candidates landed on the HEALTHY backend; the hung one contributed 0 slots and was never selected.
+    assert set((await _backend_ids_for(session, ids)).values()) == {"kueue-b"}
+    assert set((await _states_for(session, ids)).values()) == {CloudJobStatus.SUBMITTED.value}
+    assert hung.dispatch_calls == 0

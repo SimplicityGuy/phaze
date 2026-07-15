@@ -15,13 +15,18 @@
    #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
    every 5s poll (oob=True) so the alert stays live without re-rendering the DAG buttons. Same id
    on both renders is the OOB contract (mirrors awaiting_cloud_card.html). The empty <section>
-   carrier is always emitted so the OOB swap has a stable target even when the alert is silent. #}
+   carrier is always emitted so the OOB swap has a stable target even when the alert is silent.
+
+   analyze_workspace.html renders this as a full-width DIRECT sibling of localqueue_card.html above
+   the count grid (not a space-y-* wrapper), so the mb-4 below lives on THIS inner alert div (fires
+   only when the section has visible content) -- the healthy empty <section> carrier has zero margin
+   and zero height, so it never opens a gap before localqueue_card.html or the grid. #}
 <section id="inadmissible-card"
          {% if oob %}hx-swap-oob="true"{% endif %}>
     {% if inadmissible_count %}
     <div role="alert"
          aria-labelledby="inadmissible-heading"
-         class="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg p-4 space-y-1">
+         class="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg p-4 mb-4 space-y-1">
         <h2 id="inadmissible-heading" class="text-lg font-semibold text-amber-800 dark:text-amber-300">
             ⚠ K8s Jobs not admitting — check LocalQueue config
         </h2>

@@ -90,6 +90,12 @@ _SEED_CONTROL_SQL = text(
     ON CONFLICT (stage) DO UPDATE SET paused = EXCLUDED.paused, priority = EXCLUDED.priority, updated_at = now()
     """
 )
+# phaze-ar3: undo the seed above at teardown. This INSERT commits for real (it runs on its own
+# ``engine.begin()`` transaction, not inside a per-test rollback), so without this cleanup the
+# three rows outlive the test and any LATER hermetic test in the SAME pytest process that inserts
+# a fresh ``pipeline_stage_control`` row for one of these three stages collides on the PK
+# (``pk_pipeline_stage_control``). No FK references this table, so a plain scoped DELETE is safe.
+_CLEAR_CONTROL_SQL = text("DELETE FROM pipeline_stage_control WHERE stage IN ('metadata', 'analyze', 'fingerprint')")
 
 
 def _reset_hook_cache() -> None:
@@ -111,8 +117,11 @@ async def stage_env() -> AsyncGenerator[tuple[PostgresQueue, async_sessionmaker[
     wired as in prod) with a per-test-unique name for row isolation. ``session_factory`` makes
     SQLAlchemy ``AsyncSession``s bound to the same DB for the service-helper UPDATEs. Setup
     seeds ``pipeline_stage_control`` (3 unpaused/priority-50 rows) and resets the hook cache;
-    teardown deletes this queue's ``saq_jobs`` rows, disconnects the pool, disposes the engine,
-    and clears the hook cache again.
+    teardown deletes this queue's ``saq_jobs`` rows, deletes the 3 ``pipeline_stage_control``
+    rows this fixture seeded (phaze-ar3: the setup INSERT commits for real, so leaving it
+    uncleaned pollutes every later hermetic test in the same monolithic ``pytest tests/`` run
+    with a stale committed ``pk_pipeline_stage_control`` row), disconnects the pool, disposes
+    the engine, and clears the hook cache again.
     """
     import psycopg
 
@@ -142,6 +151,9 @@ async def stage_env() -> AsyncGenerator[tuple[PostgresQueue, async_sessionmaker[
             async with queue.pool.connection() as conn:
                 # queue.name is bound, never interpolated.
                 await conn.execute("DELETE FROM saq_jobs WHERE queue = %s", (queue.name,))
+        with contextlib.suppress(Exception):
+            async with engine.begin() as conn:
+                await conn.execute(_CLEAR_CONTROL_SQL)
         await queue.disconnect()
         await engine.dispose()
         _reset_hook_cache()

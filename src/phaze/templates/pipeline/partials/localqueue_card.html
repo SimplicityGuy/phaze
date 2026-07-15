@@ -15,13 +15,18 @@
    poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on every 5s poll (oob=True)
    so the alert stays live without re-rendering the DAG buttons. Same id on both renders is the OOB
    contract (mirrors inadmissible_card.html). The empty <section> carrier is always emitted so the OOB
-   swap has a stable target even when the alert is silent. #}
+   swap has a stable target even when the alert is silent.
+
+   analyze_workspace.html renders this as a full-width DIRECT sibling below inadmissible_card.html,
+   directly above the count grid (not a space-y-* wrapper), so the mb-4 below lives on THIS inner
+   alert div (fires only when the section has visible content) -- the healthy empty <section> carrier
+   has zero margin and zero height, so it never opens a gap before the 4-card grid. #}
 <section id="localqueue-card"
          {% if oob %}hx-swap-oob="true"{% endif %}>
     {% if localqueue_unreachable %}
     <div role="alert"
          aria-labelledby="localqueue-heading"
-         class="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg p-4 space-y-1">
+         class="border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950 rounded-lg p-4 mb-4 space-y-1">
         <h2 id="localqueue-heading" class="text-lg font-semibold text-amber-800 dark:text-amber-300">
             ⚠ K8s LocalQueue unreachable
         </h2>
