@@ -6,7 +6,7 @@ severity: minor
 found_by: 2026.7.6 post-deploy cloud-burst drain — live investigation 2026-07-14
 owner: next-milestone backlog
 blocks: nothing (no data/correctness impact); log cleanliness + live progress bar only
-resolves_phase: null
+resolves_phase: 99
 files:
   - src/phaze/job_runner.py  # _make_progress_cb / _safe_post_progress
   - src/phaze/services/agent_client.py  # _request funnel (timeout=30.0, stop_after_attempt(3)); post_analysis_progress

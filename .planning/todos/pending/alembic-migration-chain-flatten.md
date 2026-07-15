@@ -7,7 +7,7 @@ found_by: design session 2026-07-14 (brainstorming; superpowers spec approved)
 owner: next milestone
 design_spec: docs/superpowers/specs/2026-07-14-alembic-baseline-flatten-design.md
 blocks: null
-resolves_phase: null
+resolves_phase: 102
 precondition: "prod at Alembic 039 (SATISFIED as of 2026-07-14 deploy) — re-confirm via read-only PG probe immediately before merge"
 ---
 

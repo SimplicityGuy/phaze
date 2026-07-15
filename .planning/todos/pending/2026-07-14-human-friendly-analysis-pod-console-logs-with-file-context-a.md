@@ -6,7 +6,7 @@ severity: minor
 found_by: 2026.7.6 post-deploy cloud-burst drain — operator request 2026-07-14
 owner: next-milestone backlog
 blocks: nothing (operator observability / UX of logs)
-resolves_phase: null
+resolves_phase: 100
 files:
   - src/phaze/job_runner.py  # step logging (presign/download/verify/analyze), progress_cb
   - src/phaze/routers/agent_analysis.py  # progress upsert (source of a real progress %)
