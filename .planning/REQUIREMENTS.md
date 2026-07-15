@@ -64,27 +64,28 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONSOLE-01 | TBD | Pending |
-| CONSOLE-02 | TBD | Pending |
-| CONSOLE-03 | TBD | Pending |
-| CONSOLE-04 | TBD | Pending |
-| COMPUTE-01 | TBD | Pending |
-| COMPUTE-02 | TBD | Pending |
-| COMPUTE-03 | TBD | Pending |
-| DRAIN-01 | TBD | Pending |
-| DRAIN-02 | TBD | Pending |
-| OBS-01 | TBD | Pending |
-| OBS-02 | TBD | Pending |
-| OBS-03 | TBD | Pending |
-| MIG-01 | TBD | Pending |
-| MIG-02 | TBD | Pending |
-| MIG-03 | TBD | Pending |
+| CONSOLE-01 | Phase 93 | Pending |
+| CONSOLE-02 | Phase 93 | Pending |
+| CONSOLE-03 | Phase 94 | Pending |
+| CONSOLE-04 | Phase 95 | Pending |
+| COMPUTE-01 | Phase 96 | Pending |
+| COMPUTE-02 | Phase 97 | Pending |
+| COMPUTE-03 | Phase 97 | Pending |
+| DRAIN-01 | Phase 98 | Pending |
+| DRAIN-02 | Phase 98 | Pending |
+| OBS-01 | Phase 99 | Pending |
+| OBS-02 | Phase 100 | Pending |
+| OBS-03 | Phase 101 | Pending |
+| MIG-01 | Phase 102 | Pending |
+| MIG-02 | Phase 102 | Pending |
+| MIG-03 | Phase 102 | Pending |
 
 **Coverage:**
 - Milestone requirements: 15 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 15 ⚠️ (filled by roadmapper)
+- Mapped to phases: 15 (10 phases, 93-102) ✓
+- Unmapped: 0 ✓
+- Duplicates: 0 (every requirement maps to exactly one phase)
 
 ---
 *Requirements defined: 2026-07-14*
-*Last updated: 2026-07-14 after initial definition (milestone 2026.7.7)*
+*Last updated: 2026-07-14 after roadmap creation — traceability populated, phases 93-102 (milestone 2026.7.7)*

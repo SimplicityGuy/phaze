@@ -13,8 +13,145 @@
 - ✅ **2026.7.1 Multi-Cloud Backends** — Phases 67-71 (shipped 2026-07-05)
 - ✅ **2026.7.2 Multi-Compute Agents (N Cloud-Compute Backends)** — Phases 72-76 (shipped 2026-07-06)
 - ✅ **2026.7.5 Parallel Enrich DAG (Retire Linear `FileState`)** — Phases 77-92 (shipped 2026-07-14)
+- 🚧 **2026.7.7 Console & Cloud-Burst Hardening** — Phases 93-102 (in progress)
 
 ## Phases
+
+### 🚧 2026.7.7 Console & Cloud-Burst Hardening (Active)
+
+**Milestone Goal:** Harden the shipped 2026.7.5 DAG-console system — fix the console correctness bugs, make the multi-Kueue compute lanes surface truthfully (and fix a possible functional cloud-drain stall), make cloud-analysis pods observable, and pay down the Alembic migration-chain debt. **Zero new dependencies, no new product features** — all changes are over existing routers / services / Jinja templates + the cloud job-runner. Prod is at Alembic `039`.
+
+Granularity is **fine** — small, single-seam phases with tight blast radius; **each phase ships as its own PR on a worktree branch, never direct to main.** Phase numbering **continues from 92 (starts at Phase 93)** — NOT reset. 15 requirements mapped 1:1 (0 orphans, 0 duplicates). The work is four independent clusters plus one shared root: the **multi-Kueue per-cluster liveness derivation (Phase 96)** feeds both the compute-lane surfacing (Phase 97) and the cloud-drain hold fix (Phase 98). The three OBS pod-observability fixes stay isolated (OBS-03's subprocess execution-model change is the riskiest, its own phase). The MIG flatten is fully self-contained engineering debt.
+
+**Phases:**
+
+- [ ] **Phase 93: Console Derived-Status Truthfulness** — the file detail slide-in Stage-Eligibility pills + the left-rail stage badges surface the real derived per-stage status/in-flight counts, reusing the same `stage_status` the Files matrix already renders (CONSOLE-01, CONSOLE-02)
+- [ ] **Phase 94: Detail Pop-Out Close/Dismiss Fix** — the X/close control fully dismisses the detail pop-out on BOTH the Agents detail and the Analyze-lane detail (the HTMX-swap / Alpine-global-scope trap that today only removes the X icon); fix once, apply to both (CONSOLE-03)
+- [ ] **Phase 95: Analyze-View Browser-Slowdown Investigation & Fix** — diagnose and fix the Analyze workspace severely slowing/hanging the browser (client-side render/poll cost vs the `/pipeline/stats` 200K poll); investigate-then-fix (CONSOLE-04)
+- [ ] **Phase 96: Per-Cluster Kueue Liveness Derivation & Agents-Page Identity** — model each Kueue cluster (vox/xenolab) as a live per-cluster ephemeral identity derived from in-flight Kueue workloads (ACTIVE not `NEVER`), reconciling the single generic "k8s burst" lane; the shared derivation core (COMPUTE-01)
+- [ ] **Phase 97: Compute-Lane Surfacing — Header Count & Per-File Lane Label** — the header agent count includes every active compute lane, and each file's lane is labeled with its real `backend_id`-derived cluster, killing the stale `☁ A1` label; consumes Phase 96's derivation (COMPUTE-02, COMPUTE-03)
+- [ ] **Phase 98: Cloud-Drain Liveness-Gate Investigation & Fix** — diagnose whether the drain dispatch falsely gates on the heartbeat-liveness compute agents never emit (stranding the backlog), fix the gate if the stall is real, and make the Cloud Routing card message reflect real routing state; consumes Phase 96's corrected liveness signal (DRAIN-01, DRAIN-02)
+- [ ] **Phase 99: Progress-POST Timeout & Log-Spam Quieting** — give progress POSTs a short connect-timeout + zero retries and demote the progress-path transport-error log to debug, killing the sustained `ConnectTimeout` spam; small and independent (OBS-01)
+- [ ] **Phase 100: Human-Friendly Pod Console Logs** — a readable per-job startup banner (filename, source path/origin, target cluster / `backend_id` / bucket, duration, size) + human-phrased step lines, alongside the existing structured JSON logs; small and independent (OBS-02)
+- [ ] **Phase 101: Subprocess Essentia Analysis & Live Progress Restoration** — run essentia analysis in a subprocess so the pod's asyncio loop is no longer GIL-starved, restoring the admin-UI live progress bar with console + UI progress sharing one source; the riskiest phase (changes the pod execution model), results byte-identical (OBS-03)
+- [ ] **Phase 102: Alembic Migration-Chain Flatten** — collapse the `001`–`039` chain into one baseline reusing revision `039` (`down_revision=None`, prod-at-039 no-op), embedding the `pg_dump -s` DDL + seed rows, proven by an empty-diff fidelity merge gate + the read-only prod-at-039 probe, replacing ~22 per-migration tests with one invariant test; self-contained engineering debt (MIG-01, MIG-02, MIG-03)
+
+---
+
+### Phase 93: Console Derived-Status Truthfulness
+**Goal**: The console surfaces each file's real derived per-stage status and real in-flight counts, consistent with the Files matrix — no status-blind pills, no `0` badge while work is in flight.
+**Depends on**: Nothing (reuses the shipped derived `stage_status`)
+**Requirements**: CONSOLE-01, CONSOLE-02
+**Success Criteria** (what must be TRUE):
+  1. In the file detail slide-in, each stage's Stage-Eligibility pill shows the real derived status (done / in-flight / failed / not-started / skipped), matching that file's Files-matrix row.
+  2. A file whose row shows Meta=done / Analyze=in-flight renders visibly distinct pills (not identical plain pills).
+  3. The left-rail Analyze badge shows the true in-flight/pending count and never reads `0` while analyze jobs are in flight (the observed `0`-while-2,183-in-flight case).
+  4. The detail pills and rail badges derive from the SAME `stage_status` the Files matrix already uses — one status source, no divergent second derivation.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 94: Detail Pop-Out Close/Dismiss Fix
+**Goal**: The detail pop-out X/close control fully dismisses the panel on both surfaces, escaping the HTMX-swap / Alpine-global-scope trap that today only removes the X icon.
+**Depends on**: Nothing
+**Requirements**: CONSOLE-03
+**Success Criteria** (what must be TRUE):
+  1. Clicking X on the Agents detail panel fully closes the panel (not just removing the X icon).
+  2. Clicking X on the Analyze-lane detail panel fully closes the panel.
+  3. The close behavior survives an HTMX poll-swap — the panel does not reappear or leave a stuck partial after the next 5s poll.
+  4. The close handler invokes the Alpine method through component scope (e.g. `Alpine.$data(this)`), not a global-scope reference, and a source-level guard covers the wiring so the global-scope trap can't silently return (browser UAT is the authoritative catch).
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 95: Analyze-View Browser-Slowdown Investigation & Fix
+**Goal**: The operator can open and use the Analyze workspace at 200K-corpus scale without the browser severely slowing or hanging.
+**Depends on**: Nothing
+**Requirements**: CONSOLE-04
+**Success Criteria** (what must be TRUE):
+  1. Opening the Analyze workspace at corpus scale does not severely slow or freeze the browser.
+  2. The slowdown root cause is identified (client-side render/poll cost vs the `/pipeline/stats` poll) and recorded in the phase artifacts.
+  3. If the root cause traces to the stats poll, the DENORM-01 deferral is revisited and the decision recorded; otherwise the client-side render/poll cost is bounded at the source.
+  4. Existing Analyze workspace behavior (lane cards, per-file rows, the live windowed-progress signal) is preserved.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 96: Per-Cluster Kueue Liveness Derivation & Agents-Page Identity
+**Goal**: Each Kueue cluster surfaces as a live per-cluster ephemeral identity derived from in-flight workloads, and the single generic "k8s burst" lane is reconciled with those identities.
+**Depends on**: Nothing (the shared derivation core)
+**Requirements**: COMPUTE-01
+**Success Criteria** (what must be TRUE):
+  1. On the Agents page, each Kueue cluster (vox, xenolab) renders ACTIVE while it is running workloads — not perpetually `NEVER` / dead.
+  2. The per-cluster identity is derived from in-flight Kueue jobs / `backend_id`, not from a heartbeat the pods never emit.
+  3. A cluster is never shown twice (once dead as an agent row, once as a generic active burst lane) — the generic "k8s burst" lane is reconciled with the per-cluster identities.
+  4. Existing routing/dispatch behavior is unchanged — rank/cap tiering and per-cluster failure isolation are untouched; this is a surfacing/liveness derivation, not a scheduler change.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 97: Compute-Lane Surfacing — Header Count & Per-File Lane Label
+**Goal**: The header agent count and every per-file lane label reflect the real active compute clusters, killing the stale `☁ A1` label.
+**Depends on**: Phase 96
+**Requirements**: COMPUTE-02, COMPUTE-03
+**Success Criteria** (what must be TRUE):
+  1. The header agent count includes every active compute lane (not `Agents · 1` while multiple compute lanes are actively running).
+  2. Each file's lane is labeled with its real backend/cluster, derived from `backend_id`.
+  3. The stale `☁ A1` label never appears when no A1 backend is configured (only Kueue vox/xenolab + local) — and no A1 lane is re-added.
+  4. The header count and lane labels consume Phase 96's derived liveness / `backend_id` (single source), not a re-derived signal.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 98: Cloud-Drain Liveness-Gate Investigation & Fix
+**Goal**: The cloud-drain dispatch path and its status message reflect real routing state; the "Awaiting cloud" backlog is not falsely stranded while compute is actively analyzing.
+**Depends on**: Phase 96
+**Requirements**: DRAIN-01, DRAIN-02
+**Success Criteria** (what must be TRUE):
+  1. The investigation determines whether the drain dispatch falsely gates on a heartbeat-liveness signal compute agents never emit, and the finding is recorded (if purely cosmetic, DRAIN-01 collapses into DRAIN-02).
+  2. If the stall is real, the "Awaiting cloud" backlog dispatches to available Kueue clusters — verified by measured, non-zero dispatch throughput and a decreasing backlog.
+  3. The Cloud Routing card never reads "held — no compute agent online" while compute agents are actively analyzing files.
+  4. The rank/cap routing policy and per-cluster failure isolation are unchanged — a targeted liveness-gate fix, not a routing/scheduler redesign.
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 99: Progress-POST Timeout & Log-Spam Quieting
+**Goal**: Analysis pods stop emitting sustained progress-POST `ConnectTimeout` spam during analysis.
+**Depends on**: Nothing
+**Requirements**: OBS-01
+**Success Criteria** (what must be TRUE):
+  1. Progress POSTs use a short connect-timeout with zero retries — not the 30s × 3-retry budget that piles up into spam.
+  2. Pods no longer emit sustained `ConnectTimeout` warning spam during analysis; the progress-path transport-error log is demoted to debug.
+  3. A regression guard asserts the progress path uses the short-timeout / no-retry client, so the 30s×3 spam budget can't silently return.
+  4. A dropped progress POST still never fails the analysis job (the best-effort contract is preserved).
+**Plans**: TBD
+
+### Phase 100: Human-Friendly Pod Console Logs
+**Goal**: The operator can read a human-friendly frame for each job in the pod console, alongside the existing structured JSON logs.
+**Depends on**: Nothing (sequenced after Phase 99 — same pod-logging surface)
+**Requirements**: OBS-02
+**Success Criteria** (what must be TRUE):
+  1. Each job logs a readable startup banner — human-readable filename, `file_id`, source path/origin (fileserver, original path), target cluster / `backend_id` / staging bucket, duration and size.
+  2. Step lines are phrased for humans (e.g. downloaded N MB in Xs, verified sha256) while the structured `event`/`step`/`elapsed_ms` JSON fields are preserved for machine parsing.
+  3. essentia's own stdout banners are framed/routed so they do not read as the app's own logs.
+**Plans**: TBD
+
+### Phase 101: Subprocess Essentia Analysis & Live Progress Restoration
+**Goal**: The admin-UI live progress bar advances mid-analysis, driven by the same source as the console progress lines, by running essentia analysis in a subprocess so the event loop is no longer GIL-starved.
+**Depends on**: Phase 100
+**Requirements**: OBS-03
+**Success Criteria** (what must be TRUE):
+  1. essentia analysis runs in a subprocess so the pod's asyncio event loop is no longer GIL-starved during analysis.
+  2. The admin-UI live analysis progress bar advances mid-analysis (not a 0→100% jump at completion).
+  3. The console progress lines and the UI progress bar are driven by one shared source (the fine-window counts).
+  4. Analysis results are byte-identical to the pre-change windowed output (BPM/key/window counts unchanged) — progress remains best-effort.
+**Plans**: TBD
+
+### Phase 102: Alembic Migration-Chain Flatten
+**Goal**: The `001`–`039` Alembic chain is collapsed into a single baseline reusing revision `039` — a no-op on prod, a clean build on ephemeral CI/test DBs, byte-identical to the pre-flatten chain output.
+**Depends on**: Nothing (self-contained engineering debt)
+**Requirements**: MIG-01, MIG-02, MIG-03
+**Success Criteria** (what must be TRUE):
+  1. A single baseline migration (`revision="039"`, `down_revision=None`) embeds the full `pg_dump -s` DDL + seed rows (`pipeline_stage_control`, `route_control`); prod (at `039`) is a no-op on the next `upgrade head`, and ephemeral CI/test DBs build cleanly from the baseline.
+  2. A merge gate proves fidelity — empty schema diff vs the pre-flatten chain, byte-identical seed rows, empty `--autogenerate` diff, and a clean upgrade-from-empty + `downgrade base` round-trip.
+  3. Prod `alembic_version == '039'` is re-confirmed via the read-only PG probe (`ssh datum@lux.lan`, `BEGIN TRANSACTION READ ONLY`) immediately before merge; if not at `039`, the merge holds.
+  4. The ~22 per-migration test files are replaced by one baseline invariant test (the `033` `analysis_completed_at` XOR/NAND check, seed rows present, partial indexes, search-vector/GIN, enums, expected tables/columns) with the 90% coverage gate preserved.
+**Plans**: TBD
 
 <details>
 <summary>✅ 2026.7.5 Parallel Enrich DAG (Retire Linear FileState) — Phases 77-92 · SHIPPED 2026-07-14</summary>
@@ -285,6 +422,16 @@ Deployment-gated verification deferred to the live OCI A1 rollout (see STATE.md 
 | 90. Destructive Migration & Writer Removal | 2026.7.5 | 4/4 | Complete    | 2026-07-13 |
 | 91. Milestone-Close Hygiene | 2026.7.5 | — | Complete    | 2026-07-13 |
 | 92. Milestone-Close Tech-Debt Cleanup | 2026.7.5 | 5/5 | Complete    | 2026-07-14 |
+| 93. Console Derived-Status Truthfulness | 2026.7.7 | 0/TBD | Not started | - |
+| 94. Detail Pop-Out Close/Dismiss Fix | 2026.7.7 | 0/TBD | Not started | - |
+| 95. Analyze-View Browser-Slowdown Investigation & Fix | 2026.7.7 | 0/TBD | Not started | - |
+| 96. Per-Cluster Kueue Liveness Derivation & Agents-Page Identity | 2026.7.7 | 0/TBD | Not started | - |
+| 97. Compute-Lane Surfacing — Header Count & Per-File Lane Label | 2026.7.7 | 0/TBD | Not started | - |
+| 98. Cloud-Drain Liveness-Gate Investigation & Fix | 2026.7.7 | 0/TBD | Not started | - |
+| 99. Progress-POST Timeout & Log-Spam Quieting | 2026.7.7 | 0/TBD | Not started | - |
+| 100. Human-Friendly Pod Console Logs | 2026.7.7 | 0/TBD | Not started | - |
+| 101. Subprocess Essentia Analysis & Live Progress Restoration | 2026.7.7 | 0/TBD | Not started | - |
+| 102. Alembic Migration-Chain Flatten | 2026.7.7 | 0/TBD | Not started | - |
 
 _Phase-by-phase detail archived to `milestones/2026.7.5-ROADMAP.md`._
 
