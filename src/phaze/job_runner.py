@@ -141,10 +141,11 @@ async def _download_to(url: str, dest: Path) -> None:
 async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: AnalysisProgressPayload) -> None:
     """Best-effort counter-only progress POST (Phase 57.1, D-16).
 
-    Swallows ANY error (the ``AgentApiError`` hierarchy after the client's tenacity retries, plus
-    anything unexpected) so a dropped progress POST can never change the one-shot exit code — the
-    completion ``put_analysis`` writes the final count regardless, so the bar reaches 100% from
-    completion. This runs as a ``run_coroutine_threadsafe`` task scheduled from the analysis thread.
+    Swallows ANY error (the ``AgentApiError`` hierarchy from the client's single-attempt,
+    short-timeout progress path (Phase 99 OBS-01), plus anything unexpected) so a dropped
+    progress POST can never change the one-shot exit code — the completion ``put_analysis``
+    writes the final count regardless, so the bar reaches 100% from completion. This runs as
+    a ``run_coroutine_threadsafe`` task scheduled from the analysis thread.
     """
     try:
         await client.post_analysis_progress(file_id, payload)

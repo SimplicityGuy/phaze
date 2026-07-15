@@ -81,6 +81,14 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Phase 99 OBS-01: short, hardcoded per-request timeout for the best-effort analysis
+# progress POST. 2s connect (the phase that stalls under event-loop/GIL starvation),
+# 5s read/write/pool. Deliberately NOT an AgentSettings knob -- the client is
+# settings-free by design; mirrors the hardcoded _DOWNLOAD_CONNECT_TIMEOUT_S /
+# _DOWNLOAD_READ_TIMEOUT_S precedent in job_runner.py. If a knob is ever needed,
+# follow the push_connect_timeout_sec pattern in phaze.config instead.
+_PROGRESS_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+
 
 class AgentApiError(Exception):
     """Base for all PhazeAgentClient errors."""
@@ -172,11 +180,19 @@ class PhazeAgentClient:
     # Retry funnel -- every endpoint method routes through here (D-11).
     # ------------------------------------------------------------------
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        max_attempts: int = 3,
+        quiet_transport_errors: bool = False,
+        **kwargs: Any,
+    ) -> httpx.Response:
         """Execute one HTTP call with tenacity retry policy.
 
         Retry policy (D-11):
-        - 3 attempts total; ``wait_exponential_jitter(initial=0.5, max=4.0)``.
+        - ``max_attempts`` total (default 3); ``wait_exponential_jitter(initial=0.5, max=4.0)``.
         - Retry on any ``httpx.TransportError`` (connect/read/write/pool timeout +
           connect/network error) and 5xx.
         - 4xx surfaces immediately (no retry) via ``_should_retry``.
@@ -185,10 +201,18 @@ class PhazeAgentClient:
         - 401 / 403 -> ``AgentApiAuthError``.
         - Other 4xx -> ``AgentApiClientError``.
         - 5xx after retries / persistent network -> ``AgentApiServerError``.
+
+        ``max_attempts`` and ``quiet_transport_errors`` are keyword-only, consumed
+        here, and never forwarded to httpx. Defaults preserve the standard D-11
+        behavior for every endpoint; the analysis progress path (Phase 99 OBS-01)
+        opts out with ``max_attempts=1`` + ``quiet_transport_errors=True`` to stay
+        cheap-to-fail and quiet under sustained transport failure. When
+        ``quiet_transport_errors`` is set, the transport-error log line drops from
+        WARNING to DEBUG; the HTTPStatusError branch is unaffected.
         """
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
+                stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential_jitter(initial=0.5, max=4.0),
                 retry=retry_if_exception(_should_retry),
                 reraise=True,
@@ -216,7 +240,8 @@ class PhazeAgentClient:
             # error) maps to a retryable AgentApiServerError. Matches _should_retry's predicate so
             # the class that is retried is exactly the class that is wrapped -- no transport error
             # can escape this funnel unwrapped (the 2026-06-21 ConnectTimeout crash-loop class).
-            logger.warning("agent_api method=%s path=%s error=%s", method, path, type(e).__name__)
+            log = logger.debug if quiet_transport_errors else logger.warning
+            log("agent_api method=%s path=%s error=%s", method, path, type(e).__name__)
             raise AgentApiServerError(f"{method} {path} network failure after retries") from e
         # Defensive: tenacity AsyncRetrying with reraise=True always either returns
         # via ``return response`` above or re-raises. This line should be
@@ -417,7 +442,7 @@ class PhazeAgentClient:
         worker Postgres-free (tests/test_task_split.py)."""
         from phaze.schemas.agent_metadata import MetadataFailureResponse  # noqa: PLC0415
 
-        kwargs = {"json": payload.model_dump(mode="json")} if payload is not None else {}
+        kwargs: dict[str, Any] = {"json": payload.model_dump(mode="json")} if payload is not None else {}
         response = await self._request(
             "POST",
             f"/api/internal/agent/metadata/{file_id}/failed",
@@ -554,21 +579,29 @@ class PhazeAgentClient:
     async def post_analysis_progress(self, file_id: uuid.UUID, payload: AnalysisProgressPayload) -> None:
         """POST /api/internal/agent/analysis/{file_id}/progress -- counter-only mid-flight bump (Phase 57.1, 03).
 
-        Best-effort: the CALLER swallows ``AgentApiError`` after retries (D-16) -- a
-        dropped progress POST must NEVER fail the analysis job; the completion
-        ``put_analysis`` writes the final count regardless, so the in-flight bar
-        reaches 100% from completion even if this POST is lost. Inherits the tenacity
-        retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
-        5xx retries up to the cap, 4xx surfaces immediately; no bespoke retry loop.
-        ``file_id`` rides the path only (AUTH-01); the body carries only the counts.
-        Returns ``None`` (the endpoint echoes ``{agent_id, file_id}`` but the bump is
-        fire-and-forget). httpx-only -- NO database import (agent worker stays
-        Postgres-free; tests/test_task_split.py).
+        Best-effort: the CALLER swallows ``AgentApiError`` (D-16) -- a dropped progress
+        POST must NEVER fail the analysis job; the completion ``put_analysis`` writes
+        the final count regardless, so the in-flight bar reaches 100% from completion
+        even if this POST is lost. Phase 99 OBS-01: unlike every other endpoint, this
+        call makes a single attempt (``max_attempts=1``, no tenacity retry) against a
+        short, hardcoded ``_PROGRESS_TIMEOUT`` (5s, 2s connect) instead of the client's
+        30s default, and demotes its transport-error log to DEBUG
+        (``quiet_transport_errors=True``) -- this path fires far more often than any
+        other endpoint, so a GIL-starved pod's sustained ConnectTimeouts must not
+        spam WARNING. Exception mapping (D-12) is unchanged: transport failure still
+        raises ``AgentApiServerError``, 4xx still raises ``AgentApiClientError``, so
+        the caller's catch stays valid. ``file_id`` rides the path only (AUTH-01); the
+        body carries only the counts. Returns ``None`` (the endpoint echoes
+        ``{agent_id, file_id}`` but the bump is fire-and-forget). httpx-only -- NO
+        database import (agent worker stays Postgres-free; tests/test_task_split.py).
         """
         await self._request(
             "POST",
             f"/api/internal/agent/analysis/{file_id}/progress",
             json=payload.model_dump(mode="json"),
+            max_attempts=1,
+            quiet_transport_errors=True,
+            timeout=_PROGRESS_TIMEOUT,
         )
         return None
 

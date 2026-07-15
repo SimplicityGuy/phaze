@@ -129,9 +129,10 @@ class _QueueProgressSink:
 async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int]) -> None:
     """Best-effort counter-only POST of a single ``(analyzed, total)`` count (Phase 57.1, D-16).
 
-    Swallows ANY error (the ``AgentApiError`` hierarchy after the client's tenacity retries, plus
-    anything unexpected) so a dropped progress POST can never fail the analysis job — the completion
-    ``put_analysis`` writes the final count regardless, so the bar still reaches 100% from completion.
+    Swallows ANY error (the ``AgentApiError`` hierarchy from the client's single-attempt,
+    short-timeout progress path (Phase 99 OBS-01), plus anything unexpected) so a dropped
+    progress POST can never fail the analysis job — the completion ``put_analysis`` writes
+    the final count regardless, so the bar still reaches 100% from completion.
     """
     analyzed, total = count
     try:
