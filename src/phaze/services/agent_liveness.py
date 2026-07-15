@@ -40,13 +40,15 @@ Postgres-free invariant applies only to ``phaze.cert_bootstrap``,
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 import structlog
 
+from phaze.config import get_settings
 from phaze.constants import AGENT_LIVENESS_ALIVE_SECONDS, AGENT_LIVENESS_STALE_SECONDS
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 
@@ -56,6 +58,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.config import ControlSettings
     from phaze.models.agent import Agent
 
 
@@ -141,44 +144,122 @@ any DB error (KDEPLOY-04).
 """
 
 
-async def classify_compute_lanes(session: AsyncSession) -> tuple[str, int]:
-    """Return the ephemeral compute-lane liveness state + in-flight count (RECORD-03, D-07).
+@dataclass(frozen=True)
+class ComputeLane:
+    """One derived compute-lane identity for the two-section Agents page (COMPUTE-01).
 
-    Read-only ``CloudJob`` aggregation — mirrors the degrade-safe ``try/except → default``
-    count shape of :func:`phaze.services.pipeline.get_inadmissible_count` /
-    :func:`phaze.services.pipeline.get_cloud_phase_counts`. Precedence:
+    A per-cluster liveness identity composed from the Phase-67 backend registry (one lane per
+    NON-local entry) and the live in-flight ``CloudJob`` counts attributed to that backend. A lane
+    is NEVER a heartbeating agent — its ``state`` is derived purely from in-flight work (``running`` /
+    ``waiting``), so a configured-but-quiet cluster is ``IDLE`` (listed, never DEAD/red) and a DB
+    hiccup degrades every lane to ``IDLE`` rather than raising into the hot poll (KDEPLOY-04).
+    """
 
-    - ``("ACTIVE", running)`` when ≥1 ``CloudJob.status == running`` — the lane is doing work;
-    - ``("WAITING", waiting)`` when no job is running but ≥1 is ``submitted`` AND
-      ``inadmissible`` (blocked behind a misconfigured Kueue quota);
-    - ``("IDLE", 0)`` when nothing is in-flight.
+    backend_id: str
+    kind: str
+    state: ComputeLaneState
+    running: int
+    waiting: int
 
-    Degrade-safe (T-61-08 / KDEPLOY-04): on any :class:`~sqlalchemy.exc.SQLAlchemyError`
-    the session is rolled back and the lane degrades to ``("IDLE", 0)`` — a DB hiccup
-    must NEVER paint the lane DEAD/red (a false alarm). This is a pure aggregation the
-    router injects on the render (never a perpetually-DEAD agent row).
+
+def _lane_state(running: int, waiting: int) -> ComputeLaneState:
+    """Return the 3-state lane liveness by precedence: running≥1 → ACTIVE, waiting≥1 → WAITING, else IDLE.
+
+    DEAD is structurally impossible here (KDEPLOY-04): a compute lane is an ephemeral Job-based
+    identity, so quiescence is ``IDLE`` (green/neutral), never a perpetually-DEAD pill.
+    """
+    if running >= 1:
+        return "ACTIVE"
+    if waiting >= 1:
+        return "WAITING"
+    return "IDLE"
+
+
+def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
+    """Return ``{backend_id: kind}`` for every registry entry whose ``kind != "local"`` (COMPUTE-01).
+
+    A pure, session-free projection of the Phase-67 registry (``settings.backends``) — the shared
+    helper the per-cluster lane derivation here and the later header-count / file-badge beads all
+    consume so "which backends are cloud lanes?" is answered in exactly one place. Insertion order
+    mirrors ``settings.backends`` so downstream lane ordering is registry-deterministic.
+    """
+    return {backend.id: backend.kind for backend in settings.backends if backend.kind != "local"}
+
+
+async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeLane]:
+    """Return one :class:`ComputeLane` per non-local registry backend + a trailing unattributed lane (COMPUTE-01).
+
+    Composes the Phase-67 registry (``get_settings().backends``, non-local entries) with a SINGLE
+    grouped ``CloudJob`` read (``GROUP BY backend_id`` with filtered counts — ``RUNNING`` → running,
+    ``SUBMITTED AND inadmissible`` → waiting), mirroring the ``_admission_by_backend_id`` idiom in
+    ``services.backends``. Every configured cluster appears even when IDLE (0 counts); liveness is
+    in-flight WORK, never a reachability probe. In-flight rows with a NULL ``backend_id`` collapse
+    into ONE trailing ``"unattributed"``/``kind="cloud"`` lane, emitted only when its counts are
+    non-zero.
+
+    Degrade-safe (KDEPLOY-04): a :class:`~sqlalchemy.exc.SQLAlchemyError` rolls the session back and
+    returns the registry lanes all-``IDLE`` (a DB hiccup must NEVER paint a lane DEAD/red); a
+    settings/registry read failure returns ``[]``. This must never raise on the hot poll path.
     """
     try:
-        running = int((await session.execute(select(func.count(CloudJob.id)).where(CloudJob.status == CloudJobStatus.RUNNING.value))).scalar() or 0)
-        waiting = int(
-            (
-                await session.execute(
-                    select(func.count(CloudJob.id)).where(
-                        CloudJob.status == CloudJobStatus.SUBMITTED.value,
-                        CloudJob.inadmissible.is_(True),
-                    )
-                )
-            ).scalar()
-            or 0
-        )
+        kinds = non_local_backend_kinds(cast("ControlSettings", get_settings()))
+    except Exception:
+        logger.warning("compute_lane_identity_registry_unavailable", exc_info=True)
+        return []
+
+    try:
+        stmt = select(
+            CloudJob.backend_id,
+            func.count().filter(CloudJob.status == CloudJobStatus.RUNNING.value).label("running"),
+            func.count().filter(CloudJob.status == CloudJobStatus.SUBMITTED.value, CloudJob.inadmissible.is_(True)).label("waiting"),
+        ).group_by(CloudJob.backend_id)
+        rows = (await session.execute(stmt)).all()
     except SQLAlchemyError:
-        logger.warning("compute_lane_liveness_degraded", exc_info=True)
+        logger.warning("compute_lane_identity_degraded", exc_info=True)
         try:
             await session.rollback()
         except SQLAlchemyError:
-            logger.warning("compute_lane_liveness_rollback_failed", exc_info=True)
-        return ("IDLE", 0)
+            logger.warning("compute_lane_identity_rollback_failed", exc_info=True)
+        return [ComputeLane(backend_id=backend_id, kind=kind, state="IDLE", running=0, waiting=0) for backend_id, kind in kinds.items()]
 
+    counts = {backend_id: (int(running or 0), int(waiting or 0)) for backend_id, running, waiting in rows}
+
+    lanes: list[ComputeLane] = []
+    for backend_id, kind in kinds.items():
+        running, waiting = counts.get(backend_id, (0, 0))
+        lanes.append(ComputeLane(backend_id=backend_id, kind=kind, state=_lane_state(running, waiting), running=running, waiting=waiting))
+
+    null_running, null_waiting = counts.get(None, (0, 0))
+    if null_running or null_waiting:
+        lanes.append(
+            ComputeLane(
+                backend_id="unattributed", kind="cloud", state=_lane_state(null_running, null_waiting), running=null_running, waiting=null_waiting
+            )
+        )
+
+    return lanes
+
+
+async def classify_compute_lanes(session: AsyncSession) -> tuple[str, int]:
+    """Return the aggregate compute-lane liveness state + in-flight count (RECORD-03, D-07).
+
+    Thin backward-compat shim over :func:`derive_compute_lane_identities` (COMPUTE-01): it collapses
+    the per-cluster lanes back to the single ``(state, count)`` contract the existing router / template
+    callers still consume, so this bead ships template-free. It is removed in the follow-up tiles bead
+    once those callers render per-lane identities directly. Precedence over the aggregated counts:
+
+    - ``("ACTIVE", running)`` when ≥1 lane has a ``running`` job — the burst lane is doing work;
+    - ``("WAITING", waiting)`` when nothing is running but ≥1 is ``submitted`` AND ``inadmissible``
+      (blocked behind a misconfigured Kueue quota);
+    - ``("IDLE", 0)`` when nothing is in-flight.
+
+    Degrade-safe (T-61-08 / KDEPLOY-04): :func:`derive_compute_lane_identities` already rolls back and
+    returns all-``IDLE`` (or ``[]``) on any DB / registry error, so the aggregate collapses to
+    ``("IDLE", 0)`` — a DB hiccup must NEVER paint the lane DEAD/red (a false alarm).
+    """
+    lanes = await derive_compute_lane_identities(session)
+    running = sum(lane.running for lane in lanes)
+    waiting = sum(lane.waiting for lane in lanes)
     if running >= 1:
         return ("ACTIVE", running)
     if waiting >= 1:
