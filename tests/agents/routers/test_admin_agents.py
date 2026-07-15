@@ -198,6 +198,128 @@ async def test_revoked_agent_absent(smoke: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMPUTE-01 — Section 2 renders ONE tile per compute lane (per-cluster identity)
+# ---------------------------------------------------------------------------
+
+
+_TWO_CLUSTER_REGISTRY = """
+    [[backends]]
+    kind = "compute"
+    id = "vox"
+    rank = 10
+    cap = 2
+    agent_ref = "vox-node"
+    scratch_dir = "/scratch/vox"
+    push_host = "vox.push"
+
+    [[backends]]
+    kind = "compute"
+    id = "xenolab"
+    rank = 20
+    cap = 2
+    agent_ref = "xenolab-node"
+    scratch_dir = "/scratch/xenolab"
+    push_host = "xenolab.push"
+    """
+
+
+async def _seed_cloud_job(session: AsyncSession, make_file, *, backend_id: str) -> None:  # type: ignore[no-untyped-def]
+    """Seed ONE RUNNING CloudJob attributed to ``backend_id`` (its own unique-FK FileRecord)."""
+    import uuid
+
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
+
+    file = await make_file(original_filename=f"{backend_id}-run.mp3")
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"staging/{file.id}",
+            status=CloudJobStatus.RUNNING.value,
+            backend_id=backend_id,
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_section2_renders_two_cluster_tiles(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """COMPUTE-01: two stamped clusters (vox ACTIVE, xenolab IDLE) → two labeled tiles, never DEAD.
+
+    A 2-compute registry (vox + xenolab) with a RUNNING CloudJob stamped only on vox: Section 2 must
+    render BOTH per-cluster tiles labeled by backend_id — vox ACTIVE while xenolab stays a visible IDLE
+    lane (registry-composed, no reachability probe) — and NEVER a perpetual DEAD state (KDEPLOY-04).
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        for path in ("/admin/agents", "/admin/agents/_table"):
+            response = await ac.get(path)
+            assert response.status_code == 200, response.text
+            body = response.text
+            compute_section = body.split('id="compute-lanes"', 1)[1]
+            # Both clusters render as labeled tiles.
+            assert "vox" in compute_section, f"vox tile missing from {path}"
+            assert "xenolab" in compute_section, f"xenolab tile missing from {path}"
+            # vox is doing work → ACTIVE; xenolab is configured-but-quiet → IDLE (still listed).
+            assert "ACTIVE" in compute_section, f"vox ACTIVE pill missing from {path}"
+            assert "IDLE" in compute_section, f"xenolab IDLE pill missing from {path}"
+            # Never a perpetual DEAD/rose state in Section 2.
+            assert "DEAD" not in compute_section, f"DEAD leaked into Section 2 of {path}"
+
+
+@pytest.mark.asyncio
+async def test_section2_poll_partial_matches_full_page(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """COMPUTE-01: the /_table poll partial's Section 2 is byte-identical to the full page's.
+
+    The compute-lane tiles are a single include site, so the first-load full page and the 5s poll
+    partial must render the SAME Section-2 markup (no Pitfall-5 flicker between first-load and poll).
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        full = (await ac.get("/admin/agents")).text
+        partial = (await ac.get("/admin/agents/_table")).text
+
+    def _section2(body: str) -> str:
+        # From the compute-lanes root up to (and including) its first </section> close — the
+        # compute_lanes.html partial nests no <section>, so this isolates Section 2 from the
+        # surrounding page chrome (which differs between full page and poll partial by design).
+        start = body.index('id="compute-lanes"')
+        end = body.index("</section>", start) + len("</section>")
+        return body[start:end]
+
+    assert _section2(full) == _section2(partial)
+
+
+@pytest.mark.asyncio
+async def test_section2_empty_registry_renders_idle_card(smoke: AsyncClient) -> None:
+    """COMPUTE-01: a pure-local registry (no non-local backends) renders a friendly IDLE/empty card.
+
+    The default smoke app has no cloud backends configured, so ``derive_compute_lane_identities``
+    returns no lanes — Section 2 must still render (never blank/error) as an IDLE empty-state card.
+    """
+    response = await smoke.get("/admin/agents/_table")
+    body = response.text
+    compute_section = body.split('id="compute-lanes"', 1)[1]
+    assert "No compute lanes" in compute_section
+    assert "IDLE" in compute_section
+    assert "DEAD" not in compute_section
+
+
+# ---------------------------------------------------------------------------
 # Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
 # ---------------------------------------------------------------------------
 

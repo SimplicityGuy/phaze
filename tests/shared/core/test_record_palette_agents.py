@@ -7,16 +7,16 @@ test. Assertions are the REAL contract (bare fragments, file_id-scoping, 404 HTM
 ``role="option"``/``role="presentation"`` grouping, DISTINCT-artist read, discovery-scan
 endpoint, never-DEAD compute lanes) — never placeholder ``assert True``.
 
-Symbols that do not exist yet (``distinct_artists``, ``classify_compute_lanes``) are imported
-INSIDE the test bodies (deferred) so collection stays clean while the tests fail/err at run
-time until Plans 02-05 land them.
+Symbols that did not exist yet at Wave-0 (``distinct_artists``) are imported INSIDE the test
+bodies (deferred) so collection stays clean while the tests fail/err at run time until Plans
+02-05 land them. (COMPUTE-01 later retired the ``classify_compute_lanes`` aggregate shim.)
 
 Route/contract map (see 61-VALIDATION.md "Per-Task Verification Map", 61-RESEARCH.md diagram):
     record body            -> GET /record/{file_id}          (61-02)
     ⌘K grouped palette     -> GET /search/  (HX branch)       (61-03)
     distinct_artists()     -> phaze.services.search_queries    (61-03)
     Agents two sections    -> GET /admin/agents               (61-04)
-    classify_compute_lanes -> phaze.services.agent_liveness    (61-04)
+    derive_compute_lane_identities -> phaze.services.agent_liveness  (61-04 / COMPUTE-01)
     empty state            -> /s/analyze fragment, count==0    (61-05)
 """
 
@@ -163,21 +163,11 @@ async def test_agents_two_sections_never_dead(client: AsyncClient) -> None:
     assert "DEAD" not in compute_section
 
 
-@pytest.mark.asyncio
-async def test_compute_lane_liveness_states(session: AsyncSession, seed_cloud_jobs) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-03 (D-07): classify_compute_lanes → ACTIVE(running) > WAITING(submitted+inadmissible) > IDLE(none)."""
-    from phaze.services.agent_liveness import classify_compute_lanes
-
-    # No cloud jobs → IDLE.
-    assert await classify_compute_lanes(session) == ("IDLE", 0)
-    # A submitted+inadmissible job → WAITING.
-    await seed_cloud_jobs(submitted_inadmissible=1)
-    assert await classify_compute_lanes(session) == ("WAITING", 1)
-    # A running job dominates → ACTIVE with the in-flight count.
-    await seed_cloud_jobs(running=3)
-    state, in_flight = await classify_compute_lanes(session)
-    assert state == "ACTIVE"
-    assert in_flight == 3
+# NOTE (COMPUTE-01): the former ``test_compute_lane_liveness_states`` exercised the retired
+# ``classify_compute_lanes`` ``(state, count)`` shim. That aggregate contract was deleted once the
+# router/template moved to per-cluster ``derive_compute_lane_identities`` lanes; its ACTIVE > WAITING
+# > IDLE precedence coverage now lives in the derive-based equivalents in
+# tests/agents/services/test_agent_liveness.py (``test_derive_*``).
 
 
 # ---------------------------------------------------------------------------

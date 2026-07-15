@@ -36,7 +36,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import classify, classify_compute_lanes, sort_key
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities, sort_key
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -119,10 +119,11 @@ async def page(
     the first-load full-page render and direct navigation.
     """
     agents, now = await _load_agents(session)
-    # Section 2 (RECORD-03 / D-07): the ephemeral k8s burst-lane liveness, synthesized
-    # read-only from in-flight CloudJob counts. Injected on BOTH the full page and the
-    # partial so the existing 5s self-poll refreshes it too (no new loop, RESEARCH OQ-1).
-    compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
+    # Section 2 (RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity PER non-local
+    # registry backend, synthesized read-only from the Phase-67 registry + in-flight CloudJob counts.
+    # Injected on BOTH the full page and the partial so the existing 5s self-poll refreshes it too
+    # (no new loop, RESEARCH OQ-1).
+    compute_lanes = await derive_compute_lane_identities(session)
     template = "admin/partials/agents_table.html" if _is_htmx(request) else "admin/agents.html"
     return templates.TemplateResponse(
         request=request,
@@ -133,8 +134,7 @@ async def page(
             "now": now,
             "current_page": "admin_agents",
             "refreshed_at_iso": now.isoformat(),
-            "compute_lane_state": compute_lane_state,
-            "compute_lane_count": compute_lane_count,
+            "compute_lanes": compute_lanes,
             # Phase 88 (88-01, DRILL-03 / D-02): seed the selected-agent highlight from ?agent= so a
             # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
             # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
@@ -162,7 +162,7 @@ async def table_partial(
     unknown/absent id highlights nothing, never a 422/500 into the poll.
     """
     agents, now = await _load_agents(session)
-    compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
+    compute_lanes = await derive_compute_lane_identities(session)
     return templates.TemplateResponse(
         request=request,
         name="admin/partials/agents_table.html",
@@ -171,8 +171,7 @@ async def table_partial(
             "agents": agents,
             "now": now,
             "refreshed_at_iso": now.isoformat(),
-            "compute_lane_state": compute_lane_state,
-            "compute_lane_count": compute_lane_count,
+            "compute_lanes": compute_lanes,
             "selected_agent": _resolve_selected_agent(agent, agents),
         },
     )

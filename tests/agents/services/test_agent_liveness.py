@@ -30,7 +30,6 @@ from phaze.services.agent_liveness import (
     AgentStatus,
     ComputeLane,
     classify,
-    classify_compute_lanes,
     derive_compute_lane_identities,
     non_local_backend_kinds,
     sort_key,
@@ -216,16 +215,16 @@ def test_sort_key_never_after_dead_within_non_revoked() -> None:
 
 
 # ---------------------------------------------------------------------------
-# classify_compute_lanes(session) — degrade branch (optional margin, D-05/D-07)
+# derive_compute_lane_identities(session) — degrade branch (D-05/D-07 / KDEPLOY-04)
 # ---------------------------------------------------------------------------
 
 
 class _RaisingSession:
     """Stub session whose ``execute`` raises ``SQLAlchemyError`` and whose ``rollback`` is a no-op.
 
-    Drives ``classify_compute_lanes`` straight into its ``except SQLAlchemyError`` degrade branch
-    (agent_liveness.py:174-180), which rolls back and returns ``("IDLE", 0)`` — a DB hiccup must
-    NEVER paint the compute lane DEAD/red.
+    Drives ``derive_compute_lane_identities`` straight into its ``except SQLAlchemyError`` degrade
+    branch, which rolls back and returns the registry lanes all-``IDLE`` — a DB hiccup must NEVER
+    paint a compute lane DEAD/red.
     """
 
     async def execute(self, *_args: object, **_kwargs: object) -> object:
@@ -233,13 +232,6 @@ class _RaisingSession:
 
     async def rollback(self) -> None:
         return None
-
-
-@pytest.mark.asyncio
-async def test_classify_compute_lanes_degrades_to_idle_on_db_error() -> None:
-    """SQLAlchemyError → rollback → observable ``("IDLE", 0)`` return (D-07 observable outcome)."""
-    result = await classify_compute_lanes(_RaisingSession())  # type: ignore[arg-type]
-    assert result == ("IDLE", 0)
 
 
 # ---------------------------------------------------------------------------
