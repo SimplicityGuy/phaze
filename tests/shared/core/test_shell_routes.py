@@ -286,3 +286,18 @@ async def test_theme_and_store_preserved(client: AsyncClient) -> None:
     # $store.pipeline is CONSUMED, never redefined: exactly one Alpine.store('pipeline' seed
     # (the embedded DAG canvas only writes $store.pipeline.<key>, it does not redefine it).
     assert body.count("Alpine.store('pipeline'") == 1
+
+
+@pytest.mark.asyncio
+async def test_header_agent_count_sums_agent_online_and_compute_lanes_active(client: AsyncClient) -> None:
+    """COMPUTE-02: the header dot/count sum agentOnline + computeLanesActive (both keys, additive).
+
+    agentOnline's own 0-degrade fail-safe semantics are untouched -- computeLanesActive is a NEW
+    additive key, never a replacement.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    assert "computeLanesActive: 0" in body, "shell store must seed computeLanesActive to int 0 (no undefined flash)"
+    assert "($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0" in body
+    assert "$store.pipeline.agentOnline + $store.pipeline.computeLanesActive" in body

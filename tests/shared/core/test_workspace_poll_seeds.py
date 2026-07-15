@@ -67,6 +67,13 @@ def test_orphan_seed_targets_present() -> None:
         assert key in targets, f"dag-seed-{key} placeholder missing from _workspace_poll_seeds.html"
 
 
+def test_compute_lanes_active_seed_target_present() -> None:
+    """COMPUTE-02: dag-seed-computeLanesActive must pre-exist or the header total's ACTIVE-lane
+    half sticks at 0 on every workspace (the same OOB-target-must-pre-exist class of finding as
+    the Phase-87 orphan badges / Plan-04 computeOnline)."""
+    assert "computeLanesActive" in _seed_target_keys(), "dag-seed-computeLanesActive placeholder missing from _workspace_poll_seeds.html"
+
+
 @pytest.mark.asyncio
 async def test_files_workspace_hosts_poll_seeds_but_filter_fragment_does_not(client: AsyncClient) -> None:
     """/s/files (workspace mount) hosts the seed placeholders; /pipeline/files (filter fragment) does not.
@@ -80,4 +87,5 @@ async def test_files_workspace_hosts_poll_seeds_but_filter_fragment_does_not(cli
 
     assert 'id="dag-seed-fingerprintOrphan"' in workspace, "/s/files workspace must host the orphan seed target"
     assert 'id="dag-seed-metadataDone"' in workspace, "/s/files workspace must host the poll-seed block"
+    assert 'id="dag-seed-computeLanesActive"' in workspace, "/s/files workspace must host the computeLanesActive seed target"
     assert 'id="dag-seed-fingerprintOrphan"' not in fragment, "the /pipeline/files filter fragment must NOT re-emit seed targets"

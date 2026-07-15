@@ -85,6 +85,11 @@ _NEW_STORE_KEYS = (
     # metadataExtracted, clamped >= 0). One edit drives the store-literal seed test, the int-key
     # context test, AND the OOB-seed test -- it rides the same dag.items() seed/OOB loop.
     "notYetEnriched",
+    # COMPUTE-02: count of ACTIVE compute lanes (derive_compute_lane_identities), additive to
+    # agentOnline for the header "Agents · N" total -- agentOnline's own 0-degrade fail-safe
+    # semantics are UNTOUCHED. One edit drives the store-literal seed test, the int-key context
+    # test, AND the OOB-seed test -- it rides the same dag.items() seed/OOB loop.
+    "computeLanesActive",
 )
 
 # The Phase-34 keys the existing button :disabled gating reads — must NOT be removed.
@@ -185,6 +190,102 @@ async def test_build_dag_context_carries_every_per_node_key(session: AsyncSessio
     for key in _NEW_STORE_KEYS:
         assert key in dag, f"context dag missing store key '{key}'"
         assert isinstance(dag[key], int), f"dag['{key}'] must be an int for x-init interpolation"
+
+
+# ---------------------------------------------------------------------------
+# COMPUTE-02: computeLanesActive counts ACTIVE compute lanes only, additive to
+# agentOnline for the header total -- agentOnline/computeOnline values are UNCHANGED.
+# ---------------------------------------------------------------------------
+
+_ONE_COMPUTE_CLUSTER_REGISTRY = """
+    [[backends]]
+    kind = "compute"
+    id = "vox"
+    rank = 10
+    cap = 2
+    agent_ref = "vox-node"
+    scratch_dir = "/scratch/vox"
+    push_host = "vox.push"
+    """
+
+
+@pytest.mark.asyncio
+async def test_dag_context_compute_lanes_active_counts_active_lanes_only(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """dag['computeLanesActive'] counts only ACTIVE lanes; agentOnline/computeOnline untouched."""
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
+
+    backends_toml_env(_ONE_COMPUTE_CLUSTER_REGISTRY)
+    file = await make_file(original_filename="vox-run.mp3")
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"staging/{file.id}",
+            status=CloudJobStatus.RUNNING.value,
+            backend_id="vox",
+        )
+    )
+    await session.commit()
+
+    app_state = SimpleNamespace()
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    dag = ctx["dag"]
+    assert dag["computeLanesActive"] == 1, "the single RUNNING-backed vox lane must count as ACTIVE"
+    # No heartbeating agent rows and no kind='compute' agent rows are seeded here -- these must
+    # stay at their own independent 0, proving computeLanesActive is additive, not a replacement.
+    assert dag["agentOnline"] == 0
+    assert dag["computeOnline"] == 0
+
+
+@pytest.mark.asyncio
+async def test_dag_context_compute_lanes_active_excludes_idle_and_waiting(
+    session: AsyncSession,
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """An IDLE (quiet, no jobs) configured cluster does not count toward computeLanesActive."""
+    backends_toml_env(_ONE_COMPUTE_CLUSTER_REGISTRY)
+
+    app_state = SimpleNamespace()
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    assert ctx["dag"]["computeLanesActive"] == 0, "a quiet configured cluster (IDLE) must not count as active"
+
+
+@pytest.mark.asyncio
+async def test_dag_context_compute_lanes_active_excludes_waiting(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """A WAITING (quota-alarm) lane is not an "online worker" -- must not count as active."""
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
+
+    backends_toml_env(_ONE_COMPUTE_CLUSTER_REGISTRY)
+    file = await make_file(original_filename="vox-waiting.mp3")
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"staging/{file.id}",
+            status=CloudJobStatus.SUBMITTED.value,
+            backend_id="vox",
+            inadmissible=True,
+        )
+    )
+    await session.commit()
+
+    app_state = SimpleNamespace()
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    assert ctx["dag"]["computeLanesActive"] == 0, "a WAITING (quota-alarm) lane must not count as active"
 
 
 @pytest.mark.asyncio
