@@ -9,6 +9,10 @@
   second timer / poll loop of its own. The ⌘K button dispatches a bubbling `cmdk:open` event
   caught by cmdk_modal.html (@cmdk:open.window); it carries id="cmdk-trigger" so the modal
   returns focus here on close.
+
+  COMPUTE-02: the "Agents · N" total now sums $store.pipeline.agentOnline (heartbeating agents,
+  semantics UNTOUCHED) + $store.pipeline.computeLanesActive (ACTIVE compute lanes) so the header
+  reflects both online-agent classes — still refreshed by the SAME existing OOB poll, no new timer.
 #}
 <header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
 
@@ -46,11 +50,11 @@
         {% include "shell/partials/_force_local_pill.html" %}
         <span class="flex items-center" aria-hidden="true">
             <span class="w-2 h-2 rounded-full"
-                  :class="$store.pipeline.agentOnline > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
+                  :class="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0 ? 'bg-emerald-400' : 'bg-gray-400 dark:bg-gray-600'"></span>
         </span>
         <a href="/admin/agents"
            class="font-jura tracking-wider px-3 h-8 flex items-center rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-            <span>Agents&nbsp;·&nbsp;</span><span x-text="$store.pipeline.agentOnline">0</span>
+            <span>Agents&nbsp;·&nbsp;</span><span x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive">0</span>
         </a>
     </div>
 

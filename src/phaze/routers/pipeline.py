@@ -31,6 +31,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
+from phaze.services.agent_liveness import derive_compute_lane_identities
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.backends import (
     LANE_RECENT_N,
@@ -289,6 +290,14 @@ async def _build_dag_context(
     # dag-seed-computeOnline placeholder the Analyze workspace pre-mounts (B1: an OOB seed lands
     # only on an id already in the DOM) -- no second poll, no stats_bar.html edit, no new backend.
     dag["computeOnline"] = int(await count_active_agents(session, kind="compute"))
+
+    # COMPUTE-02: the header "Agents · N" count includes ACTIVE compute lanes alongside
+    # heartbeating agents via a NEW additive key -- agentOnline's 0-degrade fail-safe semantics
+    # (scan-launch gate) are UNTOUCHED. derive_compute_lane_identities owns its own never-500
+    # degrade (returns all-IDLE lanes on any DB error), so NO try/except is added here; only
+    # ACTIVE lanes count (IDLE configured clusters are not "active"; WAITING is a quota alarm,
+    # not an online worker). It rides the same dag.items() seed + OOB loop, no stats_bar.html edit.
+    dag["computeLanesActive"] = sum(1 for lane in await derive_compute_lane_identities(session) if lane.state == "ACTIVE")
 
     # Phase 41 (REQ-41-3): the scrape_and_store_tracklist / match_tracklist_to_discogs in-flight counts
     # gate the DAG Scrape/Match trigger nodes "busy" (Scraping… / Matching…). Both are controller tasks

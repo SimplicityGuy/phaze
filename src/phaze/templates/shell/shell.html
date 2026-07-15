@@ -141,7 +141,11 @@
                 // reads `undefined` on initial shell paint (Discover sub-count / A1 lane capacity);
                 // the dag.items() OOB loop pushes real values onto dag-seed-notYetEnriched /
                 // dag-seed-computeOnline each 5s poll (58-02, 58-04 — WORK-01/03/05).
-                notYetEnriched: 0, computeOnline: 0
+                notYetEnriched: 0, computeOnline: 0,
+                // COMPUTE-02: count of ACTIVE compute lanes, additive to agentOnline for the header
+                // "Agents · N" total. A read-only derived int seeded onto the dag dict server-side;
+                // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
+                computeLanesActive: 0
             });
         });
     </script>
