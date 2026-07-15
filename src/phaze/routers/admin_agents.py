@@ -36,7 +36,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities, sort_key
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_kinds, sort_key
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -90,6 +90,17 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
     classify/sort step AND the template's ``refreshed_at_iso`` reflect the
     same instant — eliminates a few-microsecond skew that would otherwise
     show up if the template re-evaluated ``datetime.now(UTC)`` separately.
+
+    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row whose id/name matches a
+    non-local registry backend is the SAME cluster now surfaced as a live tile in Section 2. Such a
+    row never heartbeats (it is not a persistent process), so it would otherwise sit ``NEVER`` forever
+    in Section 1 while its lane is live in Section 2 — the "shown twice" defect. We suppress ONLY that
+    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key AND
+    ``_status=='never'``. The predicate is deliberately narrow — a genuinely heartbeating compute
+    agent keeps its row, a non-registry NEVER compute row keeps its row, and fileserver rows are
+    untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no schema change. Reading
+    the registry is degrade-safe — a settings failure leaves every row visible rather than raising into
+    the hot poll.
     """
     result = await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))
     rows = list(result.scalars().all())
@@ -100,6 +111,18 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
         # the DB and is safe even if a future migration adds a real
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
+    try:
+        registry_keys = set(non_local_backend_kinds(get_settings()))  # type: ignore[arg-type]
+    except Exception:
+        # A registry/settings read failure must never break the operator poll: leave every row
+        # visible (the shadow row reappears, but the page still renders) rather than raise.
+        logger.warning("agents_registry_shadow_filter_unavailable", exc_info=True)
+        registry_keys = set()
+    rows = [
+        a
+        for a in rows
+        if not (a.kind == "compute" and a._status == "never" and (a.id in registry_keys or a.name in registry_keys))  # type: ignore[attr-defined]
+    ]
     rows.sort(key=lambda a: sort_key(a, now))
     return rows, now
 

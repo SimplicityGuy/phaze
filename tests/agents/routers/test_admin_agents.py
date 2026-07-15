@@ -320,6 +320,124 @@ async def test_section2_empty_registry_renders_idle_card(smoke: AsyncClient) -> 
 
 
 # ---------------------------------------------------------------------------
+# COMPUTE-01 (dedupe): suppress the registry-shadowed never-heartbeating compute row
+# ---------------------------------------------------------------------------
+
+
+def _sections(body: str) -> tuple[str, str]:
+    """Split the rendered page into (Section 1, Section 2) at the compute-lanes root.
+
+    Section 1 (heartbeating agents) is everything BEFORE ``id="compute-lanes"``; Section 2 (the
+    compute-lane tiles) is that marker onward. compute_lanes.html nests no ``id="compute-lanes"``, so
+    the single split cleanly separates the two panels.
+    """
+    section1, _marker, section2 = body.partition('id="compute-lanes"')
+    return section1, section2
+
+
+@pytest_asyncio.fixture
+async def shadow_smoke(session: AsyncSession, backends_toml_env) -> AsyncGenerator[AsyncClient]:  # type: ignore[no-untyped-def]
+    """Smoke client with a 2-cluster registry (vox, xenolab) + three NEVER Agent rows.
+
+    Seeds the three dedupe cases at once:
+      * ``vox``  — kind=compute, id matches a registry backend → the registry-shadowed row to suppress.
+      * ``orphan-compute`` — kind=compute, NOT in the registry → a genuine NEVER compute row, kept.
+      * ``fs-never`` — kind=fileserver → an ordinary NEVER fileserver row, untouched.
+    The conftest legacy revoked row is filtered by the existing revoked-row guard, so it never shows.
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    session.add_all(
+        [
+            Agent(id="vox", name="vox", scan_roots=[], kind="compute"),  # last_seen_at=None → NEVER
+            Agent(id="orphan-compute", name="OrphanCompute", scan_roots=[], kind="compute"),
+            Agent(id="fs-never", name="FsNever", scan_roots=[], kind="fileserver"),
+        ]
+    )
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_dedupe_registry_shadow_compute_row_suppressed_from_section1(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: a never-seen 'vox'/kind=compute row is absent from Section 1 while its tile is in Section 2.
+
+    The exact "shown twice" defect: the vox cluster must render as a live tile in Section 2 (registry-
+    composed) but NOT sit as a perpetual-NEVER agent row in Section 1.
+    """
+    for path in ("/admin/agents", "/admin/agents/_table"):
+        response = await shadow_smoke.get(path)
+        assert response.status_code == 200, response.text
+        section1, section2 = _sections(response.text)
+        # Suppressed from Section 1 (no shadow agent-row).
+        assert "agent-trigger-vox" not in section1, f"vox shadow row leaked into Section 1 of {path}"
+        # Still surfaced as a live lane in Section 2.
+        assert "vox" in section2, f"vox tile missing from Section 2 of {path}"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_non_registry_compute_row_still_renders_never(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: a never-seen compute Agent NOT matching any registry id still renders NEVER in Section 1.
+
+    The suppression predicate is narrow: only registry-shadowed compute rows are dropped. A compute
+    agent whose id is not a backend key is a genuine orphan and must keep its NEVER row so the operator
+    can see (and clean up) it.
+    """
+    response = await shadow_smoke.get("/admin/agents/_table")
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-orphan-compute" in section1, "non-registry compute NEVER row was wrongly suppressed"
+    assert "OrphanCompute" in section1
+
+
+@pytest.mark.asyncio
+async def test_dedupe_fileserver_never_row_unaffected(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: an ordinary fileserver NEVER row is untouched by the compute-only suppression."""
+    response = await shadow_smoke.get("/admin/agents/_table")
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-fs-never" in section1, "fileserver NEVER row was wrongly suppressed"
+    assert "FsNever" in section1
+    # NEVER pill still rendered for the surviving fileserver row.
+    assert "NEVER" in section1
+
+
+@pytest.mark.asyncio
+async def test_dedupe_cluster_id_appears_exactly_once(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01 invariant: the shadowed cluster id 'vox' is represented in exactly ONE section.
+
+    Before the fix, 'vox' appeared in BOTH sections (a NEVER agent row in Section 1 AND a live tile in
+    Section 2). After suppression it lives ONLY in Section 2 — proving the "shown twice" duplication is
+    gone while the lane identity is preserved.
+    """
+    response = await shadow_smoke.get("/admin/agents")
+    section1, section2 = _sections(response.text)
+    assert "vox" not in section1, "vox still duplicated into Section 1 (shown twice)"
+    assert "vox" in section2, "vox lane identity lost from Section 2"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """COMPUTE-01: a genuinely-heartbeating registry compute agent keeps its Section 1 row (never suppressed).
+
+    Suppression is gated on ``_status=='never'`` — a compute agent that IS heartbeating (recent
+    last_seen_at → 'alive') is a real process and must stay visible even when its id matches a backend.
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    now = datetime.now(UTC)
+    session.add(Agent(id="vox", name="vox", scan_roots=[], kind="compute", last_seen_at=now))
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/_table")
+
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-vox" in section1, "a heartbeating (alive) compute agent must keep its row"
+    assert "ALIVE" in section1
+
+
+# ---------------------------------------------------------------------------
 # Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
 # ---------------------------------------------------------------------------
 
