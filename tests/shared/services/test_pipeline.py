@@ -18,6 +18,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
+from phaze.services import pipeline as pipeline_mod
 from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
@@ -961,16 +962,30 @@ async def test_get_proposal_pending_batches_excludes_already_proposed_file(sessi
     assert str(unproposed.id) in flat, "a not-yet-proposed converged file MUST still be batched"
 
 
+def _backend(backend_id: str, kind: str) -> SimpleNamespace:
+    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``."""
+    return SimpleNamespace(id=backend_id, kind=kind)
+
+
+def _backend_settings(*backends: SimpleNamespace) -> SimpleNamespace:
+    """A minimal settings stand-in carrying only ``.backends`` (the sole attribute the derivation reads)."""
+    return SimpleNamespace(backends=list(backends))
+
+
 @pytest.mark.asyncio
-async def test_get_analyze_stage_files_derives_flags_from_markers(session: AsyncSession) -> None:
-    """Phase 90 (PR-A): analyze-stage rows + their flags DERIVE from markers/cloud_job, not ``files.state``.
+async def test_get_analyze_stage_files_derives_flags_from_markers(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 90 (PR-A) + COMPUTE-03: analyze-stage rows + their flags DERIVE from markers/cloud_job, not ``files.state``.
 
     Seeds four files whose ``files.state`` is deliberately a neutral ``DISCOVERED`` (proving the read no
     longer consults it): a completed analysis (``analysis_completed_at`` set), a failed analysis
-    (``failed_at`` set), an awaiting-cloud sidecar (``cloud_job(status='awaiting')``), and an off-stage
-    file with NO analysis/cloud_job (must be absent). Asserts membership + the derived ``completed`` /
-    ``analysis_failed`` / ``awaiting_cloud`` flags, and that no raw ``state`` key is exposed.
+    (``failed_at`` set), an awaiting-cloud sidecar with NO ``backend_id`` stamped yet
+    (``cloud_job(status='awaiting')``), and an off-stage file with NO analysis/cloud_job (must be absent).
+    Asserts membership + the derived ``completed`` / ``analysis_failed`` / ``awaiting_cloud`` flags, that
+    no raw ``state`` key is exposed, and that the unattributed cloud_job (no backend_id) gets the
+    truthful ``lane="cloud"`` fallback -- never the stale ``"a1"`` heuristic label.
     """
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
+
     done_f = _make_pipeline_file()
     failed_f = _make_pipeline_file()
     awaiting_f = _make_pipeline_file()
@@ -991,13 +1006,48 @@ async def test_get_analyze_stage_files_derives_flags_from_markers(session: Async
     assert by_id[str(done_f.id)]["completed"] is True
     assert by_id[str(done_f.id)]["analysis_failed"] is False
     assert by_id[str(done_f.id)]["awaiting_cloud"] is False
+    assert by_id[str(done_f.id)]["lane"] == "local", "no cloud_job row -> local lane"
+    assert by_id[str(done_f.id)]["lane_kind"] == "local"
 
     assert by_id[str(failed_f.id)]["analysis_failed"] is True
     assert by_id[str(failed_f.id)]["completed"] is False
 
     assert by_id[str(awaiting_f.id)]["awaiting_cloud"] is True
     assert by_id[str(awaiting_f.id)]["completed"] is False
-    assert by_id[str(awaiting_f.id)]["lane"] == "a1"
+    assert by_id[str(awaiting_f.id)]["lane"] == "cloud", "NULL backend_id -> truthful unattributed 'cloud' fallback, never 'a1'"
+    assert by_id[str(awaiting_f.id)]["lane_kind"] == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_get_analyze_stage_files_lane_derives_from_backend_id(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """COMPUTE-03: a stamped ``backend_id`` drives both ``lane`` (the id) and ``lane_kind`` (registry kind).
+
+    A kueue-registered backend id ("vox") yields ``lane="vox"`` / ``lane_kind="kueue"``; a backend id
+    that is no longer in the registry falls back to ``lane_kind="cloud"`` (deregistered cluster, still
+    truthfully labeled as cloud rather than crashing or reintroducing a heuristic).
+    """
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings(_backend("vox", "kueue")))
+
+    kueue_f = _make_pipeline_file()
+    stale_backend_f = _make_pipeline_file()
+    session.add_all([kueue_f, stale_backend_f])
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=kueue_f.id, status=CloudJobStatus.RUNNING.value, backend_id="vox", cloud_phase="running"))
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(), file_id=stale_backend_f.id, status=CloudJobStatus.RUNNING.value, backend_id="retired-cluster", cloud_phase="running"
+        )
+    )
+    await session.commit()
+
+    rows = await get_analyze_stage_files(session)
+    by_id = {r["file_id"]: r for r in rows}
+
+    assert by_id[str(kueue_f.id)]["lane"] == "vox"
+    assert by_id[str(kueue_f.id)]["lane_kind"] == "kueue"
+
+    assert by_id[str(stale_backend_f.id)]["lane"] == "retired-cluster"
+    assert by_id[str(stale_backend_f.id)]["lane_kind"] == "cloud", "a backend_id no longer in the registry falls back to 'cloud', never crashes"
 
 
 @pytest.mark.asyncio
