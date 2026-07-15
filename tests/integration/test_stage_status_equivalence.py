@@ -48,6 +48,7 @@ from phaze.enums.stage import Stage, domain_completed, eligible, resolve_status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
@@ -56,6 +57,8 @@ from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.services.backends import ComputeAgentBackend, KueueBackend
+from phaze.services.pipeline import get_pushed_count, get_pushing_count
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
@@ -757,3 +760,60 @@ async def test_inflight_savepoint_degrade(db_session: AsyncSession) -> None:
     assert await saq_detail(db_session) == {"queued": 0, "active": 0}
     # The SAVEPOINT rolled back alone: the outer transaction is intact and the ledger still resolves in_flight.
     assert await _eval_inflight(db_session, Stage.ANALYZE, file_id) is True
+
+
+# --------------------------------------------------------------------------------------------------
+# phaze-613 invariant: Σ backend.in_flight_count() must equal the global get_pushing_count() +
+# get_pushed_count() dashboard reader IFF every in-flight cloud_job row carries a backend_id naming a
+# registered backend. Both sides count the SAME status set -- Backend.in_flight_count's D-10
+# ``IN_FLIGHT`` tuple (UPLOADING/UPLOADED/SUBMITTED/RUNNING) is exactly the union of
+# get_pushing_count's {UPLOADING, SUBMITTED} and get_pushed_count's {UPLOADED, RUNNING} -- so the
+# per-backend reader (backend_id-scoped, the drain's own cap-enforcement substrate) and the global
+# dashboard cards (unscoped) can only ever disagree on a row with no attributed backend_id. This is
+# the identity the new "Staged (pushing)" / "Analyzing (cloud)" lane-slot captions assert holds.
+# --------------------------------------------------------------------------------------------------
+
+
+async def test_in_flight_sum_equals_pushing_plus_pushed_for_registry_stamped_rows(db_session: AsyncSession) -> None:
+    """Every in-flight row carries a registered backend_id -> the per-backend Σ matches the global cards."""
+    compute = ComputeAgentBackend(id="a1", rank=10, cap=10)
+    kueue = KueueBackend(id="k8s", rank=20, cap=10)
+
+    for status, backend_id in (
+        (CloudJobStatus.UPLOADING, "k8s"),
+        (CloudJobStatus.UPLOADED, "k8s"),
+        (CloudJobStatus.SUBMITTED, "a1"),
+        (CloudJobStatus.RUNNING, "a1"),
+    ):
+        fid = await _new_file(db_session)
+        db_session.add(CloudJob(id=uuid.uuid4(), file_id=fid, status=status.value, backend_id=backend_id))
+    await db_session.flush()
+
+    per_backend_sum = await compute.in_flight_count(db_session) + await kueue.in_flight_count(db_session)
+    global_sum = await get_pushing_count(db_session) + await get_pushed_count(db_session)
+
+    assert per_backend_sum == global_sum == 4
+
+
+async def test_null_backend_id_in_flight_row_breaks_the_sum_identity(db_session: AsyncSession) -> None:
+    """A NULL backend_id in-flight row is invisible to every per-backend Σ but still counted globally.
+
+    Documents the failure mode the identity above guards against: a future writer that upserts a
+    cloud_job row without stamping backend_id silently understates every per-backend Σ relative to
+    the dashboard cards -- an unattributed row claims no backend's slot, which is exactly the class
+    of bug that could silently defeat the drain's per-backend cap enforcement (SCHED-02).
+    """
+    compute = ComputeAgentBackend(id="a1", rank=10, cap=10)
+
+    fid = await _new_file(db_session)
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=fid, status=CloudJobStatus.SUBMITTED.value, backend_id="a1"))
+    orphan_fid = await _new_file(db_session)
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=orphan_fid, status=CloudJobStatus.RUNNING.value, backend_id=None))
+    await db_session.flush()
+
+    per_backend_sum = await compute.in_flight_count(db_session)
+    global_sum = await get_pushing_count(db_session) + await get_pushed_count(db_session)
+
+    assert per_backend_sum == 1  # the NULL-backend_id row is invisible to every per-backend Σ
+    assert global_sum == 2  # ...but the global dashboard cards still count it
+    assert per_backend_sum != global_sum  # the identity is broken by construction

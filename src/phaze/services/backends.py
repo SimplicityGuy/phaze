@@ -53,6 +53,7 @@ from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
+from phaze.services.route_control import get_route_control
 from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -796,6 +797,57 @@ async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any
             logger.warning("backend_lane_snapshot_rollback_failed", exc_info=True)
         return []
     return lanes
+
+
+# The neutral, no-causal-claim copy any unexpected error in derive_cloud_hold_reason degrades to --
+# the card must never assert a specific blocker it has not actually confirmed.
+_HOLD_REASON_DEGRADED = "held"
+
+
+async def derive_cloud_hold_reason(session: AsyncSession) -> str:
+    """Return the Cloud Routing card's truthful sub-caption, mirroring the drain's own gate order.
+
+    Lives next to :func:`get_backend_lane_snapshot` so the two can never drift apart -- this walks
+    the SAME per-lane ``{available, cap, in_flight}`` shape that function already composes, and
+    checks the SAME gates ``release_awaiting_cloud.stage_cloud_window`` checks, in the SAME order:
+    cloud disabled -> :func:`get_route_control` force-local -> no lane reachable -> every reachable
+    lane full -> no fileserver agent online -> else genuinely queued with free capacity. A prior
+    incarnation of this card hardcoded "no compute agent online" regardless of the real blocker
+    (T-83-hold-reason-bug); this derivation can only ever name a gate it has actually observed.
+
+    Every read here is individually degrade-safe (``get_route_control`` / ``get_backend_lane_snapshot``
+    never raise), but the surrounding ``try/except`` is the belt: ANY unexpected exception -- including
+    one from ``get_settings()`` or the fileserver probe -- collapses to the neutral
+    :data:`_HOLD_REASON_DEGRADED` copy with NO causal claim, so the hot 5s poll can never 500 on a
+    hiccup here (mirrors the T-71-03 idiom this module already applies throughout).
+    """
+    try:
+        cfg = cast("ControlSettings", get_settings())
+        if not cfg.cloud_enabled:
+            return "cloud routing disabled"
+        if await get_route_control(session):
+            return "held — cloud routing paused (force-local)"
+
+        lanes = await get_backend_lane_snapshot(session)
+        available_lanes = [lane for lane in lanes if lane["available"]]
+        if not available_lanes:
+            return "held — no cloud backend reachable"
+
+        total_cap = sum(lane["cap"] for lane in available_lanes)
+        total_in_flight = sum(lane["in_flight"] for lane in available_lanes)
+        free_slots = sum(max(0, lane["cap"] - lane["in_flight"]) for lane in available_lanes)
+        if free_slots <= 0:
+            return f"held — all lanes at capacity ({total_in_flight}/{total_cap} slots busy)"
+
+        try:
+            await select_active_agent(session, kind="fileserver")
+        except NoActiveAgentError:
+            return "held — no fileserver agent online"
+
+        return f"queued — {free_slots} free slots, dispatching on next drain tick (~5 min)"
+    except Exception:
+        logger.warning("cloud_hold_reason_degraded", exc_info=True)
+        return _HOLD_REASON_DEGRADED
 
 
 # --- Phase 88 (88-02, DRILL-01): degrade-safe lane-detail data helpers ---------------------
