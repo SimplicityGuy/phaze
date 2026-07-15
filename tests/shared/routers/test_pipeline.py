@@ -2790,7 +2790,7 @@ async def test_stats_poll_repushes_admission_card_oob(client: AsyncClient, sessi
     card_html = card.group(0)
     assert 'hx-swap-oob="true"' in card_html
     assert "Running" in card_html
-    assert "pod analyzing" in card_html
+    assert "admitted — pod running" in card_html
     assert "bg-violet-50" in card_html
 
 
