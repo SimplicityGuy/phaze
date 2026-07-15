@@ -251,3 +251,9 @@ src/phaze/static/css/app.css
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# beads issue tracker — local Dolt-backed store, not versioned in git
+.beads/
