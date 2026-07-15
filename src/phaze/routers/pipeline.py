@@ -34,6 +34,7 @@ from phaze.services import enqueue_router
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
 from phaze.services.backends import (
     LANE_RECENT_N,
+    derive_cloud_hold_reason,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
     get_lane_recent_completions,
@@ -644,6 +645,14 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
     lanes = await get_backend_lane_snapshot(session)
 
+    # The Cloud Routing card's truthful hold-reason sub-caption -- derived from the SAME lane snapshot
+    # above via the SAME gate order the drain (stage_cloud_window) checks, so the card can never claim
+    # a blocker the drain itself would not hit next tick. derive_cloud_hold_reason is fully degrade-safe
+    # (collapses to the neutral "held" copy on any error), so NO try/except here -- same
+    # service-owns-degrade idiom as the cloud counts above. Seeded IDENTICALLY in pipeline_stats_partial()
+    # below so the OOB-swapped card re-push agrees with this first-load render (the OOB swap contract).
+    awaiting_hold_reason = await derive_cloud_hold_reason(session)
+
     return {
         "stats": stats,
         "current_page": "pipeline",
@@ -653,6 +662,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "straggler_count": straggler_count,
         "analysis_failed_count": analysis_failed_count,
         "awaiting_cloud_count": awaiting_cloud_count,
+        "awaiting_hold_reason": awaiting_hold_reason,
         "pushing_count": pushing_count,
         "analyzing_cloud_count": analyzing_cloud_count,
         "inadmissible_count": inadmissible_count,
@@ -753,6 +763,11 @@ async def pipeline_stats_partial(
     # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
     # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
     lanes = await get_backend_lane_snapshot(session)
+    # The SAME hold-reason derivation build_dashboard_context seeds on first load, re-pushed on every 5s
+    # poll so the awaiting_cloud_card sub-caption stays live via its OOB swap (the OOB swap contract:
+    # both render paths must agree). Degrade-safe at the service layer, so NO router try/except -- mirrors
+    # the lanes wiring immediately above.
+    awaiting_hold_reason = await derive_cloud_hold_reason(session)
     # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
     # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
     selected_lane = lane if any(one.get("id") == lane for one in lanes) else None
@@ -771,6 +786,7 @@ async def pipeline_stats_partial(
             "straggler_count": straggler_count,
             "analysis_failed_count": analysis_failed_count,
             "awaiting_cloud_count": awaiting_cloud_count,
+            "awaiting_hold_reason": awaiting_hold_reason,
             "pushing_count": pushing_count,
             "analyzing_cloud_count": analyzing_cloud_count,
             "inadmissible_count": inadmissible_count,

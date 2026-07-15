@@ -17,6 +17,11 @@
    cloud_phase is NULL for a1/local deploys (admission is a k8s-only concept), so all four counts are
    0 and only the empty <section> carrier renders — no four-always-zero clutter for non-k8s operators.
 
+   The Running tile reads "admitted — pod running" (not the former "pod analyzing"): this is a
+   ``cloud_phase`` reconcile-cron reflection, not a live probe, so the card-level freshness hint
+   below the heading ("per reconcile, updates ~5 min") tells the operator how stale the whole grid
+   can be -- the same staleness class every Kueue-row status carries.
+
    Rendered inline in dashboard.html on first load (#admission-state-card lives OUTSIDE the
    #pipeline-stats poll target and outside #pipeline-stages so the OOB swap never re-renders the DAG
    trigger buttons — T-55-CARD-03), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
@@ -28,6 +33,7 @@
          class="border border-gray-200 dark:border-phaze-border rounded-lg p-4 space-y-3">
     {% if queued_behind_quota_count or admitted_count or running_count or finished_count %}
     <h2 id="admission-state-heading" class="text-lg font-semibold">Cloud · Admission</h2>
+    <p class="text-xs text-gray-400 dark:text-gray-500">per reconcile, updates ~5 min</p>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {% if queued_behind_quota_count %}
         <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-4 text-center">
@@ -47,7 +53,7 @@
         <div class="bg-violet-50 dark:bg-violet-950 rounded-lg p-4 text-center">
             <p class="text-2xl font-bold text-violet-700 dark:text-violet-400">{{ running_count }}</p>
             <p class="text-sm text-violet-600 dark:text-violet-400">Running</p>
-            <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">pod analyzing</p>
+            <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">admitted — pod running</p>
         </div>
         {% endif %}
         {% if finished_count %}

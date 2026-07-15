@@ -12,7 +12,12 @@
    Rendered inline in dashboard.html on first load (#analyzing-cloud-card lives OUTSIDE the
    #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on
    every 5s poll (oob=True) so the count stays live. Same id on both renders is the OOB contract
-   (mirrors awaiting_cloud_card.html). #}
+   (mirrors awaiting_cloud_card.html).
+
+   The sub-caption ties this count to the #analyze-lanes grid: together with "Staged (pushing)"
+   (staged_pushing_card.html) it accounts for every backend's busy in-flight slots -- the two
+   cards are the two halves of the same per-backend Backend.in_flight_count() window, just read
+   globally here rather than scoped per lane (the lane cards own the per-lane breakdown). #}
 <section id="analyzing-cloud-card"
          aria-labelledby="analyzing-cloud-heading"
          {% if oob %}hx-swap-oob="true"{% endif %}
@@ -21,6 +26,6 @@
     <div class="bg-violet-50 dark:bg-violet-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-violet-700 dark:text-violet-400">{{ analyzing_cloud_count }}</p>
         <p class="text-sm text-violet-600 dark:text-violet-400">Analyzing (cloud)</p>
-        <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">landed on compute — in analysis</p>
+        <p class="text-xs text-violet-500 dark:text-violet-500 mt-1">landed — counts toward busy lane slots</p>
     </div>
 </section>

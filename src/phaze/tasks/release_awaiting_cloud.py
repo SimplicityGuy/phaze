@@ -41,6 +41,7 @@ mirroring the ``recover_orphaned_work`` import discipline.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -73,6 +74,31 @@ logger = structlog.get_logger(__name__)
 # sees the committed window. Arbitrary stable constant (phase 50, plan 04); never collides because
 # no other code path takes an advisory lock.
 _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY = 5_000_504
+
+# DRAIN-02 (Phase 98): the per-probe availability timeout for the once-per-tick snapshot. Mirrors the
+# read-path bound ``services.backends._PROBE_TIMEOUT_SEC`` (1.5s) VERBATIM in value; declared locally
+# (not imported) because ``backends`` imports THIS module (the advisory-lock key + push-job key), so a
+# top-level ``from ...backends import _PROBE_TIMEOUT_SEC`` would close the backends<->drain import cycle
+# the deferred imports in stage_cloud_window exist to avoid. Kept in sync by this comment + the mirrored
+# value. Without this bound a HUNG (not raising) cluster probe -- KueueBackend.is_available -> kr8s
+# LocalQueue refresh() on an httpx client built ``timeout=None`` -- blocks the snapshot ``await``
+# indefinitely WHILE holding pg_advisory_xact_lock, stalling every later drain tick AND every
+# KueueBackend.reconcile per-row (they take the same lock). The try/except in the snapshot loop already
+# catches RAISES; this wait_for converts a HANG into a TimeoutError that the SAME except treats as
+# "unavailable" (0 slots this tick), so one hung cluster degrades to 0 slots instead of stalling the drain.
+_PROBE_TIMEOUT_SEC = 1.5
+
+
+async def _bounded_is_available(backend: Any, session: AsyncSession) -> bool:
+    """Await ``backend.is_available`` under an ``asyncio.wait_for(_PROBE_TIMEOUT_SEC)`` bound (DRAIN-02).
+
+    The drain-side twin of ``services.backends._probe_one``: a HUNG cluster probe times out instead of
+    stalling the whole tick. A timeout raises ``TimeoutError`` (an ``Exception``), which the snapshot
+    loop's existing ``except Exception`` already treats as "unavailable, 0 slots" -- so this helper only
+    needs to impose the bound, not classify the failure. Every non-timeout raise propagates unchanged to
+    that same handler. ``_PROBE_TIMEOUT_SEC`` is read at call time so tests can shrink it via monkeypatch.
+    """
+    return bool(await asyncio.wait_for(backend.is_available(session), _PROBE_TIMEOUT_SEC))
 
 
 def push_file_job_key(file_id: uuid.UUID) -> str:
@@ -149,7 +175,10 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # carrying creds, T-70-03-02), then continue so the surrounding limit-gate simply sees this
             # backend contribute nothing while every other backend proceeds normally.
             try:
-                available = await backend.is_available(session)
+                # DRAIN-02: bound the availability probe with asyncio.wait_for so a HUNG cluster probe
+                # (not just a raising one) times out to unavailable rather than stalling the whole tick
+                # while holding the advisory lock -- mirrors the read-path bound in services/backends.py.
+                available = await _bounded_is_available(backend, session)
                 remaining = max(0, backend.cap - await backend.in_flight_count(session))
             except Exception:
                 logger.warning("stage_cloud_window: backend snapshot probe failed -> treating as unavailable (0 slots)", backend_id=backend.id)
