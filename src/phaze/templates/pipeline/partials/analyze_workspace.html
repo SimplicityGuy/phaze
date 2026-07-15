@@ -18,7 +18,10 @@
    inadmissible_card / localqueue_card (k8s faults -- role="alert"), awaiting_cloud_card /
    staged_pushing_card / analyzing_cloud_card (A1 sub-states). They carry their own ids so the
    poll's OOB swaps land here, and they encode the load-bearing quota-wait-vs-Inadmissible
-   distinction (WORK-03).
+   distinction (WORK-03). inadmissible_card / localqueue_card are conditionally-EMPTY alert
+   carriers (zero-height <section> when healthy); they render full-width ABOVE the 4-card count
+   grid (not inside it), so a healthy carrier can never occupy a grid cell and misalign the
+   Admission/Cloud-Routing/Staged/Analyzing tiles (see the alert region + grid below).
 
    Body (c) -- the all-in-stage per-file lane + window table (D-03/D-04). Added by Plan-04 Task 3
    at the insertion point below; this fragment stays valid on its own without it.
@@ -58,13 +61,23 @@
         </div>
     </div>
 
-    {# (b) the SIX existing cloud-state cards VERBATIM (do NOT restyle). They carry their own ids so the
-       /pipeline/stats OOB swaps land here, and they encode the quota-wait-vs-Inadmissible alert
-       distinction (WORK-03). `oob` is unset here, so each renders its quiet always-on carrier. #}
-    <div class="grid grid-cols-1 gap-4 px-6 pb-6 sm:grid-cols-2">
-        {% include "pipeline/partials/admission_state_card.html" %}
+    {# (b1) the two conditionally-empty operator alerts, full-width, ABOVE the count grid, as DIRECT
+       siblings -- NOT a space-y-* wrapper, which would impose a margin between them purely from sibling
+       position even while the preceding <section> is empty/zero-height. Each carrier always renders (the
+       OOB target must stay stable); any visible spacing for a firing alert lives on the INNER alert div
+       inside that partial's own {% if %} (a self-margin), so the healthy state has zero footprint here. #}
+    <div class="px-6">
         {% include "pipeline/partials/inadmissible_card.html" %}
         {% include "pipeline/partials/localqueue_card.html" %}
+    </div>
+
+    {# (b2) the FOUR always-on cloud-state count cards VERBATIM (do NOT restyle): admission_state_card
+       (k8s healthy progression -- NO role=alert), awaiting_cloud_card / staged_pushing_card /
+       analyzing_cloud_card (A1 sub-states). They carry their own ids so the poll's OOB swaps land here.
+       `oob` is unset here, so each renders its quiet always-on carrier. Exactly 4 cells -> Admission and
+       Cloud Routing share row 1's top edge; Staged and Analyzing share row 2's, same as before. #}
+    <div class="grid grid-cols-1 gap-4 px-6 pb-6 sm:grid-cols-2">
+        {% include "pipeline/partials/admission_state_card.html" %}
         {% include "pipeline/partials/awaiting_cloud_card.html" %}
         {% include "pipeline/partials/staged_pushing_card.html" %}
         {% include "pipeline/partials/analyzing_cloud_card.html" %}
