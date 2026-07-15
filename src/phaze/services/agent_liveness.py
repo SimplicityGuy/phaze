@@ -6,12 +6,12 @@ injects the result on a transient ``agent._status`` attribute, then sorts the li
 with ``sort_key(agent, now)`` before rendering. Tests and renderer share a single
 source of truth via ``phaze.constants.AGENT_LIVENESS_*`` thresholds.
 
-``classify_compute_lanes(session)`` (RECORD-03 / D-07) is the one DB-touching read
-here — a degrade-safe, read-only ``CloudJob`` aggregation that models the ephemeral
-k8s burst lane as an Active/Waiting/Idle Job-based identity (NEVER a perpetually-DEAD
-agent). It mirrors the ``try/except → default`` count discipline in
-``phaze.services.pipeline`` and lives beside ``classify`` because both answer the same
-operator question ("what's alive right now?") for the two-section Agents page.
+``derive_compute_lane_identities(session)`` (RECORD-03 / D-07 → COMPUTE-01) is the one
+DB-touching read here — a degrade-safe, read-only ``CloudJob`` aggregation that models each
+ephemeral compute cluster (one per non-local registry backend) as an Active/Waiting/Idle
+Job-based identity (NEVER a perpetually-DEAD agent). It mirrors the ``try/except → default``
+count discipline in ``phaze.services.pipeline`` and lives beside ``classify`` because both
+answer the same operator question ("what's alive right now?") for the two-section Agents page.
 
 Status precedence (D-12 LOCKED):
 
@@ -238,30 +238,3 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
         )
 
     return lanes
-
-
-async def classify_compute_lanes(session: AsyncSession) -> tuple[str, int]:
-    """Return the aggregate compute-lane liveness state + in-flight count (RECORD-03, D-07).
-
-    Thin backward-compat shim over :func:`derive_compute_lane_identities` (COMPUTE-01): it collapses
-    the per-cluster lanes back to the single ``(state, count)`` contract the existing router / template
-    callers still consume, so this bead ships template-free. It is removed in the follow-up tiles bead
-    once those callers render per-lane identities directly. Precedence over the aggregated counts:
-
-    - ``("ACTIVE", running)`` when ≥1 lane has a ``running`` job — the burst lane is doing work;
-    - ``("WAITING", waiting)`` when nothing is running but ≥1 is ``submitted`` AND ``inadmissible``
-      (blocked behind a misconfigured Kueue quota);
-    - ``("IDLE", 0)`` when nothing is in-flight.
-
-    Degrade-safe (T-61-08 / KDEPLOY-04): :func:`derive_compute_lane_identities` already rolls back and
-    returns all-``IDLE`` (or ``[]``) on any DB / registry error, so the aggregate collapses to
-    ``("IDLE", 0)`` — a DB hiccup must NEVER paint the lane DEAD/red (a false alarm).
-    """
-    lanes = await derive_compute_lane_identities(session)
-    running = sum(lane.running for lane in lanes)
-    waiting = sum(lane.waiting for lane in lanes)
-    if running >= 1:
-        return ("ACTIVE", running)
-    if waiting >= 1:
-        return ("WAITING", waiting)
-    return ("IDLE", 0)

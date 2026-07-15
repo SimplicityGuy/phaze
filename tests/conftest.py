@@ -812,10 +812,11 @@ def seed_distinct_artists(session: AsyncSession, make_file):  # type: ignore[no-
 def seed_cloud_jobs(session: AsyncSession, make_file):  # type: ignore[no-untyped-def]
     """Return an async factory seeding ``CloudJob`` rows in a chosen liveness mix.
 
-    Backs ``classify_compute_lanes`` (RECORD-03, D-07): ``running`` count seeds ACTIVE-lane
-    rows, ``submitted_inadmissible`` count seeds WAITING-lane rows (status=submitted +
-    ``inadmissible=True``); passing all-zero leaves the IDLE (no live jobs) case. Each CloudJob
-    needs a distinct ``file_id`` (unique FK), so every row gets its own ``make_file``.
+    Backs the compute-lane liveness derivation (RECORD-03, D-07 → COMPUTE-01): ``running`` count
+    seeds ACTIVE-lane rows, ``submitted_inadmissible`` count seeds WAITING-lane rows (status=submitted
+    + ``inadmissible=True``); passing all-zero leaves the IDLE (no live jobs) case. Each CloudJob
+    needs a distinct ``file_id`` (unique FK), so every row gets its own ``make_file``. These rows carry
+    NO ``backend_id``, so they aggregate into the trailing ``"unattributed"`` lane.
     """
 
     async def _make(*, running: int = 0, submitted_inadmissible: int = 0) -> list[CloudJob]:
