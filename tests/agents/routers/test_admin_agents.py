@@ -198,6 +198,246 @@ async def test_revoked_agent_absent(smoke: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# COMPUTE-01 — Section 2 renders ONE tile per compute lane (per-cluster identity)
+# ---------------------------------------------------------------------------
+
+
+_TWO_CLUSTER_REGISTRY = """
+    [[backends]]
+    kind = "compute"
+    id = "vox"
+    rank = 10
+    cap = 2
+    agent_ref = "vox-node"
+    scratch_dir = "/scratch/vox"
+    push_host = "vox.push"
+
+    [[backends]]
+    kind = "compute"
+    id = "xenolab"
+    rank = 20
+    cap = 2
+    agent_ref = "xenolab-node"
+    scratch_dir = "/scratch/xenolab"
+    push_host = "xenolab.push"
+    """
+
+
+async def _seed_cloud_job(session: AsyncSession, make_file, *, backend_id: str) -> None:  # type: ignore[no-untyped-def]
+    """Seed ONE RUNNING CloudJob attributed to ``backend_id`` (its own unique-FK FileRecord)."""
+    import uuid
+
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
+
+    file = await make_file(original_filename=f"{backend_id}-run.mp3")
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"staging/{file.id}",
+            status=CloudJobStatus.RUNNING.value,
+            backend_id=backend_id,
+        )
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_section2_renders_two_cluster_tiles(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """COMPUTE-01: two stamped clusters (vox ACTIVE, xenolab IDLE) → two labeled tiles, never DEAD.
+
+    A 2-compute registry (vox + xenolab) with a RUNNING CloudJob stamped only on vox: Section 2 must
+    render BOTH per-cluster tiles labeled by backend_id — vox ACTIVE while xenolab stays a visible IDLE
+    lane (registry-composed, no reachability probe) — and NEVER a perpetual DEAD state (KDEPLOY-04).
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        for path in ("/admin/agents", "/admin/agents/_table"):
+            response = await ac.get(path)
+            assert response.status_code == 200, response.text
+            body = response.text
+            compute_section = body.split('id="compute-lanes"', 1)[1]
+            # Both clusters render as labeled tiles.
+            assert "vox" in compute_section, f"vox tile missing from {path}"
+            assert "xenolab" in compute_section, f"xenolab tile missing from {path}"
+            # vox is doing work → ACTIVE; xenolab is configured-but-quiet → IDLE (still listed).
+            assert "ACTIVE" in compute_section, f"vox ACTIVE pill missing from {path}"
+            assert "IDLE" in compute_section, f"xenolab IDLE pill missing from {path}"
+            # Never a perpetual DEAD/rose state in Section 2.
+            assert "DEAD" not in compute_section, f"DEAD leaked into Section 2 of {path}"
+
+
+@pytest.mark.asyncio
+async def test_section2_poll_partial_matches_full_page(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """COMPUTE-01: the /_table poll partial's Section 2 is byte-identical to the full page's.
+
+    The compute-lane tiles are a single include site, so the first-load full page and the 5s poll
+    partial must render the SAME Section-2 markup (no Pitfall-5 flicker between first-load and poll).
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        full = (await ac.get("/admin/agents")).text
+        partial = (await ac.get("/admin/agents/_table")).text
+
+    def _section2(body: str) -> str:
+        # From the compute-lanes root up to (and including) its first </section> close — the
+        # compute_lanes.html partial nests no <section>, so this isolates Section 2 from the
+        # surrounding page chrome (which differs between full page and poll partial by design).
+        start = body.index('id="compute-lanes"')
+        end = body.index("</section>", start) + len("</section>")
+        return body[start:end]
+
+    assert _section2(full) == _section2(partial)
+
+
+@pytest.mark.asyncio
+async def test_section2_empty_registry_renders_idle_card(smoke: AsyncClient) -> None:
+    """COMPUTE-01: a pure-local registry (no non-local backends) renders a friendly IDLE/empty card.
+
+    The default smoke app has no cloud backends configured, so ``derive_compute_lane_identities``
+    returns no lanes — Section 2 must still render (never blank/error) as an IDLE empty-state card.
+    """
+    response = await smoke.get("/admin/agents/_table")
+    body = response.text
+    compute_section = body.split('id="compute-lanes"', 1)[1]
+    assert "No compute lanes" in compute_section
+    assert "IDLE" in compute_section
+    assert "DEAD" not in compute_section
+
+
+# ---------------------------------------------------------------------------
+# COMPUTE-01 (dedupe): suppress the registry-shadowed never-heartbeating compute row
+# ---------------------------------------------------------------------------
+
+
+def _sections(body: str) -> tuple[str, str]:
+    """Split the rendered page into (Section 1, Section 2) at the compute-lanes root.
+
+    Section 1 (heartbeating agents) is everything BEFORE ``id="compute-lanes"``; Section 2 (the
+    compute-lane tiles) is that marker onward. compute_lanes.html nests no ``id="compute-lanes"``, so
+    the single split cleanly separates the two panels.
+    """
+    section1, _marker, section2 = body.partition('id="compute-lanes"')
+    return section1, section2
+
+
+@pytest_asyncio.fixture
+async def shadow_smoke(session: AsyncSession, backends_toml_env) -> AsyncGenerator[AsyncClient]:  # type: ignore[no-untyped-def]
+    """Smoke client with a 2-cluster registry (vox, xenolab) + three NEVER Agent rows.
+
+    Seeds the three dedupe cases at once:
+      * ``vox``  — kind=compute, id matches a registry backend → the registry-shadowed row to suppress.
+      * ``orphan-compute`` — kind=compute, NOT in the registry → a genuine NEVER compute row, kept.
+      * ``fs-never`` — kind=fileserver → an ordinary NEVER fileserver row, untouched.
+    The conftest legacy revoked row is filtered by the existing revoked-row guard, so it never shows.
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    session.add_all(
+        [
+            Agent(id="vox", name="vox", scan_roots=[], kind="compute"),  # last_seen_at=None → NEVER
+            Agent(id="orphan-compute", name="OrphanCompute", scan_roots=[], kind="compute"),
+            Agent(id="fs-never", name="FsNever", scan_roots=[], kind="fileserver"),
+        ]
+    )
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_dedupe_registry_shadow_compute_row_suppressed_from_section1(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: a never-seen 'vox'/kind=compute row is absent from Section 1 while its tile is in Section 2.
+
+    The exact "shown twice" defect: the vox cluster must render as a live tile in Section 2 (registry-
+    composed) but NOT sit as a perpetual-NEVER agent row in Section 1.
+    """
+    for path in ("/admin/agents", "/admin/agents/_table"):
+        response = await shadow_smoke.get(path)
+        assert response.status_code == 200, response.text
+        section1, section2 = _sections(response.text)
+        # Suppressed from Section 1 (no shadow agent-row).
+        assert "agent-trigger-vox" not in section1, f"vox shadow row leaked into Section 1 of {path}"
+        # Still surfaced as a live lane in Section 2.
+        assert "vox" in section2, f"vox tile missing from Section 2 of {path}"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_non_registry_compute_row_still_renders_never(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: a never-seen compute Agent NOT matching any registry id still renders NEVER in Section 1.
+
+    The suppression predicate is narrow: only registry-shadowed compute rows are dropped. A compute
+    agent whose id is not a backend key is a genuine orphan and must keep its NEVER row so the operator
+    can see (and clean up) it.
+    """
+    response = await shadow_smoke.get("/admin/agents/_table")
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-orphan-compute" in section1, "non-registry compute NEVER row was wrongly suppressed"
+    assert "OrphanCompute" in section1
+
+
+@pytest.mark.asyncio
+async def test_dedupe_fileserver_never_row_unaffected(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01: an ordinary fileserver NEVER row is untouched by the compute-only suppression."""
+    response = await shadow_smoke.get("/admin/agents/_table")
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-fs-never" in section1, "fileserver NEVER row was wrongly suppressed"
+    assert "FsNever" in section1
+    # NEVER pill still rendered for the surviving fileserver row.
+    assert "NEVER" in section1
+
+
+@pytest.mark.asyncio
+async def test_dedupe_cluster_id_appears_exactly_once(shadow_smoke: AsyncClient) -> None:
+    """COMPUTE-01 invariant: the shadowed cluster id 'vox' is represented in exactly ONE section.
+
+    Before the fix, 'vox' appeared in BOTH sections (a NEVER agent row in Section 1 AND a live tile in
+    Section 2). After suppression it lives ONLY in Section 2 — proving the "shown twice" duplication is
+    gone while the lane identity is preserved.
+    """
+    response = await shadow_smoke.get("/admin/agents")
+    section1, section2 = _sections(response.text)
+    assert "vox" not in section1, "vox still duplicated into Section 1 (shown twice)"
+    assert "vox" in section2, "vox lane identity lost from Section 2"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """COMPUTE-01: a genuinely-heartbeating registry compute agent keeps its Section 1 row (never suppressed).
+
+    Suppression is gated on ``_status=='never'`` — a compute agent that IS heartbeating (recent
+    last_seen_at → 'alive') is a real process and must stay visible even when its id matches a backend.
+    """
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    now = datetime.now(UTC)
+    session.add(Agent(id="vox", name="vox", scan_roots=[], kind="compute", last_seen_at=now))
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/_table")
+
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-vox" in section1, "a heartbeating (alive) compute agent must keep its row"
+    assert "ALIVE" in section1
+
+
+# ---------------------------------------------------------------------------
 # Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
 # ---------------------------------------------------------------------------
 

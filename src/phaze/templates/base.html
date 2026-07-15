@@ -127,6 +127,10 @@
                 // (kind="compute" online-agent count). A read-only derived int seeded onto the dag
                 // dict server-side; rides the existing dag.items() OOB loop onto dag-seed-computeOnline.
                 computeOnline: 0,
+                // COMPUTE-02: count of ACTIVE compute lanes, additive to agentOnline for the header
+                // "Agents · N" total. A read-only derived int seeded onto the dag dict server-side;
+                // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
+                computeLanesActive: 0,
                 // Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight
                 // counts gate the DAG Scrape/Match trigger nodes ("Scraping…" / "Matching…") — same seed/OOB poll.
                 scrapeBusy: 0, matchBusy: 0,

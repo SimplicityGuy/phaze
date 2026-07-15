@@ -36,7 +36,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import classify, classify_compute_lanes, sort_key
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_kinds, sort_key
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -90,6 +90,17 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
     classify/sort step AND the template's ``refreshed_at_iso`` reflect the
     same instant — eliminates a few-microsecond skew that would otherwise
     show up if the template re-evaluated ``datetime.now(UTC)`` separately.
+
+    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row whose id/name matches a
+    non-local registry backend is the SAME cluster now surfaced as a live tile in Section 2. Such a
+    row never heartbeats (it is not a persistent process), so it would otherwise sit ``NEVER`` forever
+    in Section 1 while its lane is live in Section 2 — the "shown twice" defect. We suppress ONLY that
+    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key AND
+    ``_status=='never'``. The predicate is deliberately narrow — a genuinely heartbeating compute
+    agent keeps its row, a non-registry NEVER compute row keeps its row, and fileserver rows are
+    untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no schema change. Reading
+    the registry is degrade-safe — a settings failure leaves every row visible rather than raising into
+    the hot poll.
     """
     result = await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))
     rows = list(result.scalars().all())
@@ -100,6 +111,18 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
         # the DB and is safe even if a future migration adds a real
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
+    try:
+        registry_keys = set(non_local_backend_kinds(get_settings()))  # type: ignore[arg-type]
+    except Exception:
+        # A registry/settings read failure must never break the operator poll: leave every row
+        # visible (the shadow row reappears, but the page still renders) rather than raise.
+        logger.warning("agents_registry_shadow_filter_unavailable", exc_info=True)
+        registry_keys = set()
+    rows = [
+        a
+        for a in rows
+        if not (a.kind == "compute" and a._status == "never" and (a.id in registry_keys or a.name in registry_keys))  # type: ignore[attr-defined]
+    ]
     rows.sort(key=lambda a: sort_key(a, now))
     return rows, now
 
@@ -119,10 +142,11 @@ async def page(
     the first-load full-page render and direct navigation.
     """
     agents, now = await _load_agents(session)
-    # Section 2 (RECORD-03 / D-07): the ephemeral k8s burst-lane liveness, synthesized
-    # read-only from in-flight CloudJob counts. Injected on BOTH the full page and the
-    # partial so the existing 5s self-poll refreshes it too (no new loop, RESEARCH OQ-1).
-    compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
+    # Section 2 (RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity PER non-local
+    # registry backend, synthesized read-only from the Phase-67 registry + in-flight CloudJob counts.
+    # Injected on BOTH the full page and the partial so the existing 5s self-poll refreshes it too
+    # (no new loop, RESEARCH OQ-1).
+    compute_lanes = await derive_compute_lane_identities(session)
     template = "admin/partials/agents_table.html" if _is_htmx(request) else "admin/agents.html"
     return templates.TemplateResponse(
         request=request,
@@ -133,8 +157,7 @@ async def page(
             "now": now,
             "current_page": "admin_agents",
             "refreshed_at_iso": now.isoformat(),
-            "compute_lane_state": compute_lane_state,
-            "compute_lane_count": compute_lane_count,
+            "compute_lanes": compute_lanes,
             # Phase 88 (88-01, DRILL-03 / D-02): seed the selected-agent highlight from ?agent= so a
             # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
             # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
@@ -162,7 +185,7 @@ async def table_partial(
     unknown/absent id highlights nothing, never a 422/500 into the poll.
     """
     agents, now = await _load_agents(session)
-    compute_lane_state, compute_lane_count = await classify_compute_lanes(session)
+    compute_lanes = await derive_compute_lane_identities(session)
     return templates.TemplateResponse(
         request=request,
         name="admin/partials/agents_table.html",
@@ -171,8 +194,7 @@ async def table_partial(
             "agents": agents,
             "now": now,
             "refreshed_at_iso": now.isoformat(),
-            "compute_lane_state": compute_lane_state,
-            "compute_lane_count": compute_lane_count,
+            "compute_lanes": compute_lanes,
             "selected_agent": _resolve_selected_agent(agent, agents),
         },
     )

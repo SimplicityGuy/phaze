@@ -26,6 +26,7 @@ in-flight rows for the WORK-04 mid-flight assertion) and the cloud_job lane/admi
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
 
@@ -117,11 +118,13 @@ async def _seed_cloud_job(
     *,
     status: str = CloudJobStatus.RUNNING,
     inadmissible: bool = False,
+    backend_id: str | None = None,
 ) -> CloudJob:
     """Insert the per-file ``cloud_job`` sidecar for ``file_id``.
 
-    ``cloud_phase`` drives the k8s admission-state surfaces (WORK-03); NULL models an
-    a1/local row. ``inadmissible`` flags the Kueue fault path (the ``role="alert"`` banner).
+    ``cloud_phase`` drives the k8s admission-state surfaces (WORK-03). ``inadmissible`` flags the
+    Kueue fault path (the ``role="alert"`` banner). ``backend_id`` (COMPUTE-03) is the registry
+    cluster id stamped at dispatch; NULL models an unattributed cloud row (no cluster stamped yet).
     """
     job = CloudJob(
         file_id=file_id,
@@ -129,6 +132,7 @@ async def _seed_cloud_job(
         status=status,
         cloud_phase=cloud_phase,
         inadmissible=inadmissible,
+        backend_id=backend_id,
     )
     session.add(job)
     await session.commit()
@@ -471,33 +475,49 @@ async def test_lane_grid_subcount_is_lane_count_agnostic(client: AsyncClient, se
 
 
 @pytest.mark.asyncio
-async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session: AsyncSession) -> None:
-    """WORK-04 / D-03 / D-04 -- per-file lane badge + mid-flight N/M (in-flight) / full coverage (completed).
+async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WORK-04 / D-03 / D-04 / COMPUTE-03 -- per-file lane badge + mid-flight N/M (in-flight) / full coverage (completed).
 
-    ONE table covers ALL in-stage files (D-03). Per-file lane is DERIVED from the cloud_job sidecar
-    (no row -> local; cloud_phase NULL -> A1; cloud_phase set -> k8s). Windowed progress reads the
-    analysis aggregate: a completed (ANALYZED) row shows full ``window {a}/{total}`` coverage; an
-    in-flight row shows the merged 57.1 mid-flight ``N/M windows`` signal ALONGSIDE ``running`` --
-    a render that emits only a bare ``running`` MUST fail this test (B2 / 57.1 PROG-03 read). Phase
-    61 (RECORD-01) supersedes the Phase-58 click-unbound invariant: each row now opens the
-    full-record slide-in (``hx-get="/record/{file_id}"`` + a ``record:open`` dispatch).
+    ONE table covers ALL in-stage files (D-03). Per-file lane is DERIVED from the stamped
+    ``CloudJob.backend_id`` (COMPUTE-03), through the Phase-96 ``non_local_backend_kinds`` registry
+    projection -- never the retired 'a1' heuristic: no cloud_job row -> local; a stamped
+    ``backend_id`` -> the backend id itself, glyph/color from its registry kind (kueue -> ⎈); a
+    cloud_job with NO ``backend_id`` yet -> the truthful neutral "cloud, unattributed" fallback.
+    Windowed progress reads the analysis aggregate: a completed (ANALYZED) row shows full
+    ``window {a}/{total}`` coverage; an in-flight row shows the merged 57.1 mid-flight ``N/M windows``
+    signal ALONGSIDE ``running`` -- a render that emits only a bare ``running`` MUST fail this test
+    (B2 / 57.1 PROG-03 read). Phase 61 (RECORD-01) supersedes the Phase-58 click-unbound invariant:
+    each row now opens the full-record slide-in (``hx-get="/record/{file_id}"`` + a ``record:open``
+    dispatch).
     """
+    import phaze.services.pipeline as services_pipeline_mod
+
+    monkeypatch.setattr(
+        services_pipeline_mod,
+        "get_settings",
+        lambda: SimpleNamespace(backends=[SimpleNamespace(id="vox", kind="kueue")]),
+    )
+
     # Completed LOCAL file (no cloud_job): full window coverage from the aggregate.
     done = await _seed_file(session, original_filename="done.mp3")
     await _seed_analysis(session, done.id, fine_done=41, fine_total=41, completed=True)
     # IN-FLIGHT file: a partial 57.1 analysis row (fine_done < fine_total), NOT yet ANALYZED.
     inflight = await _seed_file(session, original_filename="inflight.mp3")
     await _seed_analysis(session, inflight.id, fine_done=14, fine_total=41)
-    # A1 lane: cloud_job with cloud_phase NULL.
-    a1 = await _seed_file(session, original_filename="a1.mp3")
-    await _seed_cloud_job(session, a1.id, None)
-    # k8s lane: cloud_job with cloud_phase set.
-    k8s = await _seed_file(session, original_filename="k8s.mp3")
-    await _seed_cloud_job(session, k8s.id, CloudPhase.RUNNING.value)
+    # kueue-stamped lane: cloud_job with backend_id='vox' (registered kind=kueue) + cloud_phase set.
+    kueue_file = await _seed_file(session, original_filename="kueued.mp3")
+    await _seed_cloud_job(session, kueue_file.id, CloudPhase.RUNNING.value, backend_id="vox")
+    # NULL-backend_id cloud row: a cloud_job exists but no cluster has been stamped yet -- the
+    # truthful "cloud, unattributed" fallback, never the stale 'a1' heuristic label.
+    unattributed = await _seed_file(session, original_filename="unattributed.mp3")
+    await _seed_cloud_job(session, unattributed.id, None)
 
     resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     body = resp.text
+
+    # A1 regression (COMPUTE-03): the stale heuristic label must appear NOWHERE in the rendered page.
+    assert "A1" not in body
 
     # Scope to the file table (below the lane-card grid, which carries its own lane glyphs).
     assert 'id="analyze-file-table"' in body
@@ -514,10 +534,12 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     assert "running" in tbl
     assert "14/41" in tbl
 
-    # Per-file lane badge derivation (cloud_job rule): no row -> local; cloud_phase NULL -> A1; set -> k8s.
+    # Per-file lane badge derivation (COMPUTE-03): no cloud_job -> local; backend_id='vox' (kueue) ->
+    # its own glyph + id; NULL backend_id -> the neutral unattributed cloud fallback.
     assert "local" in tbl
-    assert "A1" in tbl
-    assert "k8s" in tbl
+    assert "⎈ vox" in tbl
+    assert "☁️ vox" not in tbl, "a kueue-kind backend must NOT render the compute glyph"
+    assert "▪ cloud" in tbl, "an unattributed cloud_job (no backend_id) renders the neutral fallback badge"
 
     # Phase 61 (RECORD-01 / D-06 supersession): rows now open the full-record slide-in --
     # hx-get="/record/{file_id}" into #record-body + a record:open dispatch. (The Phase-58

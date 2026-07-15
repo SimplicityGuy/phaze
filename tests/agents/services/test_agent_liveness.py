@@ -15,12 +15,29 @@ UI-SPEC §Status Pill Component sort order:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+import uuid
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import AgentStatus, classify, classify_compute_lanes, sort_key
+from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord
+from phaze.services import agent_liveness as liveness_mod
+from phaze.services.agent_liveness import (
+    AgentStatus,
+    ComputeLane,
+    classify,
+    derive_compute_lane_identities,
+    non_local_backend_kinds,
+    sort_key,
+)
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 NOW = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
@@ -198,16 +215,16 @@ def test_sort_key_never_after_dead_within_non_revoked() -> None:
 
 
 # ---------------------------------------------------------------------------
-# classify_compute_lanes(session) — degrade branch (optional margin, D-05/D-07)
+# derive_compute_lane_identities(session) — degrade branch (D-05/D-07 / KDEPLOY-04)
 # ---------------------------------------------------------------------------
 
 
 class _RaisingSession:
     """Stub session whose ``execute`` raises ``SQLAlchemyError`` and whose ``rollback`` is a no-op.
 
-    Drives ``classify_compute_lanes`` straight into its ``except SQLAlchemyError`` degrade branch
-    (agent_liveness.py:174-180), which rolls back and returns ``("IDLE", 0)`` — a DB hiccup must
-    NEVER paint the compute lane DEAD/red.
+    Drives ``derive_compute_lane_identities`` straight into its ``except SQLAlchemyError`` degrade
+    branch, which rolls back and returns the registry lanes all-``IDLE`` — a DB hiccup must NEVER
+    paint a compute lane DEAD/red.
     """
 
     async def execute(self, *_args: object, **_kwargs: object) -> object:
@@ -217,8 +234,202 @@ class _RaisingSession:
         return None
 
 
+# ---------------------------------------------------------------------------
+# non_local_backend_kinds(settings) — pure registry projection (COMPUTE-01)
+# ---------------------------------------------------------------------------
+
+
+def _backend(backend_id: str, kind: str) -> SimpleNamespace:
+    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``."""
+    return SimpleNamespace(id=backend_id, kind=kind)
+
+
+def _settings(*backends: SimpleNamespace) -> SimpleNamespace:
+    """A minimal settings stand-in carrying only ``.backends`` (the sole attribute the derivation reads)."""
+    return SimpleNamespace(backends=list(backends))
+
+
+def test_non_local_backend_kinds_filters_local_preserving_order() -> None:
+    """Only non-local entries survive, keyed by id → kind, in registry (insertion) order."""
+    settings = _settings(
+        _backend("local", "local"),
+        _backend("k8s-a", "kueue"),
+        _backend("k8s-b", "kueue"),
+        _backend("a1", "compute"),
+    )
+    result = non_local_backend_kinds(settings)  # type: ignore[arg-type]
+    assert result == {"k8s-a": "kueue", "k8s-b": "kueue", "a1": "compute"}
+    assert list(result) == ["k8s-a", "k8s-b", "a1"]  # local excluded, registry order preserved
+
+
+def test_non_local_backend_kinds_all_local_is_empty() -> None:
+    """An all-local registry projects to an empty map (no cloud lanes)."""
+    assert non_local_backend_kinds(_settings(_backend("local", "local"))) == {}  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# derive_compute_lane_identities(session) — per-cluster identity derivation (COMPUTE-01)
+# ---------------------------------------------------------------------------
+
+
+def _file(i: int) -> FileRecord:
+    """Build a minimal FileRecord seed (CloudJob.file_id is a unique FK to files.id)."""
+    return FileRecord(
+        agent_id="test-fileserver",
+        id=uuid.uuid4(),
+        sha256_hash=f"c{i:063d}"[:64],
+        original_path=f"/music/lane{i}.mp3",
+        original_filename=f"lane{i}.mp3",
+        current_path=f"/music/lane{i}.mp3",
+        file_type="mp3",
+        file_size=1000,
+    )
+
+
+def _cloud_job(
+    file_id: uuid.UUID,
+    *,
+    backend_id: str | None,
+    status: str = CloudJobStatus.SUBMITTED.value,
+    inadmissible: bool = False,
+) -> CloudJob:
+    """Build a CloudJob seed attributed to ``backend_id`` with the given liveness attributes."""
+    return CloudJob(
+        id=uuid.uuid4(),
+        file_id=file_id,
+        s3_key=f"staging/{file_id}",
+        status=status,
+        backend_id=backend_id,
+        inadmissible=inadmissible,
+    )
+
+
+async def _seed(session: AsyncSession, *jobs_for: tuple[str | None, str, bool]) -> None:
+    """Seed one FileRecord + CloudJob per ``(backend_id, status, inadmissible)`` triple, then commit."""
+    files = [_file(i) for i in range(len(jobs_for))]
+    session.add_all(files)
+    await session.flush()
+    session.add_all(
+        [
+            _cloud_job(files[i].id, backend_id=backend_id, status=status, inadmissible=inadmissible)
+            for i, (backend_id, status, inadmissible) in enumerate(jobs_for)
+        ]
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_classify_compute_lanes_degrades_to_idle_on_db_error() -> None:
-    """SQLAlchemyError → rollback → observable ``("IDLE", 0)`` return (D-07 observable outcome)."""
-    result = await classify_compute_lanes(_RaisingSession())  # type: ignore[arg-type]
-    assert result == ("IDLE", 0)
+async def test_derive_two_kueue_registry_both_running(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 2-Kueue registry with a RUNNING row on each cluster → both lanes ACTIVE with per-cluster counts."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue"), _backend("k8s-b", "kueue")))
+    await _seed(
+        session,
+        ("k8s-a", CloudJobStatus.RUNNING.value, False),
+        ("k8s-a", CloudJobStatus.RUNNING.value, False),
+        ("k8s-b", CloudJobStatus.RUNNING.value, False),
+    )
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert lanes == [
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=2, waiting=0),
+        ComputeLane(backend_id="k8s-b", kind="kueue", state="ACTIVE", running=1, waiting=0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_derive_idle_configured_cluster_still_listed(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured cluster with NO in-flight rows still appears as an IDLE lane (registry-composed, no probe)."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue"), _backend("k8s-idle", "kueue")))
+    await _seed(session, ("k8s-a", CloudJobStatus.RUNNING.value, False))
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert lanes == [
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0),
+        ComputeLane(backend_id="k8s-idle", kind="kueue", state="IDLE", running=0, waiting=0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_derive_waiting_via_submitted_inadmissible(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SUBMITTED+inadmissible row (and no running) → WAITING; a plain SUBMITTED row does NOT count as waiting."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    await _seed(
+        session,
+        ("k8s-a", CloudJobStatus.SUBMITTED.value, True),
+        ("k8s-a", CloudJobStatus.SUBMITTED.value, False),  # admissible submitted -> not waiting, not running
+    )
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="WAITING", running=0, waiting=1)]
+
+
+@pytest.mark.asyncio
+async def test_derive_running_takes_precedence_over_waiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lane with BOTH a running and a waiting row is ACTIVE (running≥1 dominates)."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    await _seed(
+        session,
+        ("k8s-a", CloudJobStatus.RUNNING.value, False),
+        ("k8s-a", CloudJobStatus.SUBMITTED.value, True),
+    )
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=1)]
+
+
+@pytest.mark.asyncio
+async def test_derive_unattributed_lane_only_when_null_rows_in_flight(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A NULL-backend_id in-flight row appends ONE trailing 'unattributed'/'cloud' lane after the registry lanes."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    await _seed(
+        session,
+        ("k8s-a", CloudJobStatus.RUNNING.value, False),
+        (None, CloudJobStatus.RUNNING.value, False),
+        (None, CloudJobStatus.SUBMITTED.value, True),
+    )
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert lanes == [
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="ACTIVE", running=1, waiting=0),
+        ComputeLane(backend_id="unattributed", kind="cloud", state="ACTIVE", running=1, waiting=1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_derive_no_unattributed_lane_when_no_null_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No NULL-backend in-flight rows → NO trailing unattributed lane (never a phantom 'unattributed'/'a1')."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+    await _seed(session, ("k8s-a", CloudJobStatus.RUNNING.value, False))
+
+    lanes = await derive_compute_lane_identities(session)
+
+    assert [lane.backend_id for lane in lanes] == ["k8s-a"]  # no 'unattributed' lane
+
+
+@pytest.mark.asyncio
+async def test_derive_degrades_to_registry_all_idle_on_db_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A DB error rolls back and returns the registry lanes ALL-IDLE — never raises, never DEAD (KDEPLOY-04)."""
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue"), _backend("a1", "compute")))
+
+    lanes = await derive_compute_lane_identities(_RaisingSession())  # type: ignore[arg-type]
+
+    assert lanes == [
+        ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0),
+        ComputeLane(backend_id="a1", kind="compute", state="IDLE", running=0, waiting=0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_derive_returns_empty_on_registry_failure(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A settings/registry read failure returns ``[]`` (the hot poll never sees the error)."""
+
+    def _boom() -> object:
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr(liveness_mod, "get_settings", _boom)
+    assert await derive_compute_lane_identities(session) == []
