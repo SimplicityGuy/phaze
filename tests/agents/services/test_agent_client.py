@@ -422,3 +422,64 @@ async def test_post_analysis_progress_4xx_surfaces_as_client_error(client):  # t
     with pytest.raises(AgentApiClientError):
         await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40))
     assert route.call_count == 1, "4xx must NOT be retried"
+
+
+@respx.mock
+async def test_post_analysis_progress_connect_timeout_single_attempt(client):  # type: ignore[no-untyped-def]
+    """Phase 99 OBS-01 criterion 1: the progress path makes a SINGLE attempt on a persistent
+    ConnectTimeout -- unlike every other endpoint (see ``test_connect_timeout_retries_then_raises_server_error``,
+    which asserts ``call_count == 3`` for ``put_analysis`` and is the mirror guard proving the
+    default 3-attempt policy is untouched), ``post_analysis_progress`` opts out via
+    ``max_attempts=1`` so a GIL-starved pod cannot burn the 30s x 3 retry budget per progress bump.
+    """
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/progress").mock(
+        side_effect=httpx.ConnectTimeout("simulated"),
+    )
+    with pytest.raises(AgentApiServerError):
+        await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40))
+    assert route.call_count == 1, "the progress path must NOT retry on transport error (Phase 99 OBS-01 criterion 1)"
+
+
+@respx.mock
+async def test_post_analysis_progress_transport_error_logs_debug_not_warning(client, caplog):  # type: ignore[no-untyped-def]
+    """Phase 99 OBS-01 criterion 2: a transport error on the progress path is logged at DEBUG, not
+    WARNING -- ``quiet_transport_errors=True`` demotes the ``_request`` funnel's transport-error log
+    line so a sustained ConnectTimeout under event-loop starvation cannot spam WARNING."""
+    import logging
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    file_id = uuid.uuid4()
+    respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/progress").mock(
+        side_effect=httpx.ConnectTimeout("simulated"),
+    )
+
+    caplog.set_level(logging.DEBUG, logger="phaze.services.agent_client")
+    with pytest.raises(AgentApiServerError):
+        await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40))
+
+    agent_api_records = [rec for rec in caplog.records if rec.name == "phaze.services.agent_client" and "agent_api" in rec.getMessage()]
+    assert not any(rec.levelno >= logging.WARNING for rec in agent_api_records), "transport error must NOT log at WARNING or above"
+    assert any(rec.levelno == logging.DEBUG for rec in agent_api_records), "transport error must log at DEBUG (quiet_transport_errors=True)"
+
+
+@respx.mock
+async def test_post_analysis_progress_uses_short_connect_timeout(client):  # type: ignore[no-untyped-def]
+    """Phase 99 OBS-01 criterion 3 (regression guard): the progress path must use the short,
+    hardcoded 2s connect-timeout (``_PROGRESS_TIMEOUT``), not the client's 30s default -- httpx
+    merges the per-request ``Timeout`` into ``request.extensions["timeout"]`` as a dict, which
+    respx preserves, so this asserts the actual outbound request rather than the constant."""
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(200, json={"agent_id": "a1", "file_id": str(file_id)}),
+    )
+
+    await client.post_analysis_progress(file_id, AnalysisProgressPayload(fine_windows_analyzed=0, fine_windows_total=40))
+
+    assert route.call_count == 1
+    assert route.calls.last.request.extensions["timeout"]["connect"] == 2.0, "progress path must use the short 2s connect-timeout"

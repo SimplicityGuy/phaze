@@ -470,6 +470,42 @@ async def test_progress_failure_does_not_change_exit_code(job_env, monkeypatch):
     assert exc.value.code == 0
 
 
+@respx.mock
+async def test_progress_connect_timeout_does_not_change_exit_code(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Phase 99 OBS-01 criterion 4: a persistent ConnectTimeout on the progress POST -- the exact
+    transport-error class the GIL-starved event loop produces -- is swallowed and never changes the
+    success exit (best-effort, D-16). Clone of ``test_progress_failure_does_not_change_exit_code``
+    with the progress route raising ``httpx.ConnectTimeout`` instead of returning a 500."""
+    monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "0")
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    # Every progress POST hits a ConnectTimeout (the sustained event-loop-starvation class) — must NOT fail the job.
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(side_effect=httpx.ConnectTimeout("simulated"))
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+    await asyncio.sleep(0.1)
+
+    # The completion path still wins: exit 0 despite the progress endpoint's persistent ConnectTimeout.
+    assert exc.value.code == 0
+
+
 def test_progress_bridge_source_guard():  # type: ignore[no-untyped-def]
     """Source guard: analyze runs via to_thread; progress posts via run_coroutine_threadsafe, never .result()."""
     import phaze.job_runner as jr
