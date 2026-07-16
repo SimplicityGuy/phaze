@@ -18,8 +18,10 @@ start. The seeded token is either:
   and never trigger this code.
 
 The function is idempotent: if the ``agents`` table already has at least one
-row, it no-ops. This means restarting the api container does NOT keep
-generating new tokens.
+USABLE row (not revoked, with a ``token_hash``), it no-ops. A revoked marker
+row with no ``token_hash`` (e.g. migration 012's ``legacy-application-server``)
+does NOT count and does not block seeding. This means restarting the api
+container does NOT keep generating new tokens.
 
 Gated by ``settings.dev_seed_agent`` -- production deployments leave the
 default ``false``.
@@ -70,7 +72,8 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     Behaviour:
 
     1. If ``settings.dev_seed_agent`` is ``False``, return ``None`` immediately.
-    2. If the ``agents`` table has at least one row, return ``None`` (idempotent).
+    2. If the ``agents`` table has at least one USABLE row (not revoked, with a
+       ``token_hash``), return ``None`` (idempotent).
     3. Otherwise, generate (or read from ``settings.dev_agent_token``) a wire
        token, store its sha256 in a new ``Agent`` row with ``id="dev-agent"``,
        commit, and return the cleartext token.

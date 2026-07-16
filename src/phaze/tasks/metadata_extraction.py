@@ -4,7 +4,7 @@ Reads tags from local disk via payload.original_path (NOT current_path -- D-24)
 and posts via ctx["api_client"].put_metadata.
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
-Enforced by tests/test_task_split.py (Plan 10).
+Enforced by tests/shared/core/test_task_split.py (Plan 10).
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 CONTROL-ONLY BOUNDARY: this module imports ``phaze.models`` + SQLAlchemy, so it MUST
 NEVER be imported by ``phaze.tasks._shared`` or ``phaze.tasks.agent_worker`` (the agent
-worker is deliberately Postgres-free -- import-boundary test ``tests/test_task_split.py``).
+worker is deliberately Postgres-free -- import-boundary test ``tests/shared/core/test_task_split.py``).
 The ``before_enqueue`` WRITE hook reaches these helpers via a function-LOCAL lazy import
 gated on ``getattr(job.queue, "ledger_sessionmaker", None)`` so the import only ever runs
 control-side.
@@ -18,7 +18,7 @@ Five helpers:
 - :func:`clear_ledger_entry`      -- ``DELETE`` by key (no-op if absent).
 - :func:`get_ledger_rows`         -- all rows, for recovery.
 - :func:`routing_for_function`    -- ``"agent"`` | ``"controller"`` classifier; raises
-  ``ValueError`` on an unknown function (callers only pass the 8 keyed functions).
+  ``ValueError`` on an unknown function (callers only pass the 11 keyed functions).
 
 The caller owns the transaction: every helper executes its statement but does NOT commit,
 so the WRITE/CLEAR hooks (which open their own short-lived session) and the backfill (one
@@ -48,7 +48,7 @@ def routing_for_function(function: str) -> str:
     Source of truth is :data:`enqueue_router.AGENT_TASKS` /
     :data:`enqueue_router.CONTROLLER_TASKS` (the same frozensets the live router uses), so
     the ledger's routing hint can never drift from the real dispatch destination. Callers
-    only ever pass the 8 keyed functions; an unknown name is a programming error and raises
+    only ever pass the 11 keyed functions; an unknown name is a programming error and raises
     ``ValueError`` (fail loud, never silently mis-route a replay).
     """
     if function in AGENT_TASKS:

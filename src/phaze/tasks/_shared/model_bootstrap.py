@@ -2,7 +2,7 @@
 
 IMPORT-BOUNDARY (extends Phase 26 D-25 + Phase 27 D-22):
     Postgres-free. Imports: stdlib + phaze.scripts.download_models only.
-    Verified by tests/test_task_split.py::test_model_bootstrap_stays_postgres_free
+    Verified by tests/shared/core/test_task_split.py::test_model_bootstrap_stays_postgres_free
     (Phase 29 BLOCKER-1: explicit subprocess case for this module, parallel
     to the existing test_shared_bootstrap_stays_postgres_free which covers
     agent_bootstrap.py only).
@@ -44,7 +44,8 @@ logger = structlog.get_logger(__name__)
 
 
 _EXPECTED_MODEL_COUNT = len(CLASSIFIER_MODELS) + len(GENRE_MODELS)
-"""Total weight files the production agent must have on disk.
+"""Total model configurations the production agent must have on disk (each
+contributing a ``.pb`` + ``.json`` pair, i.e. ``_EXPECTED_MODEL_COUNT * 2`` files).
 
 Used only for the operator-facing startup estimate. It is NOT a completeness
 gate: a glob count cannot tell a truncated `.pb` from a full one, so a count

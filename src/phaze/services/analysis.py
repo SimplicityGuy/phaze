@@ -592,8 +592,9 @@ def analyze_file(
     into the FINE per-window loop (``_analyze_fine_windows``) — a START signal then a
     per-window bump up to ``(len(fine_windows), fine_windows_total)``. The callback emits
     only an ``(int, int)`` count; ``analyze_file`` itself does NO I/O and imports no HTTP
-    client (the pebble pickle boundary + the ``tests/test_task_split.py`` essentia import
-    boundary stay intact). Transport + throttle are the LANE's job. Fine-only is sufficient
+    client (the Phase 101 exec'd-child JSON-protocol boundary, ``phaze.analysis_child`` /
+    ``services.analysis_exec``, plus the ``tests/shared/core/test_task_split.py`` essentia import
+    boundary, stay intact). Transport + throttle are the LANE's job. Fine-only is sufficient
     for the in-flight bar (WORK-04); the COARSE pass is intentionally not instrumented.
     """
     _suppress_essentia_logging()

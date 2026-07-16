@@ -98,8 +98,9 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     resolution is a corpus-hygiene fact about a file, not one of the pipeline stages. It takes NO
     ``stage`` argument and correlates to :class:`~phaze.models.file.FileRecord` in the enclosing query
     via a correlated ``exists(...)`` (never an outer-join-null / negated-membership anti-pattern),
-    identical in body to :func:`phaze.services.shadow_compare._dedup_exists`. Marker-row existence
-    means resolved; ``~dedup_resolved_clause()`` therefore means "not resolved" (the shape the Wave-2
+    identical in body to the Phase-90-retired ``shadow_compare._dedup_exists`` migration-verification
+    helper (the module was removed with ``files.state`` in Phase 90's writer-removal cleanup). Marker-row
+    existence means resolved; ``~dedup_resolved_clause()`` therefore means "not resolved" (the shape the Wave-2
     dedup readers and ``get_fingerprint_progress``'s denominator consume).
 
     It is deliberately kept OUT of the ``Stage`` dispatch ladders (:func:`done_clause` /

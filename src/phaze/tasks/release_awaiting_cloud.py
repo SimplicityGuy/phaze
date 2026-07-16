@@ -34,7 +34,7 @@ staleness clock the spill-to-local gate reads).
 
 CONTROL-ONLY: needs both PostgreSQL (``ctx["async_session"]``) and the per-agent enqueuer
 (``ctx["task_router"]``), exactly like ``recover_orphaned_work``. Register ONLY in
-``phaze.tasks.controller`` -- never the agent worker (``tests/test_task_split.py`` enforces the
+``phaze.tasks.controller`` -- never the agent worker (``tests/shared/core/test_task_split.py`` enforces the
 agent role stays Postgres-free). FastAPI-free: imports neither ``fastapi`` nor ``phaze.routers``,
 mirroring the ``recover_orphaned_work`` import discipline.
 """

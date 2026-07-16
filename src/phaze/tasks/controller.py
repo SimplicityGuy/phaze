@@ -1,10 +1,13 @@
 """SAQ controller settings -- entry point for ``saq phaze.tasks.controller.settings`` (Phase 26 D-01..D-04).
 
-Control role: runs the application server's SAQ worker pool. Fileless tasks only:
+Control role: runs the application server's SAQ worker pool. Fileless tasks only, e.g.:
 - generate_proposals (LLM-driven rename suggestions)
 - match_tracklist_to_discogs (Discogsography HTTP API)
 - search_tracklist + scrape_and_store_tracklist (1001Tracklists scraping)
 - refresh_tracklists (monthly cron)
+- reap_stalled_scans, recover_orphaned_work, stage_cloud_window, submit_cloud_job,
+  reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
+  authoritative, current ``functions`` / ``cron_jobs`` list)
 
 This module does NOT import `phaze.services.fingerprint` or `phaze.tasks.pool`
 (those belong to the agent role per Phase 26 D-03). Cross-imports between

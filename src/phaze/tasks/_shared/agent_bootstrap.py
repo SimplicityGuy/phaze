@@ -8,7 +8,7 @@ entry points share one source of truth for startup bring-up.
 IMPORT-BOUNDARY INVARIANT (Phase 26 D-25 + Phase 27 D-22):
     This module MUST NOT import ``phaze.database``, ``phaze.tasks.session``,
     or ``sqlalchemy.ext.asyncio``. Verified in CI by
-    ``tests/test_task_split.py::test_shared_bootstrap_stays_postgres_free``.
+    ``tests/shared/core/test_task_split.py::test_shared_bootstrap_stays_postgres_free``.
 
 Public exports:
     - ``_WHOAMI_BACKOFF_S``: bounded retry budget for the ``/whoami`` startup probe
