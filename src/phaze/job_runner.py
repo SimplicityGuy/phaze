@@ -51,8 +51,8 @@ import httpx
 import structlog
 
 from phaze.config import AgentSettings, get_settings
-from phaze.logging_config import configure_logging
-from phaze.schemas.agent_analysis import AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload
+from phaze.logging_config import _parse_bool, configure_logging
+from phaze.schemas.agent_analysis import AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, PresignDownloadMetadata
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
@@ -85,6 +85,63 @@ _DOWNLOAD_READ_TIMEOUT_S = 300.0
 def _elapsed_ms(start: float) -> int:
     """Whole-millisecond wall-clock delta since ``start`` (``time.monotonic``)."""
     return int((time.monotonic() - start) * 1000)
+
+
+def _mb(size_bytes: int) -> float:
+    """Bytes -> mebibytes, rounded to 1 dp, for human-readable step/banner lines (OBS-02)."""
+    return round(size_bytes / (1024 * 1024), 1)
+
+
+def _resolve_friendly_default() -> bool:
+    """Resolve the ONE-SHOT pod's friendly-console default (OBS-02, phaze-sfbx.3).
+
+    Every other phaze entrypoint calls ``configure_logging()`` with friendly rendering
+    defaulting OFF (JSON-only). The one-shot Job pod is the exception: an operator tailing
+    ``kubectl logs`` wants a human line next to each machine JSON line WITHOUT piping through a
+    pretty-printer, so this pod defaults friendly ON. Precedence is deliberately inverted only
+    for THIS pod: an explicit ``PHAZE_LOG_FRIENDLY`` (``0``/``false``/``no`` turns it back OFF,
+    truthy keeps it ON) always wins; only the ABSENCE of the env var flips the default to ON.
+    Returning a concrete ``bool`` (never ``None``) means ``configure_logging`` sees an explicit
+    choice and never falls back to its own default-off ``_resolve_friendly`` env path.
+    """
+    env_value = os.environ.get("PHAZE_LOG_FRIENDLY")
+    if env_value is None or env_value.strip() == "":
+        return True
+    return _parse_bool(env_value)
+
+
+def _log_banner(file_id: str, metadata: PresignDownloadMetadata | None) -> None:
+    """Emit the one-shot startup banner right after presign succeeds (OBS-02, phaze-sfbx.3).
+
+    Renders the human-readable identity threaded through the presign response
+    (phaze-sfbx.1's ``PresignDownloadMetadata`` block) so an operator tailing the pod's friendly
+    console line sees WHICH file this Job analyzes -- filename, source path/origin, duration,
+    size, and the target cluster/bucket -- not just an opaque UUID. Every field degrades
+    independently: an absent metadata block (older control plane) OR an absent individual field
+    (partial ``CloudJob``/``FileRecord`` row) is simply omitted, so the worst case is a
+    ``file_id``-only banner. The banner is COSMETIC -- the exit-code contract (D-01) is untouched
+    -- so the whole build+emit is guarded and a rendering failure never fails the job.
+    """
+    try:
+        fields: dict[str, Any] = {"file_id": file_id}
+        if metadata is not None:
+            if metadata.original_filename is not None:
+                fields["filename"] = metadata.original_filename
+            if metadata.current_path is not None:
+                fields["source_path"] = metadata.current_path
+            if metadata.source_agent_id is not None:
+                fields["source_agent_id"] = metadata.source_agent_id
+            if metadata.duration_sec is not None:
+                fields["duration_sec"] = metadata.duration_sec
+            if metadata.file_size is not None:
+                fields["file_size_mb"] = _mb(metadata.file_size)
+            if metadata.staging_bucket is not None:
+                fields["staging_bucket"] = metadata.staging_bucket
+            if metadata.backend_id is not None:
+                fields["backend_id"] = metadata.backend_id
+        log.info("job_runner_banner", **fields)
+    except Exception:  # cosmetic banner: NEVER fail the job for odd/missing metadata (D-01 untouched)
+        log.debug("job_runner_banner_failed", file_id=file_id)
 
 
 def _temp_suffix(audio_ext: str | None, url: str) -> str:
@@ -175,6 +232,19 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEve
             payload = AnalysisProgressPayload(fine_windows_analyzed=analyzed, fine_windows_total=total)
             # Fire-and-forget: schedule onto the captured loop; do NOT call .result() (deadlock risk).
             asyncio.run_coroutine_threadsafe(_safe_post_progress(client, file_id, payload), loop)
+            # OBS-02 (phaze-sfbx.3): the console progress line shares the SAME throttle gate and
+            # counter as the UI progress POST above -- one throttle, one counter -- so the tailed
+            # pod log and the web progress bar can never diverge. `is_final` bypasses the throttle,
+            # so a final "N/N (100%)" line is ALWAYS emitted. This log sits INSIDE the same swallow
+            # contract below: a rendering failure never escapes the analysis thread (KJOB-04).
+            percent = round(100.0 * analyzed / total, 1) if total > 0 else 0.0
+            log.info(
+                "job_runner_progress",
+                file_id=str(file_id),
+                fine_windows_analyzed=analyzed,
+                fine_windows_total=total,
+                percent=percent,
+            )
         except Exception:  # a progress-cb error must never escape the analysis thread
             log.debug("job_runner_progress_cb_error", file_id=str(file_id))
 
@@ -245,14 +315,16 @@ async def run() -> None:
         # (1) presign — fail-fast, no extra retry loop (D-02).
         t_presign = time.monotonic()
         try:
-            # `_presign_metadata` (Phase 100, phaze-sfbx.1 display-identity block) is unused here --
-            # phaze-sfbx.3 threads it into the console banner. Minimal unpacking-only touch to keep
-            # this call site compiling against the widened AgentClient.request_download_url return.
-            url, expected_sha256, audio_ext, _presign_metadata = await client.request_download_url(file_id)
+            # phaze-sfbx.1 widened this to a 4-tuple; phaze-sfbx.3 now CONSUMES the
+            # display-identity block (Phase 100) for the console banner below.
+            url, expected_sha256, audio_ext, presign_metadata = await client.request_download_url(file_id)
         except Exception:
             log.exception("job_runner_presign_failed", file_id=fid, step="presign")
             sys.exit(EXIT_DOWNLOAD)
         log.info("job_runner_step_ok", file_id=fid, step="presign", elapsed_ms=_elapsed_ms(t_presign))
+        # OBS-02 (phaze-sfbx.3): human-readable startup banner, best-effort from the presign
+        # metadata block. Degrades to a UUID-only line and never fails the job (D-01 untouched).
+        _log_banner(fid, presign_metadata)
 
         # (2) download — stream to a temp file; bearer never attached (T-52-04).
         # The temp file MUST carry the file's REAL audio extension: essentia detects
@@ -265,7 +337,16 @@ async def run() -> None:
         except Exception:
             log.exception("job_runner_download_failed", file_id=fid, step="download")
             sys.exit(EXIT_DOWNLOAD)
-        log.info("job_runner_step_ok", file_id=fid, step="download", elapsed_ms=_elapsed_ms(t_download))
+        # OBS-02 (phaze-sfbx.3): carry the downloaded size so the friendly line reads
+        # "...step=download downloaded_mb=130.4...". event/step/elapsed_ms stay UNCHANGED
+        # (machine parsers key off them); downloaded_mb is a purely additive human field.
+        log.info(
+            "job_runner_step_ok",
+            file_id=fid,
+            step="download",
+            elapsed_ms=_elapsed_ms(t_download),
+            downloaded_mb=_mb(tmp_path.stat().st_size),
+        )
 
         # (3) integrity — the only check a Postgres-free pod can make (KJOB-02);
         # sha256 runs OFF the event loop (chunked stdlib hash).
@@ -277,7 +358,9 @@ async def run() -> None:
         if actual_sha256.strip().lower() != expected_sha256.strip().lower():
             log.error("job_runner_integrity_mismatch", file_id=fid, step="verify")
             sys.exit(EXIT_INTEGRITY)
-        log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify))
+        # OBS-02 (phaze-sfbx.3): a truncated hash makes the friendly "verified sha256" line
+        # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
+        log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
 
         # (4) analyze — windowed/streaming analyze_file DIRECTLY (no pebble pool,
         # no retry loop — fail-fast, D-02 / KJOB-03). models_dir from env (D-05).
@@ -293,6 +376,15 @@ async def run() -> None:
         # changes the EXIT_ANALYSIS / EXIT_CALLBACK exit-code contract (KJOB-04).
         loop = asyncio.get_running_loop()
         progress_cb = _make_progress_cb(client, file_id, loop, cfg.analysis_progress_interval_sec)
+        # phaze-sfbx.4: bracket the analyze call with explicit frame markers. essentia's own
+        # ``[ INFO ] MusicExtractor...`` banners are written by C++ DIRECTLY to fd 1/2 -- NOT
+        # through structlog -- so they interleave into the pod's log stream as if they were app
+        # lines. These two events give that interleaved output a visible "essentia begins / ends"
+        # frame in BOTH the JSON and the friendly rendering. NO fd redirection / os.dup2 here:
+        # real capture/routing of the child's stdout/stderr is DEFERRED to Phase 101's subprocess
+        # execution model. Today analyze_file runs in-process (asyncio.to_thread), so its fds ARE
+        # the pod's fds -- there is nothing to reattach, only to frame.
+        log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- essentia output follows")
         try:
             result = await asyncio.to_thread(
                 analyze_file,
@@ -302,44 +394,61 @@ async def run() -> None:
                 coarse_cap=cfg.analysis_coarse_cap,
                 progress_cb=progress_cb,
             )
-            # Payload construction is part of the analyze step (NOT the callback
-            # step): a malformed analyze result (non-dict, windows present-but-
-            # None, or an unexpected window key) is a bad-analysis-output failure
-            # and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04 distinct-
-            # exit-code contract). Mirrors the process_file dict-guard.
-            if not isinstance(result, dict):
-                log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
-                sys.exit(EXIT_ANALYSIS)
-            # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
-            # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
-            # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
-            # previously recorded a NULL-everything "success". A real audio file always
-            # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
-            # reads it as failed_at instead of a false completion. SystemExit is BaseException,
-            # so it bypasses the `except Exception` below (same as the non-dict guard above).
-            fine_total = result.get("fine_windows_total") or 0
-            coarse_total = result.get("coarse_windows_total") or 0
-            if fine_total == 0 and coarse_total == 0:
-                log.error(
-                    "job_runner_empty_analysis",
-                    file_id=fid,
-                    step="analyze",
-                    reason="zero_windows",
-                    suffix=suffix,
-                    fine_windows_total=fine_total,
-                    coarse_windows_total=coarse_total,
-                )
-                sys.exit(EXIT_ANALYSIS)
+        except Exception:
+            # Close the frame BEFORE the failure log so the (possibly noisy) essentia output above
+            # stays bracketed even on the crash path, then map to EXIT_ANALYSIS (D-01 unchanged).
+            log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="error")
+            log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
+            sys.exit(EXIT_ANALYSIS)
+        # Close the frame on the success path too: everything below is analysis-OUTPUT validation
+        # (NOT essentia stdout), so it sits OUTSIDE the frame markers.
+        log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="ok")
+
+        # Payload construction is part of the analyze step (NOT the callback step): a malformed
+        # analyze result (non-dict, windows present-but-None, or an unexpected window key) is a
+        # bad-analysis-output failure and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04
+        # distinct-exit-code contract). Mirrors the process_file dict-guard.
+        if not isinstance(result, dict):
+            log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
+            sys.exit(EXIT_ANALYSIS)
+        # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
+        # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
+        # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
+        # previously recorded a NULL-everything "success". A real audio file always
+        # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
+        # reads it as failed_at instead of a false completion.
+        fine_total = result.get("fine_windows_total") or 0
+        coarse_total = result.get("coarse_windows_total") or 0
+        if fine_total == 0 and coarse_total == 0:
+            log.error(
+                "job_runner_empty_analysis",
+                file_id=fid,
+                step="analyze",
+                reason="zero_windows",
+                suffix=suffix,
+                fine_windows_total=fine_total,
+                coarse_windows_total=coarse_total,
+            )
+            sys.exit(EXIT_ANALYSIS)
+        # A window dict carrying an unexpected key fails AnalysisWindowPayload (extra="forbid")
+        # during payload build -- still an analysis-output error, so it maps to EXIT_ANALYSIS
+        # (12), NOT EXIT_CALLBACK (13) (WR-01: payload build is part of the analyze step).
+        try:
             payload = _build_payload(result)
         except Exception:
             log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
             sys.exit(EXIT_ANALYSIS)
+        # OBS-02 (phaze-sfbx.3): surface the analyzed/total fine-window counts so the friendly
+        # line reads "...step=analyze fine_windows_analyzed=94 fine_windows_total=94...".
+        # event/step/elapsed_ms/sampled unchanged; the window counts are additive human fields.
         log.info(
             "job_runner_step_ok",
             file_id=fid,
             step="analyze",
             elapsed_ms=_elapsed_ms(t_analyze),
             sampled=result.get("sampled"),
+            fine_windows_analyzed=result.get("fine_windows_analyzed"),
+            fine_windows_total=result.get("fine_windows_total"),
         )
 
         # (5) callback — the shared _request funnel supplies the bounded ~3x
@@ -351,7 +460,9 @@ async def run() -> None:
         except Exception:
             log.exception("job_runner_callback_failed", file_id=fid, step="callback")
             sys.exit(EXIT_CALLBACK)
-        log.info("job_runner_step_ok", file_id=fid, step="callback", elapsed_ms=_elapsed_ms(t_callback))
+        # OBS-02 (phaze-sfbx.3): name the destination so the friendly "analysis written" line
+        # reads for humans; event/step/elapsed_ms unchanged, result is additive.
+        log.info("job_runner_step_ok", file_id=fid, step="callback", elapsed_ms=_elapsed_ms(t_callback), result="analysis written")
 
         log.info("job_runner_complete", file_id=fid, outcome="success", exit_code=EXIT_OK)
         sys.exit(0)
@@ -365,8 +476,18 @@ async def run() -> None:
 
 
 def main() -> None:
-    """Configure logging FIRST (D-03), then run the one-shot flow to a ``sys.exit``."""
-    configure_logging()
+    """Configure logging FIRST (D-03), then run the one-shot flow to a ``sys.exit``.
+
+    OBS-02 (phaze-sfbx.3): unlike every other phaze entrypoint, this one-shot pod defaults
+    friendly dual-rendering ON (``friendly=_resolve_friendly_default()``) so an operator tailing
+    ``kubectl logs`` reads a human line beside each machine JSON line without a pretty-printer.
+    Precedence (see ``_resolve_friendly_default``): an explicit ``PHAZE_LOG_FRIENDLY`` always
+    wins -- ``PHAZE_LOG_FRIENDLY=0`` still turns friendly rendering back OFF for this pod -- and
+    only the ABSENCE of the env var selects the pod's ON default. Passing an explicit ``bool``
+    (never ``None``) keeps ``configure_logging`` from re-consulting the env with its own
+    default-off fallback, so this inverted default is scoped to THIS entrypoint alone.
+    """
+    configure_logging(friendly=_resolve_friendly_default())
     asyncio.run(run())
 
 
