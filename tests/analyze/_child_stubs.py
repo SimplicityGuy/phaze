@@ -36,7 +36,7 @@ def _result(file_path: str, models_dir: str, **windowing: Any) -> dict[str, Any]
         "danceability": 0.42,
         "features": {"genre": {"predictions": [{"label": "Electronic/House", "confidence": 0.85}]}},
         "windows": [
-            {"tier": "fine", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "bpm": 128.0, "musical_key": "C minor", "confidence": 3.8},
+            {"tier": "fine", "window_index": 0, "start_sec": 0.0, "end_sec": 30.0, "bpm": 128.0, "musical_key": "C minor"},
         ],
         "fine_windows_analyzed": 3,
         "fine_windows_total": 3,

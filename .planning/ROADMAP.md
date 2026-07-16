@@ -33,7 +33,7 @@ Granularity is **fine** — small, single-seam phases with tight blast radius; *
 - [ ] **Phase 98: Cloud-Drain Liveness-Gate Investigation & Fix** — diagnose whether the drain dispatch falsely gates on the heartbeat-liveness compute agents never emit (stranding the backlog), fix the gate if the stall is real, and make the Cloud Routing card message reflect real routing state; consumes Phase 96's corrected liveness signal (DRAIN-01, DRAIN-02)
 - [ ] **Phase 99: Progress-POST Timeout & Log-Spam Quieting** — give progress POSTs a short connect-timeout + zero retries and demote the progress-path transport-error log to debug, killing the sustained `ConnectTimeout` spam; small and independent (OBS-01)
 - [ ] **Phase 100: Human-Friendly Pod Console Logs** — a readable per-job startup banner (filename, source path/origin, target cluster / `backend_id` / bucket, duration, size) + human-phrased step lines, alongside the existing structured JSON logs; small and independent (OBS-02)
-- [ ] **Phase 101: Subprocess Essentia Analysis & Live Progress Restoration** — run essentia analysis in a subprocess so the pod's asyncio loop is no longer GIL-starved, restoring the admin-UI live progress bar with console + UI progress sharing one source; the riskiest phase (changes the pod execution model), results byte-identical (OBS-03)
+- [x] **Phase 101: Subprocess Essentia Analysis & Live Progress Restoration** — run essentia analysis in a subprocess so the pod's asyncio loop is no longer GIL-starved, restoring the admin-UI live progress bar with console + UI progress sharing one source; the riskiest phase (changes the pod execution model), results byte-identical (OBS-03) (completed 2026-07-16)
 - [ ] **Phase 102: Alembic Migration-Chain Flatten** — collapse the `001`–`039` chain into one baseline reusing revision `039` (`down_revision=None`, prod-at-039 no-op), embedding the `pg_dump -s` DDL + seed rows, proven by an empty-diff fidelity merge gate + the read-only prod-at-039 probe, replacing ~22 per-migration tests with one invariant test; self-contained engineering debt (MIG-01, MIG-02, MIG-03)
 
 ---
@@ -140,7 +140,7 @@ Granularity is **fine** — small, single-seam phases with tight blast radius; *
   2. The admin-UI live analysis progress bar advances mid-analysis (not a 0→100% jump at completion).
   3. The console progress lines and the UI progress bar are driven by one shared source (the fine-window counts).
   4. Analysis results are byte-identical to the pre-change windowed output (BPM/key/window counts unchanged) — progress remains best-effort.
-**Plans**: TBD
+**Plans**: Delivered by beads molecule phaze-bo3p (epic + 5 issues, 2026-07-16): exec'd analysis child CLI (`phaze.analysis_child`, JSONL protocol over re-routed fds — essentia banners captured to framed stderr), shared async subprocess driver (`services/analysis_exec.py`), pod lane migrated off `asyncio.to_thread`, SAQ worker lane unified onto the same driver (pebble ProcessPool + Manager-queue bridge retired), end-to-end mid-analysis progress sims on both lanes. `services/analysis.py` untouched (byte-identity).
 
 ### Phase 102: Alembic Migration-Chain Flatten
 **Goal**: The `001`–`039` Alembic chain is collapsed into a single baseline reusing revision `039` — a no-op on prod, a clean build on ephemeral CI/test DBs, byte-identical to the pre-flatten chain output.
