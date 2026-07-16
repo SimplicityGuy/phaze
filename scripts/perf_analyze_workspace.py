@@ -5,9 +5,10 @@ Standalone ``uv run`` companion to :mod:`scripts.perf_explain` / :mod:`scripts.s
 dedicated perf DB (``just perf-db-up``). It measures the THREE hot paths the phase-95 epic names
 as suspects, so the fix/verify beads have concrete before/after numbers to cite:
 
-1. ``get_analyze_stage_files`` (``services/pipeline.py:1175``) -- DIRECT timing (no ASGI/template
-   overhead) + returned row count, at corpus scale. This is the unbounded per-file read that feeds
-   the Analyze workspace table.
+1. ``get_analyze_working_set`` (``services/pipeline.py``) -- DIRECT timing (no ASGI/template
+   overhead) + returned row count, at corpus scale. This is the BOUNDED default per-file read
+   (phaze-zqvh.2) that replaced the Phase-58 unbounded ``get_analyze_stage_files`` feeding the
+   Analyze workspace table -- the "after" number to cite against the phaze-zqvh.1 92,335-row baseline.
 2. ``GET /s/analyze`` -- the full-shell server render a direct/bookmark "open the workspace" nav
    takes (mirrors ``_render_stage`` in ``routers/shell.py``): wall-clock render time, response
    payload size in bytes, and an approximate per-file DOM row count (count of the per-row
@@ -37,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from phaze.database import get_session
 from phaze.main import create_app
-from phaze.services.pipeline import get_analyze_stage_files
+from phaze.services.pipeline import get_analyze_working_set
 
 
 _DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5545/phaze_perf82"
@@ -54,8 +55,14 @@ def _percentiles(samples: list[float]) -> str:
     return f"p50={p50:.1f}ms  p95={p95:.1f}ms  min={samples[0]:.1f}ms  max={samples[-1]:.1f}ms  n={len(samples)}"
 
 
-async def time_get_analyze_stage_files(dsn: str, iterations: int) -> None:
-    """Time ``get_analyze_stage_files(session)`` DIRECTLY -- the unbounded per-file read (D-03)."""
+async def time_get_analyze_working_set(dsn: str, iterations: int) -> None:
+    """Time ``get_analyze_working_set(session)`` DIRECTLY -- the BOUNDED default per-file read (phaze-zqvh.2).
+
+    Replaces the Phase-58 ``get_analyze_stage_files`` DIRECT timing: that read returned the ENTIRE
+    analyze-stage membership (92,335 rows at 200K scale -- the phaze-zqvh.1 baseline); this measures its
+    bounded replacement (the active-first working set + a LIMIT-ed recent-completions window). The
+    returned row count is the "after" number to cite against the 92,335 "before".
+    """
     sa_url = dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
     engine = create_async_engine(sa_url)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -63,12 +70,12 @@ async def time_get_analyze_stage_files(dsn: str, iterations: int) -> None:
     row_count = 0
     try:
         async with factory() as s:
-            row_count = len(await get_analyze_stage_files(s))  # warm-up (excluded), also captures the count
-            print(f"\n===== get_analyze_stage_files() DIRECT ({iterations} iterations) =====")  # noqa: T201
+            row_count = len(await get_analyze_working_set(s))  # warm-up (excluded), also captures the count
+            print(f"\n===== get_analyze_working_set() DIRECT ({iterations} iterations) =====")  # noqa: T201
             print(f"returned row count: {row_count}")  # noqa: T201
             for _ in range(iterations):
                 t0 = time.perf_counter()
-                await get_analyze_stage_files(s)
+                await get_analyze_working_set(s)
                 samples.append((time.perf_counter() - t0) * 1000.0)
     finally:
         await engine.dispose()
@@ -161,7 +168,7 @@ async def _run_all(dsn: str, iterations: int) -> None:
     disposed at the end of one call can have its underlying connection GC-finalized during a
     LATER call's loop, once the original loop is already closed -- harmless but noisy).
     """
-    await time_get_analyze_stage_files(dsn, iterations)
+    await time_get_analyze_working_set(dsn, iterations)
     await time_s_analyze(dsn, iterations)
     await time_pipeline_stats_payload(dsn, iterations)
 

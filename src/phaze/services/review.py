@@ -5,7 +5,7 @@ Tag-write workspace (Plan 60-03) renders the computed tag comparison, all throug
 ``pipeline/partials/_diff_row.html`` partial (D-06). These helpers are their single read seam: each
 wraps its query in a ``session.begin_nested()`` SAVEPOINT and maps every ORM row to a plain dict, so
 the templates never touch an ORM object and the hot render/poll path can NEVER 500 (mirrors
-:func:`phaze.services.pipeline.get_analyze_stage_files`). No enqueue, no commit, no schema change.
+:func:`phaze.services.pipeline.get_analyze_working_set`). No enqueue, no commit, no schema change.
 
 * :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02).
 * :func:`get_tagwrite_review_rows`  -- applied files (``applied_clause()``, READ-05/D-01) with a

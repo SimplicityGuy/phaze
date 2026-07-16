@@ -10,7 +10,7 @@ asserting all three surfaces reflect that single source:
 
 * (a) the header agent count -- ``dag['computeLanesActive']`` seeded onto ``GET /pipeline/stats``;
 * (b) the Agents-page Section-2 tiles -- ``GET /admin/agents`` (+ the 5s ``/_table`` poll partial);
-* (c) the Analyze-stage file badges -- ``get_analyze_stage_files`` derives ``lane_kind`` through the
+* (c) the Analyze-stage file badges -- ``get_analyze_working_set`` derives ``lane_kind`` through the
       SAME ``non_local_backend_kinds`` registry projection the lane identities are built from.
 
 An import-identity test additionally pins that every consumer references the SAME function objects
@@ -142,7 +142,7 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     # agreement for every stubbed lane.
     from phaze.config import get_settings
     from phaze.services.agent_liveness import non_local_backend_kinds
-    from phaze.services.pipeline import get_analyze_stage_files
+    from phaze.services.pipeline import get_analyze_working_set
 
     file = await make_file(original_filename="vox-analyze.mp3")
     session.add(
@@ -156,7 +156,7 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     )
     await session.commit()
 
-    analyze_files = await get_analyze_stage_files(session)
+    analyze_files = await get_analyze_working_set(session)
     vox_badges = [f for f in analyze_files if f["lane"] == "vox"]
     assert len(vox_badges) == 1, "the vox-stamped analyze file must carry a per-cluster lane badge"
     assert vox_badges[0]["lane_kind"] == "compute", "the file-badge kind must come from the registry projection"
