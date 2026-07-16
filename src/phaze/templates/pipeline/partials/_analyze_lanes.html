@@ -17,6 +17,12 @@
    heading -- NEVER a page error, NEVER a 500, and it MUST NOT collapse the layout. Self-heals next poll. #}
 <div id="analyze-lanes"
      class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 p-6"
+     {# Phase 95 (phaze-zqvh.3): the content hash of this grid's render inputs (lanes + selected
+        highlight). The shell's htmx:oobBeforeSwap hook (shell.html) SKIPS the 5s OOB grid swap when
+        the incoming data-lanes-hash equals what is already mounted -- so a long-lived idle tab does
+        NOT destroy-and-recreate the grid (+ re-run Alpine) every tick. Empty ('') never matches, so a
+        missing hash fail-safes to always-swap (the prior behavior). #}
+     data-lanes-hash="{{ lanes_hash | default('', true) }}"
      {% if oob %}hx-swap-oob="true"{% endif %}>
     {% if lanes %}
         {% for lane in lanes %}

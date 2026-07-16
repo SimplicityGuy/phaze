@@ -20,6 +20,7 @@ from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.tracklist import Tracklist
 from phaze.services import pipeline as pipeline_mod
 from phaze.services.pipeline import (
+    analyze_lanes_content_hash,
     count_active_agents,
     count_backfill_candidates,
     count_inflight_jobs,
@@ -1177,6 +1178,33 @@ async def test_get_analyze_files_page_status_filter_lens(session: AsyncSession, 
     assert ids == {str(done_f.id), str(failed_f.id), str(awaiting_f.id)}
     assert str(off_stage.id) not in ids
     assert unknown.status is None, "an unknown status degrades to the unfiltered listing"
+
+
+def test_analyze_lanes_content_hash_is_stable_and_state_sensitive() -> None:
+    """phaze-zqvh.3: the grid content hash is deterministic, changes with lane state / selection, degrade-safe.
+
+    The hash is the server side of the idempotent-swap: identical inputs MUST yield an identical digest
+    (so an unchanged tick is byte-identical and the client skips the swap), while ANY change to the lane
+    snapshot OR the selected-lane highlight MUST change it (so a real update still swaps). A
+    non-serializable input degrades to ``""`` (fail-safe: an empty hash never matches -> always swap).
+    """
+    lanes_a = [{"id": "a1", "kind": "compute", "in_flight": 2, "cap": 4, "available": True}]
+    lanes_b = [{"id": "a1", "kind": "compute", "in_flight": 3, "cap": 4, "available": True}]
+
+    # Deterministic + non-empty for identical inputs.
+    h1 = analyze_lanes_content_hash(lanes_a, None)
+    assert h1 and h1 == analyze_lanes_content_hash(lanes_a, None)
+    # A changed datum (in_flight) changes the hash.
+    assert analyze_lanes_content_hash(lanes_b, None) != h1
+    # A changed selection changes the hash (the highlight is part of the rendered grid).
+    assert analyze_lanes_content_hash(lanes_a, "a1") != h1
+    # Empty snapshot is stable + non-crashing.
+    assert analyze_lanes_content_hash([], None) == analyze_lanes_content_hash([], None)
+    # Degrade-safe: an un-serializable input (a circular reference -- unhandled even by default=str)
+    # collapses to "" (fail-safe -> an empty hash never matches, so the grid always swaps).
+    circular: dict[str, object] = {}
+    circular["self"] = circular
+    assert analyze_lanes_content_hash([circular], None) == ""
 
 
 @pytest.mark.asyncio

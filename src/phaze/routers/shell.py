@@ -35,6 +35,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services.pipeline import (
+    analyze_lanes_content_hash,
     get_files_page,
     get_fingerprint_pending_files,
     get_match_pending_tracklists,
@@ -197,6 +198,10 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         lane_param = request.query_params.get("lane")
         seeded_lanes = context.get("lanes") or []
         context["selected_lane"] = lane_param if any(one.get("id") == lane_param for one in seeded_lanes) else None
+        # Phase 95 (phaze-zqvh.3): seed the #analyze-lanes content hash on the INITIAL render over the SAME
+        # inputs the /pipeline/stats poll hashes (lanes + selected highlight), so the first poll tick after
+        # an unchanged load is already a no-op OOB grid swap (the client htmx:oobBeforeSwap skip hook).
+        context["lanes_hash"] = analyze_lanes_content_hash(seeded_lanes, context["selected_lane"])
         # Phase 61 (61-05, RECORD-04): first-run empty state. When NO files exist, swap the
         # analyze stage_partial to the empty-state guide and inject the non-revoked agent list
         # (for the agent-roots cards). file_count>0 leaves the dashboard render untouched; the

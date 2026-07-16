@@ -45,6 +45,7 @@ from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
+    analyze_lanes_content_hash,
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
@@ -791,6 +792,12 @@ async def pipeline_stats_partial(
     # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
     # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
     selected_lane = lane if any(one.get("id") == lane for one in lanes) else None
+    # Phase 95 (phaze-zqvh.3): the content hash of the grid's render inputs (lanes + selected highlight).
+    # Emitted as data-lanes-hash so the client htmx:oobBeforeSwap hook SKIPS this OOB grid swap when the
+    # state is byte-identical to what is already mounted -- bounding per-tick destroy-and-recreate churn
+    # on a long-lived idle tab. Computed over the SAME inputs the initial render hashes, so the first tick
+    # after an unchanged load is already a no-op swap.
+    lanes_hash = analyze_lanes_content_hash(lanes, selected_lane)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/stats_bar.html",
@@ -817,6 +824,7 @@ async def pipeline_stats_partial(
             "finished_count": cloud_phase_counts["finished"],
             "lanes": lanes,
             "selected_lane": selected_lane,
+            "lanes_hash": lanes_hash,
             **activity,
             **dag_ctx,
             "queue_progress_percent": queue_progress,

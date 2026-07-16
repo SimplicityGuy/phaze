@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any, cast as type_cast
@@ -1445,6 +1446,25 @@ async def get_analyze_files_page(
     kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
     projected = _project_analyze_rows(rows[:page_size], kinds)
     return AnalyzeFilesPage(rows=projected, page=page, page_size=page_size, has_next=has_next, status=status)
+
+
+def analyze_lanes_content_hash(lanes: list[dict[str, Any]], selected_lane: str | None) -> str:
+    """Return a stable content hash of the #analyze-lanes grid's render inputs (phaze-zqvh.3).
+
+    A deterministic digest over the lane snapshot + the selected-lane highlight -- the ONLY inputs that
+    change what ``_analyze_lanes.html`` renders. Emitted as ``data-lanes-hash`` on the grid so a client
+    ``htmx:oobBeforeSwap`` hook can SKIP the 5s OOB grid swap when the incoming state is byte-identical to
+    what is already mounted -- bounding per-tick destroy-and-recreate churn (+ the Alpine re-init it
+    triggers) on a long-lived, mostly-idle tab, WITHOUT a second poll loop or any change to the OOB
+    store-seed fan-out (phaze-zqvh.3). Pure + degrade-safe: any serialization error collapses to ``""``
+    (an empty hash never matches, so the swap always proceeds -- the fail-safe default is "always swap").
+    """
+    try:
+        payload = json.dumps({"lanes": lanes, "selected": selected_lane}, sort_keys=True, default=str)
+    except Exception:
+        logger.warning("analyze_lanes_hash_degraded", exc_info=True)
+        return ""
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 # --- Phase 59 (59-01, IDENT-01/IDENT-02) Identify-workspace read-only row assembly ----------

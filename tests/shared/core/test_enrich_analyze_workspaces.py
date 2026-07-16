@@ -26,6 +26,7 @@ in-flight rows for the WORK-04 mid-flight assertion) and the cloud_job lane/admi
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
@@ -661,3 +662,129 @@ async def test_analyze_files_fragment_unknown_status_degrades(client: AsyncClien
     assert "inflight.mp3" in body
     # Degraded to the default view: no pager, the default select option is active.
     assert "Analyze files pagination" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick #analyze-lanes swap churn (idempotent OOB swap).
+# ---------------------------------------------------------------------------
+
+
+def _analyze_lanes_hash(body: str) -> str | None:
+    """Extract the #analyze-lanes grid's data-lanes-hash attribute value from a rendered body."""
+    m = re.search(r'id="analyze-lanes"[^>]*data-lanes-hash="([0-9a-f]*)"', body)
+    return m.group(1) if m else None
+
+
+@pytest.mark.asyncio
+async def test_analyze_lanes_grid_carries_content_hash(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 -- both the initial /s/analyze render and the 5s /pipeline/stats OOB grid carry data-lanes-hash.
+
+    The client htmx:oobBeforeSwap skip hook compares the incoming grid hash to what is mounted, so BOTH
+    render paths must emit a non-empty ``data-lanes-hash`` computed over the SAME inputs -- else the first
+    tick can never be a no-op and the churn bound never engages.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    lanes = [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0}]
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return lanes
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session, original_filename="held.mp3")  # a file must exist or the empty-state renders
+
+    initial = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert initial.status_code == 200
+    initial_hash = _analyze_lanes_hash(initial.text)
+    assert initial_hash, "the initial #analyze-lanes render must carry a non-empty data-lanes-hash"
+
+    poll = await client.get("/pipeline/stats")
+    assert poll.status_code == 200
+    poll_hash = _analyze_lanes_hash(poll.text)
+    assert poll_hash, "the /pipeline/stats OOB grid must carry a non-empty data-lanes-hash"
+    # Same lane state on both paths => same hash => the first poll tick is already a no-op swap.
+    assert initial_hash == poll_hash
+
+
+@pytest.mark.asyncio
+async def test_analyze_lanes_poll_hash_stable_when_unchanged_changes_on_state(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 -- the poll grid hash is byte-identical across unchanged ticks and changes on a real update.
+
+    Two /pipeline/stats ticks with an UNCHANGED lane snapshot yield an identical data-lanes-hash (the
+    client skips the destroy-and-recreate); a changed snapshot (an in_flight bump) yields a different
+    hash (a real update still swaps). This is the server-verifiable core of the idempotent-swap churn bound.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    state = {"in_flight": 2}
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "a1",
+                "kind": "compute",
+                "rank": 10,
+                "cap": 4,
+                "in_flight": state["in_flight"],
+                "available": True,
+                "quota_wait": 0,
+                "inadmissible": 0,
+            }
+        ]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+
+    tick1 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    tick2 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    assert tick1 and tick1 == tick2, "an unchanged lane state must produce a byte-identical grid hash across ticks"
+
+    state["in_flight"] = 3
+    tick3 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    assert tick3 and tick3 != tick1, "a real lane-state change must change the hash so the grid still swaps"
+
+
+@pytest.mark.asyncio
+async def test_shell_carries_analyze_lanes_idempotent_skip_hook(client: AsyncClient) -> None:
+    """phaze-zqvh.3 / WORK-05 -- the shell wires the oobBeforeSwap skip hook WITHOUT adding a second poll loop.
+
+    The churn bound is a client htmx:oobBeforeSwap handler that skips the #analyze-lanes OOB swap when the
+    incoming data-lanes-hash matches what is mounted. Assert the hook is present (scoped to #analyze-lanes,
+    setting shouldSwap=false) and that the single-poll discipline is intact (exactly one /pipeline/stats
+    poll; no setInterval / hx-trigger="every" second loop was introduced).
+    """
+    shell = await client.get("/")
+    assert shell.status_code == 200
+    body = shell.text
+    assert "htmx:oobBeforeSwap" in body
+    assert "analyze-lanes" in body
+    assert "shouldSwap = false" in body
+    # WORK-05 / R-2: still exactly one poll, no second loop.
+    assert body.count('hx-get="/pipeline/stats"') == 1
+    assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_poll_still_seeds_store_and_lands_analyze_lanes_oob(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 preservation -- the churn bound changes NOTHING about the OOB fan-out or the store seeds.
+
+    The idempotent-swap hook is purely client-side; the poll fragment must still carry the ~store-seed OOB
+    writes ($store.pipeline keys update every tick) AND the #analyze-lanes OOB grid (hx-swap-oob) so all
+    targets still land. Asserts the store writes + the OOB grid are still emitted on the tick.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    poll = await client.get("/pipeline/stats")
+    assert poll.status_code == 200
+    body = poll.text
+    # Store seeds still fire every tick (unchanged OOB store-write contract).
+    assert 'id="analyze-files-ready" hx-swap-oob="true"' in body
+    assert "$store.pipeline.discovered =" in body
+    assert "$store.pipeline.agentBusy =" in body
+    # The #analyze-lanes grid still OOB-swaps (with its new content hash).
+    assert 'id="analyze-lanes"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert _analyze_lanes_hash(body), "the OOB grid must still carry its content hash"
