@@ -261,3 +261,23 @@ def test_detail_pane_late_swap_cannot_resurrect_dismissed_pane() -> None:
         "param, so a late in-flight tick response landing after dismiss must not resurrect the pane"
     )
     assert guard.start() < on_loaded.find("open = true"), "the missing-param guard must run BEFORE open flips true"
+
+
+# --- Phase 93 rail Alpine root (browser-caught regression) ---------------------------
+
+
+def test_rail_root_carries_alpine_x_data() -> None:
+    """The rail <aside> must carry x-data — Alpine only walks x-data-rooted subtrees.
+
+    Without it every x-text numeral, x-show orphan badge, and pause/priority binding in the
+    rail is silently inert: the badges forever render their server-side "0" defaults no matter
+    what $store.pipeline holds (CONSOLE-02: the Analyze badge read 0 while 2,183 analyze jobs
+    were in flight). Invisible to markup/httpx tests — only a live browser surfaced it.
+    """
+    html = _strip_comments(_RAIL.read_text())
+    m = re.search(r"<aside\b[^>]*>", html)
+    assert m, "expected the rail <aside> root"
+    assert re.search(r"\bx-data\b", m.group(0)), (
+        "the rail <aside> must carry a bare x-data so Alpine binds the rail subtree — without "
+        "it every store-bound numeral/badge in the rail is inert and renders 0 forever"
+    )
