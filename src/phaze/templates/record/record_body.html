@@ -57,8 +57,9 @@
            single-row eligibility trace and reveals _eligibility_trace.html BENEATH the clicked pill.
            The three ENRICH stages ALSO carry the force-skip control (_force_skip_dialog.html); the
            downstream propose/review/apply pills carry NO skip affordance (approval-bypass hazard,
-           D-10). Per-stage status COLOUR is intentionally the files-table's job (the scannable
-           overview, Plan 04) — this pane is the diagnostic; the trace verdict tints green/amber. #}
+           D-10). Phase 93 (CONSOLE-01): each stage row ALSO renders the shared five-bucket
+           _stage_pill.html token, fed by stage_buckets — the SAME stage_status_case derivation the
+           Files matrix renders for this file's row, so the pane and the matrix can never disagree. #}
         <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
             <p class="{{ _eyebrow }} mb-3">Stage eligibility · click a stage to trace</p>
             <div class="space-y-2">
@@ -75,6 +76,9 @@
                                 class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-0.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-200 dark:hover:bg-white/5">
                             {{ stage_label }}
                         </button>
+                        {% with stage_label=stage_label, bucket=stage_buckets[stage_value] %}
+                            {% include "pipeline/partials/_stage_pill.html" %}
+                        {% endwith %}
                         {% if is_enrich %}
                             {% with stage_value=stage_value, stage_label=stage_label, file_id=file.id %}
                                 {% include "pipeline/partials/_force_skip_dialog.html" %}
