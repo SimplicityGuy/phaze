@@ -10,8 +10,8 @@ test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
 # Fixed container name for the ephemeral integration-test Redis
 test_redis_container := "phaze-test-redis"
 # Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
-# (own port 5545) so a concurrent `just test-db` recreate can never wipe the ~200K seeded corpus
-# mid-measurement (the shared phaze-test-db is torn down/recreated by sibling sessions).
+# (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
+# (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
 perf_db_container := "phaze-perf-db"
 perf_db_port := env_var_or_default("PHAZE_PERF_DB_PORT", "5545")
 perf_db_name := "phaze_perf82"
@@ -148,7 +148,7 @@ test-db:
     port="{{test_db_port}}"
     redis_container="{{test_redis_container}}"
     redis_port="{{test_redis_port}}"
-    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+    if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
         docker rm -f "$container" >/dev/null 2>&1 || true
@@ -160,7 +160,7 @@ test-db:
             -p "${port}:5432" \
             postgres:18-alpine >/dev/null
     fi
-    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
+    if [ "$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🟥 ${redis_container} already running on port ${redis_port}"
     else
         docker rm -f "$redis_container" >/dev/null 2>&1 || true
@@ -249,9 +249,28 @@ typecheck:
 pre-commit:
     uv run pre-commit run --all-files
 
-[doc('Run all quality checks (lint + typecheck + test)')]
+[doc('Run all quality checks (lint + typecheck + test); auto-provisions the ephemeral test-db when no TEST_DATABASE_URL override is already exported (e.g. a fresh worktree)')]
 [group('lint')]
-check: lint typecheck test
+check: lint typecheck
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # A fresh worktree has no Postgres/Redis of its own -- `test` (bare `uv run
+    # pytest`) then dies at fixture setup dialing the CI-matching localhost:5432
+    # default (tests/conftest.py:45). `just integration-test` already solves this
+    # for a one-shot run, but its `test-db-down` EXIT trap would tear down a
+    # services container other concurrent worktrees/sessions are relying on if
+    # `check` reused it. So: provision (idempotently, via the existing `test-db`
+    # recipe) and export the matching env here, but never tear down -- leave that
+    # to an explicit `just test-db-down`. If the caller already exported
+    # TEST_DATABASE_URL (CI, another `just` recipe, a shared multi-worktree rig
+    # with per-worktree database names), respect it verbatim and skip provisioning.
+    if [ -z "${TEST_DATABASE_URL:-}" ]; then
+        just test-db
+        export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
+        export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
+        export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+    fi
+    just test
 
 [doc('Trigger a file scan (requires running services)')]
 [group('scan')]
@@ -499,7 +518,7 @@ perf-db-up:
     set -euo pipefail
     container="{{perf_db_container}}"
     port="{{perf_db_port}}"
-    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+    if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
         docker rm -f "$container" >/dev/null 2>&1 || true
