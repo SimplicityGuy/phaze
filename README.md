@@ -341,6 +341,15 @@ dev database/cache on the default 5432/6379. Override the ports with `PHAZE_TEST
 `MIGRATIONS_TEST_DATABASE_URL` env vars (Redis via `PHAZE_REDIS_URL`); with nothing set they default
 to `localhost:5432`, matching CI.
 
+`just check` (and therefore a bare `bh work check`/`bh work submit` in a brand-new worktree, which
+have nothing exported and no services running) auto-provisions: if `TEST_DATABASE_URL` isn't
+already set in the environment, it runs `just test-db` first and exports the matching
+`TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` before running the suite.
+It never tears the services down afterward (unlike `integration-test`'s EXIT trap) so it's safe to
+run repeatedly, including from concurrent worktrees sharing the same `phaze-test-db`/`phaze-test-redis`
+containers — stop them explicitly with `just test-db-down` when done. Exporting `TEST_DATABASE_URL`
+yourself (e.g. a per-worktree database name) always takes precedence and skips provisioning.
+
 ### 🔍 Code Quality
 
 - **Linter/Formatter:** [Ruff](https://docs.astral.sh/ruff/) (150-char line length, double quotes)
