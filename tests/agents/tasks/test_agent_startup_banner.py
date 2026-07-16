@@ -46,7 +46,6 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
     # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
     # Patch agent_worker's local binding (imported via `from ... import construct_agent_client`).
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
@@ -109,7 +108,6 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
     fake_client.close = AsyncMock()
     # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
@@ -167,11 +165,15 @@ async def test_startup_raises_when_role_is_not_agent(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_shutdown_closes_pool_engines_and_client() -> None:
-    """shutdown() must stop/join the pebble process pool, close each orchestrator engine, and close the api_client."""
+async def test_shutdown_closes_engines_and_client() -> None:
+    """shutdown() must close each orchestrator engine and the api_client.
+
+    Phase 101: the pebble process pool (and its stop()/join() teardown) is retired —
+    analysis children are per-file subprocesses reaped by the driver, so there is no
+    long-lived pool object left for shutdown to own.
+    """
     import phaze.tasks.agent_worker as aw
 
-    pool = MagicMock()
     engine_a = MagicMock()
     engine_a.close = AsyncMock()
     engine_b_no_close = MagicMock(spec=[])  # no .close attr -- exercise hasattr() False branch
@@ -180,14 +182,11 @@ async def test_shutdown_closes_pool_engines_and_client() -> None:
     api_client.close = AsyncMock()
 
     ctx: dict[str, Any] = {
-        "process_pool": pool,
         "fingerprint_orchestrator": orchestrator,
         "api_client": api_client,
     }
     await aw.shutdown(ctx)
 
-    pool.stop.assert_called_once_with()
-    pool.join.assert_called_once_with()
     engine_a.close.assert_awaited_once()
     api_client.close.assert_awaited_once()
 

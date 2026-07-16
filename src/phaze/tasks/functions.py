@@ -1,11 +1,16 @@
 """SAQ task: process_file -- essentia analysis of a music file, posted via HTTP (Phase 26 D-05).
 
-Replaces the prior ORM-bound body. Now reads the file from local disk via
-payload.original_path, runs essentia in the process pool, and posts the
-result via ctx["api_client"].put_analysis (PUT /api/internal/agent/analysis/{file_id}).
+Replaces the prior ORM-bound body. Reads the file from local disk via
+payload.original_path, runs essentia in a dedicated child process (Phase 101:
+``python -m phaze.analysis_child`` via the shared ``services.analysis_exec`` driver,
+replacing the pebble ProcessPool + Manager-queue bridge), and posts the result via
+ctx["api_client"].put_analysis (PUT /api/internal/agent/analysis/{file_id}).
+A fresh child per file preserves pebble's ``max_tasks=1`` leak-recycling semantics
+(essentia leaks ~7 GiB/file); the ctx-provided ``analysis_semaphore`` (sized from
+``worker_process_pool_size``) preserves the pool's concurrency bound.
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
-Enforced by tests/test_task_split.py (Plan 10).
+Enforced by tests/shared/core/test_task_split.py (Plan 10).
 
 Wire-format conversion (D-26):
 - ``analyze_file`` returns ``mood``/``style`` as strings (dominant label).
@@ -20,21 +25,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import multiprocessing
 from pathlib import Path
-from queue import Empty
 import time
 from typing import TYPE_CHECKING, Any
 
-from pebble import ProcessExpired
 import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
+from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
-from phaze.tasks.pool import run_in_process_pool
 
 
 if TYPE_CHECKING:
@@ -68,21 +70,6 @@ def _agent_settings() -> AgentSettings:
     return cfg
 
 
-# Phase 27 UAT gap-13: defer the essentia-bound import to call time. essentia-tensorflow
-# is platform-gated in pyproject.toml ("sys_platform != 'linux' or platform_machine == 'x86_64'"),
-# so it is intentionally absent on linux-arm64. Loading this module at SAQ worker
-# startup must NOT fail when essentia is missing -- only process_file calls need it.
-# scan_directory and extract_file_metadata are registered on the same agent worker and
-# never touch essentia.
-def _load_analyze_file() -> Any:
-    # Deliberate function-scoped import -- module load must succeed on
-    # linux-arm64 where essentia-tensorflow is not installed. See module
-    # docstring above for the platform-marker rationale.
-    from phaze.services.analysis import analyze_file  # noqa: PLC0415
-
-    return analyze_file
-
-
 _MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma", "aac", "opus"})
 
 # The mood/style wire-format converters (_features_to_mood_dict / _features_to_style_dict)
@@ -90,40 +77,6 @@ _MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma"
 # (Plan 02) and this SAQ path share one definition. They are imported above and re-exported
 # from this module so existing callers (and tests/test_tasks/test_functions.py) resolve
 # unchanged.
-
-
-# Phase 57.1 (PROG-01): the local + A1 pebble lane progress bridge. Per 57.1-01-SPIKE-FINDINGS
-# (DECISION: Option A — parent-side Queue-drainer over a multiprocessing.Manager().Queue() proxy),
-# the child's progress_cb pushes only an (analyzed, total) int-pair onto a picklable Manager queue
-# proxy; a parent-side drainer reads them and POSTs best-effort via ctx["api_client"]. analyze_file
-# never reaches the authed client (import boundary preserved — only an (int,int) crosses the pebble
-# boundary). A Manager queue (NOT a raw multiprocessing.Queue) is mandatory: the manager process
-# owns the queue, so a SIGKILLed child can never wedge an internal feeder lock and hang the drainer.
-_PROGRESS_SENTINEL = "__phaze_progress_done__"
-
-# Bounded backstop on the drainer teardown (kill-safe). The future-done sentinel normally retires the
-# drainer the instant the pebble future completes/raises (TimeoutError on SIGKILL, ProcessExpired on
-# crash); this deadline guarantees fail-fast even if the sentinel were somehow lost (T-57.1-22).
-_DRAIN_TEARDOWN_DEADLINE_SEC = 10.0
-_DRAIN_GET_TIMEOUT_SEC = 1.0
-
-
-class _QueueProgressSink:
-    """Picklable progress sink handed to ``analyze_file`` in the pebble child (Phase 57.1).
-
-    Module-level (NO closure, NO agent_client/httpx/token) so pebble can pickle it across the
-    process boundary. ``__call__`` pushes ONLY an ``(analyzed, total)`` int-pair onto the Manager
-    queue proxy — the entire payload that crosses the trust boundary (T-57.1-21). A full or broken
-    queue is swallowed: a dropped progress emission must never fail the analysis child.
-    """
-
-    def __init__(self, queue: Any) -> None:
-        self._queue = queue
-
-    def __call__(self, analyzed: int, total: int) -> None:
-        # Progress is best-effort: a full/broken queue must never fail the analysis child.
-        with contextlib.suppress(Exception):
-            self._queue.put_nowait((analyzed, total))
 
 
 async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count: tuple[int, int]) -> None:
@@ -141,44 +94,7 @@ async def _post_progress_count(api: PhazeAgentClient, file_id: uuid.UUID, count:
         logger.debug("process_file: progress POST dropped (best-effort)", file_id=str(file_id))
 
 
-async def _drain_progress(progress_queue: Any, api: PhazeAgentClient, file_id: uuid.UUID, interval_sec: float) -> None:
-    """Parent-side drainer: throttle the child's progress counts and POST them best-effort.
-
-    Reads ``(analyzed, total)`` tuples off the Manager queue via ``asyncio.to_thread(queue.get, ...)``
-    so the event loop is NEVER blocked. Throttles to ``interval_sec`` (``monotonic()``-keyed); the
-    final count is always flushed once the future-done sentinel arrives, so the last mid-flight value
-    is sent even if it landed inside the throttle window (D-04 final flush). Terminates on the sentinel
-    — which the analysis-future done-callback pushes on success OR SIGKILL — so a killed child can
-    never hang the drainer (T-57.1-22 kill-safety, proven in 57.1-01-SPIKE-FINDINGS).
-    """
-    # ``None`` (not 0.0) so the FIRST emission always posts regardless of the monotonic-clock
-    # magnitude: ``time.monotonic()`` is seconds from an arbitrary epoch, so on a freshly-booted
-    # host (e.g. a CI runner) ``now`` can be smaller than ``interval_sec`` and a ``0.0`` baseline
-    # would throttle away the START (0, N). The sentinel makes the first post deterministic.
-    last_post: float | None = None
-    last_count: tuple[int, int] | None = None
-    while True:
-        try:
-            item = await asyncio.to_thread(progress_queue.get, True, _DRAIN_GET_TIMEOUT_SEC)
-        except Empty:
-            continue
-        except (EOFError, OSError, BrokenPipeError):
-            # The manager went away (shutdown / child teardown race). Nothing more can arrive; stop.
-            break
-        if item == _PROGRESS_SENTINEL:
-            break
-        last_count = item
-        now = time.monotonic()
-        if interval_sec <= 0.0 or last_post is None or (now - last_post) >= interval_sec:
-            await _post_progress_count(api, file_id, item)
-            last_post = now
-    if last_count is not None:
-        # Final flush: always send the last seen count (belt-and-suspenders with the completion PUT).
-        await _post_progress_count(api, file_id, last_count)
-
-
 async def _run_analysis_with_progress(
-    ctx: dict[str, Any],
     api: PhazeAgentClient,
     cfg: AgentSettings,
     file_id: uuid.UUID,
@@ -187,49 +103,61 @@ async def _run_analysis_with_progress(
     fine_cap: int,
     coarse_cap: int,
 ) -> Any:
-    """Run windowed analysis in the pebble pool while a parent-side drainer relays progress.
+    """Run windowed analysis in the child subprocess while relaying throttled progress.
 
-    Returns the ``analyze_file`` result dict. Re-raises ``TimeoutError`` (inner pebble SIGKILL) and
-    ``ProcessExpired`` (essentia crash) UNCHANGED so ``process_file``'s existing terminal handlers map
-    them to ``report_analysis_failed`` exactly as before — the progress bridge is strictly additive and
-    NEVER alters the terminal mapping. The Manager queue + drainer are torn down on every exit path.
+    Phase 101: the shared driver (``run_analysis_subprocess``) execs the analysis child
+    and invokes ``_progress`` ON the event loop per fine window — the Manager-queue
+    drainer this replaced is gone. Throttling stays parent-side and keeps the drainer's
+    semantics: the FIRST emission always posts (``last_post`` starts ``None`` — a ``0.0``
+    baseline would throttle away the START on a freshly-booted host), later emissions
+    post at most every ``interval_sec``, and the last seen count is flushed on the way
+    out even when the throttle swallowed it (D-04 final flush) — belt-and-suspenders
+    with the completion PUT.
+
+    Returns the ``analyze_file`` result dict. Raises ``TimeoutError`` (the driver kills a
+    child exceeding ``analysis_inner_timeout_sec`` — the same exception the pebble SIGKILL
+    produced) and :class:`AnalysisSubprocessError` (child crash/nonzero exit — the
+    ``ProcessExpired`` replacement) for ``process_file``'s terminal handlers; the progress
+    bridge itself never alters the terminal mapping.
     """
-    manager = multiprocessing.Manager()
-    progress_queue = manager.Queue()
-    sink = _QueueProgressSink(progress_queue)
+    interval_sec = cfg.analysis_progress_interval_sec
+    last_post: float | None = None
+    last_count: tuple[int, int] | None = None
+    last_posted: tuple[int, int] | None = None
+    pending: set[asyncio.Task[None]] = set()
 
-    analysis_task: asyncio.Future[Any] = asyncio.ensure_future(
-        run_in_process_pool(
-            ctx,
-            _load_analyze_file(),
-            read_path,
-            models_path,
-            timeout=cfg.analysis_inner_timeout_sec,
-            fine_cap=fine_cap,
-            coarse_cap=coarse_cap,
-            progress_cb=sink,
-        )
-    )
-    # Future-done sentinel: fires on the loop the instant the child future completes OR raises
-    # (TimeoutError on SIGKILL, ProcessExpired on crash) — one teardown path for crash + clean finish.
-    analysis_task.add_done_callback(lambda _t: progress_queue.put(_PROGRESS_SENTINEL))
-    drainer_task = asyncio.create_task(_drain_progress(progress_queue, api, file_id, cfg.analysis_progress_interval_sec))
+    def _progress(analyzed: int, total: int) -> None:
+        nonlocal last_post, last_count, last_posted
+        last_count = (analyzed, total)
+        now = time.monotonic()
+        if interval_sec > 0.0 and last_post is not None and (now - last_post) < interval_sec:
+            return
+        last_post = now
+        last_posted = (analyzed, total)
+        # Fire-and-forget loop task (we're ON the loop); strong-ref'd so it is never GC'd
+        # mid-flight. _post_progress_count swallows its own errors (best-effort, D-16).
+        task = asyncio.get_running_loop().create_task(_post_progress_count(api, file_id, (analyzed, total)))
+        pending.add(task)
+        task.add_done_callback(pending.discard)
 
     try:
-        return await analysis_task
+        return await run_analysis_subprocess(
+            read_path,
+            models_path,
+            fine_cap=fine_cap,
+            coarse_cap=coarse_cap,
+            progress_cb=_progress,
+            timeout=cfg.analysis_inner_timeout_sec,
+        )
     finally:
-        # Bounded, kill-safe teardown: the sentinel normally retires the drainer immediately; the
-        # deadline + cancel backstop guarantees the worker slot is never wedged by a lost sentinel.
-        try:
-            await asyncio.wait_for(drainer_task, timeout=_DRAIN_TEARDOWN_DEADLINE_SEC)
-        except TimeoutError:
-            drainer_task.cancel()
-            # Teardown is best-effort: swallow the cancellation (and anything else) so the worker
-            # slot is always reclaimed even if a lost sentinel forced the deadline backstop.
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await drainer_task
-        finally:
-            manager.shutdown()
+        # Bounded, kill-safe teardown on every exit path (success, timeout kill, crash,
+        # cancellation): drain in-flight POSTs, then flush the last seen count if the
+        # throttle swallowed it. Best-effort by construction — never masks the outcome.
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if last_count is not None and last_count != last_posted:
+                await _post_progress_count(api, file_id, last_count)
 
 
 async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
@@ -242,9 +170,9 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     api: PhazeAgentClient = ctx["api_client"]
 
-    # CPU-bound analysis in the killable pebble pool (D-23: original_path is in the payload).
-    # The inner per-task timeout (settings.analysis_inner_timeout_sec, default 6600s) SIGKILLs a
-    # runaway essentia child and reclaims its slot; the 60/30 caps bound how many windows
+    # CPU-bound analysis in a killable child process (D-23: original_path is in the payload).
+    # The inner per-task timeout (settings.analysis_inner_timeout_sec, default 6600s) has the
+    # driver SIGKILL a runaway essentia child; the 60/30 caps bound how many windows
     # analyze_file decodes (Plan 02). Both are threaded from settings here so config drives them.
     cfg = _agent_settings()
     # Phase 44: a per-job payload cap override (the "deepen analysis" lever) takes precedence over
@@ -309,28 +237,32 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             )
 
         try:
-            # Phase 57.1 (PROG-01): run the pebble analysis with a parent-side progress drainer
-            # bridging analyze_file's per-window count → ctx["api_client"].post_analysis_progress
-            # (best-effort, throttled). The helper re-raises TimeoutError/ProcessExpired unchanged so
-            # the terminal handlers below are byte-identical to before.
-            analysis = await _run_analysis_with_progress(
-                ctx,
-                api,
-                cfg,
-                payload.file_id,
-                read_path,
-                payload.models_path,
-                fine_cap,
-                coarse_cap,
-            )
+            # Phase 101 (OBS-03): run the analysis in the exec'd child via the shared driver,
+            # with the parent-side throttled progress bridge posting
+            # ctx["api_client"].post_analysis_progress mid-analysis (best-effort). The
+            # ctx-provided semaphore (sized from worker_process_pool_size by agent_worker)
+            # preserves the retired pebble pool's concurrency bound; absent (bare test ctx),
+            # the single call needs no bound.
+            semaphore: asyncio.Semaphore | None = ctx.get("analysis_semaphore")
+            async with semaphore if semaphore is not None else contextlib.nullcontext():
+                analysis = await _run_analysis_with_progress(
+                    api,
+                    cfg,
+                    payload.file_id,
+                    read_path,
+                    payload.models_path,
+                    fine_cap,
+                    coarse_cap,
+                )
         except TimeoutError:
-            # Inner pebble kill: the file is deterministically too long. TERMINAL -- report and
-            # return NORMALLY so SAQ marks the job COMPLETE (no blind re-run of a >timeout file;
-            # T-43-08). RESEARCH §Q5.
+            # Inner kill (the driver SIGKILLs a child past analysis_inner_timeout_sec): the file
+            # is deterministically too long. TERMINAL -- report and return NORMALLY so SAQ marks
+            # the job COMPLETE (no blind re-run of a >timeout file; T-43-08). RESEARCH §Q5.
             await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except ProcessExpired:
-            # essentia OOM/segfault crashed the child. Also deterministic -> TERMINAL the same way.
+        except AnalysisSubprocessError:
+            # essentia OOM/segfault/raise crashed the child (nonzero exit). Also deterministic ->
+            # TERMINAL the same way (the ProcessExpired mapping, preserved).
             await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 

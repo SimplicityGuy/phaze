@@ -166,7 +166,6 @@ async def test_agent_startup_invokes_ensure_models_present_after_whoami(tmp_path
     fake_client.whoami = fake_whoami
     fake_client.close = AsyncMock()
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
@@ -207,7 +206,6 @@ async def test_agent_startup_propagates_ensure_models_present_failure(tmp_path: 
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     fake_client.close = AsyncMock()
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "create_process_pool", lambda: MagicMock())
     monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
     monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))

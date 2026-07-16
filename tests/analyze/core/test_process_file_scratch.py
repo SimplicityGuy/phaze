@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from pebble import ProcessExpired
 import pytest
 
 from phaze.schemas.agent_tasks import ProcessFilePayload
@@ -60,7 +59,7 @@ def _patch_agent_settings() -> Any:
 
 
 def _ctx(api: AsyncMock, job: Any | None = None) -> dict[str, Any]:
-    ctx: dict[str, Any] = {"process_pool": MagicMock(), "api_client": api}
+    ctx: dict[str, Any] = {"api_client": api}
     if job is not None:
         ctx["job"] = job
     return ctx
@@ -106,11 +105,9 @@ def _write_scratch(tmp_path: Path, content: bytes = b"pushed-audio-bytes") -> Pa
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_sha256_match_analyzes_the_scratch_copy(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """scratch_path + matching expected_sha256 → analyze the SCRATCH path, then clean it up."""
@@ -126,19 +123,17 @@ async def test_sha256_match_analyzes_the_scratch_copy(
 
     assert result["status"] == "analyzed"
     mock_pool.assert_awaited_once()
-    # read_path is the 3rd positional arg to run_in_process_pool -> the scratch copy, NOT original_path.
-    assert mock_pool.await_args.args[2] == str(scratch)
+    # read_path is the 1st positional arg to run_analysis_subprocess -> the scratch copy, NOT original_path.
+    assert mock_pool.await_args.args[0] == str(scratch)
     api.put_analysis.assert_awaited_once()
     api.report_push_mismatch.assert_not_awaited()
     # finally cleanup on the success path.
     assert not scratch.exists()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_sha256_mismatch_deletes_scratch_and_reports(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """CLOUDPIPE-03: a sha256 mismatch deletes the scratch copy, reports a clean push-mismatch,
@@ -159,11 +154,9 @@ async def test_sha256_mismatch_deletes_scratch_and_reports(
     assert not scratch.exists()  # deleted (T-50-scratch-dos)
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_sha256_verify_skipped_without_expected_hash(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """scratch_path set but expected_sha256 None → no verify gate; analyze the scratch copy anyway."""
@@ -174,7 +167,7 @@ async def test_sha256_verify_skipped_without_expected_hash(
     result = await process_file(_ctx(api), **_kwargs(scratch_path=str(scratch)))
 
     assert result["status"] == "analyzed"
-    assert mock_pool.await_args.args[2] == str(scratch)
+    assert mock_pool.await_args.args[0] == str(scratch)
     api.report_push_mismatch.assert_not_awaited()
     assert not scratch.exists()
 
@@ -184,11 +177,9 @@ async def test_sha256_verify_skipped_without_expected_hash(
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_cleanup_finally_on_all_exit_paths(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """CLOUDPIPE-04: the scratch copy is removed in a ``finally`` on the SUCCESS path."""
@@ -202,16 +193,14 @@ async def test_scratch_cleanup_finally_on_all_exit_paths(
     assert not scratch.exists()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_cleanup_on_timeout(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """Terminal TimeoutError → scratch still deleted by the ``finally`` (no DoS)."""
     scratch = _write_scratch(tmp_path)
-    mock_pool.side_effect = TimeoutError("inner pebble timeout")
+    mock_pool.side_effect = TimeoutError("analysis child timed out")
     api = _api()
 
     result = await process_file(_ctx(api), **_kwargs(scratch_path=str(scratch)))
@@ -221,16 +210,16 @@ async def test_scratch_cleanup_on_timeout(
     assert not scratch.exists()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_scratch_cleanup_on_process_expired(
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_scratch_cleanup_on_subprocess_crash(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """Terminal ProcessExpired (essentia crash) → scratch still deleted by the ``finally``."""
+    """Terminal AnalysisSubprocessError (essentia crash in the child) → scratch still deleted by the ``finally``."""
+    from phaze.services.analysis_exec import AnalysisSubprocessError
+
     scratch = _write_scratch(tmp_path)
-    mock_pool.side_effect = ProcessExpired("child died", code=1)
+    mock_pool.side_effect = AnalysisSubprocessError("analysis child failed (exit 1): child died", exit_code=1)
     api = _api()
 
     result = await process_file(_ctx(api), **_kwargs(scratch_path=str(scratch)))
@@ -239,11 +228,9 @@ async def test_scratch_cleanup_on_process_expired(
     assert not scratch.exists()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_cleanup_on_generic_error(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """A re-raised generic error still runs the ``finally`` cleanup before propagating."""
@@ -259,11 +246,9 @@ async def test_scratch_cleanup_on_generic_error(
     assert not scratch.exists()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_cleanup_on_mismatch_return(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """The mismatch early-return path also leaves no scratch file behind."""
@@ -280,11 +265,9 @@ async def test_scratch_cleanup_on_mismatch_return(
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_survives_retryable_failure(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """CR-01: a retryable analysis error must NOT delete the scratch copy.
@@ -308,11 +291,9 @@ async def test_scratch_survives_retryable_failure(
     api.report_analysis_failed.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_survives_retryable_put_analysis_failure(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """CR-01: a retryable failure in the put_analysis callback (OUTSIDE the pool try) also keeps the copy.
@@ -334,11 +315,9 @@ async def test_scratch_survives_retryable_put_analysis_failure(
     api.report_analysis_failed.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_scratch_cleaned_up_on_terminal_non_retryable_failure(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
 ) -> None:
     """CR-01: once the attempt is TERMINAL (not retryable) the copy is reclaimed and the failure reported.
@@ -359,11 +338,9 @@ async def test_scratch_cleaned_up_on_terminal_non_retryable_failure(
     api.report_analysis_failed.assert_awaited_once()
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_missing_scratch_at_sha_gate_routes_to_mismatch(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -391,11 +368,9 @@ async def test_missing_scratch_at_sha_gate_routes_to_mismatch(
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions._load_analyze_file", return_value=MagicMock())
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_local_file_without_scratch_is_byte_identical(
     mock_pool: AsyncMock,
-    _mock_loader: MagicMock,
 ) -> None:
     """No scratch_path/expected_sha256 → analyze original_path, no verify, no unlink branch taken."""
     mock_pool.return_value = MOCK_ANALYSIS
@@ -405,7 +380,7 @@ async def test_local_file_without_scratch_is_byte_identical(
 
     assert result["status"] == "analyzed"
     # read_path == original_path (no scratch swap).
-    assert mock_pool.await_args.args[2] == "/music/local.mp3"
+    assert mock_pool.await_args.args[0] == "/music/local.mp3"
     api.report_push_mismatch.assert_not_awaited()
 
 
