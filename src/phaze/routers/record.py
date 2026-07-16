@@ -31,6 +31,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
+from phaze.services.pipeline import get_file_stage_buckets
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -108,10 +109,15 @@ async def file_record(
         reverse=True,
     )
 
+    # CONSOLE-01: the six derived per-stage buckets — the SAME stage_status_case derivation the
+    # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
+    stage_buckets = await get_file_stage_buckets(session, file_id)
+
     spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     context: dict[str, Any] = {
         "request": request,
         "file": file,
+        "stage_buckets": stage_buckets,
         "analysis": analysis,
         "file_id": file_id,
         "has_windows": bool(windows),
