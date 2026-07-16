@@ -12,7 +12,7 @@
 - [ ] **CONSOLE-01**: Operator sees each stage's real derived status (done / in-flight / failed / not-started / skipped) in the file detail slide-in's *Stage Eligibility* pills, consistent with the Files-matrix row for the same file (today the pills are status-blind — a row showing Meta=done / Analyze=in-flight renders identical plain pills).
 - [ ] **CONSOLE-02**: Operator sees the left-rail stage badges reflect actual work — the Analyze badge shows the true in-flight/pending count, never `0` while files are in flight (observed `0` while 2,183 analyze jobs were in flight).
 - [ ] **CONSOLE-03**: Operator can dismiss the detail pop-out with its X / close control — both the Agents detail panel and the Analyze-lane detail panel fully close, rather than only removing the X icon (HTMX-swap / Alpine-global-scope trap).
-- [ ] **CONSOLE-04**: Operator can open the Analyze workspace without the browser severely slowing or hanging.
+- [x] **CONSOLE-04**: Operator can open the Analyze workspace without the browser severely slowing or hanging. (Phase 95 / epic phaze-zqvh, PR #264 — browser-verified at 200K corpus: ~4.1s open, ~80MB heap, flat 31-minute soak, no-jank interactions at the 13K-row working set; see 95-VERIFICATION.md)
 
 ### COMPUTE — Multi-Kueue Compute Surfacing (systemic)
 
