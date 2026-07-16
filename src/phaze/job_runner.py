@@ -376,6 +376,15 @@ async def run() -> None:
         # changes the EXIT_ANALYSIS / EXIT_CALLBACK exit-code contract (KJOB-04).
         loop = asyncio.get_running_loop()
         progress_cb = _make_progress_cb(client, file_id, loop, cfg.analysis_progress_interval_sec)
+        # phaze-sfbx.4: bracket the analyze call with explicit frame markers. essentia's own
+        # ``[ INFO ] MusicExtractor...`` banners are written by C++ DIRECTLY to fd 1/2 -- NOT
+        # through structlog -- so they interleave into the pod's log stream as if they were app
+        # lines. These two events give that interleaved output a visible "essentia begins / ends"
+        # frame in BOTH the JSON and the friendly rendering. NO fd redirection / os.dup2 here:
+        # real capture/routing of the child's stdout/stderr is DEFERRED to Phase 101's subprocess
+        # execution model. Today analyze_file runs in-process (asyncio.to_thread), so its fds ARE
+        # the pod's fds -- there is nothing to reattach, only to frame.
+        log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- essentia output follows")
         try:
             result = await asyncio.to_thread(
                 analyze_file,
@@ -385,34 +394,46 @@ async def run() -> None:
                 coarse_cap=cfg.analysis_coarse_cap,
                 progress_cb=progress_cb,
             )
-            # Payload construction is part of the analyze step (NOT the callback
-            # step): a malformed analyze result (non-dict, windows present-but-
-            # None, or an unexpected window key) is a bad-analysis-output failure
-            # and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04 distinct-
-            # exit-code contract). Mirrors the process_file dict-guard.
-            if not isinstance(result, dict):
-                log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
-                sys.exit(EXIT_ANALYSIS)
-            # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
-            # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
-            # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
-            # previously recorded a NULL-everything "success". A real audio file always
-            # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
-            # reads it as failed_at instead of a false completion. SystemExit is BaseException,
-            # so it bypasses the `except Exception` below (same as the non-dict guard above).
-            fine_total = result.get("fine_windows_total") or 0
-            coarse_total = result.get("coarse_windows_total") or 0
-            if fine_total == 0 and coarse_total == 0:
-                log.error(
-                    "job_runner_empty_analysis",
-                    file_id=fid,
-                    step="analyze",
-                    reason="zero_windows",
-                    suffix=suffix,
-                    fine_windows_total=fine_total,
-                    coarse_windows_total=coarse_total,
-                )
-                sys.exit(EXIT_ANALYSIS)
+        except Exception:
+            # Close the frame BEFORE the failure log so the (possibly noisy) essentia output above
+            # stays bracketed even on the crash path, then map to EXIT_ANALYSIS (D-01 unchanged).
+            log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="error")
+            log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")
+            sys.exit(EXIT_ANALYSIS)
+        # Close the frame on the success path too: everything below is analysis-OUTPUT validation
+        # (NOT essentia stdout), so it sits OUTSIDE the frame markers.
+        log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="ok")
+
+        # Payload construction is part of the analyze step (NOT the callback step): a malformed
+        # analyze result (non-dict, windows present-but-None, or an unexpected window key) is a
+        # bad-analysis-output failure and MUST map to EXIT_ANALYSIS, not EXIT_CALLBACK (KJOB-04
+        # distinct-exit-code contract). Mirrors the process_file dict-guard.
+        if not isinstance(result, dict):
+            log.error("job_runner_bad_result", file_id=fid, step="analyze", got=type(result).__name__)
+            sys.exit(EXIT_ANALYSIS)
+        # Fail LOUDLY on a zero-window analysis (cloud-analyze-empty-no-ext hardening).
+        # ``*_total`` is the NATURAL pre-stride window count; both being 0 means the
+        # duration probe read 0 seconds (an undecodable/mis-suffixed download), which
+        # previously recorded a NULL-everything "success". A real audio file always
+        # yields >=1 window, so 0/0 is a decode failure — exit non-zero so Kueue/Workload
+        # reads it as failed_at instead of a false completion.
+        fine_total = result.get("fine_windows_total") or 0
+        coarse_total = result.get("coarse_windows_total") or 0
+        if fine_total == 0 and coarse_total == 0:
+            log.error(
+                "job_runner_empty_analysis",
+                file_id=fid,
+                step="analyze",
+                reason="zero_windows",
+                suffix=suffix,
+                fine_windows_total=fine_total,
+                coarse_windows_total=coarse_total,
+            )
+            sys.exit(EXIT_ANALYSIS)
+        # A window dict carrying an unexpected key fails AnalysisWindowPayload (extra="forbid")
+        # during payload build -- still an analysis-output error, so it maps to EXIT_ANALYSIS
+        # (12), NOT EXIT_CALLBACK (13) (WR-01: payload build is part of the analyze step).
+        try:
             payload = _build_payload(result)
         except Exception:
             log.exception("job_runner_analysis_failed", file_id=fid, step="analyze")

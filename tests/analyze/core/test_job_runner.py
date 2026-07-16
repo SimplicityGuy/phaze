@@ -793,3 +793,98 @@ async def test_progress_line_failure_never_escapes_callback(job_env, monkeypatch
     await asyncio.sleep(0.1)
 
     assert exc.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 100 (phaze-sfbx.4): bracket-marker framing around essentia's analyze output.
+# essentia's `[ INFO ] MusicExtractor...` banners are written by C++ to fd 1/2; the
+# frame events attribute that interleaved output without any fd redirection.
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_analyze_frame_markers_bracket_success_path(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """On success, analyze_begin precedes the analyze call and analyze_end(ok) follows it (phaze-sfbx.4)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA})
+
+    def _analyze_with_essentia_noise(*_a, **_k):  # type: ignore[no-untyped-def]
+        # Stand in for essentia's own fd-1 banner interleaving mid-analyze.
+        jr.log.info("essentia_musicextractor_banner")
+        return _fake_result()
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _analyze_with_essentia_noise)
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    events = [e["event"] for e in logs]
+    begin = events.index("job_runner_analyze_begin")
+    end = events.index("job_runner_analyze_end")
+    noise = events.index("essentia_musicextractor_banner")
+    step_ok_analyze = next(i for i, e in enumerate(logs) if e["event"] == "job_runner_step_ok" and e["step"] == "analyze")
+    # The essentia output is visibly bracketed: begin < essentia noise < end.
+    assert begin < noise < end
+    # The end frame closes before the step_ok summary; both name step="analyze".
+    assert end < step_ok_analyze
+    end_event = logs[end]
+    assert end_event["step"] == "analyze"
+    assert end_event["outcome"] == "ok"
+
+
+@respx.mock
+async def test_analyze_frame_markers_bracket_failure_path(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """On an analyze crash, analyze_end(error) still closes the frame before the failure log; exit 12 (phaze-sfbx.4)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+
+    def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise RuntimeError("essentia crashed")
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _boom)
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_ANALYSIS == 12
+    events = [e["event"] for e in logs]
+    begin = events.index("job_runner_analyze_begin")
+    end = events.index("job_runner_analyze_end")
+    failed = events.index("job_runner_analysis_failed")
+    # The frame is closed (error) BEFORE the failure log, so the bracket surrounds the crash too.
+    assert begin < end < failed
+    end_event = logs[end]
+    assert end_event["step"] == "analyze"
+    assert end_event["outcome"] == "error"
+    # No success step_ok for analyze on the crash path.
+    assert not any(e["event"] == "job_runner_step_ok" and e.get("step") == "analyze" for e in logs)
+
+
+def test_analyze_framing_source_guard():  # type: ignore[no-untyped-def]
+    """Source guard: frame events wrap analyze, NO fd redirection introduced, Phase 101 deferral recorded (phaze-sfbx.4)."""
+    import phaze.job_runner as jr
+
+    src = Path(jr.__file__).read_text(encoding="utf-8")
+    assert "job_runner_analyze_begin" in src, "an analyze-begin frame marker must be emitted"
+    assert "job_runner_analyze_end" in src, "an analyze-end frame marker must be emitted"
+    # No fd redirection is INTRODUCED. The comment legitimately names os.dup2 as the deferred
+    # approach, so guard on the dangerous CALL forms (a name immediately followed by an open
+    # paren), not the prose mention -- mirrors the existing ``).result()`` source guard.
+    assert "os.dup2(" not in src, "no fd redirection: capture is deferred to Phase 101"
+    assert "dup2(" not in src
+    assert "os.dup(" not in src
+    assert "Phase 101" in src, "a comment must record the deferral to Phase 101's subprocess model"
