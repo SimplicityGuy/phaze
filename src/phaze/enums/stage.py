@@ -166,7 +166,10 @@ def _apply_status(*, row_present: bool, failed: bool, inflight: bool) -> Status:
 
 
 def resolve_status(stage: Stage, scalars: Mapping[str, Any]) -> Status:
-    """Resolve the 4-way :class:`Status` for ``stage`` from plain scalars (DB-free).
+    """Resolve the per-stage :class:`Status` for ``stage`` from plain scalars (DB-free).
+
+    5-way (including ``SKIPPED``) for the three enrich stages; 4-way (no ``SKIPPED``) for the
+    downstream stages -- see the ``Status`` class docstring.
 
     ``scalars`` carries only the keys the stage's twin needs (all optional, safe defaults):
     - analyze: ``completed_at``, ``failed_at``, ``inflight``
