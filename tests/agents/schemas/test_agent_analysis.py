@@ -13,6 +13,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWindowPayload,
     AnalysisWritePayload,
     AnalysisWriteResponse,
+    PresignDownloadMetadata,
     PresignDownloadResponse,
 )
 
@@ -270,6 +271,56 @@ def test_presign_download_response_accepts_valid_sha256() -> None:
     assert resp.expected_sha256 == "a" * 64
     # cloud-analyze-empty-no-ext: audio_ext is optional and defaults to None (URL-suffix fallback).
     assert resp.audio_ext is None
+    # Phase 100 (phaze-sfbx.1): metadata is optional and defaults to None (older control plane).
+    assert resp.metadata is None
+
+
+def test_presign_download_response_carries_populated_metadata() -> None:
+    """Phase 100 (phaze-sfbx.1): the optional display-metadata block round-trips when present."""
+    metadata = PresignDownloadMetadata(
+        original_filename="song.mp3",
+        current_path="/music/song.mp3",
+        source_agent_id="fileserver-01",
+        duration_sec=245.5,
+        file_size=4096,
+        staging_bucket="staging",
+        backend_id="cluster-01",
+    )
+    resp = PresignDownloadResponse(
+        download_url="https://s3.example/obj",
+        expected_sha256="a" * 64,
+        audio_ext="mp3",
+        metadata=metadata,
+    )
+
+    assert resp.metadata is not None
+    assert resp.metadata.original_filename == "song.mp3"
+    assert resp.metadata.current_path == "/music/song.mp3"
+    assert resp.metadata.source_agent_id == "fileserver-01"
+    assert resp.metadata.file_size == 4096
+    assert resp.metadata.staging_bucket == "staging"
+    assert resp.metadata.backend_id == "cluster-01"
+    assert resp.metadata.duration_sec == 245.5
+
+
+def test_presign_download_response_absent_metadata_parses_as_none() -> None:
+    """An older control plane's response (no ``metadata`` key at all) parses cleanly with metadata=None."""
+    resp = PresignDownloadResponse.model_validate({"download_url": "https://s3.example/obj", "expected_sha256": "a" * 64, "audio_ext": "mp3"})
+
+    assert resp.metadata is None
+
+
+def test_presign_download_metadata_all_fields_individually_optional() -> None:
+    """Every field on PresignDownloadMetadata degrades independently (partial CloudJob/FileRecord rows)."""
+    metadata = PresignDownloadMetadata()
+
+    assert metadata.original_filename is None
+    assert metadata.current_path is None
+    assert metadata.source_agent_id is None
+    assert metadata.duration_sec is None
+    assert metadata.file_size is None
+    assert metadata.staging_bucket is None
+    assert metadata.backend_id is None
 
 
 def test_presign_download_response_carries_audio_ext() -> None:

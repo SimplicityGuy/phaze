@@ -26,9 +26,10 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_analysis import PresignDownloadResponse
+from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.services import s3_staging
 
@@ -177,6 +178,14 @@ async def presign_download(
     ``Field(pattern=...)`` on the response catches any format skew at the wire boundary.
 
     An unknown ``file_id`` is a clean 404, never a 500.
+
+    Phase 100 (phaze-sfbx.1): also returns an optional ``metadata`` display-identity block
+    (``PresignDownloadMetadata``) built from the SAME ``FileRecord``/``CloudJob`` rows this
+    handler already loads for the readiness gate above, plus one narrow extra
+    ``FileMetadata.duration`` select (OBS-02 wants duration in the pod banner; it lives on a
+    separate 1:1 table this handler otherwise never touches) -- no change to the auth gating or
+    the 404/409 readiness paths, which are both fully resolved before that extra select runs.
+    Consumed by the pod's console banner (phaze-sfbx.3).
     """
     # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating (AUTH-01).
     _ = agent.id
@@ -192,7 +201,12 @@ async def presign_download(
     # RUNNING}); otherwise 409 so the pod (or Phase 54 reconcile) sees "not ready" at the control plane
     # instead of taking an opaque 403/404 from S3 mid-download. Single-user system: NO per-agent
     # ownership predicate -- cross-agent access is by design (file_id is path-only, AUTH-01), not an IDOR.
-    cloud_job_row = (await session.execute(select(CloudJob.status, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
+    # Phase 100 (phaze-sfbx.1): the select is extended with `backend_id` (over the pre-existing
+    # `status`/`staging_bucket` pair) so the display-metadata block below is populated from THIS
+    # row -- no second CloudJob query. Purely additive to the readiness gating above/below.
+    cloud_job_row = (
+        await session.execute(select(CloudJob.status, CloudJob.staging_bucket, CloudJob.backend_id).where(CloudJob.file_id == file_id))
+    ).first()
     cloud_job_status = cloud_job_row.status if cloud_job_row is not None else None
     if cloud_job_row is None or cloud_job_status not in _PRESIGN_DOWNLOADABLE_STATUSES:
         raise HTTPException(
@@ -210,10 +224,31 @@ async def presign_download(
             detail="staged object has no resolvable staging bucket recorded",
         )
     download_url = await s3_staging.presign_get(file_id, bucket)
+    # Phase 100 (phaze-sfbx.1): display-metadata block for the pod's console banner
+    # (phaze-sfbx.3), populated from the FileRecord + CloudJob rows already loaded above (no
+    # new query, no effect on the gating raised earlier in this handler) PLUS one narrow extra
+    # select for `duration` -- FileMetadata is a separate 1:1-with-files table this handler
+    # otherwise never touches. `scalar_one_or_none()` tolerates a file with no metadata row yet
+    # (extraction is operator-triggered, MANUAL-META) -> duration_sec stays None rather than 500ing.
+    duration = (await session.execute(select(FileMetadata.duration).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
+    display_metadata = PresignDownloadMetadata(
+        original_filename=file.original_filename,
+        current_path=file.current_path,
+        source_agent_id=file.agent_id,
+        duration_sec=duration,
+        file_size=file.file_size,
+        staging_bucket=cloud_job_row.staging_bucket,
+        backend_id=cloud_job_row.backend_id,
+    )
     # Thread the file's real audio extension so the DB-less pod can name its temp file
     # <file_id>.<ext> (essentia detects format by extension). The staged S3 key carries
     # no extension, so without this the pod falls back to `.audio` -> essentia decodes 0
     # duration -> 0 windows -> a silent empty-but-"successful" analysis (cloud-analyze-
     # empty-no-ext). `file_type` is the dotless extension (e.g. "mp3"), the same value
     # agent_push/push use to name their scratch copies.
-    return PresignDownloadResponse(download_url=download_url, expected_sha256=file.sha256_hash, audio_ext=file.file_type)
+    return PresignDownloadResponse(
+        download_url=download_url,
+        expected_sha256=file.sha256_hash,
+        audio_ext=file.file_type,
+        metadata=display_metadata,
+    )
