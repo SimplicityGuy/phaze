@@ -67,7 +67,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CONSOLE-01 | Phase 93 | Pending |
 | CONSOLE-02 | Phase 93 | Pending |
 | CONSOLE-03 | Phase 94 | Pending |
-| CONSOLE-04 | Phase 95 | Pending |
+| CONSOLE-04 | Phase 95 | Complete (verified — 95-VERIFICATION passed) |
 | COMPUTE-01 | Phase 96 | Pending |
 | COMPUTE-02 | Phase 97 | Pending |
 | COMPUTE-03 | Phase 97 | Pending |

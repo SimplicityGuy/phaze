@@ -1,3 +1,8 @@
+---
+status: passed
+verified: 2026-07-16
+---
+
 # Phase 95 — End-to-End Scale Verification (phaze-zqvh.5)
 
 Final verify-bead for the Phase 95 epic (`phaze-zqvh`, CONSOLE-04). Closes the loop the
