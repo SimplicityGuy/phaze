@@ -51,13 +51,28 @@
                  // trigger id from the pushed ?param (STABLE id, never a captured node) and park
                  // focus on the pane heading — off the poll-doomed trigger (Pitfall 1).
                  const id = new URLSearchParams(location.search).get(this.param);
-                 this.selectedId = id ? this.triggerPrefix + id : null;
+                 if (!id) {
+                     // No ?param means the pane was dismissed (hide() cleared it) — this is a LATE
+                     // in-flight own-tick response landing after the ✕. Wipe instead of resurrecting.
+                     this.wipe();
+                     return;
+                 }
+                 this.selectedId = this.triggerPrefix + id;
                  this.open = true;
                  this.refreshError = false;
                  this.$nextTick(() => { document.getElementById('detail-pane-heading')?.focus(); });
              },
-             hide() {
+             wipe() {
+                 // Full dismiss: flipping `open` alone only hides the ✕ — the swapped wave-2 body is
+                 // not gated on `open`, and the innerHTML swap already destroyed anything that was
+                 // inside the target. Clearing the target removes the body AND its own-tick poller
+                 // (htmx cancels the every-5s trigger when the element leaves the DOM).
                  this.open = false;
+                 const pane = document.getElementById('detail-pane');
+                 if (pane) pane.innerHTML = '';
+             },
+             hide() {
+                 this.wipe();
                  // Clear the ?param back to the base path WITHOUT a navigation, then return focus
                  // to the originating trigger by STABLE id (the 5s poll may have replaced the
                  // original node; the re-rendered trigger keeps the same id).
@@ -96,11 +111,15 @@
        `this`. Guarded on window.Alpine so a pre-hydration swap degrades to the innerHTML render. #}
     <div id="detail-pane"
          class="mt-3"
-         hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); Alpine.$data(this).onLoaded(); }">
-        <div class="rounded-xl border border-gray-200 p-4 dark:border-phaze-border" x-show="!open">
-            <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ _empty_head }}</p>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ _empty_body }}</p>
-        </div>
+         hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); Alpine.$data(this).onLoaded(); }"></div>
+
+    {# Resting empty state — a SIBLING of the swap target, never inside it: the trigger's
+       hx-swap="innerHTML" destroys everything inside #detail-pane, so an inside empty state
+       could never come back after a dismiss (the ✕-only-disappears trap, CONSOLE-03). Gated
+       on !open it re-appears whenever wipe()/hide() closes the pane. #}
+    <div class="mt-3 rounded-xl border border-gray-200 p-4 dark:border-phaze-border" x-show="!open">
+        <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ _empty_head }}</p>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ _empty_body }}</p>
     </div>
 
     {# D-03 own-tick placeholder: the wave-2 body swapped into #detail-pane carries the bounded
