@@ -90,9 +90,12 @@ the reference spec is reproduced here.
 
 > **⚠️ Capacity gotcha (load-bearing).** As of **June 2026** the OCI Always-Free Ampere A1 limit
 > was reduced to **2 OCPU / 12 GB total** (previously 4 OCPU / 24 GB). Spec the A1 at **2 OCPU /
-> 12 GB** and set `WORKER_MAX_JOBS=1` on the compute agent (a single concurrent analysis is
-> RAM-bound on 12 GB). Always-Free A1 capacity is region-constrained — "Out of Capacity" is
-> common; retry across availability domains / regions.
+> 12 GB**; `docker-compose.cloud-agent.yml` already pins the compute agent's `analyze` lane to a
+> single concurrent job via `PHAZE_LANE_ANALYZE_CONCURRENCY=1` (a single concurrent analysis is
+> RAM-bound on 12 GB — `WORKER_MAX_JOBS` alone is only a ceiling in lane mode and does not by
+> itself cap concurrency; see [agent-queue-lanes.md](agent-queue-lanes.md)).
+> Always-Free A1 capacity is region-constrained — "Out of Capacity" is common; retry across
+> availability domains / regions.
 
 ```hcl
 # Provider: oracle/oci. Resources the homelab module must create:
@@ -262,8 +265,10 @@ PHAZE_AGENT_ENV=production
 PHAZE_AGENT_KIND=compute                                       # relaxes the empty-scan-roots gate
 PHAZE_AGENT_QUEUE=phaze-agent-<compute_agent_id>               # raw env, read at SAQ import time
 PHAZE_AGENT_TOKEN_FILE=/run/secrets/agent_token                # _FILE secret
-PHAZE_CLOUD_SCRATCH_DIR=/scratch                               # MUST match control's PHAZE_COMPUTE_SCRATCH_DIR
-WORKER_MAX_JOBS=1                                              # single RAM-bound analysis on the 12 GB A1
+PHAZE_CLOUD_SCRATCH_DIR=/scratch                               # MUST match this backend's scratch_dir in backends.toml (Step 6)
+# No WORKER_MAX_JOBS override needed: docker-compose.cloud-agent.yml already pins the analyze
+# lane to a single RAM-bound job via PHAZE_LANE_ANALYZE_CONCURRENCY=1 (the knob that actually
+# governs concurrency in lane mode; WORKER_MAX_JOBS alone is only a ceiling).
 MODELS_PATH=/models
 PHAZE_AGENT_CA_FILE=/certs/phaze-ca.crt
 PHAZE_IMAGE_TAG=2026.7.1                                      # pulls 2026.7.1-arm64
@@ -275,9 +280,10 @@ PHAZE_IMAGE_TAG=2026.7.1                                      # pulls 2026.7.1-a
 > password. Both are non-negotiable on the compute agent — set `PHAZE_AGENT_API_URL=https://lux:8000`
 > and a passworded `PHAZE_REDIS_URL`.
 
-**Scratch-dir match.** `PHAZE_CLOUD_SCRATCH_DIR` (A1) **must equal** `PHAZE_COMPUTE_SCRATCH_DIR`
-(lux control plane) and the named-volume mount path — a drift surfaces as a sha256/transfer
-failure, never silent corruption.
+**Scratch-dir match.** `PHAZE_CLOUD_SCRATCH_DIR` (A1) **must equal** this backend's `scratch_dir`
+field in `backends.toml` (Step 6, lux control plane — the flat control-side `compute_scratch_dir` /
+`PHAZE_COMPUTE_SCRATCH_DIR` was removed in Phase 67/73 with no shim) and the named-volume mount
+path — a drift surfaces as a sha256/transfer failure, never silent corruption.
 
 ## Step 6 — Declare the compute backend and restart the control plane (lux)
 
