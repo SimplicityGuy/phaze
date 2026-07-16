@@ -179,3 +179,97 @@ def test_unknown_level_falls_back_to_info(capsys: pytest.CaptureFixture[str]) ->
     out = capsys.readouterr().out
     assert "info kept" in out
     assert "debug dropped" not in out
+
+
+# -- PHAZE_LOG_FRIENDLY dual rendering (phaze-sfbx.2) ------------------------------
+#
+# These assert that enabling `friendly` is strictly additive: the JSON line keeps
+# the same keys it had before, a second human-readable line appears alongside it,
+# and both come from a single log call (never two call sites to drift apart).
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_disabled_by_default_single_handler(capsys: pytest.CaptureFixture[str]) -> None:
+    """With the flag unset, output stays byte-identical to pre-dual-render behavior."""
+    configure_logging(level="INFO", json_logs=True)
+    structlog.get_logger("test.friendly.default").info("solo line", key="value")
+
+    assert len(logging.getLogger().handlers) == 1
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event"] == "solo line"
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_enabled_emits_json_plus_console_line(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging(level="INFO", json_logs=True, friendly=True)
+    structlog.get_logger("test.friendly.dual").info("dual line", key="value")
+
+    assert len(logging.getLogger().handlers) == 2
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 2
+
+    json_payload = json.loads(lines[0])
+    assert json_payload["event"] == "dual line"
+    assert json_payload["key"] == "value"
+
+    # Second line is the friendly rendering of the SAME event: human-readable, not JSON.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(lines[1])
+    assert "dual line" in lines[1]
+    assert "key" in lines[1] and "value" in lines[1]
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_enabled_keeps_json_keys_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
+    """Enabling dual rendering must not add/remove/alter keys on the JSON line."""
+    configure_logging(level="INFO", json_logs=True)
+    structlog.get_logger("test.friendly.keys").info("keys line", key="value")
+    baseline_keys = set(_last_json_line(capsys.readouterr().out).keys())
+
+    configure_logging(level="INFO", json_logs=True, friendly=True)
+    structlog.get_logger("test.friendly.keys").info("keys line", key="value")
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    dual_json_keys = set(json.loads(lines[0]).keys())
+
+    assert dual_json_keys == baseline_keys
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_env_fallback(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("PHAZE_LOG_FRIENDLY", "true")
+    configure_logging(level="INFO", json_logs=True)
+    structlog.get_logger("test.friendly.env").info("env dual")
+
+    assert len(logging.getLogger().handlers) == 2
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 2
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_reconfigure_does_not_accumulate_handlers() -> None:
+    configure_logging(level="INFO", json_logs=True, friendly=True)
+    configure_logging(level="INFO", json_logs=True, friendly=True)
+    configure_logging(level="DEBUG", json_logs=True, friendly=False)
+
+    assert len(logging.getLogger().handlers) == 1
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_disabled_explicit_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHAZE_LOG_FRIENDLY", "true")
+    configure_logging(level="INFO", json_logs=True, friendly=False)
+
+    assert len(logging.getLogger().handlers) == 1
+
+
+@pytest.mark.usefixtures("reset_logging")
+def test_friendly_foreign_stdlib_record_also_dual_rendered(capsys: pytest.CaptureFixture[str]) -> None:
+    """Foreign (non-structlog) records flow through both handlers too."""
+    configure_logging(level="INFO", json_logs=True, friendly=True)
+    logging.getLogger("uvicorn.error").info("foreign dual record")
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 2
+    assert json.loads(lines[0])["event"] == "foreign dual record"
+    assert "foreign dual record" in lines[1]
