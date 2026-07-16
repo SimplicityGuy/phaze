@@ -268,8 +268,9 @@ differ per cluster — each backend's `[backends.kube]` block references them by
 
 ### 0 — Create the namespace
 
-All phaze objects for a cluster live in one namespace (the backend's `[backends.kube].namespace`,
-default `phaze`). The namespaced RBAC below scopes every grant to exactly this namespace.
+All phaze objects for a cluster live in one namespace (the backend's `[backends.kube].namespace` —
+**required**, no code-level default; this runbook's placeholder value is `phaze`). The namespaced
+RBAC below scopes every grant to exactly this namespace.
 
 ```bash
 kubectl create namespace phaze
