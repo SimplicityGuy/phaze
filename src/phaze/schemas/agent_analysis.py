@@ -134,6 +134,47 @@ class AnalysisFailureResponse(BaseModel):
     file_id: uuid.UUID
 
 
+class PresignDownloadMetadata(BaseModel):
+    """Optional display-metadata block threaded through ``PresignDownloadResponse`` (Phase 100, phaze-sfbx.1).
+
+    The Postgres-less one-shot pod (``job_runner.py``) knows only ``PHAZE_JOB_FILE_ID`` and the
+    presign response -- it has no human-readable identity to print in its startup banner
+    (phaze-sfbx.3 consumes this block for that banner, OBS-02). Populated SERVER-side by the
+    presign-download handler from the ``FileRecord`` + ``CloudJob`` rows it ALREADY loads for the
+    existing readiness gating (design decision 1, epic phaze-sfbx), plus one narrow extra select
+    against ``FileMetadata.duration`` (a separate 1:1-with-files table the handler otherwise
+    never touches) -- neither of which changes the auth gating or the 404/409 readiness paths,
+    which are both fully resolved before either query runs.
+
+    Every field is individually optional so a partially-populated control-plane row degrades
+    field-by-field instead of omitting the whole block: a ``CloudJob`` with no ``backend_id``
+    stamped yet (Phase 68 D-06 shipped it with no backfill) yields ``backend_id=None``, and a
+    file with no ``FileMetadata`` row yet (extraction is operator-triggered, MANUAL-META --
+    Phase 35 D-06) yields ``duration_sec=None``. The pod tolerates unknown additive keys
+    (``extra='ignore'``) for the same rolling-deploy forward-compat reason as the parent response.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    # Human-readable filename (FileRecord.original_filename).
+    original_filename: str | None = None
+    # Source path/origin on the owning agent's filesystem (FileRecord.current_path).
+    current_path: str | None = None
+    # Source agent/fileserver identity that owns the file (FileRecord.agent_id).
+    source_agent_id: str | None = None
+    # Track/clip duration in seconds (FileMetadata.duration). None until metadata extraction has
+    # run for this file (MANUAL-META, operator-triggered) or if no metadata row exists at all.
+    duration_sec: float | None = None
+    # File size in bytes (FileRecord.file_size).
+    file_size: int | None = None
+    # Registry bucket id the object was staged into (CloudJob.staging_bucket) -- the same value
+    # the presign handler resolves via `s3_staging.resolve_bucket_config`.
+    staging_bucket: str | None = None
+    # Config-derived backend/cluster registry id stamped at dispatch (CloudJob.backend_id, Phase 68
+    # D-06). NULLABLE with no backfill -- rows written before Phase 68 never got one.
+    backend_id: str | None = None
+
+
 class PresignDownloadResponse(BaseModel):
     """Presign-download response consumed by the DB-less one-shot pod (Phase 52, KJOB-02).
 
@@ -160,6 +201,12 @@ class PresignDownloadResponse(BaseModel):
     every file for the rollout window. Tolerating unknown additive fields keeps old
     pods forward-compatible. (The request-body models KEEP ``extra='forbid'`` -- there
     it guards against smuggled ``agent_id``/``file_id``.)
+
+    Phase 100 (phaze-sfbx.1): ``metadata`` is a further OPTIONAL, ADDITIVE block (see
+    ``PresignDownloadMetadata``) carrying human-readable display identity for the pod's console
+    banner (phaze-sfbx.3). It defaults to ``None`` so an older pod build that doesn't know the
+    field simply never reads it, and a newer pod against an older control plane that never sends
+    it degrades to a UUID-only banner rather than failing.
     """
 
     model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
@@ -181,3 +228,7 @@ class PresignDownloadResponse(BaseModel):
     # Optional (default None) so an older control plane that omits it degrades to
     # the URL-suffix fallback rather than failing response validation on rollout.
     audio_ext: str | None = Field(default=None, max_length=10)
+    # Phase 100 (phaze-sfbx.1): optional display-identity block for the pod's console banner.
+    # Absent (None) against an older control plane -- the pod (AgentClient.request_download_url)
+    # must degrade to a UUID-only banner without error, never fail response validation.
+    metadata: PresignDownloadMetadata | None = Field(default=None)

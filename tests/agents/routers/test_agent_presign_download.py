@@ -19,6 +19,7 @@ import pytest
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_analysis import PresignDownloadResponse
 
 
@@ -272,6 +273,76 @@ async def test_presign_download_terminal_status_returns_409(
 
     assert resp.status_code == 409, resp.text
     assert "not ready" in resp.json()["detail"]
+
+
+async def test_presign_download_populates_display_metadata(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """Phase 100 (phaze-sfbx.1): the response carries an optional ``metadata`` block sourced from
+    the FileRecord + CloudJob rows the handler already loads, plus a narrow FileMetadata.duration
+    select -- all without any auth-gating change."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            s3_key=f"phaze-staging/{file.id}",
+            status=CloudJobStatus.UPLOADED.value,
+            upload_id="upload-xyz",
+            staging_bucket="staging",
+            backend_id="cluster-01",
+        )
+    )
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file.id, duration=245.5))
+    await session.commit()
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    metadata = body["metadata"]
+    assert metadata is not None
+    assert metadata["original_filename"] == "song.mp3"
+    assert metadata["current_path"] == "/test/music/song.mp3"
+    assert metadata["source_agent_id"] == agent.id
+    assert metadata["file_size"] == 4096
+    assert metadata["staging_bucket"] == "staging"
+    assert metadata["backend_id"] == "cluster-01"
+    # OBS-02: duration is sourced from the separate FileMetadata table when a row exists.
+    assert metadata["duration_sec"] == 245.5
+    parsed = PresignDownloadResponse.model_validate(body)
+    assert parsed.metadata is not None
+    assert parsed.metadata.backend_id == "cluster-01"
+    assert parsed.metadata.duration_sec == 245.5
+
+
+async def test_presign_download_metadata_degrades_when_backend_id_unset(
+    s3_env: str,
+    authenticated_client: AsyncClient,
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+) -> None:
+    """A CloudJob row with no ``backend_id`` stamped (Phase 68 D-06, no backfill) and a file with
+    no FileMetadata row yet (extraction is operator-triggered, MANUAL-META) still return a
+    metadata block -- just with ``backend_id=None``/``duration_sec=None`` -- rather than omitting
+    the block entirely or 500ing on the missing metadata row."""
+    agent, _token = seed_test_agent
+    file = await _seed_file(session, agent)
+    await _seed_cloud_job(session, file.id, status=CloudJobStatus.UPLOADED)  # no backend_id stamped
+    # No FileMetadata row seeded -- duration_sec must degrade to None, not error.
+
+    resp = await authenticated_client.post(f"/api/internal/agent/files/{file.id}/presign-download")
+
+    assert resp.status_code == 200, resp.text
+    metadata = resp.json()["metadata"]
+    assert metadata is not None
+    assert metadata["backend_id"] is None
+    assert metadata["staging_bucket"] == "staging"
+    assert metadata["duration_sec"] is None
 
 
 async def test_presign_download_unresolvable_bucket_returns_409(
