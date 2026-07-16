@@ -100,11 +100,6 @@ test-ci:
 test-file FILE:
     uv run pytest {{FILE}} -x -v
 
-[doc('Run the REQUIREMENTS/ROADMAP docs-drift traceability guard (DOCS-01)')]
-[group('test')]
-docs-drift:
-    uv run pytest tests/shared/core/test_requirements_traceability.py -q
-
 # Non-blocking dead-code sweep (CLEAN-02). NOT a CI/pre-commit gate — framework-invoked
 # code produces false-positives that need per-candidate human reachability judgment. A
 # nonzero exit merely lists remaining candidates to hand-verify. vulture_whitelist.py is a

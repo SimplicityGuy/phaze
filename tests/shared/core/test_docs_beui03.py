@@ -11,11 +11,11 @@ silently drop them:
   trivial 1:1 ``cloud_target`` -> ``backends`` equivalence.
 
 This is a pure filesystem structural guard mirroring the repo's established hermetic idiom
-(``tests/shared/core/test_requirements_traceability.py`` / ``test_docs_ia_current.py``):
-repo-root ``Path`` constants, ``read_text`` parse-then-assert, one assertion per behavior, every
-assert carries a precise offender message, and ZERO ``phaze.*`` imports -> hermetic. Being
-import-free it is immune to the ``get_settings`` lru_cache leak / ``saq_jobs`` stub cross-test
-poison and passes in isolation via ``just test-bucket shared``. It needs no DB fixture.
+(``test_docs_ia_current.py``): repo-root ``Path`` constants, ``read_text`` parse-then-assert, one
+assertion per behavior, every assert carries a precise offender message, and ZERO ``phaze.*``
+imports -> hermetic. Being import-free it is immune to the ``get_settings`` lru_cache leak /
+``saq_jobs`` stub cross-test poison and passes in isolation via ``just test-bucket shared``. It
+needs no DB fixture.
 """
 
 from __future__ import annotations
