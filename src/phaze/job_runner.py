@@ -220,7 +220,12 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEve
     always post so the bar gets an early total and a final value even inside the throttle window. Any
     exception is swallowed so a progress failure can never escape the analysis thread (KJOB-04 contract).
     """
-    state = {"last_post": 0.0}
+    # Seed to -inf, NOT 0.0: time.monotonic()'s epoch is boot-relative, so on a freshly booted
+    # host (a one-shot pod ALWAYS is) with uptime < interval_sec, `now - 0.0` would be < the
+    # interval and THROTTLE the very first callback -- silently breaking the documented "the START
+    # count always posts" contract (and the console START line). -inf makes the first gap
+    # infinite, so the start count passes the gate regardless of machine uptime.
+    state = {"last_post": float("-inf")}
 
     def _cb(analyzed: int, total: int) -> None:
         try:
