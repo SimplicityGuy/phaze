@@ -142,6 +142,102 @@ async def test_progress_cb_error_never_fails_the_analysis(monkeypatch: pytest.Mo
     assert result["fine_windows_total"] == 3
 
 
+# ---------------------------------------------------------------------------
+# Defensive-branch unit coverage: a scripted fake process stands in for the child,
+# exercising protocol paths a REAL well-behaved child can never produce.
+# ---------------------------------------------------------------------------
+
+
+def _stream(lines: list[bytes]) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    for line in lines:
+        reader.feed_data(line)
+    reader.feed_eof()
+    return reader
+
+
+class _FakeProc:
+    """Minimal asyncio-subprocess stand-in: scripted pipes + a fixed return code."""
+
+    def __init__(self, stdout_lines: list[bytes], stderr_lines: list[bytes], returncode: int) -> None:
+        self.stdout = _stream(stdout_lines)
+        self.stderr = _stream(stderr_lines)
+        self._returncode = returncode
+        self.kill_called = False
+
+    async def wait(self) -> int:
+        return self._returncode
+
+    def kill(self) -> None:
+        self.kill_called = True
+
+
+def _fake_spawn(monkeypatch: pytest.MonkeyPatch, proc: _FakeProc) -> None:
+    async def _spawn(*_argv: str, **_kwargs: object) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+
+
+async def test_protocol_garbage_and_blank_lines_are_skipped_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-JSON garbage, blank lines, and unknown message types are logged and skipped;
+    the terminal result line still decides the outcome."""
+    proc = _FakeProc(
+        stdout_lines=[
+            b"\n",
+            b"not json at all\n",
+            b'{"type": "mystery", "x": 1}\n',
+            b'{"type": "progress", "analyzed": 1, "total": 2}\n',
+            b'{"type": "result", "result": {"ok": true}}\n',
+        ],
+        stderr_lines=[b"\n", b"banner line\n"],
+        returncode=0,
+    )
+    _fake_spawn(monkeypatch, proc)
+    bumps: list[tuple[int, int]] = []
+
+    with capture_logs() as captured:
+        result = await run_analysis_subprocess("/f", "/m", progress_cb=lambda a, t: bumps.append((a, t)))
+
+    assert result == {"ok": True}
+    assert bumps == [(1, 2)]
+    garbage = [entry for entry in captured if entry["event"] == "analysis_child_protocol_garbage"]
+    assert len(garbage) == 2  # the non-JSON line and the unknown-type line; blanks are silent
+
+
+async def test_nonzero_exit_without_result_raises_with_stderr_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A child that dies without a terminal line surfaces its exit code and stderr tail."""
+    proc = _FakeProc(stdout_lines=[], stderr_lines=[b"Segmentation fault\n"], returncode=139)
+    _fake_spawn(monkeypatch, proc)
+
+    with pytest.raises(AnalysisSubprocessError, match="exited 139 without a result") as excinfo:
+        await run_analysis_subprocess("/f", "/m")
+
+    assert excinfo.value.exit_code == 139
+    assert excinfo.value.stderr_tail == ("Segmentation fault",)
+
+
+async def test_clean_exit_without_result_line_is_malformed_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rc 0 with no result line is a protocol violation, never a silent empty success."""
+    proc = _FakeProc(stdout_lines=[b'{"type": "progress", "analyzed": 0, "total": 3}\n'], stderr_lines=[], returncode=0)
+    _fake_spawn(monkeypatch, proc)
+
+    with pytest.raises(AnalysisSubprocessError, match="without a result line"):
+        await run_analysis_subprocess("/f", "/m")
+
+
+async def test_missing_interpreter_is_a_clear_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A vanished sys.executable (broken venv) surfaces as RuntimeError, not FileNotFoundError."""
+
+    async def _spawn(*_argv: str, **_kwargs: object) -> _FakeProc:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+
+    with pytest.raises(RuntimeError, match="interpreter"):
+        await run_analysis_subprocess("/f", "/m")
+
+
 async def test_environment_reaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
     """The child inherits the parent env (how PHAZE_ANALYSIS_CHILD_TARGET works at all) —
     guard the assumption the whole stub scheme rests on."""
