@@ -29,6 +29,7 @@ Everything else that mentions essentia is plumbing:
 | `src/phaze/tasks/_shared/model_bootstrap.py` | Auto-downloads weights when `/models` is empty |
 | `src/phaze/services/kube_staging.py` | Mounts the read-only models PVC at `/models` for Kueue Jobs |
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
+| `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | Phase 101 subprocess boundary: `analyze_file` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
 
 `analyze_file()` in `analysis.py` runs **two passes per file**, decoding one short
 window at a time via segmented `EasyLoader` (so no essentia algorithm ever sees more

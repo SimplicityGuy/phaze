@@ -19,13 +19,6 @@ A direct/bookmark navigation to `/` or `/s/{stage}` renders the full shell chrom
 |--------|-----------|-----------------|
 | GET    | `/health` | Health check (verifies DB connectivity) |
 
-## Scan (`/api/v1`)
-
-| Method | Path                     | Description                          |
-|--------|--------------------------|--------------------------------------|
-| POST   | `/api/v1/scan`           | Start file discovery scan            |
-| GET    | `/api/v1/scan/{batch_id}`| Get scan progress and status         |
-
 ## Pipeline (`/api/v1`, `/pipeline`)
 
 | Method | Path                           | Description                              |
@@ -121,6 +114,21 @@ Operator controls that steer the three agent pipeline stages (`metadata` / `anal
 | POST   | `/pipeline/stages/{stage}/priority`   | Apply a signed priority delta (clamped `[0,100]`, lower dequeues sooner) and reorder the queued backlog |
 | POST   | `/pipeline/stages/{stage}/pause`      | Drain-pause: active jobs finish, the queued backlog is parked           |
 | POST   | `/pipeline/stages/{stage}/resume`     | Un-park ONLY the pause-parked backlog rows                              |
+
+### Per-file drill-down, retry, skip, and deepen surfaces
+
+| Method | Path                                                | Description                                                              |
+|--------|-----------------------------------------------------|---------------------------------------------------------------------------|
+| GET    | `/pipeline/files`                                   | Per-file table fragment, paginated + filterable by stage/bucket           |
+| GET    | `/pipeline/analyze-files`                           | Analyze workspace per-file table fragment (bounded default set or a filtered page) |
+| GET    | `/pipeline/lanes/{backend_id}`                      | Lane-detail body fragment for a backend lane (local/Kueue/cloud)           |
+| GET    | `/pipeline/files/{file_id}/trace/{stage}`           | Per-file, per-stage eligibility trace (diagnostic)                        |
+| GET    | `/pipeline/files/{file_id}/deepen-progress`         | HTMX poll target for the "Deepen analysis" progress surface               |
+| POST   | `/pipeline/files/{file_id}/skip/{stage}`            | Force-skip an ENRICH stage for one file (writes a `StageSkip` marker)      |
+| POST   | `/pipeline/analysis-failed/retry`                   | Bulk retry of every terminally `ANALYSIS_FAILED` file                     |
+| POST   | `/pipeline/metadata-failed/retry`                   | Bulk retry of every terminally-failed metadata file                       |
+| POST   | `/pipeline/files/{file_id}/analysis-failed/retry`   | Per-file retry of one `ANALYSIS_FAILED` file                              |
+| POST   | `/pipeline/files/{file_id}/metadata-failed/retry`   | Per-file retry of one terminally-failed metadata file                     |
 
 ## Pipeline Scans (`/pipeline/scans`)
 
@@ -233,16 +241,17 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 
 | Method | Path        | Description                              |
 |--------|-------------|------------------------------------------|
-| GET    | `/preview/` | Directory tree of approved proposals     |
+| GET    | `/preview/` | Legacy route: 302-redirects into the v7.0 shell's Move workspace (`/s/move`) |
 
 ## Agents Admin (`/admin/agents`)
 
 Operator-facing liveness page for registered worker agents. Read-only; these endpoints serve HTML and HTMX partials and are not part of the authenticated agent contract below.
 
-| Method | Path                   | Description                                    |
-|--------|------------------------|------------------------------------------------|
-| GET    | `/admin/agents`        | Agent liveness page (HTML)                     |
-| GET    | `/admin/agents/_table` | Agent liveness table (HTMX poll partial, ~5s)  |
+| Method | Path                                | Description                                       |
+|--------|-------------------------------------|----------------------------------------------------|
+| GET    | `/admin/agents`                     | Agent liveness page (HTML)                          |
+| GET    | `/admin/agents/_table`              | Agent liveness table (HTMX poll partial, ~5s)       |
+| GET    | `/admin/agents/{agent_id}/_activity`| Agent-activity detail-pane fragment (per-agent stage counts, lane depths, recent scans) |
 
 ## SAQ Monitoring UI (`/saq`)
 
