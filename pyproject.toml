@@ -231,15 +231,15 @@ constraint-dependencies = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
-    "greenlet>=3.5.2",
+    "greenlet>=3.5.3",
     "httpx>=0.28.1",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
     # ThreadedMotoServer -- required because aioboto3/aiobotocore's async response parsing
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
-    "moto[server]>=5.1.0",
-    "mypy>=2.1.0",
+    "moto[server]>=5.2.2",
+    "mypy>=2.2.0",
     "pip-audit>=2.10.1",
     "pre-commit>=4.6.0",
     "pytest>=9.1.1",
@@ -247,6 +247,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.15.18",
+    "ruff>=0.15.20",
     "vulture>=2.16",
 ]
