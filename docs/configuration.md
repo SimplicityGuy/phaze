@@ -95,10 +95,36 @@ flowchart TD
 | `WORKER_MAX_JOBS`              | No       | `8`     | Concurrent SAQ jobs per worker.                      |
 | `WORKER_JOB_TIMEOUT`          | No       | `600`   | Per-job timeout in seconds.                          |
 | `WORKER_MAX_RETRIES`          | No       | `4`     | Max attempts per job (1 initial + 3 retries).        |
-| `WORKER_PROCESS_POOL_SIZE`    | No       | `4`     | CPU-bound process pool size.                         |
+| `WORKER_PROCESS_POOL_SIZE`    | No       | `4`     | Concurrency bound (`asyncio.Semaphore`) on in-flight essentia analysis subprocesses per agent worker. |
 | `WORKER_HEALTH_CHECK_INTERVAL`| No       | `60`    | SAQ health-check interval in seconds.                |
 | `WORKER_KEEP_RESULT`          | No       | `3600`  | Seconds SAQ retains a finished job's result.         |
 | `PHAZE_SCAN_STALL_SECONDS` (or `SCAN_STALL_SECONDS`) | No | `86400` (24h) | Seconds with no progress before a RUNNING scan is reaped as stalled by the control worker's every-minute cron. Lives on `BaseSettings`, so both roles parse it, but only the control worker runs the reaper. `scan_directory` is an unbounded (`timeout=0`) BULK job, so this progress-based reaper is its sole liveness guard — the generous 24h default keeps a healthy-but-slow scan (e.g. SHA-256 hashing a multi-GB concert video on a network mount) from being falsely reaped. The admin UI flips a RUNNING scan to an amber "stalled?" indicator at **half** this threshold (12h), before the hard reap. `.env.example` ships only a commented example, so the effective default is the field default. |
+
+### Per-lane agent-worker concurrency
+
+Only the agent lane worker (started with `PHAZE_AGENT_LANE` set) reads these; they live on `BaseSettings` so both roles parse cleanly.
+
+| Variable                       | Required | Default | Description                                          |
+|--------------------------------|----------|---------|------------------------------------------------------|
+| `PHAZE_LANE_ANALYZE_CONCURRENCY` (or `lane_analyze_concurrency`) | No | `4` | Concurrency of the analyze lane worker (`process_file`; in-process essentia, CPU-bound). |
+| `PHAZE_LANE_FINGERPRINT_CONCURRENCY` (or `lane_fingerprint_concurrency`) | No | `2` | Concurrency of the fingerprint lane worker (`fingerprint_file`; via panako/audfprint, CPU-bound). |
+| `PHAZE_LANE_META_CONCURRENCY` (or `lane_meta_concurrency`) | No | `2` | Concurrency of the meta lane worker (extract/scan/execute; light/fast). |
+| `PHAZE_LANE_IO_CONCURRENCY` (or `lane_io_concurrency`) | No | `4` | Concurrency of the io lane worker (`s3_upload`/`push_file`; network-bound, off CPU budget). |
+| `PHAZE_AGENT_HEARTBEAT` (or `agent_heartbeat_enabled`) | No | `true` | Whether this agent worker launches the liveness heartbeat background task. Compose sets this `true` on exactly one lane worker (analyze) and `false` on the other three, so an agent reports one authoritative `last_seen`, never N duplicate heartbeats. |
+
+### Database connection pool tuning (all roles)
+
+These size the SQLAlchemy engine pool shared by the api and control-worker engines, plus the control-side per-`(agent, lane)` dispatch queues in `services/agent_task_router.py`. Defaults are deliberately conservative because phaze reaches Postgres through PgBouncer in session mode, where every client connection pins one upstream server connection for its lifetime.
+
+| Variable                       | Required | Default | Description                                          |
+|--------------------------------|----------|---------|------------------------------------------------------|
+| `PHAZE_DB_POOL_SIZE` (or `db_pool_size`) | No | `5` | SQLAlchemy engine `pool_size` for the api + control-worker engines. |
+| `PHAZE_DB_MAX_OVERFLOW` (or `db_max_overflow`) | No | `5` | SQLAlchemy engine `max_overflow` for the api + control-worker engines. |
+| `PHAZE_DB_POOL_TIMEOUT` (or `db_pool_timeout`) | No | `10` | Seconds to wait for a pooled connection before failing fast. |
+| `PHAZE_DB_POOL_RECYCLE` (or `db_pool_recycle`) | No | `1800` | Recycle a pooled connection after this many seconds (30 min) so idle server slots are freed rather than pinned indefinitely. |
+| `PHAZE_DB_POOL_PRE_PING` (or `db_pool_pre_ping`) | No | `true` | Validate a pooled connection before checkout, dropping dead server connections instead of handing one out. |
+| `PHAZE_DISPATCH_QUEUE_MIN_SIZE` (or `dispatch_queue_min_size`) | No | `0` | psycopg3 `min_size` for each control-side per-(agent,lane) dispatch queue. `0` keeps zero idle server connections pinned. |
+| `PHAZE_DISPATCH_QUEUE_MAX_SIZE` (or `dispatch_queue_max_size`) | No | `2` | psycopg3 `max_size` for each control-side per-(agent,lane) dispatch queue, capping the enqueue burst. |
 
 ## Backend registry (`backends.toml`)
 
@@ -129,6 +155,8 @@ flowchart TD
 | `cap` | all | Concurrency cap for this backend (replaces the old flat in-flight window). |
 | `agent_ref` | `compute` | **REQUIRED** — names the compute agent node the rsync push dispatches to. Construction **fails fast** (id-tagged `ValueError`) if absent (REG-02, D-13). |
 | `scratch_dir` | `compute` | **REQUIRED** — remote scratch dir the rsync push lands in (was the flat compute-scratch mirror). Construction fails fast if absent (a missing value would build a literal `"None/<file_id>"` push path). |
+| `push_host` | `compute` | **REQUIRED** (Phase 73, D-01) — the rsync/ssh push destination host. Construction fails fast if absent (a missing value would build a literal `"None:..."` remote spec); rejected if it contains whitespace or shell metacharacters. |
+| `ssh_user` | `compute` | Optional ssh login user for the push. Omitted ⇒ the push falls back to the fileserver's configured user; rejected if it contains whitespace or shell metacharacters. |
 | `[backends.kube]` | `kueue` | Nested Kueue cluster config: API URL, namespace, per-cluster kubeconfig `context`, local-queue, Job image/resources, workload apiVersion, CA/ConfigMap/Secret names, and inline `kubeconfig_file` / `sa_token_file` secret pointers. |
 | `buckets` | `kueue` | List of `[[buckets]]` `id`s this Kueue backend stages through. |
 
@@ -165,10 +193,10 @@ Descriptions are sourced from the `Field(...)` text in [`src/phaze/config.py`](.
 |------|-----------------|-------|---------|----------|-------------|
 | `cloud_target` | ~~`PHAZE_CLOUD_TARGET`~~ (removed) | Control | *n/a* | no | **REMOVED in 2026.7.1 (Phase 67, REG-01/04) — no shim.** This flat selector no longer exists; backend selection now comes from the [Backend registry](#backend-registry-backendstoml). Nothing in `src/phaze/` reads it, and because `model_config` is `extra="ignore"` a stale `PHAZE_CLOUD_TARGET` env var left in a live `.env` is **silently dropped** (not honored) — it does **not** change routing. Delete it. See the 1:1 `cloud_target`→`backends` equivalence in *[Cloud target](#cloud-target-removed-in-phase-67)* below. |
 | `cloud_route_threshold_sec` | `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC` (or `cloud_route_threshold_sec`) | Control | `5400` | no | Duration threshold (seconds) at/above which a file is routed to a cloud compute agent. Default 5400 (90 min); bounded `gt=0, lt=86400` (out-of-range fails fast at startup). |
-| `cloud_max_in_flight` | `PHAZE_CLOUD_MAX_IN_FLIGHT` (or `cloud_max_in_flight`) | Control | `2` | no | Max cloud files staged-or-in-flight (`PUSHING`+`PUSHED`); the load-bearing ≤N window — the only backpressure keeping an unbounded backlog off the single compute agent. Bounded `gt=0, lt=100`. |
+| `cloud_max_in_flight` | ~~`PHAZE_CLOUD_MAX_IN_FLIGHT`~~ (removed) | Control | *n/a* | no | **REMOVED in 2026.7.1 (Phase 67) — no shim.** This flat ≤N backpressure window no longer exists as a settings field; per-backend concurrency is now the `cap` field on each `[[backends]]` entry in [`backends.toml`](#backend-registry-backendstoml). A stale `PHAZE_CLOUD_MAX_IN_FLIGHT` env var is silently dropped (`extra="ignore"`), not honored. |
 | `push_max_attempts` | `PHAZE_PUSH_MAX_ATTEMPTS` (or `push_max_attempts`) | Control | `3` | no | Max push re-drives of a sha256-mismatched file before it **spills back to `AWAITING_CLOUD`** (Phase 69 SCHED-03: at the cap the file no longer hard-fails — its cloud budget is marked spent so the next drain tick routes it to local). Bounded `gt=0, lt=20`. |
 | `cloud_spill_to_local_after_seconds` | `PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS` (or `cloud_spill_to_local_after_seconds`) | Control | `900` | no | **Live (Phase 69, D-02) — the tiered-drain staleness gate.** Seconds a long file waits in `AWAITING_CLOUD` while higher-rank backends are online-but-**FULL** before slow local (rank 99) becomes an eligible spill target. Offline backends spill to local immediately (D-03, not staleness-gated). Bounded `gt=0, lt=86400`. |
-| `compute_scratch_dir` | `PHAZE_COMPUTE_SCRATCH_DIR` (or `compute_scratch_dir`) | Control | `None` | no | Control-side mirror of the compute agent's scratch directory; the push callback builds the `process_file` scratch path from it. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
+| `compute_scratch_dir` | ~~`PHAZE_COMPUTE_SCRATCH_DIR`~~ (removed) | Control | *n/a* | no | **REMOVED in Phase 67 (superseded), accessor retired in Phase 73/MCOMP-03.** This flat control-side scratch-dir mirror no longer exists as a settings field; the control plane now reads each compute backend's `scratch_dir` from [`backends.toml`](#backend-registry-backendstoml) directly. **MUST match `cloud_scratch_dir`** on the compute agent (a drift surfaces as a sha256/transfer failure). |
 | `cloud_scratch_dir` | `PHAZE_CLOUD_SCRATCH_DIR` (or `cloud_scratch_dir`) | Agent | `None` | no | Remote scratch directory on the compute agent where pushed files land and are later read by `process_file`. **MUST match the control-plane compute backend's `scratch_dir` in [`backends.toml`](#backend-registry-backendstoml)** (the flat control-side `compute_scratch_dir` field was **removed in Phase 67**); it is also the cloud-agent compose's named-volume mount path. |
 | `push_ssh_host` | `PHAZE_PUSH_SSH_HOST` (or `push_ssh_host`) | Agent | `None` | no | Hostname/IP of the rsync-over-SSH push target (the compute agent). Operator-provisioned in Phase 51. |
 | `push_ssh_user` | `PHAZE_PUSH_SSH_USER` (or `push_ssh_user`) | Agent | `None` | no | SSH username for the rsync push target. |
@@ -372,7 +400,7 @@ The agent worker reads these to size the per-window decode loop in `services/ana
 | `PHAZE_ANALYSIS_FINE_WINDOW_SEC` (or `analysis_fine_window_sec`) | No | `30` | Fine-tier (BPM/key) window length in seconds (Phase 31). |
 | `PHAZE_ANALYSIS_COARSE_WINDOW_SEC` (or `analysis_coarse_window_sec`) | No | `180` | Coarse-tier (mood/style/danceability) window length in seconds (Phase 31). |
 | `PHAZE_ANALYSIS_FINE_MIN_SEC` (or `analysis_fine_min_sec`) | No | `15` | Minimum audio length for a trailing FINE window; shorter trailing windows are dropped except window 0 (Phase 31). |
-| `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (or `analysis_inner_timeout_sec`) | No | `6600` | Inner pebble per-task analysis timeout (kill-on-timeout). MUST stay below the 7200s SAQ `process_file` net so the kill is deterministic; enforced `gt=0, lt=7200` (Phase 43). |
+| `PHAZE_ANALYSIS_INNER_TIMEOUT_SEC` (or `analysis_inner_timeout_sec`) | No | `6600` | Inner per-analysis timeout (kill-on-timeout). The Phase 101 subprocess driver (`services/analysis_exec.py`) `SIGKILL`s the analysis child past this bound (retired the earlier pebble ProcessPool from Phase 43). MUST stay below the 7200s SAQ `process_file` net so the kill is deterministic; enforced `gt=0, lt=7200`. |
 | `PHAZE_ANALYSIS_FINE_CAP` (or `analysis_fine_cap`) | No | `60` | Max FINE-tier (BPM/key) windows `analyze_file` decodes per file. Bounded `ge=2` (even-stride keeps first+last) (Phase 43). |
 | `PHAZE_ANALYSIS_COARSE_CAP` (or `analysis_coarse_cap`) | No | `30` | Max COARSE-tier (mood/style/danceability) windows `analyze_file` decodes per file. Bounded `ge=2` (Phase 43). |
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |

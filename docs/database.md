@@ -30,14 +30,16 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `pipeline_stage_control` | Durable per-stage pause/priority operator intent (one row per agent pipeline stage) |
 | `scheduling_ledger`   | Durable "this stage was scheduled for this item" record (recovery source of truth)  |
 | `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
+| `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
+| `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
 
 ### Entity relationships
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
 deleted); `analysis_window` and `file_companions` cascade with their `files` row
 (`ON DELETE CASCADE`); the remaining per-file sidecars (`metadata`, `analysis`,
-`fingerprint_results`, `proposals`, `cloud_job`) and the tracklist chain use the default
-restricting FK (no cascade).
+`fingerprint_results`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
+tracklist chain use the default restricting FK (no cascade).
 
 ```mermaid
 erDiagram
@@ -80,8 +82,9 @@ structurally protected from being overwritten by a re-run.
 ### Derived per-stage status
 
 There is **no `files.state` column and no file-level state enum** — Phase 90 dropped the
-`state` column, the file-level state `StrEnum`, and the `ix_files_state` index (migration
-`039_drop_files_state_column`). A file's status is instead **derived on read**, per stage,
+`state` column, the file-level state `StrEnum`, and the `ix_files_state` index (in the
+pre-flatten chain's migration `039_drop_files_state_column`, now folded into the `039`
+baseline schema). A file's status is instead **derived on read**, per stage,
 from its output tables (`metadata`, `fingerprint_results`, `analysis`, `proposals`,
 `execution_log`), the `cloud_job` sidecar, and the `dedup_resolution` marker.
 
@@ -118,17 +121,28 @@ flowchart TD
 
 ### Full-text search
 
-Migration 009 adds PostgreSQL `GENERATED ALWAYS ... STORED` `tsvector` columns
-(`search_vector`) to `files`, `metadata`, and `tracklists`, each backed by a GIN index. It
-also enables the `pg_trgm` extension and creates trigram GIN indexes for `ILIKE` partial
-matching. `discogs_links` carries its own GIN FTS index on denormalized artist/title.
+PostgreSQL `GENERATED ALWAYS ... STORED` `tsvector` columns (`search_vector`) exist on
+`files`, `metadata`, and `tracklists`, each backed by a GIN index. The schema also enables the
+`pg_trgm` extension and has trigram GIN indexes for `ILIKE` partial matching. `discogs_links`
+carries its own GIN FTS index on denormalized artist/title. (Originated in the pre-flatten
+chain's migration 009; now part of the `039` baseline schema.)
 
 ## Migrations
 
 Schema is managed by Alembic with the async template (`alembic/env.py` overrides
 `sqlalchemy.url` from application settings, so no URL is hard-coded in `alembic.ini`).
-Migrations run sequentially from `001` through `031` in `alembic/versions/`;
-`031_add_route_control` is the current head.
+
+**As of Phase 102 (phaze-8hfu), the entire linear chain was flattened into a single baseline
+file: `alembic/versions/039_baseline_schema.py`.** It reuses revision id `039` with
+`down_revision = None` — so a production database already stamped `039` by the pre-flatten
+chain treats the next `upgrade head` as a no-op, while a fresh (CI / test / new) database
+builds the entire current schema, plus required seed rows (`pipeline_stage_control` per-stage
+rows, the `route_control` `'global'` row), from this one file. The embedded DDL is a
+normalized `pg_dump --schema-only` of the real pre-flatten chain's output
+(`scripts/normalize_schema_dump.py`), so every non-metadata artifact the chain accreted
+(partial indexes, CHECK constraints, generated `tsvector` columns + GIN/trigram indexes, the
+`pg_trgm` extension) is preserved byte-faithfully. Fidelity is guarded going forward by
+`tests/integration/test_migrations/test_baseline_schema.py`.
 
 ```bash
 just db-upgrade              # Apply all pending migrations (alembic upgrade head)
@@ -139,42 +153,5 @@ just db-history              # Show migration history (alembic history)
 ```
 
 `db-revision` autogenerates from model changes — all models are imported in
-`src/phaze/models/__init__.py` so Alembic can discover them.
-
-### Recent migrations
-
-| Rev | Summary                                                                                  |
-|-----|------------------------------------------------------------------------------------------|
-| 009 | Add `search_vector` GENERATED tsvector columns + GIN/trigram indexes; enable `pg_trgm`    |
-| 010 | Create `discogs_links` table with status/track indexes and a GIN FTS index               |
-| 011 | Create `tag_write_log` table (before/after JSONB tags) with file/status indexes          |
-| 012 | Create `agents` table, seed legacy agent + LIVE sentinel batch, add nullable `agent_id` + FKs, backfill |
-| 013 | Set `agent_id` NOT NULL; swap `files` uniqueness from `original_path` to `(agent_id, original_path)` |
-| 014 | Add `agents.last_status` JSONB column + partial token-hash index (`WHERE revoked_at IS NULL`) |
-| 015 | Add nullable tz-aware `scan_batches.completed_at` terminal-timestamp column               |
-| 016 | Backfill `scan_batches.completed_at = updated_at` for terminal rows with a NULL value     |
-| 017 | Add nullable `scan_batches.last_progress_at` heartbeat column + backfill from `updated_at` |
-| 018 | Create `analysis_window` table (per-window time-series rows) with composite/partial/label indexes |
-| 019 | Dedupe existing pending proposals, then add partial unique index `uq_proposals_file_id_pending` |
-| 020 | Create `pipeline_stage_control` table (durable per-stage pause/priority intent)           |
-| 021 | Add analysis coverage columns (windowed-analysis progress tracking)                       |
-| 022 | Create `scheduling_ledger` table (durable per-item "stage scheduled" record)              |
-| 023 | Add `scheduling_ledger` job-policy columns (routing/replay hints)                         |
-| 024 | Add `agents.kind` (+ `ck_agents_kind_enum` CHECK `{'fileserver','compute'}`, default `fileserver`) |
-| 025 | Create `cloud_job` table (per-`file_id` S3 object-staging sidecar)                        |
-| 026 | Add `cloud_job` Kube columns (`kueue_workload`, `attempts`, `inadmissible`)               |
-| 027 | Add `cloud_job.cloud_phase` column                                                        |
-| 028 | Add `analysis.completed_at` column                                                       |
-| 029 | Add `cloud_job.backend_id` column (multi-backend registry attribution)                    |
-| 030 | Add `cloud_job.staging_bucket` column (multi-Kueue per-cluster bucket)                    |
-| 031 | Create `route_control` table + seed the single `'global'` force-local override row        |
-
-Migration 013's downgrade fails loudly if the same `original_path` now exists under multiple
-agents — duplicates must be resolved manually before rolling back, since silent dedup is
-forbidden for an irreplaceable personal collection.
-
-Migration 019 runs two ordered ops in `upgrade()`: it first collapses pre-existing duplicate
-PENDING proposals to one-per-file (keeping the most-recent `created_at`), then creates the
-partial unique index — the dedupe MUST run first or `CREATE UNIQUE INDEX` aborts on the live
-archive's duplicates. Its `downgrade()` only drops the index; the dedupe DELETE is not
-reversible.
+`src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
+of the `039` baseline rather than the retired `001`-`039` chain.
