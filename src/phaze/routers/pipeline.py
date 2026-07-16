@@ -45,6 +45,8 @@ from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
+    _read_in_own_session,
+    _stats_fanout,
     analyze_lanes_content_hash,
     count_active_agents,
     count_backfill_candidates,
@@ -739,56 +741,105 @@ async def pipeline_stats_partial(
     # context below (passed through so the heavy multi-count read runs once on the hot 5s poll).
     stage_progress = await get_stage_progress(session)
     stats = _derive_stats(stage_progress)
-    # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
-    # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
-    # poll can never 500. queue_progress_percent precomputes the guarded "Processing" bar
-    # percent server-side; the OOB store-write nodes in stats_bar.html push agent_busy /
-    # controller_busy into $store.pipeline on each tick to drive the Plan 04 button gating.
-    activity = await get_queue_activity(request.app.state, session)
+
+    # Phase 95 (CONSOLE-04, DENORM-01 revisit): the ~12 reads below used to run as SERIAL awaits on
+    # the shared request `session` (measured over the ~1s soft budget, D-07 -- see
+    # .planning/milestones/2026.7.7-phases/95-analyze-view-browser-slowdown/). They are mutually
+    # independent -- none consumes another's RESOLVED VALUE (derive_cloud_hold_reason re-derives its
+    # own lane snapshot rather than reading the `lanes` result below) -- so they now fan out
+    # CONCURRENTLY via asyncio.gather, mirroring the Phase 92 get_stage_progress pattern exactly:
+    # each read runs in its OWN AsyncSession via _read_in_own_session, bounded by the SAME
+    # _stats_fanout() cap (a fresh Semaphore(4) per poll in production; the test suite's
+    # _route_stats_fanout fixture overrides _STATS_FANOUT to Semaphore(1) and routes
+    # phaze.database.async_session onto the per-test connection, so this reuses that EXISTING
+    # test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
+    # pure Redis read that already never raises), so it rides the SAME gather directly rather than
+    # through _read_in_own_session.
+    #
+    # activity feeds queue_progress below AND is a required (if internally-unused-by-design --
+    # see _build_dag_context's docstring) positional argument to _build_dag_context: a TRUE
+    # dependency by signature, so _build_dag_context stays a sequential await AFTER this gather,
+    # once activity is a resolved value rather than a pending coroutine. It reuses the shared
+    # request `session` directly (unchanged from before this refactor) -- safe because nothing else
+    # touches that session concurrently once the fan-out (which reads through its own sessions) is
+    # under way.
+    fanout = _stats_fanout()
+    (
+        activity,
+        straggler_count,
+        analysis_failed_count,
+        awaiting_cloud_count,
+        pushing_count,
+        analyzing_cloud_count,
+        inadmissible_count,
+        localqueue_unreachable,
+        cloud_phase_counts,
+        lanes,
+        awaiting_hold_reason,
+        # asyncio.gather with >6 awaitables of mixed return types collapses to list[object] under
+        # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
+        # exact per-read tuple shape with a single cast.
+    ) = cast(
+        "tuple[dict[str, int], int, int, int, int, int, int, bool, dict[str, int], list[dict[str, Any]], str]",
+        await asyncio.gather(
+            # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
+            # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
+            # poll can never 500. queue_progress_percent (below) precomputes the guarded "Processing"
+            # bar percent server-side; the OOB store-write nodes in stats_bar.html push agent_busy /
+            # controller_busy into $store.pipeline on each tick to drive the Plan 04 button gating.
+            _read_in_own_session(
+                fanout,
+                lambda s: get_queue_activity(request.app.state, s),
+                {"agent_queued": 0, "agent_active": 0, "controller_queued": 0, "controller_active": 0, "agent_busy": 0, "controller_busy": 0},
+            ),
+            # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
+            # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
+            # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
+            _read_in_own_session(fanout, lambda s: get_straggler_count(s, settings.straggler_threshold_sec), 0),
+            _read_in_own_session(fanout, lambda s: get_analysis_failed_count(s), 0),
+            # Phase 49 (49-02, D-05): the same AWAITING_CLOUD held count the dashboard seeds, re-pushed
+            # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
+            # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
+            _read_in_own_session(fanout, lambda s: get_awaiting_cloud_count(s), 0),
+            # Phase 50 (50-07, D-09): the same PUSHING/PUSHED window counts the dashboard seeds, re-pushed
+            # on every 5s poll so the staged_pushing_card / analyzing_cloud_card stay live via their OOB
+            # swaps. Degrade-safe at the service layer, so NO router try/except -- mirrors the awaiting wiring.
+            _read_in_own_session(fanout, lambda s: get_pushing_count(s), 0),
+            _read_in_own_session(fanout, lambda s: get_pushed_count(s), 0),
+            # Phase 54 (54-04, D-06): the same Inadmissible count the dashboard seeds, re-pushed on every 5s
+            # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
+            # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
+            _read_in_own_session(fanout, lambda s: get_inadmissible_count(s), 0),
+            # Phase 56 (56-02, D-05, KDEPLOY-04): the same K8s LocalQueue-unreachable flag the dashboard seeds,
+            # re-pushed on every 5s poll so the localqueue_card stays live via its OOB swap. Degrade-safe at the
+            # service layer (56-01), so NO router try/except -- mirrors the inadmissible_count wiring; the redis
+            # handle is read off app.state exactly like the dashboard() first-load path. No session needed --
+            # runs directly (not through _read_in_own_session) rather than opening a DB connection for nothing.
+            get_localqueue_unreachable(getattr(request.app.state, "redis", None)),
+            # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
+            # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
+            # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
+            # the inadmissible_count wiring.
+            _read_in_own_session(fanout, lambda s: get_cloud_phase_counts(s), {"queued_behind_quota": 0, "admitted": 0, "running": 0, "finished": 0}),
+            # Phase 71 (71-03, BEUI-01 / D-04): the SAME N-lane snapshot the dashboard seeds, re-pushed on every
+            # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
+            # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
+            # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
+            _read_in_own_session(fanout, lambda s: get_backend_lane_snapshot(s), cast("list[dict[str, Any]]", [])),
+            # The SAME hold-reason derivation build_dashboard_context seeds on first load, re-pushed on every 5s
+            # poll so the awaiting_cloud_card sub-caption stays live via its OOB swap (the OOB swap contract:
+            # both render paths must agree). Degrade-safe at the service layer, so NO router try/except -- mirrors
+            # the lanes wiring immediately above. "held" mirrors services.backends._HOLD_REASON_DEGRADED, the
+            # SAME neutral no-causal-claim copy that function's own try/except already degrades to.
+            _read_in_own_session(fanout, lambda s: derive_cloud_hold_reason(s), "held"),
+        ),
+    )
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store
     # write keeps the 35-05 DAG bindings live without re-rendering the canvas or buttons.
     # stage_progress is passed through so _build_dag_context reuses the same read (no 2nd query).
     dag_ctx = await _build_dag_context(request.app.state, session, activity, stage_progress)
-    # Phase 44 (44-04): the same straggler + ANALYSIS_FAILED buckets the dashboard seeds,
-    # re-pushed on every 5s poll so the straggler_failed_card stays live. Degrade-safe at the
-    # service layer (44-02), so NO router try/except -- mirrors the dashboard() wiring.
-    straggler_count = await get_straggler_count(session, settings.straggler_threshold_sec)
-    analysis_failed_count = await get_analysis_failed_count(session)
-    # Phase 49 (49-02, D-05): the same AWAITING_CLOUD held count the dashboard seeds, re-pushed
-    # on every 5s poll so the awaiting_cloud_card stays live via its OOB swap. Degrade-safe at the
-    # service layer (Plan 01), so NO router try/except -- mirrors the straggler/failed wiring.
-    awaiting_cloud_count = await get_awaiting_cloud_count(session)
-    # Phase 50 (50-07, D-09): the same PUSHING/PUSHED window counts the dashboard seeds, re-pushed
-    # on every 5s poll so the staged_pushing_card / analyzing_cloud_card stay live via their OOB
-    # swaps. Degrade-safe at the service layer, so NO router try/except -- mirrors the awaiting wiring.
-    pushing_count = await get_pushing_count(session)
-    analyzing_cloud_count = await get_pushed_count(session)
-    # Phase 54 (54-04, D-06): the same Inadmissible count the dashboard seeds, re-pushed on every 5s
-    # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
-    # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
-    inadmissible_count = await get_inadmissible_count(session)
-    # Phase 56 (56-02, D-05, KDEPLOY-04): the same K8s LocalQueue-unreachable flag the dashboard seeds,
-    # re-pushed on every 5s poll so the localqueue_card stays live via its OOB swap. Degrade-safe at the
-    # service layer (56-01), so NO router try/except -- mirrors the inadmissible_count wiring; the redis
-    # handle is read off app.state exactly like the dashboard() first-load path.
-    localqueue_unreachable = await get_localqueue_unreachable(getattr(request.app.state, "redis", None))
-    # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
-    # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
-    # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
-    # the inadmissible_count wiring.
-    cloud_phase_counts = await get_cloud_phase_counts(session)
-    # Phase 71 (71-03, BEUI-01 / D-04): the SAME N-lane snapshot the dashboard seeds, re-pushed on every
-    # 5s poll so the WHOLE #analyze-lanes grid OOB-swaps as a unit (stats_bar.html includes _analyze_lanes
-    # with oob=True inside the oob_counts gate). Seeded IDENTICALLY to build_dashboard_context (degrade-safe
-    # -> [], never 500) -- one existing poll, no second loop, no new read endpoint.
-    lanes = await get_backend_lane_snapshot(session)
-    # The SAME hold-reason derivation build_dashboard_context seeds on first load, re-pushed on every 5s
-    # poll so the awaiting_cloud_card sub-caption stays live via its OOB swap (the OOB swap contract:
-    # both render paths must agree). Degrade-safe at the service layer, so NO router try/except -- mirrors
-    # the lanes wiring immediately above.
-    awaiting_hold_reason = await derive_cloud_hold_reason(session)
     # D-02 poll survival: resolve the pushed ?lane= by lookup-in-known-set (T-88-01) so the OOB
     # _analyze_lanes grid re-emits the selected ring only for a real, currently-rendered lane.
     selected_lane = lane if any(one.get("id") == lane for one in lanes) else None
