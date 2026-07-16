@@ -70,7 +70,7 @@ def _make_ctx(api_client: AsyncMock | None = None) -> dict[str, Any]:
     if api_client is None:
         api_client = AsyncMock()
         api_client.put_analysis = AsyncMock(return_value=MagicMock())
-    return {"process_pool": MagicMock(), "api_client": api_client}
+    return {"api_client": api_client}
 
 
 def _make_payload_kwargs(file_id: uuid.UUID | None = None, file_type: str = "mp3") -> dict[str, Any]:
@@ -188,7 +188,7 @@ def test_features_to_style_dict_skips_non_numeric_confidence() -> None:
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
     """process_file calls api.put_analysis with the right schema after running essentia."""
     file_id = uuid.uuid4()
@@ -213,7 +213,7 @@ async def test_process_file_calls_put_analysis(mock_pool: AsyncMock) -> None:
     assert isinstance(body.style, dict)
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_forwards_windows(mock_pool: AsyncMock) -> None:
     """Phase 31 ANL-01: process_file forwards analyze_file's per-window time-series.
 
@@ -250,7 +250,7 @@ async def test_process_file_forwards_windows(mock_pool: AsyncMock) -> None:
     assert body.bpm == 128.0
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_defaults_windows_empty_when_absent(mock_pool: AsyncMock) -> None:
     """No ``windows`` key in the analyze_file dict -> windows defaults to [] (aggregates still sent)."""
     mock_pool.return_value = MOCK_ANALYSIS  # no "windows" key
@@ -267,7 +267,7 @@ async def test_process_file_defaults_windows_empty_when_absent(mock_pool: AsyncM
     assert body.musical_key == "C minor"
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     """Non-music file_types short-circuit before pool + HTTP call."""
     api = AsyncMock()
@@ -282,7 +282,7 @@ async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     api.put_analysis.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> None:
     """A generic essentia error with no ``ctx['job']`` re-raises and does NOT report.
 
@@ -306,7 +306,7 @@ async def test_process_file_propagates_pool_failure(mock_pool: AsyncMock) -> Non
 # ---------------------------------------------------------------------------
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_timeout_is_terminal(mock_pool: AsyncMock) -> None:
     """An inner pebble TimeoutError is terminal: report reason='timeout', return normally.
 
@@ -331,13 +331,16 @@ async def test_process_file_timeout_is_terminal(mock_pool: AsyncMock) -> None:
     api.put_analysis.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
-async def test_process_file_process_expired_is_terminal(mock_pool: AsyncMock) -> None:
-    """A pebble ProcessExpired (essentia OOM/crash) is terminal: report reason='crashed'."""
-    from pebble import ProcessExpired
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -> None:
+    """An AnalysisSubprocessError (essentia OOM/crash in the child) is terminal: report reason='crashed'.
+
+    Phase 101: the ProcessExpired mapping, carried over to the exec-child model.
+    """
+    from phaze.services.analysis_exec import AnalysisSubprocessError
 
     file_id = uuid.uuid4()
-    mock_pool.side_effect = ProcessExpired("child died", code=1)
+    mock_pool.side_effect = AnalysisSubprocessError("analysis child failed (exit 1): essentia died", exit_code=1)
     api = AsyncMock()
     api.put_analysis = AsyncMock()
     api.report_analysis_failed = AsyncMock(return_value=MagicMock())
@@ -351,7 +354,7 @@ async def test_process_file_process_expired_is_terminal(mock_pool: AsyncMock) ->
     api.put_analysis.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_non_retryable_generic_error_reports_then_raises(mock_pool: AsyncMock) -> None:
     """A generic error on the LAST attempt (``job.retryable is False``) reports then re-raises.
 
@@ -375,7 +378,7 @@ async def test_process_file_non_retryable_generic_error_reports_then_raises(mock
     api.put_analysis.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_retryable_generic_error_raises_without_reporting(mock_pool: AsyncMock) -> None:
     """A generic error with retries left (``job.retryable is True``) re-raises WITHOUT reporting.
 
@@ -396,7 +399,7 @@ async def test_process_file_retryable_generic_error_raises_without_reporting(moc
     api.put_analysis.assert_not_awaited()
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
     """The success path passes the inner timeout + 60/30 caps from AgentSettings to the pool."""
     stub = _patch_agent_settings.return_value
@@ -417,7 +420,7 @@ async def test_process_file_threads_inner_timeout_and_caps(mock_pool: AsyncMock,
     assert call.kwargs["coarse_cap"] == 25
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_payload_caps_override_agent_settings(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
     """Phase 44: payload fine_cap/coarse_cap (incl. 0) override the AgentSettings defaults."""
     stub = _patch_agent_settings.return_value
@@ -439,7 +442,7 @@ async def test_process_file_payload_caps_override_agent_settings(mock_pool: Asyn
     assert call.kwargs["coarse_cap"] == 0
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_caps_fall_back_to_agent_settings_when_none(mock_pool: AsyncMock, _patch_agent_settings: MagicMock) -> None:
     """Phase 44: absent payload caps (None) fall back to the AgentSettings 60/30 defaults exactly as before."""
     stub = _patch_agent_settings.return_value
@@ -458,7 +461,7 @@ async def test_process_file_caps_fall_back_to_agent_settings_when_none(mock_pool
     assert call.kwargs["coarse_cap"] == 22
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> None:
     """The five coverage fields from analyze_file are forwarded into AnalysisWritePayload."""
     analysis = {
@@ -484,7 +487,7 @@ async def test_process_file_forwards_coverage_fields(mock_pool: AsyncMock) -> No
     assert body.sampled is True
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_coverage_fields_default_none_when_absent(mock_pool: AsyncMock) -> None:
     """No coverage keys in the analyze_file dict -> coverage fields stay None (partial-PUT)."""
     mock_pool.return_value = MOCK_ANALYSIS  # no coverage keys
@@ -502,7 +505,7 @@ async def test_process_file_coverage_fields_default_none_when_absent(mock_pool: 
     assert body.sampled is None
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_propagates_http_failure(mock_pool: AsyncMock) -> None:
     """If put_analysis raises (5xx after retries), process_file re-raises."""
     mock_pool.return_value = MOCK_ANALYSIS
@@ -514,7 +517,7 @@ async def test_process_file_propagates_http_failure(mock_pool: AsyncMock) -> Non
         await process_file(ctx, **_make_payload_kwargs())
 
 
-@patch("phaze.tasks.functions.run_in_process_pool", new_callable=AsyncMock)
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
     """ProcessFilePayload.extra='forbid' should reject unknown fields."""
     api = AsyncMock()
@@ -531,19 +534,21 @@ async def test_process_file_rejects_extra_kwargs(mock_pool: AsyncMock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 57.1 (PROG-01): the pebble (local + A1) lane progress drainer bridge.
+# Phase 57.1 (PROG-01) / Phase 101 (OBS-03): the local + A1 lane progress bridge —
+# the driver invokes progress_cb ON the loop; the parent throttles + final-flushes.
 # ---------------------------------------------------------------------------
 
 
 def _fake_pool_emitting(counts: list[tuple[int, int]], result: dict[str, Any] | None = None, raise_exc: BaseException | None = None):  # type: ignore[no-untyped-def]
-    """Build a fake ``run_in_process_pool`` that invokes the child ``progress_cb`` then returns/raises.
+    """Build a fake ``run_analysis_subprocess`` that invokes ``progress_cb`` then returns/raises.
 
-    Mirrors the pebble call shape ``run_in_process_pool(ctx, func, *args, progress_cb=..., **kwargs)``;
-    the emitted counts go through the REAL ``_QueueProgressSink`` → Manager queue → parent drainer.
+    Mirrors the driver call shape ``run_analysis_subprocess(file_path, models_dir, *,
+    progress_cb=..., **kwargs)``; the emitted counts go through the REAL parent-side
+    throttle + final-flush bridge in ``_run_analysis_with_progress``.
     """
 
-    async def _fake(ctx, func, *args, progress_cb=None, **kwargs):  # type: ignore[no-untyped-def]
-        assert progress_cb is not None, "the bridge must thread a progress_cb into the pool"
+    async def _fake(file_path, models_dir, *, progress_cb=None, **kwargs):  # type: ignore[no-untyped-def]
+        assert progress_cb is not None, "the bridge must thread a progress_cb into the driver"
         for analyzed, total in counts:
             progress_cb(analyzed, total)
         if raise_exc is not None:
@@ -553,7 +558,7 @@ def _fake_pool_emitting(counts: list[tuple[int, int]], result: dict[str, Any] | 
     return _fake
 
 
-@patch("phaze.tasks.functions.run_in_process_pool")
+@patch("phaze.tasks.functions.run_analysis_subprocess")
 async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
     """The drainer POSTs advancing (analyzed,total) counts and always flushes the final count."""
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0  # no throttle: every count posts
@@ -579,7 +584,7 @@ async def test_process_file_posts_advancing_progress_and_final_flush(mock_pool: 
     assert posted[-1] == (3, 3), "the final count is flushed"
 
 
-@patch("phaze.tasks.functions.run_in_process_pool")
+@patch("phaze.tasks.functions.run_analysis_subprocess")
 async def test_process_file_progress_throttle_collapses_bursts(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
     """A long throttle interval collapses a burst to the first post + the final flush."""
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 10_000.0  # effectively never re-post
@@ -599,9 +604,9 @@ async def test_process_file_progress_throttle_collapses_bursts(mock_pool: MagicM
     assert posted == [(0, 4), (4, 4)]
 
 
-@patch("phaze.tasks.functions.run_in_process_pool")
-async def test_process_file_progress_drainer_kill_safe_on_timeout(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
-    """A SIGKILLed child (TimeoutError) tears the drainer down within a bounded deadline (no hang)."""
+@patch("phaze.tasks.functions.run_analysis_subprocess")
+async def test_process_file_progress_kill_safe_on_timeout(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """A killed child (TimeoutError from the driver) tears the progress bridge down promptly (no hang)."""
     _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0
     mock_pool.side_effect = _fake_pool_emitting([(0, 5), (1, 5)], raise_exc=TimeoutError())
 
@@ -620,7 +625,7 @@ async def test_process_file_progress_drainer_kill_safe_on_timeout(mock_pool: Mag
     assert failure.reason == "timeout"
 
 
-@patch("phaze.tasks.functions.run_in_process_pool")
+@patch("phaze.tasks.functions.run_analysis_subprocess")
 async def test_process_file_progress_post_failure_swallowed(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
     """A failing progress POST never changes the terminal result (best-effort, D-16)."""
     from phaze.services.agent_client import AgentApiServerError
@@ -642,19 +647,6 @@ async def test_process_file_progress_post_failure_swallowed(mock_pool: MagicMock
     assert api.post_analysis_progress.await_count >= 1
 
 
-def test_queue_progress_sink_is_picklable_module_level() -> None:
-    """The sink is a module-level picklable callable (no closure, no agent_client) — pebble can pickle it."""
-    import pickle
-
-    from phaze.tasks.functions import _QueueProgressSink
-
-    # Module-level qualname (no enclosing-function closure that would break pickling into the child).
-    assert _QueueProgressSink.__qualname__ == "_QueueProgressSink"
-    # An instance wrapping a picklable channel round-trips through pickle.
-    restored = pickle.loads(pickle.dumps(_QueueProgressSink([])))  # noqa: S301 - round-tripping our own trusted object
-    assert isinstance(restored, _QueueProgressSink)
-
-
 def test_analysis_child_path_imports_no_agent_client() -> None:
     """Only an (int,int) count crosses into the child: analysis.py imports no httpx/agent_client."""
     from pathlib import Path
@@ -666,55 +658,28 @@ def test_analysis_child_path_imports_no_agent_client() -> None:
     assert "import httpx" not in src
 
 
-class _FakeDrainQueue:
-    """Minimal blocking-queue stand-in for ``_drain_progress`` unit coverage.
+@patch("phaze.tasks.functions.run_analysis_subprocess")
+async def test_process_file_respects_ctx_analysis_semaphore(mock_pool: MagicMock, _patch_agent_settings: MagicMock) -> None:
+    """Phase 101: a ctx-provided analysis_semaphore is held around the analysis call.
 
-    Each ``get`` pops the next scripted item; an ``Empty`` class in the script raises
-    ``queue.Empty`` (the drainer's timeout-retry path), an exception class raises that
-    exception (the manager-gone path), anything else is returned as a real item.
+    The semaphore replaces the pebble pool's worker_process_pool_size concurrency
+    bound; a zero-permit semaphore must therefore block the analysis from starting.
     """
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = list(script)
-
-    def get(self, _block: bool, _timeout: float) -> Any:
-        from queue import Empty as _Empty
-
-        if not self._script:
-            raise _Empty
-        item = self._script.pop(0)
-        if isinstance(item, type) and issubclass(item, BaseException):
-            raise item
-        return item
-
-
-async def test_drain_progress_skips_empty_then_posts_and_flushes() -> None:
-    """The drainer retries past a queue.Empty timeout, posts counts, and flushes the final one."""
-    from queue import Empty
-
-    from phaze.tasks.functions import _PROGRESS_SENTINEL, _drain_progress
+    _patch_agent_settings.return_value.analysis_progress_interval_sec = 0.0
+    mock_pool.side_effect = _fake_pool_emitting([(0, 1), (1, 1)])
 
     api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
     api.post_analysis_progress = AsyncMock(return_value=None)
-    file_id = uuid.uuid4()
-    queue = _FakeDrainQueue([Empty, (0, 2), (1, 2), _PROGRESS_SENTINEL])
+    ctx = _make_ctx(api_client=api)
+    ctx["analysis_semaphore"] = asyncio.Semaphore(0)  # no permits: analysis must not start
 
-    await _drain_progress(queue, api, file_id, 0.0)
+    task = asyncio.ensure_future(process_file(ctx, **_make_payload_kwargs()))
+    await asyncio.sleep(0.05)
+    assert not task.done(), "analysis must wait for a semaphore permit"
+    mock_pool.assert_not_called()
 
-    posted = [(c.args[1].fine_windows_analyzed, c.args[1].fine_windows_total) for c in api.post_analysis_progress.await_args_list]
-    # (0,2) and (1,2) posted live; (1,2) flushed again at sentinel.
-    assert posted == [(0, 2), (1, 2), (1, 2)]
-
-
-async def test_drain_progress_stops_when_manager_gone() -> None:
-    """An EOFError/OSError from the queue (manager shut down) stops the drainer without posting."""
-    from phaze.tasks.functions import _drain_progress
-
-    api = AsyncMock()
-    api.post_analysis_progress = AsyncMock(return_value=None)
-    file_id = uuid.uuid4()
-    queue = _FakeDrainQueue([EOFError])
-
-    await _drain_progress(queue, api, file_id, 0.0)
-
-    api.post_analysis_progress.assert_not_awaited()
+    ctx["analysis_semaphore"].release()  # grant the permit; the job completes normally
+    result = await asyncio.wait_for(task, timeout=5.0)
+    assert result["status"] == "analyzed"
+    mock_pool.assert_called_once()

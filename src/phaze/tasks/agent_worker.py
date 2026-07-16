@@ -67,7 +67,6 @@ from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
 from phaze.tasks.heartbeat import _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
-from phaze.tasks.pool import create_process_pool
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory, scan_live_set
@@ -215,8 +214,10 @@ async def startup(ctx: dict[str, Any]) -> None:
         ],
     )
 
-    # Step 6: CPU-bound essentia process pool (mirror worker.py:41).
-    ctx["process_pool"] = create_process_pool()
+    # Step 6: bound concurrent essentia analysis children (Phase 101). The exec'd
+    # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
+    # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
+    ctx["analysis_semaphore"] = asyncio.Semaphore(cfg.worker_process_pool_size)
 
     logger.info(
         "phaze.tasks.agent_worker startup complete agent_id=%s queue=%s lane=%s",
@@ -239,11 +240,9 @@ async def shutdown(ctx: dict[str, Any]) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
 
-    # Phase 43: pebble ProcessPool shuts down via stop()/join() (not shutdown()).
-    pool = ctx.get("process_pool")
-    if pool is not None:
-        pool.stop()
-        pool.join()
+    # Phase 101: no process pool to tear down — analysis children are per-file
+    # subprocesses owned and reaped by services.analysis_exec; the semaphore needs
+    # no shutdown.
 
     orchestrator = ctx.get("fingerprint_orchestrator")
     if orchestrator is not None:
