@@ -3,7 +3,8 @@
 This is the load-bearing spine of the v7.0 three-column "Hybrid Console" shell
 (Phase 57). It serves the structural shell (header · DAG rail · ``#stage-workspace`` ·
 right pane) on a direct/bookmark navigation, and a bare content fragment on an HTMX
-rail swap -- the fragment-vs-full fork mirrored VERBATIM from ``search.py:73-77``.
+rail swap -- the same HX-Request-aware full-page-vs-partial fork used by
+``admin_agents.page`` (``routers/admin_agents.py``).
 
 Stage resolution is a strict whitelist: ``STAGE_PARTIALS`` maps each rail-node id to the
 content partial that bridges it (D-01). ``stage`` is NEVER interpolated into a template
@@ -162,10 +163,11 @@ async def _analyze_file_count(session: AsyncSession) -> int:
 async def _render_stage(request: Request, stage: str, session: AsyncSession) -> HTMLResponse:
     """Render ``stage`` as the full shell (direct nav) or a bare fragment (HX rail swap).
 
-    The fork mirrors ``search.py:73-77`` VERBATIM: an ``HX-Request: true`` swap gets the
-    content-only ``shell/_stage_fragment.html`` (which NEVER extends ``base.html`` -- a
-    fragment carrying ``<html>``/``<head>`` corrupts the shell, a ROADMAP-locked
-    anti-pattern); a direct or bookmark navigation gets the full ``shell/shell.html``
+    The fork is the same HX-Request-aware pattern as ``admin_agents.page``: an
+    ``HX-Request: true`` swap gets the content-only ``shell/_stage_fragment.html``
+    (which NEVER extends ``base.html`` -- a fragment carrying ``<html>``/``<head>``
+    corrupts the shell, a ROADMAP-locked anti-pattern); a direct or bookmark
+    navigation gets the full ``shell/shell.html``
     chrome. ``oob_counts=False`` so the initial render never emits the ``hx-swap-oob``
     "files ready" paragraphs (Pitfall 5 -- they would collide on duplicate ids with the
     DAG canvas seeds; they are honored only during a real ``/pipeline/stats`` swap).

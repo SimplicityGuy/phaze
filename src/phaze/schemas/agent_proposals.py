@@ -2,10 +2,13 @@
 
 Per D-28: joint Proposal + FileRecord state transition in one transaction
 with server-side state-machine validation. Allowed transitions:
-- ProposalStatus.APPROVED -> EXECUTED  (file_state must be MOVED, current_path required)
-- ProposalStatus.APPROVED -> FAILED    (file_state typically UNCHANGED)
+- ProposalStatus.APPROVED -> EXECUTED  (file_state is optional; typically MOVED)
+- ProposalStatus.APPROVED -> FAILED    (file_state is optional; typically UNCHANGED or omitted)
 - Same-state PATCH (e.g., EXECUTED -> EXECUTED) is 200 idempotent no-op.
 - Any other transition (e.g., EXECUTED -> FAILED, REJECTED -> EXECUTED) is 409.
+
+file_state is never required by proposal_state: the schema only requires current_path
+when file_state == "moved" (see the validator below), regardless of proposal_state.
 
 The `_require_path_when_moved` validator enforces the conditional that
 CONTEXT.md flags as Claude's discretion: current_path MUST be set when

@@ -5,8 +5,8 @@ picks an agent + scan_root + optional subpath from the Trigger Scan card on the
 `/pipeline/` dashboard, and this handler:
 
 1. Validates the form server-side (T-27-03): joins root + subpath, NFC-normalizes,
-   rejects literal `..` (mirrors `routers/scan.py:41`), enforces prefix-against
-   `agent.scan_roots`, and verifies the agent is not revoked.
+   rejects literal `..` as a path *component* (see `trigger_scan` below), enforces
+   prefix-against `agent.scan_roots`, and verifies the agent is not revoked.
 2. Creates a RUNNING `ScanBatch` row.
 3. Enqueues `scan_directory(scan_path, batch_id)` via the lifespan-wired
    `AgentTaskRouter.enqueue_for_agent` (Phase 26 D-19) to the chosen agent's
@@ -314,7 +314,8 @@ async def trigger_scan(
 
     Validation layers (T-27-03):
     1. NFC-normalize the joined `scan_root + '/' + subpath` (Pitfall 3).
-    2. Reject literal `..` (mirrors `routers/scan.py:41`).
+    2. Reject literal `..` as a path component (WR-01, see the inline comment below --
+       not a bare substring check, to avoid false-positives on triple-dot filenames).
     3. Look up the agent; reject if missing or revoked.
     4. Enforce prefix-against `agent.scan_roots` (D-06).
 

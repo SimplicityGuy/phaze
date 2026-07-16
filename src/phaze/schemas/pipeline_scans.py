@@ -3,7 +3,7 @@
 The operator submits `{agent_id, scan_root, subpath}` from the Pipeline page's
 "Trigger Scan" card. The router (Plan 06) joins root + subpath, NFC-normalizes
 the result, validates it starts with one of the agent's `scan_roots`, and
-contains no `..` traversal (mirrors `routers/scan.py:41`).
+contains no `..` path-traversal component (see `routers/pipeline_scans.py::trigger_scan`).
 
 The schema itself accepts any string and defers semantic validation to the
 router — T-27-03 disposition: schema-level regex would be over-restrictive

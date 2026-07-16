@@ -73,11 +73,13 @@ async def report_uploaded(
     (T-53-15). ``file_id`` is the PATH value only; ``agent`` comes from the token (AUTH-01).
 
     Phase 55 (D-01b, KROUTE-03): on the kueue target the upload-complete callback is also the
-    post-staging seam -- it advances the FileRecord ``PUSHING -> PUSHED`` (a rowcount-guarded
-    idempotent flip mirroring ``agent_push.report_pushed``, freeing a window slot) and enqueues
-    ``submit_cloud_job`` through ``enqueue_router`` on the controller queue (NEVER a raw enqueue --
-    KROUTE-04). A1 uses rsync and never reaches these S3 callbacks, so the resolved-kind ``== "kueue"``
-    guard is defensive: a non-kueue target preserves today's cloud_job-only behavior.
+    post-staging seam -- it enqueues ``submit_cloud_job`` through ``enqueue_router`` on the
+    controller queue (NEVER a raw enqueue -- KROUTE-04). Phase 90 (D-09) removed the companion
+    FileRecord ``PUSHING -> PUSHED`` CAS flip this seam used to perform; idempotency is now carried
+    solely by the outer ``cloud_job`` CAS (``UPLOADING -> UPLOADED`` above) plus the deterministic
+    ``submit_cloud_job`` key. A1 uses rsync and never reaches these S3 callbacks, so the
+    resolved-kind ``== "kueue"`` guard is defensive: a non-kueue target preserves today's
+    cloud_job-only behavior.
     """
     cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
 

@@ -471,16 +471,19 @@ async def trigger_analysis(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue process_file jobs for all DISCOVERED files, routed per-file by duration (Phase 49, D-06/D-11/D-12).
+    """Enqueue process_file jobs for all DISCOVERED files, routed per-file by duration (Phase 49
+    D-06/D-11/D-12; Phase 50 CLOUDPIPE-01 reshape).
 
-    Long (``>= cloud_route_threshold_sec``) files route to a COMPUTE agent's queue;
-    short/null-duration files route to the FILESERVER queue exactly as before; a long file
-    with no compute agent online is HELD in ``AWAITING_CLOUD`` (committed, NEVER silently
-    analyzed locally -- D-02); short/null files with no fileserver online are reported
-    ``skipped`` without aborting the run. One SAQ job per routed file; the enqueues run in a
-    background task (via the shared router helper) to avoid HTTP timeout on large file counts.
-    Returns the split counts. The no-active-agent message is returned ONLY when BOTH agent
-    kinds are absent (nothing routable at all).
+    Short/null-duration files route to the FILESERVER queue exactly as before. Long
+    (``>= cloud_route_threshold_sec``) files are ALWAYS held in ``AWAITING_CLOUD`` -- there is no
+    direct-to-compute enqueue here any more (see :func:`_route_discovered_by_duration`); the
+    bounded ``stage_cloud_window`` controller cron is the sole entry to the compute pipeline.
+    Short/null files with no fileserver agent online are reported ``skipped`` without aborting the
+    run. One SAQ job per locally-routed file; the enqueues run in a background task (via the shared
+    router helper) to avoid HTTP timeout on large file counts. Returns the split counts (``cloud``
+    is always 0). The no-active-agent message is returned when NO fileserver agent is online
+    (nothing can route locally) -- any long files are still committed to ``AWAITING_CLOUD``
+    regardless.
     """
     files_with_duration = await get_discovered_files_with_duration(session)
     if not files_with_duration:
@@ -1026,13 +1029,14 @@ async def trigger_analysis_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: trigger per-file duration-routed analysis and return the split-count fragment (Phase 49).
+    """HTMX endpoint: trigger per-file duration-routed analysis and return the split-count fragment (Phase 49; Phase 50 CLOUDPIPE-01 reshape).
 
-    Mirrors :func:`trigger_analysis`: long files route to a compute agent, short/null files to
-    the fileserver, long files with no compute agent are held in ``AWAITING_CLOUD``, and
-    short/null files with no fileserver are skipped without aborting the run. The fragment
-    reports ``N local, M cloud, K awaiting cloud`` (+ a skipped bucket). The no-active-agent
-    fragment is rendered ONLY when BOTH agent kinds are absent (nothing routable).
+    Mirrors :func:`trigger_analysis`: short/null files route to the fileserver as before; long
+    files are ALWAYS held in ``AWAITING_CLOUD`` (no direct-to-compute enqueue -- see
+    :func:`_route_discovered_by_duration`), and short/null files with no fileserver online are
+    skipped without aborting the run. The fragment reports ``N local, M cloud, K awaiting cloud``
+    (+ a skipped bucket); ``cloud`` is always 0. The no-active-agent fragment is rendered when NO
+    fileserver agent is online (nothing can route locally).
     """
     files_with_duration = await get_discovered_files_with_duration(session)
     count = len(files_with_duration)
@@ -1214,12 +1218,12 @@ async def retry_analysis_failed(
     - Resolve the per-agent queue ONCE. ``process_file`` is an AGENT_TASK; if no agent is online
       ``NoActiveAgentError`` is caught and the endpoint returns a fragment WITHOUT flipping any
       state or enqueuing -- it never falls through to the consumer-less default queue.
-    - Flip every failed file ANALYSIS_FAILED -> FINGERPRINTED (the canonical pre-analysis state)
-      AND clear the ``analysis.failed_at`` / ``error_message`` marker in the SAME transaction, then
-      ``commit`` BEFORE any enqueue (get_session does NOT auto-commit): the files leave the
-      red bucket immediately; ``put_analysis`` re-flips each -> ANALYZED on success, or
-      ``report_analysis_failed`` -> ANALYSIS_FAILED only if it fails AGAIN. Clearing BOTH halves of
-      the FAIL-01 dual-write is mandatory -- see the inline note below.
+    - Clear the ``analysis.failed_at`` / ``error_message`` marker, then ``commit`` BEFORE any
+      enqueue (get_session does NOT auto-commit): the files leave the red bucket immediately;
+      ``put_analysis`` clears it again (a no-op) on success, or ``report_analysis_failed``
+      re-stamps it only if it fails AGAIN. Phase 90 (D-09) removed the companion
+      ``FileRecord.state = FINGERPRINTED`` reset -- clearing the ``analysis`` marker is now the
+      sole required mutation (see the inline note below).
     - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
       the WHOLE failed set is safe (dedup-safe; no silent cap).
     """
@@ -1356,17 +1360,20 @@ async def retry_analysis_failed_file(
     The scoped twin of :func:`retry_analysis_failed`: it re-drives EXACTLY ONE file through the
     identical guarded funnel (per-agent routing -> ``NoActiveAgentError`` guard ->
     :func:`enqueue_process_file` with the COMPLETE ``ProcessFilePayload`` + deterministic
-    ``process_file:<id>`` key), scoped by ``id == file_id AND state == ANALYSIS_FAILED`` so a
-    non-failed (or unknown) file is a safe no-op ack (T-87-27 input validation — a UUID path param +
-    the state guard, never an unscoped enqueue).
+    ``process_file:<id>`` key), scoped by ``id == file_id AND`` the derived terminal analyze-failure
+    marker (``failed_clause(Stage.ANALYZE)``, Phase 90 PR-A -- no longer the retired
+    ``files.state == ANALYSIS_FAILED`` column) so a non-failed (or unknown) file is a safe no-op ack
+    (T-87-27 input validation — a UUID path param + the failure-marker guard, never an unscoped
+    enqueue).
 
     MANUAL-ONLY, no auto-loop (D-00b, behavior 8, T-87-24): analyze is the ONLY enrich carve-out
     (``ELIGIBLE_AFTER_FAILURE[ANALYZE]=False``) — a FAILED analyze is terminal and is NEVER
     auto-retried by ``recover_orphaned_work`` / the derived pending set. This endpoint is that
-    invariant's deliberate operator-gated counterpart: it flips ANALYSIS_FAILED -> FINGERPRINTED AND
-    clears the ``analysis.failed_at`` / ``error_message`` marker in the SAME transaction, then
-    ``commit`` BEFORE the enqueue (``get_session`` does NOT auto-commit) so the file leaves the failed
-    disjunct immediately and derives ``not_started`` for a fresh re-analysis. The deterministic key
+    invariant's deliberate operator-gated counterpart: it clears the ``analysis.failed_at`` /
+    ``error_message`` marker, then ``commit`` BEFORE the enqueue (``get_session`` does NOT
+    auto-commit) so the file leaves the failed disjunct immediately and derives ``not_started`` for a
+    fresh re-analysis. Phase 90 (D-09) removed the companion ``FileRecord.state = FINGERPRINTED``
+    reset -- clearing the ``analysis`` marker is now the sole required mutation. The deterministic key
     dedups a live in-flight job to a no-op (T-87-26). The ack is count/bool-only — no operator
     free-text crosses into Jinja (T-d79-04).
     """
@@ -1941,9 +1948,12 @@ async def trigger_metadata_extraction(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue extract_file_metadata jobs for all music/video files.
+    """Enqueue extract_file_metadata jobs for eligible music/video files (READ-01 cutover).
 
-    Per D-04: queues all files regardless of state for backfill.
+    Per D-04: originally queued every music/video file regardless of status, for backfill. READ-01
+    replaced that state-agnostic selector with the DERIVED pending set (see
+    :func:`get_metadata_pending_files`, ``eligible_clause(Stage.METADATA)``): a file whose metadata
+    is genuinely done is excluded, while a not-started or failed one stays eligible (auto-retry).
     Per D-09: manual API endpoint for re-extraction.
     """
     files = await get_metadata_pending_files(session)
@@ -2020,9 +2030,12 @@ async def trigger_fingerprint(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Enqueue fingerprint_file jobs for eligible files (per D-14).
+    """Enqueue fingerprint_file jobs for eligible files (per D-14; READ-01 cutover).
 
-    Eligible: files in METADATA_EXTRACTED state, plus files with failed fingerprint results for retry.
+    Eligible: music/video files not yet fingerprinted, plus files with a failed fingerprint result
+    (auto-retry eligible), minus dedup-resolved files -- see :func:`get_fingerprint_pending_files`
+    (derived via ``eligible_clause(Stage.FINGERPRINT)``; no longer a ``METADATA_EXTRACTED``
+    file-state filter).
     """
     # Shared pending-set helper (D-03 anti-drift): METADATA_EXTRACTED + failed-retry, deduped by id.
     all_files = await get_fingerprint_pending_files(session)
