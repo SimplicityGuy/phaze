@@ -518,3 +518,278 @@ def test_progress_bridge_source_guard():  # type: ignore[no-untyped-def]
     # guard on the dangerous CALL form (a closing paren immediately followed by .result()).
     assert ").result()" not in src, "the cb must be fire-and-forget — chaining .result() would deadlock the analysis thread"
     assert "post_analysis_progress" in src, "the k8s lane must post counter-only progress"
+
+
+# ---------------------------------------------------------------------------
+# Phase 100 (phaze-sfbx.3, OBS-02): human-friendly banner, step lines, and windowed
+# progress lines. The console-readability layer over the machine JSON log.
+# ---------------------------------------------------------------------------
+
+
+_FULL_METADATA = {
+    "original_filename": "coachella-2019-full-set.mp3",
+    "current_path": "/mnt/library/live/coachella-2019-full-set.mp3",
+    "source_agent_id": "fileserver-01",
+    "duration_sec": 3723.5,
+    "file_size": 136_839_168,  # ~130.5 MiB
+    "staging_bucket": "phaze-staging",
+    "backend_id": "cluster-01",
+}
+
+
+def _wire_happy_flow(respx_mock, base, file_id, *, presign_json):  # type: ignore[no-untyped-def]
+    """Stub presign/download/PUT for a success run; the caller supplies the presign body."""
+    respx_mock.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json=presign_json),
+    )
+    respx_mock.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx_mock.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        (None, True),  # ABSENT -> the one-shot pod defaults friendly ON
+        ("", True),  # blank is treated as absent -> ON
+        ("0", False),  # explicit off wins even for this pod
+        ("false", False),
+        ("no", False),
+        ("1", True),
+        ("true", True),
+    ],
+)
+def test_resolve_friendly_default_precedence(monkeypatch, env_value, expected):  # type: ignore[no-untyped-def]
+    """The pod defaults friendly ON, but an explicit PHAZE_LOG_FRIENDLY=0 still turns it OFF (OBS-02)."""
+    import phaze.job_runner as jr
+
+    if env_value is None:
+        monkeypatch.delenv("PHAZE_LOG_FRIENDLY", raising=False)
+    else:
+        monkeypatch.setenv("PHAZE_LOG_FRIENDLY", env_value)
+
+    assert jr._resolve_friendly_default() is expected
+
+
+def test_main_configures_friendly_from_pod_default(monkeypatch):  # type: ignore[no-untyped-def]
+    """``main()`` threads the pod's friendly default into ``configure_logging`` (OBS-02)."""
+    import phaze.job_runner as jr
+
+    captured: dict = {}
+
+    def _fake_configure(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+
+    monkeypatch.delenv("PHAZE_LOG_FRIENDLY", raising=False)
+    monkeypatch.setattr(jr, "configure_logging", _fake_configure)
+    monkeypatch.setattr(jr.asyncio, "run", lambda _coro: _coro.close())
+
+    jr.main()
+
+    # Absent env -> the pod default (True) is passed explicitly, never left to configure_logging's
+    # own default-off env fallback.
+    assert captured.get("friendly") is True
+
+
+@respx.mock
+async def test_banner_emitted_with_full_metadata(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """The banner carries every present metadata field, right after presign (OBS-02)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": _FULL_METADATA})
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    banners = [e for e in logs if e["event"] == "job_runner_banner"]
+    assert len(banners) == 1
+    banner = banners[0]
+    assert banner["file_id"] == str(file_id)
+    assert banner["filename"] == "coachella-2019-full-set.mp3"
+    assert banner["source_path"] == "/mnt/library/live/coachella-2019-full-set.mp3"
+    assert banner["source_agent_id"] == "fileserver-01"
+    assert banner["duration_sec"] == 3723.5
+    assert banner["file_size_mb"] == 130.5
+    assert banner["staging_bucket"] == "phaze-staging"
+    assert banner["backend_id"] == "cluster-01"
+
+
+@respx.mock
+async def test_banner_degrades_to_uuid_only_without_metadata(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """An older control plane omits the metadata block -> the banner is file_id-only, never a failure (OBS-02)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA})
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    banners = [e for e in logs if e["event"] == "job_runner_banner"]
+    assert len(banners) == 1
+    banner = banners[0]
+    # UUID-only worst case: file_id present, but NONE of the human identity fields leak in.
+    assert banner["file_id"] == str(file_id)
+    for absent in ("filename", "source_path", "source_agent_id", "duration_sec", "file_size_mb", "staging_bucket", "backend_id"):
+        assert absent not in banner
+
+
+@respx.mock
+async def test_banner_degrades_field_by_field_on_partial_metadata(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A partial metadata block (no backend_id/duration) still emits the present fields (OBS-02)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    partial = {"original_filename": "song.mp3", "file_size": 5_242_880, "staging_bucket": "phaze-staging"}  # 5 MiB
+    _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": partial})
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    banner = next(e for e in logs if e["event"] == "job_runner_banner")
+    assert banner["filename"] == "song.mp3"
+    assert banner["file_size_mb"] == 5.0
+    assert banner["staging_bucket"] == "phaze-staging"
+    # Absent individual fields are simply omitted, not None-valued.
+    assert "backend_id" not in banner
+    assert "duration_sec" not in banner
+    assert "source_path" not in banner
+
+
+@respx.mock
+async def test_step_events_preserve_machine_keys_and_add_human_fields(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Every ``job_runner_step_ok`` keeps event/step/elapsed_ms; download carries downloaded_mb (OBS-02)."""
+    import structlog
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": _FULL_METADATA})
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    steps = {e["step"]: e for e in logs if e["event"] == "job_runner_step_ok"}
+    # Machine keys preserved on ALL five steps (parsers depend on them).
+    assert set(steps) == {"presign", "download", "verify", "analyze", "callback"}
+    for step_event in steps.values():
+        assert step_event["event"] == "job_runner_step_ok"
+        assert "step" in step_event
+        assert isinstance(step_event["elapsed_ms"], int)
+    # Additive human fields.
+    assert steps["download"]["downloaded_mb"] == pytest.approx(len(_AUDIO) / (1024 * 1024), abs=0.1)
+    assert steps["verify"]["sha256"] == _GOOD_SHA[:12]
+    assert steps["analyze"]["fine_windows_total"] == 1
+    assert steps["callback"]["result"] == "analysis written"
+
+
+@respx.mock
+async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Console progress lines share the POST throttle; the final N/N (100%) line always emits (OBS-02)."""
+    import structlog
+
+    # A large interval: only the first (unthrottled) count and the final count get through.
+    monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "3600")
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 5), (1, 5), (2, 5), (5, 5)]))
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
+        await jr.run()
+    await asyncio.sleep(0.1)
+
+    assert exc.value.code == 0
+    progress = [e for e in logs if e["event"] == "job_runner_progress"]
+    # Throttled: NOT one line per emitted count -- only the first + the final pass the gate.
+    assert len(progress) == 2
+    assert progress[0]["fine_windows_analyzed"] == 0
+    assert progress[0]["percent"] == 0.0
+    # The final count ALWAYS emits (is_final bypasses the throttle) at 100%.
+    final = progress[-1]
+    assert final["fine_windows_analyzed"] == 5
+    assert final["fine_windows_total"] == 5
+    assert final["percent"] == 100.0
+
+
+@respx.mock
+async def test_progress_line_failure_never_escapes_callback(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """A rendering failure in the progress line is swallowed and never changes the exit code (OBS-02)."""
+    monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "0")
+    from phaze.config import get_settings
+
+    get_settings.cache_clear()
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    respx.post(f"{base}/api/internal/agent/analysis/{file_id}/progress").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+    respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    # Force ONLY the progress LOG call to raise (delegate every other event/method to the real
+    # logger); the swallow contract must keep the run at exit 0 despite the rendering failure.
+    class _BoomOnProgress:
+        def __init__(self, real):  # type: ignore[no-untyped-def]
+            self._real = real
+
+        def info(self, event, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if event == "job_runner_progress":
+                raise RuntimeError("render failure")
+            return self._real.info(event, *args, **kwargs)
+
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(jr, "log", _BoomOnProgress(jr.log))
+    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+    await asyncio.sleep(0.1)
+
+    assert exc.value.code == 0
