@@ -35,7 +35,7 @@ async def put_metadata(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> MetadataWriteResponse:
-    """Idempotently replace tag-metadata for a file. Natural key: metadata.file_id (UQ from models/metadata.py:18).
+    """Idempotently replace tag-metadata for a file. Natural key: metadata.file_id (UQ from models/metadata.py:19).
 
     Field-level last-write-wins per D-14: only fields the client *explicitly
     set* (via Pydantic's exclude-unset dump semantics) land in the UPDATE
@@ -47,7 +47,7 @@ async def put_metadata(
     path falls back to `ON CONFLICT DO NOTHING` (Postgres rejects an empty
     SET clause). New rows still get an INSERT with whatever fields were set.
 
-    PK NOTE: `FileMetadata.id` (models/metadata.py:17) declares
+    PK NOTE: `FileMetadata.id` (models/metadata.py:18) declares
     `default=uuid.uuid4` as a Python-only default. The default fires only
     through ORM `session.add()`, NOT through `pg_insert(...).values()`. We
     therefore stamp `payload["id"] = uuid.uuid4()` explicitly so a fresh

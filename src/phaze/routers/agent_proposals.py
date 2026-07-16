@@ -53,7 +53,7 @@ async def patch_proposal_state(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ProposalStateResponse:
-    """Joint Proposal + FileRecord state transition in one transaction (D-28)."""
+    """Proposal status transition, plus an optional FileRecord.current_path update, in one transaction (D-28; Phase 86 SIDECAR-03)."""
     # 404 if proposal_id does not exist
     proposal = await session.get(RenameProposal, proposal_id)
     if proposal is None:

@@ -2,7 +2,7 @@
 
 Mirrors `agent_metadata.py` exactly: `pg_insert` + `on_conflict_do_update` with
 `exclude_unset` semantics (Phase 25 CR-01 fix). Natural key:
-`AnalysisResult.file_id` (unique=True per models/analysis.py:18).
+`AnalysisResult.file_id` (unique=True per models/analysis.py:19).
 
 Storage representation: `AnalysisResult.mood` and `.style` are `String(50)`
 columns (Phase 5 schema). D-26's wire format is `dict[str, float]`. The handler
@@ -346,15 +346,16 @@ async def report_analysis_failed(
     ``reason``/``error`` detail is validated + bounded by the payload (T-43-06);
     the terminal state itself is the durable signal recorded here.
 
-    Phase 81 (FAIL-01, D-05 dual-write): the same call now ALSO stamps a durable per-stage marker on
-    the file's ``analysis`` row -- ``failed_at = now()`` + ``error_message = "<reason>: <error>"`` --
-    while KEEPING the ``state = ANALYSIS_FAILED`` write. Phase 80's recovery derives ``failed(analyze)``
-    from this marker (D-02); the state write stays live until three ``files.state`` readers cut over in
-    Phases 80/82, and dies in Phase 90. The upsert is ``INSERT .. ON CONFLICT (file_id) DO UPDATE``
-    because a pure analyze failure never wrote an ``analysis`` row -- a bare UPDATE would silently no-op
-    (D-06). It clears ``analysis_completed_at`` in the same row so the migration-033 CHECK
-    (``analysis_completed_at`` XOR ``failed_at``) can never see a mixed row (D-06). All writes commit in
-    ONE transaction, ordered marker -> state -> ledger -> staged-object-delete (RESEARCH Discretion #1).
+    Phase 81 (FAIL-01, D-05 dual-write) introduced a durable per-stage marker on the file's
+    ``analysis`` row -- ``failed_at = now()`` + ``error_message = "<reason>: <error>"``. Phase 80's
+    recovery derives ``failed(analyze)`` from this marker (D-02). Phase 90 (D-09) has since removed
+    the companion ``files.state = ANALYSIS_FAILED`` write now that its readers have cut over: the
+    ``analysis.failed_at`` marker upserted here is the sole derived failure authority. The upsert is
+    ``INSERT .. ON CONFLICT (file_id) DO UPDATE`` because a pure analyze failure never wrote an
+    ``analysis`` row -- a bare UPDATE would silently no-op (D-06). It clears ``analysis_completed_at``
+    in the same row so the migration-033 CHECK (``analysis_completed_at`` XOR ``failed_at``) can never
+    see a mixed row (D-06). All writes commit in ONE transaction, ordered marker -> ledger ->
+    staged-object-delete (RESEARCH Discretion #1).
     """
     # FAIL-01 / D-07: compose + defensively truncate the persisted detail (the column is unbounded Text;
     # `error` is already max_length=2000 at the wire). Mirrors report_metadata_failed's `reason: error`.
