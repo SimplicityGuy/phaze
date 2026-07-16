@@ -17,10 +17,12 @@ store. Coverage:
 so collection still succeeds before the module exists — the RED state then
 surfaces as a per-test import error rather than a collection error.
 
-The analyze seam is patched at ``phaze.job_runner._load_analyze_file`` (the same
-deferred-import seam ``process_file`` uses) so the unit tests run without the GB
-essentia models AND without importing the platform-gated essentia wheel. The
-``no_monoloader`` source guard independently proves the windowed path is wired.
+Phase 101 (phaze-bo3p.3): analysis runs in a child process via the shared driver, so
+the analyze seam is patched at ``phaze.job_runner.run_analysis_subprocess`` — the
+``_driver_seam`` helper adapts the sync fake-analyze callables onto the driver's async
+signature. The unit tests still run without the GB essentia models AND without
+importing the platform-gated essentia wheel; the full parent↔child subprocess contract
+is covered by tests/analyze/services/test_analysis_exec.py.
 """
 
 from __future__ import annotations
@@ -77,6 +79,20 @@ def _capturing_analyze(paths: list[str]):  # type: ignore[no-untyped-def]
     return _analyze
 
 
+def _driver_seam(sync_analyze):  # type: ignore[no-untyped-def]
+    """Adapt a sync fake-analyze callable onto the async driver seam (Phase 101).
+
+    ``jr.run_analysis_subprocess(file_path, models_dir, *, progress_cb=..., ...)`` is the
+    patched seam; the fake runs inline on the loop, which is exactly how the real driver
+    delivers progress callbacks (ON the loop, mid-analysis).
+    """
+
+    async def _fake_driver(file_path, models_dir, *, progress_cb=None, **kwargs):  # type: ignore[no-untyped-def]
+        return sync_analyze(file_path, models_dir, progress_cb=progress_cb, **kwargs)
+
+    return _fake_driver
+
+
 # ---------------------------------------------------------------------------
 # cloud-analyze-empty-no-ext: the downloaded temp file MUST carry the file's REAL
 # audio extension (essentia detects format by extension). The staged S3 key has
@@ -109,7 +125,7 @@ async def test_temp_file_suffix_derives_from_real_audio_ext(job_env, monkeypatch
     )
 
     seen: list[str] = []
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _capturing_analyze(seen))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -140,7 +156,7 @@ async def test_temp_file_suffix_falls_back_to_url_suffix_when_ext_absent(job_env
     )
 
     seen: list[str] = []
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _capturing_analyze(seen))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_capturing_analyze(seen)))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -197,7 +213,7 @@ async def test_zero_window_analysis_fails_loudly(job_env, monkeypatch):  # type:
         r["coarse_windows_total"] = 0
         return r
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _empty_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _empty_result()))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -223,7 +239,7 @@ async def test_happy_path_exits_zero(job_env, monkeypatch):  # type: ignore[no-u
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -233,6 +249,53 @@ async def test_happy_path_exits_zero(job_env, monkeypatch):  # type: ignore[no-u
     # T-52-04: the internal bearer must NOT leak to the (self-authenticating) object store.
     dl_headers = {k.lower() for k in download.calls.last.request.headers}
     assert "authorization" not in dl_headers
+
+
+@respx.mock
+async def test_analysis_result_forwarded_to_put_unchanged(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """Byte-identical passthrough (OBS-03 criterion 4): the driver's returned dict reaches the
+    completion PUT with values unchanged — windows, aggregates, and the five-field coverage
+    contract all match what the analysis child produced."""
+    import json as _json
+
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+
+    respx.post(f"{base}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(200, json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_DOWNLOAD_URL).mock(return_value=httpx.Response(200, content=_AUDIO))
+    put = respx.put(f"{base}/api/internal/agent/analysis/{file_id}").mock(
+        return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
+    )
+
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == 0
+    body = _json.loads(put.calls.last.request.content)
+    expected = _fake_result()
+    for field in (
+        "bpm",
+        "musical_key",
+        "danceability",
+        "energy",
+        "fine_windows_analyzed",
+        "fine_windows_total",
+        "coarse_windows_analyzed",
+        "coarse_windows_total",
+        "sampled",
+    ):
+        assert body[field] == expected[field], field
+    # Every window dict crosses intact (payload adds only schema-defaulted keys, never mutates values).
+    assert len(body["windows"]) == len(expected["windows"])
+    for sent, produced in zip(body["windows"], expected["windows"], strict=True):
+        for key, value in produced.items():
+            assert sent[key] == value, key
 
 
 @respx.mock
@@ -282,13 +345,13 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
         def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
             raise RuntimeError("essentia crashed")
 
-        monkeypatch.setattr(jr, "_load_analyze_file", lambda: _boom)
+        monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
     elif scenario == "analyze_non_dict_result":
         # A malformed (non-dict) analyze result is a bad-analysis-output failure
         # and must map to EXIT_ANALYSIS (12), NOT EXIT_CALLBACK (13) (WR-01).
         _ok_presign()
         _ok_download()
-        monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: ["not", "a", "dict"])
+        monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: ["not", "a", "dict"]))
     elif scenario == "analyze_bad_window_key":
         # A window dict carrying an unexpected key fails AnalysisWindowPayload
         # (extra="forbid") during payload build — this is an analysis-output
@@ -302,11 +365,11 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
             result["windows"] = [{"tier": "fine", "window_index": 0, "unexpected_key": "boom"}]
             return result
 
-        monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _bad_window_result())
+        monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _bad_window_result()))
     elif scenario == "callback_fail":
         _ok_presign()
         _ok_download()
-        monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+        monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
         respx.put(put_url).mock(return_value=httpx.Response(404, json={"detail": "rejected"}))
 
     with pytest.raises(SystemExit) as exc:
@@ -400,8 +463,8 @@ def _emitting_analyze(counts):  # type: ignore[no-untyped-def]
 
 
 @respx.mock
-async def test_progress_posts_midflight_via_run_coroutine_threadsafe(job_env, monkeypatch):  # type: ignore[no-untyped-def]
-    """≥2 mid-flight counter POSTs land during one run; analyze runs off-loop via to_thread (PROG-01)."""
+async def test_progress_posts_midflight_via_loop_tasks(job_env, monkeypatch):  # type: ignore[no-untyped-def]
+    """≥2 mid-flight counter POSTs land during one run; the driver delivers progress ON the loop (PROG-01/OBS-03)."""
     monkeypatch.setenv("PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC", "0")  # no throttle: every emitted count posts
     from phaze.config import get_settings
 
@@ -423,7 +486,7 @@ async def test_progress_posts_midflight_via_run_coroutine_threadsafe(job_env, mo
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 3), (1, 3), (2, 3), (3, 3)]))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 3), (1, 3), (2, 3), (3, 3)])))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -460,7 +523,7 @@ async def test_progress_failure_does_not_change_exit_code(job_env, monkeypatch):
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 2), (1, 2), (2, 2)])))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -496,7 +559,7 @@ async def test_progress_connect_timeout_does_not_change_exit_code(job_env, monke
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 2), (1, 2), (2, 2)])))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -507,16 +570,18 @@ async def test_progress_connect_timeout_does_not_change_exit_code(job_env, monke
 
 
 def test_progress_bridge_source_guard():  # type: ignore[no-untyped-def]
-    """Source guard: analyze runs via to_thread; progress posts via run_coroutine_threadsafe, never .result()."""
+    """Source guard (Phase 101): analysis runs via the subprocess driver; progress posts are loop tasks."""
     import phaze.job_runner as jr
 
     src = Path(jr.__file__).read_text(encoding="utf-8")
-    assert "asyncio.to_thread(" in src, "analyze_file must run off-loop via asyncio.to_thread (Pitfall 3)"
-    assert "run_coroutine_threadsafe" in src, "progress POSTs must schedule via run_coroutine_threadsafe"
-    # Fire-and-forget: the scheduled future must not be chained to .result() (that would deadlock the
-    # analysis thread on a saturated loop). The docstring legitimately names ``.result()`` in prose, so
-    # guard on the dangerous CALL form (a closing paren immediately followed by .result()).
-    assert ").result()" not in src, "the cb must be fire-and-forget — chaining .result() would deadlock the analysis thread"
+    assert "run_analysis_subprocess" in src, "analysis must run in a child process via the shared driver (OBS-03)"
+    # The cross-thread scheduling machinery is GONE: the driver invokes the progress cb ON the loop,
+    # so any reappearance of run_coroutine_threadsafe means the in-process thread model crept back.
+    assert "run_coroutine_threadsafe" not in src, "progress must be delivered on-loop by the driver, not cross-thread"
+    assert "asyncio.to_thread(compute_sha256" in src, "sha256 verification must stay off the event loop"
+    # Fire-and-forget: the scheduled task must not be chained to .result(). Guard on the dangerous
+    # CALL form (a closing paren immediately followed by .result()).
+    assert ").result()" not in src, "the cb must be fire-and-forget"
     assert "post_analysis_progress" in src, "the k8s lane must post counter-only progress"
 
 
@@ -602,7 +667,7 @@ async def test_banner_emitted_with_full_metadata(job_env, monkeypatch):  # type:
     file_id = job_env["file_id"]
     base = job_env["base_url"]
     _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": _FULL_METADATA})
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -631,7 +696,7 @@ async def test_banner_degrades_to_uuid_only_without_metadata(job_env, monkeypatc
     file_id = job_env["file_id"]
     base = job_env["base_url"]
     _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA})
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -657,7 +722,7 @@ async def test_banner_degrades_field_by_field_on_partial_metadata(job_env, monke
     base = job_env["base_url"]
     partial = {"original_filename": "song.mp3", "file_size": 5_242_880, "staging_bucket": "phaze-staging"}  # 5 MiB
     _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": partial})
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -683,7 +748,7 @@ async def test_step_events_preserve_machine_keys_and_add_human_fields(job_env, m
     file_id = job_env["file_id"]
     base = job_env["base_url"]
     _wire_happy_flow(respx, base, file_id, presign_json={"download_url": _DOWNLOAD_URL, "expected_sha256": _GOOD_SHA, "metadata": _FULL_METADATA})
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: lambda *_a, **_k: _fake_result())
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(lambda *_a, **_k: _fake_result()))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -729,7 +794,7 @@ async def test_progress_lines_throttled_and_final_always_emitted(job_env, monkey
         return_value=httpx.Response(200, json={"agent_id": "test-agent-01", "file_id": str(file_id)}),
     )
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 5), (1, 5), (2, 5), (5, 5)]))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 5), (1, 5), (2, 5), (5, 5)])))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -786,7 +851,7 @@ async def test_progress_line_failure_never_escapes_callback(job_env, monkeypatch
             return getattr(self._real, name)
 
     monkeypatch.setattr(jr, "log", _BoomOnProgress(jr.log))
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _emitting_analyze([(0, 2), (1, 2), (2, 2)]))
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_emitting_analyze([(0, 2), (1, 2), (2, 2)])))
 
     with pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -818,7 +883,7 @@ async def test_analyze_frame_markers_bracket_success_path(job_env, monkeypatch):
         jr.log.info("essentia_musicextractor_banner")
         return _fake_result()
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _analyze_with_essentia_noise)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_analyze_with_essentia_noise))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -855,7 +920,7 @@ async def test_analyze_frame_markers_bracket_failure_path(job_env, monkeypatch):
     def _boom(*_a, **_k):  # type: ignore[no-untyped-def]
         raise RuntimeError("essentia crashed")
 
-    monkeypatch.setattr(jr, "_load_analyze_file", lambda: _boom)
+    monkeypatch.setattr(jr, "run_analysis_subprocess", _driver_seam(_boom))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(SystemExit) as exc:
         await jr.run()
@@ -875,16 +940,15 @@ async def test_analyze_frame_markers_bracket_failure_path(job_env, monkeypatch):
 
 
 def test_analyze_framing_source_guard():  # type: ignore[no-untyped-def]
-    """Source guard: frame events wrap analyze, NO fd redirection introduced, Phase 101 deferral recorded (phaze-sfbx.4)."""
+    """Source guard: frame events wrap analyze; fd re-routing lives in the CHILD, never here (phaze-sfbx.4/phaze-bo3p.3)."""
     import phaze.job_runner as jr
 
     src = Path(jr.__file__).read_text(encoding="utf-8")
     assert "job_runner_analyze_begin" in src, "an analyze-begin frame marker must be emitted"
     assert "job_runner_analyze_end" in src, "an analyze-end frame marker must be emitted"
-    # No fd redirection is INTRODUCED. The comment legitimately names os.dup2 as the deferred
-    # approach, so guard on the dangerous CALL forms (a name immediately followed by an open
-    # paren), not the prose mention -- mirrors the existing ``).result()`` source guard.
-    assert "os.dup2(" not in src, "no fd redirection: capture is deferred to Phase 101"
+    # The fd re-route belongs to phaze.analysis_child (pre-essentia-import, in the child
+    # process); the PARENT never touches its own fds. Guard on the dangerous CALL forms.
+    assert "os.dup2(" not in src, "fd re-routing lives in the analysis child, never the pod parent"
     assert "dup2(" not in src
     assert "os.dup(" not in src
-    assert "Phase 101" in src, "a comment must record the deferral to Phase 101's subprocess model"
+    assert "Phase 101" in src, "a comment must record the subprocess execution model (Phase 101)"

@@ -28,11 +28,13 @@ IMPORT-BOUNDARY INVARIANT (inherited from ``phaze.tasks.functions`` / D-25):
     The pod is Postgres-less; its only integrity check is the server-pinned
     ``expected_sha256``. Enforced by tests/test_task_split.py.
 
-The essentia-bound ``analyze_file`` import is deferred to call time (the same seam
-``phaze.tasks.functions`` uses) so module load succeeds on hosts without the
-platform-gated essentia wheel and stays Postgres-free. SIGTERM is intentionally
-NOT trapped into a 0 exit — the default Python SIGTERM->143 is honestly non-zero
-so an evicted pod is never mistaken for success (Pitfall 6).
+Phase 101 (OBS-03, phaze-bo3p.3): the windowed ``analyze_file`` runs in a REAL child
+process (``python -m phaze.analysis_child`` via ``services.analysis_exec``), so this
+pod's asyncio event loop is never GIL-starved by essentia's C++ — progress POSTs go
+out mid-analysis and the essentia wheel never loads in THIS process at all (the
+deferred-import seam moved into the child). SIGTERM is intentionally NOT trapped
+into a 0 exit — the default Python SIGTERM->143 is honestly non-zero so an evicted
+pod is never mistaken for success (Pitfall 6).
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import _parse_bool, configure_logging
 from phaze.schemas.agent_analysis import AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload, PresignDownloadMetadata
+from phaze.services.analysis_exec import run_analysis_subprocess
 from phaze.services.analysis_wire import _features_to_mood_dict, _features_to_style_dict
 from phaze.services.hashing import compute_sha256
 from phaze.tasks._shared.agent_bootstrap import construct_agent_client
@@ -166,18 +169,6 @@ def _temp_suffix(audio_ext: str | None, url: str) -> str:
     return url_suffix or ".audio"
 
 
-def _load_analyze_file() -> Any:
-    """Defer the essentia-bound ``analyze_file`` import to call time.
-
-    Mirrors ``phaze.tasks.functions._load_analyze_file``: essentia-tensorflow is
-    platform-gated in pyproject.toml, so module load (and the import-boundary
-    subprocess test) must not depend on it. Only the analyze step needs it.
-    """
-    from phaze.services.analysis import analyze_file  # noqa: PLC0415
-
-    return analyze_file
-
-
 async def _download_to(url: str, dest: Path) -> None:
     """Stream the presigned GET to ``dest`` in 64 KiB chunks.
 
@@ -201,8 +192,9 @@ async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: Analysis
     Swallows ANY error (the ``AgentApiError`` hierarchy from the client's single-attempt,
     short-timeout progress path (Phase 99 OBS-01), plus anything unexpected) so a dropped
     progress POST can never change the one-shot exit code — the completion ``put_analysis``
-    writes the final count regardless, so the bar reaches 100% from completion. This runs as
-    a ``run_coroutine_threadsafe`` task scheduled from the analysis thread.
+    writes the final count regardless, so the bar reaches 100% from completion. Phase 101:
+    runs as a fire-and-forget loop task created by the progress callback (which now fires
+    ON the event loop as the analysis child's protocol lines arrive).
     """
     try:
         await client.post_analysis_progress(file_id, payload)
@@ -210,15 +202,18 @@ async def _safe_post_progress(client: Any, file_id: uuid.UUID, payload: Analysis
         log.debug("job_runner_progress_dropped", file_id=str(file_id))
 
 
-def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEventLoop, interval_sec: float) -> Any:
-    """Build the sync ``progress_cb`` that the threaded ``analyze_file`` calls per FINE window.
+def _make_progress_cb(client: Any, file_id: uuid.UUID, interval_sec: float) -> tuple[Any, set[asyncio.Task[None]]]:
+    """Build the sync ``progress_cb`` the analysis-child driver invokes per FINE window.
 
-    The blocking ``analyze_file`` runs in ``asyncio.to_thread`` so the loop stays free; the callback
-    fires fire-and-forget ``run_coroutine_threadsafe(_safe_post_progress(...), loop)`` — it NEVER calls
-    ``.result()`` (blocking the analysis thread on a saturated loop would deadlock). Throttled to
-    ``interval_sec`` (``monotonic()``-keyed); the START count and the final count (``analyzed >= total``)
-    always post so the bar gets an early total and a final value even inside the throttle window. Any
-    exception is swallowed so a progress failure can never escape the analysis thread (KJOB-04 contract).
+    Phase 101: ``analyze_file`` runs in a real child process, so this callback fires ON the
+    event loop (from the driver's protocol pump) — the POST is a fire-and-forget loop task
+    (strong-ref'd in the returned ``pending`` set so it is never GC'd mid-flight), no
+    cross-thread scheduling needed. The caller drains ``pending`` after analysis so the
+    one-shot process never exits with POSTs still in flight. Throttled to ``interval_sec``
+    (``monotonic()``-keyed); the START count and the final count (``analyzed >= total``)
+    always post so the bar gets an early total and a final value even inside the throttle
+    window. Any exception is swallowed so a progress failure can never escape into the
+    analysis outcome (KJOB-04 contract).
     """
     # Seed to -inf, NOT 0.0: time.monotonic()'s epoch is boot-relative, so on a freshly booted
     # host (a one-shot pod ALWAYS is) with uptime < interval_sec, `now - 0.0` would be < the
@@ -226,6 +221,7 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEve
     # count always posts" contract (and the console START line). -inf makes the first gap
     # infinite, so the start count passes the gate regardless of machine uptime.
     state = {"last_post": float("-inf")}
+    pending: set[asyncio.Task[None]] = set()
 
     def _cb(analyzed: int, total: int) -> None:
         try:
@@ -235,8 +231,11 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEve
                 return
             state["last_post"] = now
             payload = AnalysisProgressPayload(fine_windows_analyzed=analyzed, fine_windows_total=total)
-            # Fire-and-forget: schedule onto the captured loop; do NOT call .result() (deadlock risk).
-            asyncio.run_coroutine_threadsafe(_safe_post_progress(client, file_id, payload), loop)
+            # Fire-and-forget loop task (we're already ON the loop); the pending set keeps a
+            # strong reference so the task is never garbage-collected before it runs.
+            task = asyncio.get_running_loop().create_task(_safe_post_progress(client, file_id, payload))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
             # OBS-02 (phaze-sfbx.3): the console progress line shares the SAME throttle gate and
             # counter as the UI progress POST above -- one throttle, one counter -- so the tailed
             # pod log and the web progress bar can never diverge. `is_final` bypasses the throttle,
@@ -250,10 +249,10 @@ def _make_progress_cb(client: Any, file_id: uuid.UUID, loop: asyncio.AbstractEve
                 fine_windows_total=total,
                 percent=percent,
             )
-        except Exception:  # a progress-cb error must never escape the analysis thread
+        except Exception:  # a progress-cb error must never escape into the analysis outcome
             log.debug("job_runner_progress_cb_error", file_id=str(file_id))
 
-    return _cb
+    return _cb, pending
 
 
 def _build_payload(result: dict[str, Any]) -> AnalysisWritePayload:
@@ -367,32 +366,28 @@ async def run() -> None:
         # human-recognizable; event/step/elapsed_ms unchanged, sha256 is additive.
         log.info("job_runner_step_ok", file_id=fid, step="verify", elapsed_ms=_elapsed_ms(t_verify), sha256=actual_sha256[:12])
 
-        # (4) analyze — windowed/streaming analyze_file DIRECTLY (no pebble pool,
-        # no retry loop — fail-fast, D-02 / KJOB-03). models_dir from env (D-05).
-        # There is NO in-process timeout here: a hung analysis is bounded by the
-        # Kueue/Job wall-clock deadline (activeDeadlineSeconds -> SIGTERM -> 143),
-        # not by an asyncio.wait_for. Only a raised exception maps to EXIT_ANALYSIS
-        # (12); the contract docstring above documents this delegation (WR-04).
-        analyze_file = _load_analyze_file()
+        # (4) analyze — the windowed analyze_file runs in a REAL child process via the
+        # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
+        # GIL-starved, so the progress callback fires mid-analysis. No retry loop —
+        # fail-fast, D-02 / KJOB-03. models_dir from env (D-05). There is NO in-process
+        # timeout here (timeout=None): a hung analysis is bounded by the Kueue/Job
+        # wall-clock deadline (activeDeadlineSeconds -> SIGTERM -> 143). Only a raised
+        # exception maps to EXIT_ANALYSIS (12); the contract docstring documents this
+        # delegation (WR-04).
         t_analyze = time.monotonic()
-        # Phase 57.1 (PROG-01): capture the loop BEFORE the offload, then run the blocking
-        # analyze_file in asyncio.to_thread so the loop stays free for the cb's fire-and-forget
-        # run_coroutine_threadsafe progress POSTs. A progress failure is best-effort and NEVER
-        # changes the EXIT_ANALYSIS / EXIT_CALLBACK exit-code contract (KJOB-04).
-        loop = asyncio.get_running_loop()
-        progress_cb = _make_progress_cb(client, file_id, loop, cfg.analysis_progress_interval_sec)
-        # phaze-sfbx.4: bracket the analyze call with explicit frame markers. essentia's own
-        # ``[ INFO ] MusicExtractor...`` banners are written by C++ DIRECTLY to fd 1/2 -- NOT
-        # through structlog -- so they interleave into the pod's log stream as if they were app
-        # lines. These two events give that interleaved output a visible "essentia begins / ends"
-        # frame in BOTH the JSON and the friendly rendering. NO fd redirection / os.dup2 here:
-        # real capture/routing of the child's stdout/stderr is DEFERRED to Phase 101's subprocess
-        # execution model. Today analyze_file runs in-process (asyncio.to_thread), so its fds ARE
-        # the pod's fds -- there is nothing to reattach, only to frame.
-        log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- essentia output follows")
+        progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
+        # phaze-sfbx.4 markers, phaze-bo3p.3 capture: essentia's ``[ INFO ] MusicExtractor...``
+        # banners are written by C++ directly to fd 1/2 — in the CHILD, whose fd 1 is
+        # re-routed to the stderr pipe, so the driver frames every banner line as an
+        # ``analysis_child_output`` event (Phase 101 delivered the capture the in-process
+        # model deferred). The begin/end markers still bracket the framed child output so
+        # an operator tailing the console sees where analysis starts and stops.
+        log.info("job_runner_analyze_begin", file_id=fid, step="analyze", detail="analysis running -- framed essentia output follows")
         try:
-            result = await asyncio.to_thread(
-                analyze_file,
+            # Any-typed on purpose: the dict guard below must stay a REACHABLE runtime check
+            # (the seam is monkeypatched in tests, and KJOB-04 wants a loud EXIT_ANALYSIS on
+            # any malformed analysis output), not be optimized away by the driver's annotation.
+            result: Any = await run_analysis_subprocess(
                 str(tmp_path),
                 models_dir,
                 fine_cap=cfg.analysis_fine_cap,
@@ -408,6 +403,10 @@ async def run() -> None:
         # Close the frame on the success path too: everything below is analysis-OUTPUT validation
         # (NOT essentia stdout), so it sits OUTSIDE the frame markers.
         log.info("job_runner_analyze_end", file_id=fid, step="analyze", outcome="ok")
+        # Drain any in-flight progress POSTs (each swallows its own errors) so the one-shot
+        # process never races its own exit — the completion PUT below remains the authority.
+        if pending_progress:
+            await asyncio.gather(*pending_progress, return_exceptions=True)
 
         # Payload construction is part of the analyze step (NOT the callback step): a malformed
         # analyze result (non-dict, windows present-but-None, or an unexpected window key) is a
