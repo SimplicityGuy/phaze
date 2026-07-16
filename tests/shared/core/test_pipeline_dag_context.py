@@ -555,3 +555,45 @@ async def test_window_counts_present_in_both_contexts_when_empty(client: AsyncCl
     for ctx in (dash, poll):
         assert ctx["pushing_count"] == 0
         assert ctx["analyzing_cloud_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 93 (CONSOLE-02): analyzeActive is the DERIVED in-flight count, not local-agent SAQ depth
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_active_counts_derived_inflight_without_busy_local_agent(session: AsyncSession) -> None:
+    """The observed failure shape: analyze jobs in flight, NO busy local agent — the badge must not read 0.
+
+    The rail Analyze badge (and the workspace 'files in flight' subcount) bind analyzeActive. It used
+    to read SAQ agent_active — local agent queues only — so cloud-burst analyze work (dispatched via
+    Kueue, never on a local SAQ queue) rendered `0` while thousands of files were in flight. The
+    truthful source is the SAME stage_status derivation the Files matrix renders: files whose
+    stage_status_case(analyze) == 'in_flight' (the scheduling_ledger signal, local AND cloud).
+    """
+    from phaze.models.scheduling_ledger import SchedulingLedger
+    from phaze.routers.pipeline import _build_dag_context
+    from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
+
+    func_name = STAGE_TO_FUNCTION["analyze"]
+    for _ in range(2):
+        file_rec, _meta = _make_file_with_metadata()
+        session.add(file_rec)
+        session.add(
+            SchedulingLedger(
+                key=f"{func_name}:{file_rec.id}",
+                function=func_name,
+                routing="cloud",
+                payload={"file_id": str(file_rec.id)},
+            )
+        )
+    await session.commit()
+
+    app_state = SimpleNamespace()  # no redis → counters degrade (DB-only)
+    ctx = await _build_dag_context(app_state, session, _idle_activity())  # agent_active == 0
+
+    assert ctx["dag"]["analyzeActive"] == 2, (
+        "analyzeActive must derive from stage_status_case(analyze) == 'in_flight' (ledger truth, "
+        "covers cloud-burst dispatch) — never from local-agent SAQ queue depth alone"
+    )

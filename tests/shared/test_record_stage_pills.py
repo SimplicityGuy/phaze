@@ -22,10 +22,10 @@ import uuid
 import pytest
 
 from phaze.enums.stage import Stage
-from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
@@ -105,8 +105,7 @@ def test_record_pills_reuse_single_status_source() -> None:
     """
     template = (_SRC / "templates" / "record" / "record_body.html").read_text()
     assert 'include "pipeline/partials/_stage_pill.html"' in template, (
-        "record_body.html must render the SHARED _stage_pill.html token partial — a bespoke pill "
-        "markup here is a divergent second status rendering"
+        "record_body.html must render the SHARED _stage_pill.html token partial — a bespoke pill markup here is a divergent second status rendering"
     )
     router = (_SRC / "routers" / "record.py").read_text()
     assert "get_file_stage_buckets" in router, (
