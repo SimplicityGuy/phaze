@@ -304,11 +304,13 @@ async def test_request_download_url_returns_tuple_and_injects_auth_header(client
             json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA, "audio_ext": "mp3"},
         ),
     )
-    url, sha, audio_ext = await client.request_download_url(file_id)
+    url, sha, audio_ext, metadata = await client.request_download_url(file_id)
     assert url == "https://s3.example/obj?sig=xyz"
     assert sha == _PRESIGN_SHA
     # cloud-analyze-empty-no-ext: the file's real audio extension is threaded to the pod.
     assert audio_ext == "mp3"
+    # Phase 100 (phaze-sfbx.1): no metadata key in this response body -> None, no error.
+    assert metadata is None
     assert route.call_count == 1
     sent = route.calls.last.request
     assert sent.headers["Authorization"] == f"Bearer {_TOKEN}"
@@ -325,8 +327,43 @@ async def test_request_download_url_absent_audio_ext_is_none(client):  # type: i
             json={"download_url": "https://s3.example/obj?sig=xyz", "expected_sha256": _PRESIGN_SHA},
         ),
     )
-    _url, _sha, audio_ext = await client.request_download_url(file_id)
+    _url, _sha, audio_ext, metadata = await client.request_download_url(file_id)
     assert audio_ext is None
+    assert metadata is None
+
+
+@respx.mock
+async def test_request_download_url_returns_populated_metadata(client):  # type: ignore[no-untyped-def]
+    """Phase 100 (phaze-sfbx.1): a control plane that ships the display-metadata block surfaces it."""
+    file_id = uuid.uuid4()
+    respx.post(f"{_BASE_URL}/api/internal/agent/files/{file_id}/presign-download").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "download_url": "https://s3.example/obj?sig=xyz",
+                "expected_sha256": _PRESIGN_SHA,
+                "audio_ext": "mp3",
+                "metadata": {
+                    "original_filename": "song.mp3",
+                    "current_path": "/music/song.mp3",
+                    "source_agent_id": "fileserver-01",
+                    "duration_sec": 245.5,
+                    "file_size": 4096,
+                    "staging_bucket": "staging",
+                    "backend_id": "cluster-01",
+                },
+            },
+        ),
+    )
+    _url, _sha, _audio_ext, metadata = await client.request_download_url(file_id)
+    assert metadata is not None
+    assert metadata.original_filename == "song.mp3"
+    assert metadata.current_path == "/music/song.mp3"
+    assert metadata.source_agent_id == "fileserver-01"
+    assert metadata.duration_sec == 245.5
+    assert metadata.file_size == 4096
+    assert metadata.staging_bucket == "staging"
+    assert metadata.backend_id == "cluster-01"
 
 
 @respx.mock
