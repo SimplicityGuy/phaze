@@ -83,73 +83,20 @@
         {% include "pipeline/partials/analyzing_cloud_card.html" %}
     </div>
 
-    {# (c) the all-in-stage per-file lane + window table (D-03/D-04): ONE table covering EVERY
-       Analyze-stage file (queued · running · awaiting-cloud · done), each with a derived lane badge
-       + windowed-progress State cell, rendered through the reusable _file_table.html. Rows are inert
-       (D-06 / R-1): cursor-pointer + a stable id, but NO click binding in Phase 58 (row->record is
-       Phase 61). Reads the Phase-57.1 mid-flight signal (fine_windows_analyzed/total) only. #}
+    {# (c) the BOUNDED all-in-stage per-file lane + window table (D-03/D-04 + Phase 95 phaze-zqvh.2):
+       the default view renders the active-first working set (in-flight · awaiting-cloud · failed) plus a
+       LIMIT-ed recent-completions window (get_analyze_working_set), with the full corpus reachable via the
+       status-filter bar -> GET /pipeline/analyze-files (paged). This retires the Phase-58 unbounded
+       per-file render (92,335 rows / ~105MB at 200K scale, phaze-zqvh.1 baseline). The derived lane badge +
+       windowed-progress "Progress" cell (DERIVED window-progress text: window N/M · running · pending
+       (quota) · complete -- NEVER a raw FileRecord.state) live in _analyze_files.html, which is rendered
+       BOTH here (default working set, analyze_page=None) and by the filter/pager endpoint (paged). Each row
+       opens the full-record slide-in (Phase 61 RECORD-01). #analyze-files-view is a SIBLING of the poll's
+       OOB targets and is NEVER re-emitted by the 5s poll, so the operator's filter/page state survives every
+       tick (phaze-zqvh.2: the file grid stays outside the poll's OOB fan-out). #}
     <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
-        {# Phase 87 (87-05, UI-01 cutover): this column is DERIVED window-progress text (window N/M ·
-           running · pending (quota) · complete), NEVER a raw FileRecord.state render -- so the raw-enum
-           "State" surface the anti-feature table forbids does not live here. Renamed "State" -> "Progress"
-           to make that explicit; the canonical per-stage status pill matrix is on the files table. The
-           `f.awaiting_cloud` / `f.analysis_failed` / `f.completed` lines below are DERIVED boolean flags
-           (Phase 90 PR-A: sourced from the cloud_job sidecar + the analysis markers, never the retired
-           FileRecord.state column) driving friendly words (WORK-04 mid-flight signal), not raw-enum renders. #}
-        {% set columns = ["File", "Duration", "Lane", "Progress"] %}
-        {% set ns = namespace(rows=[], file_ids=[]) %}
-        {% for f in analyze_files %}
-            {# COMPUTE-03: the lane badge is derived from `f.lane_kind` (CloudJob.backend_id's registry
-               kind, projected server-side by get_analyze_stage_files -- never a static id->badge map).
-               Glyph/color mirrors _lane_card.html:26-50 (local 🖥️/emerald, compute ☁️/blue, kueue
-               ⎈/amber); an unattributed cloud row (or an unrecognized kind) gets the neutral gray
-               fallback -- the stale 'a1' heuristic label is gone. #}
-            {% if f.lane_kind == 'local' %}
-                {% set badge_glyph, badge_color = '🖥️', 'text-emerald-600 dark:text-emerald-300' %}
-            {% elif f.lane_kind == 'compute' %}
-                {% set badge_glyph, badge_color = '☁️', 'text-blue-600 dark:text-blue-300' %}
-            {% elif f.lane_kind == 'kueue' %}
-                {% set badge_glyph, badge_color = '⎈', 'text-amber-600 dark:text-amber-300' %}
-            {% else %}
-                {% set badge_glyph, badge_color = '▪', 'text-gray-600 dark:text-gray-300' %}
-            {% endif %}
-            {% set badge_text = badge_glyph ~ ' ' ~ f.lane %}
-            {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
-            {% if f.completed %}
-                {# Completed (ANALYZED): full window coverage from the aggregate. #}
-                {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
-                {% set state_color = 'text-emerald-600 dark:text-emerald-300' %}
-            {% elif f.awaiting_cloud %}
-                {% set state_text = 'pending (quota)' %}
-                {% set state_color = 'text-amber-600 dark:text-amber-300' %}
-            {% elif f.analysis_failed %}
-                {% set state_text = 'failed' %}
-                {% set state_color = 'text-rose-600 dark:text-rose-400' %}
-            {% elif f.fine_total %}
-                {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04) --
-                   NOT a bare "running" (the superseded pre-57.1 behavior). #}
-                {% set state_text = 'running · %s/%s windows' % (f.fine_done, f.fine_total) %}
-                {% set state_color = 'text-blue-600 dark:text-blue-300' %}
-            {% else %}
-                {% set state_text = 'running' %}
-                {% set state_color = 'text-blue-600 dark:text-blue-300' %}
-            {% endif %}
-            {% set _ = ns.rows.append([
-                {'text': f.filename, 'mono': True, 'title': f.path},
-                {'text': duration_cell, 'mono': True},
-                {'text': badge_text, 'color': badge_color},
-                {'text': state_text, 'color': state_color},
-            ]) %}
-            {# Phase 61 (RECORD-01): parallel file-id list backing ns.rows — passed as row_file_ids
-               so each Analyze row opens the full-record slide-in (hx-get="/record/{file_id}"). #}
-            {% set _ = ns.file_ids.append(f.file_id) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set row_file_ids = ns.file_ids %}
-        {% set empty_heading = "No files in flight" %}
-        {% set empty_body = "Route files into Analyze from Discover, or check lane capacity above." %}
-        {% set row_id_prefix = "analyze-row" %}
-        {% set table_id = "analyze-file-table" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        {% with analyze_rows = analyze_files, analyze_page = None, active_status = None %}
+            {% include "pipeline/partials/_analyze_files.html" %}
+        {% endwith %}
     </div>
 {% endcall %}

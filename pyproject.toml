@@ -116,6 +116,13 @@ ignore_missing_imports = true
 module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
 
+# Playwright is never a project dependency (ephemeral `uv run --with playwright`, per the
+# milestone's zero-new-dependencies constraint) -- scripts/analyze_browser_soak.py (Phase 95,
+# phaze-zqvh.5) is the sole consumer, run manually against a live dev instance, never in CI.
+[[tool.mypy.overrides]]
+module = ["playwright", "playwright.*"]
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = "phaze.services.agent_client"
 check_untyped_defs = true

@@ -26,6 +26,7 @@ in-flight rows for the WORK-04 mid-flight assertion) and the cloud_job lane/admi
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
@@ -565,3 +566,225 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # WORK-05 / R-2: no second poll loop in the fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 95 (phaze-zqvh.2, CONSOLE-04): the BOUNDED analyze file grid + its status-filter/pager fragment.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_default_view(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- GET /pipeline/analyze-files (no filter) renders the bounded working-set view + filter bar.
+
+    The default (no ``status``) fragment shows the active-first working set PLUS the recent-completions
+    window through the SAME row projection the workspace uses, carries the URL-carried status-filter bar
+    (hx-get /pipeline/analyze-files into #analyze-files-view), and -- being the default view -- shows NO
+    pager. It never starts a second poll loop (WORK-05 / R-2).
+    """
+    inflight = await _seed_file(session, original_filename="inflight.mp3")
+    await _seed_analysis(session, inflight.id, fine_done=3, fine_total=10)
+    done = await _seed_file(session, original_filename="done.mp3")
+    await _seed_analysis(session, done.id, fine_done=10, fine_total=10, completed=True)
+
+    resp = await client.get("/pipeline/analyze-files")
+    assert resp.status_code == 200
+    body = resp.text
+    # The swap-target container + the status-filter lens (mirrors the _status_filter_bar idiom).
+    assert 'id="analyze-files-view"' in body
+    assert 'id="analyze-filter-bar"' in body
+    assert 'hx-get="/pipeline/analyze-files"' in body
+    assert 'hx-target="#analyze-files-view"' in body
+    # Working set (in-flight) + completions window (completed) both render, per-row record slide-in intact.
+    assert "inflight.mp3" in body
+    assert "done.mp3" in body
+    assert 'hx-get="/record/' in body
+    # Default view carries NO pager (only the filtered/paged view does).
+    assert "Analyze files pagination" not in body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in body
+    assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_filtered_and_paged(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- a status lens serves the full listing paged; the pager carries the lens, no whole-corpus COUNT.
+
+    ``page_size`` is clamped to a 10-row floor (parity with ``/pipeline/files``), so 11 completed files under
+    the ``completed`` lens at ``page_size=10`` yield page 1 bounded to 10 record rows with a Next control (the
+    +1 sentinel ``has_next``); the pager links carry ``status=completed`` and the filter select reflects the lens.
+    """
+    for i in range(11):
+        f = await _seed_file(session, original_filename=f"c{i}.mp3")
+        await _seed_analysis(session, f.id, fine_done=1, fine_total=1, completed=True)
+
+    resp = await client.get("/pipeline/analyze-files?status=completed&page_size=10")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="analyze-files-view"' in body
+    # Bounded page: exactly page_size record rows.
+    assert body.count('hx-get="/record/') == 10
+    # Pager present (11 > 10 => has_next) and carrying the status lens on its links.
+    assert "Analyze files pagination" in body
+    assert "page=2&amp;page_size=10&amp;status=completed" in body  # &-autoescaped in the href (XSS-safe)
+    # The select reflects the active lens (Clear filter affordance appears too).
+    assert 'value="completed" selected' in body
+    assert "Clear filter" in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_file_grid_stays_outside_poll_oob(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- the 5s /pipeline/stats poll NEVER re-emits the analyze file grid.
+
+    The file grid (its filter bar + pager) lives in #analyze-files-view, a SIBLING of the poll's OOB
+    targets. If the poll re-emitted it, a tick would reset the operator's page position / filter selection.
+    Assert the poll fragment carries none of the file-grid ids/endpoint -- so filter + page state survive
+    every tick (the file grid stays outside the poll's OOB fan-out).
+    """
+    stats = await client.get("/pipeline/stats")
+    assert stats.status_code == 200
+    body = stats.text
+    assert 'id="analyze-files-view"' not in body
+    assert 'id="analyze-filter-bar"' not in body
+    assert "/pipeline/analyze-files" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_unknown_status_degrades(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 / T-57-01 -- an unknown ``status`` degrades to the default view, never a 422 or a path splice."""
+    inflight = await _seed_file(session, original_filename="inflight.mp3")
+    await _seed_analysis(session, inflight.id, fine_done=2, fine_total=10)
+
+    resp = await client.get("/pipeline/analyze-files?status=../../etc/passwd")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="analyze-files-view"' in body
+    assert "inflight.mp3" in body
+    # Degraded to the default view: no pager, the default select option is active.
+    assert "Analyze files pagination" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick #analyze-lanes swap churn (idempotent OOB swap).
+# ---------------------------------------------------------------------------
+
+
+def _analyze_lanes_hash(body: str) -> str | None:
+    """Extract the #analyze-lanes grid's data-lanes-hash attribute value from a rendered body."""
+    m = re.search(r'id="analyze-lanes"[^>]*data-lanes-hash="([0-9a-f]*)"', body)
+    return m.group(1) if m else None
+
+
+@pytest.mark.asyncio
+async def test_analyze_lanes_grid_carries_content_hash(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 -- both the initial /s/analyze render and the 5s /pipeline/stats OOB grid carry data-lanes-hash.
+
+    The client htmx:oobBeforeSwap skip hook compares the incoming grid hash to what is mounted, so BOTH
+    render paths must emit a non-empty ``data-lanes-hash`` computed over the SAME inputs -- else the first
+    tick can never be a no-op and the churn bound never engages.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    lanes = [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0}]
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return lanes
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    await _seed_file(session, original_filename="held.mp3")  # a file must exist or the empty-state renders
+
+    initial = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert initial.status_code == 200
+    initial_hash = _analyze_lanes_hash(initial.text)
+    assert initial_hash, "the initial #analyze-lanes render must carry a non-empty data-lanes-hash"
+
+    poll = await client.get("/pipeline/stats")
+    assert poll.status_code == 200
+    poll_hash = _analyze_lanes_hash(poll.text)
+    assert poll_hash, "the /pipeline/stats OOB grid must carry a non-empty data-lanes-hash"
+    # Same lane state on both paths => same hash => the first poll tick is already a no-op swap.
+    assert initial_hash == poll_hash
+
+
+@pytest.mark.asyncio
+async def test_analyze_lanes_poll_hash_stable_when_unchanged_changes_on_state(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 -- the poll grid hash is byte-identical across unchanged ticks and changes on a real update.
+
+    Two /pipeline/stats ticks with an UNCHANGED lane snapshot yield an identical data-lanes-hash (the
+    client skips the destroy-and-recreate); a changed snapshot (an in_flight bump) yields a different
+    hash (a real update still swaps). This is the server-verifiable core of the idempotent-swap churn bound.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    state = {"in_flight": 2}
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "a1",
+                "kind": "compute",
+                "rank": 10,
+                "cap": 4,
+                "in_flight": state["in_flight"],
+                "available": True,
+                "quota_wait": 0,
+                "inadmissible": 0,
+            }
+        ]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+
+    tick1 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    tick2 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    assert tick1 and tick1 == tick2, "an unchanged lane state must produce a byte-identical grid hash across ticks"
+
+    state["in_flight"] = 3
+    tick3 = _analyze_lanes_hash((await client.get("/pipeline/stats")).text)
+    assert tick3 and tick3 != tick1, "a real lane-state change must change the hash so the grid still swaps"
+
+
+@pytest.mark.asyncio
+async def test_shell_carries_analyze_lanes_idempotent_skip_hook(client: AsyncClient) -> None:
+    """phaze-zqvh.3 / WORK-05 -- the shell wires the oobBeforeSwap skip hook WITHOUT adding a second poll loop.
+
+    The churn bound is a client htmx:oobBeforeSwap handler that skips the #analyze-lanes OOB swap when the
+    incoming data-lanes-hash matches what is mounted. Assert the hook is present (scoped to #analyze-lanes,
+    setting shouldSwap=false) and that the single-poll discipline is intact (exactly one /pipeline/stats
+    poll; no setInterval / hx-trigger="every" second loop was introduced).
+    """
+    shell = await client.get("/")
+    assert shell.status_code == 200
+    body = shell.text
+    assert "htmx:oobBeforeSwap" in body
+    assert "analyze-lanes" in body
+    assert "shouldSwap = false" in body
+    # WORK-05 / R-2: still exactly one poll, no second loop.
+    assert body.count('hx-get="/pipeline/stats"') == 1
+    assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_poll_still_seeds_store_and_lands_analyze_lanes_oob(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-zqvh.3 preservation -- the churn bound changes NOTHING about the OOB fan-out or the store seeds.
+
+    The idempotent-swap hook is purely client-side; the poll fragment must still carry the ~store-seed OOB
+    writes ($store.pipeline keys update every tick) AND the #analyze-lanes OOB grid (hx-swap-oob) so all
+    targets still land. Asserts the store writes + the OOB grid are still emitted on the tick.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
+        return [{"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 1, "available": True, "quota_wait": 0, "inadmissible": 0}]
+
+    monkeypatch.setattr(pipeline_mod, "get_backend_lane_snapshot", _snapshot)
+    poll = await client.get("/pipeline/stats")
+    assert poll.status_code == 200
+    body = poll.text
+    # Store seeds still fire every tick (unchanged OOB store-write contract).
+    assert 'id="analyze-files-ready" hx-swap-oob="true"' in body
+    assert "$store.pipeline.discovered =" in body
+    assert "$store.pipeline.agentBusy =" in body
+    # The #analyze-lanes grid still OOB-swaps (with its new content hash).
+    assert 'id="analyze-lanes"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert _analyze_lanes_hash(body), "the OOB grid must still carry its content hash"

@@ -264,6 +264,29 @@
                 d.isError = false;
             }
         });
+        // Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick DOM churn on the #analyze-lanes grid.
+        // Every /pipeline/stats tick re-emits the whole N-lane grid out-of-band (stats_bar.html). When the
+        // lane state is UNCHANGED (a long-lived, mostly-idle tab -- the soak scenario), destroy-and-
+        // recreating that grid + re-running Alpine.initTree over it every 5s is pure churn. htmx fires a
+        // cancelable htmx:oobBeforeSwap on the CURRENT element before each OOB swap (htmx 2.0.10), with
+        // event.detail.fragment carrying the incoming replacement; set detail.shouldSwap=false to SKIP the
+        // swap (the mounted grid + its Alpine scope are preserved untouched). We skip ONLY when the incoming
+        // data-lanes-hash equals what is already mounted -- so a real lane-state change (or the selected-lane
+        // highlight) still swaps. This touches NOTHING else: the single poll, the ~35 store-seed OOB writes
+        // ($store.pipeline keys still update every tick), and all cloud-card OOB swaps are unaffected.
+        document.body.addEventListener('htmx:oobBeforeSwap', function (event) {
+            const current = event.target;
+            if (!current || current.id !== 'analyze-lanes') return;
+            const frag = event.detail && event.detail.fragment;
+            const incoming = frag && frag.querySelector ? frag.querySelector('#analyze-lanes') : null;
+            if (!incoming) return;
+            const nextHash = incoming.getAttribute('data-lanes-hash');
+            const curHash = current.getAttribute('data-lanes-hash');
+            // Both non-empty AND equal => the grid is byte-identical to what's mounted: skip the swap.
+            if (nextHash && curHash && nextHash === curHash) {
+                event.detail.shouldSwap = false;
+            }
+        });
         document.body.addEventListener('htmx:afterSwap', function (event) {
             // htmx:afterSwap exposes the request target as event.detail.target (htmx 2.0.10);
             // fall back to event.target for the element the bubbling event fired on.
