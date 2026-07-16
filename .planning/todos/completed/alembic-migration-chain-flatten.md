@@ -9,6 +9,7 @@ design_spec: docs/superpowers/specs/2026-07-14-alembic-baseline-flatten-design.m
 blocks: null
 resolves_phase: 102
 precondition: "prod at Alembic 039 (SATISFIED as of 2026-07-14 deploy) — re-confirm via read-only PG probe immediately before merge"
+completed: 2026-07-16 (Phase 102, epic phaze-8hfu)
 ---
 
 # Flatten the Alembic migration chain into a single baseline

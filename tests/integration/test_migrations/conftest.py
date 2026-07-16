@@ -11,6 +11,12 @@ files), the ``migrated_engine`` fixture exported here runs
 ``alembic.command.upgrade(cfg, 'head')`` against the dedicated migrations test
 DB, so the actual migration revisions on disk are validated.
 
+Since the Phase 102 flatten, ``alembic/versions/`` holds the single ``039``
+baseline migration (fresh DBs build the whole schema in one step), so
+``migrated_engine`` upgrades straight to head -- the pre-flatten mid-chain
+fileserver seed (038's D-01 abort guard) and the ``pre_retire_engine`` fixture
+died with the chain.
+
 Note: ``alembic/env.py`` overrides ``sqlalchemy.url`` with
 ``settings.database_url`` on every run, so this conftest also patches the
 in-memory ``settings.database_url`` for the duration of upgrade/downgrade
@@ -37,17 +43,6 @@ MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_migrations_test",
 )
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
-
-# Migration 038 (Phase 89) reattributes legacy-application-server-owned rows to the sole
-# non-revoked ``kind='fileserver'`` agent and, per locked decision D-01, ABORTS when none
-# exists. Fileserver agents are runtime data (self-registered by agent containers), never
-# migration-seeded, so a bare ``upgrade head`` on a fresh DB aborts at 038. ``migrated_engine``
-# seeds exactly one non-revoked fileserver between the 037 and 038 upgrades so auto-detect
-# resolves it. Kept identical to the shape used by the 038 migration test's own seed helper.
-_SEED_FILESERVER_SQL = (
-    "INSERT INTO agents (id, name, kind, revoked_at, created_at, updated_at) "
-    "VALUES ('test-fileserver', 'test-fileserver', 'fileserver', NULL, NOW(), NOW())"
-)
 
 
 @contextmanager
@@ -103,32 +98,12 @@ def downgrade_to(cfg: Config, revision: str) -> None:
         command.downgrade(cfg, revision)
 
 
-async def _seed_fileserver(database_url: str) -> None:
-    """Seed exactly one non-revoked ``kind='fileserver'`` agent on ``database_url``.
-
-    Called by ``migrated_engine`` between the 037 and head (038) upgrades so migration
-    038's strict reattribution-target auto-detect (locked decision D-01) resolves the
-    sole fileserver instead of aborting ``No non-revoked fileserver agent exists``. The
-    legacy sentinel is born revoked (migration 012), so it is excluded from auto-detect
-    and this is the only match.
-    """
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text(_SEED_FILESERVER_SQL))
-    finally:
-        await engine.dispose()
-
-
 async def _reset_schema(database_url: str) -> None:
     """Drop and recreate the ``public`` schema on ``database_url``.
 
-    Used as fixture teardown instead of ``downgrade_to('base')`` because tests
-    that deliberately insert duplicate ``original_path`` rows under different
-    ``agent_id`` values (validating the composite UQ from migration 013) would
-    otherwise trip the D-16 guard during the 013->012 downgrade step, leaving
-    the DB stuck mid-chain. A bare DROP/CREATE bypasses the migration chain
-    entirely and is faster than walking 13 downgrade steps.
+    Used as fixture teardown so a failed test can never strand the DB in a
+    partially-migrated state between tests. A bare DROP/CREATE bypasses the
+    migration machinery entirely (and drops ``alembic_version`` with the schema).
     """
     engine = create_async_engine(database_url)
     try:
@@ -148,40 +123,10 @@ async def migrated_engine() -> AsyncGenerator:
     When invoked directly from this async fixture, the nested ``asyncio.run``
     crashes with "cannot be called from a running event loop". Running the
     sync alembic commands in a worker thread sidesteps the conflict.
-
-    Teardown resets the schema rather than calling ``downgrade_to('base')`` so
-    tests that exercise the D-16 guard by inserting duplicate paths under
-    different agents do not strand the DB at revision 013 between tests.
     """
     cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
     await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
-    # Stop at 037, seed a fileserver, THEN cross into 038 so its strict D-01 target
-    # auto-detect resolves instead of aborting on a fresh DB (see _SEED_FILESERVER_SQL).
-    await asyncio.to_thread(upgrade_to, cfg, "037")
-    await _seed_fileserver(MIGRATIONS_TEST_DATABASE_URL)
     await asyncio.to_thread(upgrade_to, cfg, "head")
-    engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
-
-
-@pytest_asyncio.fixture
-async def pre_retire_engine() -> AsyncGenerator:
-    """Upgrade to revision 037 (the last revision BEFORE 038), yield an engine, reset on teardown.
-
-    Migration 038 (Phase 89) DELETEs the ``legacy-application-server`` sentinel agent and its
-    ``<watcher>`` live ``scan_batch``. Tests that assert on that sentinel — its born-revoked
-    row, its live watcher batch, or that insert ``files``/``scan_batches`` under its FK — must
-    observe the pre-retirement world, which exists from migration 012 through 037. They cannot
-    use ``migrated_engine`` (which runs through head=038, where those rows are gone). No
-    fileserver seed is needed here because the upgrade stops before 038 ever runs.
-    """
-    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
-    await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
-    await asyncio.to_thread(upgrade_to, cfg, "037")
     engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
     try:
         yield engine
@@ -196,6 +141,5 @@ __all__ = [
     "_build_alembic_config",
     "downgrade_to",
     "migrated_engine",
-    "pre_retire_engine",
     "upgrade_to",
 ]
