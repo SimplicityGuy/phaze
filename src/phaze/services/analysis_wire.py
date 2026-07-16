@@ -7,7 +7,7 @@ feature-to-dict converters from one place instead of re-deriving them.
 This module MUST remain stdlib + typing only -- no database, ORM-model, or
 SQLAlchemy imports. Both the SAQ worker and the DB-less one-shot pod load it, so
 it must never cross the agent import boundary (mirrors the phaze.tasks.functions
-invariant, enforced by tests/test_task_split.py).
+invariant, enforced by tests/shared/core/test_task_split.py).
 
 Wire-format conversion (D-26):
 - ``analyze_file`` returns ``mood``/``style`` as strings (dominant label).

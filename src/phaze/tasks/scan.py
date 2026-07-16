@@ -9,14 +9,15 @@ scan_directory (Phase 27 D-11..D-14)
     Walk a directory on the agent host, SHA-256 each known-extension file, POST
     chunks of FileUpsertRecord via PhazeAgentClient.upsert_files, and PATCH the
     ScanBatch's processed_files after each chunk + a terminal status PATCH at
-    the end. Mid-walk OSError per file -> warning + continue (mirrors
-    services/ingestion.py:65). NFC-normalizes original_path, original_filename,
-    and current_path (Pitfall 3). Uses os.walk with followlinks disabled (Pitfall 4).
-    Hashes via asyncio.to_thread so the SAQ event loop isn't blocked.
+    the end. Mid-walk OSError per file -> warning + continue (mirrors the
+    per-file skip pattern of the Phase-89-retired ``services/ingestion.py``, whose
+    directory-walk responsibilities this module absorbed). NFC-normalizes
+    original_path, original_filename, and current_path (Pitfall 3). Uses os.walk
+    with followlinks disabled (Pitfall 4). Hashes via asyncio.to_thread so the SAQ
+    event loop isn't blocked.
 
-This module MUST NOT import phaze.database, phaze.models.*, sqlalchemy, or
-phaze.services.ingestion (which transitively imports phaze.models). Enforced by
-tests/test_task_split.py::test_agent_worker_does_not_import_phaze_database
+This module MUST NOT import phaze.database or phaze.models.* or sqlalchemy. Enforced by
+tests/shared/core/test_task_split.py::test_agent_worker_does_not_import_phaze_database
 (Phase 26 D-25 + Phase 27 D-13 invariant).
 """
 
@@ -178,7 +179,8 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     On clean walk: terminal PATCH ScanBatchPatch(status='completed', total_files=N, processed_files=N).
     On scan_path-missing: short-circuit PATCH ScanBatchPatch(status='failed', error_message=...).
     On AgentApiServerError after retries (D-12): abort + PATCH 'failed' with the cause.
-    On per-file OSError: log a warning, skip the file, continue the walk (matches services/ingestion.py:65; D-12).
+    On per-file OSError: log a warning, skip the file, continue the walk (mirrors the
+    Phase-89-retired ``services/ingestion.py``'s per-file skip pattern; D-12).
     """
     payload = ScanDirectoryPayload.model_validate(kwargs)
 

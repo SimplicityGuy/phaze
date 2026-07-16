@@ -111,7 +111,7 @@ def _should_retry(exc: BaseException) -> bool:
     """Retry only on transient network errors and 5xx HTTP responses.
 
     NEVER retry on 4xx -- auth/validation errors must surface immediately
-    (D-11, D-32). Tested in ``tests/test_services/test_agent_client.py`` via
+    (D-11, D-32). Tested in ``tests/agents/services/test_agent_client.py`` via
     ``route.call_count`` assertions.
     """
     # httpx.TransportError is the base of EVERY transport-level failure: connect/read/write/pool
@@ -371,7 +371,7 @@ class PhazeAgentClient:
         Finding 1). Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12) via the
         ``_request`` funnel -- 5xx retries, 4xx surface immediately. ``file_id`` rides the path only
         (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker Postgres-free
-        (tests/test_task_split.py)."""
+        (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_push import PushedResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -388,7 +388,7 @@ class PhazeAgentClient:
         terminal failure once ``push_max_attempts`` is reached. Inherits the tenacity retry policy
         (D-11) + exception hierarchy (D-12) via the ``_request`` funnel. ``file_id`` rides the path
         only (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker
-        Postgres-free (tests/test_task_split.py)."""
+        Postgres-free (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_push import PushMismatchResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -406,7 +406,7 @@ class PhazeAgentClient:
         (D-11) + exception hierarchy (D-12) via the ``_request`` funnel -- 5xx retries, 4xx surface
         immediately. ``file_id`` rides the path only (AUTH-01); the body carries only the parts list.
         httpx-only -- NO database/S3-SDK import, keeping the agent worker Postgres-free *and* SDK-free
-        (tests/test_task_split.py)."""
+        (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_s3 import UploadedRequest, UploadedResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -423,7 +423,7 @@ class PhazeAgentClient:
         failure and tears down (or re-drives) the staging upload. Inherits the tenacity retry policy
         (D-11) + exception hierarchy (D-12) via the ``_request`` funnel. ``file_id`` rides the path
         only (AUTH-01); the body carries only an optional bounded ``detail``. httpx-only -- NO
-        database/S3-SDK import (tests/test_task_split.py)."""
+        database/S3-SDK import (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_s3 import UploadFailedRequest, UploadFailedResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -444,7 +444,7 @@ class PhazeAgentClient:
         rides the JSON body so control can populate ``error_message``; when ``None`` the
         POST is bodyless (an old agent image), which the endpoint still accepts (200) --
         the version-skew guard (D-10). httpx-only -- NO database import, keeping the agent
-        worker Postgres-free (tests/test_task_split.py)."""
+        worker Postgres-free (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_metadata import MetadataFailureResponse  # noqa: PLC0415
 
         kwargs: dict[str, Any] = {"json": payload.model_dump(mode="json")} if payload is not None else {}
@@ -463,7 +463,7 @@ class PhazeAgentClient:
         scheduling-ledger row (the success path clears via ``put_fingerprint``). The clear
         key is per-file, NOT per engine. ``file_id`` rides the path only (AUTH-01); no body.
         httpx-only -- NO database import, keeping the agent worker Postgres-free
-        (tests/test_task_split.py)."""
+        (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_fingerprint import FingerprintFailureResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -490,7 +490,7 @@ class PhazeAgentClient:
         terminal failure so the control side clears the ``scan_live_set:<file_id>`` scheduling-
         ledger row (the MATCH path clears via ``create_tracklist``). ``file_id`` rides the path
         only (AUTH-01); no body. httpx-only -- NO database import, keeping the agent worker
-        Postgres-free (tests/test_task_split.py)."""
+        Postgres-free (tests/shared/core/test_task_split.py)."""
         from phaze.schemas.agent_tracklists import ScanTerminalAckResponse  # noqa: PLC0415
 
         response = await self._request(
@@ -598,7 +598,7 @@ class PhazeAgentClient:
         the caller's catch stays valid. ``file_id`` rides the path only (AUTH-01); the
         body carries only the counts. Returns ``None`` (the endpoint echoes
         ``{agent_id, file_id}`` but the bump is fire-and-forget). httpx-only -- NO
-        database import (agent worker stays Postgres-free; tests/test_task_split.py).
+        database import (agent worker stays Postgres-free; tests/shared/core/test_task_split.py).
         """
         await self._request(
             "POST",

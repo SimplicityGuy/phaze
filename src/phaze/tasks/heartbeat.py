@@ -15,9 +15,10 @@ Phase 46 — why a background task, not a SAQ CronJob:
     the same ``worker_max_jobs`` dispatch slots as multi-hour ``process_file``
     analysis jobs. When all slots were saturated, the heartbeat could not get a
     slot for ~50 min, blowing past the 300s DEAD threshold and marking a healthy
-    busy agent DEAD. ``process_file`` runs essentia in a pebble ProcessPool
-    (Phase 43), so the event loop is free — a plain asyncio background task ticks
-    reliably regardless of dispatch saturation. ``send_heartbeat`` is the single
+    busy agent DEAD. ``process_file`` runs essentia in a dedicated child process
+    (Phase 101's exec'd-child model, ``services.analysis_exec``; formerly a pebble
+    ProcessPool prior to Phase 101), so the event loop is free — a plain asyncio
+    background task ticks reliably regardless of dispatch saturation. ``send_heartbeat`` is the single
     implementation; ``_heartbeat_loop`` calls it every
     ``AGENT_HEARTBEAT_INTERVAL_SECONDS``; ``heartbeat_tick`` remains a thin shim.
 
@@ -28,7 +29,7 @@ IMPORT-BOUNDARY INVARIANT (Phase 26 D-25, extended by Phase 29):
 this module MUST NOT transitively import phaze.database,
 phaze.tasks.session, or sqlalchemy.ext.asyncio. It runs inside the agent
 SAQ worker process which has no Postgres reachability. Enforced by
-``tests/test_task_split.py`` (subprocess import-boundary tests).
+``tests/shared/core/test_task_split.py`` (subprocess import-boundary tests).
 """
 
 from __future__ import annotations

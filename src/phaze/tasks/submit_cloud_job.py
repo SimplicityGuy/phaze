@@ -19,8 +19,11 @@ THREE load-bearing invariants:
 * **Control-only**: reads ``ctx["async_session"]`` (controller worker shape, like
   ``recover_orphaned_work`` / ``stage_cloud_window``) and the kube surface via ``kube_staging`` --
   kube credentials live on the control plane only (DIST-01). Registered in
-  ``enqueue_router.CONTROLLER_TASKS`` + ``controller.settings["functions"]``; NOT wired into the
-  live ``stage_cloud_window`` trigger here (Phase 55 owns that).
+  ``enqueue_router.CONTROLLER_TASKS`` + ``controller.settings["functions"]``. It is not enqueued
+  directly by ``stage_cloud_window`` (that cron only drives the S3-staging upload leg via
+  ``KueueBackend.dispatch``); the live trigger is the S3 upload-complete callback
+  (``routers.agent_s3.report_uploaded``), which routes ``submit_cloud_job`` onto the controller
+  queue once the agent finishes PUTting the object.
 
 Mirrors the ``cloud_staging.stage_file_to_s3`` producer discipline (``__future__`` annotations, the
 ``pg_insert(...).on_conflict_do_update`` upsert idiom with the PK stamped OUT of ``set_``, structlog).
@@ -71,7 +74,8 @@ def submit_cloud_job_key(file_id: uuid.UUID) -> str:
     Mirrors ``cloud_staging``'s ``s3_upload:<file_id>`` and ``release_awaiting_cloud``'s
     ``push_file:<file_id>``: a double enqueue of an already-submitting file dedups to a no-op via
     SAQ's per-queue incomplete set. ``file_id`` is a server-generated UUID -- no untrusted free-text
-    enters the key. Phase 55 (the trigger owner) uses this when it enqueues ``submit_cloud_job``.
+    enters the key. ``routers.agent_s3.report_uploaded`` (the live trigger) and
+    ``reconcile_cloud_jobs``'s re-drive path both use this when they enqueue ``submit_cloud_job``.
     """
     return f"submit_cloud_job:{file_id}"
 

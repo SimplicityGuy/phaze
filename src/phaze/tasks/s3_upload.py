@@ -1,4 +1,5 @@
-"""SAQ task: upload_file_s3 -- httpx multipart-PUT upload of a media file to presigned URLs (Phase 53).
+"""SAQ task: ``upload_file_s3`` (registered under the SAQ function name ``s3_upload``) --
+httpx multipart-PUT upload of a media file to presigned URLs (Phase 53).
 
 The file-server agent (which owns the media mount) uploads a cloud-routed file by PUTting each
 multipart part to a presigned URL the control plane minted (control initiates the multipart upload,
@@ -9,7 +10,7 @@ response header and reports the ordered ``(part_number, etag)`` list through a c
 integrity gate.
 
 This module MUST NOT import the app ORM/async DB engine NOR the S3 client SDK -- the import
-boundary is enforced by tests/test_task_split.py (D-25 + KSTAGE-02 boundary). It carries ONLY
+boundary is enforced by tests/shared/core/test_task_split.py (D-25 + KSTAGE-02 boundary). It carries ONLY
 stdlib (asyncio/pathlib), phaze.config (AgentSettings narrowing), phaze.schemas.agent_s3, httpx,
 and references PhazeAgentClient via ctx["api_client"] at runtime.
 

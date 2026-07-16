@@ -7,7 +7,7 @@ direct enqueue -- RESEARCH §Critical Finding 1). The file-server initiates; the
 receives (CLOUDPIPE-02 directional invariant).
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy. Enforced by
-tests/test_task_split.py (D-25 import boundary). It carries ONLY stdlib (asyncio/subprocess/
+tests/shared/core/test_task_split.py (D-25 import boundary). It carries ONLY stdlib (asyncio/subprocess/
 pathlib/tempfile), phaze.config (AgentSettings narrowing), phaze.schemas (PushFilePayload), and
 references PhazeAgentClient via ctx["api_client"] at runtime.
 

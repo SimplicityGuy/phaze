@@ -95,8 +95,9 @@ async def hold_awaiting_cloud(
 
     Shared by the hold path (``trigger_analysis``) and both over-cap spill paths
     (``report_upload_failed`` / ``report_push_mismatch``) so the hard shadow invariant
-    ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (``shadow_compare.py:131``) holds for every
-    go-forward hold instead of three hand-copied writers. ``expect_status`` selects one of two modes:
+    ``AWAITING_CLOUD => cloud_job(status='awaiting')`` (verified pre-Phase-90 by the now-retired
+    ``shadow_compare.py`` migration-verification script) holds for every go-forward hold instead of
+    three hand-copied writers. ``expect_status`` selects one of two modes:
 
     * **Hold mode** (``expect_status is None``): the unconditional upsert. Phase 90 (D-09) removed the
       former AWAITING_CLOUD files.state dual-write, so this upserts ONLY the sidecar row keyed on ``file_id``

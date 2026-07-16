@@ -3,7 +3,7 @@
 CONTROL-ONLY (Phase 26 D-03 / control-vs-agent DB boundary). This task needs
 PostgreSQL via ``ctx["async_session"]`` -- the async sessionmaker wired in
 ``phaze.tasks.controller.startup``. The agent worker is deliberately
-Postgres-free (the import-boundary test ``tests/test_task_split.py`` enforces
+Postgres-free (the import-boundary test ``tests/shared/core/test_task_split.py`` enforces
 this), so this module MUST NEVER be imported or registered by
 ``phaze.tasks.agent_worker`` or anything under ``phaze.tasks._shared``. Register
 it ONLY in ``phaze.tasks.controller``.

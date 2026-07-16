@@ -17,7 +17,7 @@ THREAD-SAFETY INVARIANT (RESEARCH Pitfall 2):
 Time source:
     ``time.monotonic()`` -- guaranteed non-decreasing, immune to wall-clock
     adjustments (NTP, DST). Tests use the ``fake_clock`` fixture in
-    ``tests/test_agent_watcher/conftest.py`` to drive deterministic time.
+    ``tests/discovery/agent_watcher/conftest.py`` to drive deterministic time.
 """
 
 from __future__ import annotations

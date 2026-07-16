@@ -26,7 +26,7 @@ the cap (D-06/D-07); healthy Pending is silent.
 
 CONTROL-ONLY: needs PostgreSQL (``ctx["async_session"]``) + the controller queue (``ctx["queue"]``) for
 the re-drive enqueue, and the kube surface via ``kube_staging`` -- exactly like ``stage_cloud_window`` /
-``recover_orphaned_work``. Register ONLY in ``phaze.tasks.controller`` (``tests/test_task_split.py``
+``recover_orphaned_work``. Register ONLY in ``phaze.tasks.controller`` (``tests/shared/core/test_task_split.py``
 enforces the agent worker stays free of it). FastAPI-free: imports neither ``fastapi`` nor
 ``phaze.routers``. DO NOT re-add a general auto-advance / ``recover_orphaned_work`` cron here -- this is
 narrow, in-flight K8s reconcile ONLY (mirror the ``controller.py`` cron-scope guard comments).

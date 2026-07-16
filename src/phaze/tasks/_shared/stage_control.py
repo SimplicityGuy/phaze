@@ -25,7 +25,7 @@ CRITICAL boundary rule (37-RESEARCH Pitfall 4): this module must NOT import
 ``apply_stage_control`` before-enqueue hook (Plan 02) reads the control table through the
 queue's own psycopg3 ``pool`` -- NOT SQLAlchemy -- so the agent worker can import this
 module without pulling the ORM/DB layer across the agent import boundary (covered by
-``tests/test_task_split.py``).
+``tests/shared/core/test_task_split.py``).
 """
 
 from __future__ import annotations

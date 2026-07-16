@@ -4,7 +4,7 @@ CONTROL-ONLY (Phase 26 D-03 / control-vs-agent DB boundary). These tasks need bo
 PostgreSQL via ``ctx["async_session"]`` AND the per-agent enqueuer via
 ``ctx["task_router"]`` (plus the controller queue ``ctx["queue"]``) -- wired in
 ``phaze.tasks.controller.startup``. The agent worker is deliberately Postgres-free (the
-import-boundary test ``tests/test_task_split.py`` enforces this), so this module MUST
+import-boundary test ``tests/shared/core/test_task_split.py`` enforces this), so this module MUST
 NEVER be imported or registered by ``phaze.tasks.agent_worker`` or anything under
 ``phaze.tasks._shared``. Register it ONLY in ``phaze.tasks.controller``.
 

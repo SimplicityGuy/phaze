@@ -8,9 +8,9 @@ invariant that no producer routes onto the consumer-less default queue). The fil
 then PUTs the bytes to those presigned URLs; the control plane never touches file bytes (DIST-01).
 
 D-01: a presigned MULTIPART upload (not a single PUT) so the agent streams one bounded part at a
-time and the control plane completes the object itself. The producer is built + unit-tested here
-but is NOT wired into the live cloud-window routing seam --- Phase 55 owns that routing decision;
-this module provides the seam it will call.
+time and the control plane completes the object itself. The producer built here is wired into the
+live cloud-window routing seam via ``KueueBackend.dispatch`` (``phaze.services.backends``), which
+calls the no-commit ``_stage_file_to_s3`` core per candidate under the drain's advisory lock.
 
 Mirrors the ``agent_push.py`` producer idiom (queue_for -> connect -> enqueue with an explicit SAQ
 job-net timeout + a deterministic key) and the stateless-service conventions of ``enqueue_router``
