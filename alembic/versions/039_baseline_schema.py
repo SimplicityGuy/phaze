@@ -53,7 +53,7 @@ CREATE TABLE public.agents (
     last_status jsonb,
     kind character varying(16) DEFAULT 'fileserver'::character varying NOT NULL,
     CONSTRAINT ck_agents_ck_agents_id_charset CHECK (((id)::text ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text)),
-    CONSTRAINT ck_agents_kind_enum CHECK (((kind)::text = ANY ((ARRAY['fileserver'::character varying, 'compute'::character varying])::text[])))
+    CONSTRAINT ck_agents_kind_enum CHECK (kind IN ('fileserver', 'compute'))
 );
 CREATE TABLE public.analysis (
     id uuid NOT NULL,
@@ -106,8 +106,8 @@ CREATE TABLE public.cloud_job (
     cloud_phase character varying(20),
     backend_id character varying(255),
     staging_bucket character varying(255),
-    CONSTRAINT ck_cloud_job_cloud_phase_enum CHECK (((cloud_phase)::text = ANY ((ARRAY['queued_behind_quota'::character varying, 'admitted'::character varying, 'running'::character varying, 'finished'::character varying])::text[]))),
-    CONSTRAINT ck_cloud_job_status_enum CHECK (((status)::text = ANY ((ARRAY['uploading'::character varying, 'uploaded'::character varying, 'submitted'::character varying, 'running'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'awaiting'::character varying])::text[])))
+    CONSTRAINT ck_cloud_job_cloud_phase_enum CHECK (cloud_phase IN ('queued_behind_quota', 'admitted', 'running', 'finished')),
+    CONSTRAINT ck_cloud_job_status_enum CHECK (status IN ('uploading', 'uploaded', 'submitted', 'running', 'succeeded', 'failed', 'awaiting'))
 );
 CREATE TABLE public.dedup_resolution (
     id uuid NOT NULL,
@@ -254,7 +254,7 @@ CREATE TABLE public.stage_skip (
     skipped_at timestamp with time zone DEFAULT now() NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    CONSTRAINT ck_stage_skip_enrich_only CHECK (((stage)::text = ANY ((ARRAY['metadata'::character varying, 'analyze'::character varying, 'fingerprint'::character varying])::text[])))
+    CONSTRAINT ck_stage_skip_enrich_only CHECK (stage IN ('metadata', 'analyze', 'fingerprint'))
 );
 CREATE TABLE public.tag_write_log (
     id uuid NOT NULL,

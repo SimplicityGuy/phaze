@@ -1,7 +1,9 @@
-"""Phase 1 gap-fill tests: app factory, core settings, DB session factory, Alembic migration."""
+"""Phase 1 gap-fill tests: app factory, core settings, DB session factory.
 
-from pathlib import Path
-import re
+The Gap-4 structural checks on ``001_initial_schema.py`` died with the Phase 102
+flatten; their durable value lives in
+``tests/integration/test_migrations/test_baseline_schema.py``.
+"""
 
 import pytest
 
@@ -83,36 +85,3 @@ def test_get_session_is_async_generator_function() -> None:
     from phaze.database import get_session
 
     assert inspect.isasyncgenfunction(get_session)
-
-
-# --- Gap 4: Alembic migration file structural verification ---
-
-
-def test_initial_migration_creates_five_tables() -> None:
-    """Initial Alembic migration creates all 5 core tables."""
-    migration_path = Path("alembic/versions/001_initial_schema.py")
-    assert migration_path.exists(), "001_initial_schema.py must exist"
-    content = migration_path.read_text()
-    # op.create_table( is followed by a newline then the quoted table name
-    create_table_calls = re.findall(r'op\.create_table\(\s*["\'](\w+)["\']', content)
-    expected_tables = {"files", "metadata", "analysis", "proposals", "execution_log"}
-    assert expected_tables == set(create_table_calls), f"Expected {expected_tables}, got {set(create_table_calls)}"
-
-
-def test_initial_migration_has_downgrade() -> None:
-    """Initial Alembic migration includes downgrade that drops all 5 tables."""
-    migration_path = Path("alembic/versions/001_initial_schema.py")
-    content = migration_path.read_text()
-    drop_table_calls = re.findall(r'op\.drop_table\(["\'](\w+)["\']', content)
-    expected_tables = {"files", "metadata", "analysis", "proposals", "execution_log"}
-    assert expected_tables == set(drop_table_calls), f"Downgrade should drop {expected_tables}, got {set(drop_table_calls)}"
-
-
-def test_initial_migration_has_down_revision_none() -> None:
-    """Initial Alembic migration has down_revision = None (it is the root)."""
-    migration_path = Path("alembic/versions/001_initial_schema.py")
-    content = migration_path.read_text()
-    # Alembic generates: down_revision: str | Sequence[str] | None = None
-    # or the simpler: down_revision = None
-    # Use a simple substring check after splitting on '=' to find None assignment
-    assert re.search(r"down_revision[^=]+=\s*None", content) is not None
