@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         AnalysisProgressPayload,
         AnalysisWritePayload,
         AnalysisWriteResponse,
+        PresignDownloadMetadata,
     )
 
     # Phase 28 schema (D-06).
@@ -308,20 +309,24 @@ class PhazeAgentClient:
         )
         return AnalysisWriteResponse.model_validate(response.json())
 
-    async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None]:
+    async def request_download_url(self, file_id: uuid.UUID) -> tuple[str, str, str | None, PresignDownloadMetadata | None]:
         """POST /api/internal/agent/files/{file_id}/presign-download -- mint a fresh presigned GET URL (Phase 52, KJOB-02).
 
-        Returns ``(download_url, expected_sha256, audio_ext)``: the short-TTL presigned
+        Returns ``(download_url, expected_sha256, audio_ext, metadata)``: the short-TTL presigned
         URL the DB-less one-shot pod (Plan 02) downloads the file bytes from, the
         ``expected_sha256`` (server-sourced from ``FileRecord.sha256_hash``) it
         integrity-verifies those bytes against -- the only hash a Postgres-free pod
-        can check (Pitfall 3) -- and ``audio_ext``, the file's real dotless audio
+        can check (Pitfall 3) -- ``audio_ext``, the file's real dotless audio
         extension (server-sourced from ``FileRecord.file_type``) the pod uses to name
         the downloaded temp file so essentia's extension-based format detection can
-        decode it (cloud-analyze-empty-no-ext). ``audio_ext`` is ``None`` against an
+        decode it (cloud-analyze-empty-no-ext), and ``metadata``, the optional
+        display-identity block (Phase 100, phaze-sfbx.1) the pod's console banner
+        (phaze-sfbx.3) uses for a human-readable frame. ``audio_ext`` is ``None`` against an
         older control plane that omits it; the pod then falls back to the URL suffix.
-        A FRESH presign is requested per call at pod start, so replay-after-expiry
-        defense is the server's short-TTL minting concern (T-52-05).
+        ``metadata`` is likewise ``None`` (never an error) against a control plane that omits
+        the block -- the pod degrades to a UUID-only banner. A FRESH presign is requested per
+        call at pod start, so replay-after-expiry defense is the server's short-TTL minting
+        concern (T-52-05).
 
         Inherits the tenacity retry policy (D-11) + exception hierarchy (D-12) via the
         ``_request`` funnel -- 5xx retries up to the cap, 4xx surfaces immediately; no
@@ -338,7 +343,7 @@ class PhazeAgentClient:
             f"/api/internal/agent/files/{file_id}/presign-download",
         )
         resp = PresignDownloadResponse.model_validate(response.json())
-        return resp.download_url, resp.expected_sha256, resp.audio_ext
+        return resp.download_url, resp.expected_sha256, resp.audio_ext, resp.metadata
 
     async def report_analysis_failed(self, file_id: uuid.UUID, payload: AnalysisFailurePayload) -> AnalysisFailureResponse:
         """POST /api/internal/agent/analysis/{file_id}/failed -- terminal-failure report (Phase 43).
