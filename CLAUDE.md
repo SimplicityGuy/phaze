@@ -22,7 +22,7 @@ uv run pytest --cov --cov-report=term-missing  # Run tests with coverage
 uv run ruff check .        # Lint
 uv run ruff format .       # Format
 uv run mypy .              # Type check
-pre-commit run --all-files # Run all pre-commit hooks
+uv run pre-commit run --all-files # Run all pre-commit hooks
 ```
 
 ## Code Quality
@@ -35,7 +35,7 @@ Line length: 150. Ruff lint `target-version` is `py313` — intentionally one mi
 
 **Ignored rules**: `B008`, `C901`, `E501`, `S101`
 
-**Per-file ignores**: Allow `T201` (print) in CLI/entry points and tests. Tests also ignore `PLC` and `S105`.
+**Per-file ignores**: `__init__.py` ignores `F401`. `T201` (print) is allowed in `scripts/parity/**`, `src/phaze/cli/**`, `src/phaze/main.py`, and tests. `services/**` ignores `S603`/`S607`. Tests (`tests/**`) also ignore `PLC`, `S105`, and `ARG001`.
 
 **isort**: `lines-after-imports = 2`, `combine-as-imports = true`, `split-on-trailing-comma = true`, `force-sort-within-sections = true`. Set `known-first-party` to project package name.
 
@@ -58,28 +58,30 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
-explicit_package_bases = true
-exclude = "^(tests/|prototype/|services/)"
+mypy_path = ["src"]
+exclude = "^(tests/|prototype/|services/|vulture_whitelist\\.py)"
 ```
 
-Override for tests: `disallow_untyped_decorators = false`.
+Tests are excluded entirely (see `exclude` above), not run under a relaxed override.
 
 ### Pre-commit Hooks
 
 Use frozen SHAs (not just tags) for all hooks. Required hooks:
 
-- **pre-commit-hooks**: large files, merge conflicts, TOML, YAML, JSON, EOF fixer, trailing whitespace, mixed line endings
+- **pre-commit-hooks**: large files, executable shebangs, merge conflicts, TOML, YAML, JSON (check + pretty-format), AWS credentials, private keys, EOF fixer, trailing whitespace, mixed line endings
 - **ruff-pre-commit**: `ruff --fix` + `ruff-format`
-- **bandit**: `-x tests -s B608`
+- **bandit**: `-x tests,services -s B608`
 - **check-jsonschema**: GitHub workflows/actions validation
+- **hadolint**: Dockerfile linting
 - **actionlint**: GitHub Actions linting
 - **yamllint**: strict mode
 - **shellcheck-py**: `--shell=bash --severity=warning`
+- **pre-commit-shfmt**: `--indent=2 --case-indent --language-dialect=bash --write`
 - **Local mypy hook**: `uv run mypy .` with `pass_filenames: false`
 
 ## Testing
 
-- Minimum **90% code coverage** required
+- Minimum **95% code coverage** required
 - Upload coverage to Codecov with service-specific flags
 - Codecov config: precision 2, round down, range 70-100%, project target auto with 1% threshold, patch target 80% with 5% threshold
 
@@ -96,7 +98,7 @@ Follow the discogsography pattern:
 - **Reusable workflows** via `workflow_call` — separate jobs for code quality, tests, security
 - **Code quality job**: runs all pre-commit hooks
 - **Test job**: runs pytest with coverage, uploads to Codecov with flags and `disable_search: true`
-- **Security job**: pip-audit, bandit, Semgrep, TruffleHog secret scanning
+- **Security job**: pip-audit, bandit, osv-scanner, Semgrep, TruffleHog secret scanning, Trivy container scanning
 - **Concurrency groups** with `cancel-in-progress` on PR workflows
 - Emoji prefixes on all step names
 
@@ -136,42 +138,42 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
 | Python | 3.14 | Runtime | Project constraint. essentia-tensorflow dev1438+ ships cp314 wheels only, requiring Python 3.14. |
-| FastAPI | >=0.135.2 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
-| SQLAlchemy | >=2.0.48 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
-| asyncpg | >=0.30.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
+| FastAPI | >=0.138.0 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
+| SQLAlchemy | >=2.0.51 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
+| asyncpg | >=0.31.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
 | Alembic | >=1.18.4 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
-| PostgreSQL | 16+ | Primary database | Project constraint. Handles large-scale file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
-| Redis | 7+ | Task queue broker / cache | Required by SAQ task queue. Also useful for caching analysis results and rate-limiting LLM API calls. |
+| PostgreSQL | 16+ (pinned to `postgres:18-alpine` in docker-compose/CI) | Primary database | Project constraint. Handles large-scale file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
+| Redis | 8.x (client pinned `redis>=8.0.0,<9.0`) | Cache / pub-sub | No longer the SAQ broker (Phase 36 migrated the task queue to Postgres); used for caching analysis results and rate-limiting LLM API calls. |
 | Docker Compose | 2.x | Deployment orchestration | Project constraint. Runs PostgreSQL, Redis, API server, worker processes as separate containers. |
 ### Audio / Music Libraries
 | Library | Version | Purpose | Why Recommended |
 |---------|---------|---------|-----------------|
 | mutagen | >=1.47.0 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
 | essentia-tensorflow | >=2.1b6.dev1438 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
-| pyacoustid | >=1.3.0 | Audio fingerprinting | Python bindings for Chromaprint/AcoustID. Identifies tracks via acoustic fingerprint, enables deduplication of differently-named identical audio. Complements sha256 hash dedup. |
-| chromaprint (system) | latest | Fingerprint generation | C library required by pyacoustid. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
+| pyacoustid | *(not a pyproject.toml dependency — not currently used)* | Audio fingerprinting | Originally recommended for Chromaprint/AcoustID bindings; the shipped fingerprinting pipeline (`services/audfprint`, `services/panako`) does not depend on it. |
+| chromaprint (system) | latest | Fingerprint generation | C library (`libchromaprint`) required at runtime by essentia-tensorflow, not consumed via pyacoustid. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
 | FFmpeg (system) | 8.x | Audio/video processing | Required for audio decoding and video stream metadata extraction via ffprobe. Install in Docker image. |
 ### Web UI
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
 | Jinja2 | >=3.1 | Server-side templating | Ships with FastAPI. Server-rendered HTML means no separate frontend build, no SPA complexity. Perfect for admin-only tool. |
 | HTMX | 2.x (CDN) | Dynamic UI interactions | Eliminates need for React/Vue/Angular. Adds SPA-like interactivity (approve/reject buttons, live search, pagination) via HTML attributes. Zero build step. 90% of SPA functionality, 10% of complexity. |
-| Tailwind CSS | 3.x (CDN) | Styling | Utility-first CSS. Use via CDN (no build step) for a single-user admin tool. DaisyUI component library optional for pre-built components. |
+| Tailwind CSS | 4.x (standalone binary, pinned in `justfile`) | Styling | Utility-first CSS. Compiled at image-build time by the pinned standalone Tailwind binary (`just tailwind`) — no Node, no CDN, no client-side compiler. DaisyUI component library optional for pre-built components. |
 | Alpine.js | 3.x (CDN) | Lightweight JS interactions | 3KB library for dropdown menus, modals, toggling states. Complements HTMX for client-side state that HTMX doesn't handle. |
 ### Task Processing
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| SAQ | >=0.26.3 | Async task queue | Purpose-built for asyncio + Redis. Inspired by arq with active maintenance. Perfect for file analysis jobs (BPM, fingerprinting, metadata extraction). Supports retries with backoff, job results, cron jobs, built-in web UI. Single-user app doesn't need Celery's complexity. |
+| SAQ | >=0.26.4 (`saq[postgres]`) | Async task queue | Purpose-built for asyncio. Inspired by arq with active maintenance. Broker migrated from Redis to Postgres in Phase 36 (`PostgresQueue`, `saq_jobs` table). Perfect for file analysis jobs (BPM, fingerprinting, metadata extraction). Supports retries with backoff, job results, cron jobs, built-in web UI. Single-user app doesn't need Celery's complexity. |
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| litellm | >=1.82.6 (pin exact) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact version due to March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
+| litellm | >=1.85.6,<1.86.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
 | pydantic | >=2.10 | Data validation / LLM structured output | Already a FastAPI dependency. Use for validating LLM responses (proposed filenames, paths). Structured output parsing. |
 ### Configuration / Infrastructure
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| pydantic-settings | >=2.13.1 | Configuration management | Type-safe config from env vars, .env files, Docker secrets. Native Pydantic integration. Supports `SecretStr` for API keys. |
-| uvicorn | >=0.34.0 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
+| pydantic-settings | >=2.14.2 | Configuration management | Type-safe config from env vars, .env files, Docker secrets. Native Pydantic integration. Supports `SecretStr` for API keys. |
+| uvicorn | >=0.49.0 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
 ### Development Tools
 | Tool | Purpose | Notes |
 |------|---------|-------|
@@ -214,14 +216,14 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ## Version Compatibility
 | Package A | Compatible With | Notes |
 |-----------|-----------------|-------|
-| SQLAlchemy >=2.0.48 | asyncpg >=0.30.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
+| SQLAlchemy >=2.0.51 | asyncpg >=0.31.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
 | essentia-tensorflow >=2.1b6.dev1438 | Python 3.14 | dev1438+ ships cp314 wheels only (macOS arm64/x86_64 + linux x86_64; no linux/arm64). Keep platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
-| FastAPI >=0.135.2 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
-| FastAPI >=0.135.2 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
+| FastAPI >=0.138.0 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
+| FastAPI >=0.138.0 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
 | Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
-| litellm | ALL | **Pin exact version.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Use >=1.82.6,<1.82.7 or wait for verified post-incident release. Verify SHA checksums. |
-| SAQ >=0.26.3 | Redis 7+ | Actively maintained. Drop-in replacement for arq with similar API. |
-| pyacoustid >=1.3.0 | chromaprint (system) | Requires `fpcalc` binary on PATH. Install `chromaprint-tools` in Docker. |
+| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.85.6,<1.86.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
+| SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.0.0) is used for caching only now. |
+| chromaprint (system) | essentia-tensorflow | Not consumed via `pyacoustid` (unused) — `fpcalc`/`libchromaprint` is an essentia-tensorflow runtime dependency. Install `chromaprint-tools` in Docker. |
 ## Confidence Assessment
 | Area | Confidence | Reasoning |
 |------|------------|-----------|
