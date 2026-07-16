@@ -46,6 +46,7 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import datetime
+    import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
@@ -2200,3 +2201,25 @@ async def get_files_page(
         for row in result[:page_size]
     ]
     return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)
+
+
+async def get_file_stage_buckets(session: AsyncSession, file_id: uuid.UUID) -> dict[str, str]:
+    """Return ONE file's six derived per-stage buckets (keyed by ``Stage`` value) — the matrix row, single-file.
+
+    The record slide-in's Stage-Eligibility pills must show the SAME derived status the Files matrix
+    renders for that file (CONSOLE-01: one status source, no divergent second derivation), so this is
+    the same six correlated ``stage_status_case`` CASE columns as :func:`_files_page_stmt`, scoped to
+    a single ``FileRecord.id`` — an O(1) single-row read, never a corpus scan. Degrades to an
+    all-``not_started`` mapping on any error (the pane renders, never 500s) — mirroring
+    :func:`get_files_page`'s SAVEPOINT degrade posture.
+    """
+    cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
+    try:
+        async with session.begin_nested():
+            row = (await session.execute(select(*cols).where(FileRecord.id == file_id))).one_or_none()
+    except Exception:
+        logger.warning("file_stage_buckets_degraded", file_id=str(file_id), exc_info=True)
+        row = None
+    if row is None:
+        return dict.fromkeys((s.value for s in _FILES_PAGE_STAGES), "not_started")
+    return {stage_member.value: row[idx] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)}

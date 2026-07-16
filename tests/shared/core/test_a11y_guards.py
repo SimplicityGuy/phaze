@@ -204,3 +204,80 @@ def test_detail_pane_after_swap_reaches_alpine_scope() -> None:
 def _strip_comments(text: str) -> str:
     """Blank out ``{# ... #}`` Jinja comment regions before scanning (prose may mention onLoaded)."""
     return _JINJA_COMMENT.sub("", text)
+
+
+# --- Phase 94 detail-pane full dismiss (browser-caught regression) ------------------
+
+# CONSOLE-03: clicking ✕ only removed the ✕ icon. Root cause chain: the trigger's
+# hx-swap="innerHTML" DESTROYS the resting empty-state div (it lived INSIDE the
+# #detail-pane swap target), and hide() only flipped `open=false` — the swapped wave-2
+# body is not gated on `open`, so it stayed fully visible with no empty state to fall
+# back to. A late in-flight own-tick response could also re-fire onLoaded() after a
+# dismiss and resurrect the pane. Three source guards keep the trap from returning;
+# browser UAT is the authoritative catch.
+
+
+def test_detail_pane_empty_state_lives_outside_swap_target() -> None:
+    """The resting empty state must be a SIBLING of #detail-pane, never inside it (innerHTML swaps destroy it)."""
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    start = html.find('id="detail-pane"')
+    assert start != -1, "expected the #detail-pane swap target"
+    # The fixed swap target is an EMPTY element: nothing but whitespace before its closing tag.
+    inner = html[html.find(">", start) + 1 : html.find("</div>", start)]
+    assert "_empty_head" not in inner and 'x-show="!open"' not in inner, (
+        "the resting empty state must live OUTSIDE the #detail-pane swap target — an "
+        "hx-swap='innerHTML' load destroys everything inside the target, so an inside "
+        "empty state can never come back after dismiss"
+    )
+    # And it must still exist somewhere in the shell, gated on !open.
+    assert "_empty_head" in html, "the resting empty state must still be rendered by the shell"
+
+
+def test_detail_pane_dismiss_clears_swapped_body() -> None:
+    """hide() must clear the swapped body out of #detail-pane (this also removes the body's own-tick poller)."""
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    m = re.search(r'x-data="([^"]*)"', html, re.DOTALL)
+    assert m, "expected the shell <section x-data> component"
+    component = m.group(1)
+    assert re.search(r"getElementById\('detail-pane'\)", component), (
+        "the dismiss path must reach the #detail-pane swap target to clear the swapped body"
+    )
+    assert re.search(r"innerHTML\s*=\s*''", component), (
+        "dismiss must wipe #detail-pane's innerHTML — flipping `open` alone leaves the "
+        "swapped wave-2 body (not gated on `open`) fully visible, the ✕-only-disappears trap"
+    )
+
+
+def test_detail_pane_late_swap_cannot_resurrect_dismissed_pane() -> None:
+    """onLoaded() must guard on the ?param still being present — a late own-tick swap after dismiss must not re-open."""
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    m = re.search(r'x-data="([^"]*)"', html, re.DOTALL)
+    assert m, "expected the shell <section x-data> component"
+    component = m.group(1)
+    on_loaded = component[component.find("onLoaded()") :]
+    guard = re.search(r"if\s*\(!id\)", on_loaded)
+    assert guard, (
+        "onLoaded() must early-return (and wipe) when the ?param is gone — hide() clears the "
+        "param, so a late in-flight tick response landing after dismiss must not resurrect the pane"
+    )
+    assert guard.start() < on_loaded.find("open = true"), "the missing-param guard must run BEFORE open flips true"
+
+
+# --- Phase 93 rail Alpine root (browser-caught regression) ---------------------------
+
+
+def test_rail_root_carries_alpine_x_data() -> None:
+    """The rail <aside> must carry x-data — Alpine only walks x-data-rooted subtrees.
+
+    Without it every x-text numeral, x-show orphan badge, and pause/priority binding in the
+    rail is silently inert: the badges forever render their server-side "0" defaults no matter
+    what $store.pipeline holds (CONSOLE-02: the Analyze badge read 0 while 2,183 analyze jobs
+    were in flight). Invisible to markup/httpx tests — only a live browser surfaced it.
+    """
+    html = _strip_comments(_RAIL.read_text())
+    m = re.search(r"<aside\b[^>]*>", html)
+    assert m, "expected the rail <aside> root"
+    assert re.search(r"\bx-data\b", m.group(0)), (
+        "the rail <aside> must carry a bare x-data so Alpine binds the rail subtree — without "
+        "it every store-bound numeral/badge in the rail is inert and renders 0 forever"
+    )

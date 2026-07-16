@@ -188,7 +188,10 @@ def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str,
 
 
 async def _build_dag_context(
-    app_state: Any, session: AsyncSession, activity: dict[str, int], stage_progress: dict[str, dict[str, int | None]] | None = None
+    app_state: Any,
+    session: AsyncSession,
+    activity: dict[str, int],  # noqa: ARG001 — kept for caller stability; analyzeActive now derives from stage_progress (Phase 93)
+    stage_progress: dict[str, dict[str, int | None]] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Build the per-DAG-node store-key context consumed by stats_bar.html + the 35-05 canvas.
 
@@ -223,7 +226,11 @@ async def _build_dag_context(
         "fingerprintTotal": total("fingerprint"),
         "analyzeDone": done("analyze"),
         "analyzeTotal": total("analyze"),
-        "analyzeActive": activity["agent_active"],
+        # Phase 93 (CONSOLE-02): the DERIVED in-flight count — the same stage_status_case bucket the
+        # Files matrix renders (scheduling_ledger truth, so cloud-burst dispatch counts). The former
+        # SAQ agent_active source saw only LOCAL agent queues and read 0 while thousands of analyze
+        # jobs were in flight on the compute lanes.
+        "analyzeActive": int(stage["analyze"].get("in_flight") or 0),
         "tracklistDone": done("scan_search"),
         "scrapeDone": done("scrape"),
         "scrapeTotal": total("scrape"),
