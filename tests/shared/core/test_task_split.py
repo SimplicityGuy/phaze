@@ -669,6 +669,75 @@ def test_job_runner_does_not_run_heartbeat_loop() -> None:
     assert result.returncode == 0, f"job_runner must not import/call the heartbeat loop:\nstdout={result.stdout}\nstderr={result.stderr}"
 
 
+def test_analysis_child_stays_essentia_and_postgres_free() -> None:
+    """Phase 101 (phaze-bo3p.1) extension of D-25: phaze.analysis_child module load is
+    essentia-free AND Postgres-free.
+
+    The child CLI is exec'd by both the one-shot pod (job_runner) and the SAQ worker
+    (functions.py) via the shared driver. Its module load must succeed on hosts without
+    the platform-gated essentia wheel (the essentia-bound target import is deferred to
+    ``_load_target`` at call time) and must never drag in the app ORM / async DB engine
+    — the pod is Postgres-less. No agent env is required: the module never calls
+    ``get_settings()``. Verified by subprocess so a contaminated import in the test
+    process cannot poison downstream tests via sys.modules caching.
+    """
+    script = textwrap.dedent("""
+        import sys
+        import phaze.analysis_child  # noqa: F401
+
+        forbidden = ("essentia", "essentia.standard", "phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"analysis_child import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
+def test_analysis_exec_driver_stays_essentia_and_postgres_free() -> None:
+    """Phase 101 (phaze-bo3p.2) extension of D-25: the shared subprocess driver
+    (``phaze.services.analysis_exec``) is essentia-free AND Postgres-free.
+
+    The driver is imported by BOTH the one-shot pod (job_runner) and the SAQ worker
+    (functions.py) parents; essentia lives exclusively in the exec'd child. If the
+    driver ever drags essentia (or the ORM) into the parent import graph, the pod's
+    platform/import guarantees break. No agent env is required: the module never calls
+    ``get_settings()``. Verified by subprocess so a contaminated import in the test
+    process cannot poison downstream tests via sys.modules caching.
+    """
+    script = textwrap.dedent("""
+        import sys
+        import phaze.services.analysis_exec  # noqa: F401
+
+        forbidden = ("essentia", "essentia.standard", "phaze.database", "phaze.tasks.session", "sqlalchemy.ext.asyncio")
+        present = [m for m in forbidden if m in sys.modules]
+        if present:
+            for m in present:
+                mod = sys.modules[m]
+                sys.stderr.write(f"BANNED MODULE IMPORTED: {m} (file={getattr(mod, '__file__', '?')})\\n")
+            sys.exit(1)
+        sys.exit(0)
+    """)
+    result = subprocess.run(  # noqa: S603  # trusted input: literal sys.executable + literal -c script
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, f"analysis_exec import contaminated sys.modules:\nstdout={result.stdout}\nstderr={result.stderr}"
+
+
 def test_stage_control_stays_postgres_free() -> None:
     """Phase 37 T-37-04 invariant: phaze.tasks._shared.stage_control is Postgres-free.
 
