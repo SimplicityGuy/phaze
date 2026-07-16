@@ -1,0 +1,147 @@
+{# Phase 95 (phaze-zqvh.2, CONSOLE-04): the BOUNDED Analyze per-file table + its status-filter lens.
+
+   The Phase-58 workspace rendered ONE <tr> per analyze-stage file inline in analyze_workspace.html --
+   which at 200K scale was 92,335 rows / ~105MB of HTML (phaze-zqvh.1 baseline). That per-row build is
+   MOVED here and driven off a BOUNDED row set so it can be rendered TWO ways off ONE partial (mirroring
+   the _analyze_lanes.html two-way idiom):
+     * analyze_workspace.html includes it with the DEFAULT working set (get_analyze_working_set: the
+       active-first in-flight/awaiting-cloud/failed set + a LIMIT-ed recent-completions window) and
+       analyze_page=None -> the initial full-page grid, no pager.
+     * GET /pipeline/analyze-files swaps it into #analyze-files-view under a status filter -> a bounded
+       page (analyze_page set) with Prev/Next.
+
+   #analyze-files-view is a SIBLING of the poll's OOB targets, NEVER re-emitted by the 5s /pipeline/stats
+   poll (the poll only OOB-swaps #analyze-lanes + the cloud cards). So the operator's filter selection and
+   page position SURVIVE every poll tick (phaze-zqvh.2 acceptance) -- the file grid stays outside the poll.
+
+   Context contract:
+     * analyze_rows   -- list of projected analyze-file dicts (working set + window, OR a page's rows).
+                         Each: {file_id, filename, path, awaiting_cloud, analysis_failed, lane, lane_kind,
+                         fine_done, fine_total, duration, completed}. The SAME shape both service reads emit.
+     * analyze_page   -- OPTIONAL phaze.services.pipeline.AnalyzeFilesPage (rows/page/page_size/has_next/
+                         status). Present => filtered/paged mode (renders the pager); absent => the default
+                         working-set view (no pager).
+     * active_status  -- OPTIONAL current status-filter value (ANALYZE_FILTERS member) or None (default view).
+
+   T-57-01: `status` is validated against the ANALYZE_FILTERS allowlist in the router and NEVER spliced
+   into a template path; the filter/pager links carry it only as an autoescaped query-string value.
+#}
+{# The status-filter lens, single-sourced (mirrors _status_filter_bar.html's URL-carried idiom). value=""
+   is the DEFAULT bounded working-set view; the others are the full-listing lenses served paged. NO
+   hx-push-url here (unlike /pipeline/files): this fragment lives inside the /s/analyze shell workspace, so
+   pushing the bare-fragment URL would corrupt browser back/forward -- the record slide-in targets a
+   different element (#record-body), so the filter view is never disturbed without it. #}
+{% set _analyze_filters = [
+    ('', 'active + recent'),
+    ('all', 'all files'),
+    ('in_flight', 'in flight'),
+    ('awaiting_cloud', 'awaiting cloud'),
+    ('failed', 'failed'),
+    ('completed', 'completed'),
+] %}
+{% set _select = 'text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500' %}
+<div id="analyze-files-view">
+    <form id="analyze-filter-bar"
+          hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
+          hx-trigger="change"
+          class="flex flex-wrap items-center gap-2 pb-3">
+        <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Show</span>
+        <label class="sr-only" for="analyze-filter-status">Status</label>
+        <select id="analyze-filter-status" name="status" aria-label="Filter analyze files by status" class="{{ _select }}">
+            {% for val, label in _analyze_filters %}
+            <option value="{{ val }}"{% if (active_status or '') == val %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+        {% if active_status %}
+        {# Clear the lens -- return to the default bounded working-set view (no status param). #}
+        <button type="button"
+                hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
+                class="text-sm px-2 py-1 rounded text-blue-600 dark:text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500">Clear filter</button>
+        {% endif %}
+        {% if not active_status %}
+        <span class="text-xs text-gray-500 dark:text-gray-400">active work + latest completions — filter to browse the full archive</span>
+        {% endif %}
+    </form>
+
+    {# Build the per-row cell set from the bounded analyze_rows (moved VERBATIM from Phase-58
+       analyze_workspace.html:99-153 -- the derived lane badge + windowed-progress State cell). #}
+    {% set columns = ["File", "Duration", "Lane", "Progress"] %}
+    {% set ns = namespace(rows=[], file_ids=[]) %}
+    {% for f in analyze_rows %}
+        {# COMPUTE-03: the lane badge is derived from `f.lane_kind` (CloudJob.backend_id's registry
+           kind, projected server-side -- never a static id->badge map). Glyph/color mirrors
+           _lane_card.html (local 🖥️/emerald, compute ☁️/blue, kueue ⎈/amber); an unattributed cloud
+           row (or an unrecognized kind) gets the neutral gray fallback. #}
+        {% if f.lane_kind == 'local' %}
+            {% set badge_glyph, badge_color = '🖥️', 'text-emerald-600 dark:text-emerald-300' %}
+        {% elif f.lane_kind == 'compute' %}
+            {% set badge_glyph, badge_color = '☁️', 'text-blue-600 dark:text-blue-300' %}
+        {% elif f.lane_kind == 'kueue' %}
+            {% set badge_glyph, badge_color = '⎈', 'text-amber-600 dark:text-amber-300' %}
+        {% else %}
+            {% set badge_glyph, badge_color = '▪', 'text-gray-600 dark:text-gray-300' %}
+        {% endif %}
+        {% set badge_text = badge_glyph ~ ' ' ~ f.lane %}
+        {% set duration_cell = ('%d:%02d' % ((f.duration | int) // 60, (f.duration | int) % 60)) if f.duration else '—' %}
+        {% if f.completed %}
+            {# Completed (ANALYZED): full window coverage from the aggregate. #}
+            {% set state_text = ('window %s/%s' % (f.fine_done, f.fine_total)) if f.fine_total else 'complete' %}
+            {% set state_color = 'text-emerald-600 dark:text-emerald-300' %}
+        {% elif f.awaiting_cloud %}
+            {% set state_text = 'pending (quota)' %}
+            {% set state_color = 'text-amber-600 dark:text-amber-300' %}
+        {% elif f.analysis_failed %}
+            {% set state_text = 'failed' %}
+            {% set state_color = 'text-rose-600 dark:text-rose-400' %}
+        {% elif f.fine_total %}
+            {# In-flight: render the merged 57.1 mid-flight N/M signal ALONGSIDE running (D-04). #}
+            {% set state_text = 'running · %s/%s windows' % (f.fine_done, f.fine_total) %}
+            {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+        {% else %}
+            {% set state_text = 'running' %}
+            {% set state_color = 'text-blue-600 dark:text-blue-300' %}
+        {% endif %}
+        {% set _ = ns.rows.append([
+            {'text': f.filename, 'mono': True, 'title': f.path},
+            {'text': duration_cell, 'mono': True},
+            {'text': badge_text, 'color': badge_color},
+            {'text': state_text, 'color': state_color},
+        ]) %}
+        {# Phase 61 (RECORD-01): parallel file-id list backing ns.rows — each Analyze row opens the
+           full-record slide-in (hx-get="/record/{file_id}"). #}
+        {% set _ = ns.file_ids.append(f.file_id) %}
+    {% endfor %}
+    {% set rows = ns.rows %}
+    {% set row_file_ids = ns.file_ids %}
+    {% if active_status %}
+        {% set empty_heading = "No files match this filter" %}
+        {% set empty_body = "Try a different status, or clear the filter to return to active work." %}
+    {% else %}
+        {% set empty_heading = "No files in flight" %}
+        {% set empty_body = "Route files into Analyze from Discover, or check lane capacity above." %}
+    {% endif %}
+    {% set row_id_prefix = "analyze-row" %}
+    {% set table_id = "analyze-file-table" %}
+    {% include "pipeline/partials/_file_table.html" %}
+
+    {% if analyze_page and (analyze_page.page > 1 or analyze_page.has_next) %}
+    {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). Carries the status
+       lens + page_size as autoescaped query values (T-57-01: never a path splice). #}
+    {% set _qs = '&page_size=' ~ analyze_page.page_size ~ (('&status=' ~ analyze_page.status) if analyze_page.status else '') %}
+    <nav aria-label="Analyze files pagination" class="flex items-center justify-between mt-6">
+        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ analyze_page.page }}</p>
+        <div class="flex gap-1">
+            {% if analyze_page.page > 1 %}
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page - 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Previous</button>
+            {% else %}
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Previous</span>
+            {% endif %}
+            {% if analyze_page.has_next %}
+            <button hx-get="/pipeline/analyze-files?page={{ analyze_page.page + 1 }}{{ _qs }}" hx-target="#analyze-files-view" hx-swap="innerHTML" class="text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">Next</button>
+            {% else %}
+            <span class="text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed">Next</span>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+</div>

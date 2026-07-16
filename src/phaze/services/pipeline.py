@@ -44,7 +44,7 @@ from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import datetime
     import uuid
 
@@ -1173,92 +1173,161 @@ async def count_active_agents(session: AsyncSession, kind: str | None = None) ->
 # analysis row.
 
 
-async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return the all-in-stage Analyze file rows for the workspace table (D-03), degrade-safe.
+# Phase 95 (phaze-zqvh.2, CONSOLE-04): the per-file table is BOUNDED at the source. The
+# Phase-58 ``get_analyze_stage_files`` returned the ENTIRE analyze-stage membership -- which as the
+# archive converges monotonically approaches the whole corpus (92,335 rows / ~105MB HTML at the seeded
+# 200K scale, phaze-zqvh.1 baseline). It is SPLIT here into two bounded reads that share ONE row
+# projection (identical per-row dict shape, so ``analyze_workspace.html`` row-building is unchanged):
+#
+#   * :func:`get_analyze_working_set` -- the DEFAULT view: the active-first working set (in-flight,
+#     awaiting-cloud, failed -- everything that is NOT a finished completion, naturally bounded by lane
+#     concurrency / the failure backlog) PLUS a LIMIT-ed recent-completions window. The dominant,
+#     monotonically-growing completed set is windowed, not rendered whole.
+#   * :func:`get_analyze_files_page` -- the full corpus, reachable via the status-filter bar, served as
+#     bounded OFFSET pages with a ``page_size + 1`` sentinel for ``has_next`` (never a whole-corpus
+#     COUNT -- the same T-87-11 DoS mitigation ``get_files_page`` uses).
+#
+# The membership semantics are UNCHANGED from Phase 90 (PR-A): DERIVED, never ``files.state``. A file is
+# in the Analyze stage iff it carries ANY analysis row (``AnalysisResult.id IS NOT NULL`` -- SUPERSETS
+# done_clause + failed_clause + any partial 57.1 row) OR its analyze is in-flight (``inflight_clause``
+# over ``scheduling_ledger``) OR it carries an ACTIVE ``cloud_job`` sidecar. The correlated builders are
+# NOT composed against the OUTER-JOINED columns (SQLAlchemy would auto-correlate them out of the inner
+# ``exists(...)`` -- the Phase 90 blocking-fix); membership is spelled against the joined columns using
+# the builders' EXACT semantics while ``inflight_clause`` (over the un-joined ledger) is composed verbatim.
 
-    ONE read-only multi-state SELECT (a pure read -- NO behavior change) over FileRecord, LEFT
-    JOINing the per-file ``cloud_job`` sidecar (lane derivation), the 1:1 ``analysis`` aggregate
-    (windowed coverage / the 57.1 mid-flight signal), and ``metadata`` (duration). Returns every
-    file in the Analyze stage: queued/running (in-flight analysis row), awaiting-cloud, and done.
+# Bounded recent-completions window on the DEFAULT view (phaze-zqvh.2). Small enough that the operator
+# sees "what just finished" without the whole (corpus-scale) completed set landing in the DOM.
+_ANALYZE_COMPLETIONS_WINDOW = 50
 
-    Per-file lane is DERIVED from the stamped ``CloudJob.backend_id`` (COMPUTE-03), never a heuristic:
-    no ``cloud_job`` row -> ``lane="local"`` / ``lane_kind="local"``; a ``cloud_job`` with a
-    ``backend_id`` -> ``lane=backend_id`` / ``lane_kind`` looked up via
-    :func:`phaze.services.agent_liveness.non_local_backend_kinds` (falling back to ``"cloud"`` for a
-    backend no longer in the registry); a ``cloud_job`` with a NULL ``backend_id`` (not yet stamped) ->
-    the truthful ``lane="cloud"`` / ``lane_kind="cloud"`` unattributed fallback -- NEVER the stale
-    ``"a1"`` heuristic label. A local-routed file never enters
-    :func:`phaze.services.cloud_staging.stage_file_to_s3` (the ONLY ``cloud_job`` writer), so it
-    never carries a ``cloud_job`` row and cannot be mislabeled.
+# The ACTIVE cloud statuses that place a file in the Analyze working set -- the SAME five the Phase-58
+# membership listed (awaiting/uploading/submitted/uploaded/running; NOT the terminal ``succeeded``,
+# which the completed-window / paged listing covers instead).
+_ANALYZE_ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
+    CloudJobStatus.AWAITING.value,
+    CloudJobStatus.UPLOADING.value,
+    CloudJobStatus.SUBMITTED.value,
+    CloudJobStatus.UPLOADED.value,
+    CloudJobStatus.RUNNING.value,
+)
 
-    Window coverage reads ``analysis.fine_windows_analyzed`` / ``fine_windows_total``: a completed
-    (ANALYZED) row shows full coverage from the aggregate; an in-flight row shows the merged 57.1
-    mid-flight ``N/M`` signal (``fine_windows_analyzed < fine_windows_total``). Phase 58 only READS
-    this signal (D-04) -- no schema/query-semantics change.
+# The status-filter allowlist for the paged full listing. Validated as a SET (T-87-14 / T-57-01: a
+# filter value is NEVER spliced into SQL or a template path -- an unknown value degrades to the
+# unfiltered "all" membership, never a 422 into the render). ``None`` (no filter) => the DEFAULT
+# working-set view; ``"all"`` => the full analyze-stage membership, paged.
+ANALYZE_FILTER_ALL = "all"
+ANALYZE_FILTER_IN_FLIGHT = "in_flight"
+ANALYZE_FILTER_AWAITING = "awaiting_cloud"
+ANALYZE_FILTER_FAILED = "failed"
+ANALYZE_FILTER_COMPLETED = "completed"
+ANALYZE_FILTERS: frozenset[str] = frozenset(
+    {
+        ANALYZE_FILTER_ALL,
+        ANALYZE_FILTER_IN_FLIGHT,
+        ANALYZE_FILTER_AWAITING,
+        ANALYZE_FILTER_FAILED,
+        ANALYZE_FILTER_COMPLETED,
+    }
+)
 
-    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`count_active_agents`):
-    this read rides the hot dashboard context and must NEVER 500 the page / poll.
+
+@dataclass
+class AnalyzeFilesPage:
+    """A bounded, projected page of analyze-stage files. ``has_next`` rides a +1 sentinel -- never a COUNT."""
+
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    page: int = 1
+    page_size: int = 50
+    has_next: bool = False
+    status: str | None = None
+
+
+def _analyze_files_select() -> Select[Any]:
+    """The shared analyze-file SELECT: the 11 display columns + the three degrade-safe LEFT joins.
+
+    Extracted so the working-set, completions-window, and paged reads all project the IDENTICAL row
+    shape (:func:`_project_analyze_rows`), keeping ``analyze_workspace.html`` row-building unchanged.
+    LEFT JOINs the per-file ``cloud_job`` sidecar (lane derivation), the 1:1 ``analysis`` aggregate
+    (windowed coverage / the 57.1 mid-flight signal + the done/failed markers), and ``metadata``
+    (duration). No WHERE / ORDER here -- each caller composes its own bounded predicate + order.
     """
-    try:
-        async with session.begin_nested():
-            stmt = (
-                select(
-                    FileRecord.id,
-                    FileRecord.original_filename,
-                    FileRecord.original_path,
-                    CloudJob.id,
-                    CloudJob.status,
-                    CloudJob.backend_id,
-                    AnalysisResult.fine_windows_analyzed,
-                    AnalysisResult.fine_windows_total,
-                    AnalysisResult.analysis_completed_at,
-                    AnalysisResult.failed_at,
-                    FileMetadata.duration,
-                )
-                .select_from(FileRecord)
-                .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
-                .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
-                .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
-                # Phase 90 (PR-A): the analyze-stage membership is DERIVED, not ``files.state``. A file is in
-                # the Analyze stage iff it carries ANY (possibly partial 57.1) analysis row -- which by the
-                # LOCKED builders' own definitions SUPERSETS done_clause (``analysis_completed_at IS NOT NULL``,
-                # stage_status.py:179) AND failed_clause (``failed_at IS NOT NULL``, :230) -- OR its analyze is
-                # in-flight (``inflight_clause(ANALYZE)`` over ``scheduling_ledger``, composed VERBATIM), OR it
-                # carries an ACTIVE ``cloud_job`` sidecar (awaiting / pushing / pushed lanes, D-12).
-                #
-                # NOTE (Phase 90 blocking-fix): the AnalysisResult/CloudJob-correlated builders (done_clause /
-                # failed_clause / awaiting_candidate_clause) are NOT composed here -- because those same tables
-                # are OUTER-JOINED into this query for the display columns, SQLAlchemy would auto-correlate them
-                # out of the builders' inner ``exists(...)`` ("no FROM clauses" InvalidRequestError). Instead the
-                # membership is spelled against the already-joined columns using the builders' EXACT semantics,
-                # so the derived set stays byte-equivalent while ``inflight_clause`` (over the un-joined
-                # scheduling_ledger) is still composed verbatim.
-                .where(
-                    or_(
-                        AnalysisResult.id.is_not(None),
-                        inflight_clause(Stage.ANALYZE),
-                        CloudJob.status.in_(
-                            [
-                                CloudJobStatus.AWAITING.value,
-                                CloudJobStatus.UPLOADING.value,
-                                CloudJobStatus.SUBMITTED.value,
-                                CloudJobStatus.UPLOADED.value,
-                                CloudJobStatus.RUNNING.value,
-                            ]
-                        ),
-                    )
-                )
-                .order_by(FileRecord.created_at.desc())
-            )
-            rows = (await session.execute(stmt)).all()
-    except Exception:
-        logger.warning("analyze_stage_files_degraded", exc_info=True)
-        return []
+    return (
+        select(
+            FileRecord.id,
+            FileRecord.original_filename,
+            FileRecord.original_path,
+            CloudJob.id,
+            CloudJob.status,
+            CloudJob.backend_id,
+            AnalysisResult.fine_windows_analyzed,
+            AnalysisResult.fine_windows_total,
+            AnalysisResult.analysis_completed_at,
+            AnalysisResult.failed_at,
+            FileMetadata.duration,
+        )
+        .select_from(FileRecord)
+        .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
+        .outerjoin(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
+        .outerjoin(FileMetadata, FileMetadata.file_id == FileRecord.id)
+    )
 
-    # COMPUTE-03: the registry projection is looked up ONCE per call (not per row) -- a pure,
-    # session-free dict of {backend_id: kind} for every non-local registry entry.
-    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
 
+def _analyze_active_where() -> Any:
+    """The DEFAULT working-set predicate: analyze-stage membership MINUS finished completions.
+
+    In-flight (a partial analysis row -- ``analysis`` row present with NO ``analysis_completed_at``,
+    which also covers a ``failed_at`` row -- OR the ledger ``inflight_clause``) plus awaiting-cloud
+    (an active ``cloud_job``). A completed file (``analysis_completed_at`` set) is EXCLUDED here and
+    surfaced via the bounded completions window instead -- so this set never grows with the corpus.
+    """
+    return or_(
+        and_(AnalysisResult.id.is_not(None), AnalysisResult.analysis_completed_at.is_(None)),
+        inflight_clause(Stage.ANALYZE),
+        CloudJob.status.in_(_ANALYZE_ACTIVE_CLOUD_STATUSES),
+    )
+
+
+def _analyze_status_where(status: str | None) -> Any:
+    """Map a validated status filter to its WHERE predicate (the paged full-listing lens).
+
+    ``None`` / unknown -> the full analyze-stage membership ("all", unfiltered). Each branch is a pure
+    ORM bound-param comparison over the already-joined columns (never f-string SQL, never a request
+    value in a path -- T-87-14 / T-57-01); the router validates ``status`` against :data:`ANALYZE_FILTERS`.
+    """
+    if status == ANALYZE_FILTER_IN_FLIGHT:
+        return or_(
+            and_(
+                AnalysisResult.id.is_not(None),
+                AnalysisResult.analysis_completed_at.is_(None),
+                AnalysisResult.failed_at.is_(None),
+            ),
+            inflight_clause(Stage.ANALYZE),
+        )
+    if status == ANALYZE_FILTER_AWAITING:
+        return CloudJob.status.in_(_ANALYZE_ACTIVE_CLOUD_STATUSES)
+    if status == ANALYZE_FILTER_FAILED:
+        return AnalysisResult.failed_at.is_not(None)
+    if status == ANALYZE_FILTER_COMPLETED:
+        return AnalysisResult.analysis_completed_at.is_not(None)
+    # ANALYZE_FILTER_ALL / None / unknown -> the full analyze-stage membership (the Phase-90 predicate).
+    return or_(
+        AnalysisResult.id.is_not(None),
+        inflight_clause(Stage.ANALYZE),
+        CloudJob.status.in_(_ANALYZE_ACTIVE_CLOUD_STATUSES),
+    )
+
+
+def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[dict[str, Any]]:
+    """Project raw :func:`_analyze_files_select` rows into the per-file dict the template renders.
+
+    The IDENTICAL shape the Phase-58 ``get_analyze_stage_files`` produced (so ``analyze_workspace.html``
+    row-building is unchanged): the RECORD-01 ``file_id`` opener key, the DERIVED boolean flags
+    (``awaiting_cloud`` / ``analysis_failed`` / ``completed`` -- never a raw ``files.state``), the
+    COMPUTE-03 lane derivation off the stamped ``CloudJob.backend_id`` (no ``cloud_job`` -> local; a
+    stamped ``backend_id`` -> the id + its registry ``lane_kind`` via ``non_local_backend_kinds``,
+    falling back to ``"cloud"`` for a deregistered cluster; a NULL ``backend_id`` -> the truthful
+    unattributed ``"cloud"`` fallback, NEVER the stale ``"a1"`` heuristic), and the 57.1 windowed
+    coverage. ``kinds`` is the once-per-call registry projection (never a per-row lookup).
+    """
     files: list[dict[str, Any]] = []
     for file_id, filename, path, cloud_job_id, cloud_status, backend_id, fine_done, fine_total, completed_at, failed_at, duration in rows:
         if cloud_job_id is None:
@@ -1292,12 +1361,98 @@ async def get_analyze_stage_files(session: AsyncSession) -> list[dict[str, Any]]
     return files
 
 
+async def get_analyze_working_set(session: AsyncSession, *, completions_limit: int = _ANALYZE_COMPLETIONS_WINDOW) -> list[dict[str, Any]]:
+    """Return the BOUNDED default Analyze view: the active-first working set + a recent-completions window.
+
+    Two bounded reads, degrade-safe under ONE SAVEPOINT returning ``[]`` on any error (mirrors the
+    Phase-58 read this replaces -- it rides the hot dashboard context and must NEVER 500 the page):
+
+      1. The working set (:func:`_analyze_active_where`) -- in-flight / awaiting-cloud / failed, ordered
+         newest-first. Naturally bounded (lane concurrency + the failure backlog); NEVER the whole corpus.
+      2. A LIMIT-ed window of the most-recently-completed files, newest completion first.
+
+    The two sets are disjoint by construction (the working set EXCLUDES completed), but the window is
+    de-duplicated against the working-set ids defensively before concatenation. Active work renders
+    first (``active-first``), then the completions window.
+    """
+    completions_limit = min(max(completions_limit, 0), 500)
+    try:
+        async with session.begin_nested():
+            # FileRecord.id is a deterministic tiebreaker: Postgres ``created_at`` defaults are
+            # transaction-time constant, so newest-first alone is not a stable order.
+            active_rows = (
+                await session.execute(
+                    _analyze_files_select().where(_analyze_active_where()).order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
+                )
+            ).all()
+            window_rows = (
+                await session.execute(
+                    _analyze_files_select()
+                    .where(AnalysisResult.analysis_completed_at.is_not(None))
+                    .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
+                    .limit(completions_limit)
+                )
+            ).all()
+    except Exception:
+        logger.warning("analyze_working_set_degraded", exc_info=True)
+        return []
+
+    # COMPUTE-03: the registry projection is looked up ONCE per call (not per row).
+    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+    active = _project_analyze_rows(active_rows, kinds)
+    seen = {row["file_id"] for row in active}
+    window = [row for row in _project_analyze_rows(window_rows, kinds) if row["file_id"] not in seen]
+    return active + window
+
+
+async def get_analyze_files_page(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = _ANALYZE_COMPLETIONS_WINDOW,
+    status: str | None = None,
+) -> AnalyzeFilesPage:
+    """Return ONE bounded page of the full analyze-stage listing under a validated status filter.
+
+    Clamps ``page`` (>=1) and ``page_size`` (10..100), validates ``status`` against
+    :data:`ANALYZE_FILTERS` (unknown -> the unfiltered "all" membership), and runs the
+    :func:`_analyze_status_where` predicate ordered newest-first, LIMITed to ``page_size + 1`` -- the
+    sentinel that yields ``has_next`` with NO whole-corpus COUNT (T-87-11). SAVEPOINT degrade-safe:
+    ANY error rolls back the nested scope alone, logs a warning, and returns a safe EMPTY page -- it
+    NEVER 500s the render. Rows are the SAME projected shape as :func:`get_analyze_working_set`, so the
+    template renders both identically.
+    """
+    page = max(page, 1)
+    page_size = min(max(page_size, 10), 100)
+    status = status if status in ANALYZE_FILTERS else None
+    offset = (page - 1) * page_size
+    try:
+        async with session.begin_nested():
+            # FileRecord.id is a deterministic tiebreaker (Postgres ``created_at`` defaults are
+            # transaction-time constant) so OFFSET paging never skips/duplicates a row across pages.
+            stmt = (
+                _analyze_files_select()
+                .where(_analyze_status_where(status))
+                .order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
+                .offset(offset)
+                .limit(page_size + 1)
+            )
+            rows = (await session.execute(stmt)).all()
+    except Exception:
+        logger.warning("analyze_files_page_degraded", page=page, page_size=page_size, exc_info=True)
+        return AnalyzeFilesPage(rows=[], page=page, page_size=page_size, has_next=False, status=status)
+    has_next = len(rows) > page_size
+    kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
+    projected = _project_analyze_rows(rows[:page_size], kinds)
+    return AnalyzeFilesPage(rows=projected, page=page, page_size=page_size, has_next=has_next, status=status)
+
+
 # --- Phase 59 (59-01, IDENT-01/IDENT-02) Identify-workspace read-only row assembly ----------
 #
 # The two genuinely-new pieces of Phase 59 (RESEARCH "Don't Hand-Roll" key insight): per-row
 # presentation data for the Track-ID combined table and the Tracklist per-set table. Both are
 # PURE READS over existing, already-populated tables (no enqueue, no commit, no schema change) and
-# both degrade to ``[]`` inside a SAVEPOINT on any error, mirroring :func:`get_analyze_stage_files`
+# both degrade to ``[]`` inside a SAVEPOINT on any error, mirroring :func:`get_analyze_working_set`
 # -- they ride the hot render/poll path and must NEVER 500 the page.
 
 # The PERSISTED lowercase engine vocab (RESEARCH Pitfall 1, traced adapter -> API -> DB write):
@@ -1344,7 +1499,7 @@ async def get_trackid_stage_files(session: AsyncSession) -> list[dict[str, Any]]
     system-wide best candidate -- the literal D-04 reading; Plan 59-02 renders it and may refine if
     UI-SPEC requires per-file candidates.
 
-    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_stage_files`).
+    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_working_set`).
     """
     try:
         async with session.begin_nested():
@@ -1439,7 +1594,7 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
     NOT sum coverage across versions, which would inflate the D-07 N/M. A tracklist whose
     ``latest_version_id`` is NULL reports 0/0.
 
-    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_stage_files`).
+    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_working_set`).
     """
     try:
         async with session.begin_nested():

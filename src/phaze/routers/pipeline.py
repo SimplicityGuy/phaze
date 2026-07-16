@@ -44,11 +44,13 @@ from phaze.services.backends import (
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
+    ANALYZE_FILTERS,
     count_active_agents,
     count_backfill_candidates,
     get_analysis_failed_count,
     get_analysis_failed_files,
-    get_analyze_stage_files,
+    get_analyze_files_page,
+    get_analyze_working_set,
     get_awaiting_cloud_count,
     get_backfill_candidates,
     get_cached_stage_orphan_counts,
@@ -638,12 +640,14 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
 
-    # Phase 58 (58-04, WORK-04 / D-03): the all-in-stage Analyze file list (one table of queued ·
-    # running · awaiting-cloud · done) with each file's DERIVED lane + windowed coverage. ONE
-    # read-only multi-state SELECT (get_analyze_stage_files owns the never-500 SAVEPOINT degrade
-    # -> [] on any DB error, so NO try/except here -- same service-owns-degrade idiom as the cloud
-    # counts above). Pure read; no enqueue, no schema change.
-    analyze_files = await get_analyze_stage_files(session)
+    # Phase 58 (58-04, WORK-04 / D-03) + Phase 95 (phaze-zqvh.2, CONSOLE-04): the DEFAULT Analyze file
+    # list is now BOUNDED at the source -- the active-first working set (in-flight · awaiting-cloud ·
+    # failed) plus a LIMIT-ed recent-completions window (get_analyze_working_set), NOT the whole
+    # analyze-stage membership (which at 200K scale was 92,335 rows / ~105MB HTML -- phaze-zqvh.1
+    # baseline). The full corpus stays reachable via the status-filter bar -> GET /pipeline/analyze-files
+    # (paged). The service owns the never-500 SAVEPOINT degrade (-> [] on any DB error), so NO try/except
+    # here -- same service-owns-degrade idiom as the cloud counts above. Pure read; no enqueue, no schema change.
+    analyze_files = await get_analyze_working_set(session)
 
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
@@ -906,6 +910,54 @@ async def pipeline_files(
             "files_page": files_page,
             "active_stage": stage_enum.value if stage_enum is not None else None,
             "active_bucket": bucket_val,
+        },
+    )
+
+
+@router.get("/pipeline/analyze-files", response_class=HTMLResponse)
+async def analyze_files_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=10, le=100),
+    status: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render the Analyze per-file table fragment: the bounded default working set OR a filtered page (phaze-zqvh.2).
+
+    The status-filter bar in ``_analyze_files.html`` hx-gets this endpoint into ``#analyze-files-view`` --
+    the SAME URL-carried-lens idiom as ``/pipeline/files`` / ``_status_filter_bar.html``. ``status`` is
+    validated against the ``ANALYZE_FILTERS`` allowlist (T-57-01 / T-87-14: an unknown value NEVER reaches
+    a template path or SQL string -- it degrades to the default view, never a 422 into the render):
+
+      * no / unknown ``status`` -> the DEFAULT bounded working-set view (active-first working set + the
+        LIMIT-ed recent-completions window), no pager.
+      * a valid ``status`` -> the full analyze-stage listing under that lens, served as a bounded page
+        (``get_analyze_files_page``: OFFSET + ``page_size + 1`` sentinel, never a whole-corpus COUNT).
+
+    Both service reads are SAVEPOINT degrade-safe (never 500 the fragment). This endpoint is a SIBLING of
+    the 5s ``/pipeline/stats`` poll -- it is NEVER in the poll's OOB fan-out, so the operator's page position
+    and filter selection survive every tick (the file grid stays outside the poll, phaze-zqvh.2 acceptance).
+    """
+    status_val = status if status in ANALYZE_FILTERS else None
+    if status_val is None:
+        # DEFAULT bounded working-set view (no explicit filter): the active-first set + completions window.
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_analyze_files.html",
+            context={
+                "analyze_rows": await get_analyze_working_set(session),
+                "analyze_page": None,
+                "active_status": None,
+            },
+        )
+    analyze_page = await get_analyze_files_page(session, page=page, page_size=page_size, status=status_val)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_analyze_files.html",
+        context={
+            "analyze_rows": analyze_page.rows,
+            "analyze_page": analyze_page,
+            "active_status": status_val,
         },
     )
 

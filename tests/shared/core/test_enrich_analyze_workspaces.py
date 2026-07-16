@@ -565,3 +565,99 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     # WORK-05 / R-2: no second poll loop in the fragment.
     assert 'hx-trigger="every' not in body
     assert "setInterval" not in body
+
+
+# ---------------------------------------------------------------------------
+# Phase 95 (phaze-zqvh.2, CONSOLE-04): the BOUNDED analyze file grid + its status-filter/pager fragment.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_default_view(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- GET /pipeline/analyze-files (no filter) renders the bounded working-set view + filter bar.
+
+    The default (no ``status``) fragment shows the active-first working set PLUS the recent-completions
+    window through the SAME row projection the workspace uses, carries the URL-carried status-filter bar
+    (hx-get /pipeline/analyze-files into #analyze-files-view), and -- being the default view -- shows NO
+    pager. It never starts a second poll loop (WORK-05 / R-2).
+    """
+    inflight = await _seed_file(session, original_filename="inflight.mp3")
+    await _seed_analysis(session, inflight.id, fine_done=3, fine_total=10)
+    done = await _seed_file(session, original_filename="done.mp3")
+    await _seed_analysis(session, done.id, fine_done=10, fine_total=10, completed=True)
+
+    resp = await client.get("/pipeline/analyze-files")
+    assert resp.status_code == 200
+    body = resp.text
+    # The swap-target container + the status-filter lens (mirrors the _status_filter_bar idiom).
+    assert 'id="analyze-files-view"' in body
+    assert 'id="analyze-filter-bar"' in body
+    assert 'hx-get="/pipeline/analyze-files"' in body
+    assert 'hx-target="#analyze-files-view"' in body
+    # Working set (in-flight) + completions window (completed) both render, per-row record slide-in intact.
+    assert "inflight.mp3" in body
+    assert "done.mp3" in body
+    assert 'hx-get="/record/' in body
+    # Default view carries NO pager (only the filtered/paged view does).
+    assert "Analyze files pagination" not in body
+    # WORK-05 / R-2: no second poll loop.
+    assert 'hx-trigger="every' not in body
+    assert "setInterval" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_filtered_and_paged(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- a status lens serves the full listing paged; the pager carries the lens, no whole-corpus COUNT.
+
+    ``page_size`` is clamped to a 10-row floor (parity with ``/pipeline/files``), so 11 completed files under
+    the ``completed`` lens at ``page_size=10`` yield page 1 bounded to 10 record rows with a Next control (the
+    +1 sentinel ``has_next``); the pager links carry ``status=completed`` and the filter select reflects the lens.
+    """
+    for i in range(11):
+        f = await _seed_file(session, original_filename=f"c{i}.mp3")
+        await _seed_analysis(session, f.id, fine_done=1, fine_total=1, completed=True)
+
+    resp = await client.get("/pipeline/analyze-files?status=completed&page_size=10")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="analyze-files-view"' in body
+    # Bounded page: exactly page_size record rows.
+    assert body.count('hx-get="/record/') == 10
+    # Pager present (11 > 10 => has_next) and carrying the status lens on its links.
+    assert "Analyze files pagination" in body
+    assert "page=2&amp;page_size=10&amp;status=completed" in body  # &-autoescaped in the href (XSS-safe)
+    # The select reflects the active lens (Clear filter affordance appears too).
+    assert 'value="completed" selected' in body
+    assert "Clear filter" in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_file_grid_stays_outside_poll_oob(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 -- the 5s /pipeline/stats poll NEVER re-emits the analyze file grid.
+
+    The file grid (its filter bar + pager) lives in #analyze-files-view, a SIBLING of the poll's OOB
+    targets. If the poll re-emitted it, a tick would reset the operator's page position / filter selection.
+    Assert the poll fragment carries none of the file-grid ids/endpoint -- so filter + page state survive
+    every tick (the file grid stays outside the poll's OOB fan-out).
+    """
+    stats = await client.get("/pipeline/stats")
+    assert stats.status_code == 200
+    body = stats.text
+    assert 'id="analyze-files-view"' not in body
+    assert 'id="analyze-filter-bar"' not in body
+    assert "/pipeline/analyze-files" not in body
+
+
+@pytest.mark.asyncio
+async def test_analyze_files_fragment_unknown_status_degrades(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-zqvh.2 / T-57-01 -- an unknown ``status`` degrades to the default view, never a 422 or a path splice."""
+    inflight = await _seed_file(session, original_filename="inflight.mp3")
+    await _seed_analysis(session, inflight.id, fine_done=2, fine_total=10)
+
+    resp = await client.get("/pipeline/analyze-files?status=../../etc/passwd")
+    assert resp.status_code == 200
+    body = resp.text
+    assert 'id="analyze-files-view"' in body
+    assert "inflight.mp3" in body
+    # Degraded to the default view: no pager, the default select option is active.
+    assert "Analyze files pagination" not in body
