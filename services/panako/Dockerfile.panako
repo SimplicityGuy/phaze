@@ -7,7 +7,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 
 RUN git clone --depth 1 https://github.com/JorenSix/Panako.git /build/panako
 WORKDIR /build/panako
-RUN ./gradlew shadowJar
+
+# Upstream build.gradle lists the now-decommissioned OSSRH snapshot repo
+# (oss.sonatype.org) ahead of the maintainer's own "TarsosDSP repository"
+# (mvn.0110.be). oss.sonatype.org answers every request with a server error
+# (404/504), and Gradle treats a server error as fatal instead of falling
+# through to the next declared repository, so dependency resolution for
+# lmdbjava/TarsosDSP/jgaborator aborts even though those artifacts are all
+# published on mvn.0110.be. Drop the dead repo entry so resolution falls
+# through to mvn.0110.be, which hosts every dependency Panako needs.
+# The clone is an unpinned upstream `master`, so fail loudly (rather than
+# silently no-op) if this exact repo line ever disappears/changes upstream.
+RUN grep -qF "maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }" build.gradle \
+    || { echo "ERROR: expected oss.sonatype.org repo line not found in upstream build.gradle -- Panako's repositories block may have changed; update the sed pattern in Dockerfile.panako" >&2; exit 1; } \
+    && sed -i "\#maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }#d" build.gradle \
+    && ./gradlew shadowJar
 
 # Stage 2: Runtime
 FROM python:3.14-slim
