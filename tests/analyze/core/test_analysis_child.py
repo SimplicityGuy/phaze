@@ -141,6 +141,38 @@ def test_real_subprocess_fd_reroute_keeps_protocol_clean() -> None:
     assert "stray print from the analysis child" in result.stderr
 
 
+def test_main_reroutes_fds_and_speaks_protocol_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main()`` end-to-end IN-PROCESS: the protocol channel is claimed from the original
+    fd 1 and fd 1 is re-pointed at fd 2, with the protocol arriving on the original stdout.
+
+    The real-subprocess test above proves the same contract across the interpreter
+    boundary; this in-process pass exercises ``_open_protocol_channel``/``main`` under
+    coverage (subprocess execution is invisible to the coverage tracer). The test's own
+    fd juggling is restored in ``finally`` so pytest's capture is never disturbed.
+    """
+    monkeypatch.setenv(_TARGET_ENV, f"{_STUBS}:fake_analyze")
+    saved_stdout = os.dup(1)
+    read_end, write_end = os.pipe()
+    try:
+        os.dup2(write_end, 1)  # main() will dup THIS as its protocol channel
+        os.close(write_end)
+        rc = analysis_child.main(["/fake/audio.mp3", "--models-dir", "/fake/models"])
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+
+    payload = b""
+    while chunk := os.read(read_end, 1 << 16):
+        payload += chunk
+    os.close(read_end)
+
+    assert rc == 0
+    lines = [json.loads(line) for line in payload.decode().splitlines() if line]
+    assert [(ln["analyzed"], ln["total"]) for ln in lines if ln["type"] == "progress"] == [(0, 3), (1, 3), (2, 3), (3, 3)]
+    assert lines[-1]["type"] == "result"
+    assert lines[-1]["result"]["fine_windows_total"] == 3
+
+
 def test_open_protocol_channel_is_line_buffered() -> None:
     """The protocol handle must flush per line so the parent sees progress as it happens."""
     # Exercised implicitly by the subprocess test above; here assert the constant contract

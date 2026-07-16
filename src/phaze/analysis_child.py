@@ -91,14 +91,23 @@ def _load_target() -> Callable[..., Any]:
     """Deferred, env-overridable import of the analysis callable.
 
     Deferral keeps module load essentia-free (the platform-gated wheel is absent on
-    linux-arm64 and the import-boundary test loads this module without it).
+    linux-arm64 and the import-boundary test loads this module without it). The
+    production path (env unset or default) is a LITERAL import; only the explicit
+    test seam goes through importlib.
     """
-    spec = os.environ.get(_TARGET_ENV) or _DEFAULT_TARGET
+    spec = os.environ.get(_TARGET_ENV)
+    if spec is None or spec == _DEFAULT_TARGET:
+        from phaze.services.analysis import analyze_file  # noqa: PLC0415  # deferred essentia-bound import
+
+        return analyze_file
     module_name, _, attr = spec.partition(":")
     if not module_name or not attr:
         msg = f"malformed {_TARGET_ENV}={spec!r}; expected 'module:attr'"
         raise RuntimeError(msg)
-    module = importlib.import_module(module_name)
+    # The dynamic import is safe by trust model: the value comes from THIS process's own
+    # env, and whoever sets a child's environment already controls code execution
+    # (argv/PATH/PYTHONPATH), so no new capability is granted.
+    module = importlib.import_module(module_name)  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import -- test-only env seam
     target: Callable[..., Any] = getattr(module, attr)
     return target
 
