@@ -245,7 +245,10 @@ async def run() -> None:
         # (1) presign — fail-fast, no extra retry loop (D-02).
         t_presign = time.monotonic()
         try:
-            url, expected_sha256, audio_ext = await client.request_download_url(file_id)
+            # `_presign_metadata` (Phase 100, phaze-sfbx.1 display-identity block) is unused here --
+            # phaze-sfbx.3 threads it into the console banner. Minimal unpacking-only touch to keep
+            # this call site compiling against the widened AgentClient.request_download_url return.
+            url, expected_sha256, audio_ext, _presign_metadata = await client.request_download_url(file_id)
         except Exception:
             log.exception("job_runner_presign_failed", file_id=fid, step="presign")
             sys.exit(EXIT_DOWNLOAD)
