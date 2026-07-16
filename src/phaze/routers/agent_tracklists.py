@@ -51,9 +51,10 @@ _CONCURRENT_POLL_MAX_ATTEMPTS = 10  # 10 * 50ms = 500ms total wait
 async def _get_redis(request: Request) -> redis_async.Redis:
     """Pull the Redis client from ``app.state`` (wired by Plan 26-12 main.py lifespan).
 
-    Plan 26-12 will install ``app.state.redis = redis_async.Redis.from_url(..., decode_responses=True)``
-    in the FastAPI lifespan; this dep is a thin pass-through so the handler stays
-    testable (smoke-app fixture sets ``app.state.redis`` directly).
+    ``main.py``'s FastAPI lifespan installs ``app.state.redis =
+    redis_async.Redis.from_url(..., decode_responses=True)``; this dep is a thin
+    pass-through so the handler stays testable (smoke-app fixture sets
+    ``app.state.redis`` directly).
     """
     redis_client: redis_async.Redis = request.app.state.redis
     return redis_client

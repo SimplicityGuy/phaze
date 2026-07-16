@@ -70,8 +70,9 @@ async def apply_project_job_defaults(job: Job) -> None:
 
     The hook is registered via ``Queue.register_before_enqueue(...)`` from each
     role's settings module (``controller.py`` + ``agent_worker.py``). SAQ awaits
-    the callback before persisting the job to Redis, so attribute mutations
-    here are seen by the worker that later dequeues the job.
+    the callback before persisting the job to the ``PostgresQueue`` broker (Phase
+    36), so attribute mutations here are seen by the worker that later dequeues
+    the job.
     """
     # Resolve via the `phaze.config` module attribute (not a local import) so
     # tests can monkeypatch `phaze.config.get_settings` and see the override.

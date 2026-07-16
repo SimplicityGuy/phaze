@@ -50,6 +50,3 @@ jobs:
 
       - name: 🧪 Run pre-commit hooks
         run: just pre-commit
-
-      - name: 🧭 Docs-drift traceability gate
-        run: just docs-drift

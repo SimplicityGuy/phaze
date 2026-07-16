@@ -4,8 +4,11 @@ Two control-plane endpoints mirror the existing `put_analysis` /
 `report_analysis_failed` split (RESEARCH §Critical Finding 1 + Open-Q2):
 
 - ``POST /api/internal/agent/push/{file_id}/pushed``   — the fileserver agent
-  reports a successful rsync to the compute scratch dir; control flips the file
-  to ``FileState.PUSHED`` and enqueues ``process_file`` (50-05).
+  reports a successful rsync to the compute scratch dir; control terminalizes
+  the file's ``cloud_job`` row (``submitted`` -> ``succeeded``) and enqueues
+  ``process_file`` (50-05). Phase 90 (D-09) removed the companion
+  ``FileState.PUSHED`` dual-write -- the ``cloud_job`` sidecar is now the sole
+  derived authority.
 - ``POST /api/internal/agent/push/{file_id}/mismatch`` — the compute agent
   reports the rsync'd copy failed sha256 verification; control re-drives the
   push, or caps it to a terminal failure once ``push_max_attempts`` is reached.

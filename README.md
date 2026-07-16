@@ -211,7 +211,7 @@ Every control-plane enqueue (API endpoint or admin-UI action) routes to a **name
 
 **Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **four lane workers from one image** — `analyze` (`process_file`), `fingerprint` (`fingerprint_file`), `meta` (`extract_file_metadata` / `scan_directory` / `scan_live_set` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). CPU-bound lanes (`analyze` 4 + `fingerprint` 2) sum within nox's 8 cores with essentia/TF pinned single-threaded; `io` is off the CPU budget. Exactly **one** liveness heartbeat runs per agent (the `analyze` lane) — so the heartbeat's `queue_depth` is analyze-lane-only, while the dashboard's `get_queue_activity` (which sums all four lanes + the legacy base) is the authoritative all-lane figure. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
 
-Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
+Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/shared/core/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
 
 **Schedule-safe by construction:** every routable task is keyed deterministically as `<task>:<natural_id>` at a single central SAQ `before_enqueue` hook (`apply_deterministic_key`), so a re-enqueue dedups against an in-flight job instead of doubling the queue — no call site can drift back to a random-uuid key. Task DB writes upsert (`ON CONFLICT DO UPDATE`); proposals in particular are idempotent via a partial unique index (`uq_proposals_file_id_pending`) so re-runs never duplicate rows.
 
@@ -277,7 +277,7 @@ curl http://localhost:8000/health   # Verify: {"status": "ok"}
 | ---------------- | ----------------------- | --------------------------- |
 | 🌐 **Web UI**    | http://localhost:8000   | None                        |
 | 🐘 **PostgreSQL**| `localhost:5432`        | `phaze` / `phaze`           |
-| 🔴 **Redis**     | `localhost:6379`        | None                        |
+| 🔴 **Redis**     | `localhost:6379`        | `REDIS_PASSWORD` (default `changeme`) |
 | 🎵 **Audfprint** | `audfprint:8001` (agent stack) | None                   |
 | 🎧 **Panako**    | `panako:8002` (agent stack)    | None                   |
 
@@ -316,7 +316,7 @@ See [docs/README.md](docs/README.md) for the full documentation index.
 just install          # Install dependencies
 just up / just down   # Start / stop services
 just test             # Run tests
-just test-cov         # Tests with coverage (90% min)
+just test-cov         # Tests with coverage (95% min)
 just check            # Lint + typecheck + test
 just pre-commit       # Run all pre-commit hooks
 ```
@@ -326,7 +326,7 @@ See `just --list` for the full command reference.
 #### 🧪 Running integration tests locally
 
 The full suite needs a real PostgreSQL and Redis. `just integration-test` spins up self-contained,
-disposable containers, runs the entire suite (including `tests/test_migrations/`), and tears them
+disposable containers, runs the entire suite (including `tests/integration/test_migrations/`), and tears them
 down automatically:
 
 ```bash
@@ -365,7 +365,8 @@ GitHub Actions runs on every push and PR:
 |--------------|----------------------------------------------------------|
 | **Quality**  | Pre-commit hooks (ruff, mypy, yamllint, etc.)            |
 | **Test**     | pytest with PostgreSQL, coverage upload to Codecov       |
-| **Security** | pip-audit, bandit, Semgrep, TruffleHog, Trivy            |
+| **Security** | pip-audit, bandit, osv-scanner, Semgrep, TruffleHog, Trivy |
+| **Docker**   | hadolint Dockerfile lint, image build smoke test, docker-compose validation |
 
 ## 🛠️ Technology Stack
 

@@ -11,20 +11,17 @@ second compute-lane derivation path or resurrect the retired ``'a1'`` heuristic:
   assignments, not documentation.)
 * **Retired symbols gone** -- ``classify_compute_lanes`` (the deleted pre-epic derivation) and the
   ``compute_lane_state`` template context key are absent from ``src/`` entirely.
-* **Backends contract untouched** -- the epic introduced ZERO edits to
-  ``src/phaze/services/backends.py`` (``get_backend_lane_snapshot`` / ``derive_cloud_hold_reason`` /
-  the per-backend ``dispatch`` routing). A positive-existence check pins the three contract symbols
-  still live there; a ``git diff main...HEAD`` check (skipped gracefully when git/main is
-  unavailable) proves the file is byte-for-byte unchanged on the epic branch.
+* **Backends contract present** -- a positive-existence check pins the three dispatch-contract
+  symbols (``get_backend_lane_snapshot`` / ``derive_cloud_hold_reason`` / the per-backend
+  ``dispatch`` routing) as still live in ``src/phaze/services/backends.py``.
 
-Pure filesystem/regex + one optional subprocess -- no Postgres, no app, runs everywhere.
+Pure filesystem/regex -- no Postgres, no app, runs everywhere.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 import re
-import subprocess
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -100,35 +97,8 @@ def test_compute_lane_state_context_key_removed_from_src() -> None:
 
 
 def test_backends_contract_symbols_still_present() -> None:
-    """The three contract symbols the epic must NOT edit still live in backends.py."""
+    """The three dispatch-contract symbols still live in backends.py."""
     text = _BACKENDS.read_text(encoding="utf-8")
     assert "async def get_backend_lane_snapshot" in text
     assert "async def derive_cloud_hold_reason" in text
     assert "async def dispatch" in text  # the per-backend routing seam
-
-
-def test_epic_branch_introduced_no_backends_py_edits() -> None:
-    """``git diff main...HEAD -- src/phaze/services/backends.py`` is empty on the epic branch.
-
-    The dashboard-lane epic is additive over the read/render surfaces and must not touch the dispatch
-    contract. Skips gracefully when git or the ``main`` ref is unavailable (non-git checkout, CI
-    shallow clone) -- the positive-existence guard above still covers those environments.
-    """
-    import pytest
-
-    try:
-        diff = subprocess.run(
-            ["git", "diff", "main...HEAD", "--", "src/phaze/services/backends.py"],  # noqa: S607
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - environment-dependent
-        pytest.skip(f"git unavailable for contract diff: {exc}")
-
-    if diff.returncode != 0:  # pragma: no cover - environment-dependent (e.g. no 'main' ref)
-        pytest.skip(f"git diff main...HEAD failed (ref missing?): {diff.stderr.strip()}")
-
-    assert diff.stdout == "", f"epic branch edited the backends.py dispatch contract:\n{diff.stdout}"

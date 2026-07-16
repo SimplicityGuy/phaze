@@ -2,7 +2,7 @@
 
 Standalone asyncio process -- NOT a SAQ worker. Boots with ``asyncio.run(main())``,
 calls ``/whoami`` with bounded retry to resolve the calling agent's identity,
-schedules one watchdog Observer per ``identity.scan_root``, sweeps the
+schedules one watchdog Observer per entry in ``identity.scan_roots``, sweeps the
 :class:`Debouncer` every ``watcher_sweep_interval_seconds`` and POSTs each
 settled path via :class:`Poster`. SIGINT / SIGTERM trigger graceful shutdown:
 sweep loop exits, observer.stop() + observer.join() drain the watchdog thread,
@@ -11,7 +11,7 @@ and the HTTP client is closed.
 Import-graph invariant (Pitfall 5 / D-22):
     This module MUST NOT import ``phaze.tasks.agent_worker``,
     ``phaze.database``, ``phaze.tasks.session``, or ``sqlalchemy.ext.asyncio``.
-    Verified by ``tests/test_task_split.py::test_agent_watcher_does_not_import_phaze_database``
+    Verified by ``tests/shared/core/test_task_split.py::test_agent_watcher_does_not_import_phaze_database``
     (subprocess isolation; conditionally skipped until this module exists,
     then a hard gate).
 

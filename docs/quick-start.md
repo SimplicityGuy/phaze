@@ -20,10 +20,11 @@ command. Configuration details live in [Configuration](configuration.md).
 The `requires-python = ">=3.14,<3.15"` constraint is enforced by `pyproject.toml`.
 `uv sync` provisions a matching interpreter if one is not already on your machine.
 
-> **macOS note:** essentia-tensorflow only ships Linux x86_64 wheels. On Apple Silicon
-> or Intel macOS the package is skipped by a platform marker, so local audio analysis runs
-> inside the Linux Docker containers rather than on the host. Develop on macOS, run analysis
-> in Docker.
+> **macOS note:** essentia-tensorflow `>=2.1b6.dev1438` ships native wheels for macOS
+> (both Apple Silicon `arm64` and Intel `x86_64`), in addition to Linux `x86_64`. The
+> `pyproject.toml` platform marker only skips the dependency on **Linux non-x86_64**
+> (e.g. `linux/arm64`, which has no wheel yet) — on macOS it installs and runs natively via
+> `uv sync`, so local audio analysis works on the host, not just inside Docker.
 
 ## 🛠️ Installation
 
@@ -134,19 +135,20 @@ If you get a connection error, the containers may still be starting — check
 
 ## 🔄 Your First Workflow
 
-A file moves through seven states, and the numbered steps below map 1:1 onto the transitions:
+A file advances through seven pipeline stages. There is no stored `files.state` column —
+each stage's status (`not_started` / `in_flight` / `done` / `skipped` / `failed`) is derived
+on read from that stage's own output table (see [Database → Derived per-stage
+status](database.md#derived-per-stage-status)). The numbered steps below map 1:1 onto the
+stages:
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> DISCOVERED: scan
-    DISCOVERED --> METADATA_EXTRACTED: extract-metadata
-    METADATA_EXTRACTED --> FINGERPRINTED: fingerprint
-    FINGERPRINTED --> ANALYZED: analyze
-    ANALYZED --> PROPOSAL_GENERATED: proposals
-    PROPOSAL_GENERATED --> APPROVED: review + approve
-    APPROVED --> EXECUTED: execute batch
-    EXECUTED --> [*]
+flowchart LR
+    D[discovered] --> M[metadata]
+    M --> F[fingerprint]
+    F --> A[analyze]
+    A --> P[propose]
+    P --> R[review]
+    R --> E[apply]
 ```
 
 You drive each stage from either a `just` recipe (curl wrapper) or
@@ -159,16 +161,26 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
    a live count; clicking a stage swaps the center workspace in place. Press **⌘K** at any
    time for the command palette (search files/tracklists/artists or jump to a stage).
 
-2. **Start a scan** (file discovery against `SCAN_PATH`):
+2. **Start a scan** (file discovery, dispatched to a registered agent):
+
+   The **Discover** stage of the DAG rail (`/s/discover`) is the primary way to trigger a
+   scan: pick an agent + scan root (and optional subpath) and submit the form. Scans are
+   agent-scoped — file discovery is dispatched to a registered agent's `scan_directory`
+   job, not run in-process by the api server.
 
    ```bash
-   just scan                # POST /api/v1/scan -> {"batch_id": "...", "message": "Scan started"}
+   # Equivalent HTMX form POST against the api host (agent_id must be a registered,
+   # non-revoked agent id; scan_root must be one of that agent's configured scan_roots):
+   API_HOST=http://localhost:8000
+   curl -s -X POST "$API_HOST/pipeline/scans" \
+     -d "agent_id=dev-agent" -d "scan_root=/data/music"
    ```
 
-   The scan runs in the background. Check its progress with the returned batch ID:
+   The scan runs in the background as a `ScanBatch`. Check its progress with the returned
+   batch ID (see the Recent Scans panel on the Discover workspace, or poll directly):
 
    ```bash
-   just scan-status <BATCH_ID>     # GET /api/v1/scan/<BATCH_ID>
+   curl -s "$API_HOST/pipeline/scans/<BATCH_ID>"     # HTMX progress-card fragment
    ```
 
 3. **Run the pipeline stages.** From the DAG rail, open each stage workspace (`/s/<stage>`) and advance the discovered files through:

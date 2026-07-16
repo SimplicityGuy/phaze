@@ -881,7 +881,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     (:func:`phaze.tasks.reenqueue.is_domain_completed` + ``_build_done_sets`` + ``_in_flight_cloud_job_ids``);
     parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
     / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
-    preserve the control-only agent-worker boundary (``tests/test_task_split.py``); do NOT hoist.
+    preserve the control-only agent-worker boundary (``tests/shared/core/test_task_split.py``); do NOT hoist.
     """
     out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
     async with session.begin_nested():

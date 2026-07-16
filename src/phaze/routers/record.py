@@ -9,7 +9,7 @@ panel (D-01). The body is a SNAPSHOT: it renders once, carries no self-poll / ``
 
 Security: the ``file_id`` path param is a typed ``uuid.UUID`` (FastAPI-validated -- closes the
 template-path/BAC surface, T-61-03) and EVERY read is scoped strictly by that ``file_id`` (mirrors
-proposals.py:276 T-31-06-02). A missing / de-duplicated file resolves to a friendly 404 HTML fragment
+proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a friendly 404 HTML fragment
 (``record_not_found.html`` -- T-61-05), never a 500 / JSON detail / stack trace.
 """
 

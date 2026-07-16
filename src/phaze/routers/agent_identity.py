@@ -5,7 +5,9 @@ agent worker can verify (a) its bearer token is valid and (b) the token-derived
 agent_id matches the operator-supplied PHAZE_AGENT_QUEUE env var at startup
 (Plan 10 anti-misconfiguration probe, RESEARCH Pitfall 1).
 
-Phase 29 will also use this endpoint for the Agents admin page's reachability probe.
+Consumed by `whoami_with_retry` (`tasks/_shared/agent_bootstrap.py`) at agent-worker /
+watcher startup. The Phase 29 Agents admin page (`routers/admin_agents.py`) does NOT call
+this endpoint -- it classifies liveness from `Agent.last_seen_at` / `last_status` instead.
 """
 
 from typing import Annotated

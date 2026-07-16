@@ -37,7 +37,7 @@ ExecutionLog table's natural key `proposal_id`). The "completed_with_errors" pla
 becomes "completed_with_errors" in the returned batch dict (no schema field for it).
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
-Enforced by tests/test_task_split.py (Plan 10).
+Enforced by tests/shared/core/test_task_split.py (Plan 10).
 """
 
 from __future__ import annotations

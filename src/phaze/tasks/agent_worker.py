@@ -1,7 +1,7 @@
 """SAQ agent_worker settings -- entry point for ``saq phaze.tasks.agent_worker.settings`` (Phase 26 D-01..D-04, D-16, D-25).
 
 CRITICAL: this module MUST NOT transitively import phaze.database,
-phaze.tasks.session, or sqlalchemy.ext.asyncio. Enforced by tests/test_task_split.py
+phaze.tasks.session, or sqlalchemy.ext.asyncio. Enforced by tests/shared/core/test_task_split.py
 (subprocess import-boundary test, D-25). The invariant guarantees the agent role
 can run on a host with no Postgres reachability.
 
@@ -83,7 +83,7 @@ def _sweep_scratch(scratch_dir: Path) -> None:
     any file still genuinely needed is re-pushed by the staging cron (the deterministic
     ``push_file:<file_id>`` key + FileState window make this safe). Tolerates a missing dir so a
     fresh compute host (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the
-    module Postgres-free (tests/test_task_split.py)."""
+    module Postgres-free (tests/shared/core/test_task_split.py)."""
     if not scratch_dir.exists():
         return
     for entry in scratch_dir.iterdir():

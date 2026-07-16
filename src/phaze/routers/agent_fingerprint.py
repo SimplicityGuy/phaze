@@ -26,14 +26,15 @@ async def put_fingerprint(
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FingerprintWriteResponse:
-    """Idempotently replace fingerprint result. Natural key: (file_id, engine) from models/fingerprint.py:25 (ix_fprint_file_engine).
+    """Idempotently replace fingerprint result. Natural key: (file_id, engine) from models/fingerprint.py:26 (ix_fprint_file_engine).
 
     Last-write-wins per D-14. `agent_id` comes from auth dep, NEVER from body (AUTH-01).
 
     FAILURE MARKER (FAIL-04 / D-18): a `status='failed'` row written here IS the durable, per-engine
     fingerprint failure marker -- there is no separate failure table and no synthetic sentinel row.
-    Crucially it is AUTO-RETRYABLE: `FAILURE_IS_TERMINAL[fingerprint] = False`, so `eligible(FINGERPRINT)`
-    stays True for a FAILED engine (ELIG-04, `enums/stage.py:186`), unlike a terminal FAILED analyze.
+    Crucially it is AUTO-RETRYABLE: `ELIGIBLE_AFTER_FAILURE[fingerprint] = True` (and
+    `FAILURE_IS_TERMINAL[fingerprint] = False`), so `eligible(FINGERPRINT)` stays True for a FAILED
+    engine (ELIG-04, `enums/stage.py:96`), unlike a terminal FAILED analyze.
     A sibling `success`/`completed` engine still wins the 1:N aggregation (DERIV-05), so one failed
     engine never blocks a file whose other engine succeeded. See `report_fingerprint_failed` for why
     the terminal-ack path deliberately writes NO row.
@@ -77,8 +78,8 @@ async def report_fingerprint_failed(
     of its own. The durable per-engine failure marker already lives elsewhere: the ``status='failed'``
     row written by :func:`put_fingerprint`. A synthetic terminal row such as
     ``fingerprint_results(engine='_task', status='failed')`` would POISON the two aliased per-engine
-    outer-joins at ``services/pipeline.py:939-940`` (``audfprint`` / ``panako``) that feed
-    :func:`~phaze.services.pipeline._trackid_engine_badge` (``services/pipeline.py:864``) -- the badge
+    outer-joins at ``services/pipeline.py:1560-1561`` (``audfprint`` / ``panako``) that feed
+    :func:`~phaze.services.pipeline._trackid_engine_badge` (``services/pipeline.py:1485``) -- the badge
     keys strictly on the real lowercase engine names, so a ``_task`` sentinel would surface as a bogus
     engine column and corrupt the Track-ID table. Hence FAIL-04 is "reused, not re-invented": the
     marker is the existing per-engine row, and a failed fingerprint stays auto-retryable

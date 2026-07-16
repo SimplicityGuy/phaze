@@ -1,13 +1,15 @@
 """SAQ task: fingerprint_file -- submit a local file to audfprint + panako sidecars,
 post per-engine result via HTTP (Phase 26 D-05).
 
-Per D-17: both engines run on every file. Per D-18: file is considered fingerprinted
-after both engines report success; state transition happens server-side via the
-fingerprint endpoint's idempotent upsert and a future controller-side reducer
-(Phase 27/28 will wire that). Plan 26-11 only sends the per-engine writes.
+Per D-17: both engines run on every file. Per D-18/DERIV-05: the fingerprint stage
+is DONE once ANY engine reports ``success``/``completed`` -- a failed sibling engine
+does not block it. Completion is derived server-side (per-engine rows written by the
+fingerprint endpoint's idempotent upsert, aggregated on read via ``done_clause`` /
+``failed_clause``) rather than by flipping a single file-level state. This task only
+sends the per-engine writes.
 
 This module MUST NOT import phaze.database, phaze.models.*, or sqlalchemy.
-Enforced by tests/test_task_split.py (Plan 10).
+Enforced by tests/shared/core/test_task_split.py (Plan 10).
 """
 
 from __future__ import annotations
