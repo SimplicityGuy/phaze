@@ -1,4 +1,4 @@
-"""Tests for phaze.cert_bootstrap (Phase 29 D-02, D-22).
+"""Tests for phaze.cert_bootstrap (Phase 29 D-02, D-22; extended by issue #247 / phaze-0gu).
 
 Verifies the 7 LOCKED test cases per Plan 29-01 task 1:
     1. First-call generates 4 files; all parse via x509 / serialization.
@@ -10,16 +10,23 @@ Verifies the 7 LOCKED test cases per Plan 29-01 task 1:
     6. _parse_san_entries dispatches DNSName vs IPAddress correctly.
     7. WARNING-8: banner emitted via logger.warning() (caplog) -- both
        channels (print + logger) are mandatory per CONTEXT D-02 "Both".
+
+Plus the phaze-0gu / issue #247 SAN-diff + near-expiry leaf re-issue cases,
+each asserting the CA fingerprint AND the CA key file bytes are unchanged
+(the CA must never be touched by a leaf-only re-issue).
 """
 
 from __future__ import annotations
 
+import datetime
 import ipaddress
 import logging
 from typing import TYPE_CHECKING
 
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from phaze.cert_bootstrap import _parse_san_entries, ensure_certs_present
 
@@ -31,6 +38,62 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_SANS = "localhost,127.0.0.1,api"
+
+
+def _load_ca_cert(certs_dir: Path) -> x509.Certificate:
+    return x509.load_pem_x509_certificate((certs_dir / "phaze-ca.crt").read_bytes())
+
+
+def _ca_fingerprint(certs_dir: Path) -> bytes:
+    return _load_ca_cert(certs_dir).fingerprint(hashes.SHA256())
+
+
+def _assert_signed_by_ca(leaf: x509.Certificate, ca_cert: x509.Certificate) -> None:
+    """Assert `leaf` verifies against `ca_cert`'s (EC) public key -- proof it's signed by this exact CA."""
+    ca_public_key = ca_cert.public_key()
+    assert isinstance(ca_public_key, ec.EllipticCurvePublicKey)
+    assert leaf.signature_hash_algorithm is not None
+    ca_public_key.verify(leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm))
+
+
+def _write_leaf_with_sans_and_expiry(
+    certs_dir: Path,
+    sans: list[x509.GeneralName],
+    not_valid_after: datetime.datetime,
+) -> None:
+    """Overwrite phaze-server.{crt,key} with a leaf signed by the on-disk CA.
+
+    Used to synthesize "stale" leaves (wrong SANs / near-expiry) against a
+    real, already-bootstrapped CA, independent of `cert_bootstrap`'s own
+    `_generate_leaf` so the test exercises `ensure_certs_present` through its
+    public surface only.
+    """
+    ca_cert = _load_ca_cert(certs_dir)
+    ca_key = serialization.load_pem_private_key((certs_dir / "phaze-ca.key").read_bytes(), password=None)
+    assert isinstance(ca_key, ec.EllipticCurvePrivateKey)
+
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.UTC)
+    leaf_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
+        .issuer_name(ca_cert.subject)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(not_valid_after)
+        .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    (certs_dir / "phaze-server.crt").write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
+    (certs_dir / "phaze-server.key").write_bytes(
+        leaf_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
 
 
 def test_first_call_generates_four_parseable_files(tmp_path: Path) -> None:
@@ -163,3 +226,212 @@ def test_banner_emitted_via_logger_warning(tmp_path: Path, caplog: pytest.LogCap
     for r in banner_records:
         assert "BEGIN" not in r.getMessage(), f"banner record leaked PEM marker: {r.getMessage()}"
         assert "PRIVATE KEY" not in r.getMessage(), f"banner record leaked private-key string: {r.getMessage()}"
+
+
+# --- phaze-0gu / issue #247: SAN-diff + near-expiry leaf re-issue, CA preserved -------------
+
+
+def test_leaf_reissued_when_sans_change_ca_preserved(tmp_path: Path) -> None:
+    """Acceptance: changing PHAZE_API_TLS_SANS + restart re-issues the leaf with the new SANs;
+    CA fingerprint (and key bytes) are unchanged."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+    old_leaf_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+
+    new_sans = "localhost,127.0.0.1,api,tailnet.example.ts.net,100.72.77.110"
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=new_sans)
+
+    # CA is byte-for-byte untouched.
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+
+    # Leaf changed and now carries the new SAN.
+    new_leaf_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+    assert new_leaf_bytes != old_leaf_bytes
+    leaf = x509.load_pem_x509_certificate(new_leaf_bytes)
+    san_names = [n.value for n in leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value if isinstance(n, x509.DNSName)]
+    assert "tailnet.example.ts.net" in san_names
+    ip_names = [str(n.value) for n in leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value if isinstance(n, x509.IPAddress)]
+    assert "100.72.77.110" in ip_names
+
+    # And the re-issued leaf is signed by the SAME (unchanged) CA.
+    _assert_signed_by_ca(leaf, _load_ca_cert(tmp_path))
+
+
+def test_leaf_reissued_when_missing_ca_preserved(tmp_path: Path) -> None:
+    """Acceptance: deleting only the leaf and restarting regenerates the leaf from the existing
+    CA (CA fingerprint unchanged) -- never mints a new CA."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+
+    (tmp_path / "phaze-server.crt").unlink()
+    (tmp_path / "phaze-server.key").unlink()
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    assert (tmp_path / "phaze-server.crt").exists()
+    assert (tmp_path / "phaze-server.key").exists()
+    x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+
+
+def test_leaf_reissued_when_unparseable_ca_preserved(tmp_path: Path) -> None:
+    """A corrupt leaf (CA intact) is re-issued from the existing CA; CA is untouched."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+
+    (tmp_path / "phaze-server.crt").write_text("NOT-A-CERT")
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+
+
+def test_leaf_reissued_when_near_expiry_ca_preserved(tmp_path: Path) -> None:
+    """A leaf inside the renewal window (even with matching SANs) is re-issued; CA untouched."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+
+    sans = _parse_san_entries(_DEFAULT_SANS)
+    near_expiry = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=10)
+    _write_leaf_with_sans_and_expiry(tmp_path, sans, near_expiry)
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    leaf = x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+    # Freshly issued leaf carries the full ~2y validity again, well past the renewal window.
+    assert leaf.not_valid_after_utc - datetime.datetime.now(datetime.UTC) > datetime.timedelta(days=300)
+
+
+def test_leaf_not_reissued_when_current_and_sans_match(tmp_path: Path) -> None:
+    """No-op: an existing, current leaf whose SANs already match is left byte-for-byte alone."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    leaf_bytes_before = (tmp_path / "phaze-server.crt").read_bytes()
+    leaf_key_bytes_before = (tmp_path / "phaze-server.key").read_bytes()
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert (tmp_path / "phaze-server.crt").read_bytes() == leaf_bytes_before
+    assert (tmp_path / "phaze-server.key").read_bytes() == leaf_key_bytes_before
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+
+
+def test_absent_ca_bootstraps_fresh_ca_and_leaf_even_with_stale_leaf_present(tmp_path: Path) -> None:
+    """Acceptance: deleting the CA (or a fresh volume) still bootstraps a new CA + leaf as today
+    -- even if a leftover leaf file is still present, its presence must not suppress CA generation."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    old_ca_fingerprint = _ca_fingerprint(tmp_path)
+
+    # Simulate an operator deleting only the CA (leaf left behind).
+    (tmp_path / "phaze-ca.crt").unlink()
+    (tmp_path / "phaze-ca.key").unlink()
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    new_ca_fingerprint = _ca_fingerprint(tmp_path)
+    assert new_ca_fingerprint != old_ca_fingerprint
+    for path in (tmp_path / "phaze-ca.crt", tmp_path / "phaze-ca.key", tmp_path / "phaze-server.crt", tmp_path / "phaze-server.key"):
+        assert path.exists()
+    x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+
+
+def test_leaf_reissue_does_not_emit_new_ca_banner(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A leaf-only re-issue must NOT print/log the 'GENERATED NEW PHAZE INTERNAL CA' banner --
+    that banner tells operators to redistribute the CA, and the CA did not change."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    capsys.readouterr()  # discard the first-call banner
+
+    new_sans = f"{_DEFAULT_SANS},extra-host"
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=new_sans)
+
+    captured = capsys.readouterr()
+    assert "GENERATED NEW PHAZE INTERNAL CA" not in captured.out
+
+
+def test_leaf_reissued_when_key_missing_but_cert_intact_ca_preserved(tmp_path: Path) -> None:
+    """A healthy, current, correctly-SAN'd leaf CERT with a MISSING key must still be re-issued --
+    otherwise uvicorn has no private key to pair with the (perfectly fine-looking) cert."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+    old_leaf_crt_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+
+    (tmp_path / "phaze-server.key").unlink()
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    assert (tmp_path / "phaze-server.key").exists()
+    # The leaf cert itself was re-issued (fresh pair), not just re-paired with a stray key.
+    new_leaf_crt_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+    assert new_leaf_crt_bytes != old_leaf_crt_bytes
+    leaf = x509.load_pem_x509_certificate(new_leaf_crt_bytes)
+    leaf_key = serialization.load_pem_private_key((tmp_path / "phaze-server.key").read_bytes(), password=None)
+    spki = serialization.PublicFormat.SubjectPublicKeyInfo
+    assert leaf.public_key().public_bytes(encoding=serialization.Encoding.DER, format=spki) == leaf_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER, format=spki
+    )
+
+
+def test_leaf_reissued_when_key_unparseable_ca_preserved(tmp_path: Path) -> None:
+    """A garbage phaze-server.key (cert otherwise healthy) is re-issued; CA untouched."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+
+    (tmp_path / "phaze-server.key").write_text("NOT-A-KEY")
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    x509.load_pem_x509_certificate((tmp_path / "phaze-server.crt").read_bytes())
+    serialization.load_pem_private_key((tmp_path / "phaze-server.key").read_bytes(), password=None)
+
+
+def test_leaf_reissued_when_key_cert_mismatch_ca_preserved(tmp_path: Path) -> None:
+    """A phaze-server.key that parses fine but does NOT match phaze-server.crt's public key
+    (e.g. a stale/swapped key left over from an out-of-band operation) is re-issued; CA untouched.
+    This is the exact gap the old all-four-files-exist check caught and the SAN/expiry-only
+    rewrite regressed: a healthy-looking cert paired with a mismatched key would otherwise be
+    treated as current, leaving uvicorn unable to load the keypair."""
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+    ca_fingerprint_before = _ca_fingerprint(tmp_path)
+    ca_key_bytes_before = (tmp_path / "phaze-ca.key").read_bytes()
+    old_leaf_crt_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+
+    # Swap in an unrelated, but perfectly valid, EC private key -- the cert is untouched, so
+    # `_leaf_needs_reissue`'s cert-only checks (exists/parses/SANs/expiry) would all pass.
+    mismatched_key = ec.generate_private_key(ec.SECP256R1())
+    (tmp_path / "phaze-server.key").write_bytes(
+        mismatched_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+    ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert _ca_fingerprint(tmp_path) == ca_fingerprint_before
+    assert (tmp_path / "phaze-ca.key").read_bytes() == ca_key_bytes_before
+    new_leaf_crt_bytes = (tmp_path / "phaze-server.crt").read_bytes()
+    assert new_leaf_crt_bytes != old_leaf_crt_bytes
+
+    leaf = x509.load_pem_x509_certificate(new_leaf_crt_bytes)
+    leaf_key = serialization.load_pem_private_key((tmp_path / "phaze-server.key").read_bytes(), password=None)
+    spki = serialization.PublicFormat.SubjectPublicKeyInfo
+    assert leaf.public_key().public_bytes(encoding=serialization.Encoding.DER, format=spki) == leaf_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER, format=spki
+    )
