@@ -451,8 +451,16 @@ ALTER TABLE ONLY public.tracklists
 # Mirrors the retired 020 migration's seed exactly (order preserved for auditability).
 _SEED_STAGES = ("metadata", "analyze", "fingerprint")
 
-# Every table the baseline creates, for the mirror-image downgrade.
-_TABLES = "agents, analysis, analysis_window, cloud_job, dedup_resolution, discogs_links, execution_log, file_companions, files, files_state_archive, fingerprint_results, metadata, pipeline_stage_control, proposals, route_control, scan_batches, scheduling_ledger, stage_skip, tag_write_log, tracklist_tracks, tracklist_versions, tracklists"
+# Every table the baseline creates, dropped in one statement by the mirror-image downgrade.
+# A plain string literal (not an f-string build) so static SQL scanners see no interpolation.
+_DROP_ALL_TABLES = (
+    "DROP TABLE IF EXISTS "
+    "agents, analysis, analysis_window, cloud_job, dedup_resolution, discogs_links, execution_log, "
+    "file_companions, files, files_state_archive, fingerprint_results, metadata, pipeline_stage_control, "
+    "proposals, route_control, scan_batches, scheduling_ledger, stage_skip, tag_write_log, "
+    "tracklist_tracks, tracklist_versions, tracklists "
+    "CASCADE"
+)
 
 
 def _ddl_statements() -> list[str]:
@@ -492,5 +500,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop everything the baseline created so ``downgrade base`` leaves an empty schema."""
-    op.execute(f"DROP TABLE IF EXISTS {_TABLES} CASCADE")
+    op.execute(_DROP_ALL_TABLES)
     op.execute("DROP EXTENSION IF EXISTS pg_trgm")
