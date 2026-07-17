@@ -751,3 +751,67 @@ async def test_progress_post_failure_on_failure_path_is_swallowed(
     assert any("progress POST failed" in r.message for r in caplog.records)
     # One failed proposal -> batch result is "completed_with_errors", not "completed".
     assert result["status"] == "completed_with_errors"
+
+
+# ---------------------------------------------------------------------------
+# bead phaze-uciu.6 — the success-path 'report' PATCH is guarded so a 5xx after
+# a committed move cannot flip the proposal to FAILED / misreport failed_at_step.
+# ---------------------------------------------------------------------------
+
+
+async def test_executed_state_patch_5xx_does_not_fail_proposal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 503 on the executed-state PATCH (after a successful move) is swallowed.
+
+    Before the fix the un-guarded success PATCH landed in the generic handler:
+    proposal APPROVED->FAILED, failed_at_step misreported as 'delete', and
+    FileRecord.current_path left pointing at the deleted original. Now the move
+    is committed first, so the report failure is logged and the proposal still
+    counts as executed.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+
+    async def _raise_only_on_executed(_proposal_id: object, patch: object) -> None:
+        # 503 ONLY on the success report; a 'failed' report (which must never be
+        # reached in this scenario) would pass through.
+        if getattr(patch, "proposal_state", None) == "executed":
+            raise AgentApiServerError("503 reporting executed state")
+
+    api.patch_proposal_state = AsyncMock(side_effect=_raise_only_on_executed)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+
+    with caplog.at_level(logging.ERROR):
+        result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # The move committed: file relocated, original gone.
+    assert proposed_paths[0].exists()
+    assert not orig_paths[0].exists()
+    # Proposal is NOT marked failed.
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    # No second (failed) report was attempted -- only the executed one fired.
+    assert api.patch_proposal_state.await_count == 1
+    reported_states = [c.args[1].proposal_state for c in api.patch_proposal_state.await_args_list]
+    assert "failed" not in reported_states
+    # The terminal progress POST reports SUCCESS ('deleted'), never 'failed'/'delete'.
+    sent = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert sent.terminal_step == "deleted"
+    assert sent.failed_at_step is None
+    # The swallow was logged at ERROR (move committed, report failed).
+    assert any("reporting executed state failed" in r.message for r in caplog.records)

@@ -32,6 +32,10 @@ Phase 28 changes (Plan 28-05):
   ``subjobs_completed == subjobs_expected`` and promote the batch status.
 - Progress POST failures (after the agent_client's tenacity retries) log WARNING and do NOT
   raise -- file ops are already committed via ``patch_proposal_state`` (D-16).
+- The success-path ``patch_proposal_state`` (the 'report' step) is likewise guarded: the move
+  is committed on disk before it runs, so a 5xx there is swallowed + logged and the proposal
+  still counts as executed. Letting it raise would misattribute the failure to
+  ``failed_at_step='delete'`` and mark an already-moved file's proposal FAILED.
 
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
@@ -284,15 +288,31 @@ async def _execute_one(
                 patch_exc,
             )
 
-        # 6b. Report SUCCESS via patch_proposal_state (joint Proposal + FileRecord transition)
-        await api.patch_proposal_state(
-            item.proposal_id,
-            ProposalStatePatch(
-                proposal_state="executed",
-                file_state="moved",
-                current_path=str(proposed),
-            ),
-        )
+        # 6b. Report SUCCESS via patch_proposal_state (joint Proposal + FileRecord transition).
+        # This is the 'report' step: the move is ALREADY committed on disk (the
+        # file sits at `proposed` and the original is gone), so a failure here
+        # must NOT bubble into the generic failure handler. If it did, a 5xx
+        # after tenacity retries would flip an APPROVED->executed proposal to
+        # FAILED, misattribute failed_at_step='delete' (current_step's last
+        # value), and leave FileRecord.current_path pointing at the deleted
+        # original -- a divergence SAQ replay cannot heal (the original is gone).
+        # Swallow + log and still return success; the state report is recoverable
+        # via reconciliation, the committed move is not.
+        try:
+            await api.patch_proposal_state(
+                item.proposal_id,
+                ProposalStatePatch(
+                    proposal_state="executed",
+                    file_state="moved",
+                    current_path=str(proposed),
+                ),
+            )
+        except Exception as report_exc:
+            logger.error(
+                "execute_approved_batch: move committed but reporting executed state failed for %s: %s",
+                item.proposal_id,
+                report_exc,
+            )
 
         # 7. Phase 28 D-03: per-proposal terminal progress POST (success path).
         # Fire-and-forget: D-16 says swallow + log WARNING on failure because the
