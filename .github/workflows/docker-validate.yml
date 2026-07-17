@@ -93,11 +93,14 @@ jobs:
       - name: 🐳 Validate docker-compose.yml
         run: |
           echo "🔍 Validating application-server docker-compose.yml..."
-          # Phase 29 added fail-fast ${VAR:?} guards on REDIS_PASSWORD.
+          # Phase 29 added fail-fast ${VAR:?} guards on REDIS_PASSWORD; the
+          # infra-hardening bugfix batch (phaze-rnh7) added the same on POSTGRES_PASSWORD.
           # Supply placeholders so compose-parse can resolve interpolation.
           printf '%s\n' \
             'REDIS_PASSWORD=ci-validate-placeholder' \
             'REDIS_BIND_IP=127.0.0.1' \
+            'POSTGRES_PASSWORD=ci-validate-placeholder' \
+            'POSTGRES_BIND_IP=127.0.0.1' \
             > .env
           docker compose -f docker-compose.yml config --quiet
           echo "✅ docker-compose.yml is valid"
