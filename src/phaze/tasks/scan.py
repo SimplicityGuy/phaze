@@ -256,6 +256,13 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     batch: list[FileUpsertRecord] = []
     total = 0
+    # phaze-0p90: count per-FILE read failures too. The zero-access loud-failure guard originally
+    # counted only directory-walk errors (walk_errors), so a tree with LISTABLE directories but
+    # UNREADABLE files (dirs 0755, files 0600 owned by a foreign uid -- the common container-UID
+    # mismatch) walked every filename, skipped every hash with a per-file warning, and terminal-PATCHed
+    # status=completed/0-files -- reproducing the exact 260608 silent-failure mode the guard exists to
+    # prevent. Track the skips so a 0-file scan with unreadable files also fails loudly.
+    files_skipped = 0
     try:
         for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=_on_walk_error):
             for filename in filenames:
@@ -269,6 +276,7 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                     file_size = stat_result.st_size
                     sha256_hash = await asyncio.to_thread(compute_sha256, full_path)
                 except OSError as exc:
+                    files_skipped += 1
                     logger.warning("scan_directory: skipping unreadable file %s: %s", full_path, exc)
                     continue
 
@@ -300,38 +308,47 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
             await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
 
-        # Zero-access scan: the walk produced no files AND hit at least one
-        # directory read error. Surface this as a terminal failure that names
-        # the scan_path, the error count, and the first error, and points at
-        # the likely container-UID/ownership cause. This makes the incident's
-        # silent failure mode impossible to hide again.
-        if total == 0 and walk_errors:
+        # Zero-access scan: the walk produced no files AND hit at least one access error -- either an
+        # unreadable DIRECTORY (walk_errors) OR an unreadable FILE (files_skipped, phaze-0p90). Surface
+        # this as a terminal failure that names the scan_path, the error/skip counts, and the first
+        # error, and points at the likely container-UID/ownership cause. This makes the incident's
+        # silent completed/0-files failure mode impossible to hide again -- for BOTH access-denial shapes.
+        if total == 0 and (walk_errors or files_skipped):
+            reasons = []
+            if walk_errors:
+                reasons.append(f"{len(walk_errors)} directory read error(s) (first: {walk_errors[0]})")
+            if files_skipped:
+                reasons.append(f"{files_skipped} unreadable file(s)")
             error_message = (
-                f"Scanned 0 files but hit {len(walk_errors)} directory read error(s) "
-                f"(first: {walk_errors[0]}). The agent container user likely cannot read "
-                f"{payload.scan_path} -- check file ownership/permissions vs the container UID."
+                f"Scanned 0 files but hit {' and '.join(reasons)}. The agent container user likely "
+                f"cannot read {payload.scan_path} -- check file ownership/permissions vs the container UID."
             )
             logger.error(
                 "scan failed",
                 batch_id=str(payload.batch_id),
                 path=payload.scan_path,
-                error="walk_permission_errors",
+                error="access_errors",
                 walk_error_count=len(walk_errors),
+                files_skipped=files_skipped,
             )
             await api.patch_scan_batch(
                 payload.batch_id,
                 ScanBatchPatch(status="failed", error_message=error_message),
             )
-            return {"status": "failed", "files_posted": 0, "reason": "walk_permission_errors"}
+            # Preserve the historical reason for the directory-walk case; name the file-skip case distinctly.
+            reason = "walk_permission_errors" if walk_errors else "unreadable_files"
+            return {"status": "failed", "files_posted": 0, "reason": reason}
 
-        # Partial access: some directories were unreadable but >=1 file was
-        # found. Complete normally, logging a SINGLE summarizing warning rather
-        # than flooding the log with one line per skipped directory.
-        if walk_errors:
+        # Partial access: some directories and/or files were unreadable but >=1 file was found.
+        # Complete normally, logging a SINGLE summarizing warning rather than flooding the log with one
+        # line per skipped directory/file. phaze-0p90: include the per-file skip count so a
+        # mostly-unreadable-but-nonzero scan is visible rather than silently reporting only the readable subset.
+        if walk_errors or files_skipped:
             logger.warning(
-                "scan_directory: completed with partial access -- %d director(ies) skipped (first: %s)",
+                "scan_directory: completed with partial access -- %d director(ies) and %d file(s) skipped (first dir error: %s)",
                 len(walk_errors),
-                walk_errors[0],
+                files_skipped,
+                walk_errors[0] if walk_errors else None,
             )
 
         # Terminal success PATCH.
