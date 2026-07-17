@@ -144,10 +144,13 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     Every part PUTs a ``part_size_bytes`` slice to ``part_urls[N-1]`` and collects the response
     ETag (D-04). On success -> ``api.report_upload_complete(file_id, parts)`` (control completes the
-    multipart upload and flips the file forward) and returns a status dict. A non-2xx part ->
-    RuntimeError (SAQ retry). A missing source -> TERMINAL RuntimeError, NO callback, NO local
-    fallback. A SAQ job-net cancellation (CancelledError) or an outer wedge (TimeoutError) reaps the
-    in-flight request and re-raises -- the transfer is never swallowed into a partial-success report.
+    multipart upload and flips the file forward) and returns a status dict. A terminal/transfer
+    failure -- a non-2xx part PUT, a missing/unreadable source, or a wedged per-part wait_for
+    (RuntimeError/TimeoutError) -- calls ``api.report_upload_failed(file_id, detail)`` before
+    re-raising, so control runs its bounded re-drive / at-cap spill instead of stranding the
+    cloud_job UPLOADING (phaze-lssv). A SAQ job-net cancellation (CancelledError) reaps the in-flight
+    request and re-raises WITHOUT a callback (SAQ owns the re-drive; no premature terminal report).
+    NO local fallback ever.
     """
     payload = UploadFileS3Payload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
@@ -160,6 +163,18 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # AsyncClient is closed by its ``async with`` on the way out, so the in-flight request is
         # reaped before we re-raise. SAQ owns the re-drive; we do NOT report completion or failure on
         # a cancelled transfer (no partial-success callback, no premature terminal report).
+        raise
+    except (RuntimeError, TimeoutError) as exc:
+        # phaze-lssv: a terminal/transfer failure (unreadable source, non-2xx part PUT, or a wedged
+        # per-part wait_for). The control plane's bounded re-drive / at-cap spill machinery lives
+        # behind report_upload_failed; without this callback the cloud_job stays UPLOADING forever
+        # (leaking a kueue in-flight cap slot and a staged S3 object -- SAQ's default retries=1 means
+        # the first raise is terminal). Notify control, then re-raise so SAQ still marks the job
+        # failed. The notify is best-effort: a failure here must not mask the original error.
+        try:
+            await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
+        except Exception:  # noqa: BLE001 -- best-effort; the original transfer error must surface
+            pass
         raise
 
     await api.report_upload_complete(payload.file_id, parts)

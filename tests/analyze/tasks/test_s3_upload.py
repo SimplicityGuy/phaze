@@ -96,7 +96,37 @@ async def test_non_2xx_part_raises_runtimeerror_no_callback(agent_env, tmp_path)
     respx.put(url1).mock(return_value=httpx.Response(500))
 
     api = _FakeApiClient()
+    file_id = uuid.uuid4()
     with pytest.raises(RuntimeError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.complete_calls == []
+    # phaze-lssv: the terminal failure notifies control so the bounded re-drive / spill runs.
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_report_upload_failed_error_does_not_mask_transfer_error(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-lssv: if the failure callback itself raises, the ORIGINAL transfer error still surfaces."""
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"X" * 5)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(503))
+
+    class _BrokenApi(_FakeApiClient):
+        async def report_upload_failed(self, file_id, detail=None):  # type: ignore[no-untyped-def]
+            raise ConnectionError("control unreachable")
+
+    api = _BrokenApi()
+    with pytest.raises(RuntimeError, match="part 1 PUT returned 503"):
         await upload_file_s3(
             {"api_client": api},
             file_id=str(uuid.uuid4()),
@@ -134,6 +164,8 @@ async def test_cancellation_is_reraised_not_swallowed(agent_env, tmp_path):  # t
             agent_id="fileserver-1",
         )
     assert api.complete_calls == []
+    # phaze-lssv: a SAQ job-net cancellation is NOT a terminal failure -- no /failed callback fires.
+    assert api.failed_calls == []
 
 
 def test_saq_timeout_scales_with_part_count() -> None:
@@ -194,13 +226,17 @@ async def test_missing_original_path_is_terminal(agent_env, tmp_path):  # type: 
     from phaze.tasks.s3_upload import upload_file_s3
 
     api = _FakeApiClient()
+    file_id = uuid.uuid4()
     with pytest.raises(RuntimeError):
         await upload_file_s3(
             {"api_client": api},
-            file_id=str(uuid.uuid4()),
+            file_id=str(file_id),
             original_path=str(tmp_path / "does-not-exist.mp3"),
             part_urls=["https://s3.test/bucket/key?partNumber=1"],
             part_size_bytes=64,
             agent_id="fileserver-1",
         )
     assert api.complete_calls == []
+    # phaze-lssv: even the unreadable-source terminal leg notifies control (no silent strand).
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
