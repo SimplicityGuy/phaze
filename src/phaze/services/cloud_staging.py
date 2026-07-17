@@ -35,7 +35,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.services import s3_staging
 from phaze.services.enqueue_router import lane_for_task, select_active_agent
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
+from phaze.tasks.s3_upload import upload_file_saq_timeout_sec
 
 
 if TYPE_CHECKING:
@@ -156,7 +156,10 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         await queue.enqueue(
             "s3_upload",
             key=f"s3_upload:{file.id}",
-            timeout=UPLOAD_FILE_SAQ_TIMEOUT_SEC,
+            # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
+            # not deterministically cancelled by a fixed single-part cap. Each part carries its own
+            # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
+            timeout=upload_file_saq_timeout_sec(part_count),
             **payload.model_dump(mode="json"),
         )
 
@@ -209,4 +212,11 @@ async def redrive_upload(session: AsyncSession, file: FileRecord, task_router: A
         # sweep), so any failure here must not block the re-stage below.
         with contextlib.suppress(Exception):
             await s3_staging.abort_multipart_upload(file.id, existing.upload_id, bucket)
-    await stage_file_to_s3(session, file, task_router, bucket)
+    # phaze-j2tm: call the NO-COMMIT core, NOT the committing wrapper. The sole caller
+    # (POST /agents/s3/{file_id}/failed) holds a transaction-scoped ``pg_advisory_xact_lock`` to
+    # serialize the s3_upload_attempt read->+1->write-back (D-11/T-83-02). ``stage_file_to_s3``'s inner
+    # ``session.commit()`` would auto-RELEASE that lock mid-handler, so a concurrent /failed could
+    # acquire it and re-read the (hook-rewritten, counter-less) ledger payload as attempt 0 before the
+    # handler stamps the increment -- a lost update that defeats the bounded re-drive cap. Leaving the
+    # commit to the handler keeps the lock held through the attempt stamp, serializing the RMW.
+    await _stage_file_to_s3(session, file, task_router, bucket)

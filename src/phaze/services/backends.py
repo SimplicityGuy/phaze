@@ -54,7 +54,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
 from phaze.services.route_control import get_route_control
-from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
+from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, push_file_saq_timeout_sec
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
 
@@ -185,11 +185,14 @@ async def _enqueue_push_file(
     # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
     await queue.connect()
     # WR-03: stamp an explicit SAQ job-net timeout strictly above the agent's asyncio outer guard so
-    # a job-net cancellation can never fire before the guard reaps the rsync child.
+    # a job-net cancellation can never fire before the guard reaps the rsync child. phaze-2qpn: scale
+    # it with the file size (the guard is size-derived on the agent) so a healthy multi-GB push is not
+    # cancelled by a fixed cap, and allow retries so a killed push resumes via rsync --partial.
     return await queue.enqueue(
         "push_file",
         key=push_file_job_key(file.id),
-        timeout=PUSH_FILE_SAQ_TIMEOUT_SEC,
+        timeout=push_file_saq_timeout_sec(file.file_size),
+        retries=PUSH_FILE_SAQ_RETRIES,
         **payload.model_dump(mode="json"),
     )
 

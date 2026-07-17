@@ -26,7 +26,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
 from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
+from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
 from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
 
@@ -174,7 +174,27 @@ async def test_stage_file_to_s3_uses_deterministic_key_and_explicit_timeout(
 
     policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
     assert policy["key"] == f"s3_upload:{file_id}"
+    # Single-part file: the scaled timeout equals the retained baseline constant.
     assert policy["timeout"] == UPLOAD_FILE_SAQ_TIMEOUT_SEC
+
+
+async def test_stage_file_to_s3_scales_timeout_with_part_count(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-g37f: a multi-part upload stamps a SAQ timeout SCALED by the part count, not a fixed cap."""
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file_size = _PART_SIZE * 3  # ceil == 3 parts
+    file = await _seed_file(session, fileserver_id, file_size=file_size)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
+    assert policy["timeout"] == upload_file_saq_timeout_sec(3)
+    assert policy["timeout"] > UPLOAD_FILE_SAQ_TIMEOUT_SEC  # strictly larger than the single-part cap
 
 
 async def test_stage_file_to_s3_is_idempotent_on_file_id(
@@ -242,6 +262,31 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_redrive_upload_does_not_commit(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-j2tm: redrive_upload MUST NOT commit -- it calls the no-commit core so the /failed
+    handler's transaction-scoped advisory lock survives through the attempt stamp. A commit here would
+    release the lock mid-handler and let a concurrent /failed lose an increment (defeating the cap).
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # first stage commits
+
+    from unittest.mock import AsyncMock
+
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    await cloud_staging.redrive_upload(session, file, task_router)
+
+    commit_spy.assert_not_awaited()  # the caller owns the single commit (lock stays held)
 
 
 def test_redrive_bucket_falls_back_to_repick_over_backend_set_when_staging_bucket_absent(s3_env: str) -> None:

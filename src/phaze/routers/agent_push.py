@@ -51,7 +51,7 @@ from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends import hold_awaiting_cloud, resolve_compute_backend
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.scheduling_ledger import clear_ledger_entry
-from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
+from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, push_file_saq_timeout_sec
 
 
 if TYPE_CHECKING:
@@ -364,7 +364,10 @@ async def report_push_mismatch(
     # also derives it from file_id); passing it explicitly keeps the dedup contract clear here.
     # WR-03: stamp the explicit SAQ job-net timeout (strictly above the agent's asyncio outer guard)
     # so a re-driven push has the same deterministic inner<outer<net kill ordering as the staged one.
-    await fileserver_queue.enqueue("push_file", key=ledger_key, timeout=PUSH_FILE_SAQ_TIMEOUT_SEC, **dumped)
+    # phaze-2qpn: size-scaled + retries, matching the staged-path enqueue.
+    await fileserver_queue.enqueue(
+        "push_file", key=ledger_key, timeout=push_file_saq_timeout_sec(file.file_size), retries=PUSH_FILE_SAQ_RETRIES, **dumped
+    )
 
     # Persist the incremented attempt counter in the ledger payload. The control-side before_enqueue
     # hook upserts the row with the fresh PushFilePayload kwargs (no push_attempt) in its own session,

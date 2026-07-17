@@ -398,6 +398,51 @@ def test_push_file_saq_timeout_above_asyncio_outer_guard() -> None:
     assert asyncio_outer < push.PUSH_FILE_SAQ_TIMEOUT_SEC
 
 
+def test_push_budget_scales_with_file_size_not_a_fixed_cap() -> None:
+    # phaze-2qpn: the outer wall-clock guard is size-derived, so a healthy long transfer is NOT
+    # killed by a fixed ~630s cap. A 4 GB file gets a budget far above the small-file floor.
+    small = push.push_transfer_budget_sec(1000, io_stall_timeout_sec=600)
+    huge = push.push_transfer_budget_sec(4 * 1024**3, io_stall_timeout_sec=600)
+    # Small file floors at push_timeout_sec + buffer (historical ~630s).
+    assert small == 600 + push._OUTER_TIMEOUT_BUFFER_SEC
+    # 4 GB / ~8 Mbps floor is thousands of seconds -- far above the old fixed cap.
+    assert huge > 3600
+    assert huge > small
+    # The SAQ net sits strictly above the outer guard by the fixed margin, at every size.
+    assert push.push_file_saq_timeout_sec(4 * 1024**3) == huge + push._SAQ_JOB_TIMEOUT_MARGIN_SEC
+    # Small-file SAQ net equals the retained floor baseline constant.
+    assert push.push_file_saq_timeout_sec(0) == push.PUSH_FILE_SAQ_TIMEOUT_SEC
+
+
+async def test_push_file_large_source_gets_scaled_outer_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-2qpn: push_file stats the source and derives the outer guard from its size. Assert the
+    # timeout passed to asyncio.wait_for scales with the (faked) large file size, not a fixed ~630s cap.
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: _fake_cfg())
+
+    captured: dict[str, float] = {}
+
+    async def _fake_wait_for(awaitable: Any, timeout: float) -> Any:  # type: ignore[no-untyped-def]
+        captured["timeout"] = timeout
+        return await awaitable
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=0)
+
+    def _fake_stat(_self: Path, *_a: Any, **_k: Any) -> Any:  # type: ignore[no-untyped-def]
+        return SimpleNamespace(st_size=4 * 1024**3)  # pretend the source is 4 GB
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(push.asyncio, "wait_for", _fake_wait_for)
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+
+    api = _FakeApi()
+    await push.push_file({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert captured["timeout"] == push.push_transfer_budget_sec(4 * 1024**3, io_stall_timeout_sec=600)
+    assert captured["timeout"] > 3600  # a healthy multi-GB push is NOT capped at ~630s
+
+
 def test_require_push_config_passes_at_default_timeout() -> None:
     # WR-03 guard: the documented default (push_timeout_sec=600) keeps the layering valid, so the
     # fail-fast guard stays silent on a correctly-configured agent.
