@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "FastAPI wrapper for Panako audio fingerprinting"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.135.2",
-    "uvicorn>=0.34.0",
+    "fastapi>=0.139.0",
+    "uvicorn>=0.51.0",
 ]
 
 [tool.uv]

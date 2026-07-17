@@ -5,7 +5,7 @@ description = "FastAPI wrapper for audfprint audio fingerprinting"
 requires-python = ">=3.14"
 dependencies = [
     "docopt",
-    "fastapi>=0.135.2",
+    "fastapi>=0.139.0",
     "joblib",
     "librosa",
     "numpy",
@@ -13,7 +13,7 @@ dependencies = [
     "scipy",
     "standard-aifc",
     "standard-sunau",
-    "uvicorn>=0.34.0",
+    "uvicorn>=0.51.0",
 ]
 
 [tool.uv]
