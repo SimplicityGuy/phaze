@@ -116,3 +116,33 @@ def test_redis_hardened() -> None:
     assert any("REDIS_PASSWORD" in entry for entry in test_cmd if isinstance(entry, str)), (
         f"redis healthcheck must reference ${{REDIS_PASSWORD}}: {test_cmd!r}"
     )
+
+
+def _env_list(service: dict[str, Any]) -> list[str]:
+    """Normalize a service ``environment:`` block to a list of ``KEY=VALUE`` strings.
+
+    Compose accepts both the list form (``["KEY=VALUE"]``) and the mapping form
+    (``{KEY: VALUE}``); this test asserts a source-file invariant regardless of shape.
+    """
+    env = service.get("environment", []) or []
+    if isinstance(env, dict):
+        return [f"{k}={v}" for k, v in env.items()]
+    return [str(e) for e in env]
+
+
+def test_app_services_assemble_authenticated_redis_url() -> None:
+    """phaze-hti8: api + worker inject an authenticated REDIS_URL via compose interpolation.
+
+    Redis runs with ``--requirepass``, so the app-server's own Redis clients must
+    authenticate. Because ``env_file`` does not interpolate, the authenticated URL
+    is assembled in each service's ``environment:`` block with a ``${REDIS_PASSWORD}``
+    token — making the NOAUTH drift impossible.
+    """
+    data = _load_compose()
+    for svc_name in ("api", "worker"):
+        env = _env_list(data["services"][svc_name])
+        redis_entries = [e for e in env if e.startswith("REDIS_URL=")]
+        assert redis_entries, f"{svc_name} must set REDIS_URL in its environment block to authenticate against requirepass Redis"
+        entry = redis_entries[0]
+        assert "REDIS_PASSWORD" in entry, f"{svc_name} REDIS_URL must interpolate ${{REDIS_PASSWORD}}; got {entry!r}"
+        assert "default:" in entry, f"{svc_name} REDIS_URL must use the `default:` ACL user for the password; got {entry!r}"

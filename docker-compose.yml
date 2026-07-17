@@ -18,6 +18,14 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     env_file: .env
+    environment:
+      # phaze-hti8: Redis runs with `--requirepass ${REDIS_PASSWORD}` (below), so
+      # every client MUST authenticate. `env_file` does NOT interpolate, so the
+      # `.env` REDIS_URL cannot embed `${REDIS_PASSWORD}`; compose's `environment:`
+      # block DOES interpolate at parse time. Assembling the authenticated URL here
+      # (overriding the passwordless `.env`/default REDIS_URL) makes the NOAUTH
+      # drift impossible for the app-server's own Redis clients.
+      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
     # Backend execution registry (control-plane-only, ControlSettings) is declared in a
     # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
     # an absent file resolves to the zero-config implicit all-local registry (cloud off).
@@ -45,6 +53,11 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=control
+      # phaze-hti8: same authenticated REDIS_URL assembly as the api service — the
+      # control worker's before_enqueue/after_process counter + rate-limit hooks read
+      # this same cache_redis handle, so it must authenticate against the requirepass
+      # Redis or every hook raises NOAUTH on first use.
+      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
       # Backend execution registry (control-plane-only, ControlSettings) is declared in a
       # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
       # an absent file resolves to the zero-config implicit all-local registry (cloud off).
