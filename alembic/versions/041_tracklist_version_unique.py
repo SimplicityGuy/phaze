@@ -7,8 +7,8 @@ silently orphaning one version's tracks from every reader (which keys off
 advisory lock; this UNIQUE constraint is defense-in-depth so the race fails loudly
 (``IntegrityError`` -> SAQ retry) if it ever recurs.
 
-Revision ID: 040
-Revises: 039
+Revision ID: 041
+Revises: 040
 Create Date: 2026-07-17
 """
 
@@ -16,8 +16,8 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision = "040"
-down_revision = "039"
+revision = "041"
+down_revision = "040"
 branch_labels = None
 depends_on = None
 

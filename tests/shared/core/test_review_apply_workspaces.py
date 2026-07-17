@@ -424,6 +424,12 @@ async def test_propose_workspace_generate_and_model(
 
     assert 'hx-post="/pipeline/proposals"' in body, "GENERATE ALL wires to the existing batch trigger"
     assert "GENERATE ALL" in body
+    # R-4 bulk-enqueue guard (phaze-dyvt): the busy-gate binds the SEEDED controllerBusy key -- NOT the
+    # never-seeded proposalsBusy (undefined > 0 is permanently false, so the button never disabled) -- and
+    # carries hx-disabled-elt="this" so a mid-flight re-click enqueues nothing (matching move/rename siblings).
+    assert ':disabled="$store.pipeline.controllerBusy > 0"' in body, "busy-gate binds the seeded controllerBusy key"
+    assert "proposalsBusy" not in body, "the never-seeded proposalsBusy key must not gate GENERATE ALL"
+    assert 'hx-disabled-elt="this"' in body, "GENERATE ALL disables itself in-flight like its bulk-enqueue siblings"
     assert settings.llm_model in body, "the Model column renders the configured llm_model (A1)"
     # The generation view lists the proposal + is not a per-row diff-approve surface.
     assert "messy.mp3" in body and "Renamed.mp3" in body

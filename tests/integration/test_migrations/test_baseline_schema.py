@@ -110,9 +110,14 @@ _FROZEN_AUTOGEN_DRIFT = frozenset(
         ("add_index", "ix_analysis_window_file_id"),
         ("modify_nullable", "discogs_links.created_at"),
         ("modify_nullable", "discogs_links.updated_at"),
-        ("modify_nullable", "tag_write_log.created_at"),
-        ("modify_nullable", "tag_write_log.updated_at"),
-        ("modify_nullable", "tag_write_log.written_at"),
+        # phaze-36rc / migration 040: tag_write_log timestamps are now timestamptz in the DB, so the
+        # naive ORM columns (plain DateTime / TimestampMixin) drift on TYPE -- exactly mirroring
+        # execution_log below (naive model vs aware DB). These were formerly modify_nullable entries;
+        # once the type also diverges, alembic groups both diffs and _canonical_diff keys them as
+        # modify_type (the nullable delta is still present within the same grouped op).
+        ("modify_type", "tag_write_log.created_at"),
+        ("modify_type", "tag_write_log.updated_at"),
+        ("modify_type", "tag_write_log.written_at"),
         ("modify_type", "agents.created_at"),
         ("modify_type", "agents.updated_at"),
         ("modify_type", "analysis.created_at"),
@@ -187,13 +192,14 @@ def test_baseline_revision_contract() -> None:
 def test_baseline_is_the_only_migration() -> None:
     """The prune pattern holds: only the 039 baseline plus deliberately-landed post-flatten revisions.
 
-    040 (phaze-5vmt) intentionally lands a UNIQUE(tracklist_id, version_number) constraint on top of
-    the baseline; any other resurrected 0xx chain file is a regression.
+    040 (phaze-36rc) lands tag_write_log timestamptz; 041 (phaze-5vmt) lands the
+    UNIQUE(tracklist_id, version_number) constraint. Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
         "039_baseline_schema.py",
-        "040_tracklist_version_unique.py",
+        "040_tag_write_log_timestamptz.py",
+        "041_tracklist_version_unique.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -202,15 +208,15 @@ def test_baseline_is_the_only_migration() -> None:
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (040, phaze-5vmt)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (041: 040 tag_write_log tz + 041 tracklist unique)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "040"
+    assert version == "041"
 
 
 @pytest.mark.asyncio
 async def test_tracklist_version_unique_constraint_enforced(migrated_engine: AsyncEngine) -> None:
-    """040 adds UNIQUE(tracklist_id, version_number): a duplicate version row is rejected (phaze-5vmt)."""
+    """041 adds UNIQUE(tracklist_id, version_number): a duplicate version row is rejected (phaze-5vmt)."""
     tracklist_id = uuid.uuid4()
     async with migrated_engine.begin() as conn:
         await conn.execute(
@@ -230,6 +236,34 @@ async def test_tracklist_version_unique_constraint_enforced(migrated_engine: Asy
                 text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
                 {"id": uuid.uuid4(), "tid": tracklist_id},
             )
+
+
+@pytest.mark.asyncio
+async def test_tag_write_log_timestamps_are_timezone_aware(migrated_engine: AsyncEngine) -> None:
+    """phaze-36rc / migration 040: tag_write_log timestamps are timestamptz, matching execution_log.
+
+    Divergent typing (execution_log.executed_at timestamptz vs tag_write_log.written_at naive) made
+    asyncpg decode one aware and one naive, 500-ing GET /record/{id} when both histories were present.
+    After 040 every tag_write_log timestamp -- and execution_log.executed_at -- reports 'timestamp with
+    time zone', so the driver decodes them uniformly aware and the merge-sort can never mix tz-awareness.
+    """
+    async with migrated_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = 'public' "
+                    "AND ((table_name = 'tag_write_log' AND column_name IN ('written_at', 'created_at', 'updated_at')) "
+                    "OR (table_name = 'execution_log' AND column_name = 'executed_at'))"
+                )
+            )
+        ).all()
+    by_col = {(t, c): dtype for t, c, dtype in rows}
+    assert by_col[("tag_write_log", "written_at")] == "timestamp with time zone"
+    assert by_col[("tag_write_log", "created_at")] == "timestamp with time zone"
+    assert by_col[("tag_write_log", "updated_at")] == "timestamp with time zone"
+    # The reference sibling was already aware; both sides now agree.
+    assert by_col[("execution_log", "executed_at")] == "timestamp with time zone"
 
 
 @pytest.mark.asyncio
@@ -376,7 +410,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "040"
+        assert version == "041"
     finally:
         if engine is not None:
             await engine.dispose()

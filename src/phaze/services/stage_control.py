@@ -47,7 +47,23 @@ _SET_PRIORITY_SQL = text("UPDATE saq_jobs SET priority = :p WHERE status = 'queu
 _PAUSE_SQL = text("UPDATE saq_jobs SET scheduled = :s WHERE status = 'queued' AND key LIKE :pfx")
 # Resume is sentinel-guarded: only rows pause parked (scheduled == SENTINEL) are un-parked,
 # so a genuine retry backoff (scheduled = now + delay, never == SENTINEL) is never clobbered.
-_RESUME_SQL = text("UPDATE saq_jobs SET scheduled = 0 WHERE status = 'queued' AND key LIKE :pfx AND scheduled = :s")
+#
+# CRITICAL (phaze-01aq): un-park the scheduled COLUMN *and* the serialized ``job`` BYTEA blob. A job
+# enqueued WHILE paused is stamped ``job.scheduled = SENTINEL`` by ``apply_stage_control`` before
+# enqueue, which SAQ serializes into the JSON blob (SENTINEL != the default 0 that ``Job.to_dict``
+# omits). Resetting only the column leaves the blob at SENTINEL: on dequeue SAQ deserializes it back
+# into ``job.scheduled`` (even re-writing the column to SENTINEL), and because this project never
+# overrides ``retry_delay``, SAQ's ``_retry`` falls to ``scheduled = job.scheduled or now_seconds()``
+# -> the row re-parks at SENTINEL forever, invisible to every recovery path. We therefore strip the
+# ``scheduled`` key from the JSON blob (``jsonb - 'scheduled'``), which is exactly the shape SAQ emits
+# for an unparked job (``to_dict`` omits the default-0 field), so the deserialized job.scheduled is 0.
+# The blob is default-JSON (queue_factory sets no custom dump/load), stored as UTF-8 BYTEA.
+_RESUME_SQL = text(
+    "UPDATE saq_jobs "
+    "SET scheduled = 0, "
+    "job = convert_to(((convert_from(job, 'UTF8')::jsonb) - 'scheduled')::text, 'UTF8') "
+    "WHERE status = 'queued' AND key LIKE :pfx AND scheduled = :s"
+)
 
 
 def _key_prefix(stage: str) -> str:

@@ -6,6 +6,7 @@ import uuid
 
 from httpx import AsyncClient
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.discogs_link import DiscogsLink
@@ -463,9 +464,27 @@ async def test_delete_track(session: AsyncSession, client: AsyncClient) -> None:
     session.add(track)
     await session.flush()
 
+    # Regression (phaze-dyvt/phaze-5fc2): a matched track carries DiscogsLink children whose FK has no
+    # ON DELETE. Before the fix, deleting the track raised IntegrityError -> unhandled 500. The endpoint
+    # must clear the referencing links first.
+    dl = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="999",
+        discogs_artist="A",
+        discogs_title="T",
+        confidence=0.9,
+        status="candidate",
+    )
+    session.add(dl)
+    await session.flush()
+
     response = await client.delete(f"/tracklists/tracks/{track.id}")
     assert response.status_code == 200
     assert response.text == ""
+
+    remaining_links = await session.execute(select(func.count(DiscogsLink.id)).where(DiscogsLink.track_id == track.id))
+    assert remaining_links.scalar_one() == 0, "the matched track's DiscogsLink children are removed with it"
 
 
 @pytest.mark.asyncio
@@ -527,10 +546,33 @@ async def test_bulk_reject_low_confidence(session: AsyncSession, client: AsyncCl
     session.add_all([high_conf, low_conf])
     await session.flush()
 
+    # Regression (phaze-5fc2): a matched low-confidence track carries a DiscogsLink child (FK has no
+    # ON DELETE, Core bulk delete fires no cascade). Before the fix ONE such row raised IntegrityError,
+    # rolling back the single-statement bulk delete and rendering reject-low wholly inoperable on any
+    # matched tracklist. Match Discogs creates candidate links confidence-indifferently, so a low-conf
+    # track can absolutely carry one.
+    dl = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=low_conf.id,
+        discogs_release_id="777",
+        discogs_artist="Bad Discogs",
+        discogs_title="Bad Discogs Title",
+        confidence=0.3,
+        status="candidate",
+    )
+    session.add(dl)
+    await session.flush()
+
     response = await client.post(f"/tracklists/{tl.id}/reject-low?threshold=50")
     assert response.status_code == 200
     assert "Good" in response.text
     assert "Bad" not in response.text
+
+    # The low-confidence track AND its referencing link are both gone; the high-confidence track survives.
+    remaining_links = await session.execute(select(func.count(DiscogsLink.id)).where(DiscogsLink.track_id == low_conf.id))
+    assert remaining_links.scalar_one() == 0, "referencing DiscogsLink rows are cleared before the bulk track delete"
+    remaining_tracks = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == version.id))
+    assert remaining_tracks.scalar_one() == 1, "only the high-confidence track survives"
 
 
 @pytest.mark.asyncio
