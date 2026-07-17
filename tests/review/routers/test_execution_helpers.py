@@ -270,7 +270,8 @@ def _proposal(agent_id: str = "agent-a") -> ExecuteBatchProposalItem:
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
         original_path=f"/in/{agent_id}.mp3",
-        proposed_path=f"/out/{agent_id}.mp3",
+        proposed_path="out",  # RELATIVE destination directory
+        proposed_filename=f"{agent_id}.mp3",
     )
 
 
