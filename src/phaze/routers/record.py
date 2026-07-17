@@ -13,7 +13,7 @@ proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a frien
 (``record_not_found.html`` -- T-61-05), never a 500 / JSON detail / stack trace.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 import uuid
@@ -51,9 +51,9 @@ def _history_sort_key(when: datetime | None) -> tuple[bool, datetime]:
     ``None`` timestamps sort last (a half-written row never masks real history).
     """
     if when is None:
-        return (False, datetime.min.replace(tzinfo=timezone.utc))
+        return (False, datetime.min.replace(tzinfo=UTC))
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return (True, when)
 
 

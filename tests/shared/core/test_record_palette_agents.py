@@ -22,6 +22,7 @@ Route/contract map (see 61-VALIDATION.md "Per-Task Verification Map", 61-RESEARC
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 import uuid
 
@@ -101,11 +102,11 @@ def test_history_sort_key_tolerates_mixed_tz_awareness() -> None:
     500 on the happy path. _history_sort_key normalizes naive -> UTC-aware so the merge is always safe,
     and orders newest-first with None (half-written rows) sorting last.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from phaze.routers.record import _history_sort_key
 
-    aware = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)  # execution_log style
+    aware = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)  # execution_log style
     naive = datetime(2026, 1, 1, 13, 0)  # tag_write_log style (interpreted as UTC)
     rows = [{"when": aware}, {"when": None}, {"when": naive}]
 

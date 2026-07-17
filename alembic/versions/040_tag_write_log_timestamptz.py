@@ -31,18 +31,10 @@ _COLUMNS = ("written_at", "created_at", "updated_at")
 def upgrade() -> None:
     """Reinterpret the naive ``tag_write_log`` timestamps as UTC-aware ``timestamptz``."""
     for column in _COLUMNS:
-        op.execute(
-            f"ALTER TABLE public.tag_write_log "
-            f"ALTER COLUMN {column} TYPE timestamp with time zone "
-            f"USING {column} AT TIME ZONE 'UTC'"
-        )
+        op.execute(f"ALTER TABLE public.tag_write_log ALTER COLUMN {column} TYPE timestamp with time zone USING {column} AT TIME ZONE 'UTC'")
 
 
 def downgrade() -> None:
     """Return the columns to naive ``timestamp`` (dropping the UTC offset back to wall-clock UTC)."""
     for column in _COLUMNS:
-        op.execute(
-            f"ALTER TABLE public.tag_write_log "
-            f"ALTER COLUMN {column} TYPE timestamp without time zone "
-            f"USING {column} AT TIME ZONE 'UTC'"
-        )
+        op.execute(f"ALTER TABLE public.tag_write_log ALTER COLUMN {column} TYPE timestamp without time zone USING {column} AT TIME ZONE 'UTC'")

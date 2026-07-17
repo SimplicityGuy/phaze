@@ -26,8 +26,8 @@ import pytest
 from saq.utils import now_seconds
 from sqlalchemy import text
 
-import phaze.tasks._shared.stage_control as stage_control_module
 from phaze.services.stage_control import pause_stage, resume_stage
+import phaze.tasks._shared.stage_control as stage_control_module
 from phaze.tasks._shared.stage_control import SENTINEL
 
 
