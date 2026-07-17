@@ -264,6 +264,31 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(rows) == 1
 
 
+async def test_redrive_upload_does_not_commit(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-j2tm: redrive_upload MUST NOT commit -- it calls the no-commit core so the /failed
+    handler's transaction-scoped advisory lock survives through the attempt stamp. A commit here would
+    release the lock mid-handler and let a concurrent /failed lose an increment (defeating the cap).
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # first stage commits
+
+    from unittest.mock import AsyncMock
+
+    commit_spy = AsyncMock()
+    monkeypatch.setattr(session, "commit", commit_spy)
+
+    await cloud_staging.redrive_upload(session, file, task_router)
+
+    commit_spy.assert_not_awaited()  # the caller owns the single commit (lock stays held)
+
+
 def test_redrive_bucket_falls_back_to_repick_over_backend_set_when_staging_bucket_absent(s3_env: str) -> None:
     """A row missing ``staging_bucket`` (legacy / cleared) re-picks deterministically over its backend's bound set."""
     cfg = get_settings()

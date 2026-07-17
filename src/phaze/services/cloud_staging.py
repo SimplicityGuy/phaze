@@ -212,4 +212,11 @@ async def redrive_upload(session: AsyncSession, file: FileRecord, task_router: A
         # sweep), so any failure here must not block the re-stage below.
         with contextlib.suppress(Exception):
             await s3_staging.abort_multipart_upload(file.id, existing.upload_id, bucket)
-    await stage_file_to_s3(session, file, task_router, bucket)
+    # phaze-j2tm: call the NO-COMMIT core, NOT the committing wrapper. The sole caller
+    # (POST /agents/s3/{file_id}/failed) holds a transaction-scoped ``pg_advisory_xact_lock`` to
+    # serialize the s3_upload_attempt read->+1->write-back (D-11/T-83-02). ``stage_file_to_s3``'s inner
+    # ``session.commit()`` would auto-RELEASE that lock mid-handler, so a concurrent /failed could
+    # acquire it and re-read the (hook-rewritten, counter-less) ledger payload as attempt 0 before the
+    # handler stamps the increment -- a lost update that defeats the bounded re-drive cap. Leaving the
+    # commit to the handler keeps the lock held through the attempt stamp, serializing the RMW.
+    await _stage_file_to_s3(session, file, task_router, bucket)
