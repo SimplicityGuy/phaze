@@ -42,6 +42,14 @@ The post-reorg full suite MUST report the same **2566 passed** (no test lost, no
 | integration | 21 |
 | shared | 61 |
 
+> **Post-reorg addition (phaze-uciu.1):** a tenth bucket `services` was added to
+> `tests/buckets.json` to home `tests/services/` — regression tests for the top-level
+> `services/` FastAPI sidecars (audfprint, panako), which live OUTSIDE `src/phaze` and so
+> were previously outside every bucket and the whole pytest testpath. It rides the same
+> matrix-shard → coverage-combine → single Codecov upload flow as every other bucket
+> (`just test-bucket services`, `--cov=phaze`); the sidecars' own code stays out of the
+> `source=["phaze"]` coverage gates by design.
+
 ## File -> bucket assignment
 
 Destination convention: `tests/<bucket>/<layer>/<basename>`, where `<layer>` is the
