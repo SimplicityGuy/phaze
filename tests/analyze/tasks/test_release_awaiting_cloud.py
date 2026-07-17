@@ -52,7 +52,9 @@ class _StubBackend:
     NOT a ``LocalBackend`` subclass, so the pure ``select_backend`` policy treats it as a cloud
     backend (``isinstance(..., LocalBackend)`` is False). ``raise_on`` selects which lifecycle call
     blows up: ``"is_available"`` / ``"in_flight_count"`` (the snapshot legs), ``"dispatch"`` (a generic
-    kube/S3 raise) or ``"dispatch_noagent"`` (a fileserver-vanish ``NoActiveAgentError``). ``hang_on``
+    kube/S3 raise -- phaze-uciu.3: writes the row THEN raises, inside its own ``session.begin_nested()``
+    SAVEPOINT, mirroring the fixed ``ComputeAgentBackend`` / ``KueueBackend`` post-write-raise shape) or
+    ``"dispatch_noagent"`` (a fileserver-vanish ``NoActiveAgentError``, raised before any write). ``hang_on``
     (DRAIN-02) selects a lifecycle call that HANGS forever instead of raising -- currently only
     ``"is_available"`` is modeled (the real hang vector: KueueBackend.is_available -> kr8s LocalQueue
     refresh() on an httpx client built ``timeout=None``). A healthy stub flips its candidate to PUSHING +
@@ -85,10 +87,19 @@ class _StubBackend:
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: Any) -> bool:  # noqa: ARG002 -- protocol signature
         self.dispatch_calls += 1
-        # Fail (if configured) BEFORE any mutation -- mirrors real dispatch resolving the fileserver
-        # before touching state, so a raising path leaves the file untouched (AWAITING_CLOUD).
         if self._raise_on == "dispatch":
-            raise RuntimeError(f"{self.id}: kube submit / S3 stage blew up")
+            # phaze-uciu.3: WRITE the row FIRST, then raise -- mirroring the real ComputeAgentBackend /
+            # KueueBackend post-write-raise shape (an enqueue failure AFTER the cloud_job upsert) rather
+            # than the pre-fix stub, which raised BEFORE touching the row and so could never distinguish
+            # "the write never happened" from "the write happened and was rolled back". Wrapping the
+            # write in the SAME session.begin_nested() SAVEPOINT the fixed backends use proves the
+            # assertions below (awaiting/backend_id=None) hold because the SAVEPOINT rolled the write
+            # back -- not merely because nothing was ever written.
+            async with session.begin_nested():
+                await session.execute(
+                    update(CloudJob).where(CloudJob.file_id == file.id).values(backend_id=self.id, status=CloudJobStatus.SUBMITTED.value)
+                )
+                raise RuntimeError(f"{self.id}: kube submit / S3 stage blew up")
         if self._raise_on == "dispatch_noagent":
             raise NoActiveAgentError("fileserver")
         # Post-MIG-04 there is no ``files.state`` dual-write: the file's push status is DERIVED from the
@@ -304,10 +315,18 @@ async def test_stage_cloud_window_isolation_generic_dispatch_raise_holds_candida
 
     Before the D-07 widening (RED): the dispatch guard catches ONLY ``NoActiveAgentError``, so a generic
     ``RuntimeError`` propagates straight out and aborts the tick. After: a distinct ``except Exception``
-    branch counts the candidate skipped, leaves it AWAITING_CLOUD (no state mutated -- dispatch resolves
-    the fileserver before any mutation), and iterates to the NEXT candidate. With 2 candidates both
-    routing to the raising backend, ``dispatch`` is invoked TWICE (the loop did NOT break) and the tick
-    returns cleanly without raising.
+    branch counts the candidate skipped, leaves it AWAITING_CLOUD, and iterates to the NEXT candidate.
+    With 2 candidates both routing to the raising backend, ``dispatch`` is invoked TWICE (the loop did
+    NOT break) and the tick returns cleanly without raising.
+
+    phaze-uciu.3 (was "cements the wrong invariant"): the stub's ``dispatch`` now WRITES the
+    ``cloud_job`` row (``status='submitted'``, ``backend_id`` set) BEFORE raising, inside its own
+    ``session.begin_nested()`` SAVEPOINT -- mirroring the real ``ComputeAgentBackend`` /
+    ``KueueBackend`` post-write-raise shape (an enqueue failure AFTER the row write) instead of the
+    old pre-fix stub that raised before touching the row at all (a shape a pre-D-01 backend could
+    never actually produce, since the real bug was a write that SURVIVED an enqueue failure). The
+    "no state mutated" assertions below now hold because the SAVEPOINT rolled the write back, not
+    because dispatch never attempted one -- this is what a regression on the SAVEPOINT fix would fail.
     """
     raiser = _StubBackend(id="kueue-a", rank=10, cap=5, raise_on="dispatch")
     _patch_backends(monkeypatch, [raiser])
