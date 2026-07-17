@@ -6,7 +6,7 @@ from datetime import date, datetime  # noqa: TC003 — SQLAlchemy resolves Mappe
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import Boolean, Date, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -62,6 +62,10 @@ class TracklistVersion(TimestampMixin, Base):
 
     tracklist: Mapped[Tracklist] = relationship("Tracklist", back_populates="versions", lazy="noload")
     tracks: Mapped[list[TracklistTrack]] = relationship("TracklistTrack", back_populates="version", lazy="noload")
+
+    # phaze-5vmt: a UNIQUE (tracklist_id, version_number) makes a concurrent version race fail loudly
+    # (IntegrityError -> SAQ retry) instead of silently creating duplicate versions that orphan tracks.
+    __table_args__ = (UniqueConstraint("tracklist_id", "version_number", name="uq_tracklist_versions_tracklist_id_version_number"),)
 
 
 class TracklistTrack(TimestampMixin, Base):

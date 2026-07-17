@@ -7,7 +7,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
-from phaze.tasks.tracklist import _store_scraped_tracklist, refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+import pytest
+
+from phaze.tasks.tracklist import EmptyScrapeError, _store_scraped_tracklist, refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
 
 def _make_ctx() -> dict[str, Any]:
@@ -212,7 +214,10 @@ async def test_scrape_and_store_tracklist(mock_scraper_cls: MagicMock) -> None:
     mock_version.version_number = 2
     mock_version_result.scalar_one_or_none.return_value = mock_version
 
-    session.execute.side_effect = [mock_tl_result, mock_existing_result, mock_version_result, mock_version_result]
+    # Execute order: task's tracklist-by-id lookup, then inside _store_scraped_tracklist the
+    # per-external_id advisory lock (phaze-5vmt), the existing-tracklist lookup, the version
+    # lookup, and finally the task's own version lookup.
+    session.execute.side_effect = [mock_tl_result, MagicMock(), mock_existing_result, mock_version_result, mock_version_result]
 
     scraped = _make_scraped_tracklist()
     mock_scraper = AsyncMock()
@@ -244,7 +249,8 @@ async def test_scrape_and_store_tracklist_parses_non_first_date_format(mock_scra
     mock_version = MagicMock()
     mock_version.version_number = 2
     mock_version_result.scalar_one_or_none.return_value = mock_version
-    session.execute.side_effect = [mock_tl_result, mock_existing_result, mock_version_result, mock_version_result]
+    # +1 execute for the per-external_id advisory lock inside _store_scraped_tracklist (phaze-5vmt).
+    session.execute.side_effect = [mock_tl_result, MagicMock(), mock_existing_result, mock_version_result, mock_version_result]
 
     scraped = _make_scraped_tracklist()
     scraped.date = "14 Apr 2024"  # "%d %b %Y" -- the FIRST format "%Y-%m-%d" raises ValueError -> continue -> this matches
@@ -317,6 +323,105 @@ async def test_store_scraped_tracklist_swallows_non_valueerror_date() -> None:
     result = await _store_scraped_tracklist(session, scraped)
 
     assert result.date is None
+
+
+async def test_store_scraped_tracklist_takes_advisory_lock() -> None:
+    """The per-external_id advisory lock is acquired first, before the upsert read (phaze-5vmt)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+    no_match = MagicMock()
+    no_match.scalar_one_or_none.return_value = None
+    session.execute.return_value = no_match
+
+    scraped = _make_scraped_tracklist(external_id="lock-me")
+    await _store_scraped_tracklist(session, scraped)
+
+    first_stmt = session.execute.call_args_list[0].args[0]
+    assert "pg_advisory_xact_lock" in str(first_stmt)
+
+
+async def test_store_scraped_tracklist_refuses_empty_rescrape_over_existing_tracks() -> None:
+    """An empty (blocked) re-scrape of a tracklist that already has tracks raises, never clobbers (phaze-gfyr)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = uuid.uuid4()
+    existing.artist = "Good Artist"
+    existing.event = "Good Event"
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    count_result = MagicMock()
+    count_result.scalar.return_value = 5  # existing latest version has tracks
+    # Order: advisory lock, external_id lookup, latest-version track count.
+    session.execute.side_effect = [MagicMock(), existing_result, count_result]
+
+    scraped = _make_scraped_tracklist(external_id="blocked")
+    scraped.tracks = []
+    scraped.artist = None
+    scraped.event = None
+    scraped.date = None
+
+    with pytest.raises(EmptyScrapeError):
+        await _store_scraped_tracklist(session, scraped)
+
+    # Metadata preserved, no new (empty) version appended.
+    assert existing.artist == "Good Artist"
+    assert existing.event == "Good Event"
+    session.add.assert_not_called()
+
+
+async def test_store_scraped_tracklist_empty_rescrape_allowed_when_no_prior_tracks() -> None:
+    """An empty re-scrape is allowed when the existing tracklist has no prior version to protect (phaze-gfyr)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None  # nothing to protect -> no track-count query needed
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None  # next_version = 1
+    # Order: advisory lock, external_id lookup, max-version lookup (no track-count query fires).
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="empty-ok")
+    scraped.tracks = []
+
+    result = await _store_scraped_tracklist(session, scraped)
+    assert result is existing
+
+
+async def test_store_scraped_tracklist_does_not_null_metadata_on_partial_scrape() -> None:
+    """A scrape that resolves tracks but no artist must not null the existing artist (phaze-gfyr)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = uuid.uuid4()
+    existing.artist = "Keep Me"
+    existing.event = "Keep Event"
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    # scraped has tracks -> the empty-guard short-circuits before any track-count query.
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="partial")
+    scraped.artist = None  # scrape produced no artist
+    scraped.event = None
+
+    await _store_scraped_tracklist(session, scraped)
+
+    assert existing.artist == "Keep Me"
+    assert existing.event == "Keep Event"
 
 
 @patch("phaze.tasks.tracklist.scrape_and_store_tracklist")

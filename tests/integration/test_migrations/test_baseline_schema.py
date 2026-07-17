@@ -185,20 +185,51 @@ def test_baseline_revision_contract() -> None:
 
 
 def test_baseline_is_the_only_migration() -> None:
-    """The prune pattern holds until a NEW revision intentionally lands: 039 has no siblings named 0xx."""
+    """The prune pattern holds: only the 039 baseline plus deliberately-landed post-flatten revisions.
+
+    040 (phaze-5vmt) intentionally lands a UNIQUE(tracklist_id, version_number) constraint on top of
+    the baseline; any other resurrected 0xx chain file is a regression.
+    """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
-    assert chain_files == ["039_baseline_schema.py"], f"unexpected chain files resurrected: {chain_files}"
+    assert chain_files == [
+        "039_baseline_schema.py",
+        "040_tracklist_version_unique.py",
+    ], f"unexpected chain files resurrected: {chain_files}"
 
 
 # --- Schema invariants (baseline-built DB via migrated_engine) ---
 
 
 @pytest.mark.asyncio
-async def test_alembic_version_is_039(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands exactly at 039."""
+async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
+    """A bare ``upgrade head`` on an empty DB lands at the current head (040, phaze-5vmt)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "039"
+    assert version == "040"
+
+
+@pytest.mark.asyncio
+async def test_tracklist_version_unique_constraint_enforced(migrated_engine: AsyncEngine) -> None:
+    """040 adds UNIQUE(tracklist_id, version_number): a duplicate version row is rejected (phaze-5vmt)."""
+    tracklist_id = uuid.uuid4()
+    async with migrated_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
+                "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+            ),
+            {"id": tracklist_id, "ext": f"race-{tracklist_id}", "url": "https://example.com/tl"},
+        )
+        await conn.execute(
+            text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+            {"id": uuid.uuid4(), "tid": tracklist_id},
+        )
+    with pytest.raises(IntegrityError):
+        async with migrated_engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+                {"id": uuid.uuid4(), "tid": tracklist_id},
+            )
 
 
 @pytest.mark.asyncio
@@ -345,7 +376,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "039"
+        assert version == "040"
     finally:
         if engine is not None:
             await engine.dispose()

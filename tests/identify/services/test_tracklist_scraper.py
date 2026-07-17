@@ -183,6 +183,27 @@ class TestTracklistScraperScrape:
             await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
 
     @pytest.mark.asyncio
+    async def test_scrape_non_200_raises_status_error(self):
+        """A 403/blocked page must RAISE so SAQ retries rather than parsing an empty tracklist (phaze-o8sy)."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(403, "<html><body>Access denied</body></html>"))
+
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
+        assert exc_info.value.response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_scrape_429_raises_status_error(self):
+        """A 429 rate-limit page also raises rather than silently returning zero tracks (phaze-o8sy)."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(429, "Too Many Requests"))
+
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(httpx.HTTPStatusError):
+            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
+
+    @pytest.mark.asyncio
     async def test_scrape_mashup_detection(self):
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
