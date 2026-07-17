@@ -34,6 +34,7 @@ import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.routers.agent_exec_batches import _get_promote_status_script
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
@@ -165,6 +166,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # 6. Per-(agent, chunk) enqueue. Log-and-continue on individual failures
     # (PATTERNS S5) so a single bad enqueue does not kill the whole dispatch.
     task_router = request.app.state.task_router
+    enqueued_ok = 0
+    undispatched_proposals = 0
     for agent_id, items in groups.items():
         for chunk_index, chunk in enumerate(chunk_proposals(items)):
             try:
@@ -178,6 +181,7 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                         sub_batch_index=chunk_index,
                     ),
                 )
+                enqueued_ok += 1
             except Exception:
                 logger.exception(
                     "dispatch: enqueue failed for agent=%s chunk=%s batch_id=%s",
@@ -185,14 +189,40 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     chunk_index,
                     batch_id,
                 )
+                undispatched_proposals += len(chunk)
+
+    # 6b. phaze-kxsb: reconcile subjobs_expected with what ACTUALLY landed. The hash was seeded
+    # with the PLANNED subjobs_expected before the loop; a chunk that failed to enqueue will never
+    # POST its terminal event, so the promote's exact-equality (subjobs_completed ==
+    # subjobs_expected) could never fire and the batch would spin at 'running' until the 24h TTL
+    # reaped it. Lower subjobs_expected to the count that landed, count the undispatched proposals
+    # as failed so the operator sees them, then either promote-to-terminal directly (nothing landed
+    # -> no sub-job will ever POST) or re-run the promote check (a landed sub-job may already have
+    # reported terminal against the stale, higher expected count -- close that race here).
+    render_status = "running"
+    if groups and undispatched_proposals:
+        key = f"exec:{batch_id}"
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.hset(key, "subjobs_expected", str(enqueued_ok))
+            pipe.hincrby(key, "failed", undispatched_proposals)
+            if enqueued_ok == 0:
+                pipe.hset(key, "status", "complete_with_errors")
+            await pipe.execute()
+        subjobs_expected = enqueued_ok
+        if enqueued_ok == 0:
+            render_status = "complete_with_errors"
+        else:
+            promote_status = _get_promote_status_script(redis_client)
+            await promote_status(keys=[key], client=redis_client)
 
     # 7. D-11 dispatch INFO log.
     logger.info(
-        "dispatch batch_id=%s total=%d n_agents=%d subjobs_expected=%d",
+        "dispatch batch_id=%s total=%d n_agents=%d subjobs_expected=%d undispatched=%d",
         batch_id,
         total,
         len(groups),
         subjobs_expected,
+        undispatched_proposals,
     )
 
     # 8. First-render context for progress.html.
@@ -205,10 +235,12 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
             "skipped_revoked": skipped_revoked,
             "total": total,
             "completed": 0,
-            "failed": 0,
+            # phaze-kxsb: undispatched proposals (chunks that failed to enqueue) are surfaced as
+            # failed at first render, and the status is already terminal when NOTHING landed.
+            "failed": undispatched_proposals,
             "subjobs_expected": subjobs_expected,
             "agents": _build_agents_view(groups, agent_names=agent_names),
-            "status": "running",
+            "status": render_status,
         },
     )
 
