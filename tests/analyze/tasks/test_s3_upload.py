@@ -96,7 +96,37 @@ async def test_non_2xx_part_raises_runtimeerror_no_callback(agent_env, tmp_path)
     respx.put(url1).mock(return_value=httpx.Response(500))
 
     api = _FakeApiClient()
+    file_id = uuid.uuid4()
     with pytest.raises(RuntimeError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.complete_calls == []
+    # phaze-lssv: the terminal failure notifies control so the bounded re-drive / spill runs.
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_report_upload_failed_error_does_not_mask_transfer_error(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-lssv: if the failure callback itself raises, the ORIGINAL transfer error still surfaces."""
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"X" * 5)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(503))
+
+    class _BrokenApi(_FakeApiClient):
+        async def report_upload_failed(self, file_id, detail=None):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise ConnectionError(f"control unreachable for {file_id}")
+
+    api = _BrokenApi()
+    with pytest.raises(RuntimeError, match="part 1 PUT returned 503"):
         await upload_file_s3(
             {"api_client": api},
             file_id=str(uuid.uuid4()),
@@ -134,6 +164,61 @@ async def test_cancellation_is_reraised_not_swallowed(agent_env, tmp_path):  # t
             agent_id="fileserver-1",
         )
     assert api.complete_calls == []
+    # phaze-lssv: a SAQ job-net cancellation is NOT a terminal failure -- no /failed callback fires.
+    assert api.failed_calls == []
+
+
+def test_saq_timeout_scales_with_part_count() -> None:
+    """phaze-g37f: the SAQ job-net timeout scales with the part count, not a fixed single cap.
+
+    A multi-GB upload has many parts; a single fixed budget deterministically cancelled it. Each part
+    carries its own asyncio guard, so the net must grow linearly with the number of parts.
+    """
+    from phaze.tasks.s3_upload import (
+        _OUTER_TIMEOUT_BUFFER_SEC,
+        _SAQ_JOB_TIMEOUT_MARGIN_SEC,
+        UPLOAD_FILE_SAQ_TIMEOUT_SEC,
+        upload_file_saq_timeout_sec,
+    )
+
+    # Single part matches the retained baseline constant.
+    assert upload_file_saq_timeout_sec(1) == UPLOAD_FILE_SAQ_TIMEOUT_SEC
+    # A 64-part (≈4 GiB at 64 MiB parts) transfer gets ~64x the per-part budget -- strictly greater.
+    assert upload_file_saq_timeout_sec(64) > 32 * UPLOAD_FILE_SAQ_TIMEOUT_SEC
+    # The scaling is linear in the per-part budget with a single fixed margin.
+    per_part = 600 + _OUTER_TIMEOUT_BUFFER_SEC
+    assert upload_file_saq_timeout_sec(10) == per_part * 10 + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+    # part_count is floored at 1 (never a zero/negative budget).
+    assert upload_file_saq_timeout_sec(0) == upload_file_saq_timeout_sec(1)
+
+
+@respx.mock
+async def test_multi_part_transfer_is_not_bounded_by_a_single_cap(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-g37f: each part is guarded independently, so many parts complete without a shared cap.
+
+    Every PUT is wrapped in its own ``asyncio.wait_for``; a slow-but-healthy sequence of parts whose
+    cumulative time would exceed one part's budget still succeeds.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"C" * 12)  # 12 bytes -> 3 parts at size 4
+    urls = [f"https://s3.test/bucket/key?partNumber={n}" for n in (1, 2, 3)]
+    for n, url in enumerate(urls, start=1):
+        respx.put(url).mock(return_value=httpx.Response(200, headers={"ETag": f'"etag-{n}"'}))
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    result = await upload_file_s3(
+        {"api_client": api},
+        file_id=str(file_id),
+        original_path=str(src),
+        part_urls=urls,
+        part_size_bytes=4,
+        agent_id="fileserver-1",
+    )
+    assert result == {"file_id": str(file_id), "status": "uploaded"}
+    _sent_file_id, sent_parts = api.complete_calls[0]
+    assert [(p.part_number, p.etag) for p in sent_parts] == [(1, "etag-1"), (2, "etag-2"), (3, "etag-3")]
 
 
 async def test_missing_original_path_is_terminal(agent_env, tmp_path):  # type: ignore[no-untyped-def]
@@ -141,13 +226,17 @@ async def test_missing_original_path_is_terminal(agent_env, tmp_path):  # type: 
     from phaze.tasks.s3_upload import upload_file_s3
 
     api = _FakeApiClient()
+    file_id = uuid.uuid4()
     with pytest.raises(RuntimeError):
         await upload_file_s3(
             {"api_client": api},
-            file_id=str(uuid.uuid4()),
+            file_id=str(file_id),
             original_path=str(tmp_path / "does-not-exist.mp3"),
             part_urls=["https://s3.test/bucket/key?partNumber=1"],
             part_size_bytes=64,
             agent_id="fileserver-1",
         )
     assert api.complete_calls == []
+    # phaze-lssv: even the unreadable-source terminal leg notifies control (no silent strand).
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id

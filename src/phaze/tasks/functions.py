@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from phaze.config import AgentSettings, get_settings
+from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.schemas.agent_analysis import AnalysisFailurePayload, AnalysisProgressPayload, AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_tasks import ProcessFilePayload
 from phaze.services.analysis_exec import AnalysisSubprocessError, run_analysis_subprocess
@@ -70,7 +71,15 @@ def _agent_settings() -> AgentSettings:
     return cfg
 
 
-_MUSIC_FILE_TYPES = frozenset({"mp3", "flac", "ogg", "m4a", "wav", "aiff", "wma", "aac", "opus"})
+# phaze-p0l9: the worker's accepted set MUST agree with the control-plane analyze pending set
+# (services/pipeline.MUSIC_VIDEO_TYPES), which is derived from the SAME EXTENSION_MAP and includes BOTH
+# music AND video. essentia decodes video containers via ffmpeg, so concert videos (the project's core
+# use case) are analyzed like audio. Previously this gate was music-ONLY, so every video was enqueued,
+# skipped without crossing any HTTP boundary, and left its process_file:<id> scheduling-ledger row
+# uncleared -- the analyze stage never converged, recovery re-enqueued it forever, and a cloud-pushed
+# video permanently jammed the bounded cloud window and leaked its scratch copy. Sourcing from
+# EXTENSION_MAP keeps the two sets from ever drifting again.
+_ANALYZABLE_FILE_TYPES = frozenset(ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO))
 
 # The mood/style wire-format converters (_features_to_mood_dict / _features_to_style_dict)
 # now live in phaze.services.analysis_wire (Phase 52, KJOB-02) so the one-shot job_runner
@@ -164,9 +173,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Run essentia analysis on a local file and post results via HTTP."""
     payload = ProcessFilePayload.model_validate(kwargs)
 
-    # Skip non-music files (parity with prior body)
-    if payload.file_type not in _MUSIC_FILE_TYPES:
-        return {"file_id": str(payload.file_id), "status": "skipped", "reason": "not_music"}
+    # phaze-p0l9: skip only genuinely non-analyzable types (companion/unknown). Music AND video both
+    # flow to analysis so the worker agrees with the pending set that enqueued them -- otherwise a
+    # skipped video's ledger row never clears (perpetual in-flight + recovery churn + cloud-window jam).
+    # In practice only music/video file_types are ever enqueued for process_file, so this guard is now
+    # a defensive no-op for the real enqueue set rather than a silent video sink.
+    if payload.file_type not in _ANALYZABLE_FILE_TYPES:
+        return {"file_id": str(payload.file_id), "status": "skipped", "reason": "not_analyzable"}
 
     api: PhazeAgentClient = ctx["api_client"]
 

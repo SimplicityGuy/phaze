@@ -39,6 +39,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.scan_deletion import delete_scan_cascade
@@ -63,6 +64,9 @@ _EXPECTED_COUNTS = {
     "metadata": 1,
     "tag_write_log": 1,
     "file_companions": 1,
+    # phaze-6l74: a force-skip sidecar (fk_stage_skip_file_id_files, NO ON DELETE) on the media file.
+    # Before the fix this blocked the files delete with a ForeignKeyViolation (batch undeletable).
+    "stage_skip": 1,
     # The full-graph seed creates no dedup_resolution / cloud_job sidecars, but the
     # cascade always reports every table in its ordered list (0 rows deleted here).
     "dedup_resolution": 0,
@@ -126,6 +130,9 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
         )
     )
     session.add(FileCompanion(id=uuid.uuid4(), companion_id=companion.id, media_id=media.id))
+    # phaze-6l74: the force-skip sidecar. Its FK to files.id has no ON DELETE, so before the cascade
+    # cleared it the files delete raised ForeignKeyViolation -> the batch was permanently undeletable.
+    session.add(StageSkip(id=uuid.uuid4(), file_id=media.id, stage="metadata", reason="operator force-skip"))
 
     proposal = RenameProposal(id=uuid.uuid4(), file_id=media.id, proposed_filename="better.mp3")
     session.add(proposal)
@@ -195,6 +202,7 @@ async def test_cascade_removes_full_graph_and_returns_counts(session: AsyncSessi
         FileMetadata,
         TagWriteLog,
         FileCompanion,
+        StageSkip,
         FileRecord,
     ):
         assert await _count(session, model) == 0, f"{model.__name__} not fully deleted"

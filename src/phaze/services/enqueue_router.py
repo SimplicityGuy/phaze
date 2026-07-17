@@ -244,7 +244,14 @@ async def resolve_queue_for_task(
         if session is None:
             msg = f"resolving per-agent task {task_name!r} requires a database session"
             raise ValueError(msg)
-        agent = await select_active_agent(session)
+        # phaze-5r8f: scope the pick to the FILESERVER kind. Every task routed through this branch
+        # (scan_live_set, process_file, extract_file_metadata, fingerprint_file) runs against the
+        # fileserver's local media mount, so it MUST land on a fileserver agent. Phase 48/49 compute
+        # agents heartbeat through the same endpoint and run the same worker module, so an unscoped
+        # pick (any kind, most-recently-seen) could route a fileserver-local task to a media-less
+        # compute agent where the path does not exist -- an intermittent failure gated on heartbeat
+        # timing. Compute agents are only ever addressed explicitly via agent_ref / queue_for.
+        agent = await select_active_agent(session, kind="fileserver")
         # quick-260707-dh1: route to the task's LANE queue (phaze-agent-<id>-<lane>), never the
         # bare base. lane_for_task raises for an unmapped name -- but task_name is in AGENT_TASKS
         # here, so it always resolves.

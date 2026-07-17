@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -133,8 +133,29 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
                 "kueue_workload": stmt.excluded.kueue_workload,
                 "cloud_phase": stmt.excluded.cloud_phase,
             },
+            # phaze-kzto: guard the conflict update on the CURRENT status. Every other status writer in
+            # this pipeline uses a CAS to stop late/duplicate writers; this upsert did not. A delayed
+            # submit (e.g. the controller queue backlogged past a reconcile tick that already spilled
+            # the file to 'awaiting' or finalized it 'succeeded') would otherwise RESURRECT that row to
+            # SUBMITTED, re-inflate the kueue in_flight cap with a phantom slot, and create a doomed
+            # duplicate Job (whose staged S3 input was already deleted). Only an UPLOADED (the normal
+            # post-staging status) or SUBMITTED (an idempotent re-run) row may advance. A first-time
+            # submit with no prior row still INSERTs -- there is no conflict, so this WHERE never applies.
+            where=CloudJob.status.in_((CloudJobStatus.UPLOADED.value, CloudJobStatus.SUBMITTED.value)),
         )
-        await session.execute(stmt)
+        res = cast("CursorResult[Any]", await session.execute(stmt))
+        if res.rowcount == 0:
+            # The conflict row is in a non-advanceable status (spilled 'awaiting' / terminal). This is a
+            # late/duplicate submit: do NOT flip the row, and tear down the Job we just POSTed so no
+            # orphaned doomed pod (its S3 input may already be deleted) lingers or charges a cap slot.
+            await session.rollback()
+            await kube_staging.delete_job(name, kube)
+            logger.warning(
+                "submit_cloud_job: late/duplicate submit no-op (cloud_job not uploaded/submitted); deleted Job",
+                file_id=str(fid),
+                kueue_workload=name,
+            )
+            return {"file_id": str(fid), "kueue_workload": name, "status": "skipped"}
         await session.commit()
 
     logger.info("submit_cloud_job: cloud_job submitted", file_id=str(fid), kueue_workload=name)

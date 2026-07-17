@@ -13,8 +13,9 @@
    Trigger (D-01, reused VERBATIM): ONE GENERATE ALL button posting to the EXISTING
    POST /pipeline/proposals (routers/pipeline.py:913 trigger_proposals_ui), which enqueues the
    proposal-pending batches and returns pipeline/partials/trigger_response.html into
-   #propose-trigger-response. R-4 bulk-enqueue guard: hx-confirm naming the scope + a :disabled
-   busy-gate on $store.pipeline.proposalsBusy (don't double-enqueue while litellm jobs churn).
+   #propose-trigger-response. R-4 bulk-enqueue guard: hx-confirm naming the scope + hx-disabled-elt
+   + a :disabled busy-gate on $store.pipeline.controllerBusy (the SEEDED SAQ queue-depth key that
+   gates Proposals -- stats_bar.html:66; don't double-enqueue while litellm jobs churn).
 
    Model column (A1): the CONFIGURED settings.llm_model id (shell._render_stage -> llm_model), NOT a
    per-row value -- every proposal in a run is produced by the one configured model. Conf tier reuses
@@ -28,12 +29,13 @@
 {% set subcount = "'" ~ (propose_proposals | length) ~ " proposals ready · litellm'" %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
-    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't double-enqueue litellm jobs). #}
+    {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
     <button type="button"
             hx-post="/pipeline/proposals" hx-target="#propose-trigger-response" hx-swap="innerHTML"
             hx-confirm="Generate AI proposals for all {{ propose_proposals | length }} pending files? This enqueues {{ propose_proposals | length }} litellm jobs."
             hx-indicator="#propose-trigger-spinner"
-            :disabled="$store.pipeline.proposalsBusy > 0"
+            hx-disabled-elt="this"
+            :disabled="$store.pipeline.controllerBusy > 0"
             aria-label="Generate AI proposals for all pending files"
             class="{{ _btn }}">GENERATE ALL</button>
     <span id="propose-trigger-spinner" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>

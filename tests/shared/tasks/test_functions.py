@@ -315,8 +315,8 @@ async def test_process_file_defaults_windows_empty_when_absent(mock_pool: AsyncM
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
-async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
-    """Non-music file_types short-circuit before pool + HTTP call."""
+async def test_process_file_skips_non_analyzable(mock_pool: AsyncMock) -> None:
+    """Non-analyzable (companion) file_types short-circuit before pool + HTTP call."""
     api = AsyncMock()
     api.put_analysis = AsyncMock()
     ctx = _make_ctx(api_client=api)
@@ -324,9 +324,30 @@ async def test_process_file_skips_non_music(mock_pool: AsyncMock) -> None:
     result = await process_file(ctx, **_make_payload_kwargs(file_type="jpg"))
 
     assert result["status"] == "skipped"
-    assert result["reason"] == "not_music"
+    assert result["reason"] == "not_analyzable"
     mock_pool.assert_not_awaited()
     api.put_analysis.assert_not_awaited()
+
+
+@pytest.mark.parametrize("video_type", ["mp4", "mkv", "webm", "mov"])
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_analyzes_video(mock_pool: AsyncMock, video_type: str) -> None:
+    """phaze-p0l9: video file_types are analyzed (not skipped), so they cross the HTTP boundary.
+
+    A skipped video crossed no callback, so its scheduling-ledger row never cleared -- the analyze
+    stage never converged and recovery re-enqueued it forever. Videos must reach put_analysis (or a
+    terminal failure ack) exactly like audio.
+    """
+    mock_pool.return_value = {"bpm": 120.0, "musical_key": "A minor", "features": {}, "windows": []}
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_type=video_type))
+
+    assert result["status"] == "analyzed"  # NOT skipped
+    mock_pool.assert_awaited_once()
+    api.put_analysis.assert_awaited_once()
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)

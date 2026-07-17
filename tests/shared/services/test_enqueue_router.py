@@ -57,6 +57,7 @@ async def _seed_agent(
     agent_id: str,
     last_seen_at: datetime | None,
     revoked: bool = False,
+    kind: str = "fileserver",
 ) -> Agent:
     """Insert a kebab-case test agent with explicit liveness columns."""
     agent = Agent(
@@ -66,6 +67,7 @@ async def _seed_agent(
         scan_roots=[],
         last_seen_at=last_seen_at,
         revoked_at=datetime.now(UTC) if revoked else None,
+        kind=kind,
     )
     session.add(agent)
     await session.commit()
@@ -279,6 +281,34 @@ async def test_resolve_agent_task_returns_per_agent_queue(session: AsyncSession)
     assert routed.agent_id == "fileserver-01"
     # quick-260707-dh1: process_file routes to the analyze lane queue.
     assert routed.queue.name == "phaze-agent-fileserver-01-analyze"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_task_ignores_more_recent_compute_agent(session: AsyncSession) -> None:
+    """phaze-5r8f: an AGENT_TASKS pick lands on a FILESERVER agent even when a compute agent is newer.
+
+    Fileserver-local tasks (scan_live_set/process_file/...) run against the media mount; a media-less
+    compute agent that merely heartbeated most recently must NOT win the pick.
+    """
+    now = datetime.now(UTC)
+    await _seed_agent(session, agent_id="fileserver-01", last_seen_at=now - timedelta(minutes=5), kind="fileserver")
+    # Compute agent heartbeated MORE recently -- the unscoped pick would (wrongly) choose it.
+    await _seed_agent(session, agent_id="compute-burst", last_seen_at=now, kind="compute")
+    app_state = stub_app_state()
+
+    routed = await resolve_queue_for_task("scan_live_set", app_state, session)
+
+    assert routed.agent_id == "fileserver-01"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_task_raises_when_only_compute_online(session: AsyncSession) -> None:
+    """phaze-5r8f: with ONLY a compute agent online, a fileserver-local task fails loud (no misroute)."""
+    await _seed_agent(session, agent_id="compute-burst", last_seen_at=datetime.now(UTC), kind="compute")
+    app_state = stub_app_state()
+
+    with pytest.raises(NoActiveAgentError):
+        await resolve_queue_for_task("scan_live_set", app_state, session)
 
 
 @pytest.mark.asyncio

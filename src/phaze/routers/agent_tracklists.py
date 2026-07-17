@@ -111,6 +111,26 @@ async def create_tracklist(
         )
 
     # 3. Owner path -- do the DB transaction.
+    # We hold the owner lock (req_key). ANY failure before resp_key is cached (transient asyncpg
+    # blip, deadlock, commit failure) must RELEASE the lock, or the 1h TTL strands every subsequent
+    # delivery -- including this client's own retries -- on the 409 concurrent-writer path (which
+    # agent_client never retries), permanently and silently discarding a matched tracklist. Release
+    # on failure so the next retry can re-acquire (phaze-dwwj).
+    try:
+        return await _run_owner_path(session, redis_client, resp_key, body, agent)
+    except Exception:
+        await redis_client.delete(req_key)
+        raise
+
+
+async def _run_owner_path(
+    session: AsyncSession,
+    redis_client: redis_async.Redis,
+    resp_key: str,
+    body: TracklistCreatePayload,
+    agent: Agent,
+) -> TracklistCreateResponse:
+    """Owner-path DB transaction + response cache. Raises on any failure so the caller releases the lock."""
     # Step A: UPSERT Tracklist by external_id. ON CONFLICT preserves the existing
     # row (so its id stays stable across replays with new request_ids); we update
     # only file_id + source for last-write-wins on those mutable fields. The

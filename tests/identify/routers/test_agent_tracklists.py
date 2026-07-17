@@ -336,6 +336,58 @@ async def test_tracklist_concurrent_writer_returns_409_after_poll_exhaustion(
     assert "duplicate in-flight request" in r.text
 
 
+@pytest.mark.integration
+async def test_tracklist_owner_failure_releases_lock_then_retry_succeeds(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-dwwj: a mid-handler failure in the owner path RELEASES the req_key lock so a retry works.
+
+    Before the fix, ANY exception after ``SET NX`` (a transient asyncpg blip, deadlock, commit failure)
+    returned without caching a response and left the lock held for its full 1h TTL. Every subsequent
+    delivery -- including the client's own next retry -- then lost the ``SET NX``, polled, and got a
+    409 that agent_client maps to a NEVER-retried error, permanently and silently discarding a matched
+    tracklist. The owner path now DELs the lock on failure, so the very next retry re-acquires it.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    request_id = uuid.uuid4()
+    req_key = f"{agent_tracklists._REQ_PREFIX}{request_id}"
+    payload = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": f"fp-dead-{file_id.hex[:8]}",
+        "request_id": str(request_id),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1", "timestamp": "00:00:00"}],
+    }
+
+    # Simulate a transient failure inside the owner path (after SET NX won the lock).
+    calls = {"n": 0}
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        calls["n"] += 1
+        raise RuntimeError("transient blip in the owner path")
+
+    monkeypatch.setattr(agent_tracklists, "clear_ledger_entry", _boom)
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        with pytest.raises(RuntimeError, match="transient blip"):
+            await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    # The core fix: the lock is RELEASED despite the failure (was: held for 1h, stranding all retries).
+    assert await redis_client.get(req_key) is None, "owner-path failure must DEL the req_key lock"
+    assert calls["n"] == 1
+
+    # The retry now re-acquires the freed lock and succeeds (no permanent 409 dead-lock).
+    monkeypatch.undo()
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+    assert r.status_code == 200, r.text
+    assert r.json()["track_count"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Phase 45 (L-02): scan_live_set scheduling-ledger clear -- match path + terminal-ack endpoint
 # ---------------------------------------------------------------------------

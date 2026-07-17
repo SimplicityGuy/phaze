@@ -912,6 +912,48 @@ async def test_backfill_with_compute_online_still_holds_a_clean_awaiting_cloud_f
 
 
 @pytest.mark.asyncio
+async def test_backfill_marker_clear_is_staged_before_routing_commit(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-7g4t: the marker strips are staged in the SAME session/transaction as the hold.
+
+    The marker strips (failed_at clear + ledger delete) must be pending in the session BEFORE
+    ``_route_discovered_by_duration`` runs, so its single internal commit flushes all three mutations
+    atomically. The old code committed the holds first and the strips in a SECOND transaction, leaving
+    an interruption window that permanently stranded held files. Proving the strips are already staged
+    when routing is entered proves there is no separate second commit.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    (long_failed,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    real_route = pipeline_mod._route_discovered_by_duration
+    seen: dict[str, object] = {}
+
+    async def _spy(app_state: object, sess: AsyncSession, candidates: object, *args: object) -> dict[str, int]:
+        # At routing entry the strips must ALREADY be pending in the endpoint's session (autoflush
+        # makes the staged UPDATE/DELETE visible to these reads) -- i.e. no separate prior commit.
+        seen["ledger_at_route"] = await _process_file_ledger_rows(sess, long_failed.id)
+        seen["failed_at_route"] = await _analysis_failed_at(sess, long_failed.id)
+        return await real_route(app_state, sess, candidates, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_mod, "_route_discovered_by_duration", _spy)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    # The strips were staged in the SAME transaction before the hold's single commit.
+    assert seen["ledger_at_route"] == []  # ledger delete already staged
+    assert seen["failed_at_route"] is None  # failed_at clear already staged
+    # End state: a clean drainable hold (all three mutations landed together).
+    assert await _is_awaiting_cloud(session, long_failed.id)
+    assert await _analysis_failed_at(session, long_failed.id) is None
+    assert await _process_file_ledger_rows(session, long_failed.id) == []
+
+
+@pytest.mark.asyncio
 async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, session: AsyncSession) -> None:
     """A second backfill click holds zero new files — never a whole-backlog over-enqueue (D-10)."""
     await _persist_failed_with_duration(session, [_LONG, _LONG])
