@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # ``/filename`` to yield that directory. Using COALESCE here is what lets rename-in-place
 # proposals (proposed_path IS NULL) be compared by their true on-disk destination instead
 # of collapsing to ``/filename`` (Postgres ``concat`` ignores NULLs) -- phaze-7czn.
-def _dest_path_expr() -> object:
+def _dest_path_expr() -> ColumnElement[str]:
     """Build the ``<effective-dir>/<proposed_filename>`` key expression for collision grouping."""
     effective_dir = func.coalesce(
         RenameProposal.proposed_path,

@@ -37,9 +37,7 @@ async def _latest_version_has_tracks(session: Any, tracklist: Any) -> bool:
     """Return True if the tracklist's current latest version has at least one track."""
     if tracklist.latest_version_id is None:
         return False
-    result = await session.execute(
-        select(func.count()).select_from(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id)
-    )
+    result = await session.execute(select(func.count()).select_from(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id))
     return (result.scalar() or 0) > 0
 
 

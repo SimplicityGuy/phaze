@@ -128,9 +128,7 @@ class TestDetectCollisions:
         # Two in-place renames (null path) with the same filename but DIFFERENT source
         # directories resolve to different destinations -> no collision.
         await _create_proposal(session, proposed_filename="Track.mp3", proposed_path=None, original_dir="/music/setA")
-        await _create_proposal(
-            session, proposed_filename="Track.mp3", proposed_path=None, original_filename="other.mp3", original_dir="/music/setB"
-        )
+        await _create_proposal(session, proposed_filename="Track.mp3", proposed_path=None, original_filename="other.mp3", original_dir="/music/setB")
 
         result = await detect_collisions(session)
         assert result == []

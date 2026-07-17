@@ -14,8 +14,8 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
 if TYPE_CHECKING:
-    import uuid as uuid_mod
     from collections.abc import Iterable
+    import uuid as uuid_mod
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
