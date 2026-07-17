@@ -7,11 +7,28 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# The effective destination directory of an approved proposal, mirroring the executor
+# (tasks/execution.py:_resolve_destination): a non-null proposed_path is the relative
+# destination dir; a NULL/in-place proposed_path resolves to the file's own directory,
+# i.e. dirname(original_path). ``regexp_replace(..., '/[^/]*$', '')`` strips the trailing
+# ``/filename`` to yield that directory. Using COALESCE here is what lets rename-in-place
+# proposals (proposed_path IS NULL) be compared by their true on-disk destination instead
+# of collapsing to ``/filename`` (Postgres ``concat`` ignores NULLs) -- phaze-7czn.
+def _dest_path_expr() -> object:
+    """Build the ``<effective-dir>/<proposed_filename>`` key expression for collision grouping."""
+    effective_dir = func.coalesce(
+        RenameProposal.proposed_path,
+        func.regexp_replace(FileRecord.original_path, "/[^/]*$", ""),
+    )
+    return func.concat(effective_dir, "/", RenameProposal.proposed_filename)
 
 
 @dataclass
@@ -27,16 +44,17 @@ class TreeNode:
 async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
     """Find approved proposals that would collide at the same destination.
 
-    Returns list of (full_path, count) tuples where count > 1.
-    Only considers proposals with a non-null proposed_path.
+    Returns list of (full_path, count) tuples where count > 1. Covers BOTH
+    path-relative renames and NULL-path (rename-in-place) proposals, keying each
+    on its effective on-disk destination so two in-place renames in the same
+    source directory that target the same filename are flagged (phaze-7czn).
     """
-    full_path = func.concat(RenameProposal.proposed_path, "/", RenameProposal.proposed_filename)
+    full_path = _dest_path_expr()
     stmt = (
         select(full_path.label("dest"), func.count().label("cnt"))
-        .where(
-            RenameProposal.status == ProposalStatus.APPROVED,
-            RenameProposal.proposed_path.isnot(None),
-        )
+        .select_from(RenameProposal)
+        .join(FileRecord, RenameProposal.file_id == FileRecord.id)
+        .where(RenameProposal.status == ProposalStatus.APPROVED)
         .group_by(full_path)
         .having(func.count() > 1)
     )
@@ -47,18 +65,24 @@ async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
 async def get_collision_ids(session: AsyncSession) -> set[str]:
     """Return set of string UUIDs for proposals that participate in collisions.
 
-    Used by template rendering to show collision badges on affected rows.
+    Used by template rendering to show collision badges on affected rows. Mirrors
+    :func:`detect_collisions`, including NULL-path (in-place) proposals so those
+    rows also render a collision badge (phaze-7czn).
     """
     collisions = await detect_collisions(session)
     if not collisions:
         return set()
 
     collision_paths = [path for path, _ in collisions]
-    full_path = func.concat(RenameProposal.proposed_path, "/", RenameProposal.proposed_filename)
-    stmt = select(RenameProposal.id).where(
-        RenameProposal.status == ProposalStatus.APPROVED,
-        RenameProposal.proposed_path.isnot(None),
-        full_path.in_(collision_paths),
+    full_path = _dest_path_expr()
+    stmt = (
+        select(RenameProposal.id)
+        .select_from(RenameProposal)
+        .join(FileRecord, RenameProposal.file_id == FileRecord.id)
+        .where(
+            RenameProposal.status == ProposalStatus.APPROVED,
+            full_path.in_(collision_paths),
+        )
     )
     result = await session.execute(stmt)
     return {str(row[0]) for row in result.all()}

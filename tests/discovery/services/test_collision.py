@@ -29,14 +29,21 @@ async def _create_proposal(
     proposed_path: str | None = None,
     status: str = ProposalStatus.APPROVED,
     original_filename: str = "test.mp3",
+    original_dir: str | None = None,
 ) -> RenameProposal:
-    """Create a FileRecord + RenameProposal pair for testing."""
+    """Create a FileRecord + RenameProposal pair for testing.
+
+    ``original_dir`` pins the file's source directory (used to reproduce two
+    in-place renames sharing a directory); when omitted each file gets a unique
+    directory so it never collides with another by accident.
+    """
     file_id = uuid.uuid4()
+    source_dir = original_dir if original_dir is not None else f"/music/{uuid.uuid4().hex}"
     file_record = FileRecord(
         agent_id="test-fileserver",
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
-        original_path=f"/music/{uuid.uuid4().hex}/{original_filename}",
+        original_path=f"{source_dir}/{original_filename}",
         original_filename=original_filename,
         current_path=f"/music/{original_filename}",
         file_type="music",
@@ -115,15 +122,37 @@ class TestDetectCollisions:
         assert result[0][1] == 2
 
     @pytest.mark.asyncio
-    async def test_excludes_null_proposed_path(self, session: AsyncSession) -> None:
+    async def test_null_path_different_dirs_no_collision(self, session: AsyncSession) -> None:
         from phaze.services.collision import detect_collisions
 
-        # Two proposals with null path and same filename should NOT collide
-        await _create_proposal(session, proposed_filename="Track.mp3", proposed_path=None)
-        await _create_proposal(session, proposed_filename="Track.mp3", proposed_path=None, original_filename="other.mp3")
+        # Two in-place renames (null path) with the same filename but DIFFERENT source
+        # directories resolve to different destinations -> no collision.
+        await _create_proposal(session, proposed_filename="Track.mp3", proposed_path=None, original_dir="/music/setA")
+        await _create_proposal(
+            session, proposed_filename="Track.mp3", proposed_path=None, original_filename="other.mp3", original_dir="/music/setB"
+        )
 
         result = await detect_collisions(session)
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_null_path_same_dir_collides(self, session: AsyncSession) -> None:
+        """Two in-place renames in the SAME directory targeting the same filename collide (phaze-7czn)."""
+        from phaze.services.collision import detect_collisions
+
+        await _create_proposal(session, proposed_filename="Artist - Track.mp3", proposed_path=None, original_dir="/music/coachella")
+        await _create_proposal(
+            session,
+            proposed_filename="Artist - Track.mp3",
+            proposed_path=None,
+            original_filename="set (1).mp3",
+            original_dir="/music/coachella",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][0] == "/music/coachella/Artist - Track.mp3"
+        assert result[0][1] == 2
 
     @pytest.mark.asyncio
     async def test_excludes_non_approved_proposals(self, session: AsyncSession) -> None:
@@ -170,6 +199,20 @@ class TestGetCollisionIds:
             proposed_filename="Live.mp3",
             proposed_path=path,
             original_filename="dupe.mp3",
+        )
+
+        ids = await get_collision_ids(session)
+        assert str(p1.id) in ids
+        assert str(p2.id) in ids
+
+    @pytest.mark.asyncio
+    async def test_returns_null_path_collision_proposal_ids(self, session: AsyncSession) -> None:
+        """In-place (null-path) collisions also surface their proposal ids for the badge (phaze-7czn)."""
+        from phaze.services.collision import get_collision_ids
+
+        p1 = await _create_proposal(session, proposed_filename="Canonical.mp3", proposed_path=None, original_dir="/music/edc")
+        p2 = await _create_proposal(
+            session, proposed_filename="Canonical.mp3", proposed_path=None, original_filename="dupe.mp3", original_dir="/music/edc"
         )
 
         ids = await get_collision_ids(session)
