@@ -136,6 +136,59 @@ async def test_cancellation_is_reraised_not_swallowed(agent_env, tmp_path):  # t
     assert api.complete_calls == []
 
 
+def test_saq_timeout_scales_with_part_count() -> None:
+    """phaze-g37f: the SAQ job-net timeout scales with the part count, not a fixed single cap.
+
+    A multi-GB upload has many parts; a single fixed budget deterministically cancelled it. Each part
+    carries its own asyncio guard, so the net must grow linearly with the number of parts.
+    """
+    from phaze.tasks.s3_upload import (
+        UPLOAD_FILE_SAQ_TIMEOUT_SEC,
+        _OUTER_TIMEOUT_BUFFER_SEC,
+        _SAQ_JOB_TIMEOUT_MARGIN_SEC,
+        upload_file_saq_timeout_sec,
+    )
+
+    # Single part matches the retained baseline constant.
+    assert upload_file_saq_timeout_sec(1) == UPLOAD_FILE_SAQ_TIMEOUT_SEC
+    # A 64-part (≈4 GiB at 64 MiB parts) transfer gets ~64x the per-part budget -- strictly greater.
+    assert upload_file_saq_timeout_sec(64) > 32 * UPLOAD_FILE_SAQ_TIMEOUT_SEC
+    # The scaling is linear in the per-part budget with a single fixed margin.
+    per_part = 600 + _OUTER_TIMEOUT_BUFFER_SEC
+    assert upload_file_saq_timeout_sec(10) == per_part * 10 + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+    # part_count is floored at 1 (never a zero/negative budget).
+    assert upload_file_saq_timeout_sec(0) == upload_file_saq_timeout_sec(1)
+
+
+@respx.mock
+async def test_multi_part_transfer_is_not_bounded_by_a_single_cap(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-g37f: each part is guarded independently, so many parts complete without a shared cap.
+
+    Every PUT is wrapped in its own ``asyncio.wait_for``; a slow-but-healthy sequence of parts whose
+    cumulative time would exceed one part's budget still succeeds.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"C" * 12)  # 12 bytes -> 3 parts at size 4
+    urls = [f"https://s3.test/bucket/key?partNumber={n}" for n in (1, 2, 3)]
+    for n, url in enumerate(urls, start=1):
+        respx.put(url).mock(return_value=httpx.Response(200, headers={"ETag": f'"etag-{n}"'}))
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    result = await upload_file_s3(
+        {"api_client": api},
+        file_id=str(file_id),
+        original_path=str(src),
+        part_urls=urls,
+        part_size_bytes=4,
+        agent_id="fileserver-1",
+    )
+    assert result == {"file_id": str(file_id), "status": "uploaded"}
+    sent_file_id, sent_parts = api.complete_calls[0]
+    assert [(p.part_number, p.etag) for p in sent_parts] == [(1, "etag-1"), (2, "etag-2"), (3, "etag-3")]
+
+
 async def test_missing_original_path_is_terminal(agent_env, tmp_path):  # type: ignore[no-untyped-def]
     """A missing/unreadable original_path is a TERMINAL RuntimeError (no local fallback, no callback)."""
     from phaze.tasks.s3_upload import upload_file_s3

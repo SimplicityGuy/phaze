@@ -35,7 +35,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.services import s3_staging
 from phaze.services.enqueue_router import lane_for_task, select_active_agent
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC
+from phaze.tasks.s3_upload import upload_file_saq_timeout_sec
 
 
 if TYPE_CHECKING:
@@ -156,7 +156,10 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         await queue.enqueue(
             "s3_upload",
             key=f"s3_upload:{file.id}",
-            timeout=UPLOAD_FILE_SAQ_TIMEOUT_SEC,
+            # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
+            # not deterministically cancelled by a fixed single-part cap. Each part carries its own
+            # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
+            timeout=upload_file_saq_timeout_sec(part_count),
             **payload.model_dump(mode="json"),
         )
 
