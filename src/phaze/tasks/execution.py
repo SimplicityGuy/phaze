@@ -6,8 +6,9 @@ Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposa
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
 2. POST /execution-log with status='in_progress' (per-proposal audit row).
 3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
-4. Move `original_path` -> destination (mkdir parent as needed).
-5. Delete the original.
+4. Move `original_path` -> destination (os.replace when same-fs, else a bounded
+   streamed copy -- never load the whole file into RAM; concert videos are multi-GB).
+5. Delete the original (only needed on the cross-filesystem copy path).
 6. PATCH /execution-log/{id} with status='completed' (or 'failed').
 7. PATCH /proposals/{id}/state with proposal_state=executed, file_state=moved, current_path=proposed_path.
 8. POST /exec-batches/{batch_id}/progress with terminal_step + failed_at_step (Phase 28 D-03).
@@ -45,7 +46,9 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Any, Literal
 import uuid
 
@@ -123,6 +126,43 @@ def _sha256_of_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# Chunk size for the cross-filesystem streamed copy. Bounds peak memory
+# regardless of file size: the core use case is multi-GB concert videos, and
+# execute_approved_batch runs on the 'meta' lane (concurrency 2, no memory pin),
+# so a whole-file read would MemoryError -> proposal failed, or the OOM-killer
+# SIGKILLs the worker (uncatchable) and the batch crash-loops on SAQ replay.
+_COPY_CHUNK_BYTES = 16 * 1024 * 1024
+
+
+def _same_filesystem(src: Path, dst_dir: Path) -> bool:
+    """True when `src` and `dst_dir` live on the same filesystem (matching st_dev).
+
+    os.replace is atomic + O(1) only within one filesystem; across a mount
+    boundary it raises ``OSError(EXDEV)``. We pick the branch up front from the
+    device ids instead of catching EXDEV, so the fallback path is deterministic
+    and testable. ``dst_dir`` (not the not-yet-existent destination file) is what
+    we stat -- the caller has already created it via ``mkdir(parents=True)``.
+    """
+    return src.stat().st_dev == dst_dir.stat().st_dev
+
+
+def _streamed_copy(src: Path, dst: Path) -> None:
+    """Copy `src` -> `dst` in bounded chunks, flushing + fsyncing before return.
+
+    Uses ``shutil.copyfileobj`` with an explicit chunk length so peak memory
+    stays bounded no matter how large the file is (never ``read_bytes()`` the
+    whole file). ``copystat`` preserves mtime to match the atomic-rename branch
+    (which keeps it for free). The fsync durably lands the bytes on disk before
+    the caller unlinks the original, so a crash between copy and unlink cannot
+    lose data.
+    """
+    with src.open("rb") as fsrc, dst.open("wb") as fdst:
+        shutil.copyfileobj(fsrc, fdst, length=_COPY_CHUNK_BYTES)
+        fdst.flush()
+        os.fsync(fdst.fileno())
+    shutil.copystat(src, dst)
 
 
 def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
@@ -211,16 +251,22 @@ async def _execute_one(
                 msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual}"
                 raise ValueError(msg)
 
-        # 4. Copy original -> proposed (mkdir parent as needed). os.replace would
-        # also work but copy+delete leaves the original intact until the copy is
-        # committed.
+        # 4. Move original -> proposed (mkdir parent as needed). Prefer
+        # os.replace (atomic, O(1), constant memory) when src + dst share a
+        # filesystem; otherwise stream the bytes in bounded chunks -- concert
+        # videos are multi-GB and the meta lane has no memory pin, so a
+        # whole-file read would MemoryError / OOM-kill the worker.
         current_step = "copy"
         proposed.parent.mkdir(parents=True, exist_ok=True)
-        proposed.write_bytes(original.read_bytes())
-
-        # 5. Delete the original
-        current_step = "delete"
-        original.unlink()
+        if _same_filesystem(original, proposed.parent):
+            # Atomic rename also removes the original in one syscall -- the move
+            # IS the delete, so there is no separate delete step to fail.
+            original.replace(proposed)
+        else:
+            _streamed_copy(original, proposed)
+            # 5. Delete the original (a cross-filesystem copy leaves it in place).
+            current_step = "delete"
+            original.unlink()
 
         # 6a. PATCH execution log to completed
         try:

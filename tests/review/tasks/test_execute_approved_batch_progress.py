@@ -188,11 +188,17 @@ async def test_delete_failure_maps_to_failed_at_delete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """unlink() raises after a successful copy -> failed_at_step='delete'."""
+    """unlink() raises after a successful copy -> failed_at_step='delete'.
+
+    The 'delete' step only exists on the cross-filesystem fallback (a same-fs
+    os.replace moves + deletes atomically, so there is no separate unlink to
+    fail). Force the streamed-copy fallback so the unlink failure is reachable.
+    """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     job = _make_job_mock()
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
 
     # Monkeypatch Path.unlink to raise OSError ONLY when the orig file path is targeted.
     from pathlib import Path as _Path
