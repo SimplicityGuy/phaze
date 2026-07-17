@@ -16,7 +16,8 @@ Design choices:
   bypass the identity map.
 - Child -> parent ordering so every subquery references only tables not yet
   deleted at that step (verified order in the PR plan's 15-step block; extended
-  from 13 to add the ``dedup_resolution`` and ``cloud_job`` file sidecars).
+  from 13 to add the ``dedup_resolution`` and ``cloud_job`` file sidecars, then
+  to 16 to add the ``stage_skip`` force-skip sidecar -- phaze-6l74).
 - The caller owns the transaction: this function does NOT commit. That keeps it
   composable and lets the endpoint commit the whole cascade atomically.
 """
@@ -39,6 +40,7 @@ from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch
+from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
@@ -56,7 +58,7 @@ logger = structlog.get_logger(__name__)
 async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
     """Delete ``batch_id`` and every descendant row, scoped strictly to its files.
 
-    Executes 15 ordered set-based deletes (child -> parent). Every statement is
+    Executes 16 ordered set-based deletes (child -> parent). Every statement is
     scoped to the files of THIS batch via nested ``SELECT`` subqueries, so no
     other batch's data is ever touched. The ``dedup_resolution`` step is scoped by
     BOTH of its FK columns (``file_id`` OR ``canonical_file_id``), so a canonical
@@ -108,6 +110,10 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
             delete(DedupResolution).where(DedupResolution.file_id.in_(files_of_batch) | DedupResolution.canonical_file_id.in_(files_of_batch)),
         ),
         (CloudJob.__tablename__, delete(CloudJob).where(CloudJob.file_id.in_(files_of_batch))),
+        # StageSkip (force-skip sidecar) FKs files.id with NO ON DELETE and is not deferrable. It is
+        # the ONLY file sidecar with no undo/reaper, so a force-skipped file leaves a live stage_skip
+        # row that blocks the files delete (ForeignKeyViolation -> 500 -> batch permanently undeletable).
+        (StageSkip.__tablename__, delete(StageSkip).where(StageSkip.file_id.in_(files_of_batch))),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.batch_id == batch_id)),
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
