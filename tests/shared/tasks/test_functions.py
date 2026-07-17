@@ -29,10 +29,13 @@ MOCK_ANALYSIS: dict[str, Any] = {
             "musicnn_mtt": [{"label": "happy", "prediction": 0.7}, {"label": "not_happy", "prediction": 0.3}],
             "vggish": [{"label": "happy", "prediction": 0.9}, {"label": "not_happy", "prediction": 0.1}],
         },
+        # phaze-c8zi: REAL essentia metadata lists mood_sad ALPHABETICALLY, i.e. the
+        # NEGATIVE class 'non_sad' FIRST. Positive-class selection must still pick 'sad'
+        # (0.1/0.2/0.1); the old ``predictions[0]`` code would score P(non_sad)=~0.87.
         "mood_sad": {
-            "musicnn_msd": [{"label": "sad", "prediction": 0.1}, {"label": "not_sad", "prediction": 0.9}],
-            "musicnn_mtt": [{"label": "sad", "prediction": 0.2}, {"label": "not_sad", "prediction": 0.8}],
-            "vggish": [{"label": "sad", "prediction": 0.1}, {"label": "not_sad", "prediction": 0.9}],
+            "musicnn_msd": [{"label": "non_sad", "prediction": 0.9}, {"label": "sad", "prediction": 0.1}],
+            "musicnn_mtt": [{"label": "non_sad", "prediction": 0.8}, {"label": "sad", "prediction": 0.2}],
+            "vggish": [{"label": "non_sad", "prediction": 0.9}, {"label": "sad", "prediction": 0.1}],
         },
         "genre": {
             "predictions": [
@@ -94,8 +97,52 @@ def test_features_to_mood_dict_returns_averaged_dict() -> None:
     assert out is not None
     # mood_happy: (0.8+0.7+0.9)/3 = 0.8
     assert out["happy"] == pytest.approx(0.8, rel=1e-3)
-    # mood_sad: (0.1+0.2+0.1)/3 = 0.133
+    # mood_sad (negative-class-first real order): positive 'sad' = (0.1+0.2+0.1)/3 = 0.133
+    # NOT P(non_sad) ~ 0.867, which the old predictions[0] code would have stored.
     assert out["sad"] == pytest.approx(0.1333, rel=1e-2)
+
+
+def test_features_to_mood_dict_selects_positive_class_by_label() -> None:
+    """phaze-c8zi: negative-class-first sets (relaxed/sad/party) must store the POSITIVE prob.
+
+    Mirrors the real essentia alphabetical class order where 'non_<mood>' is listed
+    first. The persisted wire dict drives AI filename/path proposals, so an inverted
+    value (P(non_party) stored as 'party') silently corrupts that metadata. This asserts
+    the label-based selection stores each mood's true positive-class probability.
+    """
+    features = {
+        "mood_relaxed": {
+            "musicnn_msd": [{"label": "non_relaxed", "prediction": 0.05}, {"label": "relaxed", "prediction": 0.95}],
+            "musicnn_mtt": [{"label": "non_relaxed", "prediction": 0.05}, {"label": "relaxed", "prediction": 0.95}],
+            "vggish": [{"label": "non_relaxed", "prediction": 0.05}, {"label": "relaxed", "prediction": 0.95}],
+        },
+        "mood_party": {
+            "musicnn_msd": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
+            "musicnn_mtt": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
+            "vggish": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
+        },
+    }
+    out = _features_to_mood_dict(features)
+    assert out is not None
+    assert out["relaxed"] == pytest.approx(0.95, rel=1e-3), "must store P(relaxed), not P(non_relaxed)"
+    assert out["party"] == pytest.approx(0.1, rel=1e-3), "must store P(party), not P(non_party)"
+
+
+def test_positive_class_prediction_defensive_branches() -> None:
+    """phaze-c8zi: _positive_class_prediction tolerates malformed prediction lists.
+
+    Covers the never-raise contract: non-dict entries are skipped; an all-negative
+    list falls back to the first well-formed entry; a list with no usable dict
+    returns None.
+    """
+    from phaze.services.analysis_wire import _positive_class_prediction
+
+    # Non-dict entries are skipped; the positive-labeled dict is selected.
+    assert _positive_class_prediction([123, {"label": "party", "prediction": 0.7}]) == pytest.approx(0.7)
+    # All labels negative -> fall back to the first well-formed entry.
+    assert _positive_class_prediction([{"label": "non_a", "prediction": 0.3}, {"label": "not_b", "prediction": 0.4}]) == pytest.approx(0.3)
+    # No usable dict at all -> None (never raises).
+    assert _positive_class_prediction(["x", "y"]) is None
 
 
 def test_features_to_mood_dict_returns_none_for_empty() -> None:

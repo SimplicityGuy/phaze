@@ -179,12 +179,36 @@ _MOOD_SET_NAMES = frozenset(
 )
 
 
+def _positive_class_prediction(predictions: list[dict[str, Any]]) -> float:
+    """Return the POSITIVE-class probability from a binary classifier's prediction list.
+
+    essentia's binary-classifier metadata orders classes ALPHABETICALLY, not
+    positive-first, so ``predictions[0]`` is the positive class for only SOME model
+    sets. e.g. ``mood_relaxed`` = ``['non_relaxed', 'relaxed']`` and ``mood_sad`` /
+    ``mood_party`` put the NEGATIVE class first — indexing ``[0]`` there scored the
+    mood with P(non_relaxed) and systematically inverted relaxed/sad/party.
+
+    Select the positive class by LABEL: it is the entry whose label does NOT start
+    with a negation prefix (``non_`` / ``not_``). Falls back to the first entry when
+    no label qualifies (defensive — preserves behavior for unexpected label shapes).
+    Callers guard ``if predictions`` so the list is non-empty here.
+    """
+    positive: dict[str, Any] | None = None
+    for entry in predictions:
+        if not str(entry.get("label", "")).startswith(("non_", "not_")):
+            positive = entry
+            break
+    if positive is None:
+        positive = predictions[0]
+    return float(positive["prediction"])
+
+
 def derive_mood(features: dict[str, Any]) -> str:
     """Derive dominant mood from feature predictions.
 
-    For each mood model set, average the positive-class prediction (first class)
-    across the 3 variants. Return the mood name (without 'mood_' prefix) with
-    the highest averaged confidence.
+    For each mood model set, average the positive-class prediction (selected by
+    label, not list position) across the 3 variants. Return the mood name (without
+    'mood_' prefix) with the highest averaged confidence.
     """
     best_mood = ""
     best_score = -1.0
@@ -196,8 +220,7 @@ def derive_mood(features: dict[str, Any]) -> str:
         variant_scores: list[float] = []
         for _variant_name, predictions in features[set_name].items():
             if predictions:
-                # First class = positive class (binary classifier)
-                variant_scores.append(float(predictions[0]["prediction"]))
+                variant_scores.append(_positive_class_prediction(predictions))
 
         if variant_scores:
             avg_score = sum(variant_scores) / len(variant_scores)
@@ -226,8 +249,9 @@ def derive_style(genre_features: dict[str, Any]) -> str:
 def derive_danceability(features: dict[str, Any]) -> float | None:
     """Derive a scalar danceability from the danceability model set.
 
-    Averages the positive-class (first class = 'danceable') prediction across
-    the 3 variants. Returns None if the danceability set is absent/empty.
+    Averages the positive-class ('danceable') prediction across the 3 variants,
+    selected by label (robust to class order) rather than list position. Returns
+    None if the danceability set is absent/empty.
     """
     set_data = features.get("danceability")
     if not set_data:
@@ -236,7 +260,7 @@ def derive_danceability(features: dict[str, Any]) -> float | None:
     scores: list[float] = []
     for _variant_name, predictions in set_data.items():
         if predictions:
-            scores.append(float(predictions[0]["prediction"]))
+            scores.append(_positive_class_prediction(predictions))
 
     return sum(scores) / len(scores) if scores else None
 

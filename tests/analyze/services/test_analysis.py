@@ -55,46 +55,79 @@ def test_genre_model_exists() -> None:
 
 
 def test_derive_mood() -> None:
-    """Given mood model set predictions where 'happy' has highest averaged positive-class confidence, derive_mood returns 'happy'."""
+    """A quiet/relaxed track resolves to 'relaxed' when the positive class is picked by LABEL.
+
+    phaze-c8zi: the class lists here mirror the REAL essentia metadata order, which is
+    ALPHABETICAL — so mood_relaxed/mood_sad/mood_party list their NEGATIVE class FIRST
+    (['non_relaxed', 'relaxed'] etc.) while acoustic/electronic/aggressive/happy list
+    the positive class first. This fixture is a strong regression: the old
+    ``predictions[0]`` code would score P(non_party)=0.9 as 'party' and wrongly return
+    'party'; label-based selection correctly returns 'relaxed' (its positive prob 0.9).
+    """
     features: dict[str, Any] = {
+        # Positive class FIRST (matches real metadata order for these sets).
         "mood_acoustic": {
-            "musicnn_msd": [{"label": "acoustic", "prediction": 0.2}, {"label": "not_acoustic", "prediction": 0.8}],
-            "musicnn_mtt": [{"label": "acoustic", "prediction": 0.3}, {"label": "not_acoustic", "prediction": 0.7}],
-            "vggish": [{"label": "acoustic", "prediction": 0.1}, {"label": "not_acoustic", "prediction": 0.9}],
+            "musicnn_msd": [{"label": "acoustic", "prediction": 0.6}, {"label": "non_acoustic", "prediction": 0.4}],
+            "musicnn_mtt": [{"label": "acoustic", "prediction": 0.6}, {"label": "non_acoustic", "prediction": 0.4}],
+            "vggish": [{"label": "acoustic", "prediction": 0.6}, {"label": "non_acoustic", "prediction": 0.4}],
         },
         "mood_electronic": {
-            "musicnn_msd": [{"label": "electronic", "prediction": 0.4}, {"label": "not_electronic", "prediction": 0.6}],
-            "musicnn_mtt": [{"label": "electronic", "prediction": 0.3}, {"label": "not_electronic", "prediction": 0.7}],
-            "vggish": [{"label": "electronic", "prediction": 0.5}, {"label": "not_electronic", "prediction": 0.5}],
+            "musicnn_msd": [{"label": "electronic", "prediction": 0.1}, {"label": "non_electronic", "prediction": 0.9}],
+            "musicnn_mtt": [{"label": "electronic", "prediction": 0.1}, {"label": "non_electronic", "prediction": 0.9}],
+            "vggish": [{"label": "electronic", "prediction": 0.1}, {"label": "non_electronic", "prediction": 0.9}],
         },
         "mood_aggressive": {
-            "musicnn_msd": [{"label": "aggressive", "prediction": 0.1}, {"label": "not_aggressive", "prediction": 0.9}],
-            "musicnn_mtt": [{"label": "aggressive", "prediction": 0.2}, {"label": "not_aggressive", "prediction": 0.8}],
-            "vggish": [{"label": "aggressive", "prediction": 0.1}, {"label": "not_aggressive", "prediction": 0.9}],
-        },
-        "mood_relaxed": {
-            "musicnn_msd": [{"label": "relaxed", "prediction": 0.3}, {"label": "not_relaxed", "prediction": 0.7}],
-            "musicnn_mtt": [{"label": "relaxed", "prediction": 0.4}, {"label": "not_relaxed", "prediction": 0.6}],
-            "vggish": [{"label": "relaxed", "prediction": 0.2}, {"label": "not_relaxed", "prediction": 0.8}],
+            "musicnn_msd": [{"label": "aggressive", "prediction": 0.05}, {"label": "not_aggressive", "prediction": 0.95}],
+            "musicnn_mtt": [{"label": "aggressive", "prediction": 0.05}, {"label": "not_aggressive", "prediction": 0.95}],
+            "vggish": [{"label": "aggressive", "prediction": 0.05}, {"label": "not_aggressive", "prediction": 0.95}],
         },
         "mood_happy": {
-            "musicnn_msd": [{"label": "happy", "prediction": 0.9}, {"label": "not_happy", "prediction": 0.1}],
-            "musicnn_mtt": [{"label": "happy", "prediction": 0.8}, {"label": "not_happy", "prediction": 0.2}],
-            "vggish": [{"label": "happy", "prediction": 0.85}, {"label": "not_happy", "prediction": 0.15}],
+            "musicnn_msd": [{"label": "happy", "prediction": 0.2}, {"label": "non_happy", "prediction": 0.8}],
+            "musicnn_mtt": [{"label": "happy", "prediction": 0.2}, {"label": "non_happy", "prediction": 0.8}],
+            "vggish": [{"label": "happy", "prediction": 0.2}, {"label": "non_happy", "prediction": 0.8}],
+        },
+        # NEGATIVE class FIRST (real alphabetical metadata order for these sets).
+        "mood_relaxed": {
+            "musicnn_msd": [{"label": "non_relaxed", "prediction": 0.1}, {"label": "relaxed", "prediction": 0.9}],
+            "musicnn_mtt": [{"label": "non_relaxed", "prediction": 0.1}, {"label": "relaxed", "prediction": 0.9}],
+            "vggish": [{"label": "non_relaxed", "prediction": 0.1}, {"label": "relaxed", "prediction": 0.9}],
         },
         "mood_sad": {
-            "musicnn_msd": [{"label": "sad", "prediction": 0.1}, {"label": "not_sad", "prediction": 0.9}],
-            "musicnn_mtt": [{"label": "sad", "prediction": 0.2}, {"label": "not_sad", "prediction": 0.8}],
-            "vggish": [{"label": "sad", "prediction": 0.15}, {"label": "not_sad", "prediction": 0.85}],
+            "musicnn_msd": [{"label": "non_sad", "prediction": 0.7}, {"label": "sad", "prediction": 0.3}],
+            "musicnn_mtt": [{"label": "non_sad", "prediction": 0.7}, {"label": "sad", "prediction": 0.3}],
+            "vggish": [{"label": "non_sad", "prediction": 0.7}, {"label": "sad", "prediction": 0.3}],
         },
         "mood_party": {
-            "musicnn_msd": [{"label": "party", "prediction": 0.5}, {"label": "not_party", "prediction": 0.5}],
-            "musicnn_mtt": [{"label": "party", "prediction": 0.6}, {"label": "not_party", "prediction": 0.4}],
-            "vggish": [{"label": "party", "prediction": 0.4}, {"label": "not_party", "prediction": 0.6}],
+            "musicnn_msd": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
+            "musicnn_mtt": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
+            "vggish": [{"label": "non_party", "prediction": 0.9}, {"label": "party", "prediction": 0.1}],
         },
     }
     result = derive_mood(features)
-    assert result == "happy"
+    assert result == "relaxed", f"expected positive-class winner 'relaxed'; got {result!r} (inverted index would pick 'party')"
+
+
+def test_derive_mood_scores_each_mood_by_its_positive_class() -> None:
+    """phaze-c8zi: every mood is scored by its POSITIVE class, regardless of list position.
+
+    For each mood set in isolation, a HIGH positive-class probability must make that
+    mood the winner — even when the positive class is listed SECOND (relaxed/sad/party).
+    Under the old ``predictions[0]`` code, relaxed/sad/party would score their negative
+    class and never win on their own positive signal.
+    """
+    negative_first = {"mood_relaxed": "relaxed", "mood_sad": "sad", "mood_party": "party"}
+    positive_first = {"mood_acoustic": "acoustic", "mood_electronic": "electronic", "mood_aggressive": "aggressive", "mood_happy": "happy"}
+
+    for set_name, mood in {**negative_first, **positive_first}.items():
+        positive_label = mood
+        # Build the class list in the REAL order: negative-first sets list non_/not_ first.
+        neg_label = f"non_{mood}" if set_name in negative_first else (f"not_{mood}" if mood == "aggressive" else f"non_{mood}")
+        if set_name in negative_first:
+            pair = [{"label": neg_label, "prediction": 0.05}, {"label": positive_label, "prediction": 0.95}]
+        else:
+            pair = [{"label": positive_label, "prediction": 0.95}, {"label": neg_label, "prediction": 0.05}]
+        features: dict[str, Any] = {set_name: {"musicnn_msd": pair, "musicnn_mtt": pair, "vggish": pair}}
+        assert derive_mood(features) == mood, f"{set_name}: positive class {positive_label!r} (0.95) must win"
 
 
 # --- derive_style tests ---
