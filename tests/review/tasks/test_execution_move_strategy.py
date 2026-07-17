@@ -127,6 +127,75 @@ async def test_cross_filesystem_move_streams_with_bounded_memory(tmp_path: Path,
     assert not orig.exists()
 
 
+async def test_move_refuses_to_clobber_existing_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A destination that already exists is never overwritten: the proposal fails, both files survive (phaze-yu2e)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    orig = tmp_path / "orig" / "set.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"ORIGINAL-BYTES")
+
+    dest = tmp_path / "moved" / "Artist - Track.mp3"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"PREEXISTING-DO-NOT-DESTROY")
+
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "moved", "Artist - Track.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    # Neither the source nor the pre-existing destination was destroyed.
+    assert orig.read_bytes() == b"ORIGINAL-BYTES"
+    assert dest.read_bytes() == b"PREEXISTING-DO-NOT-DESTROY"
+    # Reported as a failure at the 'copy' step.
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api.patch_execution_log.await_args.args[1].error_message.startswith("copy:")
+
+
+async def test_in_place_rename_to_same_file_is_not_a_clobber(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rename whose destination resolves to the file itself is a no-op, not a refused clobber (phaze-yu2e)."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    orig = tmp_path / "set.mp3"
+    orig.write_bytes(b"KEEP-ME")
+
+    # Empty proposed_path == rename in place; same filename -> destination IS the original file.
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "", "set.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    assert orig.read_bytes() == b"KEEP-ME"
+
+
+def test_is_same_file_true_for_same_path(tmp_path: Path) -> None:
+    from phaze.tasks.execution import _is_same_file
+
+    f = tmp_path / "x.mp3"
+    f.write_bytes(b"data")
+    assert _is_same_file(f, f) is True
+
+
+def test_is_same_file_false_for_distinct_files(tmp_path: Path) -> None:
+    from phaze.tasks.execution import _is_same_file
+
+    a = tmp_path / "a"
+    a.write_bytes(b"1")
+    b = tmp_path / "b"
+    b.write_bytes(b"2")
+    assert _is_same_file(a, b) is False
+
+
+def test_is_same_file_false_when_destination_missing(tmp_path: Path) -> None:
+    from phaze.tasks.execution import _is_same_file
+
+    a = tmp_path / "a"
+    a.write_bytes(b"1")
+    assert _is_same_file(a, tmp_path / "nope") is False
+
+
 def test_same_filesystem_helper_true_within_one_tree(tmp_path: Path) -> None:
     """Two paths under the same tmp dir share a filesystem."""
     a = tmp_path / "a"

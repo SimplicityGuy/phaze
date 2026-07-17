@@ -8,7 +8,7 @@ import random
 from typing import Any
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 import structlog
 
@@ -19,6 +19,26 @@ from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistScraper
 
 
 logger = structlog.get_logger(__name__)
+
+
+class EmptyScrapeError(RuntimeError):
+    """Raised when a re-scrape yields zero tracks for a tracklist that already has data.
+
+    Signals a failed/blocked scrape so SAQ retries instead of silently overwriting good
+    tracklist data with an empty version (phaze-gfyr).
+    """
+
+    def __init__(self, external_id: str) -> None:
+        super().__init__(f"Refusing to overwrite tracklist {external_id!r} with an empty re-scrape")
+        self.external_id = external_id
+
+
+async def _latest_version_has_tracks(session: Any, tracklist: Any) -> bool:
+    """Return True if the tracklist's current latest version has at least one track."""
+    if tracklist.latest_version_id is None:
+        return False
+    result = await session.execute(select(func.count()).select_from(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id))
+    return (result.scalar() or 0) > 0
 
 
 async def _store_scraped_tracklist(
@@ -33,6 +53,14 @@ async def _store_scraped_tracklist(
     If a Tracklist with the same external_id exists, update it and add a new version.
     Otherwise, create a new Tracklist.
     """
+    # Serialize concurrent upserts keyed on external_id (phaze-5vmt). Two scrape jobs for
+    # different files can resolve to the SAME external_id and race this check-then-act
+    # read-modify-write: both could INSERT the same external_id (UNIQUE violation) or both read
+    # the same max(version_number) and write duplicate versions, orphaning one version's tracks.
+    # A transaction-scoped advisory lock on hashtext(external_id) makes the upsert atomic without
+    # taking a row lock (the row may not exist yet on the insert path). It is released on commit.
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(scraped.external_id))))
+
     # Check for existing tracklist by external_id
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == scraped.external_id))
     tracklist = result.scalar_one_or_none()
@@ -63,10 +91,24 @@ async def _store_scraped_tracklist(
         await session.flush()
         next_version = 1
     else:
-        # Update metadata
-        tracklist.artist = scraped.artist
-        tracklist.event = scraped.event
-        tracklist.date = tracklist_date
+        # phaze-gfyr: a failed/bot-blocked re-scrape parses to zero tracks and None metadata.
+        # If the existing tracklist already has a non-empty latest version, refuse to overwrite
+        # it with an empty version — raise so SAQ retries instead of silently destroying data.
+        if not scraped.tracks and await _latest_version_has_tracks(session, tracklist):
+            logger.warning(
+                "Refusing empty re-scrape over existing tracklist data",
+                external_id=scraped.external_id,
+                tracklist_id=str(tracklist.id),
+            )
+            raise EmptyScrapeError(scraped.external_id)
+        # Update metadata — but never null out good values when the scrape produced nothing
+        # (phaze-gfyr): only overwrite fields the scrape actually resolved.
+        if scraped.artist is not None:
+            tracklist.artist = scraped.artist
+        if scraped.event is not None:
+            tracklist.event = scraped.event
+        if tracklist_date is not None:
+            tracklist.date = tracklist_date
         tracklist.source_url = scraped.source_url
         # Get next version number
         version_result = await session.execute(

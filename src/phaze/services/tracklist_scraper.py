@@ -174,6 +174,18 @@ class TracklistScraper:
             logger.warning("HTTP error scraping tracklist: %s", url)
             raise
 
+        # A blocked/challenge page (403/429/5xx) is served as HTML that parses to an empty
+        # tracklist; without this guard the caller would treat that as a valid zero-track scrape
+        # and clobber good data. Mirror search()'s status handling, but RAISE instead of returning
+        # empty so SAQ retries the job rather than persisting the degraded result (phaze-o8sy).
+        if response.status_code != 200:
+            logger.warning("Scrape returned status %d for: %s", response.status_code, url)
+            raise httpx.HTTPStatusError(
+                f"Unexpected status {response.status_code} while scraping tracklist",
+                request=response.request,
+                response=response,
+            )
+
         # Extract external_id from URL
         match = self._EXTERNAL_ID_PATTERN.search(url)
         external_id = match.group(1) if match else ""
