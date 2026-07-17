@@ -28,6 +28,7 @@ Transport invariants (mirrors push.py D-06/D-07 timeout layering):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -171,10 +172,8 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # (leaking a kueue in-flight cap slot and a staged S3 object -- SAQ's default retries=1 means
         # the first raise is terminal). Notify control, then re-raise so SAQ still marks the job
         # failed. The notify is best-effort: a failure here must not mask the original error.
-        try:
+        with contextlib.suppress(Exception):
             await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
-        except Exception:  # noqa: BLE001 -- best-effort; the original transfer error must surface
-            pass
         raise
 
     await api.report_upload_complete(payload.file_id, parts)

@@ -730,9 +730,7 @@ async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_vanished_job_with_completed_analysis_is_success_not_redrive(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_vanished_job_with_completed_analysis_is_success_not_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """phaze-2o8p: a TTL-GC'd Job for a CALLBACK-COMPLETED file is finalized SUCCEEDED, never re-driven.
 
     The /analysis callback stamped analysis_completed_at + deleted the staged object but did not

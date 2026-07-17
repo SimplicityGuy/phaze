@@ -122,8 +122,8 @@ async def test_report_upload_failed_error_does_not_mask_transfer_error(agent_env
     respx.put(url1).mock(return_value=httpx.Response(503))
 
     class _BrokenApi(_FakeApiClient):
-        async def report_upload_failed(self, file_id, detail=None):  # type: ignore[no-untyped-def]
-            raise ConnectionError("control unreachable")
+        async def report_upload_failed(self, file_id, detail=None):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise ConnectionError(f"control unreachable for {file_id}")
 
     api = _BrokenApi()
     with pytest.raises(RuntimeError, match="part 1 PUT returned 503"):
@@ -175,9 +175,9 @@ def test_saq_timeout_scales_with_part_count() -> None:
     carries its own asyncio guard, so the net must grow linearly with the number of parts.
     """
     from phaze.tasks.s3_upload import (
-        UPLOAD_FILE_SAQ_TIMEOUT_SEC,
         _OUTER_TIMEOUT_BUFFER_SEC,
         _SAQ_JOB_TIMEOUT_MARGIN_SEC,
+        UPLOAD_FILE_SAQ_TIMEOUT_SEC,
         upload_file_saq_timeout_sec,
     )
 
@@ -217,7 +217,7 @@ async def test_multi_part_transfer_is_not_bounded_by_a_single_cap(agent_env, tmp
         agent_id="fileserver-1",
     )
     assert result == {"file_id": str(file_id), "status": "uploaded"}
-    sent_file_id, sent_parts = api.complete_calls[0]
+    _sent_file_id, sent_parts = api.complete_calls[0]
     assert [(p.part_number, p.etag) for p in sent_parts] == [(1, "etag-1"), (2, "etag-2"), (3, "etag-3")]
 
 

@@ -125,9 +125,7 @@ async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool
     vanished-Job path would misclassify a DONE file as a no-callback terminal and re-drive it against a
     staged object the callback already deleted. This lets that path recognise the success instead.
     """
-    completed_at = (
-        await session.execute(select(AnalysisResult.analysis_completed_at).where(AnalysisResult.file_id == file_id))
-    ).scalar_one_or_none()
+    completed_at = (await session.execute(select(AnalysisResult.analysis_completed_at).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
     return completed_at is not None
 
 
