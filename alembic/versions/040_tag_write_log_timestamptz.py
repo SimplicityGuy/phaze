@@ -25,16 +25,27 @@ down_revision = "039"
 branch_labels = None
 depends_on = None
 
-_COLUMNS = ("written_at", "created_at", "updated_at")
+# Static string-literal DDL -- column names are NOT parameterizable in ALTER COLUMN, so every
+# statement below is a fixed literal with NO interpolation (no user input ever reaches this SQL).
+_UPGRADE_SQL = (
+    "ALTER TABLE public.tag_write_log ALTER COLUMN written_at TYPE timestamp with time zone USING written_at AT TIME ZONE 'UTC'",
+    "ALTER TABLE public.tag_write_log ALTER COLUMN created_at TYPE timestamp with time zone USING created_at AT TIME ZONE 'UTC'",
+    "ALTER TABLE public.tag_write_log ALTER COLUMN updated_at TYPE timestamp with time zone USING updated_at AT TIME ZONE 'UTC'",
+)
+_DOWNGRADE_SQL = (
+    "ALTER TABLE public.tag_write_log ALTER COLUMN written_at TYPE timestamp without time zone USING written_at AT TIME ZONE 'UTC'",
+    "ALTER TABLE public.tag_write_log ALTER COLUMN created_at TYPE timestamp without time zone USING created_at AT TIME ZONE 'UTC'",
+    "ALTER TABLE public.tag_write_log ALTER COLUMN updated_at TYPE timestamp without time zone USING updated_at AT TIME ZONE 'UTC'",
+)
 
 
 def upgrade() -> None:
     """Reinterpret the naive ``tag_write_log`` timestamps as UTC-aware ``timestamptz``."""
-    for column in _COLUMNS:
-        op.execute(f"ALTER TABLE public.tag_write_log ALTER COLUMN {column} TYPE timestamp with time zone USING {column} AT TIME ZONE 'UTC'")
+    for statement in _UPGRADE_SQL:
+        op.execute(statement)
 
 
 def downgrade() -> None:
     """Return the columns to naive ``timestamp`` (dropping the UTC offset back to wall-clock UTC)."""
-    for column in _COLUMNS:
-        op.execute(f"ALTER TABLE public.tag_write_log ALTER COLUMN {column} TYPE timestamp without time zone USING {column} AT TIME ZONE 'UTC'")
+    for statement in _DOWNGRADE_SQL:
+        op.execute(statement)
