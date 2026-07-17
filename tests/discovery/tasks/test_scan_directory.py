@@ -351,6 +351,38 @@ async def test_scan_directory_skips_unreadable_file(tmp_path: Path, monkeypatch:
     assert result["files_posted"] == 2  # bad.mp3 skipped
 
 
+async def test_scan_directory_all_files_unreadable_fails_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-0p90: listable dirs but every file unreadable -> status='failed', NOT completed/0-files.
+
+    The container-UID mismatch (dirs 0755, files 0600 owned by a foreign uid) lets os.walk list every
+    filename while every hash raises PermissionError. Counting only directory-walk errors let this scan
+    terminal-complete with 0 files -- the exact 260608 silent-failure mode. The guard must now fail
+    loudly on the per-file skip count too.
+    """
+    from phaze.services import hashing as hashing_module
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import scan_directory
+
+    _touch(tmp_path / "a.mp3")
+    _touch(tmp_path / "b.mp3")
+
+    def fake_compute(_path: Path) -> str:
+        raise PermissionError("simulated unreadable file (foreign uid, mode 0600)")
+
+    monkeypatch.setattr(scan_module, "compute_sha256", fake_compute)
+    monkeypatch.setattr(hashing_module, "compute_sha256", fake_compute)
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result == {"status": "failed", "files_posted": 0, "reason": "unreadable_files"}
+    # The terminal PATCH is status='failed' with a permission-pointing, count-naming message.
+    failed_patch = ctx["api_client"].patch_scan_batch.await_args.args[1]
+    assert failed_patch.status == "failed"
+    assert "unreadable file" in failed_patch.error_message
+    assert "permissions" in failed_patch.error_message
+
+
 async def test_scan_directory_nfc_normalizes_paths(tmp_path: Path) -> None:
     """File with NFD-form combining character in name -> posted record paths are NFC-normalized (Pitfall 3)."""
     from phaze.tasks.scan import scan_directory

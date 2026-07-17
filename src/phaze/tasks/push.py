@@ -49,17 +49,56 @@ _STDERR_SNIPPET_MAX = 500
 # case rsync itself wedges without honoring --timeout (mirrors the process_file inner<outer pattern).
 _OUTER_TIMEOUT_BUFFER_SEC = 30
 
-# WR-03: the SAQ job-net timeout a producer MUST stamp on a push_file enqueue. It has to sit
-# strictly ABOVE the asyncio outer guard (push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC) so SAQ never
-# cancels the coroutine before that guard fires -- a SAQ timeout cancels via CancelledError (NOT
-# TimeoutError), and only the asyncio guard reaps the rsync child. With the default push_timeout_sec
-# of 600 the layering is rsync --timeout=600 < asyncio outer=630 < SAQ net=690, so the kill is
-# deterministic and the child is always reaped before the secret-shredding finally. Producers live
-# on the CONTROL plane (which does not see the agent's AgentSettings.push_timeout_sec), so this is
-# derived from the documented default + a 30s margin above the outer guard. An operator who raises
-# PHAZE_PUSH_TIMEOUT_SEC on the agent must raise this margin too (both live in the same deployment).
+# phaze-2qpn: rsync's --timeout is an I/O-INACTIVITY timeout, NOT a total-transfer bound -- a healthy
+# but long transfer never trips it. The old outer guard was a FIXED total wall-clock cap
+# (push_timeout_sec + buffer, ~630s), so any healthy transfer longer than that (a multi-GB concert
+# file over a home uplink) was killed mid-flight. Instead derive the total wall-clock budget from the
+# file size and a conservative minimum-throughput floor: rsync's --timeout remains the primary
+# I/O-stall kill; this budget is only the belt-and-suspenders cap for a genuine wedge. The floor is
+# intentionally low (~8 Mbps) so a healthy transfer is never killed; a real stall trips rsync's
+# --timeout long before this budget elapses.
+_MIN_PUSH_THROUGHPUT_BYTES_PER_SEC = 1_000_000
+
+# WR-03: the SAQ job-net timeout a producer MUST stamp on a push_file enqueue. It has to sit strictly
+# ABOVE the asyncio outer guard so SAQ never cancels the coroutine before that guard fires -- a SAQ
+# timeout cancels via CancelledError (NOT TimeoutError), and only the asyncio guard reaps the rsync
+# child before the secret-shredding finally. Both the outer guard and the SAQ net are now size-derived
+# (see push_transfer_budget_sec / push_file_saq_timeout_sec) so they scale together. Producers live on
+# the CONTROL plane (which does not see the agent's AgentSettings.push_timeout_sec), so the size-derived
+# floor uses the documented default push_timeout_sec (600). An operator who raises PHAZE_PUSH_TIMEOUT_SEC
+# past the small-file floor is caught by the loud _require_push_config layering check.
 _SAQ_JOB_TIMEOUT_MARGIN_SEC = 30
-PUSH_FILE_SAQ_TIMEOUT_SEC = 600 + _OUTER_TIMEOUT_BUFFER_SEC + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+
+
+def push_transfer_budget_sec(file_size_bytes: int, *, io_stall_timeout_sec: int) -> int:
+    """Total wall-clock budget for a HEALTHY push of ``file_size_bytes`` (the asyncio outer guard).
+
+    Derived from the file size divided by a conservative minimum-throughput floor, never below the
+    single-transfer I/O-stall timeout (so small files keep the historical ~630s cap). rsync's
+    ``--timeout`` (I/O inactivity) remains the primary stall kill; this budget only bounds a genuine
+    wedge. Scaling with size is what stops healthy long transfers from being killed (phaze-2qpn).
+    """
+    size_budget = int(max(0, file_size_bytes) / _MIN_PUSH_THROUGHPUT_BYTES_PER_SEC)
+    return max(io_stall_timeout_sec, size_budget) + _OUTER_TIMEOUT_BUFFER_SEC
+
+
+def push_file_saq_timeout_sec(file_size_bytes: int, *, io_stall_timeout_sec: int = 600) -> int:
+    """SAQ job-net timeout a producer MUST stamp on a push_file enqueue, SCALED by file size (WR-03).
+
+    Sits strictly above the size-derived asyncio outer guard by a fixed margin so a job-net
+    cancellation never pre-empts the guard that reaps the rsync child.
+    """
+    return push_transfer_budget_sec(file_size_bytes, io_stall_timeout_sec=io_stall_timeout_sec) + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+
+
+# Small-file floor baseline, retained for the layering fail-fast check and for callers/tests that
+# reference a nominal value. Size-scaled producers MUST call ``push_file_saq_timeout_sec(file_size)``.
+PUSH_FILE_SAQ_TIMEOUT_SEC = push_file_saq_timeout_sec(0)
+
+# SAQ retries for a push_file job: rsync's ``--partial`` resumes an interrupted transfer, so a killed
+# push can re-drive from the partial instead of being permanently stranded (phaze-2qpn). Total attempts
+# = retries + 1.
+PUSH_FILE_SAQ_RETRIES = 2
 
 
 def _agent_settings() -> AgentSettings:
@@ -205,8 +244,17 @@ async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             msg = f"push_file: required binary {missing!r} not found; cannot push (no local fallback)"
             raise RuntimeError(msg) from exc
 
+        # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
+        # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
+        # genuine wedge. A failed stat (rare -- the source is on the local mount) falls back to 0, i.e.
+        # the small-file floor, so we never build a shorter-than-default budget from a missing size.
         try:
-            _out, err = await asyncio.wait_for(proc.communicate(), timeout=cfg.push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC)
+            file_size = Path(payload.original_path).stat().st_size
+        except OSError:
+            file_size = 0
+        outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=outer_guard)
         except (TimeoutError, asyncio.CancelledError):
             # Outer-layer kill (rsync wedged past its own --timeout) OR a SAQ job-net cancellation
             # (CancelledError, NOT TimeoutError -- WR-03). Either way reap the child BEFORE the

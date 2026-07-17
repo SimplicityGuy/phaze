@@ -1139,10 +1139,37 @@ async def trigger_backfill_cloud(
         )
 
     candidates = await get_backfill_candidates(session, threshold)
-    # Phase 90 (D-09): the per-candidate `file.state = DISCOVERED` reset (and its explicit pre-routing
-    # commit) was removed. files.state no longer drives routing -- _route_discovered_by_duration writes
-    # the cloud_job/marker authority PR-A reads, and _backfill_candidates_stmt already excludes files
-    # with an active cloud_job (the derived idempotency guard added in PR-A), so no state reset is needed.
+
+    # 83-06 (OPTION A, CONSCIOUSLY REVERSES D-09): make every cloud-routed backfill candidate a CLEAN
+    # drainable held file, for BOTH the compute AND the kueue target (the all-local case already
+    # returned early above). The hold (``hold_awaiting_cloud`` inside ``_route_discovered_by_duration``)
+    # and the two marker strips below MUST land in ONE transaction:
+    #   1. Clear ``analysis.failed_at`` / ``error_message`` (mirrors :func:`retry_analysis_failed`): a
+    #      RETAINED marker made the held file analyze-domain-completed, so ``~domain_completed_clause``
+    #      was False and the drain skipped it.
+    #   2. DELETE the orphaned ``process_file:<id>`` ledger row (the backfill candidate query REQUIRES
+    #      it): its presence made the file analyze-in-flight, so ``~inflight_clause`` was False.
+    # phaze-7g4t: STAGE the marker strips BEFORE routing (do NOT commit them separately). The old code
+    # committed the holds inside ``_route_discovered_by_duration`` and THEN committed the marker strips
+    # in a SECOND transaction -- an interruption (DB error on the UPDATE/DELETE, server restart, or
+    # handler-task cancellation) between the two commits left every candidate as
+    # {cloud_job='awaiting' + failed_at set + ledger row}, which every forward path excludes: the drain
+    # never picks it (retained ledger => in-flight, retained failed_at => domain-completed), the
+    # Awaiting-cloud card shows 0, re-running Backfill selects nothing (active cloud_job), Run Analysis
+    # skips it (~failed conjunct), and recovery excludes any awaiting cloud_job -- a permanent invisible
+    # strand. Staging the strips into the session first means the hold's single commit inside
+    # ``_route_discovered_by_duration`` flushes ALL THREE mutations atomically. Every backfill candidate
+    # is long (the query filters ``duration >= threshold``) and cloud is enabled here, so the router
+    # ALWAYS holds >=1 file and therefore ALWAYS commits -- the staged strips can never be left dangling.
+    candidate_ids = [file.id for file, _ in candidates]
+    if candidate_ids:
+        await session.execute(
+            update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
+        )
+        await session.execute(
+            delete(SchedulingLedger).where(SchedulingLedger.key.in_([process_file_job_key(fid) for fid in candidate_ids])),
+        )
+
     counts = await _route_discovered_by_duration(
         request.app.state,
         session,
@@ -1154,36 +1181,6 @@ async def trigger_backfill_cloud(
         True,
         settings.models_path,
     )
-
-    # 83-06 (OPTION A, CONSCIOUSLY REVERSES D-09): make every cloud-routed backfill candidate a CLEAN
-    # drainable held file, for BOTH the compute AND the kueue target (the all-local case already
-    # returned early above -- the former ``resolved_non_local_kind(settings) == "kueue"`` fork is GONE
-    # because neither branch seeds a ledger row now). ``_route_discovered_by_duration`` HELD every
-    # candidate (every backfill candidate is long, so the candidate set IS the held set) via
-    # ``hold_awaiting_cloud`` -> an awaiting ``cloud_job`` row, already committed. Now, in one
-    # transaction, strip the two markers that made ``awaiting_candidate_clause`` EXCLUDE the held file
-    # from :func:`stage_cloud_window` (83-06):
-    #   1. Clear ``analysis.failed_at`` / ``error_message`` (mirrors :func:`retry_analysis_failed`): a
-    #      RETAINED marker made the held file analyze-domain-completed, so ``~domain_completed_clause``
-    #      was False and the drain skipped it.
-    #   2. DELETE the orphaned ``process_file:<id>`` ledger row (the backfill candidate query REQUIRES
-    #      it -- Phase 55 previously-scheduled scope): its presence made the file analyze-in-flight, so
-    #      ``~inflight_clause`` was False, the SECOND exclusion conjunct.
-    # The awaiting ``cloud_job`` row is KEPT as the SOLE in-flight/recovery registry for the held file
-    # (like a normal-hold file + the k8s path). With both markers cleared the file satisfies
-    # ``awaiting_candidate_clause`` and the bounded drain dispatches it to the compute/kueue backend --
-    # the single owner. D-09's ledger-replay recovery purpose was ALREADY dead (``analysis.failed_at``
-    # kept the held file in ``recover_orphaned_work``'s analyze domain-completed exclusion), so deleting
-    # the row + making the drain the single owner REDUCES the over-enqueue surface rather than growing it.
-    candidate_ids = [file.id for file, _ in candidates]
-    if candidate_ids:
-        await session.execute(
-            update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
-        )
-        await session.execute(
-            delete(SchedulingLedger).where(SchedulingLedger.key.in_([process_file_job_key(fid) for fid in candidate_ids])),
-        )
-        await session.commit()
 
     return templates.TemplateResponse(
         request=request,

@@ -28,6 +28,7 @@ Transport invariants (mirrors push.py D-06/D-07 timeout layering):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,18 +46,42 @@ if TYPE_CHECKING:
 # cannot ship a multi-megabyte string into the logs (T-53-12 DoS bound; mirrors push._STDERR_SNIPPET_MAX).
 _BODY_SNIPPET_MAX = 500
 
-# The outer asyncio.wait_for bound sits ABOVE the per-request httpx timeout so the per-request read
-# kill fires first on a stall; this outer layer is the belt-and-suspenders cap for the rare case a
-# request wedges without honoring its own timeout (mirrors the push_file inner<outer pattern).
+# phaze-g37f: the asyncio.wait_for guard is applied PER PART (inside the transfer loop) so it sits
+# ABOVE each individual PUT's httpx timeout -- the per-request read kill fires first on a stall and
+# this per-part layer is the belt-and-suspenders cap for the rare case one request wedges without
+# honoring its own timeout. It is deliberately NOT wrapped around the whole multi-part loop: doing so
+# bounded the ENTIRE transfer to one fixed budget, so every file larger than one part deterministically
+# timed out (a multi-GB concert recording shares no single 630s wall-clock cap now).
 _OUTER_TIMEOUT_BUFFER_SEC = 30
 
 # WR-03 (mirrored from push): the SAQ job-net timeout a producer MUST stamp on an upload_file_s3
-# enqueue. It sits strictly ABOVE the asyncio outer guard (push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC)
-# so SAQ never cancels the coroutine before that guard fires. The upload leg reuses the agent's
-# transport timeout (AgentSettings.push_timeout_sec, default 600) -- the file-server agent's generic
-# byte-transfer I/O bound -- so no new config knob is introduced for the same deployment concern.
+# enqueue. It sits strictly ABOVE the summed per-part asyncio guards so SAQ never cancels the
+# coroutine before those guards fire. The upload leg reuses the agent's transport timeout
+# (AgentSettings.push_timeout_sec, default 600) -- the file-server agent's generic byte-transfer I/O
+# bound -- so no new config knob is introduced for the same deployment concern.
 _SAQ_JOB_TIMEOUT_MARGIN_SEC = 30
-UPLOAD_FILE_SAQ_TIMEOUT_SEC = 600 + _OUTER_TIMEOUT_BUFFER_SEC + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+
+# Per-part transport budget default: the control plane cannot see the agent's
+# AgentSettings.push_timeout_sec, so the producer derives the SAQ net from the documented default.
+_DEFAULT_PER_PART_TIMEOUT_SEC = 600
+
+
+def upload_file_saq_timeout_sec(part_count: int, *, per_part_timeout_sec: int = _DEFAULT_PER_PART_TIMEOUT_SEC) -> int:
+    """SAQ job-net timeout a producer MUST stamp on an ``s3_upload`` enqueue, SCALED by part count.
+
+    Each part gets its OWN ``per_part_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC`` asyncio guard inside the
+    transfer loop, so a multi-part upload's total wall-clock budget is the SUM of the per-part budgets.
+    The SAQ net sits strictly ABOVE that sum (plus a fixed margin) so SAQ never cancels the coroutine
+    before the in-loop guards fire (WR-03). A single fixed cap here (the pre-phaze-g37f behaviour)
+    deterministically timed out every multi-GB upload because N parts shared one 660s budget.
+    """
+    parts = max(1, part_count)
+    return (per_part_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC) * parts + _SAQ_JOB_TIMEOUT_MARGIN_SEC
+
+
+# Single-part baseline, retained for callers/tests that reference a nominal value. Multi-part producers
+# MUST call ``upload_file_saq_timeout_sec(part_count)`` so the SAQ net scales with the transfer.
+UPLOAD_FILE_SAQ_TIMEOUT_SEC = upload_file_saq_timeout_sec(1)
 
 
 def _agent_settings() -> AgentSettings:
@@ -97,7 +122,13 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
                     # Source exhausted before all presigned URLs were used (e.g. a shorter file than
                     # the presign assumed). Stop -- the parts collected so far are the real upload.
                     break
-                response = await http.put(url, content=chunk)
+                # phaze-g37f: per-PART wait_for. Each PUT gets its own budget (the transport timeout
+                # plus the belt-and-suspenders buffer) so the total wall-clock scales with the number
+                # of parts. A wedged single request is reaped here without capping the whole transfer.
+                response = await asyncio.wait_for(
+                    http.put(url, content=chunk),
+                    timeout=transport_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC,
+                )
                 if response.status_code // 100 != 2:
                     snippet = response.text[:_BODY_SNIPPET_MAX]
                     msg = f"upload_file_s3: part {part_number} PUT returned {response.status_code} for file_id={payload.file_id}: {snippet}"
@@ -114,25 +145,35 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
     Every part PUTs a ``part_size_bytes`` slice to ``part_urls[N-1]`` and collects the response
     ETag (D-04). On success -> ``api.report_upload_complete(file_id, parts)`` (control completes the
-    multipart upload and flips the file forward) and returns a status dict. A non-2xx part ->
-    RuntimeError (SAQ retry). A missing source -> TERMINAL RuntimeError, NO callback, NO local
-    fallback. A SAQ job-net cancellation (CancelledError) or an outer wedge (TimeoutError) reaps the
-    in-flight request and re-raises -- the transfer is never swallowed into a partial-success report.
+    multipart upload and flips the file forward) and returns a status dict. A terminal/transfer
+    failure -- a non-2xx part PUT, a missing/unreadable source, or a wedged per-part wait_for
+    (RuntimeError/TimeoutError) -- calls ``api.report_upload_failed(file_id, detail)`` before
+    re-raising, so control runs its bounded re-drive / at-cap spill instead of stranding the
+    cloud_job UPLOADING (phaze-lssv). A SAQ job-net cancellation (CancelledError) reaps the in-flight
+    request and re-raises WITHOUT a callback (SAQ owns the re-drive; no premature terminal report).
+    NO local fallback ever.
     """
     payload = UploadFileS3Payload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
     cfg = _agent_settings()
 
     try:
-        parts = await asyncio.wait_for(
-            _transfer_parts(payload, transport_timeout_sec=cfg.push_timeout_sec),
-            timeout=cfg.push_timeout_sec + _OUTER_TIMEOUT_BUFFER_SEC,
-        )
-    except (TimeoutError, asyncio.CancelledError):
-        # Outer-layer kill (a request wedged past its own timeout) OR a SAQ job-net cancellation
-        # (CancelledError, NOT TimeoutError -- WR-03). The httpx AsyncClient is closed by its
-        # ``async with`` on the way out, so the in-flight request is reaped before we re-raise. We do
-        # NOT report completion on a cancelled transfer (no partial-success callback).
+        parts = await _transfer_parts(payload, transport_timeout_sec=cfg.push_timeout_sec)
+    except asyncio.CancelledError:
+        # A SAQ job-net cancellation (CancelledError, NOT TimeoutError -- WR-03). The httpx
+        # AsyncClient is closed by its ``async with`` on the way out, so the in-flight request is
+        # reaped before we re-raise. SAQ owns the re-drive; we do NOT report completion or failure on
+        # a cancelled transfer (no partial-success callback, no premature terminal report).
+        raise
+    except (RuntimeError, TimeoutError) as exc:
+        # phaze-lssv: a terminal/transfer failure (unreadable source, non-2xx part PUT, or a wedged
+        # per-part wait_for). The control plane's bounded re-drive / at-cap spill machinery lives
+        # behind report_upload_failed; without this callback the cloud_job stays UPLOADING forever
+        # (leaking a kueue in-flight cap slot and a staged S3 object -- SAQ's default retries=1 means
+        # the first raise is terminal). Notify control, then re-raise so SAQ still marks the job
+        # failed. The notify is best-effort: a failure here must not mask the original error.
+        with contextlib.suppress(Exception):
+            await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
         raise
 
     await api.report_upload_complete(payload.file_id, parts)
