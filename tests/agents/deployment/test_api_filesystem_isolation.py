@@ -118,6 +118,32 @@ def test_redis_hardened() -> None:
     )
 
 
+def test_postgres_hardened() -> None:
+    """phaze-rnh7: postgres mirrors redis hardening — fail-fast password + LAN-bound port.
+
+    Postgres holds all crown-jewel data, so it must get the SAME D-05 / AUTH-03
+    treatment as redis: a required (``${VAR:?}``) password rather than a weak
+    ``${VAR:-phaze}`` default, and an IP-prefixed published port (loopback by
+    default) instead of a bare ``5432:5432`` that docker binds to 0.0.0.0.
+    """
+    data = _load_compose()
+    postgres = data["services"]["postgres"]
+
+    # --- POSTGRES_PASSWORD uses fail-fast `${VAR:?...}`, NOT a `${VAR:-default}` ---
+    env = postgres.get("environment", {})
+    pw = env.get("POSTGRES_PASSWORD") if isinstance(env, dict) else None
+    assert pw is not None, "postgres must declare POSTGRES_PASSWORD"
+    assert ":?" in str(pw), f"POSTGRES_PASSWORD must fail fast (${{POSTGRES_PASSWORD:?...}}), not default silently; got {pw!r}"
+    assert ":-" not in str(pw), f"POSTGRES_PASSWORD must NOT use a weak `${{VAR:-default}}`; got {pw!r}"
+
+    # --- ports: IP-prefixed (not a bare 5432:5432 that defaults to 0.0.0.0) ---
+    ports = postgres.get("ports", [])
+    assert ports, "postgres service must declare a ports entry"
+    assert any(isinstance(p, str) and ":5432:5432" in p and not p.startswith(":") and p != "5432:5432" for p in ports), (
+        f"postgres ports must be IP-prefixed (e.g. ${{POSTGRES_BIND_IP:-127.0.0.1}}:5432:5432); got {ports!r}"
+    )
+
+
 def _env_list(service: dict[str, Any]) -> list[str]:
     """Normalize a service ``environment:`` block to a list of ``KEY=VALUE`` strings.
 
