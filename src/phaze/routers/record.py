@@ -13,6 +13,7 @@ proposals.py:283 T-31-06-02). A missing / de-duplicated file resolves to a frien
 (``record_not_found.html`` -- T-61-05), never a 500 / JSON detail / stack trace.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import uuid
@@ -37,6 +38,23 @@ from phaze.services.pipeline import get_file_stage_buckets
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/record", tags=["record"])
+
+
+def _history_sort_key(when: datetime | None) -> tuple[bool, datetime]:
+    """Stable, tz-safe sort key for merged history rows.
+
+    ExecutionLog.executed_at decodes tz-AWARE (timestamptz) while TagWriteLog.written_at historically
+    decoded tz-NAIVE (``timestamp without time zone``). ``sorted()`` over a mix of the two raises
+    ``TypeError: can't compare offset-naive and offset-aware datetimes`` -> a 500 on the happy path
+    (every tag-written file also carries an execution log). Migration 040 aligns the DB types, but we
+    ALSO normalize naive -> UTC-aware here so the merge can never throw regardless of driver decoding.
+    ``None`` timestamps sort last (a half-written row never masks real history).
+    """
+    if when is None:
+        return (False, datetime.min.replace(tzinfo=timezone.utc))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (True, when)
 
 
 @router.get("/{file_id}", response_class=HTMLResponse)
@@ -105,7 +123,7 @@ async def file_record(
     history: list[dict[str, Any]] = sorted(
         [{"when": e.executed_at, "label": e.operation, "status": e.status, "detail": e.destination_path} for e in exec_logs]
         + [{"when": t.written_at, "label": "tag write", "status": t.status, "detail": t.source} for t in tag_logs],
-        key=lambda h: (h["when"] is not None, h["when"]),
+        key=lambda h: _history_sort_key(h["when"]),
         reverse=True,
     )
 
