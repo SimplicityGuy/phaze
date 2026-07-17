@@ -18,6 +18,14 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     env_file: .env
+    environment:
+      # phaze-hti8: Redis runs with `--requirepass ${REDIS_PASSWORD}` (below), so
+      # every client MUST authenticate. `env_file` does NOT interpolate, so the
+      # `.env` REDIS_URL cannot embed `${REDIS_PASSWORD}`; compose's `environment:`
+      # block DOES interpolate at parse time. Assembling the authenticated URL here
+      # (overriding the passwordless `.env`/default REDIS_URL) makes the NOAUTH
+      # drift impossible for the app-server's own Redis clients.
+      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
     # Backend execution registry (control-plane-only, ControlSettings) is declared in a
     # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
     # an absent file resolves to the zero-config implicit all-local registry (cloud off).
@@ -45,6 +53,11 @@ services:
     env_file: .env
     environment:
       - PHAZE_ROLE=control
+      # phaze-hti8: same authenticated REDIS_URL assembly as the api service — the
+      # control worker's before_enqueue/after_process counter + rate-limit hooks read
+      # this same cache_redis handle, so it must authenticate against the requirepass
+      # Redis or every hook raises NOAUTH on first use.
+      - "REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD required}@redis:6379/0"
       # Backend execution registry (control-plane-only, ControlSettings) is declared in a
       # backends.toml mounted at PHAZE_BACKENDS_CONFIG_FILE (default /etc/phaze/backends.toml);
       # an absent file resolves to the zero-config implicit all-local registry (cloud off).
@@ -56,9 +69,21 @@ services:
 
   postgres:
     image: postgres:18-alpine
+    # phaze-rnh7 (D-05 / AUTH-03, mirrored from redis below): Postgres holds ALL of
+    # the project's crown-jewel data (file metadata, proposals, tracklists, agent
+    # token hashes), so it gets the SAME hardening as redis:
+    #   - POSTGRES_PASSWORD uses `${VAR:?msg}` (fail-fast at compose-parse time) so an
+    #     operator who forgets to set it errors instead of silently booting with a
+    #     weak default the way `${VAR:-phaze}` did.
+    #   - The published port is IP-prefixed and loopback by default; production
+    #     overrides POSTGRES_BIND_IP to the app-server's LAN IP (e.g. 192.168.1.10)
+    #     so agents on other hosts reach it, exactly like REDIS_BIND_IP. WITHOUT an
+    #     explicit IP prefix docker binds 0.0.0.0 (all interfaces = whole LAN).
+    # The api/worker containers reach Postgres via the compose-network hostname
+    # `postgres:5432`, so the published host port is NOT needed for intra-stack traffic.
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-phaze}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-phaze}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
       POSTGRES_DB: ${POSTGRES_DB:-phaze}
     volumes:
       # postgres:18+ stores data in a major-version-specific subdirectory under
@@ -67,9 +92,9 @@ services:
       # See: https://github.com/docker-library/postgres/pull/1259
       - pgdata:/var/lib/postgresql
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U phaze"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-phaze}"]
       interval: 5s
       timeout: 5s
       retries: 5

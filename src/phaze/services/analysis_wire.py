@@ -36,12 +36,48 @@ _MOOD_SET_NAMES = frozenset(
 )
 
 
+def _positive_class_prediction(predictions: list[Any]) -> float | None:
+    """Return the POSITIVE-class probability from a binary classifier's prediction list.
+
+    essentia's binary-classifier metadata orders classes ALPHABETICALLY, not
+    positive-first, so ``predictions[0]`` is the positive class for only SOME model
+    sets (e.g. ``mood_relaxed`` = ``['non_relaxed', 'relaxed']`` and ``mood_sad`` /
+    ``mood_party`` put the NEGATIVE class first). Indexing ``[0]`` there persisted
+    P(non_relaxed)/P(non_sad)/P(non_party) as the mood confidence — a systematic
+    inversion of the stored wire dict.
+
+    Select the positive class by LABEL: the entry whose label does NOT start with a
+    negation prefix (``non_`` / ``not_``). Falls back to the first well-formed entry
+    when no label qualifies. Returns None if nothing usable is present (keeps this
+    converter's defensive, never-raise contract for malformed input).
+    """
+    positive: dict[str, Any] | None = None
+    for entry in predictions:
+        if not isinstance(entry, dict):
+            continue
+        if not str(entry.get("label", "")).startswith(("non_", "not_")):
+            positive = entry
+            break
+    if positive is None:
+        for entry in predictions:
+            if isinstance(entry, dict):
+                positive = entry
+                break
+    if positive is None:
+        return None
+    try:
+        return float(positive["prediction"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _features_to_mood_dict(features: dict[str, Any]) -> dict[str, float] | None:
     """Average each ``mood_*`` set's positive-class predictions across variants.
 
     Returns the wire-format ``dict[str, float]`` mapping (e.g., ``{"happy": 0.82, "sad": 0.10}``)
-    suitable for ``AnalysisWritePayload.mood``. Keys are stripped of the ``mood_`` prefix
-    so downstream consumers see clean labels.
+    suitable for ``AnalysisWritePayload.mood``. The positive class is selected by label
+    (robust to essentia's alphabetical class order), not by list position. Keys are
+    stripped of the ``mood_`` prefix so downstream consumers see clean labels.
     """
     out: dict[str, float] = {}
     for set_name in _MOOD_SET_NAMES:
@@ -50,12 +86,10 @@ def _features_to_mood_dict(features: dict[str, Any]) -> dict[str, float] | None:
             continue
         variant_scores: list[float] = []
         for predictions in set_data.values():
-            if isinstance(predictions, list) and predictions and isinstance(predictions[0], dict):
-                # First class = positive class (binary classifier)
-                try:
-                    variant_scores.append(float(predictions[0]["prediction"]))
-                except (KeyError, TypeError, ValueError):
-                    continue
+            if isinstance(predictions, list) and predictions:
+                score = _positive_class_prediction(predictions)
+                if score is not None:
+                    variant_scores.append(score)
         if variant_scores:
             out[set_name.removeprefix("mood_")] = sum(variant_scores) / len(variant_scores)
     return out or None

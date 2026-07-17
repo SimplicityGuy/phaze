@@ -222,12 +222,43 @@ class ProposalService:
 # ---------------------------------------------------------------------------
 
 
+# Rolling-window length (seconds) for the LLM requests-per-minute counter.
+_RATE_LIMIT_WINDOW_SEC = 60
+
+# phaze-pkgb: atomic INCR + conditional-arm, evaluated server-side so no
+# CancelledError (SAQ job timeout / worker shutdown) or dropped connection can land
+# BETWEEN the increment and the EXPIRE. The previous two-command form armed the TTL
+# only inside an `if count == 1` branch after a separate INCR; a single lost EXPIRE
+# left the counter with NO expiry, and — because successful acquisitions never
+# release their increment and the over-limit path only DECRs the current iteration —
+# the count could never fall back to 1, so the TTL was never re-armed and proposal
+# generation wedged permanently until a manual `DEL phaze:llm:rpm`.
+#
+# This script re-arms whenever the key has no expiry (TTL == -1), which covers BOTH
+# the first increment (INCR creates the key without a TTL) AND any pre-existing
+# TTL-less key left by the old code path or a prior lost EXPIRE — so the limiter
+# self-heals and a lost arm can never permanently wedge it. TTL returns -2 for a
+# missing key (never true right after INCR) and -1 for "exists, no expiry".
+_RATE_LIMIT_LUA = """
+local count = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+
 async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
     """Block until an LLM request slot is available.
 
-    Uses a Redis INCR/EXPIRE pattern with a 60-second rolling window.
-    When the counter exceeds *max_rpm*, backs off with a 2-second sleep
-    and retries.
+    Uses an ATOMIC Redis INCR + conditional-EXPIRE (a single ``EVAL`` script) over a
+    60-second rolling window. When the counter exceeds *max_rpm*, backs off with a
+    2-second sleep and retries.
+
+    The counter's only reset mechanism is its TTL, so the INCR and the EXPIRE MUST be
+    inseparable: the script arms the TTL server-side in the same atomic execution as
+    the increment (and re-arms any key that somehow lacks an expiry), which is why a
+    lost EXPIRE can no longer permanently wedge the limiter (phaze-pkgb).
 
     Args:
         redis_pool: An async Redis connection (e.g. ``ctx["redis"]``, the dedicated
@@ -237,12 +268,11 @@ async def check_rate_limit(redis_pool: Any, max_rpm: int) -> None:
     """
     key = "phaze:llm:rpm"
     while True:
-        count: int = await redis_pool.incr(key)
-        if count == 1:
-            await redis_pool.expire(key, 60)
+        count = int(await redis_pool.eval(_RATE_LIMIT_LUA, 1, key, _RATE_LIMIT_WINDOW_SEC))
         if count <= max_rpm:
             return
-        # Over limit — undo the increment and wait
+        # Over limit — undo the increment and wait. The DECR keeps the existing TTL
+        # (DECR never clears an expiry), so the window still resets on schedule.
         await redis_pool.decr(key)
         await asyncio.sleep(2.0)
 

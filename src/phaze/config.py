@@ -554,6 +554,30 @@ class ControlSettings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _enforce_redis_password_in_production(self) -> "ControlSettings":
+        """phaze-hti8: production refuses passwordless redis_url on the control plane.
+
+        docker-compose.yml starts Redis with `--requirepass ${REDIS_PASSWORD:?...}`,
+        so every Redis client MUST authenticate. The control-plane clients
+        (app.state.redis, the controller queue's cache_redis, and every per-agent
+        queue's counter/rate-limit handle) all consume this `redis_url` verbatim,
+        with NO step injecting REDIS_PASSWORD into it. Without this guard the app
+        server boots green (connections are lazy) and only raises NOAUTH
+        `AuthenticationError` on first Redis use.
+
+        Mirrors `AgentSettings._enforce_redis_password_in_production` (Phase 29
+        D-06): `production` fails fast at construction time; `dev` (the default)
+        permits passwordless URLs so a fresh `docker compose up` needs no extra
+        ceremony. `urlparse` resolves URL-encoded passwords; a truly malformed URL
+        falls through to a connection failure at queue construction time.
+        """
+        if self.control_env == "production":
+            parsed = urlparse(self.redis_url)
+            if not parsed.password:
+                raise ValueError("control_env=production requires a password in redis_url (phaze-hti8)")
+        return self
+
     @property
     def cloud_enabled(self) -> bool:
         """True iff the registry holds any non-local backend (D-14/D-15).
@@ -592,6 +616,23 @@ class ControlSettings(BaseSettings):
 
     # Discogsography
     discogs_match_concurrency: int = 5
+
+    # Deployment-mode selector for the application-server (control) role. Mirrors
+    # AgentSettings.agent_env (Phase 29 D-06): `production` triggers the
+    # `_enforce_redis_password_in_production` validator below, which refuses a
+    # passwordless `redis_url` so a misconfigured app server fails fast at startup
+    # rather than connecting NOAUTH to the `--requirepass` Redis mandated by
+    # docker-compose.yml (phaze-hti8). The AgentSettings guard already protects the
+    # agent role; ControlSettings had NO parallel guard, so every control-plane Redis
+    # client (app.state.redis, the controller queue's cache_redis, per-agent queue
+    # counters/rate-limits) silently connected unauthenticated. `dev` (the default)
+    # preserves the fresh-clone convenience: `docker compose up` works without a
+    # Redis password baked into redis_url.
+    control_env: Literal["dev", "production"] = Field(
+        default="dev",
+        validation_alias=AliasChoices("PHAZE_CONTROL_ENV", "control_env"),
+        description="Deployment mode. Production refuses passwordless Redis URLs (phaze-hti8, mirrors agent_env D-06).",
+    )
 
     # LLM API keys + config (Phase 6)
     openai_api_key: SecretStr | None = None
