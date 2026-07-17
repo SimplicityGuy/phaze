@@ -47,21 +47,22 @@ async def test_execute_approved_batch_smoke_completed(tmp_path: Path, monkeypatc
     o2 = tmp_path / "b.mp3"
     o1.write_bytes(b"a")
     o2.write_bytes(b"b")
-    p1 = tmp_path / "moved" / "a.mp3"
-    p2 = tmp_path / "moved" / "b.mp3"
-
+    # proposed_path is a RELATIVE dir under the scan_root (tmp_path); the
+    # executor resolves the destination as tmp_path/moved/<proposed_filename>.
     proposals = [
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o1),
-            proposed_path=str(p1),
+            proposed_path="moved",
+            proposed_filename="a.mp3",
         ),
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o2),
-            proposed_path=str(p2),
+            proposed_path="moved",
+            proposed_filename="b.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-1", proposals=proposals)
@@ -79,23 +80,23 @@ async def test_execute_approved_batch_smoke_partial_failure(tmp_path: Path, monk
 
     o_ok = tmp_path / "a.mp3"
     o_ok.write_bytes(b"a")
-    p_ok = tmp_path / "moved" / "a.mp3"
 
     o_missing = tmp_path / "missing.mp3"  # intentionally never created
-    p_missing = tmp_path / "moved" / "missing.mp3"
 
     proposals = [
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o_ok),
-            proposed_path=str(p_ok),
+            proposed_path="moved",
+            proposed_filename="a.mp3",
         ),
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o_missing),
-            proposed_path=str(p_missing),
+            proposed_path="moved",
+            proposed_filename="missing.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-1", proposals=proposals)

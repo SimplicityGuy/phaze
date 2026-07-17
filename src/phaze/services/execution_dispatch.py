@@ -82,7 +82,12 @@ async def get_approved_proposals_grouped_by_agent(
             proposal_id=proposal.id,
             file_id=file_record.id,
             original_path=file_record.original_path,
+            # proposed_path is the RELATIVE destination directory; '' (null ->
+            # '') tells the executor to rename in place. proposed_filename is
+            # always present (non-nullable column) and is what the executor
+            # appends under the owning scan_root to build the real destination.
             proposed_path=proposal.proposed_path or "",
+            proposed_filename=proposal.proposed_filename,
             sha256_hash=file_record.sha256_hash,
         )
         groups[file_record.agent_id].append(item)

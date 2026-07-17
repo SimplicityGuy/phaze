@@ -389,40 +389,55 @@ class ComputeAgentBackend(_BaseBackend):
         fileserver gate runs first so an absent agent is a clean hold with nothing mutated. NEVER commits
         -- the drain owns the single post-loop commit so the ``pg_advisory_xact_lock`` survives the tick
         (Landmine L1).
+
+        phaze-uciu.3: the upsert + enqueue run inside a ``session.begin_nested()`` SAVEPOINT. SAQ's
+        ``PostgresQueue`` enqueue uses its OWN psycopg pool -- an enqueue failure raises WITHOUT
+        poisoning this asyncpg session/transaction, so a bare (un-savepointed) upsert-then-raise would
+        leave the ``status=SUBMITTED``/``backend_id``-stamped row intact for the drain's post-loop
+        commit: a stranded row (unrecoverable -- reconcile/orphan-recovery both scope away from
+        in-flight cloud_jobs) that permanently consumes an ``in_flight_count`` cap slot. The SAVEPOINT
+        rolls back ONLY this upsert on a raise, restoring the row's prior (pre-dispatch) state --
+        typically ``status='awaiting'`` (D-01) -- while the outer transaction (and its
+        ``pg_advisory_xact_lock``) stays alive so the tick's other candidates are unaffected. The raise
+        itself still propagates to the caller (the drain's per-candidate ``except`` clauses).
         """
         # Gate on the fileserver agent (the push initiator) BEFORE mutating: absent -> clean hold, nothing written.
         fileserver_agent = await select_active_agent(session, kind="fileserver")
 
-        # D-03: upsert the cloud_job row in the SAME session, before the enqueue. Phase 90 (D-09): the
-        # paired PUSHING files.state dual-write was removed; the cloud_job (status=SUBMITTED) is authority.
-        stmt = pg_insert(CloudJob).values(
-            # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
-            id=uuid.uuid4(),
-            file_id=file.id,
-            backend_id=self.id,
-            s3_key=None,  # compute has no S3 object -> s3_key nullable (D-08)
-            status=CloudJobStatus.SUBMITTED.value,  # single compute in-flight status (D-10)
-        )
-        stmt = stmt.on_conflict_do_update(
-            # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
-            index_elements=["file_id"],
-            set_={"backend_id": stmt.excluded.backend_id, "status": stmt.excluded.status},
-        )
-        await session.execute(stmt)
+        async with session.begin_nested():
+            # D-03: upsert the cloud_job row in the SAME session, before the enqueue. Phase 90 (D-09):
+            # the paired PUSHING files.state dual-write was removed; the cloud_job (status=SUBMITTED) is
+            # authority.
+            stmt = pg_insert(CloudJob).values(
+                # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
+                id=uuid.uuid4(),
+                file_id=file.id,
+                backend_id=self.id,
+                s3_key=None,  # compute has no S3 object -> s3_key nullable (D-08)
+                status=CloudJobStatus.SUBMITTED.value,  # single compute in-flight status (D-10)
+            )
+            stmt = stmt.on_conflict_do_update(
+                # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
+                index_elements=["file_id"],
+                set_={"backend_id": stmt.excluded.backend_id, "status": stmt.excluded.status},
+            )
+            await session.execute(stmt)
 
-        # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module) + D-02: stamp
-        # THIS backend's destination onto the push payload (record-don't-rederive originates at dispatch;
-        # NO re-lookup via resolve_compute_backend here -- the bound self.config already holds it).
-        push_host, scratch_dir, ssh_user = self._destination()
-        push_queue = task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
-        job = await _enqueue_push_file(
-            push_queue,
-            file,
-            fileserver_agent.id,
-            dest_host=push_host,
-            dest_scratch_dir=scratch_dir,
-            dest_ssh_user=ssh_user,
-        )
+            # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module) + D-02:
+            # stamp THIS backend's destination onto the push payload (record-don't-rederive originates at
+            # dispatch; NO re-lookup via resolve_compute_backend here -- the bound self.config already
+            # holds it). A raise here (SAQ's own pool, e.g. connect()/enqueue() blowing up) rolls back
+            # ONLY the upsert above (phaze-uciu.3).
+            push_host, scratch_dir, ssh_user = self._destination()
+            push_queue = task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
+            job = await _enqueue_push_file(
+                push_queue,
+                file,
+                fileserver_agent.id,
+                dest_host=push_host,
+                dest_scratch_dir=scratch_dir,
+                dest_ssh_user=ssh_user,
+            )
         # A deterministic-key dedup returns None (the file is already being pushed) -> the drain counts
         # it as skipped, not staged (T-50-double-enqueue); a genuine enqueue returns a saq.Job -> staged.
         return job is not None
@@ -494,6 +509,12 @@ class KueueBackend(_BaseBackend):
         ``autoflush`` would flush the pending PUSHING change as a side effect of that gate's ``SELECT``,
         and the drain's single post-loop commit would then persist a PUSHING file with no ``cloud_job``
         row -- the exact "limbo row" this ordering forbids.
+
+        phaze-uciu.3: ``_stage_file_to_s3`` itself wraps its ``cloud_job`` upsert + ``s3_upload`` enqueue
+        in a ``session.begin_nested()`` SAVEPOINT, so a failed enqueue (SAQ's own psycopg pool, not this
+        asyncpg session) rolls back ONLY that upsert -- restoring the row's prior ``status`` (typically
+        ``awaiting``) -- and re-raises out of this ``dispatch`` to the caller, leaving the outer
+        transaction (and the drain's ``pg_advisory_xact_lock``) alive.
         """
         cfg = cast("ControlSettings", get_settings())
         # D-06: deterministic per-file bucket over this backend's bound set; the returned id is authoritative.

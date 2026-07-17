@@ -36,7 +36,7 @@ from phaze.models.agent import Agent
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
-from tests._queue_fakes import DedupFakeTaskRouter, seed_active_agent
+from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter, seed_active_agent
 from tests.kube_fakes import fake_local_queue
 
 
@@ -202,6 +202,28 @@ def _stub_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _stub_kube_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kube_staging, "get_local_queue", AsyncMock(return_value=fake_local_queue()))
+
+
+class _RaisingQueue(DedupFakeQueue):
+    """A queue whose ``enqueue`` always raises -- models SAQ's ``PostgresQueue`` (its OWN psycopg
+    pool, phaze-uciu.3) blowing up AFTER ``dispatch``/``_stage_file_to_s3`` has already upserted the
+    ``cloud_job`` row in THIS test's asyncpg session. ``connect()`` (inherited) still succeeds, so the
+    raise fires exactly where the real enqueue failure fires.
+    """
+
+    async def enqueue(self, task_name: str, **kwargs: Any) -> Any:  # noqa: ARG002 -- fake signature parity
+        raise RuntimeError("saq enqueue blew up")
+
+
+class _RaisingTaskRouter:
+    """A task router whose every ``queue_for`` hands back a :class:`_RaisingQueue`."""
+
+    def __init__(self) -> None:
+        self.queue_for_calls: list[str] = []
+
+    def queue_for(self, agent_id: str, lane: str | None = None) -> _RaisingQueue:  # noqa: ARG002 -- fake signature parity
+        self.queue_for_calls.append(agent_id)
+        return _RaisingQueue(f"raising-{agent_id}")
 
 
 async def _seed_agent_row(
@@ -634,6 +656,84 @@ async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
     # Post-MIG-04 the atomicity guarantee is purely about the sidecar: a failed dispatch leaves NO cloud_job row.
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
     assert job is None
+
+
+# === phaze-uciu.3: a POST-WRITE enqueue raise rolls back ONLY the write (SAVEPOINT) =====================
+
+
+@pytest.mark.asyncio
+async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(session: AsyncSession) -> None:
+    """A ``push_file`` enqueue failure AFTER the ``cloud_job`` upsert leaves the row re-pickable.
+
+    Regression for phaze-uciu.3 (supersedes phaze-3e1i): before the fix, ``dispatch`` upserted
+    ``status='submitted'`` + ``backend_id`` BEFORE the fallible enqueue with NO savepoint -- SAQ's
+    ``PostgresQueue`` uses its own psycopg pool, so an enqueue raise does NOT poison this asyncpg
+    session/transaction, and the drain's per-candidate handler deliberately does not roll back
+    (Landmine L1: a mid-loop rollback would drop the tick's ``pg_advisory_xact_lock``). The un-savepointed
+    upsert therefore SURVIVED into the drain's post-loop commit -- a stranded ``submitted`` row that
+    reconcile/orphan-recovery both scope away from, permanently consuming an ``in_flight_count`` slot.
+    Post-fix the upsert + enqueue run inside ``session.begin_nested()``: the raise still propagates (the
+    caller sees it), but the SAVEPOINT rolls back ONLY the upsert, restoring the pre-dispatch
+    ``status='awaiting'`` row -- re-pickable by the next tick, and NOT counted by ``in_flight_count``.
+    """
+    from sqlalchemy import select
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _compute(id="compute-a1")
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    # The real precondition: an AWAITING_CLOUD file already carries an ``awaiting`` cloud_job sidecar
+    # row before the drain ever calls dispatch (Phase 77, D-04).
+    await backends.hold_awaiting_cloud(session, file)
+    await session.commit()
+
+    router = _RaisingTaskRouter()
+    with pytest.raises(RuntimeError, match="saq enqueue blew up"):
+        await backend.dispatch(file, session, router)
+
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert job.status == CloudJobStatus.AWAITING.value  # rolled back to the pre-dispatch hold status
+    assert job.backend_id is None  # the SAVEPOINT rollback also undid the backend_id stamp
+    assert await backend.in_flight_count(session) == 0  # 'awaiting' is never in the in-flight set (D-10)
+
+
+@pytest.mark.asyncio
+async def test_kueue_dispatch_enqueue_failure_rolls_back_write_via_savepoint(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """An ``s3_upload`` enqueue failure AFTER the ``cloud_job`` upsert leaves the row re-pickable.
+
+    The KueueBackend/``cloud_staging._stage_file_to_s3`` twin of
+    :func:`test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint`: pre-fix, the S3-staging
+    core upserted ``status='uploading'`` (+ ``s3_key``/``upload_id``/``staging_bucket``) BEFORE the
+    fallible ``s3_upload`` enqueue with no savepoint, so a raising enqueue left the row stranded. Post-fix
+    the upsert + enqueue run inside ``session.begin_nested()`` (``cloud_staging.py``), so the raise rolls
+    back ONLY that upsert -- restoring ``status='awaiting'`` -- and ``KueueBackend.dispatch``'s trailing
+    ``backend_id``/``staging_bucket`` write never runs (the SAVEPOINT raise short-circuits ``dispatch``
+    before that statement).
+    """
+    from sqlalchemy import select
+
+    _stub_s3(monkeypatch)
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file = _make_file(file_type="flac")
+    session.add(file)
+    await session.flush()
+    await backends.hold_awaiting_cloud(session, file)
+    await session.commit()
+
+    router = _RaisingTaskRouter()
+    with pytest.raises(RuntimeError, match="saq enqueue blew up"):
+        await backend.dispatch(file, session, router)
+
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
+    assert job.status == CloudJobStatus.AWAITING.value
+    assert job.backend_id is None
+    assert job.staging_bucket is None
+    assert job.s3_key is None
+    assert await backend.in_flight_count(session) == 0
 
 
 @pytest.mark.asyncio

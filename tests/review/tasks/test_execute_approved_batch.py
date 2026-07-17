@@ -17,12 +17,18 @@ import uuid
 import pytest
 
 from phaze.config import AgentSettings
+from phaze.models.agent import Agent
+from phaze.models.file import FileRecord
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.execution_dispatch import get_approved_proposals_grouped_by_agent
 from phaze.tasks.execution import execute_approved_batch
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _make_api_client_mock() -> AsyncMock:
@@ -48,6 +54,23 @@ def _seed_files(tmp_path: Path, count: int) -> tuple[list[Path], list[Path]]:
     return orig_paths, proposed_paths
 
 
+def _item(orig: Path, dest: Path, root: Path, **kwargs: object) -> ExecuteBatchProposalItem:
+    """Build an item whose proposed_path is the dest DIRECTORY relative to `root`.
+
+    Mirrors the real dispatcher shape: proposed_path is a relative directory
+    under the owning scan_root and proposed_filename is the target filename;
+    the executor rebuilds the absolute destination as root/proposed_path/name.
+    """
+    return ExecuteBatchProposalItem(
+        proposal_id=uuid.uuid4(),
+        file_id=uuid.uuid4(),
+        original_path=str(orig),
+        proposed_path=str(dest.parent.relative_to(root)),
+        proposed_filename=dest.name,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, scan_roots: list[str]) -> None:
     """Stub get_settings() to return an AgentSettings-shaped mock with given scan_roots."""
     fake_cfg = MagicMock(spec=AgentSettings)
@@ -60,15 +83,7 @@ async def test_execute_approved_batch_happy_path(tmp_path: Path, monkeypatch: py
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     orig_paths, proposed_paths = _seed_files(tmp_path, 3)
-    proposals = [
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(o),
-            proposed_path=str(p),
-        )
-        for o, p in zip(orig_paths, proposed_paths, strict=True)
-    ]
+    proposals = [_item(o, p, tmp_path) for o, p in zip(orig_paths, proposed_paths, strict=True)]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
@@ -94,15 +109,7 @@ async def test_execute_approved_batch_partial_failure(tmp_path: Path, monkeypatc
     orig_paths, proposed_paths = _seed_files(tmp_path, 3)
     # Delete the middle original to force a read failure
     orig_paths[1].unlink()
-    proposals = [
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(o),
-            proposed_path=str(p),
-        )
-        for o, p in zip(orig_paths, proposed_paths, strict=True)
-    ]
+    proposals = [_item(o, p, tmp_path) for o, p in zip(orig_paths, proposed_paths, strict=True)]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
@@ -129,7 +136,9 @@ async def test_execute_approved_batch_path_escape_rejected(tmp_path: Path, monke
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig),
-            proposed_path="/etc/passwd",  # outside scan_root -- T-26-11-S1
+            # relative-dir traversal that resolves OUTSIDE the scan_root -- T-26-11-S1
+            proposed_path="../../../../../../../../etc",
+            proposed_filename="passwd",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -153,20 +162,8 @@ async def test_execute_approved_batch_sha256_mismatch(tmp_path: Path, monkeypatc
     # Second proposal: wrong hash
     wrong_hash = "0" * 64
     proposals = [
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
-            sha256_hash=correct_hash,
-        ),
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(orig_paths[1]),
-            proposed_path=str(proposed_paths[1]),
-            sha256_hash=wrong_hash,
-        ),
+        _item(orig_paths[0], proposed_paths[0], tmp_path, sha256_hash=correct_hash),
+        _item(orig_paths[1], proposed_paths[1], tmp_path, sha256_hash=wrong_hash),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
@@ -197,7 +194,8 @@ async def test_execute_approved_batch_original_path_escape_rejected(tmp_path: Pa
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path="/etc/shadow",  # outside scan_root -- GAP-4 escape via original_path
-            proposed_path=str(proposed),
+            proposed_path="",  # in-place; irrelevant -- original_path is rejected first
+            proposed_filename="dest.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -222,7 +220,8 @@ async def test_execute_approved_batch_requires_scan_roots(tmp_path: Path, monkey
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o),
-            proposed_path=str(tmp_path / "y.mp3"),
+            proposed_path="moved",
+            proposed_filename="y.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -238,14 +237,7 @@ async def test_execute_approved_batch_tolerates_post_execution_log_failure(tmp_p
     api.post_execution_log = AsyncMock(side_effect=RuntimeError("audit log down"))
 
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
-    proposals = [
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
-        ),
-    ]
+    proposals = [_item(orig_paths[0], proposed_paths[0], tmp_path)]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
@@ -263,14 +255,7 @@ async def test_execute_approved_batch_tolerates_patch_completed_log_failure(tmp_
     api.patch_execution_log = AsyncMock(side_effect=RuntimeError("patch died"))
 
     orig_paths, proposed_paths = _seed_files(tmp_path, 1)
-    proposals = [
-        ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
-            file_id=uuid.uuid4(),
-            original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
-        ),
-    ]
+    proposals = [_item(orig_paths[0], proposed_paths[0], tmp_path)]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
@@ -290,13 +275,13 @@ async def test_execute_approved_batch_tolerates_patch_failed_log_failure(tmp_pat
 
     # Force file-op failure via missing source.
     missing = tmp_path / "missing.mp3"
-    proposed = tmp_path / "new" / "missing.mp3"
     proposals = [
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(missing),
-            proposed_path=str(proposed),
+            proposed_path="new",
+            proposed_filename="missing.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -315,13 +300,13 @@ async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path:
 
     # Force file-op failure -- this exercises the failed-PATCH-of-failure path.
     missing = tmp_path / "missing.mp3"
-    proposed = tmp_path / "new" / "missing.mp3"
     proposals = [
         ExecuteBatchProposalItem(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(missing),
-            proposed_path=str(proposed),
+            proposed_path="new",
+            proposed_filename="missing.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
@@ -333,3 +318,118 @@ async def test_execute_approved_batch_tolerates_failure_report_failure(tmp_path:
     assert result["error_count"] == 1
     # Handler reached patch_proposal_state (the side_effect fired) before swallowing.
     api.patch_proposal_state.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end regression: dispatcher -> executor with the REAL stored shape.
+#
+# The pre-fix bug survived because dispatcher tests and executor tests each used
+# a shape the OTHER half never produces: the dispatcher stores proposed_path as a
+# RELATIVE destination directory (+ a separate proposed_filename), but the
+# executor treated proposed_path as an ABSOLUTE destination FILE. These tests
+# wire the two halves together so the shapes must agree.
+# ---------------------------------------------------------------------------
+
+
+async def test_e2e_dispatcher_to_executor_relative_dir_moves_file(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A REAL stored proposal (relative proposed_path + proposed_filename) executes end-to-end.
+
+    Seeds Agent/FileRecord/RenameProposal exactly as production does (proposed_path
+    is a relative directory), builds the wire payload via the dispatcher helper
+    ``get_approved_proposals_grouped_by_agent``, then runs the executor and asserts
+    the file landed at ``scan_root/proposed_path/proposed_filename``.
+    """
+    scan_root = tmp_path / "media"
+    orig = scan_root / "incoming" / "raw-set.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    content = b"concert-audio-bytes"
+    orig.write_bytes(content)
+    real_sha = hashlib.sha256(content).hexdigest()
+
+    agent_id = "agent-e2e"
+    session.add(Agent(id=agent_id, name=agent_id, token_hash=None, scan_roots=[str(scan_root)], revoked_at=None))
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            id=file_id,
+            sha256_hash=real_sha,
+            original_path=str(orig),
+            original_filename="raw-set.mp3",
+            current_path=str(orig),
+            file_type="music",
+            file_size=len(content),
+            agent_id=agent_id,
+        ),
+    )
+    await session.flush()
+    session.add(
+        RenameProposal(
+            id=uuid.uuid4(),
+            file_id=file_id,
+            proposed_filename="Disclosure - Live at Coachella.mp3",
+            proposed_path="performances/artists/Disclosure",  # RELATIVE dir, as stored
+            status=ProposalStatus.APPROVED,
+            confidence=0.95,
+        ),
+    )
+    await session.commit()
+
+    groups = await get_approved_proposals_grouped_by_agent(session)
+    items = groups[agent_id]
+    assert len(items) == 1
+    # The wire item carries the relative directory + filename (the fix).
+    assert items[0].proposed_path == "performances/artists/Disclosure"
+    assert items[0].proposed_filename == "Disclosure - Live at Coachella.mp3"
+
+    _patch_settings(monkeypatch, [str(scan_root)])
+    api = _make_api_client_mock()
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id=agent_id, proposals=items)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    expected_dest = scan_root / "performances/artists/Disclosure" / "Disclosure - Live at Coachella.mp3"
+    assert expected_dest.exists(), f"file not moved to {expected_dest}"
+    assert expected_dest.read_bytes() == content
+    assert not orig.exists(), "original was not removed"
+    # patch_proposal_state carried the resolved absolute destination as current_path.
+    state = api.patch_proposal_state.await_args.args[1]
+    assert state.proposal_state == "executed"
+    assert state.current_path == str(expected_dest)
+
+
+async def test_null_proposed_path_renames_in_place(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A null/empty proposed_path renames the file in place (same directory, new name).
+
+    Pre-fix, a null proposed_path coerced to '' and resolved against /app -> escaped
+    every scan_root -> ValueError. Now it means "keep the directory, apply the new
+    filename".
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig = tmp_path / "library" / "messy name.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"x")
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(orig),
+            proposed_path="",  # null -> '' on the wire: rename in place
+            proposed_filename="Clean Name.mp3",
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    dest = orig.parent / "Clean Name.mp3"
+    assert dest.exists(), "in-place rename did not produce the new filename"
+    assert not orig.exists(), "original name still present after in-place rename"
+    assert api.patch_proposal_state.await_args.args[1].current_path == str(dest)
