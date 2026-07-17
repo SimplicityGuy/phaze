@@ -286,6 +286,38 @@ class TestFingerprintOrchestrator:
         result = await orchestrator.health_all()
         assert result == {"audfprint": True, "panako": False}
 
+    async def test_real_audfprint_adapter_enables_two_engine_agreement(self):
+        """A NON-empty audfprint response (the phaze-uciu.4 fix) drives the weighted-average branch.
+
+        Regression guard for phaze-uciu.4: while the audfprint sidecar's parser returned [] for
+        every real query, AudfprintAdapter.query was always empty, combined_query never saw
+        two-engine agreement, and every confidence was capped at 70.0 (panako-only). Here the
+        REAL AudfprintAdapter deserializes a service /query payload that carries a match for the
+        same track panako matched, so the orchestrator must take the weighted-average branch and
+        exceed the 70.0 single-engine cap.
+        """
+        # The exact JSON shape services/audfprint/app.py emits once its parser produces a match.
+        audfprint_payload = {"matches": [{"track_id": "/data/ref/track01.mp3", "confidence": 80.0}]}
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=audfprint_payload))
+        audfprint = AudfprintAdapter(base_url="http://audfprint:8001", weight=0.6)
+        audfprint._client = httpx.AsyncClient(transport=transport, base_url="http://audfprint:8001")
+
+        panako = self._make_mock_engine(
+            "panako",
+            0.4,
+            query_results=[QueryMatch(track_id="/data/ref/track01.mp3", confidence=90.0)],
+        )
+
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        matches = await orchestrator.combined_query("/data/query/song.wav")
+        await audfprint.close()
+
+        assert len(matches) == 1
+        # Two-engine agreement: 0.6 * 80 + 0.4 * 90 = 84.0 -- above the 70.0 single-engine cap.
+        assert matches[0].confidence == pytest.approx(84.0)
+        assert matches[0].confidence > 70.0
+        assert matches[0].engines == {"audfprint": 80.0, "panako": 90.0}
+
 
 # NOTE: get_fingerprint_progress is exercised by the real-DB integration test
 # tests/integration/test_fingerprint_progress.py (D-15). The former mock stub here
