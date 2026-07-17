@@ -102,17 +102,31 @@ async def _get_file_with_metadata(session: AsyncSession, file_id: uuid.UUID) -> 
 
 
 async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> Tracklist | None:
-    """Find the tracklist associated with a file."""
-    stmt = select(Tracklist).where(Tracklist.file_id == file_id)
+    """Find the best tracklist associated with a file.
+
+    ``tracklists.file_id`` has only a NON-unique index, and mainline paths (>=90 auto-link,
+    fingerprint re-scan) can legitimately create multiple tracklists per file. A ``scalar_one_or_none``
+    here would raise ``MultipleResultsFound`` -> 500 the tags page and silently empty the tagwrite queue
+    (services/review.py swallows it). Pick the highest-confidence link deterministically instead, mirroring
+    services/pipeline.py's ``max(match_confidence)`` per-file model.
+    """
+    stmt = select(Tracklist).where(Tracklist.file_id == file_id).order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.id).limit(1)
     result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) -> DiscogsLink | None:
     """Find the accepted DiscogsLink for the file's tracklist, if any."""
-    tl_stmt = select(Tracklist.latest_version_id).where(Tracklist.file_id == file_id)
+    # Multiplicity-tolerant (see _get_tracklist_for_file): a file may have >1 tracklist; pick the
+    # highest-confidence one's latest version rather than raising MultipleResultsFound.
+    tl_stmt = (
+        select(Tracklist.latest_version_id)
+        .where(Tracklist.file_id == file_id)
+        .order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.id)
+        .limit(1)
+    )
     tl_result = await session.execute(tl_stmt)
-    version_id = tl_result.scalar_one_or_none()
+    version_id = tl_result.scalars().first()
     if version_id is None:
         return None
     track_ids = select(TracklistTrack.id).where(TracklistTrack.version_id == version_id)

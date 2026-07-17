@@ -22,6 +22,7 @@ Route/contract map (see 61-VALIDATION.md "Per-Task Verification Map", 61-RESEARC
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 import uuid
 
@@ -91,6 +92,75 @@ async def test_record_pending_approvals_wired(client: AsyncClient, seed_pending_
     # (and htmx wiring) must appear so the row targets the right proposal.
     assert str(proposal.id) in body
     assert "hx-" in body
+
+
+def test_history_sort_key_tolerates_mixed_tz_awareness() -> None:
+    """phaze-36rc: the history merge-sort must never mix tz-naive and tz-aware datetimes.
+
+    ExecutionLog.executed_at decodes tz-aware; TagWriteLog.written_at historically decoded tz-naive.
+    A bare ``sorted()`` over both raised ``TypeError: can't compare offset-naive and offset-aware`` ->
+    500 on the happy path. _history_sort_key normalizes naive -> UTC-aware so the merge is always safe,
+    and orders newest-first with None (half-written rows) sorting last.
+    """
+    from datetime import datetime
+
+    from phaze.routers.record import _history_sort_key
+
+    aware = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)  # execution_log style
+    naive = datetime(2026, 1, 1, 13, 0)  # tag_write_log style (interpreted as UTC)
+    rows = [{"when": aware}, {"when": None}, {"when": naive}]
+
+    # The key comparison itself must not raise across the naive/aware mix.
+    ordered = sorted(rows, key=lambda h: _history_sort_key(h["when"]), reverse=True)
+
+    assert ordered[0]["when"] == naive, "13:00 (naive->UTC) is newest"
+    assert ordered[1]["when"] == aware, "12:00 aware is next"
+    assert ordered[2]["when"] is None, "None (half-written) sorts last even under reverse=True"
+
+
+@pytest.mark.asyncio
+async def test_record_renders_with_both_history_types(  # type: ignore[no-untyped-def]
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal,
+) -> None:
+    """phaze-36rc: /record renders for a file carrying BOTH an ExecutionLog and a TagWriteLog.
+
+    This is the exact happy-path shape that 500'd before the tz alignment: a fully applied-then-tagged
+    file has an execution log (aware) AND a tag write log (formerly naive). The route must render 200
+    with both entries in the merged history.
+    """
+    from phaze.models.execution import ExecutionLog
+    from phaze.models.tag_write_log import TagWriteLog
+
+    proposal = await seed_pending_proposal(0.95)
+    session.add(
+        ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=proposal.id,
+            operation="move",
+            source_path="/src/a.mp3",
+            destination_path="/dest/a.mp3",
+            sha256_verified=True,
+            status="completed",
+        )
+    )
+    session.add(
+        TagWriteLog(
+            id=uuid.uuid4(),
+            file_id=proposal.file_id,
+            before_tags={"artist": "Old"},
+            after_tags={"artist": "New"},
+            source="proposal",
+            status="completed",
+        )
+    )
+    await session.commit()
+
+    r = await client.get(f"/record/{proposal.file_id}", headers={"HX-Request": "true"})
+    assert r.status_code == 200, "record renders for a file with both an execution log and a tag write log"
+    body = r.text
+    assert "tag write" in body, "the tag write history entry renders"
 
 
 # ---------------------------------------------------------------------------

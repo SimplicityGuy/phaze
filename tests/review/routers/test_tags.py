@@ -12,7 +12,8 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link, _get_tag_stats
+from phaze.models.tracklist import Tracklist
+from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
 
 
 if TYPE_CHECKING:
@@ -291,7 +292,8 @@ def test_determine_file_status_returns_write_log_status() -> None:
 async def test_get_accepted_discogs_link_returns_highest_confidence_accepted() -> None:
     """With a resolved tracklist version, the accepted DiscogsLink is returned."""
     version_result = MagicMock()
-    version_result.scalar_one_or_none.return_value = uuid.uuid4()  # a real version_id
+    # phaze-1am9: the version lookup is now multiplicity-tolerant (scalars().first(), not scalar_one_or_none).
+    version_result.scalars.return_value.first.return_value = uuid.uuid4()  # a real version_id
     sentinel_link = MagicMock(name="accepted-link")
     link_result = MagicMock()
     link_result.scalar_one_or_none.return_value = sentinel_link
@@ -307,13 +309,57 @@ async def test_get_accepted_discogs_link_returns_highest_confidence_accepted() -
 async def test_get_accepted_discogs_link_none_when_no_tracklist_version() -> None:
     """No resolved tracklist version short-circuits to None without a link query."""
     version_result = MagicMock()
-    version_result.scalar_one_or_none.return_value = None
+    version_result.scalars.return_value.first.return_value = None
     session = AsyncMock()
     session.execute.return_value = version_result
 
     got = await _get_accepted_discogs_link(session, uuid.uuid4())
     assert got is None
     session.execute.assert_awaited_once()  # only the version lookup ran
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_for_file_tolerates_multiple_links(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-1am9: a file with TWO linked tracklists must not raise MultipleResultsFound.
+
+    ``tracklists.file_id`` has only a non-unique index and mainline paths (>=90 auto-link, fingerprint
+    re-scan) create multiple tracklists per file. The helper must pick the highest-confidence link
+    deterministically instead of crashing (which 500s /tags/ and silently empties the tagwrite queue).
+    """
+    file_record, _ = await _create_executed_file(session)
+
+    low = Tracklist(
+        id=uuid.uuid4(),
+        file_id=file_record.id,
+        external_id=f"tl-low-{uuid.uuid4().hex[:8]}",
+        source_url="https://www.1001tracklists.com/tracklist/low/test.html",
+        source="1001tracklists",
+        status="matched",
+        match_confidence=90,
+    )
+    high = Tracklist(
+        id=uuid.uuid4(),
+        file_id=file_record.id,
+        external_id=f"fp-{uuid.uuid4().hex[:8]}",
+        source_url="https://www.1001tracklists.com/tracklist/high/test.html",
+        source="fingerprint",
+        status="matched",
+        match_confidence=97,
+    )
+    session.add_all([low, high])
+    await session.commit()
+
+    got = await _get_tracklist_for_file(session, file_record.id)
+    assert got is not None
+    assert got.id == high.id, "the highest-confidence tracklist wins deterministically"
+
+    # And the accepted-link helper (same multiplicity trap on the version lookup) does not raise either.
+    link = await _get_accepted_discogs_link(session, file_record.id)
+    assert link is None  # no accepted DiscogsLink seeded; the point is it returns cleanly
+
+    # The list page renders (previously a MultipleResultsFound 500 for every file once one bad file existed).
+    resp = await client.get("/tags/", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
 
 
 # --- route not-found / invalid-field guards -----------------------------------

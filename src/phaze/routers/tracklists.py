@@ -574,6 +574,11 @@ async def delete_track(
     if not track:
         return HTMLResponse(content="Track not found", status_code=404)
 
+    # fk_discogs_links_track_id_tracklist_tracks carries NO ON DELETE and there is no ORM cascade
+    # (DiscogsLink.track is one-directional lazy='noload', TracklistTrack has no inverse), so a matched
+    # track keeps referencing DiscogsLink rows -- deleting it directly raises IntegrityError (500).
+    # Clear the referencing links first, mirroring scan_deletion.py's child->parent ordering.
+    await session.execute(delete(DiscogsLink).where(DiscogsLink.track_id == track_id))
     await session.delete(track)
     await session.commit()
     return HTMLResponse(content="")
@@ -644,6 +649,17 @@ async def reject_low_confidence(
         return HTMLResponse(content="Tracklist not found", status_code=404)
 
     if tracklist.latest_version_id:
+        # The set of low-confidence tracks about to be removed from the latest version.
+        low_conf_tracks = select(TracklistTrack.id).where(
+            TracklistTrack.version_id == tracklist.latest_version_id,
+            TracklistTrack.confidence.is_not(None),
+            TracklistTrack.confidence < threshold,
+        )
+        # Clear referencing DiscogsLink rows FIRST (fk_discogs_links_track_id has no ON DELETE and Core
+        # bulk delete never fires ORM cascades). One matched low-confidence track would otherwise raise
+        # IntegrityError and roll back this single-statement transaction -- making reject-low wholly
+        # inoperable on any matched tracklist.
+        await session.execute(delete(DiscogsLink).where(DiscogsLink.track_id.in_(low_conf_tracks)))
         # Delete low-confidence tracks from the latest version
         await session.execute(
             delete(TracklistTrack).where(
