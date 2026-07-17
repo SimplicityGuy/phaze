@@ -565,7 +565,12 @@ def test_reconcile_module_calls_no_result_writer() -> None:
     src = pathlib.Path(reconcile_mod.__file__).read_text(encoding="utf-8")
     assert "put_analysis" not in src
     assert "report_analysis_failed" not in src
-    assert "AnalysisResult" not in src
+    # phaze-2o8p: reconcile now READS AnalysisResult.analysis_completed_at to recognise a callback-
+    # completed file whose Job was TTL-GC'd, but it must never WRITE a result row -- the out-of-band
+    # callback stays the sole authoritative result writer (KSUBMIT-03).
+    assert "AnalysisResult(" not in src  # never constructs a result row
+    assert "update(AnalysisResult" not in src  # never updates a result row
+    assert "insert(AnalysisResult" not in src  # never inserts a result row
 
     tree = ast.parse(src)
     imported: set[str] = set()
@@ -722,6 +727,40 @@ async def test_vanished_job_at_cap_spills_back_to_awaiting_cloud(session: AsyncS
 
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.AWAITING.value  # D-12: 'awaiting', not FAILED
     assert s3.calls == [fid]
+
+
+@pytest.mark.asyncio
+async def test_vanished_job_with_completed_analysis_is_success_not_redrive(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-2o8p: a TTL-GC'd Job for a CALLBACK-COMPLETED file is finalized SUCCEEDED, never re-driven.
+
+    The /analysis callback stamped analysis_completed_at + deleted the staged object but did not
+    advance cloud_job.status; a lagging reconcile then sees the Job gone. Without the analysis-complete
+    check the vanished-Job path would re-drive an already-analyzed file against a deleted object and
+    eventually spill it to a redundant local re-analysis.
+    """
+    from datetime import UTC, datetime
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    # The success callback already landed the result (analysis_completed_at IS NOT NULL).
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=fid, analysis_completed_at=datetime.now(UTC)))
+    await session.commit()
+
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value  # finalized as success
+    assert cj.attempts == 0  # no attempt burned
+    assert dj.calls == [name]  # idempotent reap of the (already-GC'd) Job
+    assert s3.calls == []  # success path makes ZERO S3 calls (callback already deleted the object)
+    assert [t for t, _ in queue.captured] == []  # NO re-drive enqueued
+    assert tally["succeeded"] == 1
+    assert tally.get("redriven", 0) == 0
 
 
 # --- Per-row guard: one bad row never aborts the tick ----------------------------------------------

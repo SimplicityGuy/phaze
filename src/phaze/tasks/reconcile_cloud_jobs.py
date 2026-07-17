@@ -42,6 +42,7 @@ from sqlalchemy import select
 import structlog
 
 from phaze.config import get_settings
+from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.services import kube_staging, s3_staging
@@ -112,6 +113,22 @@ async def _job_gone(name: str, kube: KubeConfig) -> bool:
     except kr8s.NotFoundError:
         return True
     return job is None
+
+
+async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """Return whether the file's analysis result already landed (``analysis_completed_at IS NOT NULL``).
+
+    phaze-2o8p: the ``/api/internal/agent/analysis/{file_id}`` callback (KSUBMIT-03) stamps
+    ``analysis_completed_at`` and deletes the staged S3 object, but NEVER advances ``cloud_job.status``.
+    A callback-completed file therefore sits SUBMITTED/RUNNING until reconcile next reads its Job. If
+    the reconcile lag exceeds ``ttlSecondsAfterFinished`` (900s) the succeeded Job is GC'd, so the
+    vanished-Job path would misclassify a DONE file as a no-callback terminal and re-drive it against a
+    staged object the callback already deleted. This lets that path recognise the success instead.
+    """
+    completed_at = (
+        await session.execute(select(AnalysisResult.analysis_completed_at).where(AnalysisResult.file_id == file_id))
+    ).scalar_one_or_none()
+    return completed_at is not None
 
 
 async def _enqueue_resubmit(ctx: dict[str, Any], file_id: uuid.UUID) -> None:
@@ -287,6 +304,14 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     except kr8s.NotFoundError:
         job = None
     if job is None:
+        # phaze-2o8p: distinguish a callback-completed-then-TTL-GC'd Job from a genuine no-callback
+        # terminal. If the analysis result already landed (analysis_completed_at IS NOT NULL), the
+        # vanished Job is a SUCCESS whose Job was reaped by ttlSecondsAfterFinished before this lagging
+        # tick read it -- finalize it (record SUCCEEDED + delete Job) instead of re-driving an
+        # already-analyzed file against a staged object the success callback already deleted.
+        if await _analysis_completed(session, cloud_job.file_id):
+            await _record_success(session, cloud_job, name, tally, kube)
+            return
         await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
