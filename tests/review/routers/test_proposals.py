@@ -621,3 +621,151 @@ def test_bpm_spark_empty() -> None:
     assert result.lo is None
     assert result.hi is None
     assert result.window_count == 0
+
+
+# ---------------------------------------------------------------------------
+# State-machine guard on the review-UI status routes (phaze-uu17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_terminal_executed_returns_409(client: AsyncClient, session: AsyncSession) -> None:
+    """An EXECUTED proposal cannot be flipped back to APPROVED via the review UI (phaze-uu17)."""
+    proposal = await create_test_proposal(session, status=ProposalStatus.EXECUTED)
+    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    assert response.status_code == 409
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.EXECUTED  # authoritative applied fact preserved
+
+
+@pytest.mark.asyncio
+async def test_reject_terminal_failed_returns_409(client: AsyncClient, session: AsyncSession) -> None:
+    """A FAILED proposal cannot be flipped to REJECTED via the review UI (phaze-uu17)."""
+    proposal = await create_test_proposal(session, status=ProposalStatus.FAILED)
+    response = await client.patch(f"/proposals/{proposal.id}/reject")
+    assert response.status_code == 409
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_undo_terminal_executed_returns_409(client: AsyncClient, session: AsyncSession) -> None:
+    """UNDO refuses to resurrect a terminal EXECUTED proposal to PENDING (phaze-uu17)."""
+    proposal = await create_test_proposal(session, status=ProposalStatus.EXECUTED)
+    response = await client.patch(f"/proposals/{proposal.id}/undo")
+    assert response.status_code == 409
+
+    updated = await session.get(RenameProposal, proposal.id)
+    assert updated is not None
+    assert updated.status == ProposalStatus.EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_skips_terminal_rows(client: AsyncClient, session: AsyncSession) -> None:
+    """A bulk approve over a mix of PENDING + EXECUTED rows only transitions the PENDING one (phaze-uu17)."""
+    pending = await create_test_proposal(session, original_filename="p.mp3")
+    executed = await create_test_proposal(session, original_filename="x.mp3", status=ProposalStatus.EXECUTED)
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": [str(pending.id), str(executed.id)]},
+    )
+    assert response.status_code == 200
+    assert "1 proposals approved" in response.text
+
+    assert (await session.get(RenameProposal, pending.id)).status == ProposalStatus.APPROVED
+    assert (await session.get(RenameProposal, executed.id)).status == ProposalStatus.EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_undo_pending_conflict_returns_409(client: AsyncClient, session: AsyncSession) -> None:
+    """UNDO of an APPROVED proposal whose file already has a PENDING proposal returns 409 (phaze-uu17)."""
+    # One file, two proposals: an existing PENDING and an APPROVED one we try to revert.
+    file_id = uuid.uuid4()
+    file_record = FileRecord(
+        agent_id="test-fileserver",
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path=f"/music/{uuid.uuid4().hex}/dup.mp3",
+        original_filename="dup.mp3",
+        current_path="/music/dup.mp3",
+        file_type="music",
+        file_size=1_000_000,
+    )
+    session.add(file_record)
+    await session.flush()
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="Pending.mp3", status=ProposalStatus.PENDING))
+    approved = RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="Approved.mp3", status=ProposalStatus.APPROVED)
+    session.add(approved)
+    await session.commit()
+
+    response = await client.patch(f"/proposals/{approved.id}/undo")
+    # The pending-unique IntegrityError is translated to a 409 rather than a 500 (phaze-uu17). The
+    # in-request rollback leaves the approved row unchanged; we assert only the status code here
+    # because the router shares this test's session and re-querying it post-rollback is unreliable.
+    assert response.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# v7 diff-row workspace negotiation on the mutation routes (phaze-3a2j)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_from_v7_workspace_returns_diff_row(client: AsyncClient, session: AsyncSession) -> None:
+    """Approving from a v7 workspace returns the styled _diff_row.html, not the legacy <tr> (phaze-3a2j)."""
+    proposal = await create_test_proposal(session)
+    response = await client.patch(
+        f"/proposals/{proposal.id}/approve",
+        headers={"HX-Request": "true", "HX-Target": f"rename-row-{proposal.id}"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="rename-row-{proposal.id}"' in body
+    assert "approved" in body
+    assert "UNDO" in body
+    # The legacy proposals <tr> markup (checkbox/bulk row) must NOT be present.
+    assert 'id="proposal-' not in body
+
+
+@pytest.mark.asyncio
+async def test_reject_from_v7_move_workspace_returns_skipped_diff_row(client: AsyncClient, session: AsyncSession) -> None:
+    """Rejecting from the Move workspace returns a skipped diff-row keyed to move-row (phaze-3a2j)."""
+    proposal = await create_test_proposal(session, proposed_path="performances/A")
+    response = await client.patch(
+        f"/proposals/{proposal.id}/reject",
+        headers={"HX-Request": "true", "HX-Target": f"move-row-{proposal.id}"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="move-row-{proposal.id}"' in body
+    assert "skipped" in body
+
+
+@pytest.mark.asyncio
+async def test_edit_from_v7_workspace_returns_diff_row(client: AsyncClient, session: AsyncSession) -> None:
+    """Editing from a v7 workspace returns the pending diff-row with the new value (phaze-3a2j)."""
+    proposal = await create_test_proposal(session)
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "Edited Name.mp3", "facet": "filename"},
+        headers={"HX-Request": "true", "HX-Target": f"rename-row-{proposal.id}"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="rename-row-{proposal.id}"' in body
+    assert "Edited Name.mp3" in body
+    assert "APPROVE" in body  # still pending -> action cluster present
+
+
+@pytest.mark.asyncio
+async def test_approve_without_hx_target_returns_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
+    """The legacy proposals list (no v7 HX-Target) still gets approve_response.html with the stats-bar (phaze-3a2j)."""
+    proposal = await create_test_proposal(session)
+    response = await client.patch(f"/proposals/{proposal.id}/approve")
+    assert response.status_code == 200
+    assert "stats-bar" in response.text
