@@ -352,7 +352,8 @@ def _proposal_item() -> ExecuteBatchProposalItem:
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
         original_path="/orig/a.mp3",
-        proposed_path="/new/a.mp3",
+        proposed_path="new",  # RELATIVE destination directory
+        proposed_filename="a.mp3",
     )
 
 
@@ -360,7 +361,35 @@ def test_execute_batch_proposal_item_minimal() -> None:
     """sha256_hash is optional; everything else required."""
     item = _proposal_item()
     assert item.sha256_hash is None
-    assert item.proposed_path == "/new/a.mp3"
+    assert item.proposed_path == "new"
+    assert item.proposed_filename == "a.mp3"
+
+
+def test_execute_batch_proposal_item_allows_empty_proposed_path() -> None:
+    """Empty proposed_path is valid -- it signals an in-place rename."""
+    item = ExecuteBatchProposalItem(
+        proposal_id=uuid.uuid4(),
+        file_id=uuid.uuid4(),
+        original_path="/orig/a.mp3",
+        proposed_path="",
+        proposed_filename="renamed.mp3",
+    )
+    assert item.proposed_path == ""
+    assert item.proposed_filename == "renamed.mp3"
+
+
+def test_execute_batch_proposal_item_requires_proposed_filename() -> None:
+    """proposed_filename is required on the wire (RenameProposal column is non-nullable)."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        ExecuteBatchProposalItem.model_validate(
+            {
+                "proposal_id": str(uuid.uuid4()),
+                "file_id": str(uuid.uuid4()),
+                "original_path": "/o",
+                "proposed_path": "n",
+            },
+        )
+    assert any(e.get("type") == "missing" and e.get("loc") == ("proposed_filename",) for e in exc_info.value.errors())
 
 
 def test_execute_batch_proposal_item_with_sha256() -> None:
@@ -369,7 +398,8 @@ def test_execute_batch_proposal_item_with_sha256() -> None:
         proposal_id=uuid.uuid4(),
         file_id=uuid.uuid4(),
         original_path="/o",
-        proposed_path="/n",
+        proposed_path="n",
+        proposed_filename="a.mp3",
         sha256_hash="a" * 64,
     )
     assert item.sha256_hash == "a" * 64
@@ -383,7 +413,8 @@ def test_execute_batch_proposal_item_rejects_unknown_field() -> None:
                 "proposal_id": str(uuid.uuid4()),
                 "file_id": str(uuid.uuid4()),
                 "original_path": "/o",
-                "proposed_path": "/n",
+                "proposed_path": "n",
+                "proposed_filename": "a.mp3",
                 "current_path": "/x",  # explicitly forbidden by D-24
             },
         )
@@ -447,7 +478,8 @@ def test_execute_approved_batch_payload_round_trip() -> None:
                 proposal_id=uuid.uuid4(),
                 file_id=uuid.uuid4(),
                 original_path="/orig/a.mp3",
-                proposed_path="/new/a.mp3",
+                proposed_path="new",
+                proposed_filename="a.mp3",
                 sha256_hash="b" * 64,
             ),
         ],
@@ -469,7 +501,8 @@ def test_execute_approved_batch_payload_rejects_unknown_field() -> None:
                         "proposal_id": str(uuid.uuid4()),
                         "file_id": str(uuid.uuid4()),
                         "original_path": "/o",
-                        "proposed_path": "/n",
+                        "proposed_path": "n",
+                        "proposed_filename": "a.mp3",
                     },
                 ],
                 "rogue": "no",

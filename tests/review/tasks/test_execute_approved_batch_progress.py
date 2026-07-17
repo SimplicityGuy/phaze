@@ -105,7 +105,8 @@ async def test_success_emits_one_deleted_progress_post(tmp_path: Path, monkeypat
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -143,7 +144,9 @@ async def test_failure_emits_failed_progress_post_with_failed_at_step(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig),
-            proposed_path="/etc/passwd",  # outside scan_root -> path-traversal ValueError
+            # relative-dir traversal resolving OUTSIDE the scan_root -> path-traversal ValueError
+            proposed_path="../../../../../../../../etc",
+            proposed_filename="passwd",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -167,7 +170,8 @@ async def test_sha256_mismatch_maps_to_failed_at_verify(tmp_path: Path, monkeypa
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,  # wrong hash forces sha256 mismatch
         ),
     ]
@@ -209,7 +213,8 @@ async def test_delete_failure_maps_to_failed_at_delete(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -240,7 +245,8 @@ async def test_sub_batch_terminal_set_on_last_item_only(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o),
-            proposed_path=str(p),
+            proposed_path="new",
+            proposed_filename=p.name,
         )
         for o, p in zip(orig_paths, proposed_paths, strict=True)
     ]
@@ -276,7 +282,8 @@ async def test_progress_post_failure_logs_warning_but_does_not_raise(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -312,7 +319,8 @@ async def test_uuids_persisted_in_job_meta_on_first_run(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(o),
-            proposed_path=str(p),
+            proposed_path="new",
+            proposed_filename=p.name,
         )
         for o, p in zip(orig_paths, proposed_paths, strict=True)
     ]
@@ -357,7 +365,8 @@ async def test_uuids_reused_from_job_meta_on_retry(
             proposal_id=proposal_id,
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -396,7 +405,8 @@ async def test_error_message_uses_step_reason_prefix(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
         ),
     ]
@@ -430,7 +440,8 @@ async def test_execution_log_and_progress_use_distinct_uuids(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -461,7 +472,8 @@ async def test_legacy_ctx_without_job_does_not_break(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -489,7 +501,8 @@ async def test_correct_sha256_still_succeeds(tmp_path: Path, monkeypatch: pytest
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash=correct_hash,
         ),
     ]
@@ -521,7 +534,8 @@ async def test_empty_scan_roots_raises_runtime_error(monkeypatch: pytest.MonkeyP
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path="/music/x.mp3",
-            proposed_path="/music/y.mp3",
+            proposed_path="renamed",
+            proposed_filename="y.mp3",
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -551,7 +565,8 @@ async def test_post_execution_log_failure_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -583,7 +598,8 @@ async def test_patch_completed_log_failure_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -614,7 +630,8 @@ async def test_patch_failed_log_failure_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
         ),
     ]
@@ -646,7 +663,8 @@ async def test_patch_proposal_state_failed_report_failure_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
         ),
     ]
@@ -677,7 +695,8 @@ async def test_progress_post_failure_on_success_path_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
         ),
     ]
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
@@ -710,7 +729,8 @@ async def test_progress_post_failure_on_failure_path_is_swallowed(
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=str(orig_paths[0]),
-            proposed_path=str(proposed_paths[0]),
+            proposed_path="new",
+            proposed_filename=proposed_paths[0].name,
             sha256_hash="0" * 64,
         ),
     ]

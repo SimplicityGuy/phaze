@@ -151,6 +151,9 @@ async def test_groups_by_agent_id(session: AsyncSession) -> None:
             assert isinstance(item.file_id, uuid.UUID)
             assert item.original_path.startswith("/music/")
             assert item.proposed_path.startswith("organized/")
+            # proposed_filename is carried on the wire (bug fix: the executor
+            # needs it to build the real destination, not just the directory).
+            assert item.proposed_filename.endswith("-renamed.mp3")
 
 
 async def test_revoked_agent_filtered_with_count(session: AsyncSession) -> None:
@@ -231,7 +234,8 @@ def _make_items(n: int) -> list[ExecuteBatchProposalItem]:
             proposal_id=uuid.uuid4(),
             file_id=uuid.uuid4(),
             original_path=f"/x/{i}.mp3",
-            proposed_path=f"y/{i}.mp3",
+            proposed_path="y",
+            proposed_filename=f"{i}.mp3",
             sha256_hash="b" * 64,
         )
         for i in range(n)

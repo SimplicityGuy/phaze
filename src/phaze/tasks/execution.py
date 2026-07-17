@@ -1,10 +1,12 @@
 """SAQ task: execute_approved_batch -- per-proposal local file ops + HTTP state reporting (Phase 26 B2 Option A + Phase 28 D-03/D-15).
 
 Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposal:
-1. Validate `proposed_path` is contained within an agent scan_root (T-26-11-S1 path-traversal guard).
+1. Resolve `original_path` under its owning scan_root, then build the destination as
+   ``owning_root/proposed_path/proposed_filename`` (``proposed_path`` is a RELATIVE dir;
+   empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
 2. POST /execution-log with status='in_progress' (per-proposal audit row).
 3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
-4. Copy `original_path` -> `proposed_path` (mkdir parent as needed).
+4. Move `original_path` -> destination (mkdir parent as needed).
 5. Delete the original.
 6. PATCH /execution-log/{id} with status='completed' (or 'failed').
 7. PATCH /proposals/{id}/state with proposal_state=executed, file_state=moved, current_path=proposed_path.
@@ -69,8 +71,14 @@ logger = structlog.get_logger(__name__)
 FailedAtStep = Literal["copy", "verify", "delete"]
 
 
-def _resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> Path:
+def _resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> tuple[Path, Path]:
     """Resolve `candidate` and assert it lives under at least one of `scan_roots`.
+
+    Returns ``(resolved, owning_root)`` -- the resolved candidate path and the
+    resolved scan_root it lives under. Callers resolve a proposed RELATIVE
+    destination directory against this same ``owning_root`` (mirroring
+    ``services.collision`` ``concat(proposed_path, '/', proposed_filename)``)
+    so the destination lands under the file's own scan_root.
 
     Raises ValueError on path traversal (T-26-11-S1). The resolved path is what
     we use for the actual file op so symlinks-out are also caught.
@@ -80,11 +88,32 @@ def _resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> Pat
         root_resolved = Path(root).resolve()
         try:
             resolved.relative_to(root_resolved)
-            return resolved
+            return resolved, root_resolved
         except ValueError:
             continue
     msg = f"path {candidate!r} (resolved to {resolved}) escapes all scan_roots {scan_roots}"
     raise ValueError(msg)
+
+
+def _resolve_destination(
+    item: ExecuteBatchProposalItem,
+    original: Path,
+    owning_root: Path,
+    scan_roots: list[str],
+) -> Path:
+    """Build the absolute destination path for `item` and containment-check it.
+
+    ``proposed_path`` is a RELATIVE destination directory under the file's own
+    scan_root; the destination is ``owning_root / proposed_path /
+    proposed_filename`` (mirrors ``services.collision`` joining semantics). An
+    empty/null ``proposed_path`` means "rename in place" -- keep the original's
+    directory and apply the new filename. The constructed absolute path is
+    re-run through :func:`_resolve_and_check_containment` so a ``../`` embedded
+    in ``proposed_path`` cannot escape the scan_roots (T-26-11-S1).
+    """
+    dest_dir = (owning_root / item.proposed_path) if item.proposed_path else original.parent
+    resolved, _ = _resolve_and_check_containment(str(dest_dir / item.proposed_filename), scan_roots)
+    return resolved
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -137,6 +166,11 @@ async def _execute_one(
     so SAQ retries reuse the same per-proposal values (closes L6/L22; delivers D-15).
     """
     sha_verified = item.sha256_hash is not None
+    # Relative destination for the audit trail (source_path is absolute, but the
+    # true absolute destination is only known after resolving the owning
+    # scan_root inside the guarded block below). proposed_filename is always
+    # present, so this is never empty (satisfies ExecutionLogCreate min_length=1).
+    dest_display = f"{item.proposed_path.rstrip('/')}/{item.proposed_filename}" if item.proposed_path else item.proposed_filename
     # Always POST the in-progress audit row first -- this is the durable trail
     # that survives a crash mid-copy.
     try:
@@ -146,7 +180,7 @@ async def _execute_one(
                 proposal_id=item.proposal_id,
                 operation="move",
                 source_path=item.original_path,
-                destination_path=item.proposed_path,
+                destination_path=dest_display,
                 sha256_verified=False,  # not yet verified at this point
                 status=ExecutionStatus.IN_PROGRESS,
             ),
@@ -160,11 +194,14 @@ async def _execute_one(
     # handler can map exception -> failed_at_step without inspecting types.
     current_step: FailedAtStep = "copy"
     try:
-        # 2. Path-traversal guard for both original_path and proposed_path
-        # current_step="copy" covers path-resolve (a failure here means "the
-        # copy couldn't begin" -- matches operator intuition).
-        original = _resolve_and_check_containment(item.original_path, scan_roots)
-        proposed = _resolve_and_check_containment(item.proposed_path, scan_roots)
+        # 2. Path-traversal guard for original_path + construct/guard the
+        # destination. current_step="copy" covers path-resolve (a failure here
+        # means "the copy couldn't begin" -- matches operator intuition).
+        # proposed_path is a RELATIVE dir under the owning scan_root; the
+        # destination is owning_root/proposed_path/proposed_filename (empty
+        # proposed_path == in-place rename).
+        original, owning_root = _resolve_and_check_containment(item.original_path, scan_roots)
+        proposed = _resolve_destination(item, original, owning_root, scan_roots)
 
         # 3. Optional sha256 verify (caller may supply None to skip)
         if item.sha256_hash is not None:

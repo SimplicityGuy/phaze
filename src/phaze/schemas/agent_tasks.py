@@ -181,8 +181,22 @@ class ExecuteBatchProposalItem(BaseModel):
     """Per-proposal details carried inside ExecuteApprovedBatchPayload.proposals.
 
     The agent needs full local-file-op context (original_path, proposed_path,
-    optional sha256 verify) in the payload itself -- D-23 forbids reading
-    state back from the controller mid-job.
+    proposed_filename, optional sha256 verify) in the payload itself -- D-23
+    forbids reading state back from the controller mid-job.
+
+    ``proposed_path`` is the RELATIVE destination DIRECTORY the LLM proposed
+    (e.g. ``"performances/artists/Disclosure"``), matching how it is stored on
+    ``RenameProposal.proposed_path`` and joined in ``services.collision`` as
+    ``concat(proposed_path, '/', proposed_filename)``. It is NOT an absolute
+    destination file path; the executor resolves it against the owning
+    scan_root and appends ``proposed_filename``. An empty string means "rename
+    in place" (keep the current directory, apply the new filename).
+
+    ``proposed_filename`` is the new filename (with extension). It is always
+    present on the wire because ``RenameProposal.proposed_filename`` is
+    non-nullable -- carrying it here is what lets the executor build the real
+    destination instead of treating the relative directory as an absolute file
+    (the bug that failed every approved proposal at ``failed_at_step='copy'``).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -190,7 +204,8 @@ class ExecuteBatchProposalItem(BaseModel):
     proposal_id: uuid.UUID
     file_id: uuid.UUID
     original_path: str
-    proposed_path: str
+    proposed_path: str  # RELATIVE destination directory ('' == rename in place)
+    proposed_filename: str  # new filename incl. extension (appended under proposed_path)
     sha256_hash: str | None = None  # optional pre-copy integrity check
 
 
