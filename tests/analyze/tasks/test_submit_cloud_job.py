@@ -224,6 +224,57 @@ async def test_resubmit_is_idempotent_single_row(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stale_status", [CloudJobStatus.AWAITING.value, CloudJobStatus.SUCCEEDED.value, CloudJobStatus.FAILED.value])
+async def test_late_submit_does_not_resurrect_non_advanceable_row(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_status: str,
+) -> None:
+    """phaze-kzto: a delayed submit MUST NOT flip a spilled ('awaiting') or terminal row to SUBMITTED.
+
+    The CAS guards the upsert on status IN ('uploaded','submitted'); a row already advanced past the
+    submit window is left untouched and the doomed Job we POSTed is deleted (no phantom cap slot).
+    """
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+    # Seed a row that a reconcile tick already moved OUT of the submit window.
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=fid,
+            backend_id=_KUEUE_BACKEND_ID,
+            s3_key=f"phaze-staging/{fid}",
+            status=stale_status,
+        )
+    )
+    await session.commit()
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    deleted: list[str] = []
+
+    async def _fake_delete(name: str, kube: Any) -> None:
+        deleted.append(name)
+
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", _fake_delete)
+
+    result = await submit_cloud_job(_make_ctx(async_engine), fid)
+
+    session.expire_all()
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalars().all()
+    assert len(rows) == 1
+    # The row is NOT resurrected to SUBMITTED -- it keeps its advanced status.
+    assert rows[0].status == stale_status
+    # The doomed Job we POSTed is torn down (no phantom cap slot / orphaned pod).
+    assert deleted == [f"phaze-analyze-{fid}"]
+    assert result.get("status") == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_submit_seeds_no_scheduling_ledger_row(
     async_engine: AsyncEngine,
     session: AsyncSession,
