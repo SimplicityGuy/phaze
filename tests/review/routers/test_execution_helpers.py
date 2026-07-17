@@ -336,6 +336,7 @@ def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
     pipe.__aenter__ = AsyncMock(return_value=pipe)
     pipe.__aexit__ = AsyncMock(return_value=None)
     pipe.hset = MagicMock()
+    pipe.hincrby = MagicMock()
     pipe.expire = MagicMock()
     pipe.execute = AsyncMock(return_value=None)
     redis_client.pipeline = MagicMock(return_value=pipe)
@@ -377,6 +378,73 @@ async def test_start_execution_logs_and_continues_on_enqueue_failure(
     # Enqueue was attempted and the exception path was taken.
     assert mock_router.enqueue_for_agent.await_count == 1
     assert any("dispatch: enqueue failed" in r.message for r in caplog.records)
+
+
+def _hset_calls(pipe: AsyncMock) -> list[tuple]:
+    """Positional args of every pipe.hset(...) call (batch seed + correction)."""
+    return [c.args for c in pipe.hset.call_args_list]
+
+
+async def test_start_execution_zero_enqueues_reaches_terminal_status(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """Every chunk failing to enqueue -> batch is promoted to a terminal status, not stuck 'running' (phaze-kxsb)."""
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=RuntimeError("broker down"))
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    # subjobs_expected corrected to 0 and status HSET to a terminal value in the correction pipeline.
+    hsets = _hset_calls(pipe)
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "0" for a in hsets)
+    assert any(len(a) >= 3 and a[1] == "status" and a[2] == "complete_with_errors" for a in hsets)
+    # Undispatched proposals surfaced as failed, and the terminal status closes the card.
+    assert pipe.hincrby.call_args.args[1] == "failed"
+    assert pipe.hincrby.call_args.args[2] == 2
+
+
+async def test_start_execution_partial_enqueue_failure_corrects_expected(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """One chunk lands, one fails -> subjobs_expected corrected to 1 and the promote check re-runs (phaze-kxsb)."""
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")]}
+
+    async def _enqueue(*, agent_id: str, **_kw: Any) -> None:
+        if agent_id == "agent-b":
+            raise RuntimeError("agent-b broker down")
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+    promote = AsyncMock()
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        patch("phaze.routers.execution._get_promote_status_script", MagicMock(return_value=promote)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    # subjobs_expected corrected to the 1 that landed; status left 'running' (a landed sub-job will POST).
+    hsets = _hset_calls(pipe)
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "1" for a in hsets)
+    assert not any(len(a) >= 3 and a[1] == "status" and a[2] == "complete_with_errors" for a in hsets)
+    # The promote check re-ran to close the race where the landed sub-job already reported terminal.
+    promote.assert_awaited_once()
+    assert pipe.hincrby.call_args.args[2] == 1  # one undispatched proposal counted as failed
 
 
 async def test_start_execution_skips_redis_seed_when_no_groups(

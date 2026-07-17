@@ -152,6 +152,21 @@ def _same_filesystem(src: Path, dst_dir: Path) -> bool:
     return src.stat().st_dev == dst_dir.stat().st_dev
 
 
+def _is_same_file(a: Path, b: Path) -> bool:
+    """True when `a` and `b` refer to the same on-disk file (same device + inode).
+
+    Guards the no-op / case-only rename: a move whose destination resolves to the
+    very file being moved must NOT be treated as a clobber. ``os.path.samestat``
+    compares ``st_dev``/``st_ino`` so hard links and case-insensitive filesystems
+    are handled correctly. Any stat error (races, permission) is treated as
+    "not the same file" so the caller falls through to the exists guard.
+    """
+    try:
+        return os.path.samestat(a.stat(), b.stat())
+    except OSError:
+        return False
+
+
 def _streamed_copy(src: Path, dst: Path) -> None:
     """Copy `src` -> `dst` in bounded chunks, flushing + fsyncing before return.
 
@@ -262,6 +277,16 @@ async def _execute_one(
         # whole-file read would MemoryError / OOM-kill the worker.
         current_step = "copy"
         proposed.parent.mkdir(parents=True, exist_ok=True)
+        # phaze-yu2e: refuse to clobber a pre-existing destination. Both branches
+        # below silently destroy whatever sits at `proposed` -- os.replace atomically
+        # replaces it and the streamed copy's open("wb") truncates it. The
+        # dispatch-time collision gate cannot catch every case (NULL-path in-place
+        # renames, a destination already occupied by an earlier executed proposal, or
+        # an untracked on-disk file), so fail the copy step loudly here rather than
+        # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
+        if proposed.exists() and not _is_same_file(original, proposed):
+            msg = f"destination already exists, refusing to overwrite: {proposed}"
+            raise FileExistsError(msg)
         if _same_filesystem(original, proposed.parent):
             # Atomic rename also removes the original in one syscall -- the move
             # IS the delete, so there is no separate delete step to fail.

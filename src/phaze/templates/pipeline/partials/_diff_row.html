@@ -33,9 +33,12 @@
     <div class="flex items-center justify-between">
         <div class="min-w-0 truncate text-sm text-gray-900 dark:text-gray-200" title="{{ original_path }}">{{ file }}</div>
         {% if row_state and row_state != 'pending' %}
-        {# Applied/approved lifecycle (Pattern 6): emerald status word + neutral UNDO (never destructive-red). #}
+        {# Applied/approved/skipped lifecycle (Pattern 6): status word + neutral UNDO (never destructive-red).
+           'skipped' (a rejected row) is a neutral-gray word; approved/applied stay emerald. #}
+        {% set _life_word = 'applied ✓' if row_state == 'applied' else ('skipped' if row_state == 'skipped' else 'approved') %}
+        {% set _life_tint = 'text-gray-500 dark:text-gray-400' if row_state == 'skipped' else 'text-emerald-600 dark:text-emerald-300' %}
         <div class="flex items-center gap-1.5 shrink-0 ml-4">
-            <span class="font-jura text-[11px] font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-300">{{ 'applied ✓' if row_state == 'applied' else 'approved' }}</span>
+            <span class="font-jura text-[11px] font-medium uppercase tracking-wider {{ _life_tint }}">{{ _life_word }}</span>
             <button type="button" hx-patch="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
         </div>
         {% else %}

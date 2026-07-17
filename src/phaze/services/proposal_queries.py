@@ -7,17 +7,41 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import case, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     import uuid as uuid_mod
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.file import FileRecord
+
+
+class ProposalTransitionError(Exception):
+    """A proposal status write blocked by the documented state machine (phaze-uu17).
+
+    Carries the current and attempted statuses so routers can translate it into a
+    409 without re-querying. Terminal EXECUTED/FAILED rows (the authoritative record
+    that a rename was applied) must never be flipped back to pending/approved/rejected.
+    """
+
+    def __init__(self, current_status: str, attempted_status: str) -> None:
+        super().__init__(f"illegal transition {current_status} -> {attempted_status}")
+        self.current_status = current_status
+        self.attempted_status = attempted_status
+
+
+class ProposalPendingConflictError(Exception):
+    """Reverting a proposal to PENDING would violate the one-pending-per-file index (phaze-uu17)."""
+
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(f"file already has a pending proposal (proposal {proposal_id})")
+        self.proposal_id = proposal_id
 
 
 @dataclass
@@ -153,15 +177,31 @@ async def update_proposal_status(
     session: AsyncSession,
     proposal_id: uuid_mod.UUID,
     new_status: ProposalStatus,
+    allowed_from: Iterable[ProposalStatus] | None = None,
 ) -> RenameProposal | None:
-    """Update a single proposal's status and return it with eagerly loaded file."""
+    """Update a single proposal's status and return it with eagerly loaded file.
+
+    ``allowed_from`` gates the write to the documented state machine (phaze-uu17):
+    when provided, a proposal whose current status is not in the set raises
+    :class:`ProposalTransitionError` (routers translate it to 409) instead of
+    silently overwriting a terminal EXECUTED/FAILED row. ``None`` preserves the
+    legacy unconditional write for internal callers that already pre-filter.
+    """
     stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
     result = await session.execute(stmt)
     proposal = result.scalar_one_or_none()
     if proposal is None:
         return None
+    if allowed_from is not None and ProposalStatus(proposal.status) not in set(allowed_from):
+        raise ProposalTransitionError(proposal.status, new_status.value)
     proposal.status = new_status.value
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # Reverting to PENDING can collide with the one-pending-per-file partial unique
+        # index (uq_proposals_file_id_pending) if the file already has a pending proposal.
+        await session.rollback()
+        raise ProposalPendingConflictError(str(proposal_id)) from exc
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
     stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
@@ -173,9 +213,19 @@ async def bulk_update_status(
     session: AsyncSession,
     proposal_ids: list[uuid_mod.UUID],
     new_status: ProposalStatus,
+    allowed_from: Iterable[ProposalStatus] | None = None,
 ) -> int:
-    """Bulk-update status for multiple proposals. Returns number of rows updated."""
-    stmt = update(RenameProposal).where(RenameProposal.id.in_(proposal_ids)).values(status=new_status.value)
+    """Bulk-update status for multiple proposals. Returns number of rows updated.
+
+    ``allowed_from`` constrains the UPDATE to rows in one of those from-states
+    (phaze-uu17): terminal EXECUTED/FAILED rows selected by an "All"-tab bulk
+    action are skipped rather than rewritten, and the returned count reflects only
+    the rows that actually transitioned.
+    """
+    stmt = update(RenameProposal).where(RenameProposal.id.in_(proposal_ids))
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    stmt = stmt.values(status=new_status.value)
     cursor_result: Any = await session.execute(stmt)
     await session.commit()
     return int(cursor_result.rowcount)

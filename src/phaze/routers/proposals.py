@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.models.proposal import ProposalStatus
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
+    ProposalPendingConflictError,
+    ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
     get_proposal_stats,
@@ -24,6 +26,78 @@ from phaze.services.proposal_queries import (
     update_proposal_fields,
     update_proposal_status,
 )
+
+
+# Documented review-UI state machine (phaze-uu17): terminal EXECUTED/FAILED rows are the
+# authoritative record that a rename was applied and must never be flipped back by the UI.
+_APPROVE_REJECT_FROM = frozenset({ProposalStatus.PENDING})
+_UNDO_FROM = frozenset({ProposalStatus.PENDING, ProposalStatus.APPROVED, ProposalStatus.REJECTED})
+
+
+async def _guarded_status_update(
+    session: AsyncSession,
+    proposal_id: uuid.UUID,
+    new_status: ProposalStatus,
+    allowed_from: frozenset[ProposalStatus],
+) -> RenameProposal | None:
+    """Call update_proposal_status, translating state-machine errors into 409 responses."""
+    try:
+        return await update_proposal_status(session, proposal_id, new_status, allowed_from=allowed_from)
+    except ProposalTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProposalPendingConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# phaze-3a2j: the v7 diff-row workspaces (Rename / Move / Record slide-in) render rows from the
+# shared pipeline/partials/_diff_row.html partial and hx-target each row's own <div>. The mutation
+# routes historically returned the LEGACY <tr>-based proposal_row.html, so a swap dropped broken
+# table-row markup into the div list and the Alpine bindings threw ReferenceErrors. When a request
+# originates from one of these workspaces (identified by its HX-Target = "{prefix}-{proposal_id}"),
+# the route must instead return _diff_row.html with the matching prefix, facet, and lifecycle state.
+_V7_ROW_FACETS: dict[str, str] = {"rename-row": "filename", "record-row": "filename", "move-row": "path"}
+
+
+def _v7_row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str] | None:
+    """Return (row_id_prefix, facet) when the request came from a v7 diff-row workspace, else None."""
+    hx_target = request.headers.get("HX-Target", "")
+    for prefix, facet in _V7_ROW_FACETS.items():
+        if hx_target == f"{prefix}-{proposal_id}":
+            return prefix, facet
+    return None
+
+
+def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> HTMLResponse:
+    """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
+    file_record = proposal.file
+    if facet == "path":
+        before = file_record.current_path
+        after = proposal.proposed_path or ""
+        edit_facet = "path"
+    else:
+        before = file_record.original_filename
+        after = proposal.proposed_filename
+        edit_facet = "filename"
+    pid = proposal.id
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_diff_row.html",
+        context={
+            "request": request,
+            "row_id_prefix": row_id_prefix,
+            "pid": pid,
+            "file": file_record.original_filename,
+            "original_path": file_record.current_path,
+            "before": before,
+            "after": after,
+            "approve_url": f"/proposals/{pid}/approve",
+            "skip_url": f"/proposals/{pid}/reject",
+            "undo_url": f"/proposals/{pid}/undo",
+            "edit_url": f"/proposals/{pid}/edit",
+            "edit_facet": edit_facet,
+            "row_state": row_state,
+        },
+    )
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -189,9 +263,12 @@ async def approve_proposal(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Approve a proposal and return the updated row with OOB stats and toast."""
-    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.APPROVED)
+    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.APPROVED, _APPROVE_REJECT_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
+    v7 = _v7_row_target(request, proposal_id)
+    if v7 is not None:
+        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="approved")
     stats = await get_proposal_stats(session)
     return templates.TemplateResponse(
         request=request,
@@ -214,9 +291,12 @@ async def reject_proposal(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Reject a proposal and return the updated row with OOB stats and toast."""
-    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.REJECTED)
+    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
+    v7 = _v7_row_target(request, proposal_id)
+    if v7 is not None:
+        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="skipped")
     stats = await get_proposal_stats(session)
     return templates.TemplateResponse(
         request=request,
@@ -239,9 +319,12 @@ async def undo_proposal(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Revert a proposal to pending status and return updated row with OOB stats."""
-    proposal = await update_proposal_status(session, proposal_id, ProposalStatus.PENDING)
+    proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
+    v7 = _v7_row_target(request, proposal_id)
+    if v7 is not None:
+        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="pending")
     stats = await get_proposal_stats(session)
     return templates.TemplateResponse(
         request=request,
@@ -411,6 +494,11 @@ async def edit_proposal(
         proposal = await update_proposal_fields(session, proposal_id, proposed_filename=value)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
+    # phaze-3a2j: a v7 diff-row workspace expects the shared _diff_row.html back (the row stays
+    # PENDING with the edited "after" value), not the legacy <tr> proposal_row.html.
+    v7 = _v7_row_target(request, proposal_id)
+    if v7 is not None:
+        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="pending")
     return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the validated proposed value renders escaped (no raw/`| safe`), so this is not a direct tainted response.
         request=request,
         name="proposals/partials/proposal_row.html",
@@ -430,7 +518,9 @@ async def bulk_action(
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
     status_map = {"approve": ProposalStatus.APPROVED, "reject": ProposalStatus.REJECTED}
     uuids = [uuid.UUID(pid) for pid in proposal_ids]
-    count = await bulk_update_status(session, uuids, status_map[action])
+    # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
+    # rows selected via the "All" tab are skipped, and count reflects only real transitions.
+    count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)
     stats = await get_proposal_stats(session)
     return templates.TemplateResponse(
         request=request,
