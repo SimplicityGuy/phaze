@@ -11,7 +11,10 @@
 
 {# OOB: inject bulk toast #}
 <div hx-swap-oob="beforeend:#toast-container">
-    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states %}
+    {# undo_target: dedupe_workspace.html's persistent "#dedupe-bulk-response" status div, NOT the
+       v7-cutover-deleted #duplicates-list (phaze-be1j) -- it always exists in the live shell, unlike
+       the per-group cards this bulk action doesn't OOB-touch (R-2). #}
+    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML" %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>

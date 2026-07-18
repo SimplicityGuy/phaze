@@ -8,7 +8,10 @@
 
 {# OOB: inject toast #}
 <div hx-swap-oob="beforeend:#toast-container">
-    {% with toast_message="Group resolved -- " ~ resolved_count ~ " files marked as duplicates", undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, is_bulk=False %}
+    {# undo_target: the placeholder div THIS response just rendered above ("group-{{ group_hash }}"),
+       NOT the v7-cutover-deleted #duplicates-list (phaze-be1j) -- /undo restores it (outerHTML) to a
+       live _dupe_group.html card. #}
+    {% with toast_message="Group resolved -- " ~ resolved_count ~ " files marked as duplicates", undo_url="/duplicates/" ~ group_hash ~ "/undo", undo_file_states=resolved_file_states, undo_target="group-" ~ group_hash, undo_swap="outerHTML", is_bulk=False %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>

@@ -1,6 +1,13 @@
-{# Primary response: restored group card #}
+{# Primary response: restored group card. Shell-shaped (pipeline/partials/_dupe_group.html,
+   id="dupe-group-{hash}", keeper-select radios) so it swaps (outerHTML) back into the live
+   Dedupe workspace as a normal, fully-wired card -- NOT the legacy group_card.html accordion
+   row, which the workspace never renders (phaze-be1j). If the group vanished (e.g. every other
+   duplicate was deleted since resolving), fall back to an inert placeholder at the SAME id the
+   resolve response created, so the swap always lands on a real element. #}
 {% if group %}
-    {% include "duplicates/partials/group_card.html" %}
+    {% include "pipeline/partials/_dupe_group.html" %}
+{% else %}
+    <div id="group-{{ group_hash }}" style="display:none;"></div>
 {% endif %}
 
 {# OOB: update stats header #}

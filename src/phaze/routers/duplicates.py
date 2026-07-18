@@ -20,6 +20,7 @@ from phaze.services.dedup import (
     undo_resolve,
 )
 from phaze.services.proposal_queries import Pagination
+from phaze.services.review import build_dupe_group_card
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -185,8 +186,12 @@ async def undo_resolve_endpoint(
     # Re-fetch group data after undo
     groups = await find_duplicate_groups_with_metadata(session, limit=1000, offset=0)
     group = next((g for g in groups if g["sha256_hash"] == group_hash), None)
+    dupe_group_card = None
     if group:
         score_group(group)
+        # phaze-be1j: the restored group must swap back into the Dedupe workspace shell as a live
+        # _dupe_group.html card (build_dupe_group_card's shape), not the legacy group_card.html row.
+        dupe_group_card = build_dupe_group_card(group)
 
     stats = await get_duplicate_stats(session)
 
@@ -195,7 +200,8 @@ async def undo_resolve_endpoint(
         name="duplicates/partials/undo_response.html",
         context={
             "request": request,
-            "group": group,
+            "group": dupe_group_card,
+            "group_hash": group_hash,
             "stats": stats,
         },
     )
@@ -240,34 +246,26 @@ async def bulk_resolve(
 async def bulk_undo(
     request: Request,
     file_states: str = Form(...),
-    page: int = Form(1),
-    page_size: int = Form(20),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Undo a bulk resolution, restoring all files."""
+    """Undo a bulk resolution, restoring all files.
+
+    phaze-be1j: the toast's "Undo All" now targets the Dedupe workspace's persistent
+    ``#dedupe-bulk-response`` status div (``innerHTML``) -- the old ``#duplicates-list`` target
+    (and the full ``group_list.html`` legacy accordion-page response built for it) no longer
+    exists in the v7 shell, so the request never fired. Bulk resolve doesn't OOB-touch individual
+    group cards either (R-2), so there's no per-card DOM state to restore here -- just confirm
+    the undo landed.
+    """
     parsed_states = json.loads(file_states)
-    await undo_resolve(session, parsed_states)
+    restored_count = await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the bulk undo is rolled back.
-
-    # Re-fetch groups for the page
-    offset = (page - 1) * page_size
-    groups = await find_duplicate_groups_with_metadata(session, limit=page_size, offset=offset)
-    for group in groups:
-        score_group(group)
-
-    stats = await get_duplicate_stats(session)
-    total = await count_duplicate_groups(session)
-    pagination = Pagination(page=page, page_size=page_size, total=total)
 
     return templates.TemplateResponse(
         request=request,
-        name="duplicates/partials/group_list.html",
+        name="duplicates/partials/bulk_undo_response.html",
         context={
             "request": request,
-            "groups": groups,
-            "stats": stats,
-            "pagination": pagination,
-            "current_page": "duplicates",
-            "oob_stats": True,
+            "restored_count": restored_count,
         },
     )
