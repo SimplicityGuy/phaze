@@ -186,9 +186,17 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # Redis pools the shutdown block already disconnects), so the reverse-order shutdown below
     # is left untouched. No auth middleware, no new port, no ``saq[web]`` -- the reverse proxy's
     # internal-realm auth on the private LAN is the sole access control (LOCKED, threat T-33-03).
+    #
+    # phaze-k1vy: SER-01 kind-scoping (mirrors shell.py:216, pipeline.py:584) -- kueue-routed
+    # kind="compute" agents (e.g. k8s-vox / k8s-xenolab) never have SAQ queues; their work
+    # bypasses SAQ entirely (KSUBMIT-06 forbids seeding SAQ jobs for the kueue path). Mounting
+    # their phantom per-lane queues here made the dashboard show 10 permanently-0/0/0 queues
+    # that were misread as "workers are down" on 2026-07-17, and opened an unused psycopg pool
+    # per phantom queue. Scope to kind="fileserver" so only agents that actually run SAQ workers
+    # are enumerated.
     if settings.enable_saq_ui:
         async with async_session() as session:
-            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(Agent.name)
+            agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
             agents = (await session.execute(agents_stmt)).scalars().all()
         # quick-260707-dh1: mount ALL FOUR lane queues per agent (analyze/fingerprint/meta/io)
         # PLUS the legacy base queue so the migration drain window is visible in the dashboard.
