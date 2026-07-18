@@ -193,7 +193,7 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_bulk_resolve(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /duplicates/resolve-all resolves all groups on page."""
+    """POST /duplicates/resolve-all resolves every operator-submitted group_hashes entry."""
     # Group A
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
@@ -205,12 +205,64 @@ async def test_bulk_resolve(session: AsyncSession, client: AsyncClient) -> None:
 
     response = await client.post(
         "/duplicates/resolve-all",
-        data={"page": "1", "page_size": "20"},
+        data={"group_hashes": [HASH_A, HASH_B]},
     )
 
     assert response.status_code == 200
     assert "Resolved" in response.text
     assert "groups" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_only_touches_submitted_hashes(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /duplicates/resolve-all leaves a duplicate group untouched if its hash was NOT submitted.
+
+    Regression for phaze-81bu: bulk_resolve used to re-derive "the current page" via a fresh
+    LIMIT/OFFSET query instead of acting on the group hashes the operator was actually shown, so it
+    could resolve a group the operator never reviewed. Submitting only HASH_A must leave HASH_B (also a
+    qualifying duplicate group) completely unresolved.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    # Group A -- submitted
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    # Group B -- NOT submitted, but still a duplicate group the naive page/page_size re-derivation
+    # would have picked up.
+    f3 = _make_file("/dir/b1.mp3", "mp3", HASH_B)
+    f4 = _make_file("/dir/b2.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, f3, f4])
+    await session.flush()
+
+    response = await client.post(
+        "/duplicates/resolve-all",
+        data={"group_hashes": [HASH_A]},
+    )
+
+    assert response.status_code == 200
+
+    marker_file_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    # Exactly one of Group A's files (the non-canonical one) got a marker; Group B is untouched.
+    assert marker_file_ids <= {f1.id, f2.id}
+    assert marker_file_ids, "the submitted group was not resolved"
+    assert f3.id not in marker_file_ids
+    assert f4.id not in marker_file_ids
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_no_group_hashes_resolves_nothing(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /duplicates/resolve-all with no group_hashes resolves nothing (no implicit re-derivation)."""
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    response = await client.post("/duplicates/resolve-all", data={})
+
+    assert response.status_code == 200
+    assert "Resolved 0 groups" in response.text
 
 
 @pytest.mark.asyncio
@@ -223,7 +275,7 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
     await session.flush()
 
     # Bulk resolve first
-    await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
+    await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
 
     # Build undo states
     file_states = [{"id": str(f2.id)}]
@@ -395,7 +447,7 @@ async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(session: 
     session.add_all([keeper_a, dup_a, keeper_b, dup_b])
     await session.flush()
 
-    resolve = await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
+    resolve = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A, HASH_B]})
     assert resolve.status_code == 200
     payload = _extract_server_file_states(resolve.text)
 

@@ -9,10 +9,14 @@
    keeper_id. Resolving swaps the card to resolve_response.html, whose OOB toast carries the
    resolved_file_states blob so UNDO round-trips it to /duplicates/{hash}/undo (REVIEW-05).
 
-   Bulk header (D-07): AUTO-KEEP HIGHEST QUALITY POSTs the page-scoped /duplicates/resolve-all (the
-   server re-scores every group on the page and archives the non-keepers) with the R-4 mass-action
-   guard (hx-confirm naming the count + hx-disabled-elt so a second bulk write can't fire mid-run).
-   Its response's OOB bulk toast carries all_file_states for a reversible UNDO ALL.
+   Bulk header (D-07): AUTO-KEEP HIGHEST QUALITY POSTs /duplicates/resolve-all with the EXACT
+   sha256_hash of every group actually rendered below (hidden ``name="group_hashes"`` inputs, pulled in
+   via ``hx-include`` since the button sits outside any ``<form>``) -- NOT a page/page_size re-derivation.
+   phaze-81bu: re-deriving "the current page" via a fresh LIMIT/OFFSET query let the server bulk-resolve
+   a group the operator never saw (display set != write set, and it could drift further if another
+   resolve committed between render and click). Acting on the rendered hashes closes that gap. The R-4
+   mass-action guard (hx-confirm naming the count + hx-disabled-elt) still stops a second bulk write from
+   firing mid-run. Its response's OOB bulk toast carries all_file_states for a reversible UNDO ALL.
 
    NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO
    hx-swap-oob on any group card; NO | safe. KEEP/archive are text tags, never hue-only (WCAG 1.4.1). #}
@@ -22,7 +26,7 @@
 {% set actions %}
     <button type="button"
             hx-post="/duplicates/resolve-all"
-            hx-vals='{"page":"1","page_size":"100"}'
+            hx-include="#dedupe-group-hash-inputs"
             hx-target="#dedupe-bulk-response" hx-swap="innerHTML"
             hx-confirm="Auto-keep the highest-quality copy in every duplicate group and archive the rest? {{ dedupe_groups | length }} groups · reversible via undo."
             hx-disabled-elt="this"
@@ -32,6 +36,13 @@
 {% call ws.workspace(title="Review & Apply · Dedupe", subcount=subcount, actions=actions) %}
     {# Bulk-resolve response (bulk_resolve_response.html) lands here; empty:hidden until it fires. #}
     <div id="dedupe-bulk-response" class="px-6 pt-4 empty:hidden"></div>
+    {# The AUTO-KEEP button's hx-include target: one hidden input per group ACTUALLY rendered below, so
+       the bulk resolve acts on exactly what the operator was shown (phaze-81bu). #}
+    <div id="dedupe-group-hash-inputs" class="hidden">
+        {% for group in dedupe_groups %}
+        <input type="hidden" name="group_hashes" value="{{ group.sha256_hash }}">
+        {% endfor %}
+    </div>
     {# Landing target for the resolve/resolve-all OOB undo toasts (mirrors the duplicates page). #}
     <div id="toast-container" class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2 [&>*]:pointer-events-auto"></div>
     {% if dedupe_groups %}

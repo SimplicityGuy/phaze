@@ -12,6 +12,7 @@ from phaze.models.metadata import FileMetadata
 from phaze.services.dedup import (
     count_duplicate_groups,
     find_duplicate_groups,
+    find_duplicate_groups_by_hashes,
     find_duplicate_groups_with_metadata,
     get_duplicate_stats,
     resolve_group,
@@ -109,6 +110,57 @@ async def test_pagination_limit(session: AsyncSession) -> None:
     groups = await find_duplicate_groups(session, limit=1)
 
     assert len(groups) == 1
+
+
+def test_dup_hash_subquery_orders_by_hash_before_limit_offset() -> None:
+    """The paginated hash-selection subquery must ORDER BY sha256_hash before LIMIT/OFFSET.
+
+    Without this, Postgres's ``GROUP BY ... HAVING`` aggregate output order is unspecified and
+    plan-dependent, so LIMIT/OFFSET pagination over it can select a DIFFERENT set of hashes per call --
+    silently repeating or skipping duplicate groups in the review UI (acceptance: stable page membership
+    across repeated requests). No DB round-trip needed: this inspects the compiled SQL directly.
+    """
+    from phaze.services.dedup import _dup_hash_subquery
+
+    compiled = str(_dup_hash_subquery(limit=20, offset=0).compile(compile_kwargs={"literal_binds": True}))
+    order_by_idx = compiled.upper().find("ORDER BY")
+    limit_idx = compiled.upper().find("LIMIT")
+
+    assert order_by_idx != -1, "hash-selection subquery has no ORDER BY -- LIMIT/OFFSET pagination is unstable"
+    assert limit_idx != -1
+    assert order_by_idx < limit_idx, "ORDER BY must precede LIMIT so the paginated window is deterministic"
+
+
+@pytest.mark.asyncio
+async def test_pagination_is_stable_and_non_overlapping(session: AsyncSession) -> None:
+    """Paging with LIMIT/OFFSET must not repeat or skip groups (regression for the missing ORDER BY).
+
+    The hash-selection subquery paginates a ``GROUP BY ... HAVING`` with LIMIT/OFFSET but (pre-fix) no
+    ORDER BY -- Postgres aggregate output order is unspecified and plan-dependent, so two identical calls,
+    or two adjacent pages, can select a DIFFERENT set of hashes: a group shown twice, or never shown at
+    all. Hashes are inserted out of lexical order so a stable fix (ORDER BY sha256_hash) is distinguishable
+    from "insertion order happened to already look sorted".
+    """
+    for h in (HASH_D, HASH_A, HASH_C, HASH_B):
+        session.add_all([_make_file(f"/dir/{h[0]}1.mp3", "mp3", h), _make_file(f"/dir/{h[0]}2.mp3", "mp3", h)])
+    await session.flush()
+
+    # Two independent calls with the SAME limit/offset must select the identical set of hashes.
+    first = await find_duplicate_groups(session, limit=4, offset=0)
+    second = await find_duplicate_groups(session, limit=4, offset=0)
+    assert {g["sha256_hash"] for g in first} == {g["sha256_hash"] for g in second}
+
+    # Adjacent pages (limit=2) must partition the 4 groups with NO overlap and NO gap -- every hash
+    # appears on exactly one page, so a caller paging through sees each group exactly once.
+    page1 = await find_duplicate_groups(session, limit=2, offset=0)
+    page2 = await find_duplicate_groups(session, limit=2, offset=2)
+    page1_hashes = {g["sha256_hash"] for g in page1}
+    page2_hashes = {g["sha256_hash"] for g in page2}
+
+    assert len(page1_hashes) == 2
+    assert len(page2_hashes) == 2
+    assert page1_hashes | page2_hashes == {HASH_A, HASH_B, HASH_C, HASH_D}
+    assert not (page1_hashes & page2_hashes), "adjacent pages overlapped -- a group was shown twice"
 
 
 @pytest.mark.asyncio
@@ -463,6 +515,41 @@ async def test_find_duplicate_groups_with_metadata_includes_bitrate(session: Asy
     f1_dict = next(fd for fd in file_dicts if fd["id"] == str(f1.id))
     assert f1_dict["bitrate"] == 320
     assert f1_dict["artist"] == "Artist"
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_groups_by_hashes_returns_only_requested_hashes(session: AsyncSession) -> None:
+    """find_duplicate_groups_by_hashes returns EXACTLY the caller-supplied hashes, ignoring others.
+
+    This is what ``bulk_resolve`` uses to act on the group hashes the operator was actually shown,
+    instead of re-deriving "the current page" (see phaze-81bu): a group NOT in the requested hash set
+    must never appear, even though it independently qualifies as a duplicate group.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    f3 = _make_file("/dir/b1.mp3", "mp3", HASH_B)
+    f4 = _make_file("/dir/b2.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, f3, f4])
+    await session.flush()
+
+    groups = await find_duplicate_groups_by_hashes(session, [HASH_A])
+
+    assert len(groups) == 1
+    assert groups[0]["sha256_hash"] == HASH_A
+    assert groups[0]["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_groups_by_hashes_empty_list_returns_empty(session: AsyncSession) -> None:
+    """An empty hash list returns an empty list without hitting the database with an empty IN (...)."""
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    groups = await find_duplicate_groups_by_hashes(session, [])
+
+    assert groups == []
 
 
 @pytest.mark.asyncio
