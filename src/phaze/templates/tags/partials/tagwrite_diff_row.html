@@ -1,0 +1,6 @@
+{# phaze-nvll: the v7 tagwrite workspace row response -- the ONE shared pipeline/partials/_diff_row.html
+   partial (D-06, tag facet) plus this facet's OOB toast, so a mutation from tagwrite_workspace.html
+   NEVER swaps in the legacy <tr>-based tag_row.html (which carries zero undo controls) and error/stale
+   states still surface visibly instead of a silently-dropped bare 400/404 string. #}
+{% include "pipeline/partials/_diff_row.html" %}
+{% include "tags/partials/toast.html" %}
