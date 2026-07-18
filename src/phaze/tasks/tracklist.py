@@ -276,27 +276,36 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     Per D-10: find tracklists where file_id IS NULL (unresolved) or updated_at < 90 days ago (stale).
     Per TL-04: add randomized jitter between scrapes (60-300 seconds).
     """
-    stale_threshold = datetime.now(tz=UTC) - timedelta(days=90)
+    # phaze-xpzp: bind a NAIVE threshold. ``tracklists.updated_at`` (TimestampMixin) is a
+    # ``TIMESTAMP WITHOUT TIME ZONE`` column; asyncpg's naive-timestamp codec raises DataError
+    # ("can't subtract offset-naive and offset-aware datetimes") at bind-encode time when handed a
+    # tz-aware datetime, which previously made every monthly run fail on the SELECT below.
+    stale_threshold = (datetime.now(tz=UTC) - timedelta(days=90)).replace(tzinfo=None)
     refreshed = 0
     errors = 0
 
+    # phaze-xpzp: the query is split out of the per-tracklist loop's try/except so a query failure
+    # (e.g. a bad bind, a connection drop) is reported in ``errors`` instead of being swallowed by a
+    # broad ``except Exception`` into the untouched ``{"refreshed": 0, "errors": 0}`` initial
+    # counters -- a return value indistinguishable from "there was simply nothing to refresh", which
+    # let SAQ mark the job successful while the cron silently never ran.
     try:
         async with ctx["async_session"]() as session:
             result = await session.execute(select(Tracklist).where((Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold)))
             tracklists = list(result.scalars().all())
-
-        for tl in tracklists:
-            try:
-                await scrape_and_store_tracklist(ctx, tracklist_id=str(tl.id))
-                refreshed += 1
-            except Exception:
-                logger.warning("Failed to refresh tracklist %s", tl.id, exc_info=True)
-                errors += 1
-
-            # Randomized jitter between scrapes (per D-10, TL-04)
-            await asyncio.sleep(random.uniform(60, 300))  # noqa: S311  # nosec B311
-
     except Exception:
-        logger.exception("Error during tracklist refresh")
+        logger.exception("Error querying stale/unresolved tracklists")
+        return {"refreshed": 0, "errors": 1}
+
+    for tl in tracklists:
+        try:
+            await scrape_and_store_tracklist(ctx, tracklist_id=str(tl.id))
+            refreshed += 1
+        except Exception:
+            logger.warning("Failed to refresh tracklist %s", tl.id, exc_info=True)
+            errors += 1
+
+        # Randomized jitter between scrapes (per D-10, TL-04)
+        await asyncio.sleep(random.uniform(60, 300))  # noqa: S311  # nosec B311
 
     return {"refreshed": refreshed, "errors": errors}

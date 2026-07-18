@@ -14,6 +14,7 @@ from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
+from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistSearchResult
 from tests._queue_fakes import install_fake_queues, seed_active_agent
 
 
@@ -829,6 +830,179 @@ async def test_search_better_match_no_tracklist(session: AsyncSession, client: A
     fake_id = uuid.uuid4()
     response = await client.get(f"/tracklists/{fake_id}/search")
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_search_better_match_scores_against_file_not_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-ldal): score results against the FILE's context, not the tracklist's own
+    artist. Before the fix, compute_match_confidence was called with file_artist=tracklist.artist,
+    which collapses to a fuzzy artist self-comparison and produces a near-100 score for ANY
+    same-artist-as-the-tracklist result, regardless of whether it actually matches the file.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+
+    # The already-linked tracklist has a DIFFERENT artist than the file -- if the scorer still
+    # compares results to tl.artist (the bug), the result below would score low, not 100.
+    tl = _make_tracklist(file_id=file.id, match_confidence=40)
+    tl.artist = "Totally Different Artist"
+    session.add(tl)
+    await session.flush()
+
+    search_result = TracklistSearchResult(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        url="https://www.1001tracklists.com/tracklist/better1/x.html",
+        artist="Real Artist",
+        date="2024-04-14",
+    )
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.search = AsyncMock(return_value=[search_result])
+        mock_scraper.close = AsyncMock()
+
+        response = await client.get(f"/tracklists/{tl.id}/search")
+
+    assert response.status_code == 200
+    # Real Artist == Real Artist (the file's own parsed artist) -> exact match, 100%.
+    assert "100%" in response.text
+    # The selected result's own identity travels through the form so link-result can
+    # resolve/scrape ITS content -- not the path tracklist_id.
+    assert 'name="external_id" value="better1"' in response.text
+    assert f'name="url" value="{search_result.url}"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_link_search_result_links_selected_not_original(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-ldal): linking a search RESULT must persist and link THAT result's own
+    content -- not silently re-link the original tracklist (searched from) and stamp the
+    selected result's confidence onto it.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+
+    original = _make_tracklist(file_id=file.id, match_confidence=40, external_id="original-tl")
+    original.artist = "Totally Different Artist"
+    session.add(original)
+    await session.flush()
+
+    scraped = ScrapedTracklist(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        artist="Real Artist",
+        event="Coachella",
+        date="2024-04-14",
+        tracks=[],
+        source_url="https://www.1001tracklists.com/tracklist/better1/x.html",
+    )
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = AsyncMock(return_value=scraped)
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(file.id), "external_id": "better1", "url": scraped.source_url},
+        )
+
+    assert response.status_code == 200
+    mock_scraper.scrape_tracklist.assert_awaited_once_with(scraped.source_url)
+
+    # The ORIGINAL tracklist is untouched: same file link, same (low) confidence it had before.
+    await session.refresh(original)
+    assert original.file_id == file.id
+    assert original.match_confidence == 40
+
+    # The SELECTED result is persisted as its own row, linked to the file with an honest score
+    # computed against the file's actual context (not a tracklist-vs-itself comparison).
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "better1"))
+    selected = result.scalar_one_or_none()
+    assert selected is not None
+    assert selected.file_id == file.id
+    assert selected.match_confidence == 100
+    assert selected.artist == "Real Artist"
+
+
+@pytest.mark.asyncio
+async def test_link_search_result_reuses_existing_tracklist_row(session: AsyncSession, client: AsyncClient) -> None:
+    """Linking a result whose external_id already exists (e.g. previously scraped) resolves the
+    existing row instead of re-scraping -- and still leaves the original tracklist alone.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+
+    original = _make_tracklist(file_id=file.id, match_confidence=40, external_id="original-tl")
+    session.add(original)
+
+    existing = _make_tracklist(external_id="already-known", match_confidence=None)
+    existing.artist = "Real Artist"
+    existing.event = "Coachella"
+    existing.date = date(2024, 4, 14)
+    session.add(existing)
+    await session.flush()
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = AsyncMock()
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(file.id), "external_id": "already-known", "url": existing.source_url},
+        )
+
+    assert response.status_code == 200
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+
+    await session.refresh(existing)
+    assert existing.file_id == file.id
+    assert existing.match_confidence == 100
+
+    await session.refresh(original)
+    assert original.file_id == file.id
+    assert original.match_confidence == 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malicious_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata endpoint, wrong host + scheme
+        "https://internal.local/admin",  # arbitrary internal host
+        "https://www.1001tracklists.com.evil.com/tracklist/x/y.html",  # startswith-style bypass attempt
+        "https://evilwww.1001tracklists.com/tracklist/x/y.html",  # lookalike host
+        "ftp://www.1001tracklists.com/tracklist/x/y.html",  # right host, disallowed scheme
+    ],
+)
+async def test_link_search_result_rejects_url_outside_scraper_host(session: AsyncSession, client: AsyncClient, malicious_url: str) -> None:
+    """Security regression: the client-supplied ``url`` must never be handed to httpx unless it
+    is scoped to the scraper's own host -- otherwise a tampered request turns this endpoint into
+    an SSRF proxy that fetches arbitrary internal/external URLs on the server's behalf.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = AsyncMock()
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(file.id), "external_id": "attacker-picked", "url": malicious_url},
+        )
+
+    assert response.status_code == 400
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "attacker-picked"))
+    assert result.scalar_one_or_none() is None
 
 
 # --- Error branches ---

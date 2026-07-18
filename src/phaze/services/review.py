@@ -34,6 +34,7 @@ from phaze.routers.tags import (
     _count_changes,
     _get_accepted_discogs_link,
     _get_tracklist_for_file,
+    _summarize_tags,
     _terminal_tagwrite_subq,
 )
 from phaze.services.cue_generator import generate_cue_content
@@ -93,17 +94,6 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
     except Exception:
         logger.warning("pending_proposal_rows_degraded", exc_info=True)
         return []
-
-
-def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
-    """Join a comparison's ``current`` (before) or ``proposed`` (after) side into a display string.
-
-    Renders ``"label: value · label: value · …"`` across every CORE field, with an em dash for a
-    ``None`` value (an absent tag). ``side`` is ``"current"`` or ``"proposed"``. All values are plain
-    Python data -- the caller's template autoescapes them on render (T-60-XSS).
-    """
-    parts = [f"{c['label']}: {c[side] if c[side] is not None else '—'}" for c in comparison]
-    return " · ".join(parts)
 
 
 async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
@@ -194,17 +184,47 @@ def _format_quality(file_dict: dict[str, Any]) -> str:
     return size
 
 
+def build_dupe_group_card(group: dict[str, Any]) -> dict[str, Any]:
+    """Map a SCORED duplicate group dict into the ``_dupe_group.html`` card shape.
+
+    Assumes ``score_group`` has already run on ``group`` (sets ``group["canonical_id"]`` and sorts
+    ``group["files"]`` keeper-first). Returns ``sha256_hash`` (the group key the keeper radio
+    resolves against -- ``POST /duplicates/{sha256_hash}/resolve`` with Form ``canonical_id``), a
+    short ``group_name`` label, ``count``, and ``files`` (each ``id`` · ``name`` · ``quality`` ·
+    ``keeper`` where ``keeper == (id == canonical_id)``).
+
+    Shared by :func:`get_dedupe_groups` (the whole-list Dedupe workspace read) and the
+    ``POST /duplicates/{hash}/undo`` router (phaze-be1j): undo must swap a restored group back
+    into the live workspace using this SAME shell shape -- rendering the legacy
+    ``group_card.html`` accordion row there left the toast's Undo unable to hand the restored
+    group a working keeper-select card.
+    """
+    canonical_id = group["canonical_id"]
+    files = group["files"]
+    return {
+        "sha256_hash": group["sha256_hash"],
+        "group_name": Path(files[0]["original_path"]).name if files else group["sha256_hash"][:12],
+        "count": len(files),
+        "files": [
+            {
+                "id": f["id"],
+                "name": Path(f["original_path"]).name,
+                "quality": _format_quality(f),
+                "keeper": f["id"] == canonical_id,
+            }
+            for f in files
+        ],
+    }
+
+
 async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
     """Return scored duplicate groups as plain dicts for the Dedupe keeper-select workspace (degrade-safe).
 
     Reuses ``find_duplicate_groups_with_metadata`` + ``score_group`` (which sets ``group["canonical_id"]``
-    to the highest-quality copy) inside a ``session.begin_nested()`` SAVEPOINT, and maps each group to a
-    plain dict the ``_dupe_group.html`` card consumes: ``sha256_hash`` (the group key the keeper radio
-    resolves against -- ``POST /duplicates/{sha256_hash}/resolve`` with Form ``canonical_id``), a short
-    ``group_name`` label, ``count``, and ``files`` (each ``id`` · ``name`` · ``quality`` · ``keeper``
-    where ``keeper == (id == canonical_id)``). ``score_group`` sorts ``group["files"]`` in place (keeper
-    first), so the first file supplies the group label. Returns ``[]`` on any DB error so the render/poll
-    path degrades instead of 500ing (no router try/except needed). No enqueue, no commit, no write.
+    to the highest-quality copy) inside a ``session.begin_nested()`` SAVEPOINT, and maps each group via
+    :func:`build_dupe_group_card` to the plain dict the ``_dupe_group.html`` card consumes. Returns ``[]``
+    on any DB error so the render/poll path degrades instead of 500ing (no router try/except needed). No
+    enqueue, no commit, no write.
     """
     try:
         async with session.begin_nested():
@@ -212,24 +232,7 @@ async def get_dedupe_groups(session: AsyncSession) -> list[dict[str, Any]]:
             cards: list[dict[str, Any]] = []
             for group in groups:
                 score_group(group)  # sets group["canonical_id"] + sorts files keeper-first
-                canonical_id = group["canonical_id"]
-                files = group["files"]
-                cards.append(
-                    {
-                        "sha256_hash": group["sha256_hash"],
-                        "group_name": Path(files[0]["original_path"]).name if files else group["sha256_hash"][:12],
-                        "count": len(files),
-                        "files": [
-                            {
-                                "id": f["id"],
-                                "name": Path(f["original_path"]).name,
-                                "quality": _format_quality(f),
-                                "keeper": f["id"] == canonical_id,
-                            }
-                            for f in files
-                        ],
-                    }
-                )
+                cards.append(build_dupe_group_card(group))
             return cards
     except Exception:
         logger.warning("dedupe_groups_degraded", exc_info=True)

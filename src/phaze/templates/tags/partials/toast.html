@@ -1,0 +1,13 @@
+{# Shared OOB toast fragment for the tags facet (phaze-nvll), extracted from tag_row.html so both the
+   legacy <tr> row and the v7 tagwrite_diff_row.html response render an IDENTICAL toast. `toast_message`
+   is autoescaped (never `| safe`). Guarded so a caller can pass `toast_message=None` (no toast) safely --
+   e.g. the write/undo success paths always pass one, but nothing requires it. #}
+{% if toast_message %}
+<div hx-swap-oob="beforeend:#toast-container">
+    <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg" role="status"
+         x-data="{ show: true }" x-show="show" x-init="setTimeout(() => show = false, 5000)"
+         x-transition>
+        {{ toast_message }}
+    </div>
+</div>
+{% endif %}

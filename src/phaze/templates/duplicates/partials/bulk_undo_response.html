@@ -1,0 +1,6 @@
+{# phaze-be1j: swapped (innerHTML) into dedupe_workspace.html's persistent #dedupe-bulk-response
+   status div -- the toast's "Undo All" hx-target. Bulk resolve never OOB-touches the individual
+   _dupe_group.html cards (R-2), so there's no per-card DOM state to restore here; this just
+   confirms the undo landed. #}
+<p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Undo All complete</p>
+<p class="text-sm text-gray-500 dark:text-gray-400">{{ restored_count }} file{{ "" if restored_count == 1 else "s" }} restored to their previous duplicate state.</p>

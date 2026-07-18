@@ -452,6 +452,146 @@ async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncS
     assert "boom" in response.text
 
 
+# ---------------------------------------------------------------------------
+# v7 diff-row workspace negotiation on the write/undo mutation routes (phaze-nvll)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_tags_from_v7_workspace_returns_diff_row_with_undo(client: AsyncClient, session: AsyncSession) -> None:
+    """Approving from the v7 tagwrite workspace returns the styled _diff_row.html WITH a working UNDO,
+    not the legacy <tr>-based tag_row.html (phaze-nvll defects 1+2)."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist"},
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "approved" in body
+    assert "UNDO" in body
+    # The legacy <tr id="row-..."> markup (and its stray OOB detail-<tr>) must NOT be present.
+    assert f'id="row-{file_record.id}"' not in body
+    assert "<tr" not in body
+    assert f'id="detail-{file_record.id}"' not in body
+
+
+@pytest.mark.asyncio
+async def test_undo_tag_write_from_v7_workspace_restores_pending_row(client: AsyncClient, session: AsyncSession) -> None:
+    """Undoing from the v7 workspace swaps the row back to the pending diff-row (phaze-nvll)."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
+
+        response = await client.post(
+            f"/tags/{file_record.id}/undo",
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "APPROVE" in body  # reverted to pending -> the approve action cluster is back
+    assert f'id="row-{file_record.id}"' not in body
+
+
+@pytest.mark.asyncio
+async def test_write_tags_v7_missing_file_surfaces_toast_not_bare_404(client: AsyncClient) -> None:
+    """A stale row (file gone) posting APPROVE from the v7 workspace gets a 200 + OOB toast, not a
+    bare 404 string htmx silently drops (phaze-nvll defect 3)."""
+    missing_id = uuid.uuid4()
+    response = await client.post(
+        f"/tags/{missing_id}/write",
+        data={"artist": "x"},
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{missing_id}"},
+    )
+    assert response.status_code == 200
+    assert "hx-swap-oob" in response.text
+    assert "not found" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_write_tags_v7_non_executed_surfaces_toast_and_keeps_pending_row(client: AsyncClient, session: AsyncSession) -> None:
+    """A stale row (file no longer executed) posting APPROVE gets its toast surfaced AND the row
+    redrawn as still-pending, not silently dropped (phaze-nvll defect 3)."""
+    file_record, _ = await _create_executed_file(session, applied=False)
+    response = await client.post(
+        f"/tags/{file_record.id}/write",
+        data={"artist": "Test"},
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "hx-swap-oob" in body
+    assert "only executed files" in body.lower()
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "APPROVE" in body
+
+
+@pytest.mark.asyncio
+async def test_undo_tag_write_v7_missing_file_surfaces_toast_not_bare_404(client: AsyncClient) -> None:
+    """A stale row (file gone) posting UNDO from the v7 workspace gets a 200 + OOB toast (phaze-nvll defect 3)."""
+    missing_id = uuid.uuid4()
+    response = await client.post(
+        f"/tags/{missing_id}/undo",
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{missing_id}"},
+    )
+    assert response.status_code == 200
+    assert "hx-swap-oob" in response.text
+    assert "not found" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_undo_tag_write_v7_no_prior_write_surfaces_toast_and_pending_row(client: AsyncClient, session: AsyncSession) -> None:
+    """UNDO with no prior TagWriteLog (a race/stale row) surfaces its toast AND redraws the row as
+    pending instead of silently doing nothing (phaze-nvll defect 3)."""
+    file_record, _ = await _create_executed_file(session)
+    response = await client.post(
+        f"/tags/{file_record.id}/undo",
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "hx-swap-oob" in body
+    assert "no prior tag write" in body.lower()
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "APPROVE" in body
+
+
+@pytest.mark.asyncio
+async def test_write_tags_without_v7_target_keeps_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
+    """The legacy tag list/comparison pages (no v7 HX-Target) still get tag_row.html back (phaze-nvll)."""
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist"},
+            headers={"HX-Request": "true", "HX-Target": f"row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    assert f'id="row-{file_record.id}"' in response.text
+
+
 def _add_tag_write_log(session: AsyncSession, file_id: uuid.UUID, status: TagWriteStatus) -> None:
     """Attach one ``TagWriteLog`` of ``status`` to ``file_id`` (append-only audit row)."""
     session.add(

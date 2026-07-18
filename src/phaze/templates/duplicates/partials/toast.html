@@ -7,13 +7,14 @@
      class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
     <span>{{ toast_message }}</span>
     {% if is_bulk is defined and is_bulk %}
+    {# undo_target/undo_swap: the v7 shell has no #duplicates-list (its sole definer, list.html,
+       was deleted in the Phase 62 cutover) -- the caller MUST supply a real, live DOM id
+       (phaze-be1j). Bulk undo lands in the persistent #dedupe-bulk-response status div. #}
     <form hx-post="/duplicates/undo-all"
-          hx-target="#duplicates-list"
-          hx-swap="innerHTML"
+          hx-target="#{{ undo_target }}"
+          hx-swap="{{ undo_swap | default('innerHTML') }}"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
-        <input type="hidden" name="page" value="{{ page if page is defined else 1 }}">
-        <input type="hidden" name="page_size" value="{{ page_size if page_size is defined else 20 }}">
         <button type="submit"
                 @click="show = false"
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">
@@ -21,9 +22,12 @@
         </button>
     </form>
     {% else %}
+    {# undo_target/undo_swap: retargets the resolve response's OWN "group-{hash}" placeholder
+       (outerHTML), which the /undo endpoint restores to a live _dupe_group.html card
+       (phaze-be1j) -- NOT the deleted #duplicates-list. #}
     <form hx-post="{{ undo_url }}"
-          hx-target="#duplicates-list"
-          hx-swap="innerHTML"
+          hx-target="#{{ undo_target }}"
+          hx-swap="{{ undo_swap | default('outerHTML') }}"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
         <button type="submit"

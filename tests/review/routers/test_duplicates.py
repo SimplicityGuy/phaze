@@ -460,6 +460,95 @@ async def test_bulk_undo_roundtrip_deletes_markers_from_server_payload(session: 
 
 
 @pytest.mark.asyncio
+async def test_undo_toast_targets_a_dom_id_that_exists_in_the_dedupe_shell(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-be1j): the toast's Undo form must hx-target a REAL element.
+
+    Before the fix, ``toast.html`` hardcoded ``hx-target="#duplicates-list"`` -- a DOM id whose
+    sole definer (``templates/duplicates/list.html``) was deleted in the v7 cutover. Under htmx
+    2.0.10, ``issueAjaxRequest`` resolves ``hx-target`` BEFORE opening the XHR and aborts with
+    ``htmx:targetError`` on a null target -- while the Alpine ``@click="show = false"`` has
+    already dismissed the toast, so clicking Undo silently issued NO request. The toast must
+    instead target the resolve response's OWN placeholder id, which is guaranteed to exist in
+    the DOM the instant the toast is shown.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert resolve.status_code == 200
+
+    placeholder_match = re.search(r'<div id="(group-[a-f0-9]+)" style="display:none;">', resolve.text)
+    assert placeholder_match is not None, "resolve response no longer renders its group placeholder"
+    placeholder_id = placeholder_match.group(1)
+
+    toast_target_match = re.search(
+        r'<form hx-post="/duplicates/[a-f0-9]+/undo"\s+hx-target="#([^"]+)"',
+        resolve.text,
+    )
+    assert toast_target_match is not None, "undo form is missing an hx-target"
+    assert toast_target_match.group(1) != "duplicates-list", "toast still targets the dead #duplicates-list id"
+    assert toast_target_match.group(1) == placeholder_id, "toast must target the resolve response's OWN placeholder id"
+
+
+@pytest.mark.asyncio
+async def test_undo_endpoint_returns_shell_shaped_dupe_group_card(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-be1j): the /undo response must fit back into the Dedupe workspace shell.
+
+    ``undo_response.html`` used to render ``duplicates/partials/group_card.html`` -- the legacy
+    accordion-row shape (deleted-page style). Retargeting the toast alone is insufficient: the
+    restored element must be the SAME ``_dupe_group.html`` shape (``id="dupe-group-{hash}"``,
+    keeper-select radios) every other card in the live workspace uses, or the group would render
+    with the wrong shape and lose its resolve wiring.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert resolve.status_code == 200
+    file_states = _extract_server_file_states(resolve.text)
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": file_states})
+    assert undo.status_code == 200
+    assert f'id="dupe-group-{HASH_A}"' in undo.text, "undo did not restore the shell-shaped _dupe_group.html card"
+    assert f'hx-post="/duplicates/{HASH_A}/resolve"' in undo.text, "restored card lost its keeper-select resolve wiring"
+    assert f'name="group-{HASH_A}"' in undo.text
+    assert "Compare" not in undo.text, "undo rendered the legacy accordion row shape (group_card.html), not the shell shape"
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_toast_targets_a_dom_id_that_exists_in_the_dedupe_shell(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-be1j): the "Undo All" toast must also hx-target a REAL, persistent element.
+
+    Same dead-id defect as the single-group Undo, on the bulk path. ``#dedupe-bulk-response`` is
+    the persistent status div ``dedupe_workspace.html`` renders for the bulk-resolve/undo flow, so
+    it is a valid, always-present target inside the live Dedupe workspace shell.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve_all = await client.post("/duplicates/resolve-all", data={"page": "1", "page_size": "20"})
+    assert resolve_all.status_code == 200
+
+    toast_target_match = re.search(
+        r'<form hx-post="/duplicates/undo-all"\s+hx-target="#([^"]+)"',
+        resolve_all.text,
+    )
+    assert toast_target_match is not None, "bulk undo form is missing an hx-target"
+    target_id = toast_target_match.group(1)
+    assert target_id != "duplicates-list", "bulk toast still targets the dead #duplicates-list id"
+
+    workspace = await client.get("/s/dedupe")
+    assert workspace.status_code == 200
+    assert f'id="{target_id}"' in workspace.text, "bulk toast target does not exist in the live Dedupe workspace shell"
+
+
+@pytest.mark.asyncio
 async def test_undo_roundtrip_id_only_payload_still_deletes_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
     """THE BLOCKER GUARD: an id-only payload (PR-B shape, no previous_state) STILL deletes the marker.
 
