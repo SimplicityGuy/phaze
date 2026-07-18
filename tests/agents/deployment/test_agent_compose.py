@@ -107,19 +107,30 @@ def test_cpu_lanes_pin_threads_single_threaded() -> None:
             assert pin in env, f"{svc_name} must pin {pin} (honest core budget); got {env!r}"
 
 
-def test_exactly_one_heartbeat_enabled() -> None:
-    """quick-260707-dh1: PHAZE_AGENT_HEARTBEAT=true on EXACTLY ONE lane worker (analyze)."""
+def test_every_lane_worker_heartbeats() -> None:
+    """phaze-30fo: PHAZE_AGENT_HEARTBEAT=true on EVERY lane worker, not just analyze.
+
+    REPLACES the former quick-260707-dh1 "exactly one heartbeat" invariant. That rule
+    pinned the agent's entire liveness signal -- and its work-routing rank, via
+    select_active_agent's ORDER BY last_seen_at DESC -- to the analyze process alone, so
+    one stalled worker marked a busy agent DEAD. Each lane now beats with its own tag and
+    the control plane keeps max(last_seen).
+    """
     data = _load_agent_compose()
-    true_workers = []
-    for svc_name in _ALL_WORKERS:
+    for svc_name in sorted(_LANE_WORKERS):
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
-        if any(e == "PHAZE_AGENT_HEARTBEAT=true" for e in env):
-            true_workers.append(svc_name)
-    assert true_workers == ["worker-analyze"], f"exactly ONE heartbeat=true (worker-analyze); got {true_workers!r}"
-    # The other three lanes explicitly disable it.
-    for svc_name in _LANE_WORKERS - {"worker-analyze"}:
-        env = _env_to_strs(data["services"][svc_name].get("environment", []))
-        assert "PHAZE_AGENT_HEARTBEAT=false" in env, f"{svc_name} must set PHAZE_AGENT_HEARTBEAT=false; got {env!r}"
+        assert "PHAZE_AGENT_HEARTBEAT=true" in env, f"{svc_name} must set PHAZE_AGENT_HEARTBEAT=true (phaze-30fo); got {env!r}"
+
+
+def test_unlaned_drain_worker_does_not_heartbeat() -> None:
+    """worker-drain stays heartbeat=false because it is UNLANED (phaze-30fo).
+
+    An untagged beat is persisted verbatim by the handler, which would wipe the per-lane
+    `lanes` breakdown the four lane workers maintain. Not a style rule -- a data hazard.
+    """
+    data = _load_agent_compose()
+    env = _env_to_strs(data["services"]["worker-drain"].get("environment", []))
+    assert "PHAZE_AGENT_HEARTBEAT=false" in env, f"worker-drain must NOT heartbeat while unlaned; got {env!r}"
 
 
 def test_drain_service_is_off_by_default_and_all_mode() -> None:

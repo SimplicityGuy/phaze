@@ -121,6 +121,9 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         agent_version=importlib.metadata.version("phaze"),
         worker_pid=os.getpid(),
         queue_depth=queue_depth,
+        # phaze-30fo: tag the beat with THIS worker's lane so the control plane can keep a
+        # per-lane breakdown and sum an honest all-lane depth. None in all-mode (no split).
+        lane=ctx.get("agent_lane"),
     )
     try:
         await client.heartbeat(payload)

@@ -193,12 +193,17 @@ async def startup(ctx: dict[str, Any]) -> None:
     # only api_client + agent_identity (already set); it reads ctx["worker"].queue lazily
     # and degrades queue_depth to 0 if the worker is not yet attached.
     #
-    # quick-260707-dh1: the heartbeat is agent-level, not lane-level. With the 4-lane
-    # split, compose sets PHAZE_AGENT_HEARTBEAT=true on EXACTLY ONE lane worker (analyze)
-    # and false on the other three, so an agent reports one authoritative last_seen -- not
-    # N duplicate heartbeats. A1 caveat: the heartbeat's queue_depth reads ctx["worker"].queue,
-    # which in the analyze-lane worker is only the analyze lane's depth (the dashboard's
-    # get_queue_activity is the authoritative all-lane figure -- see docs/agent-queue-lanes.md).
+    # phaze-30fo: EVERY lane worker heartbeats, each tagging its own lane. This REPLACES the
+    # former quick-260707-dh1 convention (PHAZE_AGENT_HEARTBEAT=true on exactly the analyze
+    # worker, false on the other three) -- that made the agent's entire liveness signal, and
+    # therefore its work-routing rank via select_active_agent's ORDER BY last_seen_at DESC,
+    # depend on ONE process. When it stalled, the agent was classified DEAD and lost routing
+    # while its other three lanes were actively working (nox, 2026-07-18).
+    #
+    # last_seen_at is set to now() by whichever lane beats, so it is inherently the max
+    # across lanes; the server keeps the per-lane breakdown and sums an honest all-lane
+    # queue_depth (routers/agent_heartbeat.py). ~4 writes/30s per agent -- negligible.
+    ctx["agent_lane"] = _lane
     if cfg.agent_heartbeat_enabled:
         ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
 
