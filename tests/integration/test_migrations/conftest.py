@@ -40,7 +40,16 @@ from phaze.config import settings
 
 MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
     "MIGRATIONS_TEST_DATABASE_URL",
-    "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_migrations_test",
+    # Default targets the LOCAL harness on 5433 (`just test` / `PHAZE_TEST_DB_PORT`), matching
+    # this package's module docstring. CI pins the var explicitly (.github/workflows/tests.yml)
+    # because its service container publishes 5432.
+    #
+    # The old 5432 default silently worked in CI and silently broke bare `uv run pytest`: on a
+    # dev box 5432 is typically some OTHER project's Postgres, so the fallback connected to the
+    # wrong server and raised InvalidPasswordError -- 1 failure + 10 fixture errors that read as
+    # environmental damage rather than "wrong port". Defaulting to the dev port instead makes the
+    # failure mode land on CI (which is pinned and therefore cannot hit it) rather than on humans.
+    "postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_migrations_test",
 )
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
 

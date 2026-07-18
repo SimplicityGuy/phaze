@@ -67,6 +67,14 @@ jobs:
       # phaze_test service so SAQ's connect() auto-creates saq_jobs and the suite runs for real.
       TEST_DATABASE_URL: >-
         postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test
+      # Pinned EXPLICITLY rather than left to the conftest default (which targets the local
+      # `just test` harness on 5433). CI's service container publishes 5432, and the
+      # "Create migrations test database" step below provisions phaze_migrations_test there.
+      # Before this was explicit, CI silently depended on the default happening to match its
+      # own port -- so changing that default for local dev would have broken CI with an
+      # InvalidPasswordError that looks nothing like a port mismatch.
+      MIGRATIONS_TEST_DATABASE_URL: >-
+        postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_migrations_test
       PHAZE_REDIS_URL: redis://localhost:6379/0
     steps:
       - name: 🔀 Checkout repository
