@@ -12,13 +12,21 @@ Critical invariants:
   ``batch_id`` here would attribute watcher events to a stale scan batch.
 - **Pitfall 1 (vanished path):** rsync's atomic rename and transient unmounts
   can race the debouncer's settle window. If ``stat`` or ``compute_sha256``
-  raises :class:`OSError`, the entry is dropped at DEBUG with no further work.
-  A single OSError on one path MUST NOT crash the sweep loop -- the user's
-  next manual scan will pick up any genuinely-missed files.
-- **Pitfall 3 (NFC drift):** all three path fields (``original_path``,
-  ``original_filename``, ``current_path``) are NFC-normalized before being
-  serialized into the FileUpsertRecord, mirroring the watcher's handler-side
-  normalization and the scan_directory pipeline's expectations.
+  raises :class:`OSError`, the entry is dropped with a WARNING (raised from
+  DEBUG -- a DEBUG-level drop is invisible at the watcher's default INFO
+  level, and on a Unicode-normalization-sensitive filesystem an ENOENT here
+  is NOT always a transient race: it is also what a permanently-mismatched
+  path (e.g. an NFD-named file whose handle diverged from disk) looks like,
+  and that case never self-heals). A single OSError on one path MUST NOT
+  crash the sweep loop -- the user's next manual scan will pick up any
+  genuinely-missed files.
+- **Pitfall 3 (NFC drift):** ``path`` itself is used VERBATIM as the
+  filesystem handle for ``stat``/hashing -- it is NEVER normalized before
+  that (mirrors ``phaze.tasks.scan.scan_directory``, which stats the raw
+  ``os.walk`` path). Only the three outgoing record fields
+  (``original_path``, ``original_filename``, ``current_path``) are
+  NFC-normalized before being serialized into the FileUpsertRecord, so the
+  DB-facing keys stay canonical while the on-disk lookup stays byte-exact.
 - **T-27-04 (no bearer leakage):** the only client surface exposed here is
   ``self._client.upsert_files(chunk)``. Exception logs go through
   ``logger.exception`` which captures the traceback for the AgentApiError
@@ -61,7 +69,7 @@ class Poster:
         """POST one settled path as a chunk-of-1 to /api/internal/agent/files.
 
         Failure modes:
-            OSError on stat/SHA-256 -> DEBUG log, return (Pitfall 1).
+            OSError on stat/SHA-256 -> WARNING log, return (Pitfall 1).
             AgentApiClientError (4xx, non-auth) -> ERROR log, return (drop).
             AgentApiServerError (5xx after retries) -> ERROR log, return (drop;
                 user's next manual scan recovers).
@@ -75,8 +83,13 @@ class Poster:
             file_size = await asyncio.to_thread(lambda: p.stat().st_size)
             sha256 = await asyncio.to_thread(compute_sha256, p)
         except OSError as exc:
-            # Pitfall 1: rsync atomic-rename, transient unmount. Drop, don't crash.
-            logger.debug("watcher: path vanished before post; dropping path=%s err=%s", path, exc)
+            # Pitfall 1: rsync atomic-rename, transient unmount -- but ALSO a
+            # permanently-mismatched handle (e.g. an NFD-named file on a
+            # normalization-sensitive filesystem) looks identical from here.
+            # WARNING (raised from DEBUG): a DEBUG-level drop was invisible at
+            # the watcher's default INFO level, silently and permanently
+            # hiding non-transient cases with no operator-visible signal.
+            logger.warning("watcher: path vanished before post; dropping path=%s err=%s", path, exc)
             return
 
         record = FileUpsertRecord(
