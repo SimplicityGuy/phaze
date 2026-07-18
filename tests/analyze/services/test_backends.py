@@ -442,9 +442,68 @@ async def test_kueue_is_available_false_on_probe_error_never_raises(session: Asy
 
 
 @pytest.mark.asyncio
-async def test_local_in_flight_count_is_zero(session: AsyncSession) -> None:
-    """LocalBackend has no cloud_job rows -> in_flight_count is always 0."""
+async def test_local_in_flight_count_is_zero_when_nothing_running(session: AsyncSession) -> None:
+    """LocalBackend has no cloud_job rows AND no ledger rows -> in_flight_count is 0 (the healthy idle case)."""
     assert await _local().in_flight_count(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_is_ledger_derived_not_hardcoded_zero(session: AsyncSession) -> None:
+    """phaze-xd8k: LocalBackend.in_flight_count reports the REAL running count, not a hardcoded 0.
+
+    A local burst writes NO ``cloud_job`` row (the ``_BaseBackend`` COUNT substrate is structurally
+    always 0 for this lane) -- that hardcode was the observability bug: the ANALYZE header's
+    ``analyzeActive`` derives from the SAME ``process_file:<file_id>`` scheduling-ledger predicate
+    (:func:`phaze.services.stage_status.inflight_clause`) and counted thousands of in-flight files while
+    this lane rendered a literal 0. Seed TWO music/video files carrying a live ledger row (mirrors the
+    ``before_enqueue`` hook's own write, seeded directly here since ``DedupFakeQueue`` does not run that
+    hook, matching ``test_local_dispatch_excluded_from_staging_candidates``'s idiom) and a THIRD
+    non-music/video file with a ledger row that must NOT be counted (mirrors the ``music_video_total``
+    scoping every other stage-progress read applies) -> in_flight_count reports exactly 2.
+    """
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    running = [_make_file() for _ in range(2)]
+    non_music_video = _make_file(file_type="txt")
+    for file in [*running, non_music_video]:
+        session.add(file)
+    await session.commit()
+    for file in [*running, non_music_video]:
+        session.add(SchedulingLedger(key=f"process_file:{file.id}", function="process_file", routing="agent", payload={"file_id": str(file.id)}))
+    await session.commit()
+
+    assert await _local().in_flight_count(session) == 2
+
+
+@pytest.mark.asyncio
+async def test_local_in_flight_count_excludes_files_with_an_in_flight_cloud_job(session: AsyncSession) -> None:
+    """phaze-xd8k: a file whose ``process_file`` is running on a CLOUD agent is NOT double-counted as local.
+
+    Both local and compute dispatch enqueue ``process_file`` under the IDENTICAL deterministic ledger key
+    (``process_file:<file_id>``, :func:`phaze.services.analysis_enqueue.process_file_job_key`), so the
+    ledger key alone cannot distinguish "local" from "cloud" -- the real-count query must ALSO exclude any
+    file still carrying an in-flight ``cloud_job`` row (the D-10 ``{UPLOADING, UPLOADED, SUBMITTED,
+    RUNNING}`` set), which is exactly what a kueue file's actively-RUNNING analysis Job holds. Seed one
+    ledger-in-flight file WITHOUT a cloud_job row (genuinely local -> counted) alongside one
+    ledger-in-flight file WITH an in-flight cloud_job row (cloud-routed -> excluded).
+    """
+    from phaze.models.scheduling_ledger import SchedulingLedger
+
+    local_only = _make_file()
+    cloud_routed = _make_file()
+    session.add(local_only)
+    session.add(cloud_routed)
+    await session.commit()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=cloud_routed.id, backend_id="kueue-x64", status=CloudJobStatus.RUNNING.value))
+    session.add(
+        SchedulingLedger(key=f"process_file:{local_only.id}", function="process_file", routing="agent", payload={"file_id": str(local_only.id)})
+    )
+    session.add(
+        SchedulingLedger(key=f"process_file:{cloud_routed.id}", function="process_file", routing="agent", payload={"file_id": str(cloud_routed.id)})
+    )
+    await session.commit()
+
+    assert await _local().in_flight_count(session) == 1
 
 
 @pytest.mark.asyncio
