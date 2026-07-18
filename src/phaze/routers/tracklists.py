@@ -3,6 +3,7 @@
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Query, Request
@@ -22,11 +23,48 @@ from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import is_applied
-from phaze.services.tracklist_matcher import compute_match_confidence
+from phaze.services.tracklist_matcher import compute_match_confidence, parse_live_set_filename
 from phaze.services.tracklist_scraper import TracklistScraper
+from phaze.tasks.tracklist import _store_scraped_tracklist
 
 
 EDITABLE_FIELDS = {"artist", "title", "timestamp"}
+
+# The client submits a search result's own url so link_search_result can scrape it (phaze-ldal).
+# That form field is attacker-controllable, so before ever handing it to httpx we pin it to the
+# exact host the scraper is built for -- otherwise the server becomes an open fetch proxy (SSRF)
+# for whatever internal/external URL a tampered request supplies.
+_ALLOWED_TRACKLIST_HOST = urlparse(TracklistScraper.BASE_URL).netloc
+
+
+def _is_allowed_tracklist_url(url: str) -> bool:
+    """True if url is an https URL on the 1001Tracklists host the scraper is scoped to."""
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.netloc.lower() == _ALLOWED_TRACKLIST_HOST
+
+
+async def _file_match_context(session: AsyncSession, file_id: uuid.UUID | None) -> tuple[str | None, str | None, Any]:
+    """Derive (artist, event, date) signals to score a tracklist against a FILE.
+
+    Mirrors the ``search_tracklist`` task heuristic (phaze-ldal): parse the v1.0 live-set
+    filename pattern first, falling back to tag metadata. Returns all-None when there's no
+    linked file to compare against, rather than falling back to a tracklist's own fields --
+    scoring a tracklist against itself always looks like a perfect match.
+    """
+    if file_id is None:
+        return None, None, None
+
+    result = await session.execute(select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == file_id))
+    file_record = result.scalar_one_or_none()
+    if file_record is None:
+        return None, None, None
+
+    parsed = parse_live_set_filename(file_record.original_filename)
+    if parsed:
+        return parsed
+
+    file_artist = file_record.file_metadata.artist if file_record.file_metadata else None
+    return file_artist, None, None
 
 
 async def _has_candidates(session: AsyncSession, tracklist: Tracklist) -> bool:
@@ -442,6 +480,11 @@ async def search_better_match(
         query = " ".join(parts) if parts else ""
 
         if query:
+            # Score candidates against the FILE this tracklist is (or would be) linked to, not
+            # against the tracklist's own artist/event/date (phaze-ldal) -- that comparison
+            # degenerates into a same-artist self-match that reads near-100 for ANY result.
+            file_artist, file_event, file_date = await _file_match_context(session, tracklist.file_id)
+
             scraper = TracklistScraper()
             try:
                 raw_results = await scraper.search(query)
@@ -450,9 +493,9 @@ async def search_better_match(
                         tracklist_artist=r.artist,
                         tracklist_event=None,
                         tracklist_date=None,
-                        file_artist=tracklist.artist,
-                        file_event=tracklist.event,
-                        file_date=tracklist.date,
+                        file_artist=file_artist,
+                        file_event=file_event,
+                        file_date=file_date,
                     )
                     search_results.append(
                         {
@@ -461,7 +504,6 @@ async def search_better_match(
                             "url": r.url,
                             "artist": r.artist,
                             "confidence": conf,
-                            "tracklist_id": tracklist_id,
                         }
                     )
                 search_results.sort(key=lambda x: x["confidence"], reverse=True)
@@ -473,6 +515,56 @@ async def search_better_match(
         name="tracklists/partials/search_results.html",
         context={"request": request, "results": search_results, "query": query, "file_id": tracklist.file_id if tracklist else None},
     )
+
+
+@router.post("/link-result", response_class=HTMLResponse)
+async def link_search_result(
+    request: Request,
+    file_id: uuid.UUID = Form(...),
+    external_id: str = Form(...),
+    url: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Link a selected 'Find Better Match' search RESULT to a file.
+
+    Fixes phaze-ldal: the old ``/{tracklist_id}/link`` route trusted a path param that was
+    the same for every result on the panel (the tracklist being searched FROM), so picking any
+    result silently re-linked that ORIGINAL tracklist and overwrote its confidence with the
+    selected result's score -- the result's own content (external_id/url/tracks) was never
+    fetched or persisted. Here the selected result's own identity resolves (or scrapes+stores)
+    its OWN Tracklist row, which is what gets linked and honestly scored -- the original
+    tracklist this search started from is never touched.
+    """
+    if not _is_allowed_tracklist_url(url):
+        return HTMLResponse(content="Invalid tracklist url", status_code=400)
+
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
+    selected = result.scalar_one_or_none()
+
+    if selected is None:
+        scraper = TracklistScraper()
+        try:
+            scraped = await scraper.scrape_tracklist(url)
+        finally:
+            await scraper.close()
+        selected = await _store_scraped_tracklist(session, scraped)
+
+    file_artist, file_event, file_date = await _file_match_context(session, file_id)
+    confidence = compute_match_confidence(
+        tracklist_artist=selected.artist,
+        tracklist_event=selected.event,
+        tracklist_date=selected.date,
+        file_artist=file_artist,
+        file_event=file_event,
+        file_date=file_date,
+    )
+
+    selected.file_id = file_id
+    selected.match_confidence = confidence
+    selected.auto_linked = False
+    await session.commit()
+
+    return await _render_tracklist_list(request, session, "all")
 
 
 @router.post("/search", response_class=HTMLResponse)
