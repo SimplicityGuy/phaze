@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -53,27 +54,44 @@ class HealthResponse(BaseModel):
 
     status: str
     engine: str
+    detail: str = ""
 
 
-def _ensure_database() -> None:
-    """Create the audfprint database if it does not exist."""
-    if not Path(FPRINT_DB).exists():
-        result = subprocess.run(
-            ["python", AUDFPRINT_SCRIPT, "new", "--dbase", FPRINT_DB],
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT,
-        )
-        if result.returncode != 0:
-            msg = f"Failed to create database: {result.stderr}"
-            raise RuntimeError(msg)
+def _database_bootstrap_status() -> tuple[bool, str]:
+    """Report whether the fingerprint DB is present or creatable, without mutating anything.
+
+    Deliberately filesystem-only (no audfprint subprocess invocation): running audfprint's
+    ``new`` here with no input file would reintroduce the exact ZeroDivisionError bootstrap
+    bug this function exists to detect (phaze-6kw0). A missing DB is healthy as long as its
+    directory exists and is writable -- the first real ``POST /ingest`` bootstraps it via
+    ``_run_ingest``.
+    """
+    db_path = Path(FPRINT_DB)
+    if db_path.exists():
+        return True, "database present"
+    parent = db_path.parent
+    if not parent.is_dir():
+        return False, f"database directory missing: {parent}"
+    if not os.access(parent, os.W_OK):
+        return False, f"database directory not writable: {parent}"
+    return True, "database absent, will bootstrap on first ingest"
 
 
 def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
-    """Run audfprint add command synchronously (called via to_thread)."""
-    _ensure_database()
+    """Run audfprint synchronously (called via to_thread).
+
+    When the database doesn't exist yet, bootstrap it together with THIS (real) file via
+    ``new`` -- audfprint's ``new`` subcommand creates the database AND ingests the given
+    file in one step, so the ingested duration is nonzero and upstream's unconditional
+    summary division (``tothashes / soundfiletotaldur``) never divides by zero. Once the
+    database exists, subsequent calls use ``add`` to append. This replaces the old
+    empty-file ``new`` bootstrap (formerly ``_ensure_database``), which could never
+    succeed -- upstream ``audfprint`` unconditionally divides by total ingested duration
+    when printing its summary, and an empty ingest run means dividing by zero (phaze-6kw0).
+    """
+    command = "add" if Path(FPRINT_DB).exists() else "new"
     return subprocess.run(
-        ["python", AUDFPRINT_SCRIPT, "add", "--dbase", FPRINT_DB, file_path],
+        ["python", AUDFPRINT_SCRIPT, command, "--dbase", FPRINT_DB, file_path],
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT,
@@ -166,8 +184,18 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check endpoint."""
-    return HealthResponse(status="healthy", engine="audfprint")
+    """Health check endpoint.
+
+    Reflects real database availability instead of a hardcoded "healthy" -- a missing-but-
+    creatable DB (fresh volume, nothing ingested yet) is healthy; a DB whose directory is
+    missing or unwritable is not. Callers (``AudfprintAdapter.health()``) only look at the
+    HTTP status code, so an unhealthy DB is surfaced as a non-2xx response.
+    """
+    available, detail = _database_bootstrap_status()
+    if not available:
+        logger.error("audfprint health check failed: %s", detail)
+        raise HTTPException(status_code=503, detail=detail)
+    return HealthResponse(status="healthy", engine="audfprint", detail=detail)
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -176,6 +204,7 @@ async def ingest(request: IngestRequest) -> IngestResponse:
     async with _ingest_lock:
         result = await asyncio.to_thread(_run_ingest, request.file_path)
     if result.returncode != 0:
+        logger.error("audfprint ingest failed for %s: %s", request.file_path, result.stderr)
         raise HTTPException(status_code=500, detail=result.stderr)
     return IngestResponse(status="ingested", file_path=request.file_path)
 
