@@ -716,6 +716,34 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CLOUD_SPILL_TO_LOCAL_AFTER_SECONDS", "cloud_spill_to_local_after_seconds"),
         description="Seconds a long file waits in AWAITING_CLOUD while higher-rank backends are FULL before slow local becomes an eligible spill target (Phase 69, D-02). Default 900 (15 min); offline backends spill immediately (D-03).",
     )
+    # phaze-ul2v: the two STAGING-half staleness bounds the reconcile reaper
+    # (``KueueBackend._reap_stranded_staging``) compares ``cloud_job.updated_at`` against. UPLOADING /
+    # UPLOADED rows count toward ``in_flight_count`` (D-10) but are terminalized ONLY by the agent HTTP
+    # callbacks (``/uploaded``, ``/failed``); a dead agent or a lost ``s3_upload`` SAQ job means neither
+    # callback ever fires and the row occupies a lane cap slot FOREVER. These bounds are the safety net.
+    # The callback path stays PRIMARY: the reaper must never fire on a row younger than its bound, so
+    # ``cloud_uploading_stale_after_sec`` MUST comfortably exceed the largest real
+    # ``upload_file_saq_timeout_sec(part_count)`` net (a multi-GB multipart upload is legitimately slow
+    # and bumps no timestamp while it transfers). Default 21600 (6h). Bounded (gt=0, lt=604800) so an
+    # out-of-range operator value fails fast at startup rather than reaping live uploads.
+    cloud_uploading_stale_after_sec: int = Field(
+        default=21600,
+        gt=0,
+        lt=604800,
+        validation_alias=AliasChoices("PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC", "cloud_uploading_stale_after_sec"),
+        description="Seconds a cloud_job may sit UPLOADING with no timestamp movement before the reconcile reaper spills it back to awaiting (phaze-ul2v). Default 21600 (6h); MUST exceed the largest s3_upload SAQ net.",
+    )
+    # The UPLOADED half: ``report_uploaded`` enqueues ``submit_cloud_job`` in the SAME transaction that
+    # flips the row to UPLOADED, so an UPLOADED row is expected to advance to SUBMITTED within one
+    # controller-queue hop. A row still UPLOADED long after that means the submit was lost. Much tighter
+    # than the UPLOADING bound because nothing legitimately dwells here. Default 900 (15 min).
+    cloud_uploaded_stale_after_sec: int = Field(
+        default=900,
+        gt=0,
+        lt=604800,
+        validation_alias=AliasChoices("PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC", "cloud_uploaded_stale_after_sec"),
+        description="Seconds a cloud_job may sit UPLOADED with no submit enqueued before the reconcile reaper spills it back to awaiting (phaze-ul2v). Default 900 (15 min).",
+    )
     # Phase 67 (REG-04, D-12): the flat compute scratch-dir field and the flat S3
     # connection/credential surface (endpoint / bucket / region / addressing-style / access-key /
     # secret-key) were REMOVED with no shim. Compute scratch dir now comes from the compute
