@@ -1,9 +1,10 @@
 """Duplicate detection service: finds files sharing the same SHA256 hash."""
 
+from collections.abc import Iterable, Sequence
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Subquery, delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,6 +69,67 @@ def score_group(group: dict[str, Any]) -> None:
         group["rationale"] = "shortest path"
 
 
+def _dup_hash_subquery(limit: int, offset: int) -> Subquery:
+    """Build the paginated "hashes with >1 file" subquery, ORDERED so LIMIT/OFFSET is deterministic.
+
+    Postgres's ``GROUP BY ... HAVING`` aggregate output order is unspecified and plan-dependent --
+    different LIMIT/OFFSET values are likely to produce different plans/orders. Without an explicit
+    ORDER BY here, two calls for "the same page" (or two adjacent pages) can select a DIFFERENT set of
+    hashes, so the review UI can silently show a duplicate group twice while another is never shown.
+    Ordering by ``sha256_hash`` before LIMIT/OFFSET makes the selected page of hashes stable and
+    reproducible across calls (the outer queries below additionally ORDER BY sha256_hash for display,
+    but that sorts only the hashes THIS subquery already selected -- it can't fix an unstable selection).
+    """
+    return (
+        select(FileRecord.sha256_hash)
+        .where(~dedup_resolved_clause())
+        .group_by(FileRecord.sha256_hash)
+        .having(func.count(FileRecord.id) > 1)
+        .order_by(FileRecord.sha256_hash)
+        .limit(limit)
+        .offset(offset)
+        .subquery()
+    )
+
+
+def _build_metadata_groups(rows: Iterable[Sequence[Any]]) -> list[dict[str, Any]]:
+    """Group ``(FileRecord, FileMetadata | None)`` rows into the duplicate-group dict shape.
+
+    Shared by :func:`find_duplicate_groups_with_metadata` (paginated) and
+    :func:`find_duplicate_groups_by_hashes` (exact hash set) so both build identical file dicts.
+    """
+    groups_map: dict[str, list[dict[str, Any]]] = {}
+    for file_record, metadata in rows:
+        file_dict: dict[str, Any] = {
+            "id": str(file_record.id),
+            "original_path": file_record.original_path,
+            "file_size": file_record.file_size,
+            "file_type": file_record.file_type,
+            "bitrate": metadata.bitrate if metadata else None,
+            "duration": metadata.duration if metadata else None,
+            "artist": metadata.artist if metadata else None,
+            "title": metadata.title if metadata else None,
+            "album": metadata.album if metadata else None,
+            "genre": metadata.genre if metadata else None,
+            "year": metadata.year if metadata else None,
+            "track_number": metadata.track_number if metadata else None,
+        }
+        label, filled, total = tag_completeness(file_dict)
+        file_dict["tag_label"] = label
+        file_dict["tag_filled"] = filled
+        file_dict["tag_total"] = total
+        groups_map.setdefault(file_record.sha256_hash, []).append(file_dict)
+
+    return [
+        {
+            "sha256_hash": h,
+            "count": len(members),
+            "files": members,
+        }
+        for h, members in groups_map.items()
+    ]
+
+
 async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     """Find groups of files sharing the same SHA256 hash.
 
@@ -75,16 +137,7 @@ async def find_duplicate_groups(session: AsyncSession, limit: int = 100, offset:
     shared hash, member count, and file details (id, path, size, type).
     Excludes files carrying a dedup_resolution marker (marker-existence is authority, not FileRecord.state).
     """
-    # Subquery: hashes that appear more than once (excluding marker-resolved files)
-    dup_hashes = (
-        select(FileRecord.sha256_hash)
-        .where(~dedup_resolved_clause())
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .limit(limit)
-        .offset(offset)
-        .subquery()
-    )
+    dup_hashes = _dup_hash_subquery(limit, offset)
 
     # Main query: all non-resolved files matching those hashes
     stmt = (
@@ -125,16 +178,7 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
     bitrate, duration, artist, title, album, genre, year, track_number
     and tag completeness info in each file dict.
     """
-    # Subquery: hashes that appear more than once (excluding marker-resolved files)
-    dup_hashes = (
-        select(FileRecord.sha256_hash)
-        .where(~dedup_resolved_clause())
-        .group_by(FileRecord.sha256_hash)
-        .having(func.count(FileRecord.id) > 1)
-        .limit(limit)
-        .offset(offset)
-        .subquery()
-    )
+    dup_hashes = _dup_hash_subquery(limit, offset)
 
     # Main query with outerjoin to metadata
     stmt = (
@@ -145,39 +189,30 @@ async def find_duplicate_groups_with_metadata(session: AsyncSession, limit: int 
         .order_by(FileRecord.sha256_hash, FileRecord.original_path)
     )
     result = await session.execute(stmt)
-    rows = result.all()
+    return _build_metadata_groups(result.all())
 
-    # Group by hash
-    groups_map: dict[str, list[dict[str, Any]]] = {}
-    for file_record, metadata in rows:
-        file_dict: dict[str, Any] = {
-            "id": str(file_record.id),
-            "original_path": file_record.original_path,
-            "file_size": file_record.file_size,
-            "file_type": file_record.file_type,
-            "bitrate": metadata.bitrate if metadata else None,
-            "duration": metadata.duration if metadata else None,
-            "artist": metadata.artist if metadata else None,
-            "title": metadata.title if metadata else None,
-            "album": metadata.album if metadata else None,
-            "genre": metadata.genre if metadata else None,
-            "year": metadata.year if metadata else None,
-            "track_number": metadata.track_number if metadata else None,
-        }
-        label, filled, total = tag_completeness(file_dict)
-        file_dict["tag_label"] = label
-        file_dict["tag_filled"] = filled
-        file_dict["tag_total"] = total
-        groups_map.setdefault(file_record.sha256_hash, []).append(file_dict)
 
-    return [
-        {
-            "sha256_hash": h,
-            "count": len(members),
-            "files": members,
-        }
-        for h, members in groups_map.items()
-    ]
+async def find_duplicate_groups_by_hashes(session: AsyncSession, hashes: Sequence[str]) -> list[dict[str, Any]]:
+    """Return duplicate groups (with metadata) for an EXACT, caller-supplied set of hashes.
+
+    Used by ``bulk_resolve`` to act on the group hashes the operator was actually shown, instead of
+    re-deriving "the current page" via a fresh ``find_duplicate_groups_with_metadata`` LIMIT/OFFSET call --
+    which (even with a stable ORDER BY) can select a different set of groups than what was rendered if
+    another resolve committed between the page render and this call (display set != write set). No
+    LIMIT/OFFSET/HAVING here: the caller's hash set IS the selection, so there is nothing to re-derive.
+    """
+    if not hashes:
+        return []
+
+    stmt = (
+        select(FileRecord, FileMetadata)
+        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
+        .where(FileRecord.sha256_hash.in_(hashes))
+        .where(~dedup_resolved_clause())
+        .order_by(FileRecord.sha256_hash, FileRecord.original_path)
+    )
+    result = await session.execute(stmt)
+    return _build_metadata_groups(result.all())
 
 
 async def count_duplicate_groups(session: AsyncSession) -> int:

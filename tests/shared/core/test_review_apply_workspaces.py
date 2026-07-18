@@ -473,6 +473,31 @@ async def test_dedupe_keeper_resolve_wiring(
 
 
 @pytest.mark.asyncio
+async def test_dedupe_auto_keep_submits_rendered_group_hashes(
+    client: AsyncClient,
+    seed_duplicate_group: Callable[..., Awaitable[list[FileRecord]]],
+) -> None:
+    """phaze-81bu: AUTO-KEEP submits the EXACT sha256_hash of every group rendered on ``/s/dedupe``.
+
+    Regression for a page/page_size-derived bulk resolve that could silently act on groups the operator
+    was never shown. The button now carries NO ``page``/``page_size`` hx-vals; instead it ``hx-include``s
+    a hidden ``name="group_hashes"`` input per rendered group, so the write set matches the display set.
+    """
+    files = await seed_duplicate_group(count=2)
+    sha = files[0].sha256_hash
+
+    frag = await client.get("/s/dedupe", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    assert 'hx-post="/duplicates/resolve-all"' in body
+    assert '"page"' not in body, "AUTO-KEEP must not carry a page/page_size re-derivation"
+    assert '"page_size"' not in body
+    assert 'hx-include="#dedupe-group-hash-inputs"' in body, "AUTO-KEEP must pull the rendered group hashes via hx-include"
+    assert f'<input type="hidden" name="group_hashes" value="{sha}">' in body, "the rendered group's hash must be submittable"
+
+
+@pytest.mark.asyncio
 async def test_cue_gate_and_preview(
     client: AsyncClient,
     seed_cue_set: Callable[..., Awaitable[object]],

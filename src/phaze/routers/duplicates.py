@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.database import get_session
 from phaze.services.dedup import (
     count_duplicate_groups,
+    find_duplicate_groups_by_hashes,
     find_duplicate_groups_with_metadata,
     get_duplicate_stats,
     resolve_group,
@@ -204,17 +205,25 @@ async def undo_resolve_endpoint(
 @router.post("/resolve-all", response_class=HTMLResponse)
 async def bulk_resolve(
     request: Request,
-    page: int = Form(1),
-    page_size: int = Form(20),
+    group_hashes: list[str] = Form(default_factory=list),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Bulk-resolve all duplicate groups on the current page."""
-    offset = (page - 1) * page_size
-    groups = await find_duplicate_groups_with_metadata(session, limit=page_size, offset=offset)
+    """Bulk-resolve exactly the duplicate groups the operator was shown.
+
+    Resolves the operator-submitted ``group_hashes`` (the sha256 hashes rendered on the page/workspace
+    at the time of the click) rather than re-deriving "the current page" via a fresh LIMIT/OFFSET query.
+    That re-derivation is what let a never-reviewed group get auto-resolved: an unordered paginated query
+    can select a different set of hashes than what was displayed, and even with stable ordering the set
+    can still drift if another resolve committed between the page render and this POST (phaze-81bu).
+    """
+    groups = await find_duplicate_groups_by_hashes(session, group_hashes)
 
     all_file_states: list[dict[str, Any]] = []
     resolved_groups = 0
     for group in groups:
+        if not group["files"]:
+            # Already fully resolved (e.g. by a concurrent request) between display and this POST.
+            continue
         score_group(group)
         canonical_id = uuid.UUID(group["canonical_id"])
         _count, file_states = await resolve_group(session, group["sha256_hash"], canonical_id)
