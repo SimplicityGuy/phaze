@@ -202,6 +202,84 @@ def _determine_file_status(write_log: TagWriteLog | None) -> str:
     return write_log.status
 
 
+def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
+    """Join a comparison's ``current`` (before) or ``proposed`` (after) side into a display string.
+
+    Renders ``"label: value · label: value · …"`` across every CORE field, with an em dash for a
+    ``None`` value (an absent tag). ``side`` is ``"current"`` or ``"proposed"``. All values are plain
+    Python data -- the caller's template autoescapes them on render (T-60-XSS). Shared with
+    ``services.review.get_tagwrite_review_rows`` (the tagwrite queue's ``before_summary`` /
+    ``after_summary``) so a row's diff text never drifts between the queue and the mutation routes.
+    """
+    parts = [f"{c['label']}: {c[side] if c[side] is not None else '—'}" for c in comparison]
+    return " · ".join(parts)
+
+
+# phaze-nvll: the v7 tagwrite workspace (tagwrite_workspace.html) renders rows from the shared
+# pipeline/partials/_diff_row.html partial and hx-targets each row's own div. write_file_tags and
+# undo_tag_write historically always returned the legacy <tr>-based tag_row.html -- which carries
+# ZERO undo controls, so the outerHTML swap after APPROVE destroyed the row (and the UNDO button
+# that would have reversed it) in the same stroke, and bare 400/404 strings on a stale row (file
+# gone / no longer executed / no prior write) were silently dropped by htmx (it does not swap
+# non-2xx bodies by default; shell.html only special-cases #record-body). The legacy tag list/
+# comparison pages (tag_list.html, tag_comparison.html) target `#row-{file_id}` and must keep
+# getting tag_row.html back, so the v7 response is opt-in via the same HX-Target negotiation
+# proposals.py uses (phaze-3a2j).
+_V7_TAGWRITE_ROW_PREFIX = "tagwrite-row"
+
+
+def _is_v7_tagwrite_target(request: Request, file_id: uuid.UUID) -> bool:
+    """True when the request came from the v7 tagwrite diff-row workspace."""
+    return request.headers.get("HX-Target", "") == f"{_V7_TAGWRITE_ROW_PREFIX}-{file_id}"
+
+
+async def _tagwrite_row_context(session: AsyncSession, file_record: FileRecord, *, row_state: str) -> dict[str, Any]:
+    """Build the shared _diff_row.html context for one tagwrite row, at the given lifecycle state."""
+    tracklist = await _get_tracklist_for_file(session, file_record.id)
+    discogs_link = await _get_accepted_discogs_link(session, file_record.id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
+    comparison = _build_comparison(file_record.file_metadata, proposed)
+    return {
+        "row_id_prefix": _V7_TAGWRITE_ROW_PREFIX,
+        "pid": file_record.id,
+        "file": file_record.original_filename,
+        "original_path": file_record.original_filename,
+        "before": _summarize_tags(comparison, "current"),
+        "after": _summarize_tags(comparison, "proposed"),
+        "approve_url": f"/tags/{file_record.id}/write",
+        "approve_method": "post",
+        "undo_url": f"/tags/{file_record.id}/undo",
+        "undo_method": "post",
+        "show_edit": False,
+        "show_skip": False,
+        "show_undo": True,
+        "row_state": row_state,
+    }
+
+
+def _tagwrite_diff_row_response(request: Request, row_context: dict[str, Any], toast_message: str | None) -> HTMLResponse:
+    """Render the shared _diff_row.html (tag facet) plus its OOB toast for a v7 row swap."""
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/tagwrite_diff_row.html",
+        context={"request": request, "toast_message": toast_message, **row_context},
+    )
+
+
+def _tagwrite_stale_toast_response(request: Request, toast_message: str) -> HTMLResponse:
+    """A v7 row whose file has vanished entirely: OOB toast only, status 200 (phaze-nvll defect 3).
+
+    There is no file left to rebuild a row from, so the response's main (non-OOB) body is empty --
+    htmx's outerHTML swap then removes the stale row from the DOM -- while the toast still surfaces
+    the failure instead of a bare 400/404 string htmx silently drops.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="tags/partials/toast.html",
+        context={"request": request, "toast_message": toast_message},
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 async def list_tags(
     request: Request,
@@ -372,11 +450,22 @@ async def write_file_tags(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Execute tag write for a file using form-submitted proposed values."""
+    is_v7 = _is_v7_tagwrite_target(request, file_id)
+
     file_record = await _get_file_with_metadata(session, file_id)
     if file_record is None:
+        # phaze-nvll defect 3: a stale v7 row (file gone) gets a 200 + OOB toast so the failure is
+        # actually visible, instead of a bare 404 htmx silently drops for this target.
+        if is_v7:
+            return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
         return HTMLResponse(content="File not found", status_code=404)
 
     if not await is_applied(session, file_id):
+        # phaze-nvll defect 3: file still exists (a stale row -- the execution was reverted since
+        # render), so redraw it unchanged (still pending) alongside the toast rather than dropping it.
+        if is_v7:
+            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+            return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written.")
         return HTMLResponse(content="Only executed files can have tags written", status_code=400)
 
     form_data = await request.form()
@@ -422,6 +511,14 @@ async def write_file_tags(
     except ValueError as exc:
         status = "failed"
         toast_message = f"Tag write failed: {exc}"
+
+    if is_v7:
+        # phaze-nvll defects 1+2: the v7 row gets the shared _diff_row.html back, in "approved" (WITH
+        # a working UNDO) for a real write outcome (COMPLETED/DISCREPANCY), or "pending" (APPROVE
+        # still available to retry) when nothing was actually written (FAILED / a raised ValueError).
+        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY) else "pending"
+        row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
+        return _tagwrite_diff_row_response(request, row_context, toast_message)
 
     # Rebuild file data for the updated row
     comparison = _build_comparison(file_record.file_metadata, tags)
@@ -526,16 +623,34 @@ async def undo_tag_write(
     has no prior write log. Appends one further ``TagWriteLog`` so the append-only audit trail stays
     coherent (REVIEW-05: every apply, including a reversal, is one audit row).
     """
+    is_v7 = _is_v7_tagwrite_target(request, file_id)
+
     file_record = await _get_file_with_metadata(session, file_id)
     if file_record is None:
+        # phaze-nvll defect 3: a stale v7 row (file gone) gets a 200 + OOB toast, not a bare 404.
+        if is_v7:
+            return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
         return HTMLResponse(content="File not found", status_code=404)
 
     latest = await _get_latest_write_log(session, file_id)
     if latest is None:
+        # phaze-nvll defect 3: nothing to undo (a race/stale row) -- redraw the row as pending
+        # alongside the toast rather than silently doing nothing.
+        if is_v7:
+            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+            return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
         return HTMLResponse(content="No prior tag write to undo", status_code=404)
 
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()
+
+    if is_v7:
+        # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
+        # reversal write actually completed; a failed reversal keeps "approved" (UNDO stays available
+        # to retry) rather than claiming a revert that did not happen.
+        row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
+        row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
+        return _tagwrite_diff_row_response(request, row_context, f"Reverted tags for {file_record.original_filename}.")
 
     # Rebuild the row for the outerHTML swap.
     tracklist = await _get_tracklist_for_file(session, file_id)

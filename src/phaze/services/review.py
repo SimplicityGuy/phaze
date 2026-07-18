@@ -34,6 +34,7 @@ from phaze.routers.tags import (
     _count_changes,
     _get_accepted_discogs_link,
     _get_tracklist_for_file,
+    _summarize_tags,
     _terminal_tagwrite_subq,
 )
 from phaze.services.cue_generator import generate_cue_content
@@ -93,17 +94,6 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
     except Exception:
         logger.warning("pending_proposal_rows_degraded", exc_info=True)
         return []
-
-
-def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
-    """Join a comparison's ``current`` (before) or ``proposed`` (after) side into a display string.
-
-    Renders ``"label: value · label: value · …"`` across every CORE field, with an em dash for a
-    ``None`` value (an absent tag). ``side`` is ``"current"`` or ``"proposed"``. All values are plain
-    Python data -- the caller's template autoescapes them on render (T-60-XSS).
-    """
-    parts = [f"{c['label']}: {c[side] if c[side] is not None else '—'}" for c in comparison]
-    return " · ".join(parts)
 
 
 async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
