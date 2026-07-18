@@ -28,7 +28,7 @@ import uuid
 
 from httpx import Response
 import kr8s
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 import pytest
 import yaml
 
@@ -153,6 +153,34 @@ def test_build_job_manifest_spec() -> None:
     resources = container["resources"]
     assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # KSUBMIT-01: requests only
     assert "limits" not in resources  # Q1 RESOLVED (adopted): requests-only is LOCKED
+
+
+def test_build_job_manifest_sets_active_deadline_seconds() -> None:
+    """phaze-1b39: the Job MUST carry ``activeDeadlineSeconds`` -- the pipeline's only wall-clock bound.
+
+    ``job_runner``'s exit-code contract delegates ALL wall-clock bounding to this field (the analyze
+    stage runs ``timeout=None``) and ``ttlSecondsAfterFinished`` only fires AFTER a Job finishes, so
+    without it a hung/never-started pod is never terminal and holds its burst-lane cap slot forever.
+    """
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube())
+    spec = manifest["spec"]
+
+    assert spec["activeDeadlineSeconds"] == 10800  # default: 3h, the KubeConfig default
+    # It is a DISTINCT bound from the finished-Job TTL -- the TTL cannot rescue a Job that never finishes.
+    assert spec["activeDeadlineSeconds"] != spec["ttlSecondsAfterFinished"]
+
+
+def test_build_job_manifest_active_deadline_seconds_is_per_backend_configurable() -> None:
+    """phaze-1b39: a slow cluster can raise the deadline via ``[kube].active_deadline_seconds``."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(active_deadline_seconds=1800))
+
+    assert manifest["spec"]["activeDeadlineSeconds"] == 1800
+
+
+def test_kube_config_rejects_non_positive_active_deadline_seconds() -> None:
+    """A zero/negative deadline would make k8s reject the Job (or bound nothing) -- fail at config load."""
+    with pytest.raises(ValidationError):
+        _kube(active_deadline_seconds=0)
 
 
 def test_build_job_manifest_mounts_ca_secret() -> None:
