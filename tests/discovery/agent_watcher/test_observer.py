@@ -4,7 +4,12 @@ Five behaviors mirror 27-PATTERNS.md lines 1211-1215:
 
 1. Extension filter: only music/video extensions reach the debouncer touch.
 2. Directory events ignored (DirCreatedEvent fires no callback).
-3. NFC normalization of src_path before dispatch (Pitfall 3 mitigation).
+3. RAW src_path dispatch -- NO NFC normalization before the debouncer
+   (phaze-hk7k correction: the path is later used verbatim as the
+   filesystem handle in Poster.post_one; normalizing it here made an
+   NFD-named file's handle diverge from its on-disk byte-exact path on
+   Unicode-normalization-sensitive filesystems (ext4/most Linux
+   filesystems), permanently ENOENTing and silently dropping the file).
 4. Thread bridge: dispatch goes through ``loop.call_soon_threadsafe`` and
    NEVER calls debouncer.touch directly on the watchdog thread (Pitfall 2).
 5. Handler subscribes to BOTH ``on_created`` and ``on_modified`` (SCAN-03).
@@ -103,8 +108,20 @@ def test_event_handler_ignores_directories() -> None:
     assert touch.call_count == 0
 
 
-def test_event_handler_normalizes_path() -> None:
-    """NFD-form combining-accent input is NFC-normalized before dispatch (Pitfall 3)."""
+def test_event_handler_does_not_normalize_path() -> None:
+    """phaze-hk7k regression: NFD-form src_path is dispatched RAW, byte-for-byte.
+
+    This test previously asserted the OPPOSITE (that the dispatched path was
+    NFC-normalized) -- that was the wrong invariant. Normalizing the path
+    here, before it reaches the debouncer/Poster, makes it diverge from the
+    on-disk byte sequence on Unicode-normalization-sensitive filesystems
+    (ext4/most Linux filesystems): an NFD-named file's handle then
+    permanently ENOENTs in ``Poster.post_one`` (caught as ``OSError`` and
+    dropped) and is never ingested. Deterministic by construction -- this
+    synthesizes the NFD form directly rather than relying on the host
+    filesystem's own normalization behavior (macOS/APFS is normalization-
+    insensitive for lookups and would mask the bug locally).
+    """
     loop = MagicMock()
     touch = MagicMock()
     handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
@@ -117,8 +134,36 @@ def test_event_handler_normalizes_path() -> None:
 
     assert loop.call_soon_threadsafe.call_count == 1
     args, _ = loop.call_soon_threadsafe.call_args
-    normalized_arg = args[1]
-    assert unicodedata.is_normalized("NFC", normalized_arg), f"expected NFC; got {normalized_arg!r}"
+    dispatched_arg = args[1]
+    assert dispatched_arg == nfd_path, f"expected raw NFD path passed through unchanged; got {dispatched_arg!r}"
+    assert not unicodedata.is_normalized("NFC", dispatched_arg), "dispatched path must stay in its original (NFD) form"
+
+
+def test_event_handler_keeps_nfd_and_nfc_twins_distinct() -> None:
+    """phaze-hk7k regression: coexisting NFD/NFC twins must NOT collapse to one debouncer key.
+
+    Before the fix, both an NFD-named file and its NFC-named twin were
+    NFC-normalized before dispatch, so both events produced the SAME
+    debouncer touch key -- only one twin was ever posted. Dispatching the
+    raw path keeps the two touch calls distinct, letting the debouncer (and
+    downstream Poster) treat them as the two separate filesystem entries
+    they are.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    nfd_path = unicodedata.normalize("NFD", "/music/é.mp3")
+    nfc_path = unicodedata.normalize("NFC", "/music/é.mp3")
+    assert nfd_path != nfc_path, "fixture precondition: NFD and NFC forms must be distinct byte sequences"
+
+    handler.on_created(FileCreatedEvent(src_path=nfd_path))
+    handler.on_created(FileCreatedEvent(src_path=nfc_path))
+
+    assert loop.call_soon_threadsafe.call_count == 2
+    dispatched = [call.args[1] for call in loop.call_soon_threadsafe.call_args_list]
+    assert dispatched == [nfd_path, nfc_path]
+    assert len(set(dispatched)) == 2, "NFD and NFC twins must dispatch as two distinct keys, not collapse to one"
 
 
 def test_event_handler_uses_call_soon_threadsafe() -> None:

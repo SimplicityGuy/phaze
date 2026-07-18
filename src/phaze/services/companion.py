@@ -14,6 +14,14 @@ MEDIA_CATEGORIES: set[FileCategory] = {FileCategory.MUSIC, FileCategory.VIDEO}
 COMPANION_TYPES: set[str] = {ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat == FileCategory.COMPANION}
 MEDIA_TYPES: set[str] = {ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in MEDIA_CATEGORIES}
 
+_LIKE_ESCAPE_CHAR = "\\"
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE metacharacters (backslash, %, _) so a filesystem path can be used
+    safely as a literal prefix in a SQL LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 
 async def associate_companions(session: AsyncSession) -> int:
     """Link unlinked companion files to media files in the same directory.
@@ -47,11 +55,14 @@ async def associate_companions(session: AsyncSession) -> int:
 
     count = 0
     for directory, companions in dir_groups.items():
-        # Find media files in the same directory (not subdirs)
+        # Find media files in the same directory (not subdirs). Escape LIKE
+        # metacharacters in the directory so '_'/'%'/'\' in a real path (e.g.
+        # "Coachella_2024") are matched literally rather than as wildcards.
+        escaped_directory = _escape_like(directory)
         media_stmt = select(FileRecord).where(
             FileRecord.file_type.in_(MEDIA_TYPES),
-            FileRecord.original_path.like(f"{directory}/%"),
-            ~FileRecord.original_path.like(f"{directory}/%/%"),
+            FileRecord.original_path.like(f"{escaped_directory}/%", escape=_LIKE_ESCAPE_CHAR),
+            ~FileRecord.original_path.like(f"{escaped_directory}/%/%", escape=_LIKE_ESCAPE_CHAR),
         )
         media_result = await session.execute(media_stmt)
         media_files = media_result.scalars().all()

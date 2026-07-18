@@ -7,8 +7,20 @@ Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
    Other watchdog event types (move, delete, *DirEvent) are ignored.
 2. Filters by ``EXTENSION_MAP`` -- only ``FileCategory.MUSIC`` and
    ``FileCategory.VIDEO`` paths enter the debouncer (SCAN-03).
-3. Normalizes the path to NFC before dispatch (Pitfall 3 -- prevents Apple-form
-   NFD drift between watcher events and scan_directory's path-keyed upsert).
+3. Dispatches the RAW OS path (whatever Unicode normalization form the
+   filesystem handed watchdog) through, unchanged. It is later used
+   verbatim as the filesystem handle for ``stat``/hashing in
+   :class:`phaze.agent_watcher.poster.Poster`, mirroring
+   ``phaze.tasks.scan.scan_directory`` (which stats the raw ``os.walk``
+   path and normalizes only the outgoing DB record fields). Normalizing
+   to NFC here -- as a prior revision did -- makes the dispatched string
+   diverge from the on-disk byte sequence on Unicode-normalization-
+   sensitive filesystems (ext4/most Linux filesystems): an NFD-named
+   file (e.g. macOS-origin media synced via SMB/rsync) then permanently
+   ENOENTs in ``Poster.post_one`` and is silently dropped (Pitfall 3
+   correction). ``Poster`` still NFC-normalizes the *record* fields
+   (``original_path``, ``original_filename``, ``current_path``) before
+   they hit the wire / DB -- that normalization is unaffected.
 4. Dispatches the touch through the asyncio loop's thread-safe scheduler --
    the ONLY sanctioned cross-thread bridge (Pitfall 2). NEVER call
    ``debouncer.touch`` directly: the underlying ``dict[str, _PendingEntry]``
@@ -21,7 +33,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
-import unicodedata
 
 import structlog
 from watchdog.events import FileSystemEventHandler
@@ -73,12 +84,15 @@ class WatcherEventHandler(FileSystemEventHandler):
         ext = "." + Path(path_str).suffix.lower().lstrip(".")
         if EXTENSION_MAP.get(ext, FileCategory.UNKNOWN) not in _EXTRACTABLE:
             return
-        normalized = unicodedata.normalize("NFC", path_str)
-        # Pitfall 2: NEVER call ``self._debouncer_touch(normalized)`` directly --
+        # NOTE: `path_str` is dispatched RAW -- do not NFC-normalize it here.
+        # It becomes the filesystem handle Poster.post_one stats/hashes; see
+        # the module docstring point 3 for why normalizing it broke NFD-named
+        # ingestion on Linux.
+        # Pitfall 2: NEVER call ``self._debouncer_touch(path_str)`` directly --
         # this method runs on the watchdog OS thread; the debouncer's backing
         # dict is asyncio-owned. The asyncio thread-safe scheduler call below
         # is the canonical cross-thread primitive.
-        self._loop.call_soon_threadsafe(self._debouncer_touch, normalized)
+        self._loop.call_soon_threadsafe(self._debouncer_touch, path_str)
 
     def on_created(self, event: DirCreatedEvent | FileCreatedEvent) -> None:
         if event.is_directory:
