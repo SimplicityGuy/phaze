@@ -19,7 +19,10 @@ returned ``[]`` for every real query.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 from httpx import ASGITransport, AsyncClient
@@ -199,3 +202,240 @@ class TestQueryEndpointEscalation:
         status, body = await _post_query(audfprint_app)
         assert status == 200
         assert len(body["matches"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fresh-volume bootstrap (phaze-6kw0)
+#
+# The bug: _ensure_database bootstrapped a missing DB by running `audfprint new` with NO
+# input files. Upstream audfprint's do_cmd unconditionally divides by total ingested
+# duration when printing its summary (tothashes / soundfiletotaldur) -- with zero files
+# that's 0/0.0, a ZeroDivisionError, a nonzero exit, and a RuntimeError that could NEVER
+# succeed. Every /ingest against a fresh (or reset) volume permanently 500'd.
+#
+# The fix: bootstrap the DB together with the FIRST REAL FILE via `new --dbase DB <file>`
+# (audfprint's `new` creates the DB AND ingests the given file in one step, so the
+# ingested duration is nonzero), then use `add` once the DB exists.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAudfprintCli:
+    """Stand-in for the real audfprint CLI's ``new``/``add`` side effects.
+
+    Records every invocation and -- like the real CLI -- creates/updates the dbase file
+    on both ``new`` and ``add``. This lets tests assert which command was chosen (the
+    actual bug/fix distinction) purely from the recorded call, without shelling out to a
+    real audfprint install.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def run(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(args)
+        command, dbase = args[2], args[4]
+        if command in ("new", "add"):
+            Path(dbase).touch()
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+
+class TestRunIngestBootstrap:
+    """``_run_ingest`` picks ``new`` (bootstrap) vs ``add`` (append) by DB presence."""
+
+    def test_fresh_volume_uses_new_with_the_real_file_and_creates_db(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        assert not db_path.exists()
+        result = audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert result.returncode == 0
+        assert db_path.exists()
+        assert len(cli.calls) == 1
+        command, dbase, file_arg = cli.calls[0][2], cli.calls[0][4], cli.calls[0][5]
+        assert command == "new"
+        assert dbase == str(db_path)
+        assert file_arg == "/data/real/song.mp3"
+
+    def test_second_ingest_appends_via_add(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/real/first.mp3")
+        second = audfprint_app._run_ingest("/data/real/second.mp3")
+
+        assert second.returncode == 0
+        assert [call[2] for call in cli.calls] == ["new", "add"]
+
+    def test_no_ensure_database_function_remains(self, audfprint_app: ModuleType) -> None:
+        # The old empty-file bootstrap path must be gone entirely, not just unreachable.
+        assert not hasattr(audfprint_app, "_ensure_database")
+
+
+class TestIngestEndpointBootstrap:
+    """End-to-end ``POST /ingest`` against a fresh, empty volume."""
+
+    async def test_first_ingest_on_fresh_volume_returns_200_and_creates_db(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": "/data/real/song.mp3"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ingested", "file_path": "/data/real/song.mp3"}
+        assert db_path.exists()
+        assert cli.calls[0][2] == "new"
+
+    async def test_subsequent_ingest_appends(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            first = await client.post("/ingest", json={"file_path": "/data/real/first.mp3"})
+            second = await client.post("/ingest", json={"file_path": "/data/real/second.mp3"})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert [call[2] for call in cli.calls] == ["new", "add"]
+
+    async def test_ingest_failure_is_logged_as_error(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # phaze-6kw0 also requires ingest 500s to leave server-side evidence in the sidecar's
+        # own error log -- previously an ingest failure raised straight to HTTPException with
+        # no log record at all.
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        def _failing_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="boom: disk full")
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _failing_run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.post("/ingest", json={"file_path": "/data/real/song.mp3"})
+
+        assert resp.status_code == 500
+        assert any("audfprint ingest failed" in record.message and "boom: disk full" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# /health reflects DB unavailability (phaze-6kw0)
+# ---------------------------------------------------------------------------
+
+
+class TestDatabaseBootstrapStatus:
+    """``_database_bootstrap_status`` is a read-only filesystem probe -- never shells out."""
+
+    def test_existing_db_is_available(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        available, detail = audfprint_app._database_bootstrap_status()
+
+        assert available
+        assert "present" in detail
+
+    def test_missing_db_with_writable_parent_is_available(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        available, detail = audfprint_app._database_bootstrap_status()
+
+        assert available
+        assert "bootstrap" in detail
+
+    def test_missing_db_directory_is_unavailable(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "does-not-exist" / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        available, detail = audfprint_app._database_bootstrap_status()
+
+        assert not available
+        assert "missing" in detail
+
+    @pytest.mark.skipif(sys.platform.startswith("win") or os.geteuid() == 0, reason="permission bits are unenforceable for root/Windows CI runners")
+    def test_missing_db_unwritable_directory_is_unavailable(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        locked_dir = tmp_path / "locked"
+        locked_dir.mkdir()
+        db_path = locked_dir / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        locked_dir.chmod(0o500)
+        try:
+            available, detail = audfprint_app._database_bootstrap_status()
+        finally:
+            locked_dir.chmod(0o700)
+
+        assert not available
+        assert "not writable" in detail
+
+
+class TestHealthEndpoint:
+    """``GET /health`` must surface DB unavailability as a non-2xx, not a hardcoded 200."""
+
+    async def _get_health(self, audfprint_app: ModuleType) -> tuple[int, dict]:
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+        return resp.status_code, resp.json()
+
+    async def test_existing_db_reports_healthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        status, body = await self._get_health(audfprint_app)
+
+        assert status == 200
+        assert body["status"] == "healthy"
+
+    async def test_fresh_volume_still_reports_healthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # A DB that doesn't exist YET is not the same as a DB that can never exist -- a fresh
+        # volume with nothing ingested is healthy (it will bootstrap on first /ingest).
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        status, body = await self._get_health(audfprint_app)
+
+        assert status == 200
+        assert body["status"] == "healthy"
+
+    async def test_unavailable_db_directory_reports_unhealthy(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "does-not-exist" / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        status, body = await self._get_health(audfprint_app)
+
+        assert status == 503
+        assert "missing" in body["detail"]
+
+    async def test_unavailable_db_is_logged_as_error(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        db_path = tmp_path / "does-not-exist" / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            await self._get_health(audfprint_app)
+
+        assert any("audfprint health check failed" in record.message for record in caplog.records)
