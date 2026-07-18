@@ -29,7 +29,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, FingerprintFilePayload, ScanLiveSetPayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
@@ -42,6 +42,7 @@ from phaze.services.backends import (
     hold_awaiting_cloud,
 )
 from phaze.services.fingerprint import get_fingerprint_progress
+from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
@@ -2005,21 +2006,14 @@ async def trigger_extraction_ui(
 
 
 async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
-    """Background coroutine to enqueue fingerprint_file jobs with the COMPLETE payload.
+    """Background coroutine wrapper over the shared fingerprint enqueue funnel.
 
-    ``FingerprintFilePayload`` (``extra="forbid"``) requires file_id, original_path and
-    agent_id; a ``file_id``-only enqueue dead-letters every job (same class as the metadata
-    defect above). Build the full payload and serialize via ``model_dump(mode="json")``. The
-    deterministic key (``fingerprint_file:<file_id>``) is applied centrally by the
-    ``before_enqueue`` hook (35-01).
+    The funnel itself now lives in :func:`phaze.services.fingerprint_requeue.enqueue_fingerprint_jobs`
+    so the recovery CLI (``phaze fingerprint requeue``, phaze-rf04.1) enqueues through the
+    IDENTICAL payload construction. Keeping two copies is how the payload shape drifts and
+    one producer starts dead-lettering; there is exactly one now.
     """
-    for f in files:
-        payload = FingerprintFilePayload(
-            file_id=f.id,
-            original_path=f.original_path,
-            agent_id=agent_id,
-        )
-        await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
+    await enqueue_fingerprint_jobs(queue, files, agent_id)
 
 
 @router.post("/api/v1/fingerprint")
