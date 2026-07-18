@@ -24,10 +24,22 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class IngestResult:
-    """Result of ingesting a file into a fingerprint engine."""
+    """Result of ingesting a file into a fingerprint engine.
+
+    ``engine_error`` (phaze-ds1z) separates an ENGINE-level failure -- the sidecar is
+    down, unreachable, or 5xx-ing on everything -- from a FILE-level failure, where a
+    healthy sidecar rejected THIS file (4xx: unreadable/corrupt/unsupported input).
+
+    The distinction is what lets ``fingerprint_file`` refuse to complete a job during a
+    total outage (raise -> SAQ retry/backoff, no ``failed`` rows written) while still
+    letting a genuinely corrupt file fail its own job without stalling the lane. Before
+    this field existed, both collapsed to ``status="failed"`` and the worker cheerfully
+    drained an 11k backlog into per-engine FAILED rows while nothing was fingerprinted.
+    """
 
     status: str
     error: str | None = None
+    engine_error: bool = False
 
 
 @dataclass
@@ -78,6 +90,31 @@ class FingerprintEngine(Protocol):
 # ---------------------------------------------------------------------------
 
 
+async def _post_ingest(client: httpx.AsyncClient, engine: str, file_path: str) -> IngestResult:
+    """POST ``/ingest`` and classify the outcome as engine-level or file-level (phaze-ds1z).
+
+    Shared by both sidecar adapters so the classification cannot drift between them:
+
+    - 200                    -> ``success``
+    - 5xx / transport error  -> ``failed`` with ``engine_error=True``  (the sidecar is sick;
+      every file will fail the same way, so the caller must NOT record a per-file verdict)
+    - any other non-200      -> ``failed`` with ``engine_error=False`` (the sidecar is healthy
+      and rejected THIS file -- a real, file-specific failure worth recording)
+    """
+    try:
+        resp = await client.post("/ingest", json={"file_path": file_path})
+    except Exception as exc:
+        # Connect/read/timeout: the sidecar is unreachable, not the file's fault.
+        logger.warning("fingerprint ingest transport failure", engine=engine, error=str(exc))
+        return IngestResult(status="failed", error=str(exc), engine_error=True)
+    if resp.status_code == 200:
+        return IngestResult(status="success")
+    engine_error = resp.status_code >= 500
+    if engine_error:
+        logger.warning("fingerprint ingest engine failure", engine=engine, status_code=resp.status_code)
+    return IngestResult(status="failed", error=f"HTTP {resp.status_code}: {resp.text}", engine_error=engine_error)
+
+
 class AudfprintAdapter:
     """HTTP client adapter for the audfprint container (D-06)."""
 
@@ -95,14 +132,8 @@ class AudfprintAdapter:
         return self._weight
 
     async def ingest(self, file_path: str) -> IngestResult:
-        """POST /ingest with file_path, return IngestResult."""
-        try:
-            resp = await self._client.post("/ingest", json={"file_path": file_path})
-            if resp.status_code == 200:
-                return IngestResult(status="success")
-            return IngestResult(status="failed", error=f"HTTP {resp.status_code}: {resp.text}")
-        except Exception as exc:
-            return IngestResult(status="failed", error=str(exc))
+        """POST /ingest with file_path, return IngestResult (classified per phaze-ds1z)."""
+        return await _post_ingest(self._client, self.name, file_path)
 
     async def query(self, file_path: str) -> list[QueryMatch]:
         """POST /query with file_path, return list of QueryMatch."""
@@ -146,14 +177,8 @@ class PanakoAdapter:
         return self._weight
 
     async def ingest(self, file_path: str) -> IngestResult:
-        """POST /ingest with file_path, return IngestResult."""
-        try:
-            resp = await self._client.post("/ingest", json={"file_path": file_path})
-            if resp.status_code == 200:
-                return IngestResult(status="success")
-            return IngestResult(status="failed", error=f"HTTP {resp.status_code}: {resp.text}")
-        except Exception as exc:
-            return IngestResult(status="failed", error=str(exc))
+        """POST /ingest with file_path, return IngestResult (classified per phaze-ds1z)."""
+        return await _post_ingest(self._client, self.name, file_path)
 
     async def query(self, file_path: str) -> list[QueryMatch]:
         """POST /query with file_path, return list of QueryMatch."""
@@ -199,8 +224,11 @@ class FingerprintOrchestrator:
             try:
                 results[engine.name] = await engine.ingest(file_path)
             except Exception as exc:
+                # An adapter that raises out of ``ingest`` is an engine-level fault by
+                # construction (the adapters classify every per-file rejection themselves and
+                # return, never raise), so mark it engine_error -- phaze-ds1z.
                 logger.warning("Engine %s ingest failed: %s", engine.name, exc)
-                results[engine.name] = IngestResult(status="failed", error=str(exc))
+                results[engine.name] = IngestResult(status="failed", error=str(exc), engine_error=True)
         return results
 
     async def combined_query(self, file_path: str) -> list[CombinedMatch]:
