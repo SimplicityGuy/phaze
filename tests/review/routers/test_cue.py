@@ -463,6 +463,97 @@ async def test_generate_cue_write_failure(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_generate_cue_error_preserves_row_on_default_target(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-2w49 (row surface): an error response must NOT delete #cue-row-{id}.
+
+    ``_render_error_toast`` used to return an OOB-only toast fragment at HTTP 200; htmx strips the
+    OOB element before the primary ``outerHTML`` swap runs, so the (now-empty) fragment deletes the
+    row via ``target.remove()``. The fixed response must re-render the row alongside the toast.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, applied=False)
+
+    audio_path = tmp_path / f"{file_record.original_filename}"
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert f'id="cue-row-{tracklist.id}"' in response.text, "the row must survive the error, not be deleted"
+    assert "executed" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_error_preserves_tracklist_card_on_tracklist_target(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-2w49 (tracklist-card surface): HX-Target: tracklist-{id} must keep #tracklist-{id}.
+
+    tracklist_card.html's "Regenerate CUE" button gates only on ``cue_version``, so a routine
+    "must be approved" error is reachable here without the tracklist being re-eligible -- the OOB-
+    only response used to wipe the row silently on this surface.
+    """
+    file_id = uuid.uuid4()
+    file_record = FileRecord(
+        agent_id="test-fileserver",
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path="/music/test.mp3",
+        original_filename="test.mp3",
+        current_path=str(tmp_path / "test.mp3"),
+        file_type="mp3",
+        file_size=50_000_000,
+    )
+    session.add(file_record)
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))
+    (tmp_path / "test.mp3").write_text("fake")
+
+    tracklist = Tracklist(
+        id=uuid.uuid4(),
+        external_id=f"ext-{uuid.uuid4().hex[:8]}",
+        source_url="https://example.com",
+        file_id=file_id,
+        artist="Test",
+        latest_version_id=uuid.uuid4(),
+        source="1001tracklists",
+        status="proposed",  # Not approved
+    )
+    session.add(tracklist)
+    await session.commit()
+
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"tracklist-{tracklist.id}"},
+    )
+    assert response.status_code == 200
+    assert f'id="tracklist-{tracklist.id}"' in response.text, "the tracklist card must survive the error, not be deleted"
+    assert "approved" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_error_preserves_preview_card_on_cue_card_target(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-2w49 (pipeline preview-card surface): HX-Target: cue-card-{id} must keep #cue-card-{id}.
+
+    The write-failure branch is the live path for this surface (its own message expects a retry) --
+    the OOB-only response used to delete the eligible card entirely, leaving no way to retry without
+    a full refresh.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch("phaze.routers.cue.write_cue_file", side_effect=OSError("Permission denied")):
+        response = await client.post(
+            f"/cue/{tracklist.id}/generate",
+            headers={"HX-Target": f"cue-card-{tracklist.id}"},
+        )
+    assert response.status_code == 200
+    assert f'id="cue-card-{tracklist.id}"' in response.text, "the preview card must survive the error, not be deleted"
+    assert "Failed to write CUE file" in response.text
+
+
+@pytest.mark.asyncio
 async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch skips tracklists without timestamps."""
     _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")

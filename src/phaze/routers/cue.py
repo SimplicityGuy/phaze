@@ -260,24 +260,24 @@ async def generate_cue(
     # Validate the file is applied (READ-05/D-01: an executed proposal exists, NOT files.state).
     if file_record is None or not await is_applied(session, file_record.id):
         toast_msg = "File must be executed before generating a CUE sheet. Run the pipeline to move the file to its destination."
-        return _render_error_toast(request, toast_msg)
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     # Validate tracklist is approved
     if tracklist.status != "approved":
         toast_msg = "Tracklist must be approved before generating a CUE sheet."
-        return _render_error_toast(request, toast_msg)
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     # Build CUE tracks
     if not tracklist.latest_version_id:
         toast_msg = "No tracks have timestamps. CUE sheets require track timing data from fingerprinting or 1001Tracklists."
-        return _render_error_toast(request, toast_msg)
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
 
     # Validate at least one track has timestamps
     if not any(t.timestamp_seconds is not None for t in cue_tracks):
         toast_msg = "No tracks have timestamps. CUE sheets require track timing data from fingerprinting or 1001Tracklists."
-        return _render_error_toast(request, toast_msg)
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     # Generate and write CUE file
     audio_path = Path(file_record.current_path)
@@ -286,17 +286,14 @@ async def generate_cue(
         written_path = write_cue_file(content, audio_path)
     except Exception as exc:
         toast_msg = f"Failed to write CUE file: {exc}. Check filesystem permissions on the destination directory."
-        return _render_error_toast(request, toast_msg)
+        return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     # Determine version for toast message
     cue_version = _get_cue_version(file_record.current_path)
     toast_msg = f"CUE file regenerated: {written_path.name} (v{cue_version})" if cue_version > 1 else f"CUE file generated: {written_path.name}"
 
     # Return updated row + OOB toast
-    track_count = 0
-    if tracklist.latest_version_id:
-        count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id))
-        track_count = count_result.scalar() or 0
+    track_count = await _get_track_count(session, tracklist.latest_version_id)
 
     # Detect if request came from tracklist card (HX-Target starts with "tracklist-")
     hx_target = request.headers.get("HX-Target", "")
@@ -401,13 +398,88 @@ async def generate_batch(
     )
 
 
-def _render_error_toast(request: Request, message: str) -> HTMLResponse:
-    """Return an error toast via OOB swap."""
+async def _get_track_count(session: AsyncSession, version_id: uuid.UUID | None) -> int:
+    """Count tracks for a tracklist version (0 if there is none)."""
+    if not version_id:
+        return 0
+    count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == version_id))
+    return count_result.scalar() or 0
+
+
+async def _build_generate_error_card(
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord | None,
+) -> dict[str, Any]:
+    """Rebuild the pipeline preview card's context after a failed generate (phaze-2w49).
+
+    Mirrors the eligibility rule in ``services.review.get_cue_review_cards`` for a single
+    tracklist so the re-rendered card reflects the tracklist's REAL current state: the write-
+    failure branch stays eligible (a genuine retry, matching the error message's own promise),
+    while a data-gap branch (not applied/approved/timestamped) renders the honest gated state
+    instead of a stale APPROVE button.
+    """
+    eligible = False
+    cue_text: str | None = None
+    if file_record is not None and tracklist.status == "approved" and tracklist.latest_version_id and await is_applied(session, file_record.id):
+        cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
+        if any(t.timestamp_seconds is not None for t in cue_tracks):
+            eligible = True
+            cue_text = generate_cue_content(Path(file_record.current_path).name, file_record.file_type, cue_tracks)
+
+    return {
+        "tracklist_id": tracklist.id,
+        "set_name": Path(file_record.current_path).stem if file_record is not None else str(tracklist.id),
+        "eligible": eligible,
+        "cue_text": cue_text,
+    }
+
+
+async def _render_generate_error(
+    request: Request,
+    session: AsyncSession,
+    tracklist: Tracklist,
+    file_record: FileRecord | None,
+    message: str,
+) -> HTMLResponse:
+    """Re-render the surface a failed ``/generate`` targeted, with the error as an OOB toast.
+
+    phaze-2w49: htmx's oobSwap strips the OOB toast element from the response fragment
+    unconditionally, then runs the PRIMARY ``outerHTML`` swap against the now-empty remainder --
+    with no empty-guard, ``swapOuterHTML`` inserts nothing and calls ``target.remove()``. A
+    toast-only 200 therefore deletes the very card/row the toast is complaining about on all three
+    generate surfaces (the pipeline preview card, the tracklist card, and the cue row). Every error
+    branch must re-render its own primary content alongside the toast instead.
+    """
+    hx_target = request.headers.get("HX-Target", "")
+    cue_version = _get_cue_version(file_record.current_path) if file_record is not None else 0
+
+    if hx_target.startswith("cue-card-"):
+        card = await _build_generate_error_card(session, tracklist, file_record)
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_cue_preview.html",
+            context={"request": request, "card": card, "toast_message": message},
+        )
+
+    if hx_target.startswith("tracklist-"):
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/tracklist_card.html",
+            context={"request": request, "tracklist": tracklist, "cue_version": cue_version, "toast_message": message},
+        )
+
+    row_data: dict[str, Any] = {
+        "id": tracklist.id,
+        "artist": tracklist.artist or "Unknown Artist",
+        "event": tracklist.event or "",
+        "date": tracklist.date,
+        "track_count": await _get_track_count(session, tracklist.latest_version_id),
+        "cue_version": cue_version,
+        "source": tracklist.source,
+    }
     return templates.TemplateResponse(
         request=request,
-        name="cue/partials/toast.html",
-        context={
-            "request": request,
-            "message": message,
-        },
+        name="cue/partials/cue_row.html",
+        context={"request": request, "tracklist": row_data, "toast_message": message},
     )
