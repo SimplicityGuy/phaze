@@ -43,11 +43,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
 
-from sqlalchemy import CursorResult, func, select, text, update
+from sqlalchemy import CursorResult, exists, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
 from phaze.config import get_settings
+from phaze.enums.stage import Stage
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import PushFilePayload
@@ -55,8 +56,10 @@ from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
+from phaze.services.pipeline import MUSIC_VIDEO_TYPES
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import clear_ledger_entry
+from phaze.services.stage_status import inflight_clause
 from phaze.tasks.push import PUSH_FILE_SAQ_RETRIES, push_file_saq_timeout_sec
 from phaze.tasks.reconcile_cloud_jobs import _reconcile_one
 from phaze.tasks.release_awaiting_cloud import _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY, push_file_job_key
@@ -277,18 +280,51 @@ class LocalBackend(_BaseBackend):
     """On-prem/all-local backend -- analysis runs on the fileserver agent via ``process_file`` (no cloud_job).
 
     ``is_available`` is unconditionally True (local dispatch needs no remote cloud agent);
-    ``in_flight_count`` is always 0 (a local burst writes NO ``cloud_job`` row); ``reconcile`` is a no-op
-    (local completion is synchronous, no cron read). ``dispatch`` re-homes the ``process_file`` local
-    enqueue path (Phase-69 scheduler uses it; unit-tested here, NOT wired into the single-path drain).
+    ``in_flight_count`` is the REAL ledger-derived running count (phaze-xd8k, see below); ``reconcile``
+    is a no-op (local completion is synchronous, no cron read). ``dispatch`` re-homes the ``process_file``
+    local enqueue path (Phase-69 scheduler uses it; unit-tested here, NOT wired into the single-path drain).
     """
 
     async def is_available(self, session: AsyncSession) -> bool:  # noqa: ARG002 -- protocol signature; local needs no session probe
         """Always True -- local dispatch never depends on a remote cloud agent."""
         return True
 
-    async def in_flight_count(self, session: AsyncSession) -> int:  # noqa: ARG002 -- protocol signature; local holds no cloud_job rows
-        """Always 0 -- a local burst writes no ``cloud_job`` row, so it holds no in-flight cloud slot."""
-        return 0
+    async def in_flight_count(self, session: AsyncSession) -> int:
+        """Return the REAL local-lane running count (phaze-xd8k), not a hardcoded 0.
+
+        A local burst writes NO ``cloud_job`` row, so :class:`_BaseBackend`'s ``cloud_job``-derived
+        COUNT is structurally always 0 for this lane -- that hardcode was the observability bug: the
+        ANALYZE header's ``analyzeActive`` (:func:`phaze.services.stage_status.inflight_clause` on
+        ``Stage.ANALYZE``, the SAME scheduling-ledger ``process_file:<file_id>`` predicate the DAG
+        derives ``analyzeActive`` from, D-01 authoritative source) counts EVERY in-flight ``process_file``
+        job regardless of which agent it was routed to, while this lane rendered a literal 0 even when
+        thousands of files were actively analyzing locally.
+
+        The fix: count music/video files that are ``inflight_clause(ANALYZE)`` (a live
+        ``process_file:<file_id>`` scheduling-ledger row) AND carry NO in-flight ``cloud_job`` row
+        (D-10's ``{UPLOADING, UPLOADED, SUBMITTED, RUNNING}`` set). A cloud-routed file's ``process_file``
+        is enqueued on ITS agent under the SAME deterministic ledger key
+        (:func:`phaze.services.analysis_enqueue.process_file_job_key`), so the ledger key alone cannot
+        distinguish "local" from "cloud" -- the ``~exists(cloud_job in-flight)`` exclusion is what carves
+        out the local-only slice: a compute/kueue file either has no ``cloud_job`` row yet (still
+        pre-stage) or still carries its in-flight ``cloud_job`` row while its ``process_file`` runs
+        remotely (kueue's Job IS its ``process_file`` execution; compute's row stays SUBMITTED until the
+        ``/pushed`` callback flips it, well past when ITS ledger row would appear). The one known gap
+        (documented, not fixed here -- out of phaze-xd8k's scope): a COMPUTE file's ``cloud_job`` row is
+        terminalized SUCCEEDED by ``report_pushed`` in the SAME transaction that enqueues its remote
+        ``process_file`` (``routers/agent_push.py``), so for the brief window a compute agent is actually
+        running analysis, this lane's real-count query cannot distinguish it from a genuinely local file
+        and would over-count local by that amount. Harmless where no ``compute`` backend is configured
+        (this bug's confirmed scenario: local + kueue only) and bounded by compute lane concurrency caps
+        elsewhere.
+        """
+        stmt = (
+            select(func.count(FileRecord.id))
+            .where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES))
+            .where(inflight_clause(Stage.ANALYZE))
+            .where(~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_([status.value for status in IN_FLIGHT]))))
+        )
+        return int((await session.execute(stmt)).scalar() or 0)
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
         """Flip ``file`` to LOCAL_ANALYZING then enqueue ``process_file`` on the fileserver queue -- one txn, no commit.
