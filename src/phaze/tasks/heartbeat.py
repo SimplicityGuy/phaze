@@ -49,6 +49,34 @@ from phaze.services.agent_client import AgentApiError
 logger = structlog.get_logger(__name__)
 
 
+BEAT_TIMEOUT_SECONDS = float(AGENT_HEARTBEAT_INTERVAL_SECONDS)
+"""Hard deadline on ONE beat (phaze-kaf2).
+
+Deliberately a SEPARATE constant from ``AGENT_HEARTBEAT_INTERVAL_SECONDS`` rather than
+reusing it inline, even though it takes the same default. Cadence ("how often do we
+beat") and deadline ("how long may one beat take") are different concerns: tuning the
+cadence -- or patching it to 0 to make a test fast -- must never silently disable the
+hang protection this bead exists to add.
+"""
+
+QUEUE_INFO_TIMEOUT_SECONDS = 5.0
+"""Hard deadline on ``Queue.info()`` (phaze-kaf2).
+
+The broker read is a NICE-TO-HAVE enrichment of the heartbeat, not its purpose. A
+psycopg pool acquire that never returns must degrade ``queue_depth`` to 0, never delay
+the POST that keeps the agent alive. Kept far below
+``AGENT_HEARTBEAT_INTERVAL_SECONDS`` so a slow broker cannot eat the whole tick.
+"""
+
+HEARTBEAT_INFO_LOG_EVERY = 20
+"""Emit one INFO every Nth beat (phaze-kaf2).
+
+Success was DEBUG-only, so a frozen loop and a healthy loop produced byte-identical
+logs (nothing) -- during the 2026-07-18 nox incident there was no way to tell them
+apart. At the 30s cadence this is ~1 line / 10 min: readable, not a flood.
+"""
+
+
 async def send_heartbeat(ctx: dict[str, Any]) -> None:
     """POST one agent heartbeat from the current worker state.
 
@@ -72,8 +100,17 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
     # ticks, so read ctx["worker"] lazily INSIDE the try and degrade to 0.
     try:
         queue = ctx["worker"].queue
-        info = await queue.info()
+        # phaze-kaf2: `queue.info()` is UNBOUNDED without this deadline. A hung psycopg
+        # pool acquire/query blocks here forever; the except-Exception below only fires
+        # on a RAISE, never on a hang, so the beat silently never completes and the agent
+        # is classified DEAD while still processing jobs.
+        info = await asyncio.wait_for(queue.info(), timeout=QUEUE_INFO_TIMEOUT_SECONDS)
         queue_depth = int(info.get("queued", 0))
+    except TimeoutError:
+        # Distinct from the generic failure below: a HANG is the phaze-kaf2 signature and
+        # an operator needs to see it named, not folded into "queue.info() failed".
+        logger.warning("heartbeat: queue.info() timed out after %.1fs; defaulting depth to 0", QUEUE_INFO_TIMEOUT_SECONDS)
+        queue_depth = 0
     except Exception:
         # Defensive: any queue error (worker not attached, SAQ internal change,
         # broker blip) must NOT crash the heartbeat. Default to 0; log + still POST.
@@ -84,6 +121,9 @@ async def send_heartbeat(ctx: dict[str, Any]) -> None:
         agent_version=importlib.metadata.version("phaze"),
         worker_pid=os.getpid(),
         queue_depth=queue_depth,
+        # phaze-30fo: tag the beat with THIS worker's lane so the control plane can keep a
+        # per-lane breakdown and sum an honest all-lane depth. None in all-mode (no split).
+        lane=ctx.get("agent_lane"),
     )
     try:
         await client.heartbeat(payload)
@@ -102,15 +142,33 @@ async def _heartbeat_loop(ctx: dict[str, Any]) -> None:
     ``worker_max_jobs`` slots. Each iteration is wrapped so a single failed beat
     never kills the loop (a dead loop = a silently DEAD agent);
     ``asyncio.CancelledError`` is re-raised so shutdown can cancel + await cleanly.
+
+    phaze-kaf2 -- the try/except above catches RAISES, not HANGS. An ``await`` that never
+    returns is not an exception, so before the per-iteration deadline below a single
+    wedged await froze liveness permanently with zero log evidence while the worker kept
+    processing jobs. ``asyncio.wait_for`` bounds every beat: a hung one is cancelled,
+    named in the log, and the NEXT tick still fires.
     """
+    beats = 0
     while True:
         try:
-            await send_heartbeat(ctx)
+            await asyncio.wait_for(send_heartbeat(ctx), timeout=BEAT_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            # The phaze-kaf2 failure mode, now survivable and visible. WARNING (not DEBUG):
+            # silence is exactly what made the original incident unreadable.
+            logger.warning("heartbeat timed out after %ss; cancelled, continuing", BEAT_TIMEOUT_SECONDS)
         except Exception:
             # One bad iteration must not kill the loop -- log and keep ticking.
             logger.warning("heartbeat loop iteration failed; continuing", exc_info=True)
+
+        beats += 1
+        if beats % HEARTBEAT_INFO_LOG_EVERY == 0:
+            # Proof-of-life an operator can grep. Distinguishes "loop alive" from
+            # "loop dead", which DEBUG-only success logging could not.
+            logger.info("heartbeat loop alive", beats=beats, interval_seconds=AGENT_HEARTBEAT_INTERVAL_SECONDS)
+
         await asyncio.sleep(AGENT_HEARTBEAT_INTERVAL_SECONDS)
 
 

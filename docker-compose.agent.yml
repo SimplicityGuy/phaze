@@ -26,7 +26,13 @@
 # CPU budget (nox = 8 cores): analyze(4) + fingerprint(2) = 6 CPU-bound slots, leaving
 # headroom for the fast meta lane + sidecars + OS. essentia/TF are pinned single-threaded
 # (OMP_NUM_THREADS=1, TF intra/inter-op=1) on the CPU lanes so one slot ≈ one core.
-# EXACTLY ONE heartbeat per agent: PHAZE_AGENT_HEARTBEAT=true only on worker-analyze.
+# EVERY lane worker heartbeats (PHAZE_AGENT_HEARTBEAT=true on all four), each tagging its
+# own lane (phaze-30fo). This REPLACES the former "exactly one heartbeat per agent, on
+# worker-analyze" rule: that pinned the agent's whole liveness signal -- and its work-routing
+# rank, via select_active_agent's ORDER BY last_seen_at DESC -- to a single process, so one
+# stalled analyze worker marked the agent DEAD and cost it routing while its other three
+# lanes were busy. The control plane keeps max(last_seen) and a per-lane depth breakdown.
+# worker-drain stays false: it is unlaned (all-mode), so its beat carries no lane tag.
 #
 # Invariants (asserted by tests/agents/deployment/test_agent_compose.py):
 #   - No DATABASE_URL on any service (DIST-04: agents reach Postgres only via
@@ -74,7 +80,7 @@ services:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_LANE=fingerprint
       - PHAZE_LANE_FINGERPRINT_CONCURRENCY=${PHAZE_LANE_FINGERPRINT_CONCURRENCY:-2}
-      - PHAZE_AGENT_HEARTBEAT=false
+      - PHAZE_AGENT_HEARTBEAT=true
       # CPU-bound lane (drives the panako/audfprint sidecars): pin threads for an honest budget.
       - OMP_NUM_THREADS=1
       - TF_NUM_INTRAOP_THREADS=1
@@ -93,7 +99,7 @@ services:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_LANE=meta
       - PHAZE_LANE_META_CONCURRENCY=${PHAZE_LANE_META_CONCURRENCY:-2}
-      - PHAZE_AGENT_HEARTBEAT=false
+      - PHAZE_AGENT_HEARTBEAT=true
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:rw"
@@ -108,7 +114,7 @@ services:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_LANE=io
       - PHAZE_LANE_IO_CONCURRENCY=${PHAZE_LANE_IO_CONCURRENCY:-4}
-      - PHAZE_AGENT_HEARTBEAT=false
+      - PHAZE_AGENT_HEARTBEAT=true
       # Network-bound (httpx multipart PUT + rsync-over-SSH): off the CPU budget, no thread pinning.
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
@@ -121,7 +127,9 @@ services:
   # queue only DRAINS (never grows). This all-mode consumer (PHAZE_AGENT_LANE UNSET -> all 8
   # functions, base queue) finishes any in-flight legacy job IN PLACE, so a running multi-hour
   # process_file is NOT re-enqueued (no duplicate-active hazard). PHAZE_AGENT_HEARTBEAT=false
-  # so it never competes with worker-analyze's heartbeat. Bring it up ONLY during the migration:
+  # because this consumer is UNLANED: an untagged beat is persisted verbatim and would wipe
+  # the per-lane `lanes` breakdown the four lane workers maintain (phaze-30fo). Bring it up
+  # ONLY during the migration:
   #   docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain
   # Remove it once `phaze-agent-nox` reports 0 queued + 0 active (see docs/agent-queue-lanes.md).
   worker-drain:

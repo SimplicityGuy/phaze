@@ -257,3 +257,6 @@ src/phaze/static/css/app.css
 
 # beads issue tracker — local Dolt-backed store, not versioned in git
 .beads/
+
+# Local repowise index/tool state -- not project source.
+.repowise/
