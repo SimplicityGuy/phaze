@@ -51,3 +51,9 @@ def load_service_module(service: str, unique_name: str) -> ModuleType:
 def audfprint_app() -> ModuleType:
     """The ``services/audfprint/app.py`` module, freshly loaded per test."""
     return load_service_module("audfprint", "phaze_test_services_audfprint_app")
+
+
+@pytest.fixture
+def panako_app() -> ModuleType:
+    """The ``services/panako/app.py`` module, freshly loaded per test."""
+    return load_service_module("panako", "phaze_test_services_panako_app")

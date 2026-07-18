@@ -82,6 +82,78 @@ jobs:
           docker run --rm "phaze-validate-api:ci" \
             uv run python -c "import phaze.main; print('✅ import phaze.main OK — native backends (psycopg/essentia) load on the slim base')"
 
+      # Fingerprint smoke for the panako image (phaze-vp07). A green `docker build` did
+      # NOT prove this image works: 2026.7.7 shipped with a 0-byte COPY layer and no
+      # /app/panako.jar at all (the glob `Panako-*-all.jar` never matched the actual
+      # lowercase `panako-2.1-all.jar`), so every /ingest 500'd in production while
+      # /health still reported "healthy". This step asserts the jar is really present
+      # AND drives a real store+query round trip through the HTTP API.
+      - name: 🎧 Fingerprint smoke — panako stores and queries a fixture
+        if: matrix.name == 'panako'
+        run: |
+          set -euo pipefail
+
+          echo "🔎 Asserting the shaded jar is a non-empty, extractable file..."
+          cid="$(docker create phaze-validate-panako:ci)"
+          docker cp "${cid}:/app/panako.jar" ./panako-extracted.jar
+          docker rm -f "${cid}" >/dev/null
+          jar_bytes="$(stat -c%s ./panako-extracted.jar)"
+          echo "   /app/panako.jar = ${jar_bytes} bytes"
+          # The exact 2026.7.7 regression: a zero-match glob COPY yields an EMPTY layer.
+          test "${jar_bytes}" -gt 1000000 \
+            || { echo "::error::/app/panako.jar is missing or implausibly small (${jar_bytes} bytes)"; exit 1; }
+
+          echo "🚀 Starting the panako sidecar..."
+          docker run -d --name panako-smoke -p 18002:8002 phaze-validate-panako:ci
+
+          echo "⏳ Waiting for the service to answer..."
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://localhost:18002/health; then break; fi
+            sleep 2
+          done
+
+          echo "🩺 /health must report healthy on a correctly built image..."
+          health="$(curl -fsS http://localhost:18002/health)"
+          echo "   ${health}"
+          echo "${health}" | grep -q '"status":"healthy"' \
+            || { echo "::error::/health did not report healthy"; docker logs panako-smoke; exit 1; }
+
+          # Build a broadband fixture in-container. Panako's Olaf strategy needs real
+          # spectral peaks; a narrowband synthetic tone yields zero fingerprints.
+          echo "🎼 Generating the fixture clip..."
+          docker exec -u root panako-smoke sh -c \
+            'mkdir -p /audio && ffmpeg -v error -f lavfi -i "anoisesrc=d=25:c=pink:r=44100:a=0.5" \
+               -f lavfi -i "sine=frequency=440:r=44100:d=25" \
+               -filter_complex "[0][1]amix=inputs=2:duration=shortest,tremolo=f=2:d=0.7" \
+               -ac 1 -ar 44100 /audio/smoke.wav -y'
+
+          echo "📥 POST /ingest ..."
+          ingest="$(curl -fsS -X POST http://localhost:18002/ingest \
+            -H 'Content-Type: application/json' -d '{"file_path":"/audio/smoke.wav"}')"
+          echo "   ${ingest}"
+          echo "${ingest}" | grep -q '"status":"ingested"' \
+            || { echo "::error::/ingest did not succeed"; docker logs panako-smoke; exit 1; }
+
+          echo "🔍 POST /query — the stored clip must match itself..."
+          query="$(curl -fsS -X POST http://localhost:18002/query \
+            -H 'Content-Type: application/json' -d '{"file_path":"/audio/smoke.wav"}')"
+          echo "   ${query}"
+          # A real self-match returns the stored path. The null-sentinel row that Panako
+          # emits for "no match" is filtered out by the parser, so an empty match list
+          # here means the store genuinely did not persist any fingerprints.
+          echo "${query}" | grep -q '/audio/smoke.wav' \
+            || { echo "::error::/query returned no self-match — store did not persist fingerprints"; docker logs panako-smoke; exit 1; }
+
+          echo "🧪 /health must go UNHEALTHY when the jar is removed (the outage scenario)..."
+          docker exec -u root panako-smoke rm -f /app/panako.jar
+          code="$(curl -s -o /tmp/h.json -w '%{http_code}' http://localhost:18002/health)"
+          echo "   HTTP ${code} $(cat /tmp/h.json)"
+          test "${code}" = "503" \
+            || { echo "::error::/health still reported OK with the jar removed"; exit 1; }
+
+          docker rm -f panako-smoke >/dev/null
+          echo "✅ panako fingerprint smoke passed"
+
   validate-docker-compose:
     runs-on: ubuntu-latest
     timeout-minutes: 5
