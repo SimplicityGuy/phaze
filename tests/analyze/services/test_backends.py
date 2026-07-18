@@ -1393,3 +1393,269 @@ async def test_local_dispatch_leaves_awaiting_row_present(session: AsyncSession)
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
     assert job is not None  # LocalBackend did NOT delete the inert awaiting row (D-13)
     assert job.status == CloudJobStatus.AWAITING.value  # nor re-write it
+
+
+# === phaze-ul2v: the stranded-staging reaper ({UPLOADING, UPLOADED} age bound) ============
+#
+# in_flight_count counts {UPLOADING, UPLOADED, SUBMITTED, RUNNING} (D-10), but reconcile only ever
+# SELECTED {SUBMITTED, RUNNING}. The staging half is terminalized solely by the agent HTTP callbacks
+# (report_uploaded / report_upload_failed), so a dead agent or a lost s3_upload SAQ job strands the row
+# forever and permanently leaks a burst-lane cap slot. These cells pin the safety net: it fires past the
+# age bound (both states), decrements in_flight_count, and NEVER fires on a young row.
+
+
+async def _seed_staging_cloud_job(
+    session: AsyncSession,
+    *,
+    backend_id: str,
+    status: CloudJobStatus,
+    age_sec: int,
+    staging_bucket: str | None = None,
+    upload_id: str | None = None,
+) -> uuid.UUID:
+    """Insert one staging cloud_job row aged ``age_sec`` into the past; return the file id.
+
+    ``updated_at`` is DB-managed (``onupdate=func.now()``), so the age is forced with a raw UPDATE
+    AFTER the insert -- the reaper reads exactly that column.
+    """
+    from sqlalchemy import text as sa_text
+
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            backend_id=backend_id,
+            s3_key=f"staging/{file.id}",
+            status=status.value,
+            upload_id=upload_id,
+            staging_bucket=staging_bucket,
+        )
+    )
+    await session.commit()
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(secs => :age) WHERE file_id = :fid"),
+        {"age": age_sec, "fid": file.id},
+    )
+    await session.commit()
+    return file.id
+
+
+async def _cloud_job_for(session: AsyncSession, file_id: uuid.UUID) -> Any:
+    from sqlalchemy import select
+
+    session.expire_all()
+    return (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reaps_stranded_uploading_row_and_frees_the_cap_slot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-ul2v: an UPLOADING row older than the bound (agent job gone) spills to awaiting + frees its slot.
+
+    The bug: the fileserver agent dies mid-upload, so neither ``/uploaded`` nor ``/failed`` ever fires.
+    Pre-fix, reconcile selected only {SUBMITTED, RUNNING}, so this row sat UPLOADING forever while
+    ``in_flight_count`` kept counting it -- a permanently leaked burst-lane cap slot. Post-fix the age-bounded
+    reaper re-stamps it to ``'awaiting'`` (deliberately OUT of IN_FLIGHT), so the count drops to 0.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    assert await backend.in_flight_count(session) == 1  # the leaked slot, pre-reap
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1
+    row = await _cloud_job_for(session, file_id)
+    assert row.status == CloudJobStatus.AWAITING.value  # spilled back onto the drain
+    assert row.cloud_phase is None  # cleared off the "Running" tile (D-12)
+    assert row.attempts == 1  # one re-drive attempt SPENT -> the loop is bounded
+    assert await backend.in_flight_count(session) == 0  # the cap slot is released
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reaps_stranded_uploaded_row_with_no_submit(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-ul2v: an UPLOADED row whose ``submit_cloud_job`` was lost also spills within its (tighter) bound.
+
+    ``report_uploaded`` enqueues the submit in the same transaction that flips UPLOADED, so an UPLOADED row
+    should reach SUBMITTED within one controller hop. A row still UPLOADED long after that means the submit
+    was lost -- and, pre-fix, it held a cap slot forever exactly like the UPLOADING case.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    # 3600s: past the 900s UPLOADED bound but well UNDER the 21600s UPLOADING bound -- so this cell also
+    # proves the two bounds are read per-status, not shared.
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=3_600)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1
+    row = await _cloud_job_for(session, file_id)
+    assert row.status == CloudJobStatus.AWAITING.value
+    assert await backend.in_flight_count(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_never_reaps_a_staging_row_younger_than_its_bound(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-ul2v ACCEPTANCE: the callback path stays PRIMARY -- the reaper never fires inside the bound.
+
+    A multi-GB multipart upload legitimately transfers for hours while bumping no timestamp, and an
+    UPLOADED row is normally submitted within seconds. Both young rows here MUST be left completely alone
+    so the in-flight agent callback is the one that terminalizes them.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    uploading_fid = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=3_600)
+    uploaded_fid = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=60)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # nothing reaped
+    assert (await _cloud_job_for(session, uploading_fid)).status == CloudJobStatus.UPLOADING.value
+    assert (await _cloud_job_for(session, uploaded_fid)).status == CloudJobStatus.UPLOADED.value
+    assert await backend.in_flight_count(session) == 2  # both still hold their slots, as they should
+
+
+@pytest.mark.asyncio
+async def test_reap_scopes_to_own_backend_id(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reaper is backend_id-scoped like the rest of reconcile: a sibling backend's row is untouched."""
+    _stub_kube_available(monkeypatch)
+    other_fid = await _seed_staging_cloud_job(session, backend_id="kueue-other", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    tally = await _kueue(id="kueue-x64").reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0
+    assert (await _cloud_job_for(session, other_fid)).status == CloudJobStatus.UPLOADING.value
+
+
+@pytest.mark.asyncio
+async def test_reap_cleans_up_the_staged_s3_object_and_multipart(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """A reaped row with a RECORDED staging bucket aborts its multipart + deletes the object (KSTAGE-04).
+
+    Mirrors ``report_upload_failed``'s over-cap spill: the spill re-stages from scratch, so leaving the
+    half-finished multipart and the staged object behind would leak both.
+    """
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-xyz",
+    )
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1
+    assert abort.await_count == 1
+    assert delete.await_count == 1
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
+@pytest.mark.asyncio
+async def test_reap_loses_the_race_to_a_live_callback_and_takes_a_full_noop(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-ul2v ACCEPTANCE: the happy-path callback WINS the race -- the reaper's CAS misses and it no-ops.
+
+    Simulates ``report_uploaded`` landing between the reaper's read and its update: the row advances out of
+    the OBSERVED status, the ``expect_status``-pinned CAS in ``hold_awaiting_cloud`` matches 0 rows, and the
+    reaper must take a FULL no-op -- crucially NO S3 cleanup, since the callback's burst now owns the object.
+    """
+    from sqlalchemy import update as sa_update
+
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-xyz",
+    )
+
+    real_hold = backends.hold_awaiting_cloud
+
+    async def _callback_wins_first(*args: Any, **kwargs: Any) -> bool:
+        # The "callback": advance the row out of UPLOADING in a sibling transaction-visible write, then
+        # let the REAL CAS run -- it now matches 0 rows exactly as it would in production.
+        await session.execute(sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUBMITTED.value))
+        return await real_hold(*args, **kwargs)
+
+    monkeypatch.setattr(backends, "hold_awaiting_cloud", _callback_wins_first)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # the reaper lost the race and did nothing
+    assert abort.await_count == 0  # FULL no-op: no cleanup of an object the live burst owns
+    assert delete.await_count == 0
+    assert (await _cloud_job_for(session, file_id)).status != CloudJobStatus.AWAITING.value
+
+
+@pytest.mark.asyncio
+async def test_reap_per_row_guard_survives_a_bad_row(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One exploding row never aborts the sweep (per-row rollback guard, mirroring reconcile's)."""
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    monkeypatch.setattr(backends, "hold_awaiting_cloud", AsyncMock(side_effect=RuntimeError("boom")))
+
+    tally = await backend.reconcile(session)  # must NOT raise
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_a_row_that_left_staging_between_snapshot_and_reread(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A row terminalized by a callback AFTER the sweep's snapshot is re-read fresh and skipped.
+
+    The sweep captures primitive ids up front, then re-reads each row inside the loop precisely so a
+    callback landing mid-sweep is honoured. Here the row advances to SUCCEEDED between snapshot and
+    re-read: the reaper must drop it without ever reaching the CAS.
+    """
+    from sqlalchemy import update as sa_update
+
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    real_get = session.get
+
+    async def _advance_then_get(entity: Any, ident: Any, **kwargs: Any) -> Any:
+        await session.execute(sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.SUCCEEDED.value))
+        session.expire_all()
+        return await real_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", _advance_then_get)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0
+    monkeypatch.undo()
+    # The skip branch rolls back (releasing the xact lock), which also undoes this cell's simulated
+    # mid-sweep advance -- the load-bearing assertion is that the reaper NEVER spilled the row.
+    assert (await _cloud_job_for(session, file_id)).status != CloudJobStatus.AWAITING.value

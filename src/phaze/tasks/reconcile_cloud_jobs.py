@@ -35,6 +35,7 @@ narrow, in-flight K8s reconcile ONLY (mirror the ``controller.py`` cron-scope gu
 from __future__ import annotations
 
 import contextlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
@@ -70,6 +71,39 @@ _TYPE_EVICTED = "Evicted"
 _REASON_PENDING = "Pending"
 _REASON_INADMISSIBLE = "Inadmissible"
 
+# phaze-1b39 defense-in-depth: how long past the Job's own ``activeDeadlineSeconds`` an in-flight row
+# may sit with no terminal signal before reconcile terminalizes it itself. The deadline is the PRIMARY
+# recovery mechanism (k8s fails the Job -> the existing no-callback-terminal path recovers it); this
+# slack window only covers the cases where that signal never arrives at all -- the kube API dropping the
+# Job, a Workload wedged Admitted with no pod, or a phantom row whose Job was never recorded. Generous
+# on purpose (15 min > 3 reconcile ticks) so a merely-slow terminal signal is never mistaken for a hang.
+RUNNING_STALENESS_SLACK_SECONDS = 900
+
+
+def _staleness_cutoff_seconds(kube: KubeConfig) -> int:
+    """Age past which an in-flight row with no terminal signal is treated as hung (deadline + slack)."""
+    return kube.active_deadline_seconds + RUNNING_STALENESS_SLACK_SECONDS
+
+
+def _row_age_seconds(cloud_job: CloudJob) -> float:
+    """Seconds since the row's last state transition (``updated_at``), the in-flight staleness clock.
+
+    ``updated_at`` carries ``onupdate=func.now()``, which fires ONLY on a real UPDATE -- and every
+    in-flight branch below mutates only when a field actually changes -- so a row re-affirmed RUNNING
+    tick after tick keeps the timestamp of the transition INTO RUNNING. That is exactly the "how long
+    has this been running" clock we want; a genuinely progressing row re-stamps it on each transition.
+
+    models/base.py declares the timestamp columns without ``timezone=True``, so ``create_all`` yields
+    naive datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the row's
+    awareness (assume-UTC, the scan_reaper / release_awaiting_cloud convention) so the subtraction can
+    never raise inside the cron.
+    """
+    now = datetime.now(UTC)
+    updated = cloud_job.updated_at
+    if updated.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    return (now - updated).total_seconds()
+
 
 def _job_counter(job: Any, key: str) -> int:
     """Read an integer ``status`` counter (``succeeded``/``failed``) off a Job, defaulting to 0.
@@ -99,7 +133,7 @@ def _workload_condition(workload: Any, cond_type: str) -> dict[str, Any] | None:
     return None
 
 
-async def _job_gone(name: str, kube: KubeConfig) -> bool:
+async def _job_gone(name: str | None, kube: KubeConfig) -> bool:
     """Return whether the Job ``name`` is gone (deleted) on ``kube``'s cluster -- ``get_job`` returns None or 404s.
 
     The re-drive race guard (D-08): after ``delete_job`` we confirm the prior Job is GONE before
@@ -107,7 +141,12 @@ async def _job_gone(name: str, kube: KubeConfig) -> bool:
     409->refresh inside ``submit_job`` would re-acquire the still-present Failed Job and the next tick
     would re-see Failed and burn an extra attempt. A real ``get_job`` raises ``NotFoundError`` on a 404
     (the desired end state); the fake-kube seam returns None.
+
+    phaze-1b39: a phantom row (``kueue_workload IS NULL``) has no Job to wait on -- nothing can
+    409->refresh under us -- so it is trivially gone.
     """
+    if name is None:
+        return True
     try:
         job = await kube_staging.get_job(name, kube)
     except kr8s.NotFoundError:
@@ -142,7 +181,7 @@ async def _enqueue_resubmit(ctx: dict[str, Any], file_id: uuid.UUID) -> None:
     await queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
 
 
-async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str, tally: dict[str, int], kube: KubeConfig) -> None:
+async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str | None, tally: dict[str, int], kube: KubeConfig) -> None:
     """Succeeded Job: record SUCCEEDED + COMMIT, THEN delete the Job on ``kube``'s cluster (D-04). No S3 delete, no result.
 
     The analysis result already landed via the ``/api/internal/agent/*`` callback (KSUBMIT-03), which
@@ -154,7 +193,8 @@ async def _record_success(session: AsyncSession, cloud_job: CloudJob, name: str,
     cloud_job.inadmissible = False  # CR-01: a transiently-Inadmissible row that then succeeds must clear the alert flag.
     cloud_job.cloud_phase = CloudPhase.FINISHED.value  # D-04: admission progression terminus (orthogonal to the fault flag).
     await session.commit()
-    await kube_staging.delete_job(name, kube)
+    if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
+        await kube_staging.delete_job(name, kube)
     tally["succeeded"] += 1
 
 
@@ -162,7 +202,7 @@ async def _handle_no_callback_terminal(
     ctx: dict[str, Any],
     session: AsyncSession,
     cloud_job: CloudJob,
-    name: str,
+    name: str | None,
     cap: int,
     tally: dict[str, int],
     kube: KubeConfig,
@@ -255,7 +295,8 @@ async def _handle_no_callback_terminal(
         cloud_job.inadmissible = False  # terminal row must not keep the operator alert lit (helper does not stamp it).
         cloud_job.staging_bucket = None  # clear so no pre-repurpose reader is misled about the (now-gone) object.
         await session.commit()  # releases the per-row lock -- the old object is ALREADY gone (clean-before-flip).
-        await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
+        if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
+            await kube_staging.delete_job(name, kube)  # Job delete stays POST-commit (D-04 status-read-vs-GC; cleanup only).
         tally["failed"] += 1
         logger.warning(
             "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
@@ -266,7 +307,8 @@ async def _handle_no_callback_terminal(
         return
 
     # Under cap -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
-    await kube_staging.delete_job(name, kube)
+    if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
+        await kube_staging.delete_job(name, kube)
     if not await _job_gone(name, kube):
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
@@ -288,8 +330,29 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     """
     name = cloud_job.kueue_workload
     if not name:
-        logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
-        await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
+        # phaze-1b39: this row has no Job to read, so NO terminal signal can EVER arrive for it -- the
+        # pre-fix behaviour (warn + skip) re-logged the same line every tick forever while the row kept
+        # its burst-lane cap slot: a permanent phantom. Bound it by age. Fresh (a submit that crashed
+        # between the row insert and the workload stamp, or is mid-flight right now) -> hold quietly as
+        # before, so a live submit is never stolen. Past the staleness cutoff -> terminalize through the
+        # SAME no-callback path everything else uses (bounded re-drive under cap, spill to local at cap),
+        # which is what returns the cap slot without operator surgery.
+        if _row_age_seconds(cloud_job) <= _staleness_cutoff_seconds(kube):
+            logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
+            await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
+            return
+        logger.warning(
+            "reconcile_cloud_jobs: cloud_job missing kueue_workload past staleness bound -- terminalizing phantom row",
+            cloud_job_id=str(cloud_job.id),
+            file_id=str(cloud_job.file_id),
+            age_seconds=int(_row_age_seconds(cloud_job)),
+        )
+        if await _analysis_completed(session, cloud_job.file_id):
+            # The callback landed anyway (it keys off file_id, not the Job) -- finalize as the success it
+            # is rather than re-driving an already-analyzed file. name=None: there is no Job to delete.
+            await _record_success(session, cloud_job, None, tally, kube)
+            return
+        await _handle_no_callback_terminal(ctx, session, cloud_job, None, cap, tally, kube)
         return
 
     # WR-01: a vanished Job (real kube 404 -> NotFoundError; fake seam -> None) on an in-flight row is a
@@ -367,6 +430,25 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     admitted_true = admitted is not None and admitted.get("status") == "True"
     quota_true = quota_reserved is not None and quota_reserved.get("status") == "True"
     if admitted_true or quota_true:
+        # phaze-1b39 defense-in-depth, BEFORE the RUNNING re-affirm. Admission state alone says nothing
+        # about progress: an admitted Workload whose pod never runs (ImagePullBackOff /
+        # CreateContainerConfigError from a missing operator ConfigMap/Secret, a hung analyze, a
+        # black-holed callback) leaves the Job non-terminal, so the branch below would stamp RUNNING and
+        # return -- every tick, forever -- while the row holds its burst-lane cap slot. The Job's own
+        # activeDeadlineSeconds is the PRIMARY fix (k8s marks it Failed, handled above); this is the
+        # backstop for when that signal never reaches us. Past deadline+slack with NO analysis result,
+        # treat the row as a no-callback terminal so the existing re-drive/spill path recovers the slot.
+        if _row_age_seconds(cloud_job) > _staleness_cutoff_seconds(kube) and not await _analysis_completed(session, cloud_job.file_id):
+            logger.warning(
+                "reconcile_cloud_jobs: in-flight row exceeded activeDeadlineSeconds + slack with no terminal signal -- terminalizing",
+                cloud_job_id=str(cloud_job.id),
+                file_id=str(cloud_job.file_id),
+                kueue_workload=name,
+                age_seconds=int(_row_age_seconds(cloud_job)),
+                cutoff_seconds=_staleness_cutoff_seconds(kube),
+            )
+            await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
+            return
         # D-04 admission progression (ORTHOGONAL to the status advance): Admitted=True means the pod
         # is un-gated and running -> RUNNING; QuotaReserved-only (quota granted, not yet un-suspended)
         # is the intermediate ADMITTED phase. The cloud_job ``status`` axis still advances to RUNNING
