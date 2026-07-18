@@ -20,12 +20,13 @@
                 {{ result.confidence }}%
             </span>
         </div>
-        <form hx-post="/tracklists/{{ result.tracklist_id }}/link"
+        <form hx-post="/tracklists/link-result"
               hx-target="#tracklists-list"
               hx-swap="innerHTML"
               class="inline">
             <input type="hidden" name="file_id" value="{{ file_id }}">
-            <input type="hidden" name="confidence" value="{{ result.confidence }}">
+            <input type="hidden" name="external_id" value="{{ result.external_id }}">
+            <input type="hidden" name="url" value="{{ result.url }}">
             <button type="submit"
                     class="text-xs bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600 text-white font-semibold px-3 py-1 rounded-md">
                 Link Tracklist
