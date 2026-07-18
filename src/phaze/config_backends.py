@@ -190,6 +190,17 @@ class KubeConfig(BaseModel):
     # PV/PVC and references the claim by name only. Unset (None) -> no models volume/mount is emitted
     # (byte-identical manifest, current behavior). The PVC carries ONLY model weights -- never secrets/certs.
     models_pvc_name: str | None = None
+    # phaze-1b39: the Job-level wall-clock bound, emitted as ``spec.activeDeadlineSeconds`` by
+    # ``build_job_manifest``. LOAD-BEARING, not cosmetic: ``job_runner``'s exit-code contract
+    # (job_runner.py:17-19) explicitly delegates ALL wall-clock bounding to this deadline (the analyze
+    # stage runs with ``timeout=None``), and the reconcile loop derives RUNNING purely from Kueue
+    # admission state -- so without it an admitted-but-stalled pod (ImagePullBackOff /
+    # CreateContainerConfigError from a missing operator ConfigMap/Secret, a hung essentia analyze, a
+    # black-holed callback) is NEVER terminal and occupies its burst-lane cap slot forever.
+    # ``activeDeadlineSeconds`` makes k8s SIGTERM the pod and mark the Job Failed, which routes the row
+    # into the existing ``_handle_no_callback_terminal`` re-drive/spill recovery. Default 3h -- comfortably
+    # above a worst-case long analyze, far below "forever". Per-backend so a slow cluster can raise it.
+    active_deadline_seconds: int = Field(default=10800, gt=0)
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
 

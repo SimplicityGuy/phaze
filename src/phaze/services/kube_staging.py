@@ -143,6 +143,9 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     ``parallelism/completions: 1``, ``backoffLimit: 0`` (KSUBMIT-05 -- the first pod failure is
     immediately terminal; pod-level retry neutralized, control plane owns retry),
     ``ttlSecondsAfterFinished`` = ``JOB_TTL_SECONDS`` (D-04 orphan backstop only),
+    ``activeDeadlineSeconds`` = ``kube.active_deadline_seconds`` (phaze-1b39 -- the pipeline's ONLY
+    wall-clock bound; job_runner delegates all of it here and ttlSecondsAfterFinished cannot help a
+    Job that never finishes),
     ``restartPolicy: Never``, the ``kueue.x-k8s.io/queue-name`` label ON THE JOB (Kueue reads it
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
@@ -200,6 +203,14 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             "parallelism": 1,
             "completions": 1,
             "backoffLimit": 0,
+            # phaze-1b39: the ONLY wall-clock bound in the whole pipeline. job_runner's exit-code
+            # contract delegates all wall-clock bounding here (the analyze stage runs timeout=None), and
+            # ttlSecondsAfterFinished below only fires AFTER a Job finishes -- so it can never rescue a
+            # Job that never finishes. Without activeDeadlineSeconds an admitted-but-stalled pod stays
+            # non-terminal forever and reconcile re-affirms RUNNING every tick, permanently consuming a
+            # burst-lane cap slot. With it, k8s SIGTERMs the pod (-> exit 143) and marks the Job Failed,
+            # which the reconcile loop already routes to _handle_no_callback_terminal (re-drive/spill).
+            "activeDeadlineSeconds": kube.active_deadline_seconds,
             "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
             "template": {
                 "spec": {

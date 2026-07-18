@@ -24,13 +24,14 @@ engine), ``queue`` (a ``DedupFakeQueue`` controller-queue stand-in the re-drive 
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime, timedelta
 import pathlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.analysis import AnalysisResult
@@ -137,7 +138,7 @@ _KUEUE_BACKEND_ID = "kueue-x64"
 _STAGING_BUCKET_ID = "staging-a"
 
 
-def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
+def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, deadline: int = 10800) -> None:
     """Pin ``get_settings()`` for BOTH the cron and ``KueueBackend.reconcile`` so cap + registry are deterministic.
 
     The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
@@ -156,7 +157,9 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
                 cap=cap,
                 # MKUE-01/D-04: KueueBackend.reconcile threads self.config.kube into the seam; the
                 # get_job/delete_job spies are monkeypatched, so a minimal stand-in kube suffices.
-                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+                # phaze-1b39: ``active_deadline_seconds`` feeds the in-flight staleness cutoff
+                # (deadline + RUNNING_STALENESS_SLACK_SECONDS); mirrors the KubeConfig default.
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=deadline),
             )
         ],
         buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
@@ -436,7 +439,9 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(sess
                 id=_KUEUE_BACKEND_ID,
                 rank=20,
                 cap=cap,
-                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq"),
+                # phaze-1b39: ``active_deadline_seconds`` feeds the in-flight staleness cutoff
+                # (deadline + RUNNING_STALENESS_SLACK_SECONDS); mirrors the KubeConfig default.
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=10800),
             )
         ],
     )
@@ -1000,3 +1005,229 @@ async def test_clean_before_flip_delete_is_best_effort(session: AsyncSession, mo
     assert (await _read_cloud_job(session, fid)).status == CloudJobStatus.AWAITING.value  # D-12: 'awaiting', not FAILED
     assert dj.calls == [name]  # Job delete stays post-commit and still runs despite the swallowed S3 error
     assert tally["failed"] == 1
+
+
+# --- phaze-1b39: in-flight staleness bound (deadline + slack) --------------------------------------
+#
+# The PRIMARY fix is the Job's own ``activeDeadlineSeconds`` (pinned in test_kube_staging.py): k8s
+# SIGTERMs a hung pod and marks the Job Failed, which the existing terminal path already handles.
+# These tests cover the defense-in-depth backstop for when that signal never reaches reconcile: an
+# admitted Workload whose Job stays non-terminal forever, and a phantom row with NO Job at all.
+# Pre-fix, BOTH re-affirmed in-flight state every tick forever, permanently holding a burst-lane cap
+# slot while the lane card rendered a healthy "N/N".
+
+
+async def _backdate(session: AsyncSession, file_id: uuid.UUID, seconds: int) -> None:
+    """Push the row's ``updated_at`` staleness clock ``seconds`` into the past.
+
+    ``updated_at`` carries ``onupdate=func.now()``, but an UPDATE that names the column explicitly
+    uses the supplied value -- so this simulates a row that entered RUNNING long ago and has had no
+    real transition since (exactly what a hung pod produces: reconcile's RUNNING branch only mutates
+    when a field actually changes, so no UPDATE fires and the timestamp stays put).
+    """
+    cj = await _read_cloud_job(session, file_id)
+    now = datetime.now(UTC)
+    stamped = cj.updated_at
+    if stamped is not None and stamped.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(updated_at=now - timedelta(seconds=seconds)))
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_stale_admitted_row_terminalizes_instead_of_reaffirming_running(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1b39: an Admitted Workload with a non-terminal Job past deadline+slack terminalizes.
+
+    THE REGRESSION TEST. Pre-fix this exact shape (Job succeeded=0/failed=0, Workload Admitted=True)
+    fell into the admission branch and was re-stamped RUNNING every tick forever, so the row NEVER
+    left the in-flight set and its burst-lane cap slot was consumed permanently. Post-fix it routes to
+    the no-callback terminal -> bounded re-drive, returning the slot without operator kubectl surgery.
+    """
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    queue = DedupFakeQueue("controller")
+    # Non-terminal Job on the first read, gone on the confirm-gone read (the re-drive race guard).
+    _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name), None), get_workload=GetWorkloadSpy(ADMITTED))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1  # a real terminal outcome, not another silent RUNNING re-affirm
+    assert cj.status == CloudJobStatus.SUBMITTED.value  # re-driven
+    assert dj.calls == [name]  # the wedged Job was deleted
+    assert [t for t, _ in queue.captured] == ["submit_cloud_job"]
+    assert tally["redriven"] == 1
+    assert tally["running"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_admitted_row_at_cap_spills_and_frees_the_lane_slot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1b39 acceptance: at cap the wedged row spills to 'awaiting' -- out of the in-flight set.
+
+    ``'awaiting'`` is NOT an in-flight status, so ``in_flight_count`` drops and the burst-lane cap slot
+    the hung pod was squatting on is returned. This is the "lane returns to 0 without kubectl surgery"
+    half of the acceptance criteria.
+    """
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value, attempts=3)  # at cap
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.AWAITING.value  # D-12 spill: no longer in-flight -> cap slot freed
+    assert cj.attempts == 3  # budget-spent marker, not double-counted
+    assert s3.calls == [fid]  # the staged object of the abandoned burst is cleaned up
+    assert dj.calls == [name]
+    assert tally["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_admitted_row_is_never_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A healthy, recently-admitted row is untouched: the bound must not steal live work (false-positive guard)."""
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid, name = await _seed(session, status=CloudJobStatus.SUBMITTED.value)
+    await _backdate(session, fid, 60)  # well inside deadline + slack
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.RUNNING.value
+    assert cj.attempts == 0
+    assert dj.calls == []
+    assert s3.calls == []
+    assert queue.captured == []
+    assert tally["running"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_admitted_row_with_landed_callback_is_not_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale-looking row whose analysis result ALREADY landed must never be re-driven (would redo work).
+
+    The callback (KSUBMIT-03) is the authoritative result writer and keys off ``file_id``; if
+    ``analysis_completed_at`` is set the burst genuinely finished, so the staleness bound must stand down
+    and leave the row to the normal terminal paths.
+    """
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    session.add(AnalysisResult(file_id=fid, analysis_completed_at=datetime.now(UTC).replace(tzinfo=None)))
+    await session.commit()
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    assert (await _read_cloud_job(session, fid)).attempts == 0
+    assert dj.calls == []
+    assert s3.calls == []
+    assert queue.captured == []
+    assert tally["running"] == 1
+
+
+# --- phaze-1b39: the permanent-phantom row (kueue_workload IS NULL) --------------------------------
+
+
+async def _seed_phantom(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED.value, attempts: int = 0) -> uuid.UUID:
+    """Seed an in-flight cloud_job row with NO ``kueue_workload`` -- the phantom shape (submit crashed mid-flight)."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            backend_id=_KUEUE_BACKEND_ID,
+            s3_key=f"phaze-staging/{file.id}",
+            status=status,
+            kueue_workload=None,
+            attempts=attempts,
+            staging_bucket=_STAGING_BUCKET_ID,
+        )
+    )
+    await session.commit()
+    return file.id
+
+
+@pytest.mark.asyncio
+async def test_stale_phantom_row_without_workload_terminalizes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1b39: a NULL-``kueue_workload`` row past the staleness bound is terminalized, not skipped forever.
+
+    Pre-fix this row logged 'missing kueue_workload; skipping' on EVERY tick and stayed in-flight
+    permanently -- an unrecoverable phantom holding a cap slot, since no terminal signal can ever exist
+    for a Job that was never recorded. Post-fix it re-drives (under cap) with NO delete_job call (there
+    is no Job to delete).
+    """
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid = await _seed_phantom(session)
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert dj.calls == []  # no Job name -> nothing to delete (and no crash on a None name)
+    assert [t for t, _ in queue.captured] == ["submit_cloud_job"]
+    assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_phantom_row_without_workload_is_still_held(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A just-inserted row whose submit is still mid-flight is held (unchanged behaviour) -- never stolen."""
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid = await _seed_phantom(session)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 0
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert dj.calls == []
+    assert s3.calls == []
+    assert queue.captured == []
+
+
+@pytest.mark.asyncio
+async def test_stale_phantom_row_at_cap_spills_to_awaiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At cap the phantom spills to 'awaiting' (out of the in-flight set) with no Job delete attempted."""
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid = await _seed_phantom(session, status=CloudJobStatus.RUNNING.value, attempts=3)
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.AWAITING.value
+    assert s3.calls == [fid]
+    assert dj.calls == []
+    assert tally["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_phantom_row_with_landed_callback_records_success(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A phantom whose callback landed anyway (it keys off file_id, not the Job) finalizes as SUCCEEDED."""
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid = await _seed_phantom(session, status=CloudJobStatus.RUNNING.value)
+    session.add(AnalysisResult(file_id=fid, analysis_completed_at=datetime.now(UTC).replace(tzinfo=None)))
+    await session.commit()
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value
+    assert cj.cloud_phase == CloudPhase.FINISHED.value
+    assert dj.calls == []  # no Job to delete
+    assert s3.calls == []  # success path makes ZERO S3 calls (the callback deleted the object inline)
+    assert tally["succeeded"] == 1
