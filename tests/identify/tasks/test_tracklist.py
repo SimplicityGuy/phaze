@@ -448,15 +448,22 @@ async def test_refresh_tracklists_counts_per_item_failures(mock_sleep: AsyncMock
 
 
 @patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
-async def test_refresh_tracklists_swallows_outer_failure(mock_sleep: AsyncMock) -> None:
-    """A failure loading the stale set is logged and yields zero counts, not a raise."""
+async def test_refresh_tracklists_reports_outer_failure_as_error(mock_sleep: AsyncMock) -> None:
+    """phaze-xpzp: a failure loading the stale/unresolved set is logged AND counted as an error, not a raise.
+
+    Previously this asserted the OLD (buggy) behavior -- a query failure (e.g. the aware-vs-naive
+    ``DataError``) was swallowed by a broad ``except Exception`` into the untouched
+    ``{"refreshed": 0, "errors": 0}`` initial counters, a return value indistinguishable from "there
+    was simply nothing to refresh". SAQ then marked the job successful and the monthly cron silently
+    never ran. The query failure must now surface in ``errors``.
+    """
     ctx = _make_ctx()
     session = ctx["_mock_session"]
     session.execute.side_effect = RuntimeError("db unreachable")
 
     result = await refresh_tracklists(ctx)
 
-    assert result == {"refreshed": 0, "errors": 0}
+    assert result == {"refreshed": 0, "errors": 1}
     mock_sleep.assert_not_awaited()
 
 

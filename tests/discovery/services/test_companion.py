@@ -130,3 +130,40 @@ async def test_companions_link_only_to_own_dir(session: AsyncSession) -> None:
     # No cross-directory links
     assert (comp_a.id, media_b.id) not in link_pairs
     assert (comp_b.id, media_a.id) not in link_pairs
+
+
+@pytest.mark.asyncio
+async def test_companions_with_underscore_dir_do_not_link_to_sibling_dashed_dir(session: AsyncSession) -> None:
+    """A companion in a directory containing '_' must not link to media in a sibling
+    directory whose name matches only because '_' is an unescaped LIKE wildcard
+    (e.g. Coachella_2024 vs Coachella-2024 or "Coachella 2024")."""
+    media_underscore = _make_file("/music/Coachella_2024/track.mp3", "mp3")
+    comp_underscore = _make_file("/music/Coachella_2024/cover.jpg", "jpg")
+    media_dashed = _make_file("/music/Coachella-2024/other.mp3", "mp3")
+    media_spaced = _make_file("/music/Coachella 2024/another.mp3", "mp3")
+    session.add_all([media_underscore, comp_underscore, media_dashed, media_spaced])
+    await session.flush()
+
+    count = await associate_companions(session)
+
+    assert count == 1
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    link_pairs = {(link.companion_id, link.media_id) for link in links}
+    assert link_pairs == {(comp_underscore.id, media_underscore.id)}
+
+
+@pytest.mark.asyncio
+async def test_companions_with_underscore_dir_do_not_link_across_path_separator(session: AsyncSession) -> None:
+    """The unescaped '_' wildcard also matches '/', so a directory like 'Set_1' must
+    not link to media in an unrelated subdirectory tree such as 'Set/1'."""
+    comp = _make_file("/music/Set_1/notes.txt", "txt")
+    media_other_tree = _make_file("/music/Set/1/track.mp3", "mp3")
+    session.add_all([comp, media_other_tree])
+    await session.flush()
+
+    count = await associate_companions(session)
+
+    assert count == 0
+    result = await session.execute(select(FileCompanion))
+    assert len(result.scalars().all()) == 0
