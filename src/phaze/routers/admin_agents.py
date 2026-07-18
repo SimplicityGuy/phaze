@@ -36,7 +36,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_kinds, sort_key
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds, sort_key
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -95,12 +95,18 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
     non-local registry backend is the SAME cluster now surfaced as a live tile in Section 2. Such a
     row never heartbeats (it is not a persistent process), so it would otherwise sit ``NEVER`` forever
     in Section 1 while its lane is live in Section 2 — the "shown twice" defect. We suppress ONLY that
-    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key AND
-    ``_status=='never'``. The predicate is deliberately narrow — a genuinely heartbeating compute
-    agent keeps its row, a non-registry NEVER compute row keeps its row, and fileserver rows are
-    untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no schema change. Reading
-    the registry is degrade-safe — a settings failure leaves every row visible rather than raising into
-    the hot poll.
+    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key OR a registry
+    ``agent_ref`` AND ``_status=='never'``. The predicate is deliberately narrow — a genuinely
+    heartbeating compute agent keeps its row, a non-registry NEVER compute row keeps its row, and
+    fileserver rows are untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no
+    schema change. Reading the registry is degrade-safe — a settings failure leaves every row visible
+    rather than raising into the hot poll.
+
+    phaze-ifcr: id/name string equality against the backend's OWN id (``registry_keys``) misses whenever
+    the operator's callback-agent id/name diverges from the backend id it dispatches for — e.g. a kueue
+    backend id ``"vox"`` bound to callback agent ``"k8s-vox"`` (``phaze agents add --kind compute``).
+    ``non_local_backend_agent_refs`` closes that gap with the STRUCTURAL binding (``agent_ref``) instead
+    of name-coincidence, so the shadow row is suppressed regardless of what the operator named it.
     """
     result = await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))
     rows = list(result.scalars().all())
@@ -112,16 +118,20 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
     try:
-        registry_keys = set(non_local_backend_kinds(get_settings()))  # type: ignore[arg-type]
+        settings = get_settings()
+        registry_keys = set(non_local_backend_kinds(settings))  # type: ignore[arg-type]
+        registry_agent_refs = set(non_local_backend_agent_refs(settings))  # type: ignore[arg-type]
     except Exception:
         # A registry/settings read failure must never break the operator poll: leave every row
         # visible (the shadow row reappears, but the page still renders) rather than raise.
         logger.warning("agents_registry_shadow_filter_unavailable", exc_info=True)
         registry_keys = set()
+        registry_agent_refs = set()
+    shadow_keys = registry_keys | registry_agent_refs
     rows = [
         a
         for a in rows
-        if not (a.kind == "compute" and a._status == "never" and (a.id in registry_keys or a.name in registry_keys))  # type: ignore[attr-defined]
+        if not (a.kind == "compute" and a._status == "never" and (a.id in shadow_keys or a.name in shadow_keys))  # type: ignore[attr-defined]
     ]
     rows.sort(key=lambda a: sort_key(a, now))
     return rows, now

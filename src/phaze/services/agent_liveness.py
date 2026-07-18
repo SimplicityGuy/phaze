@@ -186,6 +186,20 @@ def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
     return {backend.id: backend.kind for backend in settings.backends if backend.kind != "local"}
 
 
+def non_local_backend_agent_refs(settings: ControlSettings) -> dict[str, str]:
+    """Return ``{agent_ref: backend_id}`` for every non-local registry entry that binds an ``agent_ref`` (phaze-ifcr).
+
+    Structural (not name-coincidence) companion to :func:`non_local_backend_kinds`: a bearer-token
+    ``kind='compute'`` Agent row's id is the operator's free choice at ``phaze agents add --kind
+    compute`` (e.g. backend id ``"vox"`` bound to callback agent ``"k8s-vox"``), so the COMPUTE-01
+    shadow-row filter in ``routers.admin_agents`` cannot rely on id/name string equality against the
+    backend's own id alone. ``ComputeBackend.agent_ref`` is REQUIRED (REG-02); ``KueueBackend.agent_ref``
+    is OPTIONAL (backward-compatible with pre-existing ``[kube]`` config) and simply contributes nothing
+    here when unset. ``getattr`` guards against any future non-local variant that never grows the field.
+    """
+    return {agent_ref: backend.id for backend in settings.backends if backend.kind != "local" and (agent_ref := getattr(backend, "agent_ref", None))}
+
+
 async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeLane]:
     """Return one :class:`ComputeLane` per non-local registry backend + a trailing unattributed lane (COMPUTE-01).
 
