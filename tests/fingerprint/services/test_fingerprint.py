@@ -390,3 +390,65 @@ class TestCombinedMatchExtended:
         assert match.timestamp == "04:32"
         assert match.resolved_artist == "Deadmau5"
         assert match.resolved_title == "Strobe"
+
+
+class TestIngestErrorClassification:
+    """phaze-ds1z: ingest failures must distinguish ENGINE-level from FILE-level faults.
+
+    ``fingerprint_file`` keys its refuse-to-complete decision off ``engine_error``, so this
+    classification is load-bearing: mislabel a 5xx as file-level and a total outage once
+    again drains the backlog into fabricated FAILED rows; mislabel a 4xx as engine-level and
+    one corrupt file stalls the whole lane behind retries.
+    """
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_is_engine_level(self, adapter_cls):
+        transport = httpx.MockTransport(lambda _request: httpx.Response(500, json={"error": "internal"}))
+        adapter = adapter_cls()
+        adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test")
+        result = await adapter.ingest("/data/music/test.mp3")
+        assert result.status == "failed"
+        assert result.engine_error is True
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_4xx_is_file_level(self, adapter_cls):
+        transport = httpx.MockTransport(lambda _request: httpx.Response(422, json={"error": "undecodable"}))
+        adapter = adapter_cls()
+        adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test")
+        result = await adapter.ingest("/data/music/test.mp3")
+        assert result.status == "failed"
+        assert result.engine_error is False
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_transport_error_is_engine_level(self, adapter_cls):
+        def raise_error(_request):
+            raise httpx.ConnectError("Connection refused")
+
+        transport = httpx.MockTransport(raise_error)
+        adapter = adapter_cls()
+        adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test")
+        result = await adapter.ingest("/data/music/test.mp3")
+        assert result.status == "failed"
+        assert result.engine_error is True
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_success_is_not_an_error(self, adapter_cls):
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, json={"status": "ok"}))
+        adapter = adapter_cls()
+        adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test")
+        result = await adapter.ingest("/data/music/test.mp3")
+        assert result.status == "success"
+        assert result.engine_error is False
+        await adapter.close()
+
+    async def test_orchestrator_marks_raising_adapter_as_engine_level(self):
+        """An adapter that RAISES is an engine fault by construction (adapters never raise per-file)."""
+        audfprint = AsyncMock()
+        audfprint.name = "audfprint"
+        audfprint.ingest = AsyncMock(side_effect=Exception("Container down"))
+        orchestrator = FingerprintOrchestrator(engines=[audfprint])
+        results = await orchestrator.ingest_all("/data/music/test.mp3")
+        assert results["audfprint"].engine_error is True

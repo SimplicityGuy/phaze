@@ -5,7 +5,13 @@ FROM eclipse-temurin:17-jdk-jammy AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 https://github.com/JorenSix/Panako.git /build/panako
+# Pin the upstream clone to an exact commit. Upstream publishes no usable release
+# tag (the only tag, `joss`, predates the 2.1 build), so a SHA is the only stable
+# ref available. An unpinned `master` clone means the artifact this image is built
+# from can change underneath us between two builds of the same phaze release.
+ARG PANAKO_REF=e4b0e1dbb55e340bc66c90bac0ceb82b2cf84211
+RUN git clone --filter=blob:none https://github.com/JorenSix/Panako.git /build/panako \
+    && git -C /build/panako checkout --detach "${PANAKO_REF}"
 WORKDIR /build/panako
 
 # Upstream build.gradle lists the now-decommissioned OSSRH snapshot repo
@@ -23,23 +29,60 @@ RUN grep -qF "maven { url 'https://oss.sonatype.org/content/repositories/snapsho
     && sed -i "\#maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }#d" build.gradle \
     && ./gradlew shadowJar
 
+# Normalize the shaded jar to ONE fixed, glob-free path.
+#
+# This is the fix for the 2026.7.7 outage: the runtime stage used to copy
+# `build/libs/Panako-*-all.jar` (capital P). Upstream's settings.gradle declares
+# `rootProject.name = 'panako'` (LOWERCASE), so shadowJar actually emits
+# `panako-2.1-all.jar`. The glob matched nothing, and BuildKit resolves a
+# zero-match COPY glob to an empty layer instead of failing -- so the image built
+# green and shipped with no /app/panako.jar at all. Resolving the wildcard HERE,
+# in a RUN, means a zero-match is a hard build failure (`ls` exits non-zero), and
+# the runtime COPY below is an exact path that cannot silently no-op.
+RUN set -eu; \
+    jar="$(ls -1 build/libs/*-all.jar)"; \
+    test -s "$jar" || { echo "ERROR: shadowJar produced no non-empty *-all.jar in build/libs" >&2; exit 1; }; \
+    cp "$jar" /build/panako.jar; \
+    echo "Resolved shaded jar: $jar"
+
 # Stage 2: Runtime
 FROM python:3.14-slim
 
 WORKDIR /app
 
-# System deps
+# System deps.
+#
+# liblmdb0: lmdbjava 0.9.1 bundles native LMDB for linux-x86_64 / osx-x86_64 /
+# windows-x86_64 ONLY. On any other arch (notably linux/arm64) it falls back to
+# dlopen("liblmdb.so") from the system and dies with UnsatisfiedLinkError if it is
+# absent. Panako publishes linux/amd64 today, where the bundled .so wins and this
+# package is inert -- it is here so the image is not silently arch-locked.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    liblmdb0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install JRE (minimal)
 COPY --from=eclipse-temurin:21-jre-jammy /opt/java/openjdk /opt/java/openjdk
 ENV PATH="/opt/java/openjdk/bin:$PATH"
 
-# Copy built Panako JAR
-COPY --from=builder /build/panako/build/libs/Panako-*-all.jar /app/panako.jar
+# Copy built Panako JAR. Exact path, NO glob -- a glob that matches nothing
+# resolves to an empty layer instead of failing the build (see builder stage).
+COPY --from=builder /build/panako.jar /app/panako.jar
+
+# Build-time assertion: a missing, empty, or non-runnable jar must FAIL the image
+# build rather than ship. `test -s` catches absent/0-byte; actually invoking the
+# CLI catches a present-but-broken jar (bad manifest, missing Main-Class, shaded
+# deps that don't resolve) -- the failure mode `test -s` alone would wave through.
+RUN set -eu; \
+    test -s /app/panako.jar || { echo "ERROR: /app/panako.jar is missing or empty" >&2; exit 1; }; \
+    java -jar /app/panako.jar >/tmp/panako-probe.txt 2>&1 || true; \
+    cat /tmp/panako-probe.txt; \
+    grep -qiE 'panako|usage|command' /tmp/panako-probe.txt \
+      || { echo "ERROR: /app/panako.jar is not a runnable Panako CLI" >&2; cat /tmp/panako-probe.txt >&2; exit 1; }; \
+    rm -f /tmp/panako-probe.txt; \
+    echo "OK: /app/panako.jar present ($(stat -c%s /app/panako.jar) bytes) and runnable"
 
 # Install uv + Python deps for FastAPI wrapper
 COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /bin/
