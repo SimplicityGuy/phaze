@@ -272,6 +272,50 @@ async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-3st0: a malformed proposal_ids entry is SKIPPED (never a 500); valid ids still act."""
+    p1 = await create_test_proposal(session, original_filename="bulkmal1.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": [str(p1.id), "not-a-uuid"]},
+    )
+    assert response.status_code == 200
+    assert "1 proposals approved." in response.text
+
+    updated1 = await session.get(RenameProposal, p1.id)
+    assert updated1 is not None
+    assert updated1.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_skips_empty_id(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-3st0: an empty-string proposal_ids entry is SKIPPED (never a 500)."""
+    p1 = await create_test_proposal(session, original_filename="bulkmal2.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": [str(p1.id), ""]},
+    )
+    assert response.status_code == 200
+
+    updated1 = await session.get(RenameProposal, p1.id)
+    assert updated1 is not None
+    assert updated1.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_all_ids_malformed(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-3st0: every id malformed -> 200 with a zero count, never a 500."""
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": ["not-a-uuid", ""]},
+    )
+    assert response.status_code == 200
+    assert "0 proposals approved." in response.text
+
+
+@pytest.mark.asyncio
 async def test_sort_by_confidence(client: AsyncClient, session: AsyncSession) -> None:
     """GET /proposals/?sort=confidence&order=asc returns proposals sorted by confidence ascending."""
     await create_test_proposal(session, original_filename="high.mp3", proposed_filename="High Conf.mp3", confidence=0.95)
