@@ -35,6 +35,13 @@ callbacks load ``FileRecord`` on a ``file_id`` a PREVIOUS request named, and a s
 ``cloud_job`` sidecar, cascade-deleted in the same transaction -- while a file is still mid-rsync.
 Both handlers use ``scalar_one_or_none()`` and branch explicitly to the same clean 200 hold used
 for "no attributed compute backend": no state change, no ledger clear, no enqueue.
+
+KNOWN LIMITATION (phaze-p5nb): ``/pushed``'s hold cannot clean up a scratch copy the rsync already
+landed on the compute agent before the FileRecord vanished -- process_file (the only thing that ever
+unlinks a scratch path, see ``tasks/functions.py``) is never enqueued on this hold, and the control
+plane has no remote-delete primitive for a compute agent's scratch directory. The hold logs loudly so
+the leak is operator-visible; fixing it for real needs either a remote-delete task or a scratch-dir
+TTL reaper -- tracked as a follow-up, not fixed inline here.
 """
 
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -91,12 +98,33 @@ async def report_pushed(
     No attributed compute backend (no ``cloud_job``, or an operator-removed ``backend_id``) -> a clean
     200 hold (NOT a 500): nothing is enqueued and the file is left ``PUSHING`` with its ledger row so the
     staging cron / recovery re-drives it later.
+
+    NO FileRecord row at all (``DELETE /pipeline/scans/{batch_id}`` deleted a terminal batch's files
+    while one was still mid-rsync) -> the SAME clean 200 hold (request_guards.py rule 3): there is no
+    sha256_hash/file_type left to pin a process_file payload with and nothing to terminalize, so this is
+    an explicit no-op branch, never a ``scalar_one()`` 500. KNOWN LIMITATION: the rsync already landed a
+    scratch copy on the compute agent's scratch dir before this callback fired; since process_file is
+    never enqueued on this hold, that copy is not cleaned up here -- the control plane has no
+    remote-delete primitive for a compute agent's scratch directory (see the module docstring). The
+    warning log below is the operator-visible signal in place of silent disk growth; a follow-up bead
+    should add either a remote-delete task or a scratch-dir TTL reaper.
     """
     settings = cast("ControlSettings", get_settings())
 
     # Load the file first: the pinned payload needs sha256_hash + file_type (D-11). Reading before
     # the state flip is fine -- both fields are immutable here and untouched by the UPDATE below.
-    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    # NULL-GUARD (phaze-p5nb): scan-deletion (delete_scan_cascade) can remove this FileRecord (and its
+    # cloud_job) between the previous request that named it and this callback -- a routine race, not an
+    # invariant violation. scalar_one() would raise NoResultFound -> unhandled 500 here; branch instead.
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        logger.warning(
+            "report_pushed held: file record no longer exists (concurrent scan-deletion); "
+            "pushed scratch copy may be orphaned on the compute agent -- no remote cleanup primitive exists",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return PushedResponse(file_id=file_id)
 
     # D-06 (record-don't-rederive, Pitfall 4): resolve the file's OWN compute backend from the RECORDED
     # cloud_job.backend_id -- NOT select_active_agent(kind="compute"). The scratch dir, the process_file

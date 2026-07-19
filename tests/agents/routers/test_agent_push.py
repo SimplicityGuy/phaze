@@ -477,6 +477,40 @@ async def test_pushed_holds_when_backend_id_unresolvable(
 
 
 @pytest.mark.asyncio
+async def test_pushed_holds_cleanly_when_file_record_deleted_mid_push(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-p5nb: FileRecord deleted mid-push (scan-deletion race) -> 200 hold, never a 500.
+
+    ``DELETE /pipeline/scans/{batch_id}`` only requires the batch to be terminal, so an operator can
+    delete a completed scan batch while one of its files is still mid-rsync to a compute agent;
+    ``delete_scan_cascade`` removes the FileRecord AND its cloud_job in one transaction. The subsequent
+    fileserver ``/pushed`` callback must then hit the SAME clean 200 hold used for "no attributed
+    compute backend" -- not an unhandled ``NoResultFound`` 500 from a bare ``scalar_one()``. No state
+    change, no ledger clear, no enqueue: there is nothing left to terminalize or pin a payload with.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)
+    _install_concurrent_scan_deletion(session, file_id)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: clean hold, never a 500/NoResultFound
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["status"] == "pushed"
+    assert task_router.queues == {}, "nothing may be enqueued for a vanished FileRecord"
+
+
+@pytest.mark.asyncio
 async def test_pushed_duplicate_callback_is_idempotent_noop(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
