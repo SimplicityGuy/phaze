@@ -106,11 +106,6 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("/api/internal/agent/fingerprints/{file_id}/{engine}", "engine"): "phaze-94zs -- no max_length vs String(30)",
-    ("/api/v1/duplicates", "limit"): "phaze-hpo9 -- bare default, negatives reach Postgres",
-    ("/api/v1/duplicates", "offset"): "phaze-hpo9 -- bare default, negatives reach Postgres",
-    ("/search/", "date_from"): "phaze-z3tx -- declared str, forwarded unparsed against a Date column",
-    ("/search/", "date_to"): "phaze-z3tx -- declared str, forwarded unparsed against a Date column",
 }
 
 # Gaps this check FOUND that have no bead yet. Same defect class, same strict-xfail semantics; kept
