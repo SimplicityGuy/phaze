@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 import structlog
 
 from phaze.config import settings
@@ -1612,6 +1613,24 @@ async def force_skip_stage(
 
     The pill flips to ``⊘ skipped`` on the NEXT poll tick (not optimistic) — the ack is a toast only.
     ``reason`` is never echoed back into the response (T-87-21 — no XSS surface via the free text).
+
+    UNKNOWN/CONCURRENTLY-DELETED FILE (request_guards.py contract rule 4): ``StageSkip.file_id`` is a
+    NOT NULL FK to ``files.id`` that ``on_conflict_do_nothing(index_elements=["file_id", "stage"])``
+    does not shield — that arbiter only absorbs the UNIQUE(file_id, stage) replay, not a FK whose
+    referent is missing. ``file_id`` is a typed ``uuid.UUID`` path param already well-formed by the
+    time this body runs, so no stricter signature could reject a nonexistent-but-well-formed id; this
+    is a genuine race (a concurrent ``delete_scan_cascade`` removing the row between page-render and
+    submit), not a wire-boundary defect. Two layers, not one:
+
+    - A pre-check (:func:`_force_skip_file_exists`) short-circuits the common case with a clean no-op
+      toast and skips the DB round trip through Postgres's error path -- but it is a TOCTOU hole on
+      its own, since the row can vanish between the check and the INSERT.
+    - The INSERT itself runs inside a SAVEPOINT (``session.begin_nested()``) and a caught
+      ``IntegrityError`` unwinds only the nested scope (rule 5), leaving the session usable for the
+      rest of the request, so the race window between the pre-check and the write is closed too.
+
+    Mirrors the sibling per-file endpoints' T-87-27 discipline: an unknown well-formed UUID is a safe
+    no-op, never a 500.
     """
     if stage not in STAGE_TO_FUNCTION:  # D-10 enrich-only — mirror pipeline_stages._validate_stage
         raise HTTPException(status_code=422, detail="stage not force-skippable")
@@ -1623,14 +1642,29 @@ async def force_skip_stage(
             '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
             status_code=422,
         )
+    # Pre-check (T-87-27 discipline, mirrors the sibling retry endpoints): short-circuits the common
+    # "stale Files-matrix row" case with a clean no-op ack and no DB error round trip. NOT sufficient
+    # alone -- see the IntegrityError catch below for the race this cannot close.
+    if not await _force_skip_file_exists(session, file_id):
+        return _force_skip_no_op_toast(stage)
     # Idempotent additive write (CR-01): re-submitting a force-skip for the same (file, stage) is a NORMAL
     # path — `_force_skip_dialog.html` is not hidden after success — and the UNIQUE(file_id, stage) constraint
     # would turn a bare INSERT into an unhandled IntegrityError → HTTP 500. on_conflict_do_nothing mirrors
     # `insert_ledger_if_absent`: the marker's existence IS the desired end state, so a duplicate is a no-op
     # success. Never clears failed_at (additive-only, T-87-20).
-    await session.execute(
-        pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
-    )
+    #
+    # Rule 4 + rule 5: the pre-check above is TOCTOU-vulnerable (delete_scan_cascade can remove the file
+    # between the SELECT and this INSERT), so the INSERT itself runs inside a SAVEPOINT and a genuine FK
+    # violation is caught and converted to the same no-op ack rather than an unhandled 500. Rolling back
+    # only the nested scope (not a full session.rollback()) keeps the session usable for the rest of the
+    # request.
+    stmt = pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
+    try:
+        async with session.begin_nested():
+            await session.execute(stmt)
+    except IntegrityError:
+        logger.info("force_skip_stage race: file deleted between pre-check and insert", file_id=str(file_id), stage=stage)
+        return _force_skip_no_op_toast(stage)
     await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
     logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
     # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
@@ -1641,6 +1675,34 @@ async def force_skip_stage(
         f'x-init="setTimeout(() => show = false, 5000)" x-transition '
         f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
         f"Skipped {stage} — reason recorded.</div></div>"
+    )
+
+
+async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """``True`` iff a ``FileRecord`` row named by ``file_id`` currently exists.
+
+    Extracted to a named helper (rather than inlined) so a regression test can force the
+    :func:`force_skip_stage` race branch deterministically -- monkeypatching this to always return
+    ``True`` reproduces "file existed at pre-check time, vanished before the INSERT" without a second
+    concurrent connection.
+    """
+    result = await session.execute(select(FileRecord.id).where(FileRecord.id == file_id))
+    return result.scalar_one_or_none() is not None
+
+
+def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
+    """Benign toast for an unknown or concurrently-deleted ``file_id`` (T-87-27 discipline).
+
+    ``stage`` is allowlisted before this is ever called (``STAGE_TO_FUNCTION`` membership), so it is
+    safe to interpolate. Returned by both the pre-check miss and the ``IntegrityError`` race branch in
+    :func:`force_skip_stage` so the two failure paths are indistinguishable to the client.
+    """
+    return HTMLResponse(
+        '<div hx-swap-oob="beforeend:#toast-container">'
+        '<div role="status" aria-live="polite" x-data="{ show: true }" x-show="show" '
+        'x-init="setTimeout(() => show = false, 5000)" x-transition '
+        'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
+        f"File not found — nothing to skip {stage}.</div></div>"
     )
 
 

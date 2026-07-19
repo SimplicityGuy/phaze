@@ -178,3 +178,63 @@ async def test_skip_never_clears_analysis_failed_at(client: AsyncClient, session
     row = (await verify.execute(select(AnalysisResult.failed_at).where(AnalysisResult.file_id == file_id))).first()
     assert row is not None
     assert row[0] is not None  # failed_at was NOT cleared by the additive writer
+
+
+@pytest.mark.asyncio
+async def test_skip_unknown_file_id_is_no_op_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-yx6s: an unknown well-formed ``file_id`` is a clean no-op ack, never a 500 (T-87-27).
+
+    Mirrors the sibling per-file endpoints' contract. The pre-check (``_force_skip_file_exists``)
+    intercepts this case before any INSERT is attempted, so no StageSkip row is written.
+    """
+    file_id = uuid.uuid4()  # genuinely nonexistent -- no FileRecord was ever seeded for it
+
+    response = await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "no such file"})
+
+    assert response.status_code == 200
+    assert "File not found" in response.text
+    assert await _read_skip(file_id, "metadata") is None
+
+
+@pytest.mark.asyncio
+async def test_skip_race_deleted_between_precheck_and_insert_is_no_op_and_session_survives(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-yx6s (request_guards.py rule 4 + rule 5): the pre-check alone is a TOCTOU hole.
+
+    Forces the race the pre-check cannot close: ``_force_skip_file_exists`` is monkeypatched to report
+    "exists" for a ``file_id`` that has NO backing ``FileRecord`` row, reproducing "file existed when
+    checked, was deleted before the INSERT ran" without a second concurrent connection. The subsequent
+    INSERT hits the real FK violation on ``files.id`` and must be caught -- not surfaced as a 500.
+
+    Also proves rule 5: the caught error unwinds only the nested SAVEPOINT (``session.begin_nested()``),
+    NOT a full ``session.rollback()`` -- so the session used by the request (the same object the
+    ``client`` fixture's ``get_session`` override hands back on every call, per ``tests/conftest.py``)
+    is still usable for a query issued immediately afterward, rather than raising
+    ``PendingRollbackError``/expiring already-loaded ORM state.
+    """
+    import phaze.routers.pipeline as pipeline_module
+
+    async def _fake_exists(_session: AsyncSession, _file_id: uuid.UUID) -> bool:
+        return True  # lies: no FileRecord backs this file_id, simulating the post-check delete
+
+    monkeypatch.setattr(pipeline_module, "_force_skip_file_exists", _fake_exists)
+
+    file_id = uuid.uuid4()  # genuinely nonexistent FK referent -- the real race condition
+
+    response = await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "raced out"})
+
+    assert response.status_code == 200, response.text
+    assert "File not found" in response.text
+    assert await _read_skip(file_id, "metadata") is None
+
+    # Rule 5 proof: the outer request transaction on `session` must still be usable -- a full
+    # session.rollback() would expire every loaded object and 500 the NEXT statement on this session.
+    still_usable = await session.execute(select(FileRecord.id).limit(1))
+    still_usable.scalar_one_or_none()  # does not raise PendingRollbackError / InvalidRequestError
+
+    # And the session can still commit further real work afterward.
+    other_file_id = await _seed_file(session)
+    assert other_file_id is not None
