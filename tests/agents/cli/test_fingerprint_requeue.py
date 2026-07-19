@@ -20,7 +20,12 @@ from phaze.cli import parse_window
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.fingerprint import FingerprintResult
 from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs, select_outage_failed_files
+from phaze.services.fingerprint_requeue import (
+    FingerprintEnqueueResult,
+    _classify_collision,
+    enqueue_fingerprint_jobs,
+    select_outage_failed_files,
+)
 from tests.conftest import TEST_DATABASE_URL
 
 
@@ -44,12 +49,25 @@ async def _fail_both_engines(session: AsyncSession, file_id: uuid.UUID, when: da
     await session.commit()
 
 
-class _FakeQueue:
-    """Records enqueue calls; returns ``None`` for ids in ``dedup`` (deterministic-key collapse)."""
+class _FakeJob:
+    """Minimal stand-in for a looked-up SAQ job row (phaze-e57w classification)."""
 
-    def __init__(self, dedup: set[str] | None = None) -> None:
+    def __init__(self, *, status: str, stuck: bool = False) -> None:
+        self.status = status
+        self.stuck = stuck
+
+
+class _FakeQueue:
+    """Records enqueue calls; returns ``None`` for ids in ``dedup`` (deterministic-key collapse).
+
+    ``existing`` maps a deterministic key to the :class:`_FakeJob` that ``queue.job(key)`` returns,
+    so a collision can be classified as genuinely-in-flight vs BLOCKED-by-a-zombie (phaze-e57w).
+    """
+
+    def __init__(self, dedup: set[str] | None = None, existing: dict[str, _FakeJob] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self._dedup = dedup or set()
+        self._existing = existing or {}
 
     async def connect(self) -> None:
         return None
@@ -57,6 +75,9 @@ class _FakeQueue:
     async def enqueue(self, function: str, **kwargs: Any) -> object | None:
         self.calls.append({"function": function, **kwargs})
         return None if str(kwargs.get("file_id")) in self._dedup else object()
+
+    async def job(self, key: str) -> _FakeJob | None:
+        return self._existing.get(key)
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +174,10 @@ async def test_enqueue_sends_complete_payload(session: AsyncSession, make_file) 
     f = await make_file()
     queue = _FakeQueue()
 
-    accepted = await enqueue_fingerprint_jobs(queue, [f], "test-fileserver")
+    result = await enqueue_fingerprint_jobs(queue, [f], "test-fileserver")
 
-    assert accepted == 1
+    assert result.accepted == 1
+    assert result.blocked == 0
     call = queue.calls[0]
     assert call["function"] == "fingerprint_file"
     # A file_id-only enqueue dead-letters every job; assert the full contract.
@@ -169,12 +191,79 @@ async def test_enqueue_does_not_count_deduped_jobs(session: AsyncSession, make_f
     # overstate the recovery.
     a = await make_file()
     b = await make_file()
-    queue = _FakeQueue(dedup={str(a.id)})
+    # `a` collides against a live QUEUED row -> genuinely in flight (benign), not blocked.
+    queue = _FakeQueue(dedup={str(a.id)}, existing={f"fingerprint_file:{a.id}": _FakeJob(status="queued")})
 
-    accepted = await enqueue_fingerprint_jobs(queue, [a, b], "test-fileserver")
+    result = await enqueue_fingerprint_jobs(queue, [a, b], "test-fileserver")
 
-    assert accepted == 1
+    assert result.accepted == 1
+    assert result.in_flight == 1
+    assert result.blocked == 0
     assert len(queue.calls) == 2
+
+
+async def test_enqueue_distinguishes_blocked_zombie_from_in_flight(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-e57w REGRESSION: a key held by a dead 'aborting' row is BLOCKED, not "in flight".
+
+    Pre-fix, enqueue_fingerprint_jobs returned a bare accepted count and every None collision was
+    reported uniformly as "already in flight" -- so a file permanently blocked by an 'aborting'
+    zombie was silently folded into the benign count. This asserts the two are now separated.
+    """
+    live = await make_file()  # collides with a genuinely-running ACTIVE row
+    zombie = await make_file()  # collides with a stuck 'aborting' zombie -- BLOCKED, cannot recover
+    queue = _FakeQueue(
+        dedup={str(live.id), str(zombie.id)},
+        existing={
+            f"fingerprint_file:{live.id}": _FakeJob(status="active", stuck=False),
+            f"fingerprint_file:{zombie.id}": _FakeJob(status="aborting"),
+        },
+    )
+
+    result = await enqueue_fingerprint_jobs(queue, [live, zombie], "test-fileserver")
+
+    assert result.accepted == 0
+    assert result.in_flight == 1
+    assert result.blocked == 1
+    assert result.blocked_keys == (f"fingerprint_file:{zombie.id}",)
+    # A stuck-past-timeout live claimed row is ALSO blocked (a stale claim that never progresses).
+    assert _classify_collision(_FakeJob(status="active", stuck=True)) == "blocked"
+    assert _classify_collision(_FakeJob(status="queued", stuck=False)) == "in_flight"
+    # An unlookupable / unknown-status collision degrades to in_flight (benign) rather than crying wolf.
+    assert _classify_collision(None) == "in_flight"
+    assert _classify_collision(_FakeJob(status="new")) == "in_flight"
+
+
+async def test_enqueue_treats_unlookupable_collision_as_in_flight(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A queue with no ``job()`` lookup cannot classify a collision -> it stays benign (in_flight)."""
+
+    class _NoLookupQueue(_FakeQueue):
+        job = None  # type: ignore[assignment]  # a minimal queue without the lookup method
+
+    f = await make_file()
+    queue = _NoLookupQueue(dedup={str(f.id)})
+    result = await enqueue_fingerprint_jobs(queue, [f], "test-fileserver")
+    assert (result.accepted, result.in_flight, result.blocked) == (0, 1, 0)
+
+
+def test_cli_reports_blocked_files_loudly(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-e57w REGRESSION: the CLI must print BLOCKED files loudly, not as benign "in flight".
+
+    Pre-fix output for a collision was only "N skipped -- already in flight". A zombie-blocked file
+    would hide there. Now the blocked count + its keys are printed under a distinct WARNING.
+    """
+
+    async def _fake(*_a: object, **_k: object) -> tuple[int, FingerprintEnqueueResult, str | None]:
+        return 5, FingerprintEnqueueResult(accepted=3, in_flight=1, blocked=1, blocked_keys=("fingerprint_file:dead-1",)), "nox"
+
+    monkeypatch.setattr(cli, "_run_requeue", _fake)
+    rc = cli.main(["fingerprint", "requeue", "--since", "2026-07-18T05:00:00", "--until", "2026-07-18T13:39:00"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Re-queued 3 of 5" in out
+    assert "1 skipped -- already in flight" in out  # the benign in-flight count stays quiet
+    assert "WARNING: 1 file(s) BLOCKED by a dead job row" in out  # the zombie is loud + distinct
+    assert "fingerprint_file:dead-1" in out
 
 
 # ---------------------------------------------------------------------------
@@ -314,9 +403,10 @@ async def test_run_requeue_routes_to_the_agents_fingerprint_lane(
     monkeypatch.setattr(cli, "AgentTaskRouter", _FakeRouter)
     monkeypatch.setattr(cli, "select_active_agent", _agent)
 
-    selected, accepted, agent_id = await cli._run_requeue(OUTAGE_START, OUTAGE_END, None, dry_run=False)
+    selected, result, agent_id = await cli._run_requeue(OUTAGE_START, OUTAGE_END, None, dry_run=False)
 
-    assert (selected, accepted, agent_id) == (1, 1, "test-fileserver")
+    assert result is not None
+    assert (selected, result.accepted, agent_id) == (1, 1, "test-fileserver")
     # Stranding fingerprint work on the analyze lane is the Phase-30 bug this guards.
     assert captured["lane"] == "fingerprint"
     assert queue.calls[0]["function"] == "fingerprint_file"
@@ -354,8 +444,8 @@ def test_main_success_reports_counts_and_the_resume_warning(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    async def _fake(*_a: object, **_k: object) -> tuple[int, int, str | None]:
-        return 10, 7, "nox"
+    async def _fake(*_a: object, **_k: object) -> tuple[int, FingerprintEnqueueResult, str | None]:
+        return 10, FingerprintEnqueueResult(accepted=7, in_flight=3, blocked=0, blocked_keys=()), "nox"
 
     monkeypatch.setattr(cli, "_run_requeue", _fake)
     rc = cli.main(["fingerprint", "requeue", "--since", "2026-07-18T05:00:00", "--until", "2026-07-18T13:39:00"])
@@ -366,3 +456,4 @@ def test_main_success_reports_counts_and_the_resume_warning(
     assert "3 skipped" in out
     # The parked-jobs warning is the operational safeguard against resuming too early.
     assert "/pipeline/stages/fingerprint/resume" in out
+

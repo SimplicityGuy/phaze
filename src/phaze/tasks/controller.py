@@ -39,6 +39,7 @@ from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
@@ -280,6 +281,10 @@ settings = {
         search_tracklist,
         scrape_and_store_tracklist,
         reap_stalled_scans,
+        # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
+        # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors
+        # reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
+        reap_stuck_aborting_jobs,
         recover_orphaned_work,
         stage_cloud_window,
         # Phase 54 (KSUBMIT-02): the fast kube-submit producer is operator/Phase-55-enqueueable on
@@ -295,6 +300,9 @@ settings = {
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form, matching refresh_tracklists above.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
+        # phaze-e57w: every-minute reaper for zombie 'aborting' SAQ rows (control-only -- needs
+        # ctx["async_session"]). Same cadence/shape as reap_stalled_scans.
+        CronJob(reap_stuck_aborting_jobs, cron="* * * * *"),  # type: ignore[type-var]
         # Phase 42 (D-01): the every-5-min ``reenqueue_discovered`` auto-advance cron was REMOVED.
         # With the Phase-36 Postgres broker, queued/active jobs survive a restart, so a steady-state
         # re-enqueue loop would only churn the DB and risk re-doubling work. Recovery is now a SINGLE
