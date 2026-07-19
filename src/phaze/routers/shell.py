@@ -38,9 +38,7 @@ from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
     get_files_page,
-    get_fingerprint_pending_files,
     get_match_pending_tracklists,
-    get_metadata_pending_files,
     get_scrape_pending_tracklists,
     get_stage_progress,
     get_trackid_stage_files,
@@ -247,20 +245,12 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # exclude kind="compute" (media-less burst backends) from the picker.
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
-    elif stage == "metadata":
-        # Phase 58 (58-03, WORK-02): the Metadata workspace renders the metadata-pending queue --
-        # the EXACT set its EXTRACT ALL button enqueues (get_metadata_pending_files: every
-        # music/video FileRecord, D-01). Pitfall 5 -- the metadata stage had NO DB context before
-        # this plan (only analyze/discover did). Reuses the existing shared pending-set helper (no
-        # new service fn, no enqueue change). oob_counts stays False; the live sub-count refreshes
-        # via the single chrome poll's OOB seeds.
-        context["metadata_files"] = await get_metadata_pending_files(session)
-    elif stage == "fingerprint":
-        # Phase 58 (58-03, WORK-02): the Fingerprint workspace renders the fingerprint-pending
-        # queue -- the EXACT set its FINGERPRINT ALL button enqueues (get_fingerprint_pending_files:
-        # METADATA_EXTRACTED plus failed-retry, deduped, D-01). Pitfall 5 (no prior context for this
-        # stage). Existing read only; no new service fn, no enqueue change.
-        context["fingerprint_files"] = await get_fingerprint_pending_files(session)
+    # phaze-5462: the metadata and fingerprint stages deliberately get NO file-list context here any
+    # more. They used to seed `metadata_files` / `fingerprint_files` from get_*_pending_files, which
+    # are UNBOUNDED (no LIMIT, no ORDER BY) -- the same latent cliff that made the Analyze tab ship
+    # 12.7 MB. Those two tabs measured a harmless ~70 KB only because their backlogs happen to be
+    # empty in production today, NOT because they were paged. Both workspaces now hx-get the bounded
+    # GET /pipeline/pending-files fragment on load instead, so there is no file read on this path.
     elif stage == "trackid":
         # Phase 59 (59-02, IDENT-01): the Track-ID workspace renders the combined per-file identity
         # table -- per-engine audfprint/Panako fingerprint state + tracklist match-state/confidence

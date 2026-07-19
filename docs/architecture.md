@@ -539,6 +539,39 @@ rather than crashing on settings construction. Verbose output for triaging a run
 model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 [Configuration → Logging / observability](configuration.md#logging--observability-all-roles)).
 
+## 📄 List Paging Contract
+
+Every operator-facing list in phaze is bounded by ONE shared contract, owned by
+`src/phaze/services/pagination.py`. Read that module's docstring before adding a paged read — this
+is a summary, the module is the source of truth.
+
+**Why it exists.** The Analyze workspace once server-rendered its entire working set inline —
+10,132 rows / 12.7 MB, ~180x the sibling tabs — behind a docstring that merely *asserted* the set
+was "naturally bounded". Nothing enforced it. An assumption is not a bound; a bound is a `LIMIT`.
+
+| Rule | Decision |
+| ---- | -------- |
+| Paging style | **OFFSET**, not cursor. One shape everywhere; supports the Prev/Next affordance and arbitrary sort orders. |
+| Totals | **Never a whole-corpus `COUNT`.** `has_next` rides a `page_size + 1` sentinel row. The UI shows "Page N" with Prev/Next, never "page X of Y". |
+| Page size | `DEFAULT_PAGE_SIZE = 50`, clamped to `[MIN_PAGE_SIZE=10, MAX_PAGE_SIZE=100]`. Owned in one place; routers import the constant rather than spelling a default. |
+| **Tiebreaker** | **Mandatory and unique.** `paged_stmt()` raises `ValueError` without one. A non-unique `ORDER BY` (`ts_rank`, `executed_at`, `created_at`, a score) silently *skips and duplicates* rows across pages. `created_at` is NOT valid here — Postgres timestamp defaults are transaction-time constant, so rows inserted together tie exactly. Use a primary key. |
+| Out-of-range input | **Clamps, never raises.** Negative/zero page → 1; page size → `[MIN, MAX]`. A page past the end is a normal empty page, not an error. |
+| Degradation | Paged render reads run in a `begin_nested()` SAVEPOINT and return an empty `Page` on error — they never 500 a render. |
+| Render vs enqueue | A bounded render read is **never** the enqueue set. Where a "pending" set feeds both a table and a bulk-enqueue button, the render pages and the enqueue stays unbounded — paging it would silently under-enqueue. |
+
+```python
+stmt = paged_stmt(
+    select(Thing).where(...),
+    page=page, page_size=page_size,
+    order_by=(Thing.created_at.desc(),),  # display order; may tie
+    tiebreaker=(Thing.id.desc(),),        # REQUIRED, unique
+)
+rows, has_next = split_sentinel((await session.execute(stmt)).all(), page_size)
+```
+
+All three enrich workspaces (metadata / fingerprint / analyze) ship an empty host `div` that
+`hx-get`s a bounded fragment on load; none server-renders a file row inline.
+
 ## 🧱 Key Abstractions
 
 ### Models (`src/phaze/models/`)

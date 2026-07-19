@@ -524,7 +524,16 @@ async def test_analyze_file_table_lane_and_windows(client: AsyncClient, session:
     unattributed = await _seed_file(session, original_filename="unattributed.mp3")
     await _seed_cloud_job(session, unattributed.id, None)
 
-    resp = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    # phaze-5462: /s/analyze no longer server-renders the file table -- it ships an empty host div
+    # that lazy-loads the BOUNDED, paged fragment. Assert the shell carries no rows, then fetch the
+    # fragment (which is where the per-row lane/window rendering now lives) and assert on that.
+    shell = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert shell.status_code == 200
+    assert 'id="analyze-files-view"' in shell.text, "the workspace must host the lazy-load target"
+    assert 'id="analyze-file-table"' not in shell.text, "the workspace must NOT server-render the file table (phaze-5462)"
+    assert "done.mp3" not in shell.text, "no file row may be rendered inline on the landing path"
+
+    resp = await client.get("/pipeline/analyze-files")
     assert resp.status_code == 200
     body = resp.text
 
@@ -602,7 +611,10 @@ async def test_analyze_files_fragment_default_view(client: AsyncClient, session:
     assert resp.status_code == 200
     body = resp.text
     # The swap-target container + the status-filter lens (mirrors the _status_filter_bar idiom).
-    assert 'id="analyze-files-view"' in body
+    # phaze-5462: the HOST owns id="analyze-files-view"; the fragment is pure content. When the
+    # fragment also carried the id, each innerHTML swap nested a second one inside the first.
+    assert 'id="analyze-files-view"' not in body, "the fragment must not duplicate the host id"
+    assert 'id="analyze-filter-bar"' in body
     assert 'id="analyze-filter-bar"' in body
     assert 'hx-get="/pipeline/analyze-files"' in body
     assert 'hx-target="#analyze-files-view"' in body
@@ -632,7 +644,10 @@ async def test_analyze_files_fragment_filtered_and_paged(client: AsyncClient, se
     resp = await client.get("/pipeline/analyze-files?status=completed&page_size=10")
     assert resp.status_code == 200
     body = resp.text
-    assert 'id="analyze-files-view"' in body
+    # phaze-5462: the HOST owns id="analyze-files-view"; the fragment is pure content. When the
+    # fragment also carried the id, each innerHTML swap nested a second one inside the first.
+    assert 'id="analyze-files-view"' not in body, "the fragment must not duplicate the host id"
+    assert 'id="analyze-filter-bar"' in body
     # Bounded page: exactly page_size record rows.
     assert body.count('hx-get="/record/') == 10
     # Pager present (11 > 10 => has_next) and carrying the status lens on its links.
@@ -669,7 +684,10 @@ async def test_analyze_files_fragment_unknown_status_degrades(client: AsyncClien
     resp = await client.get("/pipeline/analyze-files?status=../../etc/passwd")
     assert resp.status_code == 200
     body = resp.text
-    assert 'id="analyze-files-view"' in body
+    # phaze-5462: the HOST owns id="analyze-files-view"; the fragment is pure content. When the
+    # fragment also carried the id, each innerHTML swap nested a second one inside the first.
+    assert 'id="analyze-files-view"' not in body, "the fragment must not duplicate the host id"
+    assert 'id="analyze-filter-bar"' in body
     assert "inflight.mp3" in body
     # Degraded to the default view: no pager, the default select option is active.
     assert "Analyze files pagination" not in body

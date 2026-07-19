@@ -32,6 +32,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.agent_liveness import non_local_backend_kinds
 from phaze.services.enqueue_router import LANES
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.stage_status import (
     awaiting_candidate_clause,
     dedup_resolved_clause,
@@ -1362,90 +1363,118 @@ def _project_analyze_rows(rows: Sequence[Any], kinds: dict[str, str]) -> list[di
     return files
 
 
-async def get_analyze_working_set(session: AsyncSession, *, completions_limit: int = _ANALYZE_COMPLETIONS_WINDOW) -> list[dict[str, Any]]:
-    """Return the BOUNDED default Analyze view: the active-first working set + a recent-completions window.
+async def get_analyze_working_set(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    completions_limit: int = _ANALYZE_COMPLETIONS_WINDOW,
+) -> AnalyzeFilesPage:
+    """Return ONE BOUNDED page of the default Analyze view: the active-first working set, then a completions window.
 
-    Two bounded reads, degrade-safe under ONE SAVEPOINT returning ``[]`` on any error (mirrors the
-    Phase-58 read this replaces -- it rides the hot dashboard context and must NEVER 500 the page):
+    phaze-5462 -- THIS READ USED TO BE UNBOUNDED, and its docstring said the opposite. The retired
+    text claimed the working set was "Naturally bounded (lane concurrency + the failure backlog);
+    NEVER the whole corpus". That was FALSE in production and is the entire bug: a file joins the
+    working set merely by having a ``scheduling_ledger`` row OR a partial/failed ``analysis`` row, and
+    ORPHANED work never leaves it on its own. With a large stuck backlog the branch rendered 10,132
+    rows / 12.7 MB inline -- ~180x the sibling metadata/fingerprint tabs. The prior fix (phaze-zqvh)
+    bounded only the completions window and trusted this assertion for the other half. An assumption
+    is not a bound; the LIMIT below is.
 
-      1. The working set (:func:`_analyze_active_where`) -- in-flight / awaiting-cloud / failed, ordered
-         newest-first. Naturally bounded (lane concurrency + the failure backlog); NEVER the whole corpus.
-      2. A LIMIT-ed window of the most-recently-completed files, newest completion first.
+    Both reads follow the paging contract in :mod:`phaze.services.pagination` -- OFFSET paging, the
+    shared :data:`~phaze.services.pagination.DEFAULT_PAGE_SIZE`, a ``page_size + 1`` sentinel for
+    ``has_next`` (NEVER a whole-corpus COUNT), and the MANDATORY unique ``FileRecord.id`` tiebreaker
+    (``created_at`` alone ties -- Postgres timestamp defaults are transaction-time constant -- so
+    without it OFFSET paging would silently skip and duplicate rows across pages).
 
-    The two sets are disjoint by construction (the working set EXCLUDES completed), but the window is
-    de-duplicated against the working-set ids defensively before concatenation. Active work renders
-    first (``active-first``), then the completions window.
+      1. The active working set (:func:`_analyze_active_where`) -- in-flight / awaiting-cloud /
+         failed, newest-first, PAGED.
+      2. The recent-completions window, appended ONLY on the final page (``has_next`` False) so the
+         "active work first, then what just finished" reading survives while every page stays
+         bounded. For a working set that fits one page this is byte-identical to the prior behaviour.
+
+    Degrade-safe under ONE SAVEPOINT: any error rolls back the nested scope alone, logs, and returns
+    an EMPTY page -- this rides the hot workspace render and must NEVER 500 the page.
     """
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
     completions_limit = min(max(completions_limit, 0), 500)
     try:
         async with session.begin_nested():
-            # FileRecord.id is a deterministic tiebreaker: Postgres ``created_at`` defaults are
-            # transaction-time constant, so newest-first alone is not a stable order.
-            active_rows = (
+            active_raw = (
                 await session.execute(
-                    _analyze_files_select().where(_analyze_active_where()).order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
+                    paged_stmt(
+                        _analyze_files_select().where(_analyze_active_where()),
+                        page=page,
+                        page_size=page_size,
+                        order_by=(FileRecord.created_at.desc(),),
+                        tiebreaker=(FileRecord.id.desc(),),
+                    )
                 )
             ).all()
+            active_rows, has_next = split_sentinel(active_raw, page_size)
+            # The completions window is a TAIL garnish, not part of the paged set -- read it only when
+            # there is no further active page to show.
             window_rows = (
-                await session.execute(
-                    _analyze_files_select()
-                    .where(AnalysisResult.analysis_completed_at.is_not(None))
-                    .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
-                    .limit(completions_limit)
-                )
-            ).all()
+                (
+                    await session.execute(
+                        _analyze_files_select()
+                        .where(AnalysisResult.analysis_completed_at.is_not(None))
+                        .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
+                        .limit(completions_limit)
+                    )
+                ).all()
+                if not has_next
+                else []
+            )
     except Exception:
-        logger.warning("analyze_working_set_degraded", exc_info=True)
-        return []
+        logger.warning("analyze_working_set_degraded", page=page, page_size=page_size, exc_info=True)
+        return AnalyzeFilesPage(rows=[], page=page, page_size=page_size, has_next=False, status=None)
 
     # COMPUTE-03: the registry projection is looked up ONCE per call (not per row).
     kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
     active = _project_analyze_rows(active_rows, kinds)
     seen = {row["file_id"] for row in active}
     window = [row for row in _project_analyze_rows(window_rows, kinds) if row["file_id"] not in seen]
-    return active + window
+    return AnalyzeFilesPage(rows=active + window, page=page, page_size=page_size, has_next=has_next, status=None)
 
 
 async def get_analyze_files_page(
     session: AsyncSession,
     *,
     page: int = 1,
-    page_size: int = _ANALYZE_COMPLETIONS_WINDOW,
+    page_size: int = DEFAULT_PAGE_SIZE,
     status: str | None = None,
 ) -> AnalyzeFilesPage:
     """Return ONE bounded page of the full analyze-stage listing under a validated status filter.
 
-    Clamps ``page`` (>=1) and ``page_size`` (10..100), validates ``status`` against
-    :data:`ANALYZE_FILTERS` (unknown -> the unfiltered "all" membership), and runs the
-    :func:`_analyze_status_where` predicate ordered newest-first, LIMITed to ``page_size + 1`` -- the
-    sentinel that yields ``has_next`` with NO whole-corpus COUNT (T-87-11). SAVEPOINT degrade-safe:
-    ANY error rolls back the nested scope alone, logs a warning, and returns a safe EMPTY page -- it
-    NEVER 500s the render. Rows are the SAME projected shape as :func:`get_analyze_working_set`, so the
-    template renders both identically.
+    Follows the paging contract in :mod:`phaze.services.pagination`: OFFSET paging, the shared
+    clamps, a ``page_size + 1`` sentinel for ``has_next`` (NEVER a whole-corpus COUNT -- T-87-11), and
+    the MANDATORY unique ``FileRecord.id`` tiebreaker after the non-unique ``created_at`` display
+    order. ``status`` is validated against :data:`ANALYZE_FILTERS` (unknown -> the unfiltered "all"
+    membership, never a 422 into the render). SAVEPOINT degrade-safe: ANY error rolls back the nested
+    scope alone, logs a warning, and returns a safe EMPTY page. Rows are the SAME projected shape as
+    :func:`get_analyze_working_set`, so the template renders both identically.
     """
-    page = max(page, 1)
-    page_size = min(max(page_size, 10), 100)
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
     status = status if status in ANALYZE_FILTERS else None
-    offset = (page - 1) * page_size
     try:
         async with session.begin_nested():
-            # FileRecord.id is a deterministic tiebreaker (Postgres ``created_at`` defaults are
-            # transaction-time constant) so OFFSET paging never skips/duplicates a row across pages.
-            stmt = (
-                _analyze_files_select()
-                .where(_analyze_status_where(status))
-                .order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
-                .offset(offset)
-                .limit(page_size + 1)
+            stmt = paged_stmt(
+                _analyze_files_select().where(_analyze_status_where(status)),
+                page=page,
+                page_size=page_size,
+                order_by=(FileRecord.created_at.desc(),),
+                tiebreaker=(FileRecord.id.desc(),),
             )
-            rows = (await session.execute(stmt)).all()
+            raw = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("analyze_files_page_degraded", page=page, page_size=page_size, exc_info=True)
         return AnalyzeFilesPage(rows=[], page=page, page_size=page_size, has_next=False, status=status)
-    has_next = len(rows) > page_size
+    rows, has_next = split_sentinel(raw, page_size)
     kinds = non_local_backend_kinds(type_cast("ControlSettings", get_settings()))
-    projected = _project_analyze_rows(rows[:page_size], kinds)
-    return AnalyzeFilesPage(rows=projected, page=page, page_size=page_size, has_next=has_next, status=status)
+    return AnalyzeFilesPage(rows=_project_analyze_rows(rows, kinds), page=page, page_size=page_size, has_next=has_next, status=status)
 
 
 def analyze_lanes_content_hash(lanes: list[dict[str, Any]], selected_lane: str | None) -> str:
@@ -2039,6 +2068,10 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     state-agnostic "every music/video file", and excludes dedup-resolved files. A file whose metadata is
     genuinely done (a row present with ``failed_at`` NULL) drops out; a not-started or failed one stays.
     Pure ORM / bound params, NO interpolated operator input (T-42-03).
+    UNBOUNDED BY DESIGN (paging contract rule 7, phaze.services.pagination). This is the ENQUEUE set
+    -- the exact membership the bulk trigger and the recovery producer must schedule -- so it must
+    NEVER be paged or LIMITed; doing so would silently under-enqueue the backlog. The WORKSPACE
+    renders the bounded :func:`get_pending_files_page` instead. Keep the two readers separate.
     """
     stmt = select(FileRecord).where(
         FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
@@ -2047,6 +2080,53 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+def _pending_page_stmt(stage: Stage, *, page: int, page_size: int) -> Select[Any]:
+    """Build the bounded pending-set page SELECT shared by the metadata and fingerprint workspaces.
+
+    The SAME membership predicate the unbounded enqueue readers use
+    (:func:`get_metadata_pending_files` / :func:`get_fingerprint_pending_files`), wrapped in the
+    :mod:`phaze.services.pagination` contract: newest-first display order with the MANDATORY unique
+    ``FileRecord.id`` tiebreaker (``created_at`` ties -- Postgres timestamp defaults are
+    transaction-time constant), OFFSET paging, and a ``page_size + 1`` sentinel instead of a COUNT.
+    """
+    return paged_stmt(
+        select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause()),
+        page=page,
+        page_size=page_size,
+        order_by=(FileRecord.created_at.desc(),),
+        tiebreaker=(FileRecord.id.desc(),),
+    )
+
+
+async def get_pending_files_page(session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[FileRecord]:
+    """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
+
+    phaze-5462: the metadata and fingerprint workspaces used to render
+    :func:`get_metadata_pending_files` / :func:`get_fingerprint_pending_files` in full, inline and
+    UNBOUNDED -- exactly the cliff phaze-5462 fixed on the Analyze tab. They measured a harmless
+    ~70 KB with zero rows only because those backlogs happen to be EMPTY in production today; a
+    metadata stall would have reproduced the 12.7 MB Analyze payload verbatim. This is the bounded
+    read those two surfaces render instead.
+
+    CRITICAL (paging contract rule 7): this is the RENDER read ONLY. The bulk EXTRACT ALL /
+    FINGERPRINT ALL triggers keep calling the UNBOUNDED ``get_*_pending_files`` readers, because
+    enqueuing only the first page would silently under-enqueue the backlog -- a far worse bug than a
+    long table. Do NOT "unify" these two readers.
+
+    SAVEPOINT degrade-safe: returns an EMPTY page on any error rather than 500ing the workspace.
+    """
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
+    try:
+        async with session.begin_nested():
+            raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size))).scalars().all()
+    except Exception:
+        logger.warning("pending_files_page_degraded", stage=stage.value, page=page, page_size=page_size, exc_info=True)
+        return Page(rows=[], page=page, page_size=page_size, has_next=False)
+    rows, has_next = split_sentinel(raw, page_size)
+    return Page(rows=rows, page=page, page_size=page_size, has_next=has_next)
 
 
 async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
@@ -2081,6 +2161,10 @@ async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecor
     eligible (ELIG-04 auto-retry). A single ``.where`` cannot emit a duplicate row, so the de-dup loop is
     unnecessary. Dedup-resolved files are excluded. Pure ORM / bound params, NO interpolated operator
     input (T-42-03).
+    UNBOUNDED BY DESIGN (paging contract rule 7, phaze.services.pagination). This is the ENQUEUE set
+    -- the exact membership the bulk trigger and the recovery producer must schedule -- so it must
+    NEVER be paged or LIMITed; doing so would silently under-enqueue the backlog. The WORKSPACE
+    renders the bounded :func:`get_pending_files_page` instead. Keep the two readers separate.
     """
     stmt = select(FileRecord).where(
         FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
@@ -2313,7 +2397,8 @@ class FilesPage:
 
     rows: list[FilesPageRow] = field(default_factory=list)
     page: int = 1
-    page_size: int = 25
+    # Contract rule 3: the page size is owned by phaze.services.pagination, never re-spelled here.
+    page_size: int = DEFAULT_PAGE_SIZE
     has_next: bool = False
 
 
@@ -2328,26 +2413,27 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     ``stage_status_case(stage) == bucket`` -- a pure ORM bound-param comparison (never f-string SQL,
     T-87-14); the caller validates ``stage``/``bucket`` against the ``Stage``/``Status`` allowlists.
     """
-    offset = (page - 1) * page_size
     cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
-    stmt = select(FileRecord, *cols).order_by(FileRecord.id)
+    stmt = select(FileRecord, *cols)
     if stage is not None and bucket is not None:
         stmt = stmt.where(stage_status_case(stage) == bucket)
-    # +1 sentinel -> has_next WITHOUT a whole-corpus COUNT (the T-87-11 DoS mitigation).
-    return stmt.offset(offset).limit(page_size + 1)
+    # The paging contract (phaze.services.pagination): OFFSET + a page_size+1 sentinel for has_next
+    # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is BOTH the display order and the unique
+    # tiebreaker here, so the order is already total.
+    return paged_stmt(stmt, page=page, page_size=page_size, order_by=(), tiebreaker=(FileRecord.id,))
 
 
 async def get_files_page(
     session: AsyncSession,
     *,
     page: int = 1,
-    page_size: int = 25,
+    page_size: int = DEFAULT_PAGE_SIZE,
     stage: Stage | None = None,
     bucket: str | None = None,
 ) -> FilesPage:
     """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
 
-    Clamps ``page`` (>=1) and ``page_size`` (10..100), builds the bounded :func:`_files_page_stmt`, and
+    Clamps ``page``/``page_size`` via the :mod:`phaze.services.pagination` contract, builds the bounded :func:`_files_page_stmt`, and
     runs it inside a ``begin_nested()`` SAVEPOINT so ANY error (a DB hiccup, an aborted transaction, a
     build-time raise) rolls back the nested scope ALONE, logs a warning, and returns a safe EMPTY page --
     it NEVER 500s the poll (INFLIGHT-02 / D-00c / T-87-12). ``has_next`` is derived from the LIMIT+1
@@ -2358,8 +2444,8 @@ async def get_files_page(
     ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
     wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
     """
-    page = max(page, 1)
-    page_size = min(max(page_size, 10), 100)
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
             stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket)
@@ -2367,13 +2453,13 @@ async def get_files_page(
     except Exception:
         logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)
         return FilesPage(rows=[], page=page, page_size=page_size, has_next=False)
-    has_next = len(result) > page_size
+    page_rows, has_next = split_sentinel(result, page_size)
     rows = [
         FilesPageRow(
             file=row[0],
             buckets={stage_member.value: row[idx + 1] for idx, stage_member in enumerate(_FILES_PAGE_STAGES)},
         )
-        for row in result[:page_size]
+        for row in page_rows
     ]
     return FilesPage(rows=rows, page=page, page_size=page_size, has_next=has_next)
 

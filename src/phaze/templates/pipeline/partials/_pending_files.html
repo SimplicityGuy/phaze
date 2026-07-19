@@ -1,0 +1,75 @@
+{# phaze-5462: the BOUNDED, paged pending-set table shared by the Metadata and Fingerprint workspaces.
+
+   Both workspaces used to render their ENTIRE pending set inline (shell._render_stage ->
+   get_metadata_pending_files / get_fingerprint_pending_files, neither of which has a LIMIT). They
+   measured a harmless ~70 KB with zero rows only because those backlogs happen to be EMPTY in
+   production today -- a metadata stall would have reproduced the Analyze tab's 12.7 MB payload
+   verbatim. The bead's premise that these two "already page" did not survive checking.
+
+   Now they ship an empty host div that hx-gets GET /pipeline/pending-files on load, exactly like
+   #analyze-files-view -- the SAME paging contract (phaze.services.pagination), the same page size,
+   the same Prev/Next affordance, the same empty and loading states.
+
+   Context contract:
+     * pending_page  -- phaze.services.pagination.Page[FileRecord] (rows/page/page_size/has_next).
+     * stage         -- "metadata" | "fingerprint" (validated against the router allowlist; carried
+                        ONLY as an autoescaped query value, never spliced into a template path).
+     * host_id       -- the id of the host div this fragment is swapped into (hx-target for the pager).
+#}
+{% set _is_metadata = stage == "metadata" %}
+{% if _is_metadata %}
+    {% set columns = ["File", "Format", "Size", "Existing tags"] %}
+    {% set empty_heading = "Nothing pending" %}
+    {% set empty_body = "Every discovered file already has extracted metadata." %}
+    {% set row_id_prefix = "metadata-row" %}
+{% else %}
+    {% set columns = ["File", "Duration", "Chromaprint", "AcoustID"] %}
+    {% set empty_heading = "Nothing to fingerprint" %}
+    {% set empty_body = "All discovered files have a chromaprint fingerprint." %}
+    {% set row_id_prefix = "fingerprint-row" %}
+{% endif %}
+<div>
+    {% set ns = namespace(rows=[]) %}
+    {% for f in pending_page.rows %}
+        {% if _is_metadata %}
+            {% set _ = ns.rows.append([
+                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
+                {'text': f.file_type},
+                {'text': f.file_size | filesizeformat, 'mono': True},
+                {'text': '—'},
+            ]) %}
+        {% else %}
+            {% set _ = ns.rows.append([
+                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
+                {'text': '—'},
+                {'text': '—'},
+                {'text': '—'},
+            ]) %}
+        {% endif %}
+    {% endfor %}
+    {% set rows = ns.rows %}
+    {% include "pipeline/partials/_file_table.html" %}
+
+    {% if pending_page.show_pager %}
+    {# Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the paging
+       contract forbids (rule 2). Same affordance the Analyze pager renders. #}
+    {% set _qs = '&stage=' ~ stage ~ '&page_size=' ~ pending_page.page_size %}
+    {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
+    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed' %}
+    <nav aria-label="{{ stage }} files pagination" class="flex items-center justify-between mt-6">
+        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ pending_page.page }}</p>
+        <div class="flex gap-1">
+            {% if pending_page.has_prev %}
+            <button hx-get="/pipeline/pending-files?page={{ pending_page.page - 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Previous</button>
+            {% else %}
+            <span class="{{ _pdis }}">Previous</span>
+            {% endif %}
+            {% if pending_page.has_next %}
+            <button hx-get="/pipeline/pending-files?page={{ pending_page.page + 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Next</button>
+            {% else %}
+            <span class="{{ _pdis }}">Next</span>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+</div>

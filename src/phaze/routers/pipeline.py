@@ -43,6 +43,7 @@ from phaze.services.backends import (
 )
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
@@ -69,6 +70,7 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_metadata_failed_files,
     get_metadata_pending_files,
+    get_pending_files_page,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -647,14 +649,13 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
 
-    # Phase 58 (58-04, WORK-04 / D-03) + Phase 95 (phaze-zqvh.2, CONSOLE-04): the DEFAULT Analyze file
-    # list is now BOUNDED at the source -- the active-first working set (in-flight · awaiting-cloud ·
-    # failed) plus a LIMIT-ed recent-completions window (get_analyze_working_set), NOT the whole
-    # analyze-stage membership (which at 200K scale was 92,335 rows / ~105MB HTML -- phaze-zqvh.1
-    # baseline). The full corpus stays reachable via the status-filter bar -> GET /pipeline/analyze-files
-    # (paged). The service owns the never-500 SAVEPOINT degrade (-> [] on any DB error), so NO try/except
-    # here -- same service-owns-degrade idiom as the cloud counts above. Pure read; no enqueue, no schema change.
-    analyze_files = await get_analyze_working_set(session)
+    # phaze-5462: the Analyze workspace no longer server-renders ANY file rows inline. It used to seed
+    # `analyze_files` here from get_analyze_working_set, whose "active working set" branch was UNBOUNDED
+    # (10,132 rows / 12.7 MB in prod -- ~180x the metadata/fingerprint tabs, which render a ~70 KB shell
+    # with zero rows). phaze-zqvh bounded only the completions window and trusted a docstring assertion
+    # for the other half. The list now loads exactly like its siblings: the workspace ships an empty
+    # #analyze-files-view that hx-gets GET /pipeline/analyze-files on load, which serves the BOUNDED,
+    # paged working set. No DB read for the file list happens on this path at all any more.
 
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
@@ -701,7 +702,6 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         # Phase 58 (58-04): the all-in-stage Analyze file list (D-03).
-        "analyze_files": analyze_files,
         # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
         # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
         "lanes": lanes,
@@ -943,7 +943,7 @@ _VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
 async def pipeline_files(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     stage: str | None = Query(None),
     bucket: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
@@ -981,7 +981,7 @@ async def pipeline_files(
 async def analyze_files_fragment(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     status: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -992,8 +992,8 @@ async def analyze_files_fragment(
     validated against the ``ANALYZE_FILTERS`` allowlist (T-57-01 / T-87-14: an unknown value NEVER reaches
     a template path or SQL string -- it degrades to the default view, never a 422 into the render):
 
-      * no / unknown ``status`` -> the DEFAULT bounded working-set view (active-first working set + the
-        LIMIT-ed recent-completions window), no pager.
+      * no / unknown ``status`` -> the DEFAULT bounded working-set view (the active-first working set,
+        PAGED, plus the LIMIT-ed recent-completions window on the final page), with a pager.
       * a valid ``status`` -> the full analyze-stage listing under that lens, served as a bounded page
         (``get_analyze_files_page``: OFFSET + ``page_size + 1`` sentinel, never a whole-corpus COUNT).
 
@@ -1003,13 +1003,16 @@ async def analyze_files_fragment(
     """
     status_val = status if status in ANALYZE_FILTERS else None
     if status_val is None:
-        # DEFAULT bounded working-set view (no explicit filter): the active-first set + completions window.
+        # DEFAULT bounded working-set view (no explicit filter): the active-first set, PAGED, with the
+        # completions window appended on the final page. phaze-5462: this branch is now paged like every
+        # other -- it used to return the whole unbounded working set.
+        working_set = await get_analyze_working_set(session, page=page, page_size=page_size)
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/_analyze_files.html",
             context={
-                "analyze_rows": await get_analyze_working_set(session),
-                "analyze_page": None,
+                "analyze_rows": working_set.rows,
+                "analyze_page": working_set,
                 "active_status": None,
             },
         )
@@ -1021,6 +1024,47 @@ async def analyze_files_fragment(
             "analyze_rows": analyze_page.rows,
             "analyze_page": analyze_page,
             "active_status": status_val,
+        },
+    )
+
+
+# phaze-5462: the stage allowlist for the shared pending-files fragment. Validated as a SET so an
+# unknown value can NEVER reach SQL or a template path (T-57-01 / T-87-14) -- it degrades to
+# "metadata", never a 422 into the render.
+_PENDING_STAGES: dict[str, Stage] = {"metadata": Stage.METADATA, "fingerprint": Stage.FINGERPRINT}
+
+
+@router.get("/pipeline/pending-files", response_class=HTMLResponse)
+async def pending_files_fragment(
+    request: Request,
+    stage: str = Query("metadata"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the Metadata / Fingerprint pending set (phaze-5462).
+
+    The sibling of :func:`analyze_files_fragment`, on the SAME paging contract
+    (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a ``page_size + 1`` sentinel
+    for ``has_next`` (never a whole-corpus COUNT), and the mandatory unique tiebreaker. Both enrich
+    workspaces hx-get this on load into their empty host div, so neither server-renders a file row
+    inline any more.
+
+    ``stage`` is validated against :data:`_PENDING_STAGES` (unknown -> metadata) and is carried into
+    the template only as an autoescaped query value -- never a template path (T-57-01).
+
+    NOTE: this is the RENDER read. The EXTRACT ALL / FINGERPRINT ALL buttons still enqueue the
+    UNBOUNDED pending set (paging contract rule 7) -- paging the enqueue would silently drop work.
+    """
+    stage_key = stage if stage in _PENDING_STAGES else "metadata"
+    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_pending_files.html",
+        context={
+            "pending_page": pending_page,
+            "stage": stage_key,
+            "host_id": f"{stage_key}-files-view",
         },
     )
 

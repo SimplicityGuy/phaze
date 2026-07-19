@@ -1000,7 +1000,7 @@ async def test_get_analyze_working_set_derives_flags_from_markers(session: Async
     session.add(CloudJob(id=uuid.uuid4(), file_id=awaiting_f.id, status=CloudJobStatus.AWAITING.value))
     await session.commit()
 
-    rows = await get_analyze_working_set(session)
+    rows = (await get_analyze_working_set(session)).rows
     by_id = {r["file_id"]: r for r in rows}
 
     assert str(off_stage.id) not in by_id, "a file with no analysis/cloud_job marker is not in the Analyze stage"
@@ -1043,7 +1043,7 @@ async def test_get_analyze_working_set_lane_derives_from_backend_id(session: Asy
     )
     await session.commit()
 
-    rows = await get_analyze_working_set(session)
+    rows = (await get_analyze_working_set(session)).rows
     by_id = {r["file_id"]: r for r in rows}
 
     assert by_id[str(kueue_f.id)]["lane"] == "vox"
@@ -1063,9 +1063,10 @@ async def test_get_analyze_working_set_bounds_completions_window(session: AsyncS
     """phaze-zqvh.2: the DEFAULT view never returns the whole completed corpus -- completions are LIMIT-ed.
 
     Seeds MANY completed files (more than the window) plus the active working set (in-flight + failed +
-    awaiting-cloud). The working set is returned IN FULL (it is naturally bounded); the completed set is
-    capped at ``completions_limit`` -- so the total row count is ``working_set + window``, NEVER the whole
-    corpus. This is the load-bearing bound the phaze-zqvh.1 92,335-row baseline motivates.
+    awaiting-cloud). phaze-5462: the active working set is now PAGED rather than "returned IN FULL
+    because it is naturally bounded" -- that claim was false and is the bug this bead fixed. Here the
+    3 active rows fit one page, so the total is ``active (3) + window (2)`` and the completed set is
+    still capped at ``completions_limit``.
     """
     monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
 
@@ -1084,7 +1085,7 @@ async def test_get_analyze_working_set_bounds_completions_window(session: AsyncS
         session.add(_completed_analysis_for(f.id, fine_done=40, fine_total=40))
     await session.commit()
 
-    rows = await get_analyze_working_set(session, completions_limit=2)
+    rows = (await get_analyze_working_set(session, completions_limit=2)).rows
     by_id = {r["file_id"]: r for r in rows}
 
     # The full active working set is present (in-flight / failed / awaiting-cloud), regardless of window.
@@ -1111,7 +1112,7 @@ async def test_get_analyze_working_set_is_active_first(session: AsyncSession, mo
     session.add(_completed_analysis_for(completed_f.id, fine_done=40, fine_total=40))
     await session.commit()
 
-    rows = await get_analyze_working_set(session)
+    rows = (await get_analyze_working_set(session)).rows
     order = [r["file_id"] for r in rows]
     assert order.index(str(inflight_f.id)) < order.index(str(completed_f.id)), "active work must render before completions"
 
