@@ -457,3 +457,19 @@ def test_main_success_reports_counts_and_the_resume_warning(
     # The parked-jobs warning is the operational safeguard against resuming too early.
     assert "/pipeline/stages/fingerprint/resume" in out
 
+
+def test_queue_status_prints_running_vs_claimed_breakdown(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-grx3: ``phaze queue status`` renders the honest RUNNING vs CLAIMED-but-unrun split."""
+    from phaze.services.queue_introspection import ActiveJobBreakdown
+
+    async def _fake(_queue: str) -> ActiveJobBreakdown:
+        return ActiveJobBreakdown(queue=_queue, total_active=3449, running=2, claimed_unrun=3447, stuck_past_timeout=3419)
+
+    monkeypatch.setattr(cli, "_run_queue_status", _fake)
+    rc = cli.main(["queue", "status", "--queue", "phaze-agent-nox-fingerprint"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "3449 row(s) in status='active' -- this is NOT the number running" in out
+    assert "running (attempts>=1, genuinely executing): 2" in out
+    assert "claimed-but-unrun (attempts=0" in out and "3447" in out

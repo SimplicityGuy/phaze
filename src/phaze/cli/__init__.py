@@ -40,6 +40,7 @@ from phaze.routers.agent_auth import hash_token
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
 from phaze.services.fingerprint_requeue import FingerprintEnqueueResult, enqueue_fingerprint_jobs, select_outage_failed_files
+from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 
 
 if TYPE_CHECKING:
@@ -259,6 +260,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Report what WOULD be re-queued and exit without enqueueing anything.",
     )
 
+    # phaze-grx3: operator diagnostic -- split a queue's 'active' count into genuinely-running vs
+    # claimed-but-buffered rows, so "active: N" is never misread as "N files fingerprinting".
+    queue_grp = subcommands.add_parser("queue", help="SAQ queue diagnostics.")
+    queue_sub = queue_grp.add_subparsers(dest="queue_command", required=True)
+    status = queue_sub.add_parser(
+        "status",
+        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun (phaze-grx3).",
+        description=(
+            "SAQ marks a row 'active' at dequeue and buffers it in-process; only 'concurrency' rows "
+            "actually run at once, so a raw 'active' count over-reports. This splits it using the "
+            "attempts signal: attempts>=1 is genuinely running, attempts=0 is claimed-but-unrun."
+        ),
+    )
+    status.add_argument("--queue", dest="queue_name", required=True, help="SAQ queue name (e.g. phaze-agent-nox-fingerprint).")
     return parser
 
 
@@ -277,7 +292,23 @@ def main(argv: list[str] | None = None) -> int:
     # AttributeError the moment a second group exists.
     if args.group == "fingerprint":
         return _main_fingerprint(args)
+    if args.group == "queue":
+        return _main_queue_status(args)
     return _main_agents_add(args)
+
+
+def _main_queue_status(args: argparse.Namespace) -> int:
+    """Handle ``phaze queue status``. Returns a process exit code."""
+    breakdown = asyncio.run(_run_queue_status(args.queue_name))
+    for line in breakdown.as_lines():
+        print(line)
+    return 0
+
+
+async def _run_queue_status(queue_name: str) -> ActiveJobBreakdown:
+    """Read the RUNNING vs CLAIMED-but-unrun split for ``queue_name`` (phaze-grx3)."""
+    async with async_session() as session:
+        return await summarize_active_jobs(session, queue_name)
 
 
 def _main_agents_add(args: argparse.Namespace) -> int:
