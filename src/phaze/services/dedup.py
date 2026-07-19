@@ -215,6 +215,39 @@ async def find_duplicate_groups_by_hashes(session: AsyncSession, hashes: Sequenc
     return _build_metadata_groups(result.all())
 
 
+async def find_duplicate_group_by_hash(session: AsyncSession, group_hash: str) -> dict[str, Any] | None:
+    """Return the ONE unresolved duplicate group for ``group_hash``, or ``None`` if there isn't one.
+
+    This is a LOOKUP, not a paged read, and it deliberately does not touch
+    :mod:`phaze.services.pagination` (phaze-m7ya). Locating a single known group is an indexed
+    ``WHERE sha256_hash = :group_hash`` query whose cost and correctness are independent of where that
+    group happens to sort among all the others. Paging a lookup would preserve the original defect in a
+    nicer costume: ``compare_group`` and ``undo_resolve_endpoint`` used to fetch a hardcoded first 1000
+    groups and linear-scan them, so any group past that arbitrary boundary reported "Group not found"
+    and could never be reviewed or resolved through the UI -- even though the list page happily rendered
+    it with a Compare button. Widening the cap, or walking pages until the hash turns up, would only
+    move the boundary; removing the scan removes the class of bug. It also drops an O(all groups)
+    metadata fetch that ran on EVERY single card expand.
+
+    Returns ``None`` for a hash that is unknown, already resolved, or no longer a duplicate (down to a
+    single remaining file) -- all of which are ordinary states a stale card can ask about, not errors.
+    The ``count > 1`` check mirrors the ``HAVING count(id) > 1`` in :func:`_dup_hash_subquery` so a
+    lookup agrees with the list about what counts as a group.
+    """
+    stmt = (
+        select(FileRecord, FileMetadata)
+        .outerjoin(FileMetadata, FileRecord.id == FileMetadata.file_id)
+        .where(FileRecord.sha256_hash == group_hash)
+        .where(~dedup_resolved_clause())
+        .order_by(FileRecord.original_path)
+    )
+    result = await session.execute(stmt)
+    groups = _build_metadata_groups(result.all())
+    if not groups or groups[0]["count"] <= 1:
+        return None
+    return groups[0]
+
+
 async def count_duplicate_groups(session: AsyncSession) -> int:
     """Count the total number of duplicate groups (hashes with >1 file).
 
