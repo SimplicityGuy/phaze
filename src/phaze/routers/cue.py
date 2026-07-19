@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -18,6 +18,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import applied_clause, is_applied
 
@@ -29,14 +30,26 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/cue", tags=["cue"])
 
 
-async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | None = None) -> list[tuple[Tracklist, FileRecord]]:
-    """Query approved tracklists with EXECUTED files that have at least one timestamped track.
+# The CUE list's display order (phaze-hdho): fingerprint-sourced tracklists first (D-02 / CUE-01
+# preference), then alphabetically by artist/event. BOTH ``Tracklist.artist`` and ``Tracklist.event``
+# are nullable ``Text`` (models/tracklist.py), so a set of tracklists sharing a source and the same
+# -- or NULL -- artist/event forms a tie group. This tuple alone is NOT a unique sort key; every
+# caller MUST append a ``Tracklist.id`` tiebreaker (directly, or via :func:`paged_stmt`) before
+# relying on it for anything that slices or pages the result set (paging contract rule 4).
+_ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (
+    (Tracklist.source == "fingerprint").desc(),
+    Tracklist.artist,
+    Tracklist.event,
+)
 
-    Pass ``limit`` to bound the result set at the SQL level. WR-03: the review-card consumer
-    (``services.review.get_cue_review_cards``) passes ``limit=_MAX_REVIEW_ROWS`` so the DB never
-    returns more than the render cap -- the eligible half is then genuinely memory-bounded, not just
-    loop-capped after materializing every eligible pair. The count/pagination callers
-    (``_get_cue_stats``, ``list_cue``) still call with no ``limit`` and get the full set.
+
+def _eligible_tracklist_stmt() -> Select[Any]:
+    """Build the base (UNORDERED) SELECT for approved tracklists with EXECUTED files that have >=1 timestamped track.
+
+    Shared by every eligible-tracklist reader so the join/filter logic lives in exactly one place.
+    Deliberately carries NO ``ORDER BY`` -- callers compose :data:`_ELIGIBLE_DISPLAY_ORDER` (+ the
+    mandatory ``Tracklist.id`` tiebreaker) themselves, so it is applied exactly once per statement
+    instead of risking a double-appended sort key.
     """
     # Subquery: tracklist IDs that have at least one track with a timestamp
     has_timestamp_subq = (
@@ -47,7 +60,7 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
         .correlate(Tracklist)
     )
 
-    stmt = (
+    return (
         select(Tracklist, FileRecord)
         .join(FileRecord, Tracklist.file_id == FileRecord.id)
         .where(
@@ -56,13 +69,25 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
             applied_clause(),
             Tracklist.id.in_(has_timestamp_subq),
         )
-        .order_by(
-            # Fingerprint first per D-02 (CUE-01 preference)
-            (Tracklist.source == "fingerprint").desc(),
-            Tracklist.artist,
-            Tracklist.event,
-        )
     )
+
+
+async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | None = None) -> list[tuple[Tracklist, FileRecord]]:
+    """Query approved tracklists with EXECUTED files that have at least one timestamped track.
+
+    Ordered by :data:`_ELIGIBLE_DISPLAY_ORDER` with ``Tracklist.id`` appended as a tiebreaker so a
+    caller-supplied ``limit`` (a bare SQL ``LIMIT``, no ``OFFSET``) is deterministic even when many
+    rows tie on source/artist/event -- WITHOUT it, WHICH rows fall inside the cap could vary between
+    executions (phaze-hdho).
+
+    Pass ``limit`` to bound the result set at the SQL level. WR-03: the review-card consumer
+    (``services.review.get_cue_review_cards``) passes ``limit=_MAX_REVIEW_ROWS`` so the DB never
+    returns more than the render cap -- the eligible half is then genuinely memory-bounded, not just
+    loop-capped after materializing every eligible pair. The count/batch callers (``_get_cue_stats``,
+    ``generate_batch``) call with no ``limit`` and get the full set. The OFFSET-paged render read in
+    ``list_cue`` does NOT use this helper -- see :func:`paged_stmt` there instead.
+    """
+    stmt = _eligible_tracklist_stmt().order_by(*_ELIGIBLE_DISPLAY_ORDER, Tracklist.id)
     if limit is not None:
         stmt = stmt.limit(limit)
 
@@ -187,10 +212,26 @@ async def _load_tracklist_with_file(session: AsyncSession, tracklist_id: uuid.UU
 async def list_cue(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Render the CUE management page or HTMX partial."""
+    """Render ONE bounded page of the CUE management list.
+
+    phaze-hdho: this used to re-run the UNORDERED-past-its-display-key eligible query on every page
+    request and slice the fully materialized list in Python (``eligible_pairs[offset:offset+page_size]``).
+    ``Tracklist.artist``/``Tracklist.event`` are both nullable, so any set of tracklists sharing a
+    source and the same (or NULL) artist/event tied on the ORDER BY -- and Postgres gives NO stability
+    guarantee for tied rows across two SEPARATE query executions. Page 1 and page 2 are independent
+    HTTP requests, each re-running the query, so a boundary row's tie-group placement could flip
+    between them: silently duplicated onto both pages, or dropped from both.
+
+    Routed through :mod:`phaze.services.pagination` instead: :func:`paged_stmt` appends the mandatory
+    unique ``Tracklist.id`` tiebreaker AFTER the existing display order (contract rule 4), so the
+    total ordering is deterministic and OFFSET paging can no longer skip or duplicate a row. ``page``/
+    ``page_size`` clamp rather than raise (rule 5); ``has_next`` rides the ``page_size + 1`` sentinel,
+    never a whole-corpus COUNT (rule 2); the read is SAVEPOINT degrade-safe (rule 6) -- any DB error
+    rolls back the nested scope alone and renders an EMPTY page rather than 500ing the workspace.
+    """
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
     if request.headers.get("HX-Request") != "true":
@@ -198,13 +239,22 @@ async def list_cue(
 
     stats = await _get_cue_stats(session)
 
-    # Query eligible tracklists for the list
-    eligible_pairs = await _get_eligible_tracklist_query(session)
-
-    # Paginate
-    total = len(eligible_pairs)
-    offset = (page - 1) * page_size
-    page_pairs = eligible_pairs[offset : offset + page_size]
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
+    try:
+        async with session.begin_nested():
+            stmt = paged_stmt(
+                _eligible_tracklist_stmt(),
+                page=page,
+                page_size=page_size,
+                order_by=_ELIGIBLE_DISPLAY_ORDER,
+                tiebreaker=(Tracklist.id,),
+            )
+            raw = (await session.execute(stmt)).tuples().all()
+    except Exception:
+        logger.warning("cue_list_page_degraded", page=page, page_size=page_size, exc_info=True)
+        raw = []
+    page_pairs, has_next = split_sentinel(list(raw), page_size)
 
     # Build tracklist data with CUE status
     tracklists: list[dict[str, Any]] = []
@@ -230,7 +280,8 @@ async def list_cue(
             }
         )
 
-    pagination = Pagination(page=page, page_size=page_size, total=total)
+    # No whole-corpus total (paging contract rule 2): has_next already came off the +1 sentinel above.
+    pagination = Page[tuple[Tracklist, FileRecord]](page=page, page_size=page_size, has_next=has_next)
 
     context: dict[str, Any] = {
         "request": request,
@@ -383,7 +434,7 @@ async def generate_batch(
             }
         )
 
-    pagination = Pagination(page=1, page_size=20, total=len(eligible_pairs))
+    pagination = Pagination(page=1, page_size=DEFAULT_PAGE_SIZE, total=len(eligible_pairs))
 
     return templates.TemplateResponse(
         request=request,
