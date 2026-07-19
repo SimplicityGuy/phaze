@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from phaze.config import AgentSettings
+from phaze.enums.execution import ExecutionStatus
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_client import AgentApiServerError
 from phaze.tasks.execution import execute_approved_batch
@@ -390,6 +391,201 @@ async def test_uuids_reused_from_job_meta_on_retry(
     assert api.post_exec_batch_progress.await_count == 1
     progress_payload = _payload_from_call(api.post_exec_batch_progress.await_args)
     assert progress_payload.request_id == preseeded_req_id
+
+
+# ---------------------------------------------------------------------------
+# phaze-ebpt — already-moved replay detection: a SAQ retry after a crash between
+# the committed file move and the success PATCHes must report COMPLETED (with a
+# current_path pointing at `proposed`), NOT flip an already-executed proposal to
+# FAILED with a stale current_path pointing at the now-deleted `original`.
+# ---------------------------------------------------------------------------
+
+
+async def test_crash_retry_already_moved_reports_completed_not_stale_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-ebpt.
+
+    Simulates the exact crash window the bug report describes: the file op
+    (``original.replace(proposed)``) already committed on a first attempt, the
+    worker died before the completed/executed/progress PATCHes ran, and SAQ's
+    sweep now re-dispatches the SAME job -- reusing the SAME
+    ``execution_log_id``/``progress_request_id`` from ``job.meta`` (D-15),
+    exactly as a genuine retry would.
+
+    Pre-fix: ``_resolve_and_check_containment``'s non-strict resolve lets the
+    missing ``original`` resolve without error, the move/verify code below then
+    discovers ``proposed`` already occupied (``_is_same_file`` can't confirm a
+    match because ``original.stat()`` raises OSError) and raises
+    ``FileExistsError("destination already exists, refusing to overwrite")`` --
+    caught by the generic handler, which PATCHes the execution log FAILED, flips
+    the still-APPROVED proposal to FAILED, and reports ``current_path=None``
+    (leaving ``FileRecord.current_path`` pointing at the deleted ``original``).
+
+    Post-fix: ``_execute_one`` detects ``not original.exists() and
+    proposed.exists()`` up front, skips the file op entirely, and falls through
+    to the SAME success-reporting path a first-time success takes -- the
+    proposal ends ``executed``/COMPLETED with ``current_path == str(proposed)``.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    original = orig_paths[0]
+    proposed = proposed_paths[0]
+
+    proposal_id = uuid.uuid4()
+    preseeded_log_id = uuid.uuid4()
+    preseeded_req_id = uuid.uuid4()
+    job = _make_job_mock(
+        initial_meta={
+            f"log_id:{proposal_id}": str(preseeded_log_id),
+            f"req_id:{proposal_id}": str(preseeded_req_id),
+        },
+    )
+
+    # Simulate the crash window: the FIRST attempt already committed the move
+    # (original.replace(proposed)) on disk before it crashed, so replay begins
+    # with `original` gone and `proposed` present -- exactly what os.replace
+    # leaves behind, and exactly what the code under test must detect.
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    original.replace(proposed)
+    assert not original.exists()
+    assert proposed.exists()
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=proposal_id,
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    # The batch as a whole must report success, not a failure.
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+
+    # The retry-stable execution_log_id/progress_request_id were re-used (no
+    # fresh UUIDs seeded -- this really is the "same job" SAQ retry shape).
+    job.update.assert_not_awaited()
+    log_post = api.post_execution_log.await_args.args[0]
+    assert log_post.id == preseeded_log_id
+
+    # ExecutionLog PATCH must be COMPLETED, never FAILED.
+    log_patch = api.patch_execution_log.await_args.args[1]
+    assert log_patch.status == ExecutionStatus.COMPLETED
+
+    # Proposal-state PATCH must report 'executed' with current_path pointing at
+    # `proposed` -- NOT 'failed' with the stale (deleted) `original` path.
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.file_state == "moved"
+    assert state_patch.current_path == str(proposed)
+
+    # Progress POST must report the success terminal_step, reusing the
+    # preseeded (not-yet-consumed, since the first attempt crashed before
+    # posting it) request_id.
+    progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert progress_post.terminal_step == "deleted"
+    assert progress_post.request_id == preseeded_req_id
+
+    # The file itself is untouched by the replay: still exactly at `proposed`.
+    assert proposed.exists()
+    assert not original.exists()
+
+
+async def test_crash_retry_already_moved_with_hash_verifies_against_proposed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Already-moved replay with a supplied sha256_hash verifies against `proposed`, not the gone `original`.
+
+    Pre-fix, a hash-carrying retry of an already-moved proposal would hit
+    ``_sha256_of_file(original)`` and raise FileNotFoundError (a distinct crash
+    signature from the no-hash case, but still misreports the proposal FAILED).
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    original = orig_paths[0]
+    proposed = proposed_paths[0]
+    content_hash = hashlib.sha256(original.read_bytes()).hexdigest()
+
+    # Simulate the crash window (same as above): the move already committed.
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    original.replace(proposed)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.current_path == str(proposed)
+
+
+async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """already-moved shape (original gone, proposed present) + WRONG hash -> still fails.
+
+    Guards against the fix over-trusting the already-moved heuristic: if the
+    file sitting at `proposed` does not match the declared sha256, that is not
+    the proposal's own replayed move (e.g. an unrelated file landed at the
+    destination) and must be reported as a genuine verify failure, not silently
+    swallowed into a false 'completed'.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    orig_paths, proposed_paths = _seed_files(tmp_path, 1)
+    original = orig_paths[0]
+    proposed = proposed_paths[0]
+
+    # Simulate the already-moved shape, but `proposed` does NOT match the
+    # declared hash (as if an unrelated file occupies the destination).
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    original.replace(proposed)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash="0" * 64,  # deliberately wrong
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "failed"
+    progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert progress_post.failed_at_step == "verify"
 
 
 # ---------------------------------------------------------------------------
