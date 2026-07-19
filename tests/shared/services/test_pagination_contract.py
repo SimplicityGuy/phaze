@@ -262,7 +262,9 @@ async def test_analyze_paging_is_stable_when_the_sort_key_ties(session: AsyncSes
     seen = await _walk_all_pages(lambda p: get_analyze_working_set(session, page=p, page_size=MIN_PAGE_SIZE), MIN_PAGE_SIZE)
 
     expected = {str(f.id) for f in files}
-    assert len(seen) == len(set(seen)), f"a row was DUPLICATED across pages -- the ORDER BY lost its unique tiebreaker ({len(seen) - len(set(seen))} dupes)"
+    assert len(seen) == len(set(seen)), (
+        f"a row was DUPLICATED across pages -- the ORDER BY lost its unique tiebreaker ({len(seen) - len(set(seen))} dupes)"
+    )
     assert set(seen) == expected, f"a row was SKIPPED across pages -- {len(expected - set(seen))} missing of {len(expected)}"
 
 
