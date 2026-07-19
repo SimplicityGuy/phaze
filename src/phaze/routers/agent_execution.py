@@ -27,6 +27,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
@@ -72,10 +73,26 @@ async def create_execution_log(
     `agent_id` is NOT in the request body and NOT a column on ExecutionLog;
     the response echoes the auth-dep's `agent.id` so the caller can correlate
     the row with the authenticated identity.
+
+    `proposal_id` is a NOT NULL FK to `proposals.id` that `ON CONFLICT (id) DO
+    NOTHING` does not shield (that clause only absorbs an `id` PK replay, not
+    the separate FK constraint). A `proposal_id` naming a proposal that does
+    not exist -- stale SAQ job state, or the proposal was deleted/rolled back
+    concurrently -- is a genuine race (request_guards.py contract rule 4):
+    `proposal_id` is already a well-formed `uuid.UUID` by the time Pydantic
+    validates the body, so no stricter signature could have rejected it before
+    it reached the database. The INSERT runs inside a SAVEPOINT so a caught
+    `IntegrityError` unwinds only the nested scope (rule 5), leaving the
+    session usable for the rest of the request; a genuine FK violation maps to
+    404 rather than an unhandled 500.
     """
     payload = body.model_dump()
     stmt = pg_insert(ExecutionLog).values([payload]).on_conflict_do_nothing(index_elements=["id"])
-    await session.execute(stmt)
+    try:
+        async with session.begin_nested():
+            await session.execute(stmt)
+    except IntegrityError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="proposal not found") from exc
     await session.commit()
     return ExecutionLogCreateResponse(agent_id=agent.id, execution_log_id=body.id)
 
