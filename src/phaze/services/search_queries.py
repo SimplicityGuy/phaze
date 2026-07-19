@@ -18,6 +18,8 @@ from phaze.services.proposal_queries import Pagination
 
 
 if TYPE_CHECKING:
+    from datetime import date
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -41,8 +43,8 @@ async def search(
     *,
     artist: str | None = None,
     genre: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     bpm_min: float | None = None,
     bpm_max: float | None = None,
     page: int = 1,
