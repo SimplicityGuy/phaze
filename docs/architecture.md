@@ -572,6 +572,36 @@ rows, has_next = split_sentinel((await session.execute(stmt)).all(), page_size)
 All three enrich workspaces (metadata / fingerprint / analyze) ship an empty host `div` that
 `hx-get`s a bounded fragment on load; none server-renders a file row inline.
 
+## 🧮 Wire Bounds Contract
+
+Every value crossing the HTTP boundary is bounded to fit the column it lands in. The contract is
+owned by `src/phaze/schemas/wire_bounds.py` and **mechanically enforced** by
+`tests/shared/schemas/test_wire_bounds_contract.py` — read the module docstring before adding an
+inbound field; this table is a summary.
+
+**Why it exists.** `agent_tracklists` accepted an unbounded `timestamp` into a `varchar(20)` and an
+unbounded `external_id` into the `varchar(50)` NOT NULL idempotency key. Postgres answers
+over-width input with `StringDataRightTruncation`, and there is no DB exception handler anywhere in
+the app — so the aborted transaction escaped as an unhandled **500 instead of a 422**, after the
+1-hour idempotency lock was already taken. Seven sibling defects shared the exact shape. The
+convention that prevents it already existed and was applied exactly; it was simply never written
+down, so it was possible to deviate silently.
+
+| Rule | Decision |
+| ---- | -------- |
+| Strings | `max_length` **equals** the mapped `String(N)` width. Not less (you reject what the column accepts), not more (you hand Postgres a value it must raise on). |
+| `Text` columns | **No cap.** `Text` is unbounded; a cap invents a limit the storage does not have. Don't add one "for safety". |
+| Integers | Prefer a **real domain bound** (`ge=0, le=100` for a 0–100 score) over the storage bound. Fall back to the column's range — int4 is `[-2147483648, 2147483647]` (`INT32_MIN`/`INT32_MAX`); int2/int8 constants are exported too. |
+| **Layer** | **422 at the boundary, never a caught DB exception downstream.** A `try/except` around the insert is the wrong layer: it still admits the value, still opens the transaction, still takes the lock, and turns a poison payload into a politer infinite retry. |
+| Entry shapes | Applies to **all four**: `Field` bodies, `Path` segments, `Query` params, `Form` fields. "It's only a path parameter" is not an exemption. |
+| Types, not just ranges | Declare the type that **matches the column** — a `date` filter declared `str` and forwarded unparsed renders `$1::VARCHAR` and 500s on the cast. A bound would not have helped; the type was wrong. |
+| DoS bounds | A bound that exists to cap work per request (e.g. `tracks` `max_length=2000`) is **not** a width cap and says so, so nobody "corrects" it to a column width that doesn't exist. |
+| Paging params | Defer to the [paging contract](#-list-paging-contract) **and** still declare the route guard. The service-layer clamp is the belt; `ge=`/`le=` is the braces. A raw `limit`/`offset` that bypasses `services/pagination.py` needs its own `ge=`. |
+
+The enforcing test is a live checklist, not a suppression list: known gaps are recorded as
+**strict xfail**, so when a fix lands the entry stops matching and the suite fails until the entry
+is deleted. A new unclassified wire field also fails — that is what stops the next regression.
+
 ## 🧱 Key Abstractions
 
 ### Models (`src/phaze/models/`)
