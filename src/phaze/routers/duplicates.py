@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
+from phaze.routers.request_guards import parse_json_array_payload
 from phaze.services.dedup import (
     count_duplicate_groups,
     find_duplicate_group_by_hash,
@@ -180,8 +181,14 @@ async def undo_resolve_endpoint(
     file_states: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Undo a group resolution, restoring files to previous states."""
-    parsed_states = json.loads(file_states)
+    """Undo a group resolution, restoring files to previous states.
+
+    phaze-wkqk: ``file_states`` is a raw client string, so the parse is guarded (untrusted-input
+    contract rule 1, ``routers/request_guards.py``) -- a stale tab replaying a truncated payload
+    gets a 422, not the unhandled ``JSONDecodeError`` 500 this used to raise. Rule 2's element half
+    lives in ``undo_resolve``, which drops entries that are not dicts.
+    """
+    parsed_states = parse_json_array_payload(file_states, field="file_states")
     await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the undo is rolled back.
 
@@ -267,8 +274,11 @@ async def bulk_undo(
     exists in the v7 shell, so the request never fired. Bulk resolve doesn't OOB-touch individual
     group cards either (R-2), so there's no per-card DOM state to restore here -- just confirm
     the undo landed.
+
+    phaze-wkqk: same guarded parse as ``undo_resolve_endpoint`` -- see the untrusted-input contract
+    in ``routers/request_guards.py``.
     """
-    parsed_states = json.loads(file_states)
+    parsed_states = parse_json_array_payload(file_states, field="file_states")
     restored_count = await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the bulk undo is rolled back.
 

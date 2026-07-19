@@ -673,3 +673,83 @@ async def test_compare_reports_not_found_for_an_unknown_hash(session: AsyncSessi
 
     assert response.status_code == 200
     assert "Group not found" in response.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-wkqk: the untrusted-input contract (src/phaze/routers/request_guards.py).
+#
+# Contract rule 6 makes a docstring that promises "no HTTP 500" a TEST obligation, so every payload
+# shape the guard names is exercised here. Before the fix, `not-json` raised JSONDecodeError and
+# `[1,2]` raised AttributeError on `int.get` -- both escaping as an unhandled HTTP 500 through
+# handlers that documented a graceful no-op. Nothing below may ever assert a 5xx.
+# ---------------------------------------------------------------------------
+
+_UNDO_PATHS = (f"/duplicates/{HASH_A}/undo", "/duplicates/undo-all")
+
+# Envelope failures (rule 1): unparseable, or valid JSON that is not an array. Whole request -> 422.
+_MALFORMED_ENVELOPES = (
+    "not-json",  # not JSON at all -> json.JSONDecodeError
+    "",  # empty form value -- the truncated-payload case
+    '{"id": "x"}',  # valid JSON, wrong container: iterating a non-empty dict yields str keys
+    "{}",  # valid JSON, wrong container (empty -- used to no-op by luck, not by contract)
+    "null",  # valid JSON, not a container at all
+    "42",  # valid JSON scalar
+    '"a string"',  # valid JSON string -- iterating it would yield characters
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", _UNDO_PATHS)
+@pytest.mark.parametrize("payload", _MALFORMED_ENVELOPES)
+async def test_undo_malformed_envelope_returns_422_never_500(client: AsyncClient, path: str, payload: str) -> None:
+    """A non-JSON or non-array ``file_states`` is a 422 envelope rejection, never a 500."""
+    response = await client.post(path, data={"file_states": payload})
+
+    assert response.status_code == 422, f"{path} with {payload!r} returned {response.status_code}"
+    assert "file_states" in response.text
+
+
+# Element failures (rule 2): the envelope is a valid array, but entries are unusable. These are
+# SKIPPED, not escalated -- one stale entry must not void an otherwise valid bulk undo.
+_MALFORMED_ELEMENT_ARRAYS = (
+    "[1, 2]",  # ints -> (1).get("id") AttributeError before the fix
+    '["a", "b"]',  # strings -> str.get AttributeError before the fix
+    "[null]",  # None -> NoneType.get
+    "[[]]",  # nested list
+    '[{"id": "not-a-uuid"}]',  # the malformed-id case the docstring already claimed to handle
+    '[{"nope": 1}]',  # dict without the id key
+    "[]",  # the empty payload
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", _UNDO_PATHS)
+@pytest.mark.parametrize("payload", _MALFORMED_ELEMENT_ARRAYS)
+async def test_undo_malformed_elements_are_skipped_not_500(client: AsyncClient, path: str, payload: str) -> None:
+    """Unusable ENTRIES inside a well-formed array degrade to a graceful no-op 200."""
+    response = await client.post(path, data={"file_states": payload})
+
+    assert response.status_code == 200, f"{path} with {payload!r} returned {response.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_undo_mixed_payload_undoes_the_valid_entries(session: AsyncSession, client: AsyncClient) -> None:
+    """A payload mixing junk entries with one real id still undoes the real one (rule 2's whole point)."""
+    from sqlalchemy import func, select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert resolve.status_code == 200
+
+    payload = json.dumps([1, "junk", None, {"nope": 1}, {"id": "not-a-uuid"}, {"id": str(f2.id)}])
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
+
+    assert undo.status_code == 200
+    remaining = (await session.execute(select(func.count()).select_from(DedupResolution))).scalar_one()
+    assert remaining == 0, "a junk entry suppressed the undo of a valid id"
