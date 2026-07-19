@@ -106,16 +106,11 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("TracklistTrackPayload", "position"): "phaze-p9k7 -- ge=0 but no upper bound vs int32 column",
-    ("AnalysisWritePayload", "fine_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "fine_windows_total"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "coarse_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "coarse_windows_total"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWindowPayload", "window_index"): "phaze-01gh -- ge=0, no upper bound",
-    ("MetadataWriteRequest", "year"): "phaze-bd4n -- unbounded vs int4",
-    ("MetadataWriteRequest", "track_number"): "phaze-bd4n -- unbounded vs int4",
-    ("MetadataWriteRequest", "bitrate"): "phaze-bd4n -- ge=0 only, no upper bound vs int4",
-    ("/tracklists/{tracklist_id}/link", "confidence"): "phaze-k5ac -- int Form, no range vs int4 match_confidence",
+    ("/api/internal/agent/fingerprints/{file_id}/{engine}", "engine"): "phaze-94zs -- no max_length vs String(30)",
+    ("/api/v1/duplicates", "limit"): "phaze-hpo9 -- bare default, negatives reach Postgres",
+    ("/api/v1/duplicates", "offset"): "phaze-hpo9 -- bare default, negatives reach Postgres",
+    ("/search/", "date_from"): "phaze-z3tx -- declared str, forwarded unparsed against a Date column",
+    ("/search/", "date_to"): "phaze-z3tx -- declared str, forwarded unparsed against a Date column",
 }
 
 # Gaps this check FOUND that have no bead yet. Same defect class, same strict-xfail semantics; kept

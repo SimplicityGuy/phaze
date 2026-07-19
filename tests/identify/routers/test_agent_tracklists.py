@@ -574,3 +574,41 @@ async def test_tracklist_over_width_value_422s_without_taking_the_idempotency_lo
         "the idempotency lock was taken for a payload that failed validation -- the retry is now poisoned"
     )
     assert (await session.execute(select(Tracklist).where(Tracklist.external_id == "e" * 51))).first() is None
+
+
+@pytest.mark.integration
+async def test_tracklist_position_over_int32_422s_without_taking_the_idempotency_lock(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """phaze-p9k7: an int32-overflowing ``position`` is rejected 422 by pydantic BEFORE the SET NX EX req_key.
+
+    Mirrors the phaze-btlu width-cap regression test exactly, but for the int32 numeric bound on
+    ``TracklistTrackPayload.position`` (wire_bounds rule 3/4). Had the value reached Postgres, the
+    aborted NumericValueOutOfRange transaction would surface as an unhandled 500 -- and, because the
+    lock is taken BEFORE the insert, every retry of the deterministic request_id would then get a
+    misleading 409 for the full hour of the TTL. Asserting the key is ABSENT is what proves the
+    rejection happened early enough to leave the retry path clean.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    request_id = uuid.uuid4()
+    payload: dict[str, object] = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": f"fp-{file_id.hex[:8]}",
+        "request_id": str(request_id),
+        "tracks": [{"position": 2147483648, "artist": "A", "title": "T1"}],
+    }
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r.status_code == 422, r.text
+    assert "position" in r.text
+    assert "less_than_equal" in r.text, r.text
+    assert await redis_client.get(f"tracklist_req:{request_id}") is None, (
+        "the idempotency lock was taken for a payload that failed validation -- the retry is now poisoned"
+    )
+    assert (await session.execute(select(Tracklist).where(Tracklist.external_id == f"fp-{file_id.hex[:8]}"))).first() is None

@@ -217,6 +217,50 @@ def test_analysis_write_payload_rejects_negative_coverage_count() -> None:
         AnalysisWritePayload.model_validate({"fine_windows_analyzed": -1})
 
 
+# ------------------------------------------------------------------------------------------------
+# phaze-01gh: the four coverage counts + window_index are capped at a realistic domain (the same
+# windows-per-file bound as the `windows` list DoS cap), not left to overflow the int4 columns they
+# write (wire_bounds rule 3).
+# ------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "field",
+    ["fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total"],
+)
+def test_analysis_write_payload_rejects_int32_overflowing_coverage_count(field: str) -> None:
+    """A count >= 2^31 would raise Postgres NumericValueOutOfRange on the int4 column -- reject at 422."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        AnalysisWritePayload.model_validate({field: 2147483648})
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["fine_windows_analyzed", "fine_windows_total", "coarse_windows_analyzed", "coarse_windows_total"],
+)
+def test_analysis_write_payload_accepts_coverage_count_at_the_domain_boundary(field: str) -> None:
+    """50000 (same domain as the `windows` DoS cap) is exactly the boundary -- must be ACCEPTED."""
+    payload = AnalysisWritePayload.model_validate({field: 50000})
+
+    assert getattr(payload, field) == 50000
+
+
+def test_analysis_write_payload_rejects_over_domain_coverage_count() -> None:
+    """50001 exceeds the realistic windows-per-file domain -- reject even though it fits int4."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        AnalysisWritePayload.model_validate({"fine_windows_total": 50001})
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
+
+
+def test_analysis_window_payload_rejects_int32_overflowing_window_index() -> None:
+    """window_index >= 2^31 would raise NumericValueOutOfRange on analysis_windows.window_index (int4)."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        AnalysisWindowPayload.model_validate({"tier": "fine", "window_index": 2147483648, "start_sec": 0.0, "end_sec": 30.0})
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
+
+
 def test_analysis_failure_payload_accepts_valid_reasons() -> None:
     """reason validates against the Literal classifications; error is optional."""
     for reason in ("timeout", "crashed", "error"):

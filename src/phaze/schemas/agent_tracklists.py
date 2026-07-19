@@ -19,13 +19,17 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from phaze.schemas.wire_bounds import INT32_MAX
+
 
 class TracklistTrackPayload(BaseModel):
     """One row in the tracks[] array of a TracklistCreatePayload."""
 
     model_config = ConfigDict(extra="forbid")  # nested-class strictness per RESEARCH Pitfall 5
 
-    position: int = Field(ge=0)
+    # position has no real domain narrower than "a row index" -- tracklist_tracks.position is a
+    # plain Integer (int4), so the fallback column bound applies (wire_bounds rule 3).
+    position: int = Field(ge=0, le=INT32_MAX)
     artist: str | None = None  # -> tracklist_tracks.artist Text -- unbounded column, no cap (wire_bounds rule 2)
     title: str | None = None  # -> tracklist_tracks.title Text -- unbounded column, no cap (wire_bounds rule 2)
     timestamp: str | None = Field(default=None, max_length=20)  # -> tracklist_tracks.timestamp String(20) (wire_bounds rule 1)
