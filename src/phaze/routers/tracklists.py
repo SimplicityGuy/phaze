@@ -434,7 +434,10 @@ async def link_tracklist(
     request: Request,
     tracklist_id: uuid.UUID,
     file_id: uuid.UUID = Form(...),
-    confidence: int = Form(...),
+    # confidence is a 0-100 match score (Tracklist.match_confidence Integer) -- the domain bound
+    # beats the int32 column fallback (wire_bounds rule 3): a value outside 0-100 is nonsense even
+    # when it fits in int4, and a value outside int4 raised NumericValueOutOfRange unhandled (phaze-k5ac).
+    confidence: int = Form(..., ge=0, le=100),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Link a search result to a file."""
