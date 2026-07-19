@@ -637,6 +637,102 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(session: AsyncSes
     assert queue_b.captured == []  # NO re-submit enqueued on this tick
 
 
+# --- phaze-32wz: a pending re-submit is not a fresh no-callback terminal ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_resubmit_after_redrive_is_not_double_charged(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGRESSION (phaze-32wz): a just-enqueued re-submit must not be re-read as a fresh vanished terminal.
+
+    Tick 1 re-drives an Evicted row: attempts 0 -> 1, a fresh ``submit_cloud_job`` is enqueued onto the
+    (capturing, non-executing) fake controller queue -- exactly as a real SAQ enqueue only schedules the
+    work; the actual kube re-POST runs later, asynchronously, on the controller queue.
+
+    Tick 2 reconciles the SAME row again BEFORE that enqueued submit has run (the fake queue never
+    executes captured jobs, modelling the real controller-queue lag / backlog window). Pre-fix,
+    ``cloud_job.kueue_workload`` still named the OLD (already-confirmed-gone) Job, so ``get_job`` on
+    that name reads None again -- indistinguishable from a NEW no-callback terminal -- and
+    ``_handle_no_callback_terminal`` fires a SECOND time, inflating ``attempts`` to 2 for a re-submit
+    that never actually ran (let alone failed). A short loop of such ticks burns through the cap and
+    spills a healthy file to local without a single real cloud Job ever executing in between.
+
+    Post-fix, the re-drive clears ``kueue_workload`` in the SAME commit as the attempts bump, so tick 2
+    reads the row as "pending confirmation" (the phantom-row hold path) and skips it with NO extra kube
+    read, NO attempt increment, and NO spill -- until either the resubmit lands (new ``kueue_workload``)
+    or the pending window itself goes stale (a SEPARATE, later, independently-charged attempt).
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    queue = DedupFakeQueue("controller")
+    ctx = _make_ctx(queue)
+
+    # Tick 1: Evicted Workload -> no-callback terminal -> under-cap re-drive.
+    get_job, _, dj, _ = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name), None),
+        get_workload=GetWorkloadSpy(EVICTED),
+    )
+    tally_1 = await reconcile_cloud_jobs(ctx)
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert cj.kueue_workload is None  # phaze-32wz: cleared -- the durable "pending confirmation" record
+    assert dj.calls == [name]  # the prior (now-gone) Job was deleted as part of the re-drive
+    assert len(get_job.calls) == 2  # terminal read + confirm-gone
+    assert [t for t, _ in queue.captured] == ["submit_cloud_job"]  # enqueued, NOT yet executed
+    assert tally_1["redriven"] == 1
+
+    # Tick 2: reconcile runs again while the enqueued submit_cloud_job is STILL pending (the fake queue
+    # never runs captured jobs -- the real controller-queue equivalent of a backlog/lag window). The
+    # get_job seam is NOT re-armed with a 3rd response: if this tick reads it at all, that alone proves
+    # the pending-vs-vanished distinction failed to hold (pre-fix behaviour), and the spy would stick on
+    # its last response (None) -- reproducing the double-charge.
+    tally_2 = await reconcile_cloud_jobs(ctx)
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1  # NOT inflated to 2 -- no real terminal event happened between the ticks
+    assert cj.status == CloudJobStatus.SUBMITTED.value  # still in-flight
+    assert cj.status != CloudJobStatus.AWAITING.value  # no premature spill to local
+    assert len(get_job.calls) == 2  # unchanged -- tick 2 never re-reads the OLD (gone) Job name
+    assert queue.captured == [("submit_cloud_job", {"file_id": str(fid)})]  # no second re-drive enqueued
+    assert tally_2["redriven"] == 0
+    assert tally_2["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_resubmit_resolves_once_fresh_job_is_observed(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-32wz: once the enqueued resubmit actually lands, the pending window closes and reconcile resumes normally.
+
+    Mirrors ``submit_cloud_job``'s own upsert re-stamping ``kueue_workload`` back to the (unchanged,
+    deterministic) Job name once its kube POST completes. A subsequent tick then reads a live Job again
+    -- proving the pending marker is self-clearing, not a permanent hold.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    ctx = _make_ctx()
+
+    # Tick 1: Evicted -> re-drive; kueue_workload cleared (pending confirmation).
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name), None), get_workload=GetWorkloadSpy(EVICTED))
+    await reconcile_cloud_jobs(ctx)
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.kueue_workload is None
+
+    # The deferred submit_cloud_job "runs" -- re-stamps kueue_workload (deterministic name unchanged).
+    await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(kueue_workload=name))
+    await session.commit()
+
+    # Tick 2: the fresh Job is now observable and healthy (Pending) -- normal reconcile resumes, no
+    # extra attempt burned for the resolved pending window.
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(PENDING))
+    tally = await reconcile_cloud_jobs(ctx)
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1  # unchanged -- resolving the pending window is not itself an attempt
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert tally["pending"] == 1
+
+
 # --- CR-01: the Inadmissible alert flag clears once the Workload recovers ---------------------------
 
 
