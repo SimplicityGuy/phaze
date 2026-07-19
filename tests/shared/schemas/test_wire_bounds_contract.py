@@ -106,9 +106,6 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("MetadataWriteRequest", "year"): "phaze-bd4n -- unbounded vs int4",
-    ("MetadataWriteRequest", "track_number"): "phaze-bd4n -- unbounded vs int4",
-    ("MetadataWriteRequest", "bitrate"): "phaze-bd4n -- ge=0 only, no upper bound vs int4",
     ("/api/internal/agent/fingerprints/{file_id}/{engine}", "engine"): "phaze-94zs -- no max_length vs String(30)",
     ("/api/v1/duplicates", "limit"): "phaze-hpo9 -- bare default, negatives reach Postgres",
     ("/api/v1/duplicates", "offset"): "phaze-hpo9 -- bare default, negatives reach Postgres",
