@@ -106,7 +106,6 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("TracklistTrackPayload", "position"): "phaze-p9k7 -- ge=0 but no upper bound vs int32 column",
     ("AnalysisWritePayload", "fine_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
     ("AnalysisWritePayload", "fine_windows_total"): "phaze-01gh -- ge=0, no upper bound",
     ("AnalysisWritePayload", "coarse_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
