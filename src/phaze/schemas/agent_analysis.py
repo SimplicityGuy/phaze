@@ -75,9 +75,20 @@ class AnalysisWritePayload(BaseModel):
     coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
     sampled: bool | None = None
     # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
-    # contract (router only replaces windows when this is not None); `max_length`
-    # bounds the DoS-via-huge-bulk-insert threat (a 24h file at 30s windows is
-    # ~2,880 fine windows, so 50000 is generous).
+    # contract (router only replaces windows when this is not None).
+    #
+    # `max_length` here is a DoS bound on work-per-request, NOT a column width and NOT a
+    # storage-path limit (wire_bounds rule 7 -- do not "correct" it to either). It bounds the
+    # memory and time one PUT can demand; 50000 windows is ~17 days of audio at 30s fine
+    # windows, so it cannot refuse a real recording (a 24h file is ~2,880 fine windows).
+    #
+    # phaze-syxv: this cap USED to be a lie. The storage path persisted every window in one
+    # multi-row VALUES, which PostgreSQL's int16 Bind parameter count caps at 2,730 rows for
+    # this model -- so a payload well under 50000 (and under the 2,880 cited above) died with
+    # an asyncpg InterfaceError, and because FAILURE_IS_TERMINAL[ANALYZE] that discarded hours
+    # of analysis permanently. The router now chunks the insert (services/bulk_insert.py), so
+    # the wire cap is once again a statement about work-per-request only, and the whole range
+    # this field admits is actually storable.
     windows: list[AnalysisWindowPayload] | None = Field(default=None, max_length=50000)
 
 
