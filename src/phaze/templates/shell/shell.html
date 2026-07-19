@@ -263,6 +263,16 @@
                 d.shouldSwap = true;
                 d.isError = false;
             }
+            // PUT /tracklists/tracks/{id}/edit/{field} answers an over-width inline-edit value
+            // (timestamp > varchar(20)) with a 422 that re-renders the SAME edit input, the
+            // operator's typed value preserved, plus an inline reason -- not a bare rejection that
+            // blanks what they just typed (phaze-81au). Same WR-01 opt-in shape as the 404 case
+            // above: htmx does not swap non-2xx by default, so opt this one response back in.
+            if (d && d.xhr && d.xhr.status === 422 && typeof d.xhr.responseURL === 'string' &&
+                /\/tracklists\/tracks\/[^/]+\/edit\/[^/]+$/.test(d.xhr.responseURL)) {
+                d.shouldSwap = true;
+                d.isError = false;
+            }
         });
         // Phase 95 (phaze-zqvh.3): bound the 5s poll's per-tick DOM churn on the #analyze-lanes grid.
         // Every /pipeline/stats tick re-emits the whole N-lane grid out-of-band (stats_bar.html). When the
