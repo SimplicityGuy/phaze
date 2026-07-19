@@ -62,6 +62,7 @@ from phaze.tasks._shared.agent_bootstrap import (
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
@@ -360,9 +361,16 @@ queue = build_pipeline_queue(_queue_name, _settings_obj.queue_url, cache_redis_u
 
 settings = {
     "queue": queue,
-    # Phase 35 (D-02): bump the maintained `completed` counter on each COMPLETE outcome
-    # (Worker constructor kwarg, not a register_* call).
-    "after_process": increment_completed,
+    # phaze-geuq: re-check a stage's paused flag right before its function runs, so a job
+    # that reached `status='queued'` via SAQ's `_retry` re-queue path (which bypasses
+    # `before_enqueue` -- see tasks/_shared/stage_control.py module docstring) is reparked
+    # instead of starting a fresh full-length attempt on a paused stage.
+    "before_process": enforce_stage_pause_on_process,
+    # `repark_if_stage_paused` MUST run BEFORE `increment_completed`: it authoritatively
+    # restores a pause-bounced job to QUEUED/parked, so `increment_completed` never sees a
+    # bounce as a genuine COMPLETE/FAILED terminal outcome (Phase 35 D-02 completed-counter +
+    # scheduling-ledger clear must both stay no-ops for a bounce).
+    "after_process": [repark_if_stage_paused, increment_completed],
     # quick-260707-dh1: register ONLY this lane's functions (LANE_TASKS[_lane]); all-mode
     # registers all 8. The union of the four lanes' registered names == AGENT_TASKS (mirror
     # contract, asserted in tests/shared/core/test_task_split.py).
