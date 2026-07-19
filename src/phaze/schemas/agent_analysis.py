@@ -42,10 +42,23 @@ class AnalysisWindowPayload(BaseModel):
     end_sec: float = Field(ge=0.0)
     # Fine-tier fields
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_windows.musical_key String(10), rule 1. Written as f"{key} {scale}" by
+    # _analyze_fine_windows (services/analysis.py) from essentia's KeyExtractor: `key` is a
+    # 12-tone pitch class ("A".."G#", <=2 chars) and `scale` is "major"/"minor" (5 chars), so the
+    # longest real value ("C# minor"/"G# major") is 8 chars -- the column is tight but not too
+    # narrow for the data it actually receives (phaze-ty0o investigation), so the wire is capped
+    # to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     # Coarse-tier fields
-    mood: str | None = None
-    style: str | None = None
+    # -> analysis_windows.mood String(50), rule 1. derive_mood (services/analysis.py) returns one
+    # of the fixed `_MOOD_SET_NAMES` values with the "mood_" prefix stripped -- longest is
+    # "electronic"/"aggressive" at 10 chars, well inside the column.
+    mood: str | None = Field(default=None, max_length=50)
+    # -> analysis_windows.style String(50), rule 1. derive_style (services/analysis.py) returns the
+    # top discogs-effnet genre label ("Parent---Child" with "---" replaced by "/"); the Discogs
+    # taxonomy's longest parent ("Folk, World, & Country") plus its longest subgenre stays well
+    # under 50 chars.
+    style: str | None = Field(default=None, max_length=50)
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     features: dict | None = None
 
@@ -56,7 +69,11 @@ class AnalysisWritePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")  # D-26 -- strict body parsing
 
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_results.musical_key String(10), rule 1. Same essentia KeyExtractor provenance as
+    # AnalysisWindowPayload.musical_key above (`f"{key} {scale}"`, longest real value 8 chars) --
+    # the column is tight but sufficient for the data it actually receives (phaze-ty0o
+    # investigation), so the wire is capped to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     mood: dict[str, float] | None = None
     style: dict[str, float] | None = None
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)

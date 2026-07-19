@@ -524,6 +524,77 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 
+@pytest.mark.asyncio
+async def test_analysis_put_overwidth_musical_key_422s_without_persisting(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-ty0o: an over-width ``musical_key`` is rejected 422 BEFORE the pg_insert runs.
+
+    ``analysis_results.musical_key`` is ``String(10)``. Pre-fix, an unbounded string reaching
+    Postgres over that width raises ``StringDataRightTruncation``, aborting the transaction --
+    since the analyze stage is FAILURE_IS_TERMINAL (Phase 43), a repeatable over-width value from a
+    misbehaving upstream would 500 every retry rather than degrade cleanly. 11 chars is the
+    smallest over-width value; real essentia ``KeyExtractor`` output never exceeds 8 chars
+    (`f"{key} {scale}"`), so this is a malformed/adversarial value, not a realistic one.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"musical_key": "x" * 11})
+
+    assert r.status_code == 422, r.text
+    assert "musical_key" in r.text
+    assert "string_too_long" in r.text, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "over_width"),
+    [
+        ("musical_key", "x" * 11),
+        ("mood", "x" * 51),
+        ("style", "x" * 51),
+    ],
+)
+async def test_analysis_window_overwidth_field_422s_without_persisting(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    field: str,
+    over_width: str,
+) -> None:
+    """phaze-ty0o: an over-width window ``musical_key``/``mood``/``style`` is rejected 422 first.
+
+    ``analysis_windows.musical_key`` is ``String(10)``; ``.mood``/``.style`` are ``String(50)``. Same
+    FAILURE_IS_TERMINAL exposure as the aggregate ``musical_key`` field above -- an unhandled
+    ``StringDataRightTruncation`` would abort the transaction on a stage the agent cannot cleanly
+    retry past.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"windows": [_window("fine" if field == "musical_key" else "coarse", 0, 0.0, 30.0, **{field: over_width})]},
+        )
+
+    assert r.status_code == 422, r.text
+    assert field in r.text
+    assert "string_too_long" in r.text, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
+    rows = await _window_rows(session, file_id)
+    assert not rows, "a rejected (422) PUT must not persist any AnalysisWindow row"
+
+
 # ---------------------------------------------------------------------------
 # Phase 57.1 (Plan 03): AnalysisProgressPayload schema validation
 # ---------------------------------------------------------------------------
