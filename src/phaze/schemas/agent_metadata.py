@@ -18,11 +18,20 @@ class MetadataWriteRequest(BaseModel):
     artist: str | None = None
     title: str | None = None
     album: str | None = None
-    year: int | None = None
+    # year/track_number/bitrate all map to `Integer` (int4) columns (models/metadata.py). Each takes
+    # a DOMAIN bound narrower than the int32 column fallback (wire_bounds rule 3, phaze-bd4n):
+    #   - year: tag readers represent a year as a 4-digit field (ID3 TYER and friends); 0-9999 covers
+    #     every real recording date (including pre-1900 historical transfers) while rejecting a
+    #     bogus multi-billion value a buggy tag reader could otherwise emit.
+    #   - track_number: no release (including box sets) plausibly has more than a few hundred
+    #     tracks; 0-9999 is generous headroom on the same 4-digit-field convention as year.
+    #   - bitrate: kbps. Even exotic hi-res multichannel PCM tops out in the low hundreds of
+    #     thousands of kbps; 0-1,000,000 is a wide safety margin while still rejecting nonsense.
+    year: int | None = Field(default=None, ge=0, le=9999)
     genre: str | None = None
-    track_number: int | None = None
+    track_number: int | None = Field(default=None, ge=0, le=9999)
     duration: float | None = Field(default=None, ge=0.0)
-    bitrate: int | None = Field(default=None, ge=0)
+    bitrate: int | None = Field(default=None, ge=0, le=1_000_000)
     raw_tags: dict | None = None
 
 

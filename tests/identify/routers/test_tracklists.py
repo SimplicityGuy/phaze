@@ -810,6 +810,56 @@ async def test_link_tracklist(session: AsyncSession, client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confidence", [0, 100])
+async def test_link_tracklist_accepts_the_domain_boundary(session: AsyncSession, client: AsyncClient, confidence: int) -> None:
+    """phaze-k5ac: 0 and 100 are exactly the 0-100 match-score domain boundary -- must be ACCEPTED."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": confidence},
+    )
+    assert response.status_code == 200, response.text
+
+    await session.refresh(tl)
+    assert tl.match_confidence == confidence
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confidence", [-1, 101, 3000000000])
+async def test_link_tracklist_rejects_confidence_outside_the_domain(session: AsyncSession, client: AsyncClient, confidence: int) -> None:
+    """phaze-k5ac: confidence outside 0-100 -- including an int32-overflowing value -- is a 422, not a 500.
+
+    3000000000 (> int32 max 2147483647) previously reached `tracklist.match_confidence = confidence`
+    and raised Postgres NumericValueOutOfRange, unhandled, on commit. Asserting `match_confidence` is
+    left untouched proves the rejection happens before the assignment/commit ever runs.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": confidence},
+    )
+    assert response.status_code == 422, response.text
+
+    await session.refresh(tl)
+    assert tl.match_confidence is None, "a rejected (422) link POST must not mutate match_confidence"
+    assert tl.file_id is None, "a rejected (422) link POST must not mutate file_id either"
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()

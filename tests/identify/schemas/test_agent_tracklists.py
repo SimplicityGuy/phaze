@@ -217,3 +217,22 @@ def test_external_id_rejects_empty_string() -> None:
         )
 
     assert any(e.get("type") == "string_too_short" for e in exc_info.value.errors())
+
+
+# ------------------------------------------------------------------------------------------------
+# phaze-p9k7: position is capped at the int32 column bound (wire_bounds rule 3, fallback -- position
+# has no narrower domain than "a row index").
+# ------------------------------------------------------------------------------------------------
+def test_track_position_accepts_the_int32_boundary() -> None:
+    """2147483647 (int32 max) is exactly tracklist_tracks.position Integer -- must be ACCEPTED."""
+    track = TracklistTrackPayload.model_validate({"position": 2147483647})
+
+    assert track.position == 2147483647
+
+
+def test_track_position_rejects_over_int32() -> None:
+    """2147483648 would raise NumericValueOutOfRange in Postgres -- reject at the boundary as 422."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        TracklistTrackPayload.model_validate({"position": 2147483648})
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
