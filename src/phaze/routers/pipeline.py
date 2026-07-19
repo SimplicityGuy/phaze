@@ -29,6 +29,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -1930,6 +1931,12 @@ async def deepen_progress(
     0), never essentia strings (T-cvz-02). An unknown file_id returns a benign "gone" fragment,
     never a 500 (T-cvz-04).
 
+    phaze-zut8: being a valid ``float`` does not make ``since`` a valid Unix timestamp -- NaN,
+    +/-infinity, and magnitudes beyond ``datetime``'s year range all raise ``ValueError`` /
+    ``OverflowError`` out of ``datetime.fromtimestamp``. Per request_guards.py contract rule 1
+    this is an ENVELOPE failure (a single scalar, nothing partial to do), so it is rejected with
+    ``422`` rather than escaping as the 500 this docstring's "never a 500" promise forbids.
+
     COMPLETION PREDICATE (timestamp-gated): a re-run is complete only when ``put_analysis`` has
     stamped ``analysis_completed_at`` AFTER this click (``> requested_at``). A stale pre-click
     sampled result has ``completed_at <= requested_at`` and is NOT complete -- killing the
@@ -1937,10 +1944,18 @@ async def deepen_progress(
     ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
     completed_at until the fresh ``put_analysis`` lands.
 
-    State machine (evaluated in order): missing file -> gone (terminal); complete predicate ->
-    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
-    otherwise -> queued/starting (poll).
+    State machine (evaluated in order): malformed ``since`` -> 422 (terminal, no query run);
+    missing file -> gone (terminal); complete predicate -> complete (terminal); fine_total
+    truthy AND fine_done < fine_total -> running (poll); otherwise -> queued/starting (poll).
     """
+    try:
+        requested_at = datetime.fromtimestamp(since, tz=UTC)
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(
+            status_code=MALFORMED_PAYLOAD_STATUS,
+            detail=f"since is not a valid timestamp: {exc}",
+        ) from exc
+
     file_result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
     file = file_result.scalar_one_or_none()
 
@@ -1963,7 +1978,6 @@ async def deepen_progress(
     analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
     analysis = analysis_result.scalar_one_or_none()
 
-    requested_at = datetime.fromtimestamp(since, tz=UTC)
     complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
 
     fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
