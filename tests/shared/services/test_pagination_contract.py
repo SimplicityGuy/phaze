@@ -26,8 +26,11 @@ from sqlalchemy import select
 
 from phaze.enums.stage import Stage
 from phaze.models.analysis import AnalysisResult
+from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
+from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services import pipeline as pipeline_mod
+from phaze.services.execution_queries import get_execution_logs_page
 from phaze.services.pagination import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -305,6 +308,135 @@ async def test_pending_files_paging_is_stable_when_the_sort_key_ties(session: As
     expected = {str(f.id) for f in files}
     assert len(seen) == len(set(seen)), "a row was DUPLICATED across pages of the pending pager"
     assert set(seen) == expected, "a row was SKIPPED across pages of the pending pager"
+
+
+async def _make_execution_log_batch(session: AsyncSession, count: int) -> list[ExecutionLog]:
+    """Insert ``count`` :class:`ExecutionLog` rows in ONE transaction, letting ``executed_at`` fall
+    back to its ``server_default=func.now()`` so every row ties to the microsecond (phaze-mft5's
+    premise: Postgres timestamp defaults are transaction-time constant).
+
+    Shares a single ``FileRecord`` / ``RenameProposal`` across the batch -- ``ExecutionLog.proposal_id``
+    carries no uniqueness constraint, so this is a valid, minimal seed for exercising the audit log's
+    OWN unique key (``ExecutionLog.id``) as the tiebreaker.
+    """
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/music/{uuid.uuid4().hex}/test.mp3",
+            original_filename="test.mp3",
+            current_path="/music/test.mp3",
+            file_type="music",
+            file_size=1_000_000,
+        )
+    )
+    await session.flush()
+
+    proposal_id = uuid.uuid4()
+    session.add(
+        RenameProposal(
+            id=proposal_id,
+            file_id=file_id,
+            proposed_filename="new.mp3",
+            confidence=0.9,
+            status=ProposalStatus.APPROVED,
+            context_used={"artist": "Test"},
+            reason="Test",
+        )
+    )
+    await session.flush()
+
+    logs = [
+        ExecutionLog(
+            id=uuid.uuid4(),
+            proposal_id=proposal_id,
+            operation="copy",
+            source_path=f"/music/old-{i}.mp3",
+            destination_path=f"/music/new-{i}.mp3",
+            sha256_verified=True,
+            status=ExecutionStatus.COMPLETED,
+        )
+        for i in range(count)
+    ]
+    session.add_all(logs)
+    await session.commit()
+    return logs
+
+
+@pytest.mark.asyncio
+async def test_audit_log_paging_is_stable_when_the_sort_key_ties(session: AsyncSession) -> None:
+    """phaze-mft5 CORE REGRESSION (contract rule 4): no audit row is skipped or duplicated across pages.
+
+    Every seeded ``ExecutionLog`` is inserted in ONE transaction, so ``executed_at`` -- populated
+    purely by ``server_default=func.now()`` -- is IDENTICAL on all of them, exactly the "bulk audit
+    write" failure scenario the bead describes: two agents' create-execution-log writes landing in the
+    same transaction/microsecond. Before the fix, ``get_execution_logs_page`` ordered solely by
+    ``executed_at DESC`` with no tiebreaker, so this degenerate key could skip or duplicate a row
+    across the page boundary. Walking every page must still yield each log EXACTLY once.
+    """
+    logs = await _make_execution_log_batch(session, 25)
+
+    # Confirm the premise: executed_at really is tied, so this test exercises the tiebreaker.
+    executed_ats = (await session.execute(select(ExecutionLog.executed_at))).scalars().all()
+    assert len(set(executed_ats)) == 1, "premise failed: executed_at is not tied, so this would not exercise the tiebreaker"
+
+    seen = await _walk_all_pages(
+        lambda p: get_execution_logs_page(session, page=p, page_size=MIN_PAGE_SIZE),
+        MIN_PAGE_SIZE,
+    )
+
+    expected = {str(log.id) for log in logs}
+    assert len(seen) == len(set(seen)), f"a row was DUPLICATED across audit log pages ({len(seen) - len(set(seen))} dupes)"
+    assert set(seen) == expected, f"a row was SKIPPED across audit log pages -- {len(expected - set(seen))} missing of {len(expected)}"
+
+
+@pytest.mark.asyncio
+async def test_audit_log_page_out_of_range_yields_an_empty_page_not_an_error(session: AsyncSession) -> None:
+    """Contract rule 5: a page past the end of the audit log is a normal EMPTY page, never an error."""
+    await _make_execution_log_batch(session, 3)
+
+    page = await get_execution_logs_page(session, page=9999, page_size=DEFAULT_PAGE_SIZE)
+    assert page.rows == []
+    assert page.has_next is False
+
+
+class _NullSavepoint:
+    """Async-context-manager stand-in for ``session.begin_nested()`` in the fake-session test below.
+
+    ``__aexit__`` returns ``False`` so an exception raised inside the ``async with`` block propagates
+    out to ``get_execution_logs_page``'s degrade ``except`` -- exactly as a real SAVEPOINT does after
+    ``ROLLBACK TO SAVEPOINT`` (mirrors the pattern in ``test_pipeline.py``'s
+    ``test_get_stage_busy_counts_degrades_on_db_error``).
+    """
+
+    async def __aenter__(self) -> _NullSavepoint:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_audit_log_page_degrades_on_db_error() -> None:
+    """Contract rule 6: a DB error on the audit log read returns an EMPTY page, never a 500.
+
+    The read runs inside a SAVEPOINT (``begin_nested``); the exception propagates out of the nested
+    scope and is caught by the degrade ``except``, which returns ``Page(rows=[], has_next=False)``
+    instead of letting the audit view 500.
+    """
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("connection reset by peer")
+
+    page = await get_execution_logs_page(_ExplodingSession(), page=1, page_size=MIN_PAGE_SIZE)  # type: ignore[arg-type]
+    assert page.rows == []
+    assert page.has_next is False
 
 
 @pytest.mark.asyncio
