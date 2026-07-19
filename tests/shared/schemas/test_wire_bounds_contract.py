@@ -106,11 +106,6 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("AnalysisWritePayload", "fine_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "fine_windows_total"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "coarse_windows_analyzed"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWritePayload", "coarse_windows_total"): "phaze-01gh -- ge=0, no upper bound",
-    ("AnalysisWindowPayload", "window_index"): "phaze-01gh -- ge=0, no upper bound",
     ("MetadataWriteRequest", "year"): "phaze-bd4n -- unbounded vs int4",
     ("MetadataWriteRequest", "track_number"): "phaze-bd4n -- unbounded vs int4",
     ("MetadataWriteRequest", "bitrate"): "phaze-bd4n -- ge=0 only, no upper bound vs int4",

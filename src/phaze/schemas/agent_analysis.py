@@ -18,6 +18,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from phaze.schemas.wire_bounds import INT32_MAX
+
 
 class AnalysisWindowPayload(BaseModel):
     """One per-window time-series row (Phase 31, ANL-01).
@@ -32,7 +34,10 @@ class AnalysisWindowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")  # strict body parsing
 
     tier: Literal["fine", "coarse"]
-    window_index: int = Field(ge=0)
+    # window_index has no domain narrower than "an index into a windowed analysis run" -- it maps
+    # to analysis_windows.window_index Integer (int4), so the fallback column bound applies
+    # (wire_bounds rule 3, phaze-01gh).
+    window_index: int = Field(ge=0, le=INT32_MAX)
     start_sec: float = Field(ge=0.0)
     end_sec: float = Field(ge=0.0)
     # Fine-tier fields
@@ -59,11 +64,15 @@ class AnalysisWritePayload(BaseModel):
     # Phase 43 windowed-analysis coverage (the five-field contract analyze_file
     # returns). These land in dedicated `analysis` columns -- the router adds them
     # to `_ANALYSIS_COLUMN_FIELDS` so they do NOT funnel into `features` JSONB. All
-    # optional so partial-PUT preserves unset coverage; counts are `ge=0`.
-    fine_windows_analyzed: int | None = Field(default=None, ge=0)
-    fine_windows_total: int | None = Field(default=None, ge=0)
-    coarse_windows_analyzed: int | None = Field(default=None, ge=0)
-    coarse_windows_total: int | None = Field(default=None, ge=0)
+    # optional so partial-PUT preserves unset coverage. Bounded by the SAME
+    # realistic-windows-per-file domain as `windows` below (a 24h file at 30s
+    # windows is ~2,880 fine windows; 50000 is generous) rather than the wider
+    # int32 column fallback -- a count can never legitimately exceed the number of
+    # windows a run could produce (wire_bounds rule 3, phaze-01gh).
+    fine_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
+    fine_windows_total: int | None = Field(default=None, ge=0, le=50000)
+    coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
+    coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
     sampled: bool | None = None
     # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
     # contract (router only replaces windows when this is not None); `max_length`
@@ -87,8 +96,12 @@ class AnalysisProgressPayload(BaseModel):
     ``| None``, no default) -- a progress POST always carries both (the START
     call sends ``analyzed=0, total=N``; bumps send ``analyzed=k, total=N``).
     ``extra='forbid'`` rejects any attempt to ride an ``agent_id``/``file_id``
-    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``
-    guards bound malformed counts at the wire boundary.
+    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``/``le=50000``
+    bound malformed counts at the wire boundary -- same realistic-windows-per-file domain
+    as ``AnalysisWritePayload.fine_windows_analyzed``/``.fine_windows_total`` (wire_bounds
+    rule 3, phaze-01gh): these land in the same ``analysis_results`` int4 counter columns,
+    so an out-of-range value would otherwise raise Postgres ``NumericValueOutOfRange``
+    unhandled, and here the abort happens BEFORE the ledger clear, re-queuing the file.
 
     Fine-only per Claude's Discretion (CONTEXT D-01): fine-only satisfies
     WORK-04; coarse counts are intentionally omitted (do NOT add coarse fields).
@@ -96,8 +109,8 @@ class AnalysisProgressPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # strict body parsing -- forged agent_id/file_id -> 422
 
-    fine_windows_analyzed: int = Field(ge=0)
-    fine_windows_total: int = Field(ge=0)
+    fine_windows_analyzed: int = Field(ge=0, le=50000)
+    fine_windows_total: int = Field(ge=0, le=50000)
 
 
 class AnalysisProgressResponse(BaseModel):

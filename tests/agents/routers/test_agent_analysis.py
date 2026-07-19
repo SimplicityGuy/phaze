@@ -549,6 +549,18 @@ def test_progress_schema_rejects_negative_count() -> None:
         AnalysisProgressPayload(fine_windows_analyzed=-1, fine_windows_total=40)
 
 
+def test_progress_schema_rejects_int32_overflowing_count() -> None:
+    """phaze-01gh: a count >= 2^31 would overflow analysis_results' int4 counter columns -- reject at 422."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError) as exc_info:
+        AnalysisProgressPayload(fine_windows_analyzed=1, fine_windows_total=2147483648)
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
+
+
 def test_progress_schema_requires_both_counts() -> None:
     """Both fine counts are REQUIRED (no default) -- a progress POST always carries both."""
     from pydantic import ValidationError
@@ -672,6 +684,35 @@ async def test_progress_post_forged_body_key_422(seed_test_agent: tuple[Agent, s
 
 
 @pytest.mark.asyncio
+async def test_progress_post_overflowing_count_422s_without_stranding_the_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-01gh: an int32-overflowing progress count is rejected 422 before the pg_insert / ledger touch.
+
+    Bare unhandled 500 in the pre-fix code (post_analysis_progress has no ledger-clear step of its
+    own to skip, but the same DataError -> 500 -> no clean signal for the agent to stop retrying with
+    the same bad count applies). Asserting no AnalysisResult row is written proves the rejection
+    happens before any transaction opens.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 2147483648},
+        )
+
+    assert r.status_code == 422, r.text
+    assert "fine_windows_total" in r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) progress POST must not persist any AnalysisResult row"
+
+
+@pytest.mark.asyncio
 async def test_analysis_failed_sets_marker(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """POST /{file_id}/failed stamps the derived analyze-failure marker (analysis.failed_at, the sole
     authority after Phase 90 D-09 removed the files.state = ANALYSIS_FAILED write) and echoes agent_id/file_id."""
@@ -787,6 +828,39 @@ async def test_analysis_put_success_clears_ledger(seed_test_agent: tuple[Agent, 
 
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key), "successful analyze callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_overflowing_coverage_count_422s_without_stranding_the_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-01gh: an int32-overflowing coverage count is rejected 422 BEFORE the pg_insert runs.
+
+    In the pre-fix code, ``fine_windows_total=2147483648`` reached ``pg_insert(AnalysisResult)`` and
+    Postgres raised ``NumericValueOutOfRange``, aborting the transaction BEFORE `clear_ledger_entry`
+    (agent_analysis.py) ran -- leaving ``process_file:<file_id>`` in the ledger, which the recovery
+    sweep re-enqueues, re-running the SAME failing analysis forever (a poison loop). The schema bound
+    now rejects the value before the handler body -- and therefore before any transaction -- ever
+    runs, so the pre-existing ledger row is left EXACTLY as it was (not cleared, not corrupted) for a
+    future corrected retry to clear normally, and no partial/bad AnalysisResult row is ever written.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"fine_windows_total": 2147483648})
+
+    assert r.status_code == 422, r.text
+    assert "fine_windows_total" in r.text
+    assert await _ledger_present(session, key), "a rejected (422) PUT must not strand or clear the ledger row"
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
 
 
 @pytest.mark.asyncio
