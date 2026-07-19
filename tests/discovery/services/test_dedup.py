@@ -1,5 +1,6 @@
 """Tests for duplicate detection service."""
 
+from typing import Any
 import uuid
 
 import pytest
@@ -671,3 +672,40 @@ async def test_find_duplicate_group_by_hash_ignores_resolved_files(session: Asyn
     await session.flush()
 
     assert await find_duplicate_group_by_hash(session, HASH_A) is None
+
+
+# phaze-wkqk: undo_resolve's docstring promises "no HTTP 500 on any payload shape". Contract rule 6
+# says such a promise is a test obligation, so the ELEMENT half is pinned here at the service layer
+# (the router's 422 ENVELOPE half is pinned in tests/review/routers/test_duplicates.py).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [1, 2],  # ints -> (1).get("id") AttributeError before the fix
+        ["a", "b"],  # strings -> str.get AttributeError before the fix
+        [None],
+        [[]],
+        [{"nope": 1}],  # dict without the id key
+        [{"id": "not-a-uuid"}],  # the malformed-id case the docstring already claimed to handle
+        [{"id": None}],
+        [],
+    ],
+)
+async def test_undo_resolve_skips_unusable_entries(session: AsyncSession, payload: list[Any]) -> None:
+    """Every unusable ENTRY shape is skipped and returns 0 -- never an AttributeError/TypeError."""
+    assert await undo_resolve(session, payload) == 0
+
+
+@pytest.mark.asyncio
+async def test_undo_resolve_mixed_payload_deletes_the_valid_marker(session: AsyncSession) -> None:
+    """Junk entries alongside a real id do not suppress the real id's marker DELETE."""
+    f1 = _make_file("/dir/keep.mp3", "mp3", "d" * 64, file_size=2000)
+    f2 = _make_file("/dir/dup.mp3", "mp3", "d" * 64, file_size=1000)
+    session.add_all([f1, f2])
+    await session.flush()
+    await resolve_group(session, "d" * 64, f1.id)
+    await session.flush()
+
+    undone = await undo_resolve(session, [1, "junk", None, {"id": "not-a-uuid"}, {"id": str(f2.id)}])
+
+    assert undone == 1

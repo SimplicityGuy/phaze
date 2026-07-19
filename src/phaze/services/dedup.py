@@ -354,10 +354,13 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     return len(file_states), file_states
 
 
-async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]]) -> int:
+async def undo_resolve(session: AsyncSession, file_states: list[Any]) -> int:
     """Undo a group resolution: DELETE the dedup markers, keyed on the payload id-set.
 
-    Accepts the browser-held ``[{id}]`` payload. The marker DELETE and its early-return gate derive from
+    Accepts the browser-held ``[{id}]`` payload. The element type is ``Any``, not ``dict``, ON
+    PURPOSE (phaze-wkqk): this consumes an UNTRUSTED array whose elements the router deliberately
+    does not validate, and a ``dict`` annotation would be a lie that hides the isinstance guard
+    below from the type checker. The marker DELETE and its early-return gate derive from
     ``entry["id"]`` ALONE. Phase 90: PR-A decoupled this gate from ``previous_state``; PR-B (D-09) then
     removed the ``previous_state`` capture / DUPLICATE_RESOLVED dual-write / state-restore as a matched set,
     so an id-only ``[{id}]`` payload is now the ONLY shape and it still deletes the marker.
@@ -368,13 +371,30 @@ async def undo_resolve(session: AsyncSession, file_states: list[dict[str, Any]])
     Returns the count actually undone (callers do not use it for control flow).
 
     Threat mitigation (T-84-03-01/02 / T-90A-04): the DELETE is scoped ``WHERE file_id IN (payload ids)``,
-    so it can only remove markers for ids the operator's own payload names; a malformed id is dropped (no
-    HTTP 500).
+    so it can only remove markers for ids the operator's own payload names.
+
+    NO HTTP 500 ON ANY PAYLOAD SHAPE (phaze-wkqk). This is the ELEMENT half of the untrusted-input
+    contract (``routers/request_guards.py`` rule 2): an entry that is not a dict, or whose ``id`` is
+    absent / not a UUID, is SKIPPED and the rest of the payload still undoes. It is not escalated --
+    one stale id must not void an otherwise valid bulk undo, and the returned count is the authority
+    on what actually happened. The ENVELOPE half (``file_states`` unparseable, or valid JSON that is
+    not an array) is rejected with 422 by the router before it reaches here. The claim in this
+    paragraph is backed by tests (rule 6), not merely asserted -- see
+    ``tests/discovery/services/test_dedup.py`` and ``tests/review/routers/test_duplicates.py``.
+
+    Note this docstring previously claimed the no-500 guarantee while covering only the id VALUE; a
+    non-dict entry reached ``entry.get`` and raised ``AttributeError`` -> 500. That gap is the case
+    study rule 6 was written from.
     """
     # (1) DERIVED AUTHORITY: build the DELETE id-set from ``entry["id"]`` ALONE (accept UUID-or-str, drop
     #     non-UUIDs, dedupe). A malformed id must not escape as an unhandled ValueError/KeyError (HTTP 500).
     ids: set[uuid_mod.UUID] = set()
     for entry in file_states:
+        if not isinstance(entry, dict):
+            # phaze-wkqk: valid JSON of the wrong SHAPE -- ``[1, 2]``, ``["a"]``, a list of nulls.
+            # Parsing succeeded, so the router's envelope guard passed it through; without this the
+            # ``entry.get`` below raises AttributeError and escapes as a 500.
+            continue
         raw_id = entry.get("id")
         if isinstance(raw_id, uuid_mod.UUID):
             ids.add(raw_id)

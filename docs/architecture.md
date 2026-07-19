@@ -601,6 +601,35 @@ down, so it was possible to deviate silently.
 The enforcing test is a live checklist, not a suppression list: known gaps are recorded as
 **strict xfail**, so when a fix lands the entry stops matching and the suite fails until the entry
 is deleted. A new unclassified wire field also fails — that is what stops the next regression.
+||||||| 83c75fe
+## 🛡️ Untrusted-Input Contract
+
+Every request path that parses a raw client string, or looks up a row an earlier request named,
+follows ONE shared contract, owned by `src/phaze/routers/request_guards.py`. Read that module's
+docstring before adding such a handler — this is a summary, the module is the source of truth.
+
+**Why it exists.** The duplicate undo endpoints called `json.loads(file_states)` bare on a raw form
+string and fed the result into `undo_resolve`, whose docstring advertised "a malformed id is dropped
+(no HTTP 500)". That was true only for the id *value* inside a well-formed dict. `not-json` raised
+`JSONDecodeError`; `[1,2]` raised `AttributeError` on `int.get`. Both escaped as HTTP 500 through a
+handler documenting a graceful no-op. An asserted invariant is not an invariant; a tested one is.
+
+| Rule | Decision |
+| ---- | -------- |
+| Parse guards | **No bare `json.loads` / `uuid.UUID` / `int` / `datetime.fromtimestamp` on a wire value.** An unparseable or wrong-container **envelope** is **HTTP 422** — the same code FastAPI's own validation returns. Never a parallel 400. |
+| **Shape ≠ parse** | **Parsing successfully is not receiving the expected structure.** `"[1,2]"`, `"{}"` and `"null"` all decode fine and explode at the first attribute access. Assert shape *separately, at the same boundary*: a **Pydantic model** where fields are named, an explicit container check where the payload is a loose best-effort id-set. |
+| Envelope vs element | **Envelope malformed → 422** (whole request unintelligible). **Element malformed → skip it, keep going, return the count acted on** (browser-held id-sets are arbitrarily stale; one bad id must not void a valid bulk action). This is the repo-wide answer to "malformed id: 4xx or skip?". |
+| Row lookups | **`scalar_one()` is the bug.** Use `scalar_one_or_none()` + an explicit `None` branch. What the branch returns (clean 200 hold / 404 / skip) is the handler's call; an escaping `NoResultFound` never is. In-repo reference: `report_push_mismatch`'s over-cap branch. |
+| Integrity errors | Catch `IntegrityError` around the flush for a **genuine race** (referent deleted between render and POST). `ON CONFLICT (id)` does **not** absorb an FK violation. **Boundary vs constrain-at-the-wire:** if a stricter signature could have rejected the value, it 422s at the wire and catching `IntegrityError` for it is wrong; if it was valid when checked and another transaction invalidated it, this contract owns it. |
+| Transaction state | A failed statement aborts the Postgres transaction. Run the risky statement in a **`session.begin_nested()` SAVEPOINT** and roll back only that scope — same mechanism as the paging contract's degrade-safe reads. **Never** a full `session.rollback()` as recovery: it expires loaded ORM objects and 500s on the very hiccup it claims to survive. |
+| Documented guarantees | **A docstring promising "no HTTP 500" is a test obligation.** Ship regression tests for unparseable input, wrong-container and wrong-element-type input, and the specific malformed value the docstring names. Untested shape → the docstring may not claim it. |
+
+```python
+from phaze.routers.request_guards import parse_json_array_payload
+
+parsed_states = parse_json_array_payload(file_states, field="file_states")  # 422 on non-JSON / non-array
+restored = await undo_resolve(session, parsed_states)                       # drops unusable elements
+```
 
 ## 🧱 Key Abstractions
 
