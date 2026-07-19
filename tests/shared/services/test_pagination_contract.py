@@ -207,6 +207,53 @@ def test_shell_router_does_not_read_unbounded_pending_sets() -> None:
     assert "get_fingerprint_pending_files(" not in shell_src, "the shell render path must use the bounded get_pending_files_page"
 
 
+def test_identify_workspaces_render_no_rows_inline() -> None:
+    """phaze-1wvb acceptance: neither Identify workspace may server-render its table inline.
+
+    The Phase-59 Track-ID and Tracklist workspaces were authored BEFORE this contract existed and
+    were never retrofitted: both `{% include %}`-d ``_file_table.html`` with a whole-corpus row list
+    already in context (get_trackid_stage_files / get_tracklist_set_rows -- no LIMIT, `.all()`).
+    Same structural guard as the enrich workspaces above.
+    """
+    templates = pathlib.Path("src/phaze/templates/pipeline/partials")
+    cases = {
+        "trackid_workspace.html": ("trackid-files-view", "/pipeline/trackid-files"),
+        "tracklist_workspace.html": ("tracklist-sets-view", "/pipeline/tracklist-sets"),
+    }
+    for name, (host_id, endpoint) in cases.items():
+        body = (templates / name).read_text()
+        assert f'id="{host_id}"' in body, f"{name} lost its lazy-load host div"
+        assert f'hx-get="{endpoint}"' in body, f"{name} no longer lazy-loads its bounded fragment"
+        assert 'hx-trigger="load"' in body, f"{name} host div must load the fragment on render"
+        assert '{% include "pipeline/partials/_file_table.html" %}' not in body, f"{name} re-inlines the table on the landing path"
+        assert "{% for f in" not in body, f"{name} re-introduced an inline per-file row loop"
+        assert "{% for s in" not in body, f"{name} re-introduced an inline per-set row loop"
+
+
+def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
+    """phaze-1wvb: the shell render path must not call the old whole-corpus Identify readers.
+
+    Both were RENDER-ONLY (verified by call graph -- no enqueue consumed them), so unlike the pending
+    sets they were bounded in place rather than split; the old names must not come back.
+    """
+    shell_src = pathlib.Path("src/phaze/routers/shell.py").read_text()
+    assert "get_trackid_stage_files(" not in shell_src, "the shell render path must use the bounded get_trackid_files_page"
+    assert "get_tracklist_set_rows(" not in shell_src, "the shell render path must use the bounded get_tracklist_sets_page"
+
+
+def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
+    """Contract rule 7 for the Identify surface: bounding the table must not bound the buttons.
+
+    The Tracklist workspace's SEARCH / SCRAPE / MATCH ALL triggers keep reading their own UNBOUNDED
+    pending sets. A "consistency" refactor pointing them at a ``*_page`` reader would silently stop
+    enqueuing everything past page 1.
+    """
+    router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
+    assert "get_untracked_files(session)" in router_src, "SEARCH ALL must enqueue the UNBOUNDED pending set"
+    assert "get_scrape_pending_tracklists(session)" in router_src, "SCRAPE ALL must enqueue the UNBOUNDED pending set"
+    assert "get_match_pending_tracklists(session)" in router_src, "MATCH ALL must enqueue the UNBOUNDED pending set"
+
+
 def test_bulk_enqueue_still_uses_the_unbounded_pending_set() -> None:
     """Contract rule 7: paging the ENQUEUE set would silently under-enqueue the backlog.
 

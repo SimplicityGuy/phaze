@@ -7,9 +7,11 @@
    trigger -- the prototype's AcoustID IDENTIFY flow is the dropped IDENT-03; its signals are
    produced by the Fingerprint + Tracklist workspaces, not here).
 
-   Body = ONE combined per-file identity table (D-03 -- NOT two sub-sections) over
-   get_trackid_stage_files (shell._render_stage -> trackid_files), rendered through the reusable
-   _file_table.html. Columns: File · audfprint · Panako · Tracklist · Confidence.
+   Body = ONE combined per-file identity table (D-03 -- NOT two sub-sections). phaze-1wvb: the body is
+   an EMPTY host div that hx-gets the BOUNDED, paged GET /pipeline/trackid-files fragment on load
+   (_trackid_files.html, over get_trackid_files_page) -- nothing is server-rendered inline any more.
+   Columns: File · audfprint · Panako · Tracklist · Confidence. The per-row colour rules described
+   below now live in that fragment.
 
    Per UI-SPEC (Track-ID Color): audfprint/Panako render the engine status WORD coloured (D-01,
    never hue-only -- WCAG 1.4.1): done emerald / failed rose / pending gray. Tracklist renders the
@@ -24,47 +26,18 @@
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = '`${$store.pipeline.fingerprintDone} fingerprinted · ${$store.pipeline.tracklistDone} with a tracklist match`' %}
-{% set _engine_color = {
-    "done": "text-emerald-600 dark:text-emerald-300",
-    "failed": "text-rose-600 dark:text-rose-400",
-    "pending": "text-gray-500 dark:text-gray-400",
-} %}
-{% set _match_color = {
-    "matched": "text-emerald-600 dark:text-emerald-300",
-    "candidate": "text-amber-600 dark:text-amber-300",
-    "no match": "text-gray-500 dark:text-gray-400",
-} %}
 {% call ws.workspace(title="TRACK-ID", subcount=subcount) %}
     <div class="p-6">
-        {% set columns = ["File", "audfprint", "Panako", "Tracklist", "Confidence"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for f in trackid_files %}
-            {% if f.confidence is none %}
-                {% set conf_text = "—" %}
-                {% set conf_color = "text-gray-500 dark:text-gray-400" %}
-            {% else %}
-                {% set conf_text = "%d%%" | format(f.confidence) %}
-                {% if f.confidence >= 90 %}
-                    {% set conf_color = "text-emerald-600 dark:text-emerald-300" %}
-                {% elif f.confidence >= 70 %}
-                    {% set conf_color = "text-amber-600 dark:text-amber-300" %}
-                {% else %}
-                    {% set conf_color = "text-gray-500 dark:text-gray-400" %}
-                {% endif %}
-            {% endif %}
-            {% set _ = ns.rows.append([
-                {'text': f.filename, 'mono': True, 'title': f.path},
-                {'text': f.audfprint_status, 'color': _engine_color.get(f.audfprint_status, "text-gray-500 dark:text-gray-400")},
-                {'text': f.panako_status, 'color': _engine_color.get(f.panako_status, "text-gray-500 dark:text-gray-400")},
-                {'text': f.tracklist_state, 'color': _match_color.get(f.tracklist_state, "text-gray-500 dark:text-gray-400")},
-                {'text': conf_text, 'mono': True, 'color': conf_color},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "Nothing to identify" %}
-        {% set empty_body = "No discovered files carry a fingerprint or tracklist signal yet. Run Fingerprint or Tracklist Search first." %}
-        {% set row_id_prefix = "trackid-row" %}
-        {% set table_id = "trackid-file-table" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        {# phaze-1wvb: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the bounded,
+           paged fragment on load -- the SAME contract as #analyze-files-view / #metadata-files-view. It
+           used to render the ENTIRE unbounded Track-ID identity set inline (every music/video file with
+           any fingerprint row or a linked tracklist), which converges on the whole corpus. Do NOT
+           reintroduce an inline row loop on this path. #}
+        <div id="trackid-files-view"
+             hx-get="/pipeline/trackid-files"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+        </div>
     </div>
 {% endcall %}

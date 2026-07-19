@@ -83,6 +83,8 @@ from phaze.services.pipeline import (
     get_stage_controls,
     get_stage_progress,
     get_straggler_count,
+    get_trackid_files_page,
+    get_tracklist_sets_page,
     get_untracked_files,
     queue_progress_percent,
 )
@@ -1066,6 +1068,55 @@ async def pending_files_fragment(
             "stage": stage_key,
             "host_id": f"{stage_key}-files-view",
         },
+    )
+
+
+@router.get("/pipeline/trackid-files", response_class=HTMLResponse)
+async def trackid_files_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the Track-ID identity table (phaze-1wvb).
+
+    The sibling of :func:`analyze_files_fragment` / :func:`pending_files_fragment`, on the SAME
+    paging contract (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a
+    ``page_size + 1`` sentinel for ``has_next`` (never a whole-corpus COUNT), and the mandatory
+    unique tiebreaker. The Track-ID workspace hx-gets this into its empty host div on load, so it no
+    longer server-renders a single identity row inline.
+
+    NOTE (paging contract rule 7): there is no enqueue behind this read to under-serve -- the
+    Track-ID workspace is READ-ONLY (it has no trigger at all), and the neighbouring Tracklist
+    workspace's bulk triggers keep reading their own UNBOUNDED pending sets.
+    """
+    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_trackid_files.html",
+        context={"trackid_page": trackid_page, "host_id": "trackid-files-view"},
+    )
+
+
+@router.get("/pipeline/tracklist-sets", response_class=HTMLResponse)
+async def tracklist_sets_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the per-set Tracklist coverage table (phaze-1wvb).
+
+    Same paging contract as :func:`trackid_files_fragment`. The Tracklist workspace hx-gets this into
+    the empty host div BELOW its three step cards; the step cards themselves (and their SEARCH /
+    SCRAPE / MATCH ALL triggers, which enqueue the UNBOUNDED pending sets -- rule 7) are untouched
+    and still server-rendered by the shell.
+    """
+    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_tracklist_sets.html",
+        context={"sets_page": sets_page, "host_id": "tracklist-sets-view"},
     )
 
 

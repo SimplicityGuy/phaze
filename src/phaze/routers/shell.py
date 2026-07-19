@@ -41,8 +41,6 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_scrape_pending_tracklists,
     get_stage_progress,
-    get_trackid_stage_files,
-    get_tracklist_set_rows,
     get_untracked_files,
 )
 from phaze.services.review import (
@@ -251,18 +249,16 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     # 12.7 MB. Those two tabs measured a harmless ~70 KB only because their backlogs happen to be
     # empty in production today, NOT because they were paged. Both workspaces now hx-get the bounded
     # GET /pipeline/pending-files fragment on load instead, so there is no file read on this path.
-    elif stage == "trackid":
-        # Phase 59 (59-02, IDENT-01): the Track-ID workspace renders the combined per-file identity
-        # table -- per-engine audfprint/Panako fingerprint state + tracklist match-state/confidence
-        # (get_trackid_stage_files: a read-only, degrade-safe assembly over the existing
-        # fingerprint_results + tracklists reads -- NO new query path, NO enqueue, NO backend change).
-        # The helper returns [] on any DB error, so no router try/except is needed; oob_counts stays
-        # False (Pitfall 5) -- the live sub-count refreshes via the single chrome poll's OOB seeds.
-        context["trackid_files"] = await get_trackid_stage_files(session)
+    # phaze-1wvb: the trackid stage deliberately gets NO file-list context here any more. It used to
+    # seed `trackid_files` from get_trackid_stage_files, which was UNBOUNDED -- every music/video file
+    # carrying any fingerprint row or a linked tracklist, `.all()`-materialised and server-rendered
+    # into one table. As the archive converges that predicate approaches the WHOLE corpus, i.e. the
+    # exact cliff phaze-5462 fixed on the Analyze tab. The workspace now hx-gets the bounded
+    # GET /pipeline/trackid-files fragment on load, so there is no file read on this path at all.
     elif stage == "tracklist":
         # Phase 59 (59-03, IDENT-02): the Tracklist workspace renders three Search/Scrape/Match step
         # cards (server-rendered done/total + pending counts) over the per-step ALL triggers, plus the
-        # per-set N/M track-coverage table. get_stage_progress + get_tracklist_set_rows + the three
+        # per-set N/M track-coverage table (the latter now hx-get, below). get_stage_progress + the three
         # pending-set helpers are read-only, degrade-safe assemblies over the existing tracklist reads
         # (NO new query path, NO enqueue, NO backend change). The busy pills bind to the existing
         # searchBusy/scrapeBusy/matchBusy store keys (Pitfall 3 -- no new key, no second poll), so
@@ -271,7 +267,11 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["tracklist_search_pending"] = len(await get_untracked_files(session))
         context["tracklist_scrape_pending"] = len(await get_scrape_pending_tracklists(session))
         context["tracklist_match_pending"] = len(await get_match_pending_tracklists(session))
-        context["tracklist_sets"] = await get_tracklist_set_rows(session)
+        # phaze-1wvb: the per-set table is NOT seeded here any more -- get_tracklist_set_rows was an
+        # unbounded row-per-Tracklist read rendered inline. The workspace hx-gets the bounded
+        # GET /pipeline/tracklist-sets fragment on load instead. NOTE the three *_pending counts above
+        # stay as they are: they feed the SEARCH/SCRAPE/MATCH ALL *enqueue* sets (paging contract
+        # rule 7), which must never be paged.
     elif stage == "rename":
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
         # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
