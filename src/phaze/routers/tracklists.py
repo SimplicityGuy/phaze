@@ -314,6 +314,26 @@ async def trigger_scan(
     )
 
 
+def _scan_failure_identifier(job: Any) -> str:
+    """Return a human-readable identifier for a FAILED ``scan_live_set`` job.
+
+    Prefers the enqueued ``original_path`` (available via ``job.kwargs`` --
+    ``trigger_scan`` enqueues ``ScanLiveSetPayload``, which always carries
+    ``original_path``) since that is what an operator recognizes in the UI.
+    Falls back to the first line of ``job.error`` (SAQ's traceback string,
+    where a FAILED job's failure detail actually lives -- ``job.result`` is
+    always ``None`` on failure) and finally to a generic placeholder if
+    neither is available.
+    """
+    kwargs = job.kwargs or {}
+    original_path = kwargs.get("original_path")
+    if original_path:
+        return str(original_path)
+    if job.error:
+        return str(job.error).splitlines()[0]
+    return "unknown"
+
+
 @router.get("/scan/status", response_class=HTMLResponse)
 async def scan_status(
     request: Request,
@@ -327,6 +347,17 @@ async def scan_status(
     queue-scoped, so the poll must target the SAME lane queue the job was enqueued
     on (quick-260707-dh1). The ``agent_id`` is echoed from ``trigger_scan`` through
     the progress partial.
+
+    COMPLETE and FAILED are handled as SEPARATE branches (not folded into one
+    ``job.status in (...)`` check) because SAQ only populates ``job.result`` from
+    the task's return value on a genuine COMPLETE; a FAILED job's ``result`` is
+    always ``None`` -- its failure detail lives in ``job.error`` (the traceback
+    string). ``scan_live_set`` (``tasks/scan.py``) never returns a
+    ``{"status": "error"}`` result -- it only returns ``"no_matches"`` /
+    ``"scanned"``; every failure path raises and becomes ``Status.FAILED``. So a
+    FAILED job is reported explicitly as an error (surfacing the enqueued
+    ``original_path`` when available, else the first line of ``job.error``)
+    instead of being silently folded into ``completed`` with no error entry.
     """
     queue = request.app.state.task_router.queue_for(agent_id, lane_for_task("scan_live_set"))
     ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
@@ -340,14 +371,14 @@ async def scan_status(
         if job is None:
             completed += 1
             continue
-        if job.status in (Status.COMPLETE, Status.FAILED):
+        if job.status == Status.FAILED:
+            completed += 1
+            errors.append(_scan_failure_identifier(job))
+        elif job.status == Status.COMPLETE:
             completed += 1
             result_data = job.result
-            if isinstance(result_data, dict):
-                if result_data.get("status") == "scanned":
-                    tracklists_created += 1
-                elif result_data.get("status") == "error":
-                    errors.append(result_data.get("filename", "unknown"))
+            if isinstance(result_data, dict) and result_data.get("status") == "scanned":
+                tracklists_created += 1
 
     total = len(ids)
     done = completed >= total
