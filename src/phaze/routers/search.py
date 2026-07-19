@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.search_queries import SearchResult, distinct_artists, search
 
 
@@ -27,7 +28,7 @@ async def search_page(
     bpm_min: float | None = Query(None),
     bpm_max: float | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Render the search page, or an HTMX results fragment."""
