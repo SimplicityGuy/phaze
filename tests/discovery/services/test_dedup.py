@@ -11,6 +11,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.dedup import (
     count_duplicate_groups,
+    find_duplicate_group_by_hash,
     find_duplicate_groups,
     find_duplicate_groups_by_hashes,
     find_duplicate_groups_with_metadata,
@@ -615,3 +616,58 @@ async def test_undo_resolve(session: AsyncSession) -> None:
     # Both markers were deleted -> the files derive ~dedup_resolved_clause() again.
     remaining = (await session.execute(select(DedupResolution.file_id))).scalars().all()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# phaze-m7ya: find_duplicate_group_by_hash is a keyed LOOKUP, not a paged read.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_returns_the_group_with_metadata(session: AsyncSession) -> None:
+    """The lookup returns the one requested group, with metadata joined, and nothing else."""
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    other = _make_file("/dir/b1.mp3", "mp3", HASH_B)
+    other2 = _make_file("/dir/b2.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, other, other2])
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=f1.id, bitrate=320, artist="Artist A"))
+    await session.flush()
+
+    group = await find_duplicate_group_by_hash(session, HASH_A)
+
+    assert group is not None
+    assert group["sha256_hash"] == HASH_A
+    assert group["count"] == 2
+    assert {f["original_path"] for f in group["files"]} == {"/dir/a1.mp3", "/dir/a2.mp3"}
+    assert next(f for f in group["files"] if f["original_path"] == "/dir/a1.mp3")["bitrate"] == 320
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_returns_none_for_unknown_hash(session: AsyncSession) -> None:
+    """An unknown hash is an ordinary miss, not an error."""
+    assert await find_duplicate_group_by_hash(session, HASH_A) is None
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_returns_none_for_a_single_file(session: AsyncSession) -> None:
+    """A lone file is not a duplicate group -- mirrors the list's ``HAVING count(id) > 1``."""
+    session.add(_make_file("/dir/only.mp3", "mp3", HASH_A))
+    await session.flush()
+
+    assert await find_duplicate_group_by_hash(session, HASH_A) is None
+
+
+@pytest.mark.asyncio
+async def test_find_duplicate_group_by_hash_ignores_resolved_files(session: AsyncSession) -> None:
+    """Once resolved down to a single unresolved file, the group stops being a group."""
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    await resolve_group(session, HASH_A, f1.id)
+    await session.flush()
+
+    assert await find_duplicate_group_by_hash(session, HASH_A) is None
