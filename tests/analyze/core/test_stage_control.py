@@ -1,10 +1,13 @@
-"""Unit tests for the ``apply_stage_control`` before-enqueue hook (Phase 37 Plan 02).
+"""Unit tests for the ``apply_stage_control`` before-enqueue hook (Phase 37 Plan 02) and the
+``enforce_stage_pause_on_process`` / ``repark_if_stage_paused`` before/after-process pair
+(phaze-geuq).
 
-The hook stamps a new stage job with its stage's live ``priority`` (and parks it with
-``scheduled = SENTINEL`` when the stage is paused) by reading the ``pipeline_stage_control``
-table through the queue's psycopg3 ``pool`` (NOT SQLAlchemy -- agent import boundary,
-37-RESEARCH Pitfall 4). It mirrors :func:`apply_deterministic_key`'s best-effort discipline:
-any control-read failure logs and returns without mutating, so an enqueue is never blocked.
+The before-enqueue hook stamps a new stage job with its stage's live ``priority`` (and parks
+it with ``scheduled = SENTINEL`` when the stage is paused) by reading the
+``pipeline_stage_control`` table through the queue's psycopg3 ``pool`` (NOT SQLAlchemy --
+agent import boundary, 37-RESEARCH Pitfall 4). It mirrors :func:`apply_deterministic_key`'s
+best-effort discipline: any control-read failure logs and returns without mutating, so an
+enqueue is never blocked.
 
 Five behaviors are proven with a fake queue exposing a fake ``.pool`` (an async
 context-manager connection returning ``(paused, priority)``):
@@ -14,6 +17,21 @@ context-manager connection returning ``(paused, priority)``):
 3. passthrough -- a non-stage function is untouched and triggers NO pool read;
 4. best-effort -- a pool whose connection raises => warning logged, defaults left, no raise;
 5. TTL cache -- two enqueues of the same stage within the TTL window issue ONE pool read.
+
+phaze-geuq: SAQ's retry path (``PostgresQueue._retry``) re-queues via a raw ``update()`` that
+never calls ``enqueue()``, so the before-enqueue hook above cannot see a retried job. The
+before/after-process pair closes that gap at the WORKER boundary instead (unit-tested here
+with a fake queue that mimics SAQ's ``Queue.update`` attribute-setting semantics; the
+end-to-end reproduction against a real Postgres broker + real SAQ ``_retry``/``Worker`` lives
+in ``tests/integration/test_stage_pause_retry_bounce.py``):
+
+6. bounce   -- paused stage => raises ``StagePausedRetry``, flags ``ctx``, parks ``scheduled``;
+7. passthrough -- unpaused stage / non-stage function => no raise, no ``ctx`` flag;
+8. best-effort -- a pool whose connection raises => no raise, job proceeds unpaused;
+9. after-process no-op -- ``ctx`` unflagged => no queue mutation;
+10. after-process authoritative -- flagged ``ctx`` => forces QUEUED/SENTINEL and restores
+    ``attempts`` to its pre-dequeue count, even overriding an already-``FAILED`` status (the
+    attempts-exhausted edge case a pause bounce must never terminalize).
 """
 
 from __future__ import annotations
@@ -23,10 +41,16 @@ from typing import Any
 import uuid
 
 import pytest
-from saq.job import Job
+from saq.job import Job, Status
 
 from phaze.tasks._shared import stage_control
-from phaze.tasks._shared.stage_control import SENTINEL, apply_stage_control
+from phaze.tasks._shared.stage_control import (
+    SENTINEL,
+    StagePausedRetry,
+    apply_stage_control,
+    enforce_stage_pause_on_process,
+    repark_if_stage_paused,
+)
 
 
 class _FakeCursor:
@@ -150,3 +174,130 @@ async def test_ttl_cache_collapses_repeat_reads() -> None:
     assert j1.priority == 42
     assert j2.priority == 42
     assert pool.read_count[0] == 1
+
+
+# ----------------------------------------------------------------------------------------
+# phaze-geuq: enforce_stage_pause_on_process (before_process) / repark_if_stage_paused
+# (after_process) -- covers SAQ's `_retry` before_enqueue bypass.
+# ----------------------------------------------------------------------------------------
+
+
+class _FakeUpdatingQueue:
+    """Minimal stand-in for ``saq.queue.base.Queue`` mimicking ONLY ``update()``'s attribute-
+    setting semantics (``base.py``'s real ``update()`` does the identical ``setattr`` loop
+    before persisting) -- enough to unit-test the hooks without a real Postgres broker. The
+    real end-to-end persistence (and SAQ's OWN ``_retry``) is covered by the integration
+    regression in ``tests/integration/test_stage_pause_retry_bounce.py``.
+    """
+
+    def __init__(self, pool: _FakePool) -> None:
+        self.pool = pool
+        self.update_calls: list[dict[str, Any]] = []
+
+    async def update(self, job: Job, **kwargs: Any) -> None:
+        self.update_calls.append(dict(kwargs))
+        for k, v in kwargs.items():
+            if hasattr(job, k):
+                setattr(job, k, v)
+
+
+def _ctx_for(job: Job) -> dict[str, Any]:
+    return {"job": job}
+
+
+async def test_enforce_stage_pause_on_process_bounces_when_paused() -> None:
+    job = _stage_job("process_file")
+    job.queue = _queue_with((True, 50))
+    ctx = _ctx_for(job)
+
+    with pytest.raises(StagePausedRetry):
+        await enforce_stage_pause_on_process(ctx)
+
+    assert ctx[stage_control._REPARK_CTX_KEY] is True
+    assert job.scheduled == SENTINEL
+
+
+async def test_enforce_stage_pause_on_process_noop_when_unpaused() -> None:
+    job = _stage_job("process_file")
+    job.queue = _queue_with((False, 50))
+    ctx = _ctx_for(job)
+    default_scheduled = job.scheduled
+
+    await enforce_stage_pause_on_process(ctx)  # must NOT raise
+
+    assert stage_control._REPARK_CTX_KEY not in ctx
+    assert job.scheduled == default_scheduled
+
+
+async def test_enforce_stage_pause_on_process_noop_for_non_stage_function() -> None:
+    job = Job(function="heartbeat_tick", kwargs={})
+    pool = _FakePool((True, 50))
+    job.queue = SimpleNamespace(pool=pool)
+    ctx = _ctx_for(job)
+
+    await enforce_stage_pause_on_process(ctx)  # must NOT raise
+
+    assert stage_control._REPARK_CTX_KEY not in ctx
+    assert pool.read_count[0] == 0
+
+
+async def test_enforce_stage_pause_on_process_best_effort_on_read_failure() -> None:
+    job = _stage_job("fingerprint_file")
+    job.queue = _queue_with(None, boom=True)
+    ctx = _ctx_for(job)
+    default_scheduled = job.scheduled
+
+    await enforce_stage_pause_on_process(ctx)  # must NOT raise
+
+    assert stage_control._REPARK_CTX_KEY not in ctx
+    assert job.scheduled == default_scheduled
+
+
+async def test_repark_if_stage_paused_noop_when_not_flagged() -> None:
+    job = _stage_job("process_file")
+    queue = _FakeUpdatingQueue(_FakePool((False, 50)))
+    job.queue = queue
+    ctx = _ctx_for(job)
+
+    await repark_if_stage_paused(ctx)  # must NOT raise
+
+    assert queue.update_calls == []
+
+
+async def test_repark_if_stage_paused_restores_queued_state_and_attempts() -> None:
+    job = _stage_job("process_file")
+    queue = _FakeUpdatingQueue(_FakePool((False, 50)))
+    job.queue = queue
+    job.attempts = 2  # Worker.process() already incremented this before the bounce
+    job.error = "timeout (simulated)"
+    ctx = _ctx_for(job)
+    ctx[stage_control._REPARK_CTX_KEY] = True
+
+    await repark_if_stage_paused(ctx)
+
+    assert job.status == Status.QUEUED
+    assert job.scheduled == SENTINEL
+    assert job.attempts == 1, "pause bounce must undo Worker.process()'s attempts increment"
+    assert job.error is None
+    assert stage_control._REPARK_CTX_KEY not in ctx  # popped, not just falsified
+
+
+async def test_repark_if_stage_paused_overrides_an_already_failed_terminal_status() -> None:
+    """The attempts-exhausted edge case: the generic exception handler already called
+    ``job.finish(FAILED, ...)`` before this hook runs. A pause bounce must NEVER terminalize
+    the job (it would silently orphan the deterministic-key scheduling-ledger row), so this
+    hook's write must win regardless of what SAQ's own retry/finish decided in between.
+    """
+    job = _stage_job("process_file")
+    queue = _FakeUpdatingQueue(_FakePool((False, 50)))
+    job.queue = queue
+    job.attempts = job.retries  # exhausted -> job.retryable was False, so finish() ran
+    job.status = Status.FAILED
+    ctx = _ctx_for(job)
+    ctx[stage_control._REPARK_CTX_KEY] = True
+
+    await repark_if_stage_paused(ctx)
+
+    assert job.status == Status.QUEUED
+    assert job.scheduled == SENTINEL
+    assert job.attempts == job.retries - 1

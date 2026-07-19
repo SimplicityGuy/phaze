@@ -24,6 +24,15 @@ next drain tick routes it to the local safety net (``attempts >= cap``) rather t
 Inadmissible (operator misconfig) holds indefinitely + alerts and NEVER consumes
 the cap (D-06/D-07); healthy Pending is silent.
 
+phaze-32wz: the re-drive (D-08) only ENQUEUES the fresh ``submit_cloud_job`` -- it does not (cannot)
+confirm the re-submitted Job exists in the same transaction, since the actual kube POST runs later on
+the controller queue. The row's state model explicitly distinguishes three things a ``None`` Job read
+can mean, rather than collapsing them: **pending confirmation** (a resubmit was just enqueued and
+hasn't run yet -- recorded by clearing ``kueue_workload``, held quietly with NO attempt charged),
+**confirmed vanished** (pending confirmation that outlived the staleness bound with still no Job --
+NOW a genuine no-callback terminal), and **terminal** (a real Failed/Evicted signal from the Job or
+Workload itself). Only "confirmed vanished" and "terminal" burn a re-drive attempt.
+
 CONTROL-ONLY: needs PostgreSQL (``ctx["async_session"]``) + the controller queue (``ctx["queue"]``) for
 the re-drive enqueue, and the kube surface via ``kube_staging`` -- exactly like ``stage_cloud_window`` /
 ``recover_orphaned_work``. Register ONLY in ``phaze.tasks.controller`` (``tests/shared/core/test_task_split.py``
@@ -231,6 +240,24 @@ async def _handle_no_callback_terminal(
     extra attempt is burned and the deterministic-name 409->refresh cannot latch onto the dying Job.
     The staged S3 object is PRESERVED on the re-drive path (the re-submitted Job still needs it); it is
     deleted only on the genuinely-terminal at-cap path.
+
+    phaze-32wz (pending-vs-vanished, the TOCTOU this closes): ``_enqueue_resubmit`` only ENQUEUES the
+    fresh ``submit_cloud_job`` -- the actual re-create-and-stamp is asynchronous and runs later, on the
+    controller queue. Between this commit and that later run, ``cloud_job`` reads ``status=SUBMITTED``
+    with NO Job under its (deterministic, unchanged) name -- indistinguishable from a genuinely-vanished
+    terminal unless something records "a resubmit is in flight". Rather than inferring that purely from
+    elapsed time, this clears ``cloud_job.kueue_workload`` to ``None`` in the SAME commit as the attempts
+    bump: a cleared ``kueue_workload`` on a SUBMITTED/RUNNING row is the durable, explicit
+    pending-confirmation record (mirrors ``NULL`` s3_key et al -- state IS the record here, no extra
+    column/migration needed). The very next ``_reconcile_one`` tick then reads ``name is None`` and takes
+    the SAME phantom-row branch already built for "a submit that crashed between insert and workload
+    stamp, or is mid-flight right now" (below) -- which holds quietly (no attempt charged) while fresh,
+    and only escalates to ``_handle_no_callback_terminal`` again (a NEW, independently-charged attempt)
+    once the pending resubmit has been silent past the staleness cutoff, i.e. is now CONFIRMED vanished
+    rather than merely pending. Once the enqueued ``submit_cloud_job`` actually runs, its upsert
+    re-stamps ``kueue_workload`` to the fresh Job name (unchanged deterministic string) -- exiting the
+    pending state and resuming the normal get_job read on the next tick. No new attempt is burned for
+    the SAME re-drive merely waiting on its own enqueue to execute.
     """
     file_id = cloud_job.file_id
     next_attempt = cloud_job.attempts + 1
@@ -315,6 +342,11 @@ async def _handle_no_callback_terminal(
     cloud_job.attempts = next_attempt
     cloud_job.status = CloudJobStatus.SUBMITTED.value
     cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
+    # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
+    # confirmation" (the phantom-row branch's fresh-hold path), not as a fresh no-callback terminal
+    # against the OLD, already-confirmed-gone name -- this is what stops the enqueue-time attempt bump
+    # above from being immediately re-charged before the re-submitted Job even exists.
+    cloud_job.kueue_workload = None
     await session.commit()
     await _enqueue_resubmit(ctx, file_id)
     tally["redriven"] += 1
@@ -330,13 +362,20 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     """
     name = cloud_job.kueue_workload
     if not name:
-        # phaze-1b39: this row has no Job to read, so NO terminal signal can EVER arrive for it -- the
-        # pre-fix behaviour (warn + skip) re-logged the same line every tick forever while the row kept
-        # its burst-lane cap slot: a permanent phantom. Bound it by age. Fresh (a submit that crashed
-        # between the row insert and the workload stamp, or is mid-flight right now) -> hold quietly as
-        # before, so a live submit is never stolen. Past the staleness cutoff -> terminalize through the
-        # SAME no-callback path everything else uses (bounded re-drive under cap, spill to local at cap),
-        # which is what returns the cap slot without operator surgery.
+        # phaze-1b39 / phaze-32wz: this row has PENDING CONFIRMATION, not a Job to read, so no terminal
+        # signal can arrive for it yet -- the pre-1b39 behaviour (warn + skip) re-logged the same line
+        # every tick forever while the row kept its burst-lane cap slot: a permanent phantom. Two
+        # equally-legitimate ways a row lands here with status in {SUBMITTED, RUNNING}: (a) the FIRST
+        # submit crashed between the row insert and the workload stamp, or is mid-flight right now; (b) a
+        # no-callback-terminal RE-DRIVE just cleared ``kueue_workload`` (phaze-32wz, above) after
+        # confirming the OLD Job gone, and its freshly-enqueued ``submit_cloud_job`` has not yet run to
+        # re-stamp a new one. Both are "pending confirmation", explicitly recorded by the cleared column
+        # rather than inferred from elapsed time -- bound ONLY the "how long is too long" question by
+        # age. Fresh -> hold quietly, so a live/pending submit is never stolen and NO attempt is charged
+        # for a submit that simply hasn't run yet. Past the staleness cutoff the pending resubmit is
+        # CONFIRMED VANISHED (not merely pending) -> terminalize through the SAME no-callback path
+        # everything else uses (bounded re-drive under cap -- a NEW, independently-charged attempt --
+        # spill to local at cap), which is what returns the cap slot without operator surgery.
         if _row_age_seconds(cloud_job) <= _staleness_cutoff_seconds(kube):
             logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
             await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).

@@ -2013,7 +2013,16 @@ async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_i
     IDENTICAL payload construction. Keeping two copies is how the payload shape drifts and
     one producer starts dead-lettering; there is exactly one now.
     """
-    await enqueue_fingerprint_jobs(queue, files, agent_id)
+    result = await enqueue_fingerprint_jobs(queue, files, agent_id)
+    # phaze-e57w: this HTTP path is fire-and-forget (no operator response to carry counts), but a
+    # BLOCKED collision -- a file whose deterministic key is held by a dead 'aborting'/failed row --
+    # must not vanish silently. Surface it in the logs (the aborting-reaper frees the key).
+    if result.blocked:
+        logger.warning(
+            "fingerprint enqueue: files BLOCKED by a dead job row (not in flight)",
+            blocked=result.blocked,
+            blocked_keys=list(result.blocked_keys),
+        )
 
 
 @router.post("/api/v1/fingerprint")

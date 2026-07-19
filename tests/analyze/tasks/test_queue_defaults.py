@@ -148,7 +148,16 @@ def test_agent_worker_settings_construct_real_worker(monkeypatch: pytest.MonkeyP
 
     import saq
 
+    from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
     from phaze.tasks.agent_worker import settings as agent_settings
 
     worker = saq.Worker(**agent_settings)
     assert worker is not None
+
+    # phaze-geuq: the agent worker MUST run enforce_stage_pause_on_process before every job's
+    # function so a job retried via SAQ's `_retry` (which bypasses before_enqueue) is bounced
+    # rather than run fresh on a paused stage; repark_if_stage_paused must run BEFORE
+    # increment_completed so a bounce is never mistaken for a genuine COMPLETE/FAILED outcome.
+    assert worker.before_process == [enforce_stage_pause_on_process]
+    assert worker.after_process is not None
+    assert worker.after_process[0] is repark_if_stage_paused

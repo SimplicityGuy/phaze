@@ -712,6 +712,49 @@ async def test_skipped_metadata_row_is_excluded_from_recovery(
 
 
 @pytest.mark.asyncio
+async def test_force_skipped_metadata_with_stale_failed_at_is_excluded_from_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-3m5n regression: a force-SKIPPED metadata stage is NEVER re-driven, even with a stale ``failed_at``.
+
+    Reproduces the exact failure scenario the bug report describes: metadata extraction fails at T1
+    (``failed_at`` set); the operator retries (``retry_metadata_failed`` deliberately LEAVES ``failed_at``
+    set, 81 D-11) and a ledger row is written; the job is lost before running (queue truncate / restore);
+    the operator gives up and force-skips metadata (the additive-only ``force_skip_stage`` writer, T-87-20,
+    never clears ``failed_at`` nor the ledger row). On the next Recover, the file is domain-complete via the
+    ``skipped_clause`` disjunct of ``domain_completed_clause(METADATA)``, but it ALSO carries a non-NULL
+    ``metadata_failed_at`` entry -- pre-fix, ``is_domain_completed`` fell through to the D-10
+    ``enqueued_at <= failed_at`` gate and re-drove the force-skipped extraction (the ledger row's
+    ``enqueued_at`` postdates ``failed_at``, exactly D-10 Cell A). The fix checks ``metadata_skipped``
+    membership BEFORE the D-10 gate, so this now stays terminal and NOTHING is re-enqueued.
+
+    MUTATION: reverting the ``metadata_skipped`` short-circuit (falling straight through to the D-10 gate
+    on every row in ``metadata_domain_completed``) makes this RED -- the force-skipped file re-drives.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)  # genuine queue-loss: the lost operator-retry job never ran
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=datetime.now(UTC))  # T1: metadata FAILED
+    # T2 > T1: the operator's lost retry ledger row survives the failure marker (D-10 Cell A shape).
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+    # The operator gives up and force-skips metadata AFTER the failure -- additive-only, failed_at stays set.
+    await _seed_stage_skip(session, f.id, stage="metadata")
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert router.queues == {}
+
+
+@pytest.mark.asyncio
 async def test_skipped_fingerprint_row_is_excluded_from_recovery(
     async_engine: AsyncEngine,
     session: AsyncSession,
@@ -967,7 +1010,14 @@ def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
     still backstop a still-live item, so replaying is the safe default.
     """
     row = SchedulingLedger(key="process_file:ghost", function="process_file", routing="agent", payload={})
-    empty = _DoneSets(analyze_done=set(), metadata_domain_completed=set(), metadata_failed_at={}, fingerprint_done=set(), push_done=set())
+    empty = _DoneSets(
+        analyze_done=set(),
+        metadata_domain_completed=set(),
+        metadata_failed_at={},
+        metadata_skipped=set(),
+        fingerprint_done=set(),
+        push_done=set(),
+    )
     assert is_domain_completed(row, empty) is False
 
 
@@ -1483,6 +1533,36 @@ async def test_d10_cell_a_orphaned_operator_retry_redrives_metadata(session: Asy
     assert str(f.id) in done_sets.metadata_domain_completed
     assert str(f.id) in done_sets.metadata_failed_at
     assert is_domain_completed(row, done_sets) is False
+
+
+@pytest.mark.asyncio
+async def test_d10_gate_never_applies_to_a_force_skipped_metadata_row(session: AsyncSession) -> None:
+    """phaze-3m5n: force-skip membership short-circuits the D-10 gate, even in the Cell A shape.
+
+    Unit-level twin of ``test_force_skipped_metadata_with_stale_failed_at_is_excluded_from_recovery``:
+    isolates ``is_domain_completed`` directly against a done-sets snapshot carrying BOTH a stale
+    ``metadata_failed_at`` entry (``enqueued_at > failed_at``, which alone would fail the D-10 gate --
+    see ``test_d10_cell_a_orphaned_operator_retry_redrives_metadata``) AND ``metadata_skipped``
+    membership for the same file. The skip must win: ``is_domain_completed`` returns True without ever
+    reaching the ``enqueued_at <= failed_at`` comparison.
+    MUTATION: dropping the ``metadata_skipped`` short-circuit (falling through to the D-10 gate
+    unconditionally) makes this RED, identically to Cell A.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED
+    await _seed_stage_skip(session, f.id, stage="metadata")  # force-skipped AFTER the failure
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    # enqueued_at (the orphaned retry) is AFTER failed_at -- the D-10 gate alone would return False here
+    # (proved by Cell A), so this row only stays domain-complete if the skip is checked first.
+    row, done_sets = await _metadata_done_sets_for(session, file_id=f.id, key=key, enqueued_at=failed_at + timedelta(minutes=5))
+
+    assert str(f.id) in done_sets.metadata_skipped
+    assert str(f.id) in done_sets.metadata_failed_at
+    assert is_domain_completed(row, done_sets) is True
 
 
 @pytest.mark.asyncio

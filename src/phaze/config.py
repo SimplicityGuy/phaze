@@ -288,6 +288,19 @@ class BaseSettings(PydanticBaseSettings):
     worker_process_pool_size: int = 4
     worker_health_check_interval: int = 60
     worker_keep_result: int = 3600
+    # phaze-e57w: age bound (seconds since the job's frozen `started`) past which a SAQ row
+    # stuck in status='aborting' is reaped -- deleted so its deterministic key
+    # (fingerprint_file:<file_id>) is released and the file becomes re-queueable. A legitimate
+    # abort completes in seconds (the worker calls finish(ABORTED)), so a row still 'aborting'
+    # this far past `started` is a zombie the owning worker will never finalize. The bound is on
+    # `started` (frozen), NOT `touched` -- SAQ's sweeper bumps `touched` on every abort->ABORTING
+    # pass (Queue.update), so a touched-based bound would never trigger (spike phaze-qmc2.1).
+    # Default 900 == worker_job_timeout(600) + 300s slack; MUST exceed worker_job_timeout.
+    aborting_reap_seconds: int = Field(
+        default=900,
+        validation_alias=AliasChoices("PHAZE_ABORTING_REAP_SECONDS", "aborting_reap_seconds"),
+        description="Seconds past a job's frozen `started` before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). Default 900 = 600s timeout + 300s slack.",
+    )
 
     # DB connection footprint / pool hygiene (quick-260707-ryn). These live on BaseSettings
     # so BOTH the api engine (via the module-level `settings` singleton, database.py) AND the

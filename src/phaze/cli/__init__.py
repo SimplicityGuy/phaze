@@ -39,7 +39,8 @@ from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
-from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs, select_outage_failed_files
+from phaze.services.fingerprint_requeue import FingerprintEnqueueResult, enqueue_fingerprint_jobs, select_outage_failed_files
+from phaze.services.queue_introspection import ActiveJobBreakdown, summarize_active_jobs
 
 
 if TYPE_CHECKING:
@@ -123,28 +124,33 @@ def parse_window(value: str, field: str) -> datetime.datetime:
     return parsed.astimezone(datetime.UTC)
 
 
-async def _run_requeue(since: datetime.datetime, until: datetime.datetime, limit: int | None, dry_run: bool) -> tuple[int, int, str | None]:
+async def _run_requeue(
+    since: datetime.datetime, until: datetime.datetime, limit: int | None, dry_run: bool
+) -> tuple[int, FingerprintEnqueueResult, str | None]:
     """Select the burned files and (unless ``dry_run``) re-enqueue them.
 
-    Returns ``(selected, accepted, agent_id)``. ``accepted`` excludes jobs the
-    deterministic-key hook collapsed because the file was already in flight.
+    Returns ``(selected, result, agent_id)``; for a dry run / empty selection ``result`` is an
+    empty tally and ``agent_id`` is ``None`` (nothing was enqueued). ``result.accepted`` excludes
+    jobs the deterministic-key hook collapsed, and ``result.blocked`` (phaze-e57w) separates files
+    collided against a DEAD zombie key from those genuinely in flight.
 
     Ordering mirrors the bulk retry endpoints: resolve the target agent BEFORE any
     enqueue, so "no active agent" fails loudly having changed nothing rather than
     stranding jobs on a default queue.
     """
+    empty = FingerprintEnqueueResult(accepted=0, in_flight=0, blocked=0, blocked_keys=())
     settings = get_settings()
     async with async_session() as session:
         files = await select_outage_failed_files(session, since, until, limit=limit)
         if not files or dry_run:
-            return len(files), 0, None
+            return len(files), empty, None
 
         agent = await select_active_agent(session, kind="fileserver")
         router = AgentTaskRouter(queue_url=settings.queue_url, cache_redis_url=settings.redis_url, ledger_sessionmaker=async_session)
         queue = router.queue_for(agent.id, lane_for_task("fingerprint_file"))
         await queue.connect()
-        accepted = await enqueue_fingerprint_jobs(queue, files, agent.id)
-        return len(files), accepted, agent.id
+        result = await enqueue_fingerprint_jobs(queue, files, agent.id)
+        return len(files), result, agent.id
 
 
 def _main_fingerprint(args: argparse.Namespace) -> int:
@@ -163,7 +169,7 @@ def _main_fingerprint(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        selected, accepted, agent_id = asyncio.run(_run_requeue(since, until, args.limit, args.dry_run))
+        selected, result, agent_id = asyncio.run(_run_requeue(since, until, args.limit, args.dry_run))
     except NoActiveAgentError:
         print(
             "error: no active fileserver agent -- nothing was enqueued. Bring an agent online and re-run.",
@@ -181,9 +187,19 @@ def _main_fingerprint(args: argparse.Namespace) -> int:
         print("No fingerprint-FAILED files found in that window; nothing to re-queue.")
         return 0
 
-    print(f"Re-queued {accepted} of {selected} selected file(s) to agent {agent_id!r}.")
-    if accepted < selected:
-        print(f"  {selected - accepted} skipped -- already in flight (deterministic-key dedup).")
+    print(f"Re-queued {result.accepted} of {selected} selected file(s) to agent {agent_id!r}.")
+    # phaze-e57w: a deterministic-key collision is NOT uniformly "already in flight". Report the two
+    # cases separately: genuinely-in-flight is benign; BLOCKED-by-a-dead-row is a file that can never
+    # recover on its own and needs the aborting-reaper -- so it is printed LOUDLY, not folded away.
+    if result.in_flight:
+        print(f"  {result.in_flight} skipped -- already in flight (deterministic-key dedup).")
+    if result.blocked:
+        print(f"  WARNING: {result.blocked} file(s) BLOCKED by a dead job row (status aborting/failed/stuck) --")
+        print("           NOT in flight; the file cannot recover until its zombie key is reaped.")
+        print("           The controller aborting-reaper releases these automatically (every minute);")
+        print("           the affected deterministic keys are:")
+        for key in result.blocked_keys:
+            print(f"             {key}")
     print("")
     print("  NOTE: if the fingerprint stage is paused, these jobs are PARKED, not running.")
     print("  Release them only once both engines are proven healthy:")
@@ -243,6 +259,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report what WOULD be re-queued and exit without enqueueing anything.",
     )
+
+    # phaze-grx3: operator diagnostic -- split a queue's 'active' count into genuinely-running vs
+    # claimed-but-buffered rows, so "active: N" is never misread as "N files fingerprinting".
+    queue_grp = subcommands.add_parser("queue", help="SAQ queue diagnostics.")
+    queue_sub = queue_grp.add_subparsers(dest="queue_command", required=True)
+    status = queue_sub.add_parser(
+        "status",
+        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun (phaze-grx3).",
+        description=(
+            "SAQ marks a row 'active' at dequeue and buffers it in-process; only 'concurrency' rows "
+            "actually run at once, so a raw 'active' count over-reports. This splits it using the "
+            "attempts signal: attempts>=1 is genuinely running, attempts=0 is claimed-but-unrun."
+        ),
+    )
+    status.add_argument("--queue", dest="queue_name", required=True, help="SAQ queue name (e.g. phaze-agent-nox-fingerprint).")
     return parser
 
 
@@ -261,7 +292,23 @@ def main(argv: list[str] | None = None) -> int:
     # AttributeError the moment a second group exists.
     if args.group == "fingerprint":
         return _main_fingerprint(args)
+    if args.group == "queue":
+        return _main_queue_status(args)
     return _main_agents_add(args)
+
+
+def _main_queue_status(args: argparse.Namespace) -> int:
+    """Handle ``phaze queue status``. Returns a process exit code."""
+    breakdown = asyncio.run(_run_queue_status(args.queue_name))
+    for line in breakdown.as_lines():
+        print(line)
+    return 0
+
+
+async def _run_queue_status(queue_name: str) -> ActiveJobBreakdown:
+    """Read the RUNNING vs CLAIMED-but-unrun split for ``queue_name`` (phaze-grx3)."""
+    async with async_session() as session:
+        return await summarize_active_jobs(session, queue_name)
 
 
 def _main_agents_add(args: argparse.Namespace) -> int:

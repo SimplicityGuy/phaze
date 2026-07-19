@@ -37,6 +37,23 @@ Phase 28 changes (Plan 28-05):
   still counts as executed. Letting it raise would misattribute the failure to
   ``failed_at_step='delete'`` and mark an already-moved file's proposal FAILED.
 
+phaze-ebpt fix (already-moved replay detection): the guard above closes the ``patch_proposal_state``
+5xx window, but a WORKER CRASH between the committed move (``original.replace(proposed)`` / the
+cross-filesystem copy+unlink) and those same completed/executed/progress PATCHes left a second,
+unguarded divergence -- a SAQ retry of the crashed job re-enters ``_execute_one`` from scratch,
+``_resolve_and_check_containment``'s non-strict resolve lets the now-missing ``original`` resolve
+without error, and the verify/copy code then raises FileNotFoundError, which the generic failure
+handler mistook for a fresh failure: it flipped the already-executed proposal APPROVED -> FAILED
+and left ``FileRecord.current_path`` pointing at the deleted ``original``. ``_execute_one`` now
+detects this explicitly right after resolving ``original``/``proposed``: ``not original.exists()
+and proposed.exists()`` is conclusive replay evidence (only this function ever creates
+``proposed``), distinct from both a live in-flight move and a genuinely missing/never-started
+file. When detected (and, if a hash was supplied, confirmed by hashing ``proposed`` instead of the
+gone ``original``) the file op is skipped entirely and the replay falls through to the SAME
+success-reporting path used by a first-time success -- already idempotent via the retry-stable
+``execution_log_id``/``progress_request_id`` -- which also self-heals ``current_path`` (the
+success PATCH sets it from ``str(proposed)``).
+
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
 end) are adapted to the existing schema as: one POST+PATCH per proposal (matching the
@@ -262,40 +279,71 @@ async def _execute_one(
         original, owning_root = _resolve_and_check_containment(item.original_path, scan_roots)
         proposed = _resolve_destination(item, original, owning_root, scan_roots)
 
-        # 3. Optional sha256 verify (caller may supply None to skip)
-        if item.sha256_hash is not None:
+        # phaze-ebpt: already-moved replay detection. `_resolve_and_check_containment`
+        # uses a non-strict `Path.resolve()`, so a SAQ retry that resumes after a prior
+        # attempt already committed `original.replace(proposed)` (or the cross-filesystem
+        # copy+unlink) -- but crashed before the completed/executed/progress PATCHes
+        # below -- resolves `original` cleanly even though it no longer exists. Without
+        # this check that retry falls straight into `_sha256_of_file(original)` or
+        # `_same_filesystem`'s `original.stat()` and raises FileNotFoundError, which the
+        # generic failure handler misreports as a fresh failure: it flips the
+        # already-executed proposal APPROVED -> FAILED and leaves
+        # FileRecord.current_path pointing at the now-deleted `original` (the stale
+        # current_path this bead closes). Distinguish that terminal "already moved"
+        # state from a genuinely missing/never-started file explicitly here, rather
+        # than letting the move/verify code below discover it implicitly via an
+        # exception: `original` gone + `proposed` present is conclusive replay
+        # evidence (only this function ever creates `proposed`), so skip the file op
+        # entirely and fall through to the success-reporting path, which is already
+        # idempotent (retry-stable execution_log_id/progress_request_id) and also
+        # self-heals current_path (the success PATCH sets it from `str(proposed)`).
+        already_moved = not original.exists() and proposed.exists()
+        if already_moved and item.sha256_hash is not None:
+            # Confirm `proposed` is actually the expected file before trusting the
+            # replay -- a hash mismatch means this isn't the already-moved file (e.g.
+            # an unrelated file landed at the destination), so treat it as a genuine
+            # verify failure instead of silently reporting success.
             current_step = "verify"
-            actual = _sha256_of_file(original)
+            actual = _sha256_of_file(proposed)
             if actual != item.sha256_hash:
-                msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual}"
+                msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual} (already-moved replay check against {proposed})"
                 raise ValueError(msg)
 
-        # 4. Move original -> proposed (mkdir parent as needed). Prefer
-        # os.replace (atomic, O(1), constant memory) when src + dst share a
-        # filesystem; otherwise stream the bytes in bounded chunks -- concert
-        # videos are multi-GB and the meta lane has no memory pin, so a
-        # whole-file read would MemoryError / OOM-kill the worker.
-        current_step = "copy"
-        proposed.parent.mkdir(parents=True, exist_ok=True)
-        # phaze-yu2e: refuse to clobber a pre-existing destination. Both branches
-        # below silently destroy whatever sits at `proposed` -- os.replace atomically
-        # replaces it and the streamed copy's open("wb") truncates it. The
-        # dispatch-time collision gate cannot catch every case (NULL-path in-place
-        # renames, a destination already occupied by an earlier executed proposal, or
-        # an untracked on-disk file), so fail the copy step loudly here rather than
-        # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
-        if proposed.exists() and not _is_same_file(original, proposed):
-            msg = f"destination already exists, refusing to overwrite: {proposed}"
-            raise FileExistsError(msg)
-        if _same_filesystem(original, proposed.parent):
-            # Atomic rename also removes the original in one syscall -- the move
-            # IS the delete, so there is no separate delete step to fail.
-            original.replace(proposed)
-        else:
-            _streamed_copy(original, proposed)
-            # 5. Delete the original (a cross-filesystem copy leaves it in place).
-            current_step = "delete"
-            original.unlink()
+        if not already_moved:
+            # 3. Optional sha256 verify (caller may supply None to skip)
+            if item.sha256_hash is not None:
+                current_step = "verify"
+                actual = _sha256_of_file(original)
+                if actual != item.sha256_hash:
+                    msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual}"
+                    raise ValueError(msg)
+
+            # 4. Move original -> proposed (mkdir parent as needed). Prefer
+            # os.replace (atomic, O(1), constant memory) when src + dst share a
+            # filesystem; otherwise stream the bytes in bounded chunks -- concert
+            # videos are multi-GB and the meta lane has no memory pin, so a
+            # whole-file read would MemoryError / OOM-kill the worker.
+            current_step = "copy"
+            proposed.parent.mkdir(parents=True, exist_ok=True)
+            # phaze-yu2e: refuse to clobber a pre-existing destination. Both branches
+            # below silently destroy whatever sits at `proposed` -- os.replace atomically
+            # replaces it and the streamed copy's open("wb") truncates it. The
+            # dispatch-time collision gate cannot catch every case (NULL-path in-place
+            # renames, a destination already occupied by an earlier executed proposal, or
+            # an untracked on-disk file), so fail the copy step loudly here rather than
+            # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
+            if proposed.exists() and not _is_same_file(original, proposed):
+                msg = f"destination already exists, refusing to overwrite: {proposed}"
+                raise FileExistsError(msg)
+            if _same_filesystem(original, proposed.parent):
+                # Atomic rename also removes the original in one syscall -- the move
+                # IS the delete, so there is no separate delete step to fail.
+                original.replace(proposed)
+            else:
+                _streamed_copy(original, proposed)
+                # 5. Delete the original (a cross-filesystem copy leaves it in place).
+                current_step = "delete"
+                original.unlink()
 
         # 6a. PATCH execution log to completed
         try:

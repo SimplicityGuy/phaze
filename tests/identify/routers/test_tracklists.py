@@ -648,19 +648,82 @@ async def test_scan_status_all_complete(session: AsyncSession, client: AsyncClie
 
 @pytest.mark.asyncio
 async def test_scan_status_with_error(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /tracklists/scan/status reports errors from failed jobs on the per-agent queue."""
+    """GET /tracklists/scan/status reports errors from failed jobs on the per-agent queue.
+
+    Mirrors REAL SAQ semantics (regression for the crashed-scan-reported-as-clean bug):
+    a FAILED job's ``result`` is always ``None`` -- SAQ only populates ``result`` from the
+    task's return value on COMPLETE (``saq/job.py``) -- and the failure detail lives in
+    ``job.error`` (the traceback string). The ``result={"status": "error", ...}`` shape this
+    test used to fake is never produced by ``scan_live_set`` (it only ever returns
+    ``no_matches``/``scanned``; failures raise and become ``Status.FAILED``), so faking it
+    would let the pre-fix ``isinstance(job.result, dict)`` branch pass without exercising the
+    real bug. Pre-fix, this test fails: the dead ``result_data.get("status") == "error"``
+    branch is unreachable against ``result=None``, so the job silently counts as a clean
+    completion ("Scan complete. No matching tracks found...") instead of surfacing the crash.
+    """
     from saq import Status
 
     mock_job = MagicMock()
     mock_job.status = Status.FAILED
-    mock_job.result = {"status": "error", "filename": "bad.mp3"}
+    mock_job.result = None
+    mock_job.error = "RuntimeError: fingerprint sidecar unreachable\nTraceback (most recent call last): ..."
+    mock_job.kwargs = {"file_id": str(uuid.uuid4()), "original_path": "/music/bad.mp3", "agent_id": "nox"}
 
     _controller, task_router = install_fake_queues(client)
     task_router.queue_for("nox", "meta").job = AsyncMock(return_value=mock_job)
 
     response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
     assert response.status_code == 200
-    assert "bad.mp3" in response.text
+    # The crash is surfaced explicitly -- NOT folded into a clean "Scan complete" message.
+    assert "/music/bad.mp3" in response.text
+    assert "Scan failed" in response.text
+    assert "No matching tracks found" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_status_failed_job_falls_back_to_job_error(session: AsyncSession, client: AsyncClient) -> None:
+    """A FAILED job with no ``original_path`` in kwargs falls back to ``job.error``'s first line."""
+    from saq import Status
+
+    mock_job = MagicMock()
+    mock_job.status = Status.FAILED
+    mock_job.result = None
+    mock_job.error = "ConnectionError: fingerprint service refused connection\nTraceback: ..."
+    mock_job.kwargs = {}
+
+    _controller, task_router = install_fake_queues(client)
+    task_router.queue_for("nox", "meta").job = AsyncMock(return_value=mock_job)
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=nox")
+    assert response.status_code == 200
+    assert "ConnectionError: fingerprint service refused connection" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_status_mixed_complete_and_failed(session: AsyncSession, client: AsyncClient) -> None:
+    """A batch with one COMPLETE (scanned) job and one FAILED job reports both: a
+    created tracklist AND a surfaced crash, with neither masking the other."""
+    from saq import Status
+
+    complete_job = MagicMock()
+    complete_job.status = Status.COMPLETE
+    complete_job.result = {"status": "scanned", "file_id": "abc"}
+
+    failed_job = MagicMock()
+    failed_job.status = Status.FAILED
+    failed_job.result = None
+    failed_job.error = "RuntimeError: fingerprint sidecar unreachable"
+    failed_job.kwargs = {"original_path": "/music/crashed.mp3"}
+
+    _controller, task_router = install_fake_queues(client)
+    fake_queue = task_router.queue_for("nox", "meta")
+    fake_queue.job = AsyncMock(side_effect=[complete_job, failed_job])
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1,job-2&agent_id=nox")
+    assert response.status_code == 200
+    assert "tracklist(s) created" in response.text
+    assert "/music/crashed.mp3" in response.text
+    assert "Scan failed" in response.text
 
 
 @pytest.mark.asyncio

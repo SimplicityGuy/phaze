@@ -31,6 +31,7 @@ Design constraints discovered while building this, each load-bearing:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,52 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+# phaze-e57w: SAQ statuses that mean the deterministic key is held by a job that is NOT genuinely
+# in flight -- it is dead or dying and will never process the file, yet its surviving key blocks
+# re-enqueue (SAQ's _enqueue upsert only overwrites keys in aborted/complete/failed, never
+# 'aborting'). A file colliding with one of these is BLOCKED, not "already in flight".
+_BLOCKED_STATUS_VALUES = frozenset({"aborting", "failed", "aborted"})
+# Non-terminal statuses: genuinely in flight ONLY if the row is not also stale/stuck.
+_LIVE_STATUS_VALUES = frozenset({"new", "deferred", "queued", "active"})
+
+
+@dataclasses.dataclass(frozen=True)
+class FingerprintEnqueueResult:
+    """Outcome of an :func:`enqueue_fingerprint_jobs` batch, with in-flight and BLOCKED separated.
+
+    phaze-e57w: a ``None`` return from ``queue.enqueue`` (a deterministic-key collision) used to be
+    reported uniformly as "already in flight". That is FALSE for a file whose key is held by a dead
+    ``aborting``/``failed``/``aborted`` row (or a stuck-past-timeout claimed row): the file is not in
+    flight, it is BLOCKED and needs the reaper/operator. These counts keep the two apart so the
+    benign case stays quiet and the blocked case is reported loudly.
+    """
+
+    accepted: int
+    in_flight: int
+    blocked: int
+    blocked_keys: tuple[str, ...]
+
+
+def _classify_collision(job: Any) -> str:
+    """Classify a deterministic-key collision as ``"in_flight"`` or ``"blocked"``.
+
+    ``job`` is the existing ``saq_jobs`` row (via ``queue.job(key)``) or ``None`` if it could not be
+    looked up. A dead/dying status (aborting/failed/aborted) is BLOCKED; a live status (queued/active)
+    is BLOCKED only when the row is also ``stuck`` (past its timeout/heartbeat -- a stale claimed row
+    that will never make progress on its own), otherwise it is genuinely in flight. An unlookupable /
+    unknown-status row degrades to in_flight (benign) rather than crying wolf.
+    """
+    if job is None:
+        return "in_flight"
+    status = getattr(job, "status", None)
+    sval = getattr(status, "value", status)
+    if sval in _BLOCKED_STATUS_VALUES:
+        return "blocked"
+    if sval in _LIVE_STATUS_VALUES and bool(getattr(job, "stuck", False)):
+        return "blocked"
+    return "in_flight"
+
+
 def _to_naive_utc(value: datetime.datetime) -> datetime.datetime:
     """Return ``value`` as a naive UTC datetime (tz-aware input is converted, not truncated)."""
     if value.tzinfo is None:
@@ -58,8 +105,8 @@ def _to_naive_utc(value: datetime.datetime) -> datetime.datetime:
     return value.astimezone(datetime.UTC).replace(tzinfo=None)
 
 
-async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> int:
-    """Enqueue ``fingerprint_file`` jobs with the COMPLETE payload; return the accepted count.
+async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> FingerprintEnqueueResult:
+    """Enqueue ``fingerprint_file`` jobs with the COMPLETE payload; return a classified outcome.
 
     THE single fingerprint enqueue funnel -- the HTTP triggers in
     :mod:`phaze.routers.pipeline` and the recovery CLI both route through here so the
@@ -71,8 +118,17 @@ async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id
     (35-01), so enqueueing a file that is already in flight collapses to a ``None``
     return. Those are NOT counted as accepted -- a caller reporting "re-queued N" must
     not count work it did not actually create.
+
+    phaze-e57w: a ``None`` return no longer collapses to a single "already in flight" tally. Each
+    collision is looked up (``queue.job(key)``) and classified: a live queued/active row is
+    ``in_flight`` (benign), while a dead ``aborting``/``failed``/``aborted`` row -- or a stuck-past-
+    timeout claimed row -- is ``blocked`` (the file is NOT in flight; its zombie key must be reaped
+    before it can recover). The blocked keys are returned so the caller can report them loudly.
     """
     accepted = 0
+    in_flight = 0
+    blocked_keys: list[str] = []
+    job_lookup = getattr(queue, "job", None)
     for f in files:
         payload = FingerprintFilePayload(
             file_id=f.id,
@@ -82,7 +138,21 @@ async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id
         job = await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
         if job is not None:
             accepted += 1
-    return accepted
+            continue
+        # Collision: the deterministic key already exists. Inspect the holder to tell a genuine
+        # in-flight job from a zombie that permanently blocks this file.
+        key = f"fingerprint_file:{f.id}"
+        existing = await job_lookup(key) if callable(job_lookup) else None
+        if _classify_collision(existing) == "blocked":
+            blocked_keys.append(key)
+        else:
+            in_flight += 1
+    return FingerprintEnqueueResult(
+        accepted=accepted,
+        in_flight=in_flight,
+        blocked=len(blocked_keys),
+        blocked_keys=tuple(blocked_keys),
+    )
 
 
 async def select_outage_failed_files(
