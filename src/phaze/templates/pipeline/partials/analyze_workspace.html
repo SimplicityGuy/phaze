@@ -32,9 +32,16 @@
    the grid is a server-rendered loop that OOB-swaps as a unit (BEUI-01 N-lane redesign).
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{# BEUI-01: the sub-count is lane-count-agnostic -- the lane count is interpolated from the seeded
-   `lanes` list (server-side Jinja) so an N-backend registry never renders a stale hardcoded count. #}
-{% set subcount = '`${$store.pipeline.analyzeActive} files in flight across ' ~ (lanes | length) ~ ' lanes`' %}
+{# phaze-xd8k: the header total and the lane-card numerators are DELIBERATELY different populations
+   from different tables -- $store.pipeline.analyzeActive is the scheduling-ledger-derived count of
+   EVERY in-flight process_file job regardless of route (local/compute/kueue), while each lane card
+   below counts only that backend's own cloud_job rows. The former copy ("N files in flight across M
+   lanes") claimed the header WAS the sum of the lane numerators, which is false in the routine steady
+   state (e.g. thousands local + a handful cloud) and read as "files are lost". Reword to make NO
+   "across M lanes" summation claim -- the lane grid below is a separate, complementary per-lane view,
+   not a breakdown of this total (see _lane_card.html for the per-lane numerators; BEUI-01 keeps the
+   sub-count lane-count-agnostic regardless). #}
+{% set subcount = '`${$store.pipeline.analyzeActive} files in the analyze stage`' %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     {# UI-SPEC Copywriting: ROUTE RULES + PAUSE (PAUSE is reversible -- no confirm, R-4). Presentation

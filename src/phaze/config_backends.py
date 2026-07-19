@@ -142,6 +142,17 @@ class KueueBackend(BaseModel):
     # The full KubeConfig submodel is defined in Task 2.
     kube: "KubeConfig | None" = None
     buckets: list[str] = Field(default_factory=list)  # explicit id-list bind (D-08)
+    # phaze-ifcr: the id/name of the bearer-token kind='compute' Agent row the operator provisions via
+    # ``phaze agents add --kind compute`` for THIS cluster's one-shot job_runner callbacks (mirrors
+    # ComputeBackend.agent_ref, REG-02). That row can never heartbeat by design (job_runner pods never
+    # call the heartbeat endpoint), so without a structural binding here the COMPUTE-01 dedupe filter
+    # (routers/admin_agents.py) has nothing authoritative to key on and falls back to id/name
+    # string-coincidence against the backend's OWN id — which silently misses whenever the operator picks
+    # a different agent id/name (e.g. backend id "vox" / agent id "k8s-vox"). OPTIONAL and defaulting to
+    # None (unlike ComputeBackend's REQUIRED agent_ref) so this lands backward-compatible with any already-
+    # deployed ``[kube]`` backends.toml that predates this field -- a kueue backend with no agent_ref bound
+    # simply falls back to the pre-existing id/name-coincidence dedupe path rather than failing to boot.
+    agent_ref: str | None = None
 
     @model_validator(mode="after")
     def _require_kube(self) -> "KueueBackend":

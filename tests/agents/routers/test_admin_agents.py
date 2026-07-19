@@ -438,6 +438,92 @@ async def test_dedupe_heartbeating_compute_agent_row_kept(session: AsyncSession,
 
 
 # ---------------------------------------------------------------------------
+# phaze-ifcr — COMPUTE-01 shadow-row dedup via structural agent_ref binding
+#
+# The pre-existing dedupe above only catches the shadow when the operator names the callback agent
+# THE SAME as the backend id (agent "vox" == backend "vox"). In production the operator's free choice
+# at ``phaze agents add --kind compute`` is typically "k8s-<backend id>" (docs/k8s-burst.md), which the
+# id/name string-equality predicate never matches — the filter silently never fires. These tests use a
+# backend id != agent id/name fixture (the bead's acceptance criterion) to prove the structural
+# ``agent_ref`` binding closes that gap.
+# ---------------------------------------------------------------------------
+
+_KUEUE_REGISTRY_WITH_AGENT_REF = """
+    [[backends]]
+    kind = "kueue"
+    id = "vox"
+    rank = 10
+    cap = 4
+    agent_ref = "k8s-vox"
+    buckets = ["vox-bucket"]
+
+    [backends.kube]
+    api_url = "https://kube.example.com"
+    namespace = "phaze"
+    local_queue = "phaze-lq"
+
+    [[buckets]]
+    id = "vox-bucket"
+    scope = "cluster-specific"
+    endpoint_url = "https://s3.example.com"
+    bucket = "phaze-vox"
+    """
+
+
+@pytest_asyncio.fixture
+async def kueue_shadow_smoke(session: AsyncSession, backends_toml_env) -> AsyncGenerator[AsyncClient]:  # type: ignore[no-untyped-def]
+    """Smoke client with a kueue backend (id="vox") whose callback agent is named "k8s-vox" (id != backend id).
+
+    Mirrors the bead's acceptance fixture verbatim: a kueue backend id "vox" whose callback agent row is
+    named "k8s-vox".
+    """
+    backends_toml_env(_KUEUE_REGISTRY_WITH_AGENT_REF)
+    session.add(Agent(id="k8s-vox", name="k8s-vox", scan_roots=[], kind="compute"))  # last_seen_at=None → NEVER
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_dedupe_kueue_agent_ref_shadow_row_suppressed_from_section1(kueue_shadow_smoke: AsyncClient) -> None:
+    """phaze-ifcr acceptance: the k8s-vox NEVER row is absent from Section 1 while vox's tile is in Section 2.
+
+    Before the fix: id/name string equality ("k8s-vox" in {"vox"}) is False, so the shadow row leaked
+    into Section 1 permanently as NEVER while Section 2 showed the same cluster's lane ACTIVE/IDLE —
+    exactly the "2 active workloads but the agent never checked in" operator-confusion the bead reports.
+    """
+    for path in ("/admin/agents", "/admin/agents/_table"):
+        response = await kueue_shadow_smoke.get(path)
+        assert response.status_code == 200, response.text
+        section1, section2 = _sections(response.text)
+        assert "agent-trigger-k8s-vox" not in section1, f"k8s-vox kueue shadow row leaked into Section 1 of {path}"
+        assert "vox" in section2, f"vox tile missing from Section 2 of {path}"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_kueue_agent_ref_heartbeating_row_kept(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A genuinely-heartbeating agent_ref-bound compute agent keeps its Section 1 row (never suppressed).
+
+    Suppression stays gated on ``_status=='never'`` even for the new agent_ref binding path — a real,
+    heartbeating process must remain visible regardless of which registry key matched it.
+    """
+    backends_toml_env(_KUEUE_REGISTRY_WITH_AGENT_REF)
+    now = datetime.now(UTC)
+    session.add(Agent(id="k8s-vox", name="k8s-vox", scan_roots=[], kind="compute", last_seen_at=now))
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/_table")
+
+    section1, _section2 = _sections(response.text)
+    assert "agent-trigger-k8s-vox" in section1, "a heartbeating agent_ref-bound compute agent must keep its row"
+    assert "ALIVE" in section1
+
+
+# ---------------------------------------------------------------------------
 # Phase 48 — Kind badge (CLOUDAGENT-03), UI-SPEC §Component Contract LOCKED
 # ---------------------------------------------------------------------------
 

@@ -31,6 +31,7 @@ from phaze.services.agent_liveness import (
     ComputeLane,
     classify,
     derive_compute_lane_identities,
+    non_local_backend_agent_refs,
     non_local_backend_kinds,
     sort_key,
 )
@@ -239,9 +240,13 @@ class _RaisingSession:
 # ---------------------------------------------------------------------------
 
 
-def _backend(backend_id: str, kind: str) -> SimpleNamespace:
-    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``."""
-    return SimpleNamespace(id=backend_id, kind=kind)
+def _backend(backend_id: str, kind: str, agent_ref: str | None = None) -> SimpleNamespace:
+    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``.
+
+    ``agent_ref`` defaults to ``None`` (unset) so existing ``non_local_backend_kinds`` callers stay
+    unaffected; ``non_local_backend_agent_refs`` reads it via ``getattr`` (phaze-ifcr).
+    """
+    return SimpleNamespace(id=backend_id, kind=kind, agent_ref=agent_ref)
 
 
 def _settings(*backends: SimpleNamespace) -> SimpleNamespace:
@@ -265,6 +270,51 @@ def test_non_local_backend_kinds_filters_local_preserving_order() -> None:
 def test_non_local_backend_kinds_all_local_is_empty() -> None:
     """An all-local registry projects to an empty map (no cloud lanes)."""
     assert non_local_backend_kinds(_settings(_backend("local", "local"))) == {}  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# non_local_backend_agent_refs(settings) — structural agent-ref binding (phaze-ifcr)
+# ---------------------------------------------------------------------------
+
+
+def test_non_local_backend_agent_refs_keys_by_ref_value_not_backend_id() -> None:
+    """The map is keyed by the bound agent_ref VALUE (not the backend id) → backend id (phaze-ifcr).
+
+    This is the exact structural gap the string-equality dedupe (admin_agents.py COMPUTE-01) misses: a
+    kueue backend id "vox" bound to callback agent "k8s-vox" projects to {"k8s-vox": "vox"}, letting a
+    caller key the shadow-row suppression on the AGENT's id/name rather than the backend's own id.
+    """
+    settings = _settings(
+        _backend("local", "local"),
+        _backend("vox", "kueue", agent_ref="k8s-vox"),
+        _backend("a1", "compute", agent_ref="compute-agent-01"),
+    )
+    result = non_local_backend_agent_refs(settings)  # type: ignore[arg-type]
+    assert result == {"k8s-vox": "vox", "compute-agent-01": "a1"}
+
+
+def test_non_local_backend_agent_refs_excludes_local() -> None:
+    """A local backend never contributes an agent_ref, even if one were somehow set (defense-in-depth)."""
+    settings = _settings(_backend("local", "local", agent_ref="should-never-appear"))
+    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
+
+
+def test_non_local_backend_agent_refs_skips_unset_kueue_ref() -> None:
+    """A kueue backend with NO agent_ref bound (backward-compat, pre-existing [kube] config) contributes nothing.
+
+    ``KueueBackend.agent_ref`` is OPTIONAL (unlike the REQUIRED ``ComputeBackend.agent_ref``) precisely
+    so an already-deployed backends.toml that predates this field keeps booting; such an entry simply
+    falls back to the pre-existing id/name-coincidence dedupe path in admin_agents.py.
+    """
+    settings = _settings(_backend("xenolab", "kueue", agent_ref=None))
+    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
+
+
+def test_non_local_backend_agent_refs_tolerates_missing_attribute() -> None:
+    """A registry entry with NO ``agent_ref`` attribute at all (e.g. LocalBackend) is read via ``getattr`` default."""
+    no_ref_attr = SimpleNamespace(id="local", kind="local")
+    settings = _settings(no_ref_attr)
+    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

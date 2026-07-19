@@ -95,6 +95,28 @@ def test_kueue_backend_parses() -> None:
     assert be.buckets == ["b1"]
 
 
+def test_kueue_backend_agent_ref_optional_defaults_none() -> None:
+    """A kueue entry with no agent_ref boots cleanly (backward-compat with pre-existing [kube] config, phaze-ifcr).
+
+    Unlike ``ComputeBackend.agent_ref`` (REQUIRED, REG-02), ``KueueBackend.agent_ref`` must stay OPTIONAL
+    so a deployed backends.toml written before this field existed keeps parsing without edits.
+    """
+    be = KueueBackend(kind="kueue", id="kueue-noref", rank=5, cap=4, kube=KubeConfig(api_url="https://kube.example.com"))
+    assert be.agent_ref is None
+
+
+def test_kueue_backend_agent_ref_parses() -> None:
+    """A kueue entry may bind an agent_ref naming its callback compute agent (mirrors ComputeBackend REG-02, phaze-ifcr).
+
+    This is the structural binding COMPUTE-01's dedupe filter keys on: the backend id ("vox") and its
+    callback agent id ("k8s-vox") are legitimately DIFFERENT strings — the operator's free choice at
+    ``phaze agents add --kind compute``.
+    """
+    be = KueueBackend(kind="kueue", id="vox", rank=10, cap=4, agent_ref="k8s-vox", kube=KubeConfig(api_url="https://kube.example.com"))
+    assert be.agent_ref == "k8s-vox"
+    assert be.id != be.agent_ref
+
+
 def test_kueue_backend_missing_kube_fails_fast_with_id() -> None:
     """A kueue entry without a [kube] config fails fast, message contains the entry id (REG-02, D-13)."""
     with pytest.raises(ValidationError, match=r"backend 'kueue-nokube'"):

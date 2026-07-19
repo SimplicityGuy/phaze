@@ -368,10 +368,13 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     """
     import phaze.routers.pipeline as pipeline_mod
 
+    # phaze-xd8k: "nox" is offline yet still carries 5 real in-flight files (a lane can be unreachable
+    # for NEW dispatch while still draining work it already accepted) -- the card must render that TRUE
+    # count, never a fabricated 0 that hides real in-flight work behind "offline".
     lanes = [
         {"id": "a1", "kind": "compute", "rank": 10, "cap": 4, "in_flight": 2, "available": True, "quota_wait": 0, "inadmissible": 0},
         {"id": "k8s", "kind": "kueue", "rank": 20, "cap": 3, "in_flight": 1, "available": True, "quota_wait": 2, "inadmissible": 1},
-        {"id": "nox", "kind": "local", "rank": 99, "cap": 1, "in_flight": 0, "available": False, "quota_wait": 0, "inadmissible": 0},
+        {"id": "nox", "kind": "local", "rank": 99, "cap": 8, "in_flight": 5, "available": False, "quota_wait": 0, "inadmissible": 0},
     ]
 
     async def _snapshot(_session: AsyncSession) -> list[dict[str, object]]:
@@ -420,6 +423,9 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
     # local lane available=False -> explicit "offline" word (never hidden). "not configured" is retired.
     assert "offline" in body
     assert "not configured" not in body
+    # phaze-xd8k: the offline nox lane renders its TRUE in-flight count (5/8), never a literal "0" that
+    # would hide the 5 files it is still draining.
+    assert "5/8" in body
 
     # D-07 / WORK-03 load-bearing distinction: the Inadmissible FAULT carries role="alert"; the HEALTHY
     # admission-state card does NOT (the fault can never be collapsed into healthy progression).
@@ -439,13 +445,16 @@ async def test_lane_cards_states(client: AsyncClient, session: AsyncSession, mon
 
 
 @pytest.mark.asyncio
-async def test_lane_grid_subcount_is_lane_count_agnostic(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BEUI-01 -- no operator-facing copy hardcodes a lane count; the subcount reflects the seeded lane count.
+async def test_lane_grid_subcount_makes_no_across_lanes_claim(client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-xd8k -- the ANALYZE sub-count no longer claims to be a sum "across M lanes".
 
-    Phase 58 hardcoded ``across 3 lanes``. With N≠3 registry backends the Analyze sub-count must interpolate
-    the ACTUAL seeded lane count (server-side Jinja over ``lanes``) so a 2-backend deploy renders ``across 2
-    lanes`` and NEVER the stale ``3 lanes``. Also proves a compute lane renders configured off the snapshot
-    (no ``not configured``, no ``cloud_target`` leak, no template exception).
+    The header's ``$store.pipeline.analyzeActive`` (scheduling-ledger-derived, ALL routes) and the lane
+    cards' ``in_flight`` (cloud_job-derived, per-backend) are DIFFERENT populations from DIFFERENT
+    tables -- "N files in flight across M lanes" falsely claimed the header was the sum of the lane
+    numerators (2929 vs 2 in the confirmed bug scenario). The reworded copy drops the "across M lanes"
+    summation claim entirely; this test locks that the old phrasing (with ANY lane count) can never
+    return, regardless of how many backends are registered. Also proves a compute lane still renders
+    configured off the snapshot (no ``not configured``, no ``cloud_target`` leak, no template exception).
     """
     import phaze.routers.pipeline as pipeline_mod
 
@@ -466,9 +475,11 @@ async def test_lane_grid_subcount_is_lane_count_agnostic(client: AsyncClient, se
     body = resp.text
 
     assert 'id="analyze-lanes"' in body
-    # BEUI-01: N=2 lanes -> the subcount reflects the actual count; the stale "3 lanes" never survives.
+    # phaze-xd8k: no "across N lanes" summation claim survives, for ANY N.
+    assert "flight across" not in body
     assert "3 lanes" not in body
-    assert "2 lanes" in body
+    assert "2 lanes" not in body
+    assert "files in the analyze stage" in body
     # The compute lane renders configured + available off the snapshot; "not configured" is retired.
     assert "COMPUTE · a1" in body
     assert "not configured" not in body
