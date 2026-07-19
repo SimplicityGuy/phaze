@@ -141,6 +141,161 @@ async def test_ensure_dev_agent_seeds_past_revoked_legacy_marker(
 
 
 @pytest.mark.asyncio
+async def test_ensure_dev_agent_reseeds_past_revoked_same_id_row(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-viwd: a REVOKED same-id ``dev-agent`` row must not crash-loop startup.
+
+    Pre-fix, a blind ``session.add(Agent(id="dev-agent", ...))`` collided with
+    ``pk_agents`` on the still-present revoked row and raised ``IntegrityError`` at
+    commit -- an unhandled exception in the FastAPI lifespan that aborted startup on
+    every restart, since the DB state never changed. The fix must not merely survive
+    the call: it must complete the operator's rotation intent by leaving a USABLE
+    (non-revoked, token_hash set) ``dev-agent`` row behind.
+    """
+    from datetime import UTC, datetime
+
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
+        await session.commit()
+
+    stale_hash = hashlib.sha256(b"stale-revoked-token").hexdigest()
+    session.add(
+        Agent(
+            id="dev-agent",
+            name="dev-agent",
+            token_hash=stale_hash,
+            revoked_at=datetime.now(UTC),
+            scan_roots=["/data/music"],
+        )
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", None)
+
+    raw_token = await ensure_dev_agent(session)  # must not raise IntegrityError
+
+    assert raw_token is not None, "must (re-)seed a usable token past a revoked same-id row"
+
+    # Exactly one dev-agent row -- upserted in place, not duplicated.
+    count = (await session.execute(select(func.count()).select_from(Agent).where(Agent.id == "dev-agent"))).scalar_one()
+    assert count == 1, f"expected the row to be upserted in place, got {count} rows"
+
+    dev = await session.get(Agent, "dev-agent")
+    assert dev is not None
+    assert dev.revoked_at is None, "un-revoking the row is the operator's actual rotation intent"
+    assert dev.token_hash is not None
+    assert dev.token_hash != stale_hash, "token must actually be rotated, not left stale"
+    assert dev.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_ensure_dev_agent_skips_duplicate_live_sentinel(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-viwd: a pre-existing LIVE sentinel ``ScanBatch`` must not crash-loop startup.
+
+    Revoking the dev-agent does not touch its ``scan_batches`` rows, so a LIVE
+    sentinel batch from before the revoke can still be present. Pre-fix, the
+    unconditional second ``INSERT ... status='live'`` violated the partial unique
+    index ``uq_scan_batches_agent_id_live`` and raised ``IntegrityError`` at commit
+    -- independently of the Agent PK collision, so a fix that only handles the
+    Agent side still crash-loops here.
+    """
+    from datetime import UTC, datetime
+
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
+        await session.commit()
+
+    session.add(
+        Agent(
+            id="dev-agent",
+            name="dev-agent",
+            token_hash=None,
+            revoked_at=datetime.now(UTC),
+            scan_roots=["/data/music"],
+        )
+    )
+    await session.commit()
+
+    existing_batch = ScanBatch(
+        agent_id="dev-agent",
+        scan_path="<watcher>",
+        status="live",
+        total_files=0,
+        processed_files=0,
+    )
+    session.add(existing_batch)
+    await session.commit()
+    existing_batch_id = existing_batch.id
+
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", None)
+
+    raw_token = await ensure_dev_agent(session)  # must not raise IntegrityError
+
+    assert raw_token is not None
+
+    live_batches = (await session.execute(select(ScanBatch).where(ScanBatch.agent_id == "dev-agent", ScanBatch.status == "live"))).scalars().all()
+    assert len(live_batches) == 1, f"expected exactly one live sentinel batch, got {len(live_batches)}"
+    assert live_batches[0].id == existing_batch_id, "the pre-existing live sentinel must be left in place, not duplicated"
+
+    dev = await session.get(Agent, "dev-agent")
+    assert dev is not None and dev.revoked_at is None and dev.token_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_dev_agent_reseeds_past_null_token_hash_same_id_row(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-viwd: a non-revoked ``dev-agent`` row with ``token_hash=NULL`` must not crash-loop.
+
+    The idempotency guard's "usable" predicate is ``revoked_at IS NULL AND token_hash
+    IS NOT NULL`` -- so a same-id row with ``token_hash`` stripped to ``NULL`` (but
+    NOT revoked) is just as invisible to the guard as a revoked one, and hits the
+    exact same PK collision on a blind insert.
+    """
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
+        await session.commit()
+
+    session.add(
+        Agent(
+            id="dev-agent",
+            name="dev-agent",
+            token_hash=None,
+            revoked_at=None,
+            scan_roots=["/data/music"],
+        )
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", None)
+
+    raw_token = await ensure_dev_agent(session)  # must not raise IntegrityError
+
+    assert raw_token is not None
+
+    count = (await session.execute(select(func.count()).select_from(Agent).where(Agent.id == "dev-agent"))).scalar_one()
+    assert count == 1, f"expected the row to be upserted in place, got {count} rows"
+
+    dev = await session.get(Agent, "dev-agent")
+    assert dev is not None
+    assert dev.revoked_at is None
+    assert dev.token_hash is not None
+    assert dev.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_ensure_dev_agent_uses_env_token_when_set(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
