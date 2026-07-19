@@ -1,0 +1,83 @@
+{# phaze-1wvb: the BOUNDED, paged per-set Tracklist coverage table (D-07/D-08).
+
+   The Tracklist workspace used to render one row per Tracklist inline and unbounded
+   (shell._render_stage -> get_tracklist_set_rows, no LIMIT). It now ships an empty host div below
+   the three step cards that hx-gets this fragment on load -- the SAME paging contract
+   (phaze.services.pagination) as #analyze-files-view / #metadata-files-view / #trackid-files-view.
+
+   IMPORTANT (paging contract rule 7): ONLY the table moved. The three step cards above it, and their
+   SEARCH / SCRAPE / MATCH ALL triggers, stay server-rendered by the shell and keep enqueuing their
+   UNBOUNDED pending sets (get_untracked_files / get_scrape_pending_tracklists /
+   get_match_pending_tracklists). Bounding a render is not bounding an enqueue -- do not merge them.
+
+   The per-row presentation is UNCHANGED: the Tracks cell is the D-07 N/M track-level coverage
+   (confident/total) from TracklistTrack.confidence, emerald at full coverage and blue otherwise.
+   Rows are inert-but-present (D-06 / R-1). Every DB-sourced `text` crosses the DB->render trust
+   boundary through _file_table.html autoescape -- never the raw passthrough filter (T-59-XSS).
+
+   Context contract:
+     * sets_page -- phaze.services.pagination.Page[dict] (rows/page/page_size/has_next).
+     * host_id   -- the id of the host div this fragment is swapped into (hx-target for the pager).
+#}
+{% set _match_color = {
+    "matched": "text-emerald-600 dark:text-emerald-300",
+    "candidate": "text-amber-600 dark:text-amber-300",
+} %}
+<div>
+    {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
+    {% set ns = namespace(rows=[]) %}
+    {% for s in sets_page.rows %}
+        {% if s.tracks_total == 0 %}
+            {% set coverage_text = "—" %}
+            {% set coverage_color = "text-gray-500 dark:text-gray-400" %}
+        {% else %}
+            {% set coverage_text = "%d/%d" | format(s.tracks_confident, s.tracks_total) %}
+            {% if s.tracks_confident == s.tracks_total %}
+                {% set coverage_color = "text-emerald-600 dark:text-emerald-300" %}
+            {% else %}
+                {% set coverage_color = "text-blue-600 dark:text-blue-300" %}
+            {% endif %}
+        {% endif %}
+        {% if s.matched_to_file %}
+            {% set matched_text = "matched" %}
+            {% set matched_color = "text-emerald-600 dark:text-emerald-300" %}
+        {% else %}
+            {% set matched_text = "—" %}
+            {% set matched_color = "text-gray-500 dark:text-gray-400" %}
+        {% endif %}
+        {% set _ = ns.rows.append([
+            {'text': s.set_name, 'mono': True, 'title': s.path},
+            {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-gray-500 dark:text-gray-400")},
+            {'text': coverage_text, 'mono': True, 'color': coverage_color},
+            {'text': matched_text, 'color': matched_color},
+        ]) %}
+    {% endfor %}
+    {% set rows = ns.rows %}
+    {% set empty_heading = "No tracklists yet" %}
+    {% set empty_body = "Run SEARCH ALL to discover 1001Tracklists matches for your live sets." %}
+    {% set row_id_prefix = "tracklist-row" %}
+    {% set table_id = "tracklist-set-table" %}
+    {% include "pipeline/partials/_file_table.html" %}
+
+    {% if sets_page.show_pager %}
+    {# Prev/Next only -- NO "page X of Y" (paging contract rule 2 forbids the whole-corpus COUNT). #}
+    {% set _qs = '&page_size=' ~ sets_page.page_size %}
+    {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
+    {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed' %}
+    <nav aria-label="Tracklist sets pagination" class="flex items-center justify-between mt-6">
+        <p class="text-sm text-gray-500 dark:text-gray-400">Page {{ sets_page.page }}</p>
+        <div class="flex gap-1">
+            {% if sets_page.has_prev %}
+            <button hx-get="/pipeline/tracklist-sets?page={{ sets_page.page - 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Previous</button>
+            {% else %}
+            <span class="{{ _pdis }}">Previous</span>
+            {% endif %}
+            {% if sets_page.has_next %}
+            <button hx-get="/pipeline/tracklist-sets?page={{ sets_page.page + 1 }}{{ _qs }}" hx-target="#{{ host_id }}" hx-swap="innerHTML" class="{{ _pbtn }}">Next</button>
+            {% else %}
+            <span class="{{ _pdis }}">Next</span>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+</div>

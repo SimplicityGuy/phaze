@@ -1526,30 +1526,168 @@ def _trackid_engine_badge(status: str | None) -> str:
     return "pending"
 
 
-async def get_trackid_stage_files(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return the per-file Track-ID identity-signal rows for the combined table (IDENT-01), degrade-safe.
+# phaze-1wvb: BOTH Identify reads below are BOUNDED at the source, on the paging contract
+# (:mod:`phaze.services.pagination`). As authored in Phase 59 they were whole-corpus reads: the
+# Track-ID read selected EVERY music/video file carrying any ``FingerprintResult`` OR a linked
+# ``Tracklist``, and the Tracklist read one row per ``Tracklist`` -- neither with a LIMIT, both
+# materialised with ``.all()`` and server-rendered inline into one HTML table by
+# ``shell._render_stage``. That is the identical cliff phaze-5462 fixed on the Analyze tab (10,132
+# rows / 12.7 MB, and 92,335 rows / ~105 MB HTML at the seeded 200K scale). As the archive converges
+# -- most music/video files fingerprinted, many tracklists -- the Track-ID predicate approaches the
+# WHOLE corpus, so "the signal-bearing subset" was never a bound. An assumption is not a bound.
+#
+# RULE 7 DETERMINATION (paging contract rule 7 -- do this BEFORE bounding anything): both readers are
+# RENDER-ONLY. Verified by call graph -- their ONLY callers were ``shell._render_stage``
+# (``trackid_files`` / ``tracklist_sets``), both flowing straight into ``_file_table.html``; neither
+# feeds an enqueue, a trigger, or any bulk action. The Identify workspace's bulk actions read
+# DIFFERENT, deliberately UNBOUNDED sets: SEARCH ALL -> :func:`get_untracked_files`, SCRAPE ALL ->
+# :func:`get_scrape_pending_tracklists`, MATCH ALL -> :func:`get_match_pending_tracklists`. None of
+# those three is touched here, so there is no shared reader to split and no way for this change to
+# under-enqueue the backlog: bounding these two bounds ONLY pixels. Do NOT ever point a bulk trigger
+# at a ``*_page`` reader.
 
-    ONE read-only SELECT (a pure read -- NO behavior change) over the signal-bearing set: music/video
-    files that carry at least one ``FingerprintResult`` row OR a linked ``Tracklist`` (RESEARCH
-    Open-Q2). Each row carries the per-engine fingerprint badge words (audfprint / panako, D-01) and
-    the tracklist match-state + confidence (D-04).
+
+def _trackid_linked_conf_subq() -> Any:
+    """Per-file best LINKED tracklist confidence (the D-04 "matched" branch)."""
+    return (
+        select(
+            Tracklist.file_id.label("file_id"),
+            func.max(Tracklist.match_confidence).label("conf"),
+        )
+        .where(Tracklist.file_id.is_not(None))
+        .group_by(Tracklist.file_id)
+        .subquery()
+    )
+
+
+def _trackid_files_select(linked_conf_subq: Any) -> Select[Any]:
+    """The Track-ID row SELECT: the display columns + the per-engine and linked-tracklist LEFT joins.
+
+    No ORDER BY / LIMIT here -- :func:`_trackid_page_stmt` composes those through :func:`paged_stmt`
+    so the bound and the mandatory unique tiebreaker live in exactly one place.
+    """
+    audfprint = aliased(FingerprintResult)
+    panako = aliased(FingerprintResult)
+    return (
+        select(
+            FileRecord.original_filename,
+            FileRecord.original_path,
+            audfprint.status,
+            panako.status,
+            linked_conf_subq.c.file_id,
+            linked_conf_subq.c.conf,
+        )
+        .select_from(FileRecord)
+        .outerjoin(audfprint, and_(audfprint.file_id == FileRecord.id, audfprint.engine == _TRACKID_ENGINE_AUDFPRINT))
+        .outerjoin(panako, and_(panako.file_id == FileRecord.id, panako.engine == _TRACKID_ENGINE_PANAKO))
+        .outerjoin(linked_conf_subq, linked_conf_subq.c.file_id == FileRecord.id)
+        .where(
+            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+            or_(
+                exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id)),
+                exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
+            ),
+        )
+    )
+
+
+def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int) -> Select[Any]:
+    """Build the BOUNDED Track-ID page SELECT (phaze-1wvb).
+
+    Extracted (like :func:`_pending_page_stmt`) so the bound is assertable at the SQL level: a test
+    can compile this and check it carries a ``LIMIT``. That matters because :func:`split_sentinel`
+    truncates in PYTHON -- a page whose row COUNT looks right can still be sitting on an unbounded
+    whole-corpus DB read, which is the memory/DB half of the bug this bead fixes. Asserting only on
+    ``len(page.rows)`` does NOT catch a missing LIMIT.
+
+    Newest-first display order with the MANDATORY unique ``FileRecord.id`` tiebreaker (contract
+    rule 4 -- ``created_at`` alone ties for every row written in one transaction).
+    """
+    return paged_stmt(
+        _trackid_files_select(linked_conf_subq),
+        page=page,
+        page_size=page_size,
+        order_by=(FileRecord.created_at.desc(),),
+        tiebreaker=(FileRecord.id.desc(),),
+    )
+
+
+def _tracklist_sets_page_stmt(*, page: int, page_size: int) -> Select[Any]:
+    """Build the BOUNDED per-set Tracklist page SELECT (phaze-1wvb).
+
+    Extracted for the same reason as :func:`_trackid_page_stmt`: the LIMIT must be assertable in the
+    EMITTED SQL, not merely inferred from the length of the returned list. Newest-first with the
+    MANDATORY unique ``Tracklist.id`` tiebreaker (contract rule 4).
+    """
+    track_counts_subq = (
+        select(
+            TracklistTrack.version_id.label("version_id"),
+            func.count(TracklistTrack.id).label("total"),
+            func.count(TracklistTrack.confidence).label("confident"),
+        )
+        .group_by(TracklistTrack.version_id)
+        .subquery()
+    )
+    return paged_stmt(
+        select(
+            Tracklist.external_id,
+            Tracklist.artist,
+            Tracklist.event,
+            Tracklist.file_id,
+            FileRecord.original_filename,
+            FileRecord.original_path,
+            track_counts_subq.c.total,
+            track_counts_subq.c.confident,
+        )
+        .select_from(Tracklist)
+        .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
+        .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id),
+        page=page,
+        page_size=page_size,
+        order_by=(Tracklist.created_at.desc(),),
+        tiebreaker=(Tracklist.id.desc(),),
+    )
+
+
+async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+    """Return ONE BOUNDED page of the Track-ID identity-signal rows (IDENT-01), degrade-safe.
+
+    The membership is UNCHANGED from Phase 59 -- music/video files that carry at least one
+    ``FingerprintResult`` row OR a linked ``Tracklist`` (RESEARCH Open-Q2) -- and so is the per-row
+    dict shape, so the Track-ID table renders exactly as before. What changed (phaze-1wvb) is that
+    the read now carries a LIMIT: it is served as bounded OFFSET pages with a ``page_size + 1``
+    sentinel for ``has_next``, NEVER a whole-corpus COUNT (paging contract rule 2 / the T-87-11 DoS
+    mitigation). ``page`` / ``page_size`` are CLAMPED inside :func:`paged_stmt`, and a page past the
+    end is an EMPTY page, not a 422 (rule 5).
+
+    Ordering: newest-first display order with the MANDATORY unique ``FileRecord.id`` tiebreaker
+    (rule 4). ``created_at`` ALONE is not a valid tiebreaker in phaze -- Postgres timestamp defaults
+    are transaction-time constant, so every file inserted in one transaction ties exactly and OFFSET
+    paging could silently skip or duplicate rows between pages.
+
+    RENDER READ ONLY (rule 7): this feeds the Track-ID table and nothing else. The Track-ID workspace
+    has NO bulk trigger of its own, and the Tracklist workspace's SEARCH/SCRAPE/MATCH ALL buttons
+    enqueue their own UNBOUNDED sets (:func:`get_untracked_files` /
+    :func:`get_scrape_pending_tracklists` / :func:`get_match_pending_tracklists`). Never enqueue from
+    a page.
 
     Per-engine badge (D-01, Pitfall 1/2): two aliased LEFT joins keyed on the lowercase persisted
     ``engine`` values map ``status == "success"`` -> ``"done"``, ``"failed"`` -> ``"failed"``, and a
     missing row -> ``"pending"`` (see :func:`_trackid_engine_badge`).
 
     Tracklist match-state (D-04): a tracklist LINKED to this file (``Tracklist.file_id == files.id``)
-    -> ``"matched"`` + that linked tracklist's ``match_confidence`` (best via
-    ``match_confidence desc nulls_last``); else, if any unlinked candidate tracklist exists in the
-    system -> ``"candidate"`` + the global best candidate ``match_confidence`` (the
-    ``match_confidence.desc().nulls_last()`` ordering ``list_tracklists`` already uses); else
-    ``"no match"`` with confidence ``None``. NOTE: with the current schema a candidate
+    -> ``"matched"`` + that linked tracklist's best ``match_confidence``; else, if any unlinked
+    candidate tracklist exists, ``"candidate"`` + the global best candidate ``match_confidence``;
+    else ``"no match"`` with confidence ``None``. NOTE: with the current schema a candidate
     (``file_id IS NULL``) is not tied to a specific file, so the candidate fallback surfaces the
-    system-wide best candidate -- the literal D-04 reading; Plan 59-02 renders it and may refine if
-    UI-SPEC requires per-file candidates.
+    system-wide best candidate -- the literal D-04 reading. Both candidate probes are themselves
+    bounded (``LIMIT 1`` / ``EXISTS``), so no part of this read scales with the corpus.
 
-    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_working_set`).
+    Degrade-safe via a SAVEPOINT returning an EMPTY :class:`Page` on any error (rule 6): rolling back
+    only the nested scope keeps the outer request transaction usable for the rest of the workspace.
     """
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
             # D-04 fallback: the system-wide best unlinked candidate (highest match_confidence).
@@ -1564,47 +1702,15 @@ async def get_trackid_stage_files(session: AsyncSession) -> list[dict[str, Any]]
             has_candidate = bool((await session.execute(select(exists(select(Tracklist.id).where(Tracklist.file_id.is_(None)))))).scalar())
 
             # Per-file best LINKED tracklist confidence (D-04 "matched" branch).
-            linked_conf_subq = (
-                select(
-                    Tracklist.file_id.label("file_id"),
-                    func.max(Tracklist.match_confidence).label("conf"),
-                )
-                .where(Tracklist.file_id.is_not(None))
-                .group_by(Tracklist.file_id)
-                .subquery()
-            )
-
-            audfprint = aliased(FingerprintResult)
-            panako = aliased(FingerprintResult)
-            stmt = (
-                select(
-                    FileRecord.original_filename,
-                    FileRecord.original_path,
-                    audfprint.status,
-                    panako.status,
-                    linked_conf_subq.c.file_id,
-                    linked_conf_subq.c.conf,
-                )
-                .select_from(FileRecord)
-                .outerjoin(audfprint, and_(audfprint.file_id == FileRecord.id, audfprint.engine == _TRACKID_ENGINE_AUDFPRINT))
-                .outerjoin(panako, and_(panako.file_id == FileRecord.id, panako.engine == _TRACKID_ENGINE_PANAKO))
-                .outerjoin(linked_conf_subq, linked_conf_subq.c.file_id == FileRecord.id)
-                .where(
-                    FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-                    or_(
-                        exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id)),
-                        exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
-                    ),
-                )
-                .order_by(FileRecord.created_at.desc())
-            )
-            rows = (await session.execute(stmt)).all()
+            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size)
+            raw = (await session.execute(stmt)).all()
     except Exception:
-        logger.warning("trackid_stage_files_degraded", exc_info=True)
-        return []
+        logger.warning("trackid_files_page_degraded", page=page, page_size=page_size, exc_info=True)
+        return Page(rows=[], page=page, page_size=page_size, has_next=False)
 
+    sentinel_rows, has_next = split_sentinel(raw, page_size)
     files: list[dict[str, Any]] = []
-    for filename, path, af_status, pk_status, linked_file_id, linked_conf in rows:
+    for filename, path, af_status, pk_status, linked_file_id, linked_conf in sentinel_rows:
         if linked_file_id is not None:
             tracklist_state = "matched"
             confidence = linked_conf
@@ -1624,61 +1730,48 @@ async def get_trackid_stage_files(session: AsyncSession) -> list[dict[str, Any]]
                 "confidence": confidence,
             }
         )
-    return files
+    return Page(rows=files, page=page, page_size=page_size, has_next=has_next)
 
 
-async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return the per-set Tracklist rows for the per-set coverage table (IDENT-02 / D-07/D-08), degrade-safe.
+async def get_tracklist_sets_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+    """Return ONE BOUNDED page of the per-set Tracklist rows (IDENT-02 / D-07/D-08), degrade-safe.
 
-    ONE read-only SELECT (a pure read -- NO behavior change), one row per ``Tracklist`` (a "set").
-    Each row carries the set name + path, the match-state + ``matched_to_file`` flag, and the D-07
-    per-set track coverage: ``tracks_confident`` of ``tracks_total`` derived from
-    ``TracklistTrack.confidence`` over the tracklist's versioned tracks (``COUNT(confidence)`` counts
-    only non-NULL confidences -> the confident N; ``COUNT(id)`` -> the total M).
+    One row per ``Tracklist`` (a "set"), carrying the set name + path, the match-state +
+    ``matched_to_file`` flag, and the D-07 per-set track coverage: ``tracks_confident`` of
+    ``tracks_total`` derived from ``TracklistTrack.confidence`` over the tracklist's versioned tracks
+    (``COUNT(confidence)`` counts only non-NULL confidences -> the confident N; ``COUNT(id)`` -> the
+    total M). Membership and row shape are UNCHANGED from Phase 59; phaze-1wvb only added the bound.
 
-    A tracklist LINKED to a file (``file_id IS NOT NULL``) -> ``"matched"`` + the file's name/path;
-    an unlinked tracklist -> ``"candidate"`` (set name falls back to artist / event / external_id,
-    path ``None``). The track counts are scoped to the tracklist's ``latest_version_id`` only (the
-    same convention the tracklists router uses) -- a re-scraped tracklist with multiple versions must
-    NOT sum coverage across versions, which would inflate the D-07 N/M. A tracklist whose
-    ``latest_version_id`` is NULL reports 0/0.
+    The track counts stay scoped to the tracklist's ``latest_version_id`` only (the same convention
+    the tracklists router uses) -- a re-scraped tracklist with multiple versions must NOT sum coverage
+    across versions, which would inflate the D-07 N/M. A tracklist whose ``latest_version_id`` is NULL
+    reports 0/0.
 
-    Degrade-safe via a SAVEPOINT returning ``[]`` on any error (mirrors :func:`get_analyze_working_set`).
+    Bounded per the paging contract: OFFSET pages with a ``page_size + 1`` sentinel for ``has_next``
+    (never a COUNT -- rule 2), newest-first display order with the MANDATORY unique ``Tracklist.id``
+    tiebreaker (rule 4 -- ``created_at`` ties for every row written in one transaction), and clamped
+    inputs that yield an empty page rather than an error (rule 5).
+
+    RENDER READ ONLY (rule 7): the SEARCH / SCRAPE / MATCH ALL triggers above this table enqueue
+    :func:`get_untracked_files` / :func:`get_scrape_pending_tracklists` /
+    :func:`get_match_pending_tracklists`, which are UNBOUNDED BY DESIGN and untouched. Paging THIS
+    read cannot under-enqueue anything; paging THOSE would.
+
+    Degrade-safe via a SAVEPOINT returning an EMPTY :class:`Page` on any error (rule 6).
     """
+    page = clamp_page(page)
+    page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            track_counts_subq = (
-                select(
-                    TracklistTrack.version_id.label("version_id"),
-                    func.count(TracklistTrack.id).label("total"),
-                    func.count(TracklistTrack.confidence).label("confident"),
-                )
-                .group_by(TracklistTrack.version_id)
-                .subquery()
-            )
-            stmt = (
-                select(
-                    Tracklist.external_id,
-                    Tracklist.artist,
-                    Tracklist.event,
-                    Tracklist.file_id,
-                    FileRecord.original_filename,
-                    FileRecord.original_path,
-                    track_counts_subq.c.total,
-                    track_counts_subq.c.confident,
-                )
-                .select_from(Tracklist)
-                .outerjoin(FileRecord, FileRecord.id == Tracklist.file_id)
-                .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id)
-                .order_by(Tracklist.created_at.desc())
-            )
-            rows = (await session.execute(stmt)).all()
+            stmt = _tracklist_sets_page_stmt(page=page, page_size=page_size)
+            raw = (await session.execute(stmt)).all()
     except Exception:
-        logger.warning("tracklist_set_rows_degraded", exc_info=True)
-        return []
+        logger.warning("tracklist_sets_page_degraded", page=page, page_size=page_size, exc_info=True)
+        return Page(rows=[], page=page, page_size=page_size, has_next=False)
 
+    sentinel_rows, has_next = split_sentinel(raw, page_size)
     sets: list[dict[str, Any]] = []
-    for external_id, artist, event, file_id, filename, path, total, confident in rows:
+    for external_id, artist, event, file_id, filename, path, total, confident in sentinel_rows:
         matched = file_id is not None
         set_name = filename if matched else (artist or event or external_id)
         sets.append(
@@ -1691,7 +1784,7 @@ async def get_tracklist_set_rows(session: AsyncSession) -> list[dict[str, Any]]:
                 "matched_to_file": matched,
             }
         )
-    return sets
+    return Page(rows=sets, page=page, page_size=page_size, has_next=has_next)
 
 
 # --- ANALYSIS_FAILED bucket (Phase 44, D-02) --------------------------------------------
