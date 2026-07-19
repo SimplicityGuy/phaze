@@ -1,6 +1,6 @@
 """PUT /api/internal/agent/fingerprints/{file_id}/{engine} -- idempotent fingerprint write (phase-25)."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, status
@@ -17,11 +17,20 @@ from phaze.services.scheduling_ledger import clear_ledger_entry
 
 router = APIRouter(prefix="/api/internal/agent/fingerprints", tags=["agent-internal"])
 
+# The engine set is genuinely closed (phaze-94zs, wire_bounds rule 5): FingerprintOrchestrator is
+# constructed with exactly these two adapters (tasks/agent_worker.py), whose `.name` properties are
+# hardcoded to these lowercase strings (services/fingerprint.py AudfprintAdapter/PanakoAdapter), and
+# `fingerprint_file` (tasks/fingerprint.py) sends only those `.name` values as the path segment here.
+# A `Literal` whitelist is strictly stronger than the String(30) column's width cap -- it rejects any
+# value outside the two the pipeline actually understands (services/pipeline.py's per-engine badge
+# joins key strictly on these same two lowercase names), not merely any value that happens to fit.
+EngineName = Literal["audfprint", "panako"]
+
 
 @router.put("/{file_id}/{engine}", status_code=status.HTTP_200_OK, response_model=FingerprintWriteResponse)
 async def put_fingerprint(
     file_id: uuid.UUID,
-    engine: str,
+    engine: EngineName,
     body: FingerprintWriteRequest,
     agent: Annotated[Agent, Depends(get_authenticated_agent)],
     session: Annotated[AsyncSession, Depends(get_session)],

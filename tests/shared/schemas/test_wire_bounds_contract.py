@@ -116,7 +116,6 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
     ("MetadataWriteRequest", "track_number"): "phaze-bd4n -- unbounded vs int4",
     ("MetadataWriteRequest", "bitrate"): "phaze-bd4n -- ge=0 only, no upper bound vs int4",
     ("/tracklists/{tracklist_id}/link", "confidence"): "phaze-k5ac -- int Form, no range vs int4 match_confidence",
-    ("/api/internal/agent/fingerprints/{file_id}/{engine}", "engine"): "phaze-94zs -- no max_length vs String(30)",
     ("/api/v1/duplicates", "limit"): "phaze-hpo9 -- bare default, negatives reach Postgres",
     ("/api/v1/duplicates", "offset"): "phaze-hpo9 -- bare default, negatives reach Postgres",
     ("/search/", "date_from"): "phaze-z3tx -- declared str, forwarded unparsed against a Date column",
