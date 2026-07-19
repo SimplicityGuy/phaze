@@ -28,6 +28,13 @@ Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
 AUTH-01 discipline: ``file_id`` always travels on the URL PATH and the agent identity
 comes from the token dependency -- never from a request body (the agent client sends
 no body for either callback).
+
+NULL-GUARD FOR A CONCURRENTLY-DELETED FileRecord (request_guards.py rule 3, phaze-zdej): both
+callbacks load ``FileRecord`` on a ``file_id`` a PREVIOUS request named, and a scan-deletion
+(``DELETE /pipeline/scans/{batch_id}`` -> ``delete_scan_cascade``) can remove that row -- and its
+``cloud_job`` sidecar, cascade-deleted in the same transaction -- while a file is still mid-rsync.
+Both handlers use ``scalar_one_or_none()`` and branch explicitly to the same clean 200 hold used
+for "no attributed compute backend": no state change, no ledger clear, no enqueue.
 """
 
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -330,7 +337,24 @@ async def report_push_mismatch(
         await session.commit()
         return PushMismatchResponse(file_id=file_id, cleared=False)
 
-    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
+    # NULL-GUARD (phaze-zdej, request_guards.py rule 3 -- copy the over-cap branch's shape): a
+    # concurrent scan-deletion can remove this FileRecord (and cascade-delete the SAME cloud_job row
+    # this handler already read above) in the window between the cloud_job SELECT and this SELECT.
+    # `backend` was resolved from the in-memory cloud_job read before that deletion could have
+    # committed, so reaching here with a vanished FileRecord is a genuine race, not a contradiction.
+    # scalar_one() would raise NoResultFound -> unhandled 500; there is nothing left to re-drive a
+    # push for, so hold cleanly (mirrors the "no fileserver online" hold below) instead of crashing.
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        logger.warning(
+            "report_push_mismatch held: file record no longer exists (concurrent scan-deletion)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
+        await session.commit()
+        return PushMismatchResponse(file_id=file_id, cleared=False)
+
     try:
         fileserver_agent = await select_active_agent(session, kind="fileserver")
     except NoActiveAgentError:
