@@ -12,7 +12,7 @@
            hx-target="#tracklists-list"
            hx-swap="innerHTML">View proposed tracklists.</a>
     </p>
-    {% else %}
+    {% elif not (errors is defined and errors) %}
     <p class="text-sm text-gray-900 dark:text-gray-100">Scan complete. No matching tracks found in the fingerprint database.</p>
     {% endif %}
     {% if errors is defined and errors %}
