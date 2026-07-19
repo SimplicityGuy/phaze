@@ -50,6 +50,7 @@ from phaze.schemas.agent_analysis import (
     AnalysisWriteResponse,
 )
 from phaze.services import s3_staging
+from phaze.services.bulk_insert import chunk_rows
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
@@ -232,9 +233,18 @@ async def put_analysis(
         if body.windows:
             # pg_insert bypasses the Python-only `default=uuid.uuid4` PK, so stamp `id`
             # explicitly per row (mirrors the aggregate path above).
-            await session.execute(
-                pg_insert(AnalysisWindow).values([{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows])
-            )
+            rows = [{"id": uuid.uuid4(), "file_id": file_id, **w.model_dump()} for w in body.windows]
+            # phaze-syxv: CHUNKED, because an explicit multi-row VALUES binds
+            # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
+            # message caps that at int16 (32767) -- 2,730 rows at this model's 12 parameters,
+            # BELOW the ~2,880 windows a 24h recording produces and 18x below the schema's own
+            # 50,000 cap. `chunk_rows` derives the split from the rows' actual parameter count
+            # (see services/bulk_insert.py), so adding a column cannot silently reintroduce it.
+            # ATOMICITY: every chunk executes on THIS session inside the SAME transaction as the
+            # aggregate upsert and the preceding DELETE, so the replace stays all-or-nothing --
+            # a half-written window set is never committed (it would read as a complete analysis).
+            for chunk in chunk_rows(rows):
+                await session.execute(pg_insert(AnalysisWindow).values(chunk))
 
     # Phase 43 state-advance: a non-empty write (any aggregate/coverage field the
     # client actually set) means analysis produced a real result, so advance the

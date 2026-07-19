@@ -23,6 +23,7 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.routers import agent_analysis as agent_analysis_module
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 
@@ -376,6 +377,84 @@ async def test_analysis_window_idempotent_delete_scoped_to_path_file_id(
     rows_b = await _window_rows(session, file_b)
     assert len(rows_b) == 1, "cross-file deletion: file_b windows must survive a PUT to file_a"
     assert rows_b[0].bpm == 99.0
+
+
+# phaze-syxv: 2,731 rows x 12 bind parameters = 32,772 > the 32,767 the PostgreSQL Bind message can
+# carry in an int16 count, so an UNCHUNKED insert raises asyncpg
+# `InterfaceError: the number of query arguments cannot exceed 32767` from here up. 2,800 is just
+# past that break AND is roughly the fine-window count of a real 24h recording at 30s windows -- the
+# figure the schema's own comment cites as realistic. These tests FAIL on the pre-fix code.
+_BIND_LIMIT_BREAK_ROWS = 2800
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_insert_exceeds_pg_bind_parameter_limit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A window set past the int16 bind-parameter limit persists in full (phaze-syxv regression).
+
+    Before the fix this was TERMINAL data loss, not a transient 500: the PUT passed schema
+    validation (well under ``max_length=50000``), the single multi-row VALUES raised, and because
+    ``FAILURE_IS_TERMINAL[ANALYZE]`` the analyze stage was marked permanently FAILED -- discarding
+    hours of essentia CPU, with every retry reproducing the same deterministic error.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    windows = [_window("fine", i, i * 30.0, (i + 1) * 30.0, bpm=120.0 + (i % 7), musical_key="C major") for i in range(_BIND_LIMIT_BREAK_ROWS)]
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0, "windows": windows})
+
+    assert response.status_code == 200, response.text
+    rows = await _window_rows(session, file_id)
+    assert len(rows) == _BIND_LIMIT_BREAK_ROWS, "every window must persist -- chunking must not drop or truncate rows"
+    # Chunk boundaries are where a naive split silently loses or duplicates rows, so pin the ends
+    # and the count of distinct indices rather than only the total.
+    assert rows[0].window_index == 0
+    assert rows[-1].window_index == _BIND_LIMIT_BREAK_ROWS - 1
+    assert len({r.window_index for r in rows}) == _BIND_LIMIT_BREAK_ROWS, "no duplicated window_index across chunk boundaries"
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_chunked_insert_is_atomic_on_mid_write_failure(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure BETWEEN chunks commits nothing -- the window replace stays all-or-nothing (phaze-syxv).
+
+    Chunking splits one statement into several, which would be a regression if the chunks could
+    land independently: a file holding half its windows reads as a complete analysis and is worse
+    than a clean failure. All chunks share ``put_analysis``'s single transaction, so a mid-write
+    raise leaves ZERO windows committed.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    real_chunk_rows = agent_analysis_module.chunk_rows
+
+    def _explode_after_first_chunk(rows: object) -> object:
+        """Yield the first chunk (so rows really are written), then fail like a dropped connection."""
+        for index, chunk in enumerate(real_chunk_rows(rows)):  # type: ignore[arg-type]
+            if index > 0:
+                raise RuntimeError("simulated mid-write failure")
+            yield chunk
+
+    monkeypatch.setattr(agent_analysis_module, "chunk_rows", _explode_after_first_chunk)
+
+    windows = [_window("fine", i, i * 30.0, (i + 1) * 30.0, bpm=120.0) for i in range(_BIND_LIMIT_BREAK_ROWS)]
+
+    async with _make_client(session, raw_token) as ac:
+        with pytest.raises(RuntimeError, match="simulated mid-write failure"):
+            await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0, "windows": windows})
+
+    # The route never reached its single `session.commit()`, so unwinding the transaction must
+    # discard the chunks that DID execute.
+    await session.rollback()
+    rows = await _window_rows(session, file_id)
+    assert rows == [], "a mid-write failure must leave NO partially-written window set committed"
 
 
 @pytest.mark.asyncio
