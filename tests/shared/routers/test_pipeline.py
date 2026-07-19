@@ -1732,6 +1732,32 @@ async def test_deepen_progress_non_numeric_since_is_422(client: AsyncClient, ses
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "since",
+    [
+        "nan",  # ValueError: Invalid value NaN out of datetime.fromtimestamp
+        "inf",  # OverflowError: timestamp out of range for platform time_t
+        "-inf",  # OverflowError: timestamp out of range for platform time_t
+        "1e30",  # OverflowError: beyond datetime's year range, still a valid float
+        "-7e10",  # ValueError: year out of the 1..9999 range on the pre-epoch side
+    ],
+)
+async def test_deepen_progress_out_of_range_since_is_422(client: AsyncClient, session: AsyncSession, since: str) -> None:
+    """phaze-zut8: NaN/inf/out-of-range `since` is rejected with 422, never the docstring-forbidden 500.
+
+    A well-formed ``float`` is not necessarily a valid Unix timestamp -- ``datetime.fromtimestamp``
+    raises ``ValueError``/``OverflowError`` for these shapes, and the endpoint's own docstring
+    promises "never a 500" (T-cvz-04), so contract rule 6 requires this regression test.
+    """
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={since}")
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient, session: AsyncSession) -> None:
     """The deepen POST success branch now emits the self-polling bootstrap span, not the old static line."""
     file_rec = _make_file()

@@ -513,11 +513,23 @@ async def bulk_action(
     proposal_ids: list[str] = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Bulk approve or reject multiple proposals."""
+    """Bulk approve or reject multiple proposals.
+
+    phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
+    guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
+    rejecting the whole request, and the returned count is the authority on what actually happened.
+    """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
     status_map = {"approve": ProposalStatus.APPROVED, "reject": ProposalStatus.REJECTED}
-    uuids = [uuid.UUID(pid) for pid in proposal_ids]
+    # Parse submitted ids into UUIDs, skipping malformed/empty strings (never a 500); mirrors
+    # tracklists.trigger_scan's identical id-list guard.
+    uuids: list[uuid.UUID] = []
+    for pid in proposal_ids:
+        try:
+            uuids.append(uuid.UUID(pid))
+        except ValueError:
+            continue
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
     count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)

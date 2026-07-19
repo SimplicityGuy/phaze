@@ -34,7 +34,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -268,6 +268,39 @@ async def _file_row(session: AsyncSession, file_id: uuid.UUID) -> FileRecord:
     return (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one()
 
 
+def _targets_file_record(stmt: Any) -> bool:
+    """True when ``stmt`` is a ``select(FileRecord)`` -- used to inject a race at the right SELECT."""
+    try:
+        return any(cd.get("entity") is FileRecord for cd in stmt.column_descriptions)
+    except AttributeError:
+        return False
+
+
+def _install_concurrent_scan_deletion(session: AsyncSession, file_id: uuid.UUID) -> None:
+    """Patch ``session.execute`` so the FIRST ``select(FileRecord)`` call races a scan-deletion.
+
+    Reproduces phaze-zdej / phaze-p5nb: a previous request named ``file_id``, but before THIS
+    handler's own ``FileRecord`` SELECT executes, a concurrent ``delete_scan_cascade`` (scan_deletion.py)
+    commits, removing the FileRecord AND its FK-dependent cloud_job row in one transaction. The delete
+    is spliced in immediately before the real SELECT runs (rather than up front) so any earlier reads in
+    the handler -- e.g. the /mismatch cloud_job SELECT that resolves ``backend`` -- still observe the
+    pre-deletion state, exactly like the real race window between two separate SQL statements.
+    """
+    real_execute = session.execute
+    fired = False
+
+    async def _execute_with_race(stmt: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal fired
+        if not fired and _targets_file_record(stmt):
+            fired = True
+            await real_execute(delete(CloudJob).where(CloudJob.file_id == file_id))
+            await real_execute(delete(FileRecord).where(FileRecord.id == file_id))
+            await session.commit()
+        return await real_execute(stmt, *args, **kwargs)
+
+    session.execute = _execute_with_race  # type: ignore[method-assign]
+
+
 # ---------------------------------------------------------------------------
 # /pushed
 # ---------------------------------------------------------------------------
@@ -444,6 +477,40 @@ async def test_pushed_holds_when_backend_id_unresolvable(
 
 
 @pytest.mark.asyncio
+async def test_pushed_holds_cleanly_when_file_record_deleted_mid_push(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-p5nb: FileRecord deleted mid-push (scan-deletion race) -> 200 hold, never a 500.
+
+    ``DELETE /pipeline/scans/{batch_id}`` only requires the batch to be terminal, so an operator can
+    delete a completed scan batch while one of its files is still mid-rsync to a compute agent;
+    ``delete_scan_cascade`` removes the FileRecord AND its cloud_job in one transaction. The subsequent
+    fileserver ``/pushed`` callback must then hit the SAME clean 200 hold used for "no attributed
+    compute backend" -- not an unhandled ``NoResultFound`` 500 from a bare ``scalar_one()``. No state
+    change, no ledger clear, no enqueue: there is nothing left to terminalize or pin a payload with.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)
+    _install_concurrent_scan_deletion(session, file_id)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: clean hold, never a 500/NoResultFound
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["status"] == "pushed"
+    assert task_router.queues == {}, "nothing may be enqueued for a vanished FileRecord"
+
+
+@pytest.mark.asyncio
 async def test_pushed_duplicate_callback_is_idempotent_noop(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
@@ -598,6 +665,44 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 
     assert fileserver_queue.captured_policy[0]["timeout"] == PUSH_FILE_SAQ_TIMEOUT_SEC
+
+
+@pytest.mark.asyncio
+async def test_mismatch_under_cap_holds_cleanly_when_file_record_deleted_mid_race(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-zdej: under-cap re-drive whose FileRecord vanishes between the cloud_job read and the
+    FileRecord read -> 200 hold (``cleared=False``), never a 500.
+
+    D-07 passes (the reporter matches the recorded backend's agent_ref) so the handler resolves a
+    non-None ``backend`` from the cloud_job SELECT and proceeds past the ``backend is None`` guard --
+    exactly the reachable shape the bug requires. A concurrent scan-deletion then removes the
+    FileRecord (and the SAME cloud_job row already read into ``backend``) before the handler's OWN
+    FileRecord SELECT runs. The under-cap branch must take the identical NULL-GUARD hold the over-cap
+    branch already uses (request_guards.py rule 3 -- copy the over-cap branch), not
+    ``scalar_one()`` -> unhandled ``NoResultFound``.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id, push_attempt=0)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)  # backend_id oci-a1, agent_ref test-agent-01
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    _install_concurrent_scan_deletion(session, file_id)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: clean hold, never a 500/NoResultFound
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["cleared"] is False, "the vanished file cannot be re-driven -- hold, not a partial mutation"
+    assert task_router.queues == {}, "no destination-less/orphaned push_file may be enqueued"
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the null-guard hold must not clear the ledger row"
 
 
 @pytest.mark.asyncio
