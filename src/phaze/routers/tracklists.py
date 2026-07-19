@@ -30,6 +30,14 @@ from phaze.tasks.tracklist import _store_scraped_tracklist
 
 EDITABLE_FIELDS = {"artist", "title", "timestamp"}
 
+# wire_bounds rule 1: a string field's cap equals its mapped ``String(N)`` column width. ``artist``
+# and ``title`` land in ``TracklistTrack.artist``/``.title`` -- both ``Text``, unbounded, no entry
+# needed (rule 2). ``timestamp`` lands in ``TracklistTrack.timestamp String(20)`` (models/tracklist.py)
+# and is the only editable field that needs a guard (phaze-81au). This mirrors the cap already
+# applied on the agent-write path, ``TracklistTrackPayload.timestamp`` (schemas/agent_tracklists.py,
+# phaze-btlu) -- both sides of the same column agree on 20.
+EDITABLE_FIELD_MAX_LENGTHS = {"timestamp": 20}
+
 # The client submits a search result's own url so link_search_result can scrape it (phaze-ldal).
 # That form field is attacker-controllable, so before ever handing it to httpx we pin it to the
 # exact host the scraper is built for -- otherwise the server becomes an open fetch proxy (SSRF)
@@ -677,6 +685,33 @@ async def save_track_field(
 
     form_data = await request.form()
     new_value = str(form_data.get(field, ""))
+
+    # wire_bounds rule 1/4: reject an over-width value AT THE BOUNDARY, before setattr/commit ever
+    # opens a transaction against ``timestamp``'s String(20) column -- not by catching the Postgres
+    # StringDataRightTruncation a commit would raise (phaze-81au). This route parses its own form
+    # body (one PUT serves three fields with three different bounds) rather than a declared FastAPI
+    # ``Form(...)`` param, so the guard is manual here instead of a Field/Form constraint.
+    #
+    # This is an OPERATOR-facing inline edit, not the agent wire path: a bare 422 that blanks what
+    # they just typed is a worse outcome than the 500 it replaces. So the rejection re-renders the
+    # SAME edit input, preserving their typed value verbatim plus an inline reason, instead of
+    # discarding it -- the front end opts this response back into the swap despite the 4xx status
+    # (the ``htmx:beforeSwap`` handler in shell.html, same pattern as the WR-01 404 opt-in).
+    max_length = EDITABLE_FIELD_MAX_LENGTHS.get(field)
+    if max_length is not None and len(new_value) > max_length:
+        return templates.TemplateResponse(
+            request=request,
+            name="tracklists/partials/inline_edit_field.html",
+            context={
+                "request": request,
+                "track": track,
+                "field": field,
+                "value": new_value,
+                "error": f"{field} must be {max_length} characters or fewer (got {len(new_value)}).",
+            },
+            status_code=422,
+        )
+
     setattr(track, field, new_value)
     await session.commit()
     await session.refresh(track)
