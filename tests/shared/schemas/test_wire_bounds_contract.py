@@ -110,15 +110,7 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {}
 # Gaps this check FOUND that have no bead yet. Same defect class, same strict-xfail semantics; kept
 # separate so the set awaiting triage is obvious rather than buried among the filed beads. Move an
 # entry into KNOWN_GAPS once it is filed, and delete it once it is fixed.
-UNFILED_GAPS: dict[tuple[str, str], str] = {
-    ("AnalysisWritePayload", "musical_key"): "rule 1: no max_length vs analysis_results.musical_key String(10)",
-    ("AnalysisWindowPayload", "musical_key"): "rule 1: no max_length vs analysis_windows.musical_key String(10)",
-    ("AnalysisWindowPayload", "mood"): "rule 1: no max_length vs analysis_windows.mood String(50)",
-    ("AnalysisWindowPayload", "style"): "rule 1: no max_length vs analysis_windows.style String(50)",
-    ("FileUpsertRecord", "file_size"): "rule 3: ge=0 only, no upper bound vs files.file_size BigInteger (int8)",
-    ("ScanBatchPatch", "total_files"): "rule 3: unbounded vs scan_batches.total_files Integer (int4)",
-    ("ScanBatchPatch", "processed_files"): "rule 3: unbounded vs scan_batches.processed_files Integer (int4)",
-}
+UNFILED_GAPS: dict[tuple[str, str], str] = {}
 
 ALL_GAPS: dict[tuple[str, str], str] = {**KNOWN_GAPS, **UNFILED_GAPS}
 

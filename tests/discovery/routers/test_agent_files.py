@@ -221,6 +221,28 @@ async def test_missing_auth_returns_401(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_size_int64_overflow_422s_without_persisting(
+    authenticated_client: AsyncClient,
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-ty0o: a ``file_size`` beyond int8 is rejected 422, never a Postgres ``NumericValueOutOfRange``.
+
+    ``files.file_size`` is ``BigInteger`` (int8, max 9223372036854775807). Pre-fix ``file_size`` only
+    carried ``ge=0`` -- an unbounded Pydantic int one past int8 max would have reached Postgres and
+    aborted the transaction instead of failing cleanly at the wire.
+    """
+    bad_record = _make_record(size=9223372036854775808)
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [bad_record]})
+    assert response.status_code == 422, response.text
+    assert "file_size" in response.text
+    assert "less_than_equal" in response.text, response.text
+
+    result = await session.execute(select(sa_func.count()).select_from(FileRecord))
+    assert result.scalar_one() == 0, "a rejected (422) upsert must not persist any FileRecord row"
+
+
+@pytest.mark.asyncio
 async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     rec1 = _make_record(path="/test/music/dup.mp3")
     rec2 = {**_make_record(path="/test/music/dup.mp3"), "file_size": 999}
