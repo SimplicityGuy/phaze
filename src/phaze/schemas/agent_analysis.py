@@ -42,10 +42,42 @@ class AnalysisWindowPayload(BaseModel):
     end_sec: float = Field(ge=0.0)
     # Fine-tier fields
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_windows.musical_key String(10), rule 1. Written as f"{key} {scale}" by
+    # _analyze_fine_windows (services/analysis.py) from essentia's KeyExtractor(profileType="edma").
+    # NOT a guess: essentia's own MusicExtractor docs (essentia.upf.edu/tutorial_extractors_
+    # musicextractor.html) show tonal.key_edma/key_krumhansl/key_temperley all returning `key`
+    # and `scale` as separate descriptors -- `key` is a chromatic note name (<=2 chars: the 12
+    # pitch classes A..G#) and `scale` is exactly "major"/"minor" (<=5 chars), never a richer
+    # MIREX-style name. Empirically ran `es.KeyExtractor(profileType="edma")` against synthetic
+    # C#-major and A-minor triads on this checkout (the installed essentia-tensorflow binary) and
+    # got key="C#"/scale="major" and key="A"/scale="minor", confirming the theoretical 2+1+5=8-char
+    # max ("C# minor"/"A# major") is what's actually produced. The aggregate (non-window) value
+    # (`aggregate_key` in services/analysis.py) picks one of the SAME per-window strings unchanged
+    # (duration-weighted mode) -- it never appends the profile name or key-strength, so no richer
+    # value reaches AnalysisWritePayload.musical_key via job_runner.py/tasks/functions.py either.
+    # The column is tight but not too narrow for the data it actually receives (phaze-ty0o
+    # investigation), so the wire is capped to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     # Coarse-tier fields
-    mood: str | None = None
-    style: str | None = None
+    # -> analysis_windows.mood String(50), rule 1. derive_mood (services/analysis.py) returns one
+    # of the fixed `_MOOD_SET_NAMES` values with the "mood_" prefix stripped -- all seven are
+    # essentia's standard BINARY mood classifiers (mood_happy/mood_sad/etc., each a 3-variant
+    # musicnn/vggish head per `_make_standard_set`), not the multi-word MIREX mood-cluster head
+    # (which this codebase does not use anywhere in MODEL_SETS). Longest label is
+    # "electronic"/"aggressive" at 10 chars, well inside the column.
+    mood: str | None = Field(default=None, max_length=50)
+    # -> analysis_windows.style String(50), rule 1. derive_style (services/analysis.py) returns the
+    # top genre_discogs400 label from `GENRE_MODEL` (filename="discogs-effnet-bs64-1", the
+    # discogs-effnet head -- NOT the newer discogs519 taxonomy, which would need re-checking if
+    # ever swapped in), with "---" replaced by "/". MEASURED directly against the model's own class
+    # list metadata (essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-
+    # bs64-1.json, 400 classes): the longest raw label is "Folk, World, & Country---Canzone
+    # Napoletana" at 43 characters (== 43 bytes; 11 labels are non-ASCII but none is the longest,
+    # so byte width never exceeds char width here) -- after the "---"->"/" substitution (-2 chars)
+    # the stored value tops out at 41 chars, comfortably inside String(50). Postgres varchar(N) and
+    # Pydantic `max_length` both count characters, not encoded bytes, so the non-ASCII labels are
+    # not a separate risk even before that margin.
+    style: str | None = Field(default=None, max_length=50)
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     features: dict | None = None
 
@@ -56,7 +88,11 @@ class AnalysisWritePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")  # D-26 -- strict body parsing
 
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_results.musical_key String(10), rule 1. Same essentia KeyExtractor provenance,
+    # same empirically-confirmed 8-char max ("C# minor"/"G# major"), as AnalysisWindowPayload.musical_key
+    # above -- the column is tight but sufficient for the data it actually receives (phaze-ty0o
+    # investigation), so the wire is capped to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     mood: dict[str, float] | None = None
     style: dict[str, float] | None = None
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)

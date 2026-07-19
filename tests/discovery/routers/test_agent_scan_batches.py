@@ -212,6 +212,36 @@ async def test_defensive_live_409_when_literal_bypassed(session: AsyncSession, s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["total_files", "processed_files"])
+async def test_int32_overflowing_count_422s_without_mutating_the_row(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    field: str,
+) -> None:
+    """phaze-ty0o: an int32-overflowing ``total_files``/``processed_files`` is rejected 422 first.
+
+    ``scan_batches.total_files``/``.processed_files`` are ``Integer`` (int4, max 2147483647).
+    Pre-fix these were entirely unbounded on the wire -- an out-of-range count reaching Postgres
+    would raise ``NumericValueOutOfRange`` and abort the transaction rather than fail cleanly.
+    """
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.RUNNING)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={field: 2147483648})
+
+    assert r.status_code == 422, r.text
+    assert field in r.text
+    assert "less_than_equal" in r.text, r.text
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.total_files == 0
+    assert b.processed_files == 0
+
+
+@pytest.mark.asyncio
 async def test_extra_field_422(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """extra='forbid' rejects unknown fields."""
     agent, raw_token = seed_test_agent

@@ -50,13 +50,17 @@ def test_scan_batch_patch_accepts_progress_counts() -> None:
     assert p.processed_files == 50
 
 
-def test_scan_batch_patch_no_ge_constraint_on_counts() -> None:
-    """Schema shape matches sibling ExecutionLogPatch — no `ge=` on integer fields.
+def test_scan_batch_patch_rejects_negative_counts() -> None:
+    """phaze-ty0o (wire_bounds rule 3): a file count is never negative — the schema now says so.
 
-    D-10 does not specify integer-range constraints; controller may enforce.
+    Supersedes the prior "no ge= constraint" assertion: D-10 didn't specify integer-range
+    constraints, but the wire-bounds contract closed that gap. `total_files`/`processed_files`
+    carry `ge=0, le=INT32_MAX` to match `scan_batches.total_files`/`.processed_files` Integer
+    (int4) — `ge=0` is a genuine domain fact (a count of files scanned can't be negative), not
+    an arbitrary cap.
     """
-    p = ScanBatchPatch(total_files=-1)
-    assert p.total_files == -1
+    with pytest.raises(pydantic.ValidationError):
+        ScanBatchPatch(total_files=-1)
 
 
 def test_scan_batch_patch_rejects_unknown_field() -> None:
