@@ -260,3 +260,7 @@ src/phaze/static/css/app.css
 
 # Local repowise index/tool state -- not project source.
 .repowise/
+
+# Claude Code MCP server config (local, machine-specific) + VS Code workspace settings
+.mcp.json
+.vscode/
