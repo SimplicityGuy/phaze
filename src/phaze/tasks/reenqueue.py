@@ -161,12 +161,19 @@ class _DoneSets:
     so membership is O(1) in :func:`is_domain_completed` and the derivation is O(|ledger|), never
     O(200K corpus). The metadata cell is split into a domain-completed set + a ``failed_at`` map so the
     call site can apply the D-10 ``enqueued_at <= failed_at`` gate (which needs the per-row ledger
-    timestamp) to the failed subset.
+    timestamp) to the failed subset -- and a SEPARATE ``metadata_skipped`` set (phaze-3m5n) so the call
+    site can short-circuit to domain-complete on force-skip membership BEFORE ever reaching the D-10
+    gate. Without this separate cell, a file that is force-skipped AFTER a failure (the additive-only
+    ``force_skip_stage`` contract, T-87-20, never clears ``failed_at``) still carries a non-NULL
+    ``metadata_failed_at`` entry, so the D-10 gate would wrongly re-subject it to the
+    ``enqueued_at <= failed_at`` comparison and re-drive an orphaned post-failure retry row that the
+    operator explicitly terminated -- exactly the bug phaze-3m5n fixes.
     """
 
     analyze_done: set[str]  # domain_completed_clause(ANALYZE): done OR terminal-failed
-    metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR failed (D-10 gate refines failed)
+    metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR skipped OR failed (D-10 gate refines the failed-only subset)
     metadata_failed_at: dict[str, datetime]  # failed_clause(METADATA) rows -> failed_at (D-10 gate)
+    metadata_skipped: set[str]  # skipped_clause(METADATA) alone: force-skip is domain-complete UNCONDITIONALLY, never gated
     fingerprint_done: set[str]  # done_clause(FINGERPRINT) OR skipped_clause: failed auto-retries, force-skip excluded
     push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
 
@@ -219,12 +226,17 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
 
     - ``analyze_done``: ``domain_completed_clause(ANALYZE)`` (done OR terminal-failed -- an
       un-analyzable file stays terminal, FAILURE_IS_TERMINAL[analyze]).
-    - ``metadata_domain_completed`` + ``metadata_failed_at``: ``domain_completed_clause(METADATA)`` gives
-      the done-OR-failed set (both terminal for metadata); the failed rows' ``failed_at`` is read alongside
-      so the call site can REFINE the failed subset with the D-10 gate
-      (``done OR (failed AND enqueued_at <= failed_at)``) -- both twins stay ledger-agnostic. Deriving the
-      set via ``domain_completed_clause`` (not a bare ``done_clause``) is what makes the D-11 lock bite: a
-      ``~inflight_clause`` conjunct wrongly added to it would drop every failed-and-inflight candidate.
+    - ``metadata_domain_completed`` + ``metadata_failed_at`` + ``metadata_skipped``: ``domain_completed_clause(METADATA)``
+      gives the done-OR-skipped-OR-failed set; the failed rows' ``failed_at`` is read alongside so the
+      call site can REFINE ONLY the failed-only subset with the D-10 gate
+      (``done OR skipped OR (failed AND enqueued_at <= failed_at)``) -- both twins stay ledger-agnostic.
+      Deriving the set via ``domain_completed_clause`` (not a bare ``done_clause``) is what makes the
+      D-11 lock bite: a ``~inflight_clause`` conjunct wrongly added to it would drop every
+      failed-and-inflight candidate. ``metadata_skipped`` is read SEPARATELY (``skipped_clause(METADATA)``
+      alone, not folded into the merged set) so the call site can test skip membership BEFORE the D-10
+      gate -- a force-skipped file that ALSO carries a stale ``failed_at`` (the force-skip writer's
+      additive-only contract, T-87-20, never clears it) must stay domain-complete UNCONDITIONALLY,
+      never re-subjected to the failed-only ``enqueued_at`` comparison (phaze-3m5n).
     - ``fingerprint_done``: ``done_clause(FINGERPRINT) OR skipped_clause(FINGERPRINT)`` -- a FAILED
       fingerprint still auto-retries (it is NOT domain-complete: the analyze/fingerprint asymmetry D-01
       encodes, FAILURE_IS_TERMINAL[fingerprint] is False), but an operator-force-SKIPPED fingerprint is
@@ -242,7 +254,7 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
     (:func:`_fids_scope`). An empty ledger short-circuits to empty sets (no pointless round-trips).
     """
     if not fids:
-        return _DoneSets(set(), set(), {}, set(), set())
+        return _DoneSets(set(), set(), {}, set(), set(), set())
 
     analyze_done = {str(fid) for fid in (await session.scalars(_select_done_analyze_ids(fids))).all()}
     metadata_domain_completed = {
@@ -260,6 +272,9 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
             )
         ).all()
     }
+    metadata_skipped = {
+        str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "ms_ids"), skipped_clause(Stage.METADATA)))).all()
+    }
     fingerprint_done = {
         str(fid)
         for fid in (
@@ -274,6 +289,7 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
         analyze_done=analyze_done,
         metadata_domain_completed=metadata_domain_completed,
         metadata_failed_at=metadata_failed_at,
+        metadata_skipped=metadata_skipped,
         fingerprint_done=fingerprint_done,
         push_done=push_done,
     )
@@ -376,13 +392,19 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     - ``push_file``: file id in ``push_done`` (succeeded OR domain_completed(analyze), D-07).
     - ``fingerprint_file``: file id in ``fingerprint_done`` (done OR skipped -- a failed fingerprint
       auto-retries; an operator-force-SKIPPED fingerprint is excluded, phase-87 behavior 5).
-    - ``extract_file_metadata``: the D-10 cell. Domain-complete when ``done(metadata)`` OR the metadata
-      FAILED AND the ledger row's ``enqueued_at <= metadata.failed_at``. metadata is the ONLY stage with
-      this ambiguous cell: ``retry_metadata_failed`` LEAVES ``failed_at`` set (81 D-11) then re-enqueues,
-      so ``(ledger row AND failed_at)`` is ambiguous. ``enqueued_at > failed_at`` (an orphaned OPERATOR
-      retry) re-drives; ``enqueued_at < failed_at`` (a callback that wrote the marker but crashed before
-      clearing the ledger) stays terminal. ``analysis.failed_at`` is cleared on retry (CR-01), so analyze
-      has no such cell -- the asymmetry is intentional (D-10).
+    - ``extract_file_metadata``: skip-first, THEN the D-10 cell. A force-SKIPPED file (``metadata_skipped``)
+      is domain-complete UNCONDITIONALLY and returns True BEFORE the D-10 gate is ever consulted
+      (phaze-3m5n) -- the force-skip writer's additive-only contract (T-87-20) never clears
+      ``failed_at``, so a file skipped after a failed operator retry still carries a stale
+      ``metadata_failed_at`` entry, and the D-10 gate must never be applied to it (that would
+      re-classify the skip as "genuinely pending" and re-drive a stage the operator explicitly
+      terminated). Absent a skip marker, domain-complete when ``done(metadata)`` OR the metadata FAILED
+      AND the ledger row's ``enqueued_at <= metadata.failed_at``. metadata is the ONLY stage with this
+      ambiguous failed-only cell: ``retry_metadata_failed`` LEAVES ``failed_at`` set (81 D-11) then
+      re-enqueues, so ``(ledger row AND failed_at)`` is ambiguous. ``enqueued_at > failed_at`` (an
+      orphaned OPERATOR retry) re-drives; ``enqueued_at < failed_at`` (a callback that wrote the marker
+      but crashed before clearing the ledger) stays terminal. ``analysis.failed_at`` is cleared on retry
+      (CR-01), so analyze has no such cell -- the asymmetry is intentional (D-10).
     """
     function = row.function
     if function not in _DOMAIN_COMPLETED_STAGES:
@@ -396,9 +418,14 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
         return fid in done_sets.push_done
     if function == "fingerprint_file":
         return fid in done_sets.fingerprint_done
-    # extract_file_metadata -- D-10 call-site gate via SchedulingLedger.enqueued_at.
+    # extract_file_metadata -- force-skip is checked BEFORE the D-10 gate (phaze-3m5n): the gate must
+    # refine ONLY the subset of metadata_domain_completed whose membership derives solely from the
+    # failed disjunct, never a row that is ALSO domain-complete via the skipped disjunct.
+    if fid in done_sets.metadata_skipped:
+        return True  # force-skipped -> domain-complete unconditionally, D-10 gate never applies
+    # D-10 call-site gate via SchedulingLedger.enqueued_at.
     if fid not in done_sets.metadata_domain_completed:
-        return False  # neither done nor failed -> genuinely pending -> re-drive
+        return False  # neither done, skipped, nor failed -> genuinely pending -> re-drive
     failed_at = done_sets.metadata_failed_at.get(fid)
     if failed_at is None:
         return True  # done (a metadata row present, failed_at NULL) -> domain-complete
