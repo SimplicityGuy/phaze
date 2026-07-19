@@ -35,20 +35,15 @@
     {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
     <div id="fingerprint-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     <div class="p-6">
-        {% set columns = ["File", "Duration", "Chromaprint", "AcoustID"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for f in fingerprint_files %}
-            {% set _ = ns.rows.append([
-                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
-                {'text': '—'},
-                {'text': '—'},
-                {'text': '—'},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "Nothing to fingerprint" %}
-        {% set empty_body = "All discovered files have a chromaprint fingerprint." %}
-        {% set row_id_prefix = "fingerprint-row" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the shared
+           bounded/paged fragment on load -- the SAME contract as #analyze-files-view. It used to render
+           the ENTIRE unbounded fingerprint pending set inline; that measured harmlessly only because the
+           backlog is empty today. Do NOT reintroduce an inline row loop on this path. #}
+        <div id="fingerprint-files-view"
+             hx-get="/pipeline/pending-files?stage=fingerprint"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+        </div>
     </div>
 {% endcall %}
