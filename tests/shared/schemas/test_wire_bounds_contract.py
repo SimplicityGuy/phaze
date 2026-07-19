@@ -105,8 +105,7 @@ UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
 # KNOWN GAPS -- the sibling beads of this defect class. Strict xfail: each MUST still be violating.
 # When your bead lands, DELETE your entry; leaving it fails the suite.
 # --------------------------------------------------------------------------------------------
-KNOWN_GAPS: dict[tuple[str, str], str] = {
-}
+KNOWN_GAPS: dict[tuple[str, str], str] = {}
 
 # Gaps this check FOUND that have no bead yet. Same defect class, same strict-xfail semantics; kept
 # separate so the set awaiting triage is obvious rather than buried among the filed beads. Move an
