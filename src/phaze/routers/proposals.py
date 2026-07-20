@@ -204,6 +204,55 @@ async def _build_sparklines(session: AsyncSession, file_ids: list[uuid.UUID]) ->
     return sparklines
 
 
+async def _proposal_list_context(
+    request: Request,
+    session: AsyncSession,
+    *,
+    status: str | None,
+    q: str | None,
+    page: int,
+    page_size: int,
+    sort: str,
+    order: str,
+) -> dict[str, object]:
+    """Build the render context for the proposal list container (table + bulk bar + pagination).
+
+    Shared by ``list_proposals`` (filter/sort/pagination swaps) and ``bulk_action`` (phaze-gc5d):
+    the bulk PATCH must re-render the SAME view -- same status filter, search, page, sort -- so a
+    bulk approve/reject neither wipes ``#proposal-list-container`` nor silently resets the user
+    back to page 1 of the default filter.
+    """
+    # Default to pending filter when no status param provided (D-09)
+    effective_status = status if status is not None else "pending"
+
+    proposals, pagination = await get_proposals_page(
+        session,
+        status=effective_status,
+        search=q,
+        page=page,
+        page_size=page_size,
+        sort_by=sort,
+        sort_order=order,
+    )
+    stats = await get_proposal_stats(session)
+    collision_ids = await get_collision_ids(session)
+    sparklines = await _build_sparklines(session, [p.file_id for p in proposals])
+
+    return {
+        "request": request,
+        "proposals": proposals,
+        "pagination": pagination,
+        "stats": stats,
+        "collision_ids": collision_ids,
+        "sparklines": sparklines,
+        "current_status": effective_status,
+        "search_query": q or "",
+        "current_sort": sort,
+        "current_order": order,
+        "current_page": "proposals",
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def list_proposals(
     request: Request,
@@ -221,35 +270,7 @@ async def list_proposals(
     if request.headers.get("HX-Request") != "true":
         return RedirectResponse(url="/s/propose", status_code=302)
 
-    # Default to pending filter when no status param provided (D-09)
-    effective_status = status if status is not None else "pending"
-
-    proposals, pagination = await get_proposals_page(
-        session,
-        status=effective_status,
-        search=q,
-        page=page,
-        page_size=page_size,
-        sort_by=sort,
-        sort_order=order,
-    )
-    stats = await get_proposal_stats(session)
-    collision_ids = await get_collision_ids(session)
-    sparklines = await _build_sparklines(session, [p.file_id for p in proposals])
-
-    context = {
-        "request": request,
-        "proposals": proposals,
-        "pagination": pagination,
-        "stats": stats,
-        "collision_ids": collision_ids,
-        "sparklines": sparklines,
-        "current_status": effective_status,
-        "search_query": q or "",
-        "current_sort": sort,
-        "current_order": order,
-        "current_page": "proposals",
-    }
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
     # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
@@ -511,6 +532,12 @@ async def bulk_action(
     request: Request,
     action: str = Form(...),
     proposal_ids: list[str] = Form(...),
+    status: str | None = Form(None),
+    q: str | None = Form(None),
+    page: int = Form(1, ge=1),
+    page_size: int = Form(50, ge=10, le=100),
+    sort: str = Form("confidence"),
+    order: str = Form("asc"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk approve or reject multiple proposals.
@@ -518,6 +545,14 @@ async def bulk_action(
     phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
     guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
     rejecting the whole request, and the returned count is the authority on what actually happened.
+
+    phaze-gc5d: the bulk forms swap this response into ``#proposal-list-container`` with
+    ``innerHTML``, so the body MUST be the re-rendered list (table + bulk bar). It previously
+    rendered approve_response.html with ``proposal=None``, whose entire non-OOB body is gated on
+    ``{% if proposal %}`` -- the swap therefore emptied the container and destroyed both the table
+    and the selection toolbar until a full reload. The view state (status/q/page/page_size/sort/
+    order) rides along as hidden inputs on the form so the re-render lands on the SAME page and
+    filter the user acted from, rather than silently resetting them to page 1 / pending.
     """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
@@ -533,17 +568,12 @@ async def bulk_action(
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
     count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/approve_response.html",
-        context={
-            "request": request,
-            "proposal": None,
-            "stats": stats,
-            "action_label": action + "d",
-            "toast_message": f"{count} proposals {action}d.",
-            "is_bulk": True,
-            "bulk_ids": [str(uid) for uid in uuids],
-        },
-    )
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
+    context |= {
+        "proposal": None,
+        "action_label": action + "d",
+        "toast_message": f"{count} proposals {action}d.",
+        "is_bulk": True,
+        "bulk_ids": [str(uid) for uid in uuids],
+    }
+    return templates.TemplateResponse(request=request, name="proposals/partials/bulk_response.html", context=context)
