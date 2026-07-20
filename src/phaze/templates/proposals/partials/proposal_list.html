@@ -9,12 +9,16 @@
        proposal_table + bulk_actions + pagination
 
    Producers, all of which render this file and nothing more:
-     * proposal_content.html  -- wraps it in the container div (full-view render)
      * GET  /proposals/ (HX)  -- returns it bare (pagination / sort / search swaps)
      * PATCH /proposals/bulk  -- returns it bare inside bulk_response.html, plus OOB fragments
 
-   The pager lives INSIDE the container deliberately. It used to render outside it
-   (proposal_content.html, after the div closed), which meant a bulk approve/reject re-rendered the
+   phaze-a6hm.12 deleted the third producer, proposal_content.html (the legacy full-view chrome
+   that wrapped this partial in the container div). Its deletion is why the list above is now two
+   entries: both survivors return this file BARE, so the container div itself is supplied by
+   whatever already owns it on the page rather than by a wrapper partial.
+
+   The pager lives INSIDE the container deliberately. It used to render outside it (in the deleted
+   proposal_content.html, after the div closed), which meant a bulk approve/reject re-rendered the
    rows but left "Showing 1-50 of 312 proposals" and the page buttons reporting pre-action totals. #}
 {% if proposals %}
     {% include "proposals/partials/proposal_table.html" %}

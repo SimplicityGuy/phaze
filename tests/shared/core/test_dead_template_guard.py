@@ -58,36 +58,20 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # so no template needs a reachability waiver any more. Keep it empty; if a future dynamic
 # `name=` makes a real template statically un-discoverable, add it back WITH an inline
 # justification -- do NOT relax the closure logic below to force green.
-_ALLOWLIST: frozenset[str] = frozenset(
-    {
-        # phaze-7j50 surfaced this as an orphan, and the orphaning is REAL -- this is the
-        # allowlist's primary documented case (unreachable legacy templates awaiting deletion),
-        # not the secondary "reachable but statically un-discoverable" one. Do not read this
-        # entry as a reachability waiver.
-        #
-        # The legacy proposals view has NO live entry point in the v7 shell: the rail never links
-        # /proposals/, "propose" resolves to pipeline/partials/propose_workspace.html (a different
-        # UI), and a non-fragment GET /proposals/ 302s to /s/propose. The only requests that reach
-        # proposal_content.html's family come from pagination.html / proposal_table.html, which are
-        # themselves rendered only by that same endpoint -- a closed loop nothing outside can enter.
-        #
-        # Before phaze-7j50 the HX branch returned proposal_content.html, so the guard counted it
-        # reachable via that loop. 7j50 correctly narrowed the branch to the container's inner
-        # content (its callers all target #proposal-list-container), which left the chrome with no
-        # consumer and made the pre-existing deadness visible.
-        #
-        # Retiring it is a product decision about the legacy proposals UI, deliberately NOT taken
-        # inside a bug sweep -- tracked in phaze-fann / phaze-a6hm.12.
-        #
-        # phaze-a6hm.2 REMOVED two former entries from this list -- filter_tabs.html and
-        # search_box.html. They are no longer orphaned: the propose workspace now includes both
-        # (parameterised for its own URLs and swap target), which is the ADOPTION phaze-a6hm.12
-        # expects rather than the deletion it will apply to the rest of the legacy family. They are
-        # off the allowlist because they are genuinely reachable now, so the guard proves it; had
-        # they been left here the guard would simply have stopped checking them.
-        "proposals/partials/proposal_content.html",
-    }
-)
+# phaze-a6hm.12 drained the 2026-07-20 sweep back to empty, and did so by DELETING the
+# waived template rather than re-justifying it. The single entry was
+# `proposals/partials/proposal_content.html` -- the legacy proposals chrome -- and it is now
+# gone from disk, so the guard proves its absence instead of excusing its presence.
+#
+# The other two entries the sweep added, filter_tabs.html and search_box.html, were removed by
+# phaze-a6hm.2 for the opposite reason: the propose workspace adopted both (parameterised via
+# tabs_url/tabs_target and search_url/search_target), making them genuinely reachable. Between
+# adoption and deletion the sweep is fully resolved and nothing needs a waiver.
+#
+# Keep this EMPTY. If a future dynamic `name=` ever makes a real template statically
+# un-discoverable, add it back WITH an inline justification -- do NOT relax the closure logic
+# below to force green, and do NOT park a merely-unreachable template here to defer deleting it.
+_ALLOWLIST: frozenset[str] = frozenset()
 
 # Router ``"...html"`` literals that are intentionally NOT on-disk templates — a redirect
 # target, an ``href`` string, a docstring example. ``_HTML_LITERAL`` captures ANY quoted
