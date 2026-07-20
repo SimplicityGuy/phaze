@@ -87,18 +87,20 @@
   {% endfor %}
 {% endif %}
 
-{# Commands (D-03) — always present so the roving nav always has selectable targets. #}
+{# Commands (D-03) — always present so the roving nav always has selectable targets.
+
+   ORDERING IS LOAD-BEARING (phaze-45uu). cmdk_modal.html's onResults() resets activeIndex to 0
+   after every swap and Enter calls items[0].click(), so the FIRST row here is what a bare
+   ⌘K + Enter fires. With an empty or no-result query the Commands group is the ONLY rendered
+   group, which made that first row items[0] for the whole palette. #cmdk-cmd-scan (a
+   state-changing hx-post, and hx-swap="none" so it leaves no visible trace) therefore fired
+   silently on the most common muscle-memory keystroke in the app. Two guards, both required:
+     1. Navigation rows come first — the accidental-Enter default is now an idempotent GET.
+     2. The scan row carries hx-confirm, matching the app-wide bulk-action confirm pattern, so
+        it stays gated even when reached deliberately via ↑/↓.
+   Keep any future state-changing command LAST and confirmed; tests/shared/core/
+   test_cmdk_palette_default_option.py enforces both by role + htmx verb, not by id. #}
 <div role="presentation" class="{{ head_class }}">Commands</div>
-<div id="cmdk-cmd-scan"
-     role="option"
-     aria-selected="false"
-     tabindex="-1"
-     class="{{ row_class }}"
-     hx-post="/pipeline/scan-live-sets"
-     hx-swap="none">
-  <span aria-hidden="true">⊕</span>
-  <span class="flex-1 text-gray-900 dark:text-gray-100">Scan for new live sets</span>
-</div>
 <a id="cmdk-cmd-stage"
    role="option"
    aria-selected="false"
@@ -126,6 +128,18 @@
   <span aria-hidden="true">⎈</span>
   <span class="flex-1 text-gray-900 dark:text-gray-100">Open Agents</span>
 </a>
+{# The one state-changing command: last, and confirmed. See the ordering note above. #}
+<div id="cmdk-cmd-scan"
+     role="option"
+     aria-selected="false"
+     tabindex="-1"
+     class="{{ row_class }}"
+     hx-post="/pipeline/scan-live-sets"
+     hx-confirm="Scan for new live sets?"
+     hx-swap="none">
+  <span aria-hidden="true">⊕</span>
+  <span class="flex-1 text-gray-900 dark:text-gray-100">Scan for new live sets</span>
+</div>
 
 {% if query and not file_results and not tracklist_results and not discogs_results and not artists %}
   <div class="px-3 py-6 text-center text-sm text-gray-500 dark:text-gray-500">
