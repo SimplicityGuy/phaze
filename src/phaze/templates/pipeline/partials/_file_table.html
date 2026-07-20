@@ -25,6 +25,15 @@
                         When ABSENT the row stays click-UNBOUND (backward compatible for the
                         workspaces that have not yet supplied file ids). file_id is a UUID (safe).
 
+     * sort           — OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.1). When present,
+                        every header whose LABEL the state recognises renders as a sort button
+                        instead of plain text; every other header is untouched. This is the ONE
+                        place sortable headers are spelled, so all nine including workspaces
+                        inherit sorting by passing this context key and NOTHING else — there is no
+                        per-workspace header markup to duplicate or drift.
+                        When ABSENT (Jinja Undefined ⇒ falsy) every header renders exactly as it
+                        did before, so a workspace that has not been wired yet is unaffected.
+
    D-06 / R-1: rows always carry `cursor-pointer` + a stable id + hover; the row→record click is
    bound ONLY when `row_file_ids` is provided (Phase 61) — otherwise the row is inert.
 #}
@@ -43,7 +52,27 @@
         <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
             <tr>
                 {% for col in columns %}
+                {% if sort and sort.is_sortable(col) %}
+                {# phaze-a6hm.1 sortable-column contract. SERVER-SIDE: the click re-requests this
+                   table from its own endpoint under a new ORDER BY — it does NOT reorder the rows
+                   already in the DOM, which would sort one PAGE of a paginated set and present the
+                   result as the ordering of the whole corpus.
+                   aria-sort (contract rule 5) is the accessible signal; the caret is decorative and
+                   aria-hidden, so a screen-reader user is not read a lone glyph.
+                   hx-target is the table's EXISTING host container, carried on the contract — this
+                   emits no OOB fragment and introduces no new id, so it cannot duplicate one. #}
+                <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                    <button type="button"
+                            hx-get="{{ sort.url_for(col) }}"
+                            hx-target="{{ sort.contract.target }}"
+                            hx-swap="innerHTML"
+                            class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
+                        {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
+                    </button>
+                </th>
+                {% else %}
                 <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                {% endif %}
                 {% endfor %}
             </tr>
         </thead>

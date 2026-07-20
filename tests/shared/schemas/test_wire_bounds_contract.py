@@ -162,6 +162,18 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/files", "bucket"): _WHITELIST,
     ("/pipeline/analyze-files", "status"): _WHITELIST,
     ("/pipeline/pending-files", "stage"): _WHITELIST,
+    # phaze-a6hm.1 sortable-column contract (src/phaze/routers/column_sort.py). These six are the
+    # STRONGEST form of _WHITELIST in the repo: the allowlist is not a set of accepted NAMES that a
+    # later line turns into a column, it is a mapping straight TO already-constructed SQLAlchemy
+    # column objects. SortContract.resolve() matches the wire value against those keys by equality
+    # and discards anything else, so an unwhitelisted value has no column to reach by construction --
+    # never getattr, never text() interpolation. See tests/shared/routers/test_column_sort.py.
+    ("/pipeline/pending-files", "sort"): _WHITELIST,
+    ("/pipeline/pending-files", "order"): _WHITELIST,
+    ("/pipeline/trackid-files", "sort"): _WHITELIST,
+    ("/pipeline/trackid-files", "order"): _WHITELIST,
+    ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
+    ("/pipeline/tracklist-sets", "order"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,
