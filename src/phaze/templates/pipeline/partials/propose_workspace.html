@@ -26,13 +26,24 @@
    raw / never `| safe`). NO second poll (R-2); the live sub-count would ride the single chrome poll.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = "'" ~ (propose_proposals | length) ~ " proposals ready · litellm'" %}
+{# phaze-a6hm.9: the header count is the FILTERED TOTAL (pagination.total), not
+   `propose_proposals | length`. Once the list is paginated that length is the size of the current
+   PAGE, so the old expression would have reported "25 proposals ready" for any backlog of 25 or
+   more -- a header that stops counting exactly when the number starts mattering. #}
+{% set subcount = "'" ~ propose_pagination.total ~ " proposals ready · litellm'" %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     {# R-4 bulk-enqueue guard: hx-confirm + hx-disabled-elt + :disabled busy-gate (don't double-enqueue litellm jobs). #}
     <button type="button"
             hx-post="/pipeline/proposals" hx-target="#propose-trigger-response" hx-swap="innerHTML"
-            hx-confirm="Generate AI proposals for all {{ propose_proposals | length }} pending files? This enqueues {{ propose_proposals | length }} litellm jobs."
+            {# The confirm quotes propose_stats.pending -- the corpus-wide pending count -- NOT the
+               rendered row count. GENERATE ALL enqueues over the whole pending set and is entirely
+               unaffected by the tab, the search or the page, so quoting the visible rows would
+               understate the blast radius: filtered to Approved, or searched down to two hits, the
+               old `propose_proposals | length` would have promised "2 litellm jobs" before
+               enqueuing thousands. A bulk-enqueue confirm must name the scope the ACTION has
+               (paging contract rule 7 -- enqueue sets are never paged). #}
+            hx-confirm="Generate AI proposals for all {{ propose_stats.pending }} pending files? This enqueues {{ propose_stats.pending }} litellm jobs."
             hx-indicator="#propose-trigger-spinner"
             hx-disabled-elt="this"
             :disabled="$store.pipeline.controllerBusy > 0"
@@ -43,36 +54,28 @@
 {% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
     {# Trigger response lands here (trigger_response.html branches: count>0 / none ready). #}
     <div id="propose-trigger-response" class="px-6 pt-4 empty:hidden"></div>
-    <div class="p-6">
-        {% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for p in propose_proposals %}
-            {% if p.confidence is none %}
-                {% set _conf_text = "—" %}
-                {% set _conf_color = "text-gray-500" %}
-            {% else %}
-                {% set _pct = (p.confidence * 100) | round | int %}
-                {% set _conf_text = _pct ~ "%" %}
-                {% if _pct >= 90 %}
-                    {% set _conf_color = "text-emerald-600 dark:text-emerald-300" %}
-                {% elif _pct >= 70 %}
-                    {% set _conf_color = "text-amber-600 dark:text-amber-300" %}
-                {% else %}
-                    {% set _conf_color = "text-gray-500" %}
-                {% endif %}
-            {% endif %}
-            {% set _ = ns.rows.append([
-                {'text': p.filename, 'mono': True, 'title': p.original_path},
-                {'text': p.proposed_filename},
-                {'text': (p.proposed_path or "—"), 'mono': True},
-                {'text': llm_model, 'mono': True, 'color': 'text-gray-500 dark:text-gray-500'},
-                {'text': _conf_text, 'mono': True, 'color': _conf_color},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "Nothing to propose" %}
-        {% set empty_body = "Every discovered file already has a rename proposal. Run enrichment first to surface more." %}
-        {% set row_id_prefix = "propose-row" %}
-        {% include "pipeline/partials/_file_table.html" %}
+    {# phaze-a6hm.2: the status filter tabs + search box the v7 cutover dropped, restored by ADOPTING
+       the legacy proposals/partials/*.html markup (which had been orphaned but intact) rather than
+       rewriting it -- so the visual language matches the rest of the app. Both partials are now
+       parameterised; they point at /s/propose and swap the list container below.
+
+       Both push /s/propose?... URLs. That is what makes the filtered view bookmarkable AND correct
+       on a history restore: the pushed URL is a real full-page route, so a restore re-renders the
+       whole document with the same filter applied (response_shape.py rule 2) rather than dropping a
+       chrome-less fragment into <body>. #}
+    <div class="px-6 pt-4">
+        {% with view = propose_view, stats = propose_stats, tabs_url = "/s/propose", tabs_target = "#" ~ propose_list_id %}
+            {% include "proposals/partials/filter_tabs.html" %}
+        {% endwith %}
+        {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search" %}
+            {% include "proposals/partials/search_box.html" %}
+        {% endwith %}
+    </div>
+    {# The list container. Its inner content is defined in exactly one place (_propose_list.html) so
+       every producer -- this full render and the narrow HX swaps -- returns the same shape. The id
+       comes from the router (PROPOSE_LIST_CONTAINER_ID) so the element and the HX-Target comparison
+       that routes swaps to it cannot drift; see that constant for the id-uniqueness argument. #}
+    <div id="{{ propose_list_id }}">
+        {% include "pipeline/partials/_propose_list.html" %}
     </div>
 {% endcall %}

@@ -17,6 +17,13 @@
                        Each row: .file (FileRecord) + .buckets (dict keyed by Stage value).
      * active_stage -- optional current stage filter (Plan 05); carried in pagination links.
      * active_bucket-- optional current bucket filter (Plan 05); carried in pagination links.
+     * sort         -- OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.3), resolved against
+                       the router's FILES_SORT contract. This partial builds its OWN table (see below)
+                       rather than including _file_table.html, so it mirrors that partial's sortable-
+                       header markup by hand for the two REAL FileRecord columns it renders (File,
+                       Type) -- the six stage-matrix cells are per-page DERIVED buckets, not columns
+                       a SQL ORDER BY can address, and stay plain headers. When ABSENT every header
+                       renders exactly as before (Jinja Undefined is falsy).
 
    The file path crosses the DB->render trust boundary: it is ALWAYS autoescaped, NEVER `| safe`
    (T-87-13 XSS). file.id is a UUID (safe) used only for the record slide-in hx-get.
@@ -33,7 +40,9 @@
     ('Appr', 'review'),
     ('Exec', 'apply'),
 ] %}
-{% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') %}
+{# phaze-a6hm.3: pagers must carry the sort forward (column_sort contract rule 4, inverse direction)
+   -- a Prev/Next click that dropped the operator's chosen order would silently reset it mid-scan. #}
+{% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (sort.query_state() if sort else '') %}
 {# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
 {% set _stage_names = {'metadata': 'Metadata', 'fingerprint': 'Fingerprint', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Approve', 'apply': 'Execute'} %}
 {% set _stage_display = _stage_names.get(active_stage, active_stage) %}
@@ -103,8 +112,27 @@
         <table class="w-full text-left text-sm">
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
                 <tr>
-                    <th scope="col" class="px-6 py-2.5 font-medium">File</th>
-                    <th scope="col" class="px-6 py-2.5 font-medium">Type</th>
+                    {# phaze-a6hm.3: File / Type are the only two REAL FileRecord columns this table
+                       renders, so they are the only ones the FILES_SORT contract whitelists. Mirrors
+                       _file_table.html's sortable-header markup by hand (see the module docstring
+                       above for why this partial cannot include that one) -- same is_sortable() gate,
+                       same aria_sort()/url_for()/indicator() calls, same existing #files-table-view
+                       hx-target so this introduces no new swap target or OOB fragment. #}
+                    {% for col in ('File', 'Type') %}
+                    {% if sort and sort.is_sortable(col) %}
+                    <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                        <button type="button"
+                                hx-get="{{ sort.url_for(col) }}"
+                                hx-target="{{ sort.contract.target }}"
+                                hx-swap="innerHTML"
+                                class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
+                            {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
+                        </button>
+                    </th>
+                    {% else %}
+                    <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                    {% endif %}
+                    {% endfor %}
                     {% for stage_label, _key in _stage_cols %}
                     <th scope="col" class="px-6 py-2.5 font-medium">{{ stage_label }}</th>
                     {% endfor %}

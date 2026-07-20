@@ -1,7 +1,12 @@
 {# phaze-mft5: Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the
    paging contract forbids (rule 2). ``pagination`` is a phaze.services.pagination.Page
-   (rows/page/page_size/has_next), the same shape the Analyze/metadata/fingerprint pagers use. #}
+   (rows/page/page_size/has_next), the same shape the Analyze/metadata/fingerprint pagers use.
+
+   phaze-a6hm.5 / column_sort.py contract rule 4, the easy-to-forget direction: the PAGER carries the
+   active sort forward via sort.query_state(), so Prev/Next stays inside the operator's chosen order
+   instead of silently snapping back to the default mid-scan. Empty when unsorted. #}
 {% if pagination.show_pager %}
+{% set _sort_qs = sort.query_state() if sort else '' %}
 <div class="flex items-center justify-between mt-4 px-4 py-3">
     <span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">
         Page {{ pagination.page }}
@@ -9,7 +14,7 @@
     <div class="flex gap-1">
         {% if pagination.has_prev %}
         <button
-            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}"
+            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page - 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
             class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Previous
@@ -18,7 +23,7 @@
 
         {% if pagination.has_next %}
         <button
-            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}"
+            hx-get="/audit/?status={{ current_status }}&page={{ pagination.page + 1 }}&page_size={{ pagination.page_size }}{{ _sort_qs }}"
             hx-target="#audit-content"
             class="text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel rounded px-3 py-1 text-sm">
             Next

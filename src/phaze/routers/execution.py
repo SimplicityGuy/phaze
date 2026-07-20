@@ -34,7 +34,9 @@ import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.execution import ExecutionLog
 from phaze.routers.agent_exec_batches import _get_promote_status_script
+from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.collision import detect_collisions
@@ -58,6 +60,27 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["execution"])
+
+# phaze-a6hm.5: ONE contract, declared at import time next to the handler it serves
+# (column_sort.py contract rule 6). ``target`` is "#audit-content" -- the SAME host div the filter
+# tabs and pager already swap into (execution/audit_log.html), so a sort click introduces no new
+# swap target and no OOB fragment. "Error" stays a plain header: it is a sparsely-populated free-text
+# column (most rows carry no error), so ordering by it is not a meaningful operator question the way
+# ordering by status, operation, or timestamp is.
+AUDIT_SORT = SortContract(
+    endpoint="/audit/",
+    target="#audit-content",
+    columns=(
+        SortableColumn(key="operation", label="Operation", expression=ExecutionLog.operation),
+        SortableColumn(key="source_path", label="Source Path", expression=ExecutionLog.source_path),
+        SortableColumn(key="destination_path", label="Destination Path", expression=ExecutionLog.destination_path),
+        SortableColumn(key="sha256_verified", label="SHA256 Verified", expression=ExecutionLog.sha256_verified),
+        SortableColumn(key="status", label="Status", expression=ExecutionLog.status),
+        SortableColumn(key="executed_at", label="Timestamp", expression=ExecutionLog.executed_at),
+    ),
+    default_key="executed_at",
+    default_order=DESCENDING,
+)
 
 
 def _build_agents_view(
@@ -387,10 +410,16 @@ async def audit_log(
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the audit log page, or an HTMX table fragment."""
-    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size)
+    # phaze-a6hm.5: resolve BEFORE the read, same as every other sortable table (column_sort.py
+    # USING IT). ``status`` rides view_state so a header click keeps the operator on their active
+    # filter tab (contract rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
+    sort_state = AUDIT_SORT.resolve(sort=sort, order=order, view_state={"status": status, "page_size": page_size})
+    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size, sort=sort_state)
     stats = await get_execution_stats(session)
 
     context = {
@@ -400,6 +429,7 @@ async def audit_log(
         "stats": stats,
         "current_status": status or "all",
         "current_page": "audit",
+        "sort": sort_state,
     }
 
     # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history

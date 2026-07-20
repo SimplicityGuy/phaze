@@ -182,6 +182,28 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/admin/agents", "order"): _WHITELIST,
     ("/admin/agents/_table", "sort"): _WHITELIST,
     ("/admin/agents/_table", "order"): _WHITELIST,
+    # phaze-a6hm.6 extends that same contract to the Recent Scans table: RECENT_SCANS_SORT in
+    # routers/pipeline_scans.py is a SortContract, so these four resolve through the identical
+    # equality-match-then-discard path as the six above -- same helper, same structural guarantee,
+    # same classification. DELETE /pipeline/scans/{batch_id} carries them for the same reason its
+    # poll does: it re-renders the whole #recent-scans section, so it must not reset the operator's
+    # chosen order (column_sort contract rule 4a).
+    ("/pipeline/scans/recent", "sort"): _WHITELIST,
+    ("/pipeline/scans/recent", "order"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "sort"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "order"): _WHITELIST,
+    # phaze-a6hm.3: same FILES_SORT contract wiring as the four pairs above (src/phaze/routers/pipeline.py).
+    ("/pipeline/files", "sort"): _WHITELIST,
+    ("/pipeline/files", "order"): _WHITELIST,
+    # phaze-a6hm.5: the audit log's own AUDIT_SORT contract (routers/execution.py). Same
+    # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
+    ("/audit/", "sort"): _WHITELIST,
+    ("/audit/", "order"): _WHITELIST,
+    # phaze-a6hm.7: the tag review list's TAGS_SORT contract -- same SortContract/SortState
+    # mechanism as the six entries above, classified the same way for the same reason.
+    ("/tags/", "sort"): _WHITELIST,
+    ("/tags/", "order"): _WHITELIST,
+
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,

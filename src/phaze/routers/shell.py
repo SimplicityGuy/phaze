@@ -34,8 +34,10 @@ from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
+from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.response_shape import wants_fragment
+from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
     get_files_page,
@@ -48,6 +50,7 @@ from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
     get_pending_proposal_rows,
+    get_proposal_workspace_page,
     get_tagwrite_review_rows,
 )
 from phaze.services.route_control import get_route_control
@@ -138,6 +141,33 @@ STAGE_PARTIALS: dict[str, str] = {
 # to when the file count is exactly 0. The guide lists each agent's already-configured `scan_roots`
 # and posts the DISCOVERY scan (POST /pipeline/scans) — zero new input surface (D-08).
 _EMPTY_STATE_PARTIAL = "pipeline/partials/empty_state.html"
+
+# phaze-a6hm.2 / .9: the id of the Propose workspace's list container -- the swap target every filter
+# tab, search keystroke and pager click aims at. Spelled ONCE, here, and injected into the template
+# context rather than hardcoded in markup, so the router's HX-Target comparison and the element that
+# must match it cannot drift apart.
+#
+# ID UNIQUENESS (argued, not assumed -- this repo has FOUR duplicate-id OOB bugs on record: gzrd,
+# op6f, 7j50, and the one 5p43 avoided):
+#
+# 1. It is NOT "proposal-list-container". That id belongs to the legacy proposals view and is
+#    contractually defined by proposals/partials/proposal_list.html as holding exactly
+#    `proposal_table + bulk_actions + pagination`. This container holds a _file_table-based workspace
+#    list instead, so reusing the id would create a SECOND, DISAGREEING definition of the same id --
+#    precisely the phaze-7j50 defect. The names are deliberately more than one character apart
+#    ("propose-workspace-list" vs "proposal-list-container") so neither reads as a typo of the other.
+# 2. It cannot collide within the propose render: the id is emitted by exactly one element, in
+#    _propose_list_host, which is included exactly once by propose_workspace.html.
+# 3. It cannot collide ACROSS stages: STAGE_PARTIALS maps one partial per stage and only the propose
+#    workspace includes that host, and #stage-workspace holds exactly one stage at a time.
+# 4. It cannot be duplicated BY ITS OWN SWAPS -- the recurring shape of the four bugs above, where a
+#    fragment re-emits its own wrapper and nests a copy inside itself. The narrow-swap branch in
+#    _render_stage returns _propose_list.html (the container's INNER content), never the host div, and
+#    the two files are kept separate for exactly that reason. The full-workspace branch is the only
+#    producer of the wrapper.
+# 5. No OOB fragment targets it: this container is only ever an hx-target, and oob_counts stays False
+#    on every stage render (Pitfall 5), so the chrome poll's OOB seeds cannot land here.
+PROPOSE_LIST_CONTAINER_ID = "propose-workspace-list"
 
 
 async def _analyze_file_count(session: AsyncSession) -> int:
@@ -231,12 +261,17 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # does (pipeline.pipeline_files): the bounded, per-page-derived, SAVEPOINT degrade-safe
         # get_files_page over the default first page (stage/bucket filters are UNSET here -- the
         # unfiltered overview; the _status_filter_bar in the partial drives filtering via
-        # /pipeline/files links). The three keys mirror the route verbatim. stage/stage_partial/
-        # oob_counts are re-asserted AFTER (defensive; the merge above only added base keys) so the
-        # files context can never shadow the shell fork discriminators.
-        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None)
+        # /pipeline/files links). The four keys mirror the route verbatim (phaze-a6hm.3 added `sort`).
+        # stage/stage_partial/oob_counts are re-asserted AFTER (defensive; the merge above only added
+        # base keys) so the files context can never shadow the shell fork discriminators.
+        # phaze-a6hm.3: this is the UNSORTED default landing, so resolve against no wire sort/order --
+        # reuses the SAME FILES_SORT contract instance pipeline.pipeline_files() resolves against
+        # (contract rule 6: one contract object per table), never a second one built here.
+        files_sort_state = FILES_SORT.resolve(sort=None, order=None, view_state={"page_size": 25, "stage": None, "bucket": None})
+        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None, sort=files_sort_state)
         context["active_stage"] = None
         context["active_bucket"] = None
+        context["sort"] = files_sort_state
         # 87-09 gap-fix: mounted as a WORKSPACE, so host the shared OOB seed-target placeholders (like
         # every other workspace via _workspace_scaffold) — else the single chrome /pipeline/stats poll's
         # OOB seeds (rail orphan badge, priority store, agent-busy gating) land nowhere on /s/files and log
@@ -300,12 +335,40 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # oob_counts stays False (Pitfall 5).
         context["move_proposals"] = await get_pending_proposal_rows(session)
     elif stage == "propose":
-        # Phase 60 (60-03, D-01): the Propose generation view reuses the SAME degrade-safe pending-proposal
-        # read as Rename/Move (it is a generation view over the shared RenameProposal source, NOT a diff).
-        # The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a per-row
-        # value); it is a plain str read off the module-level ControlSettings singleton (no DB, no enqueue).
-        # oob_counts stays False (Pitfall 5); the live sub-count would ride the single chrome poll's OOB seeds.
-        context["propose_proposals"] = await get_pending_proposal_rows(session)
+        # Phase 60 (60-03, D-01): the Propose generation view over the shared RenameProposal source (NOT a
+        # diff). The Model column renders the CONFIGURED settings.llm_model (A1 -- one model per run, not a
+        # per-row value); a plain str off the module-level ControlSettings singleton (no DB, no enqueue).
+        # oob_counts stays False (Pitfall 5); the live sub-count rides the single chrome poll's OOB seeds.
+        #
+        # phaze-a6hm.2 / .9: the row read is now the FILTERED + SEARCHED + PAGINATED
+        # get_proposal_workspace_page, not the flat pending-only get_pending_proposal_rows. Both emit the
+        # same row dict shape, so _file_table.html is unchanged by the swap. The display state comes from
+        # ListViewState.from_request -- the query string is the single source of truth for which slice is
+        # on screen, which is what makes the view bookmarkable, swap-stable and restore-correct in one
+        # move (see view_state.py). Defaults to status="pending": the workspace's job is the review queue,
+        # and landing on "all" would bury it under already-executed rows.
+        context["propose_view"] = view = ListViewState.from_request(request)
+        page = await get_proposal_workspace_page(
+            session,
+            status=view.status,
+            search=view.q,
+            page=view.page,
+            page_size=view.page_size,
+            sort=view.sort,
+            order=view.order,
+        )
+        context["propose_proposals"] = page.rows
+        context["propose_pagination"] = page.pagination
+        context["propose_stats"] = page.stats
+        context["propose_list_id"] = PROPOSE_LIST_CONTAINER_ID
+        # The pager's destination and page-size choices live in the BASE context (not a template
+        # {% with %}) because _propose_list.html has two producers -- the full workspace render and
+        # the bare fragment this router returns for a container-targeted swap. A value threaded in
+        # only by the workspace would be missing on the fragment path, and the pager would render
+        # with empty hx-get URLs: controls that look fine and navigate nowhere.
+        context["pager_url"] = "/s/propose"
+        context["pager_target"] = f"#{PROPOSE_LIST_CONTAINER_ID}"
+        context["page_size_choices"] = PAGE_SIZE_CHOICES
         context["llm_model"] = settings.llm_model
     elif stage == "tagwrite":
         # Phase 60 (60-03, REVIEW-01/REVIEW-02): the Tag-write review workspace renders the computed tag
@@ -330,7 +393,30 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["cue_cards"] = await get_cue_review_cards(session)
 
     if wants_fragment(request):
+        # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the
+        # control aimed at. A rail click targets #stage-workspace and wants the whole workspace; a filter
+        # tab, search keystroke or pager click targets the list container INSIDE that workspace and wants
+        # only the list. Re-rendering the whole workspace for the latter would re-emit the search input
+        # mid-keystroke (destroying focus and the caret) and duplicate the _workspace_poll_seeds OOB
+        # targets, so the narrow swap is not an optimisation -- it is the correct answer.
+        #
+        # Discriminating on HX-Target (not HX-Request) is the established in-tree pattern for exactly
+        # this "same URL, two swap shapes" case -- see _v7_row_target in routers/proposals.py, which
+        # picks the v7 diff-row partial the same way. It is ALSO not a response_shape rule-1 violation:
+        # wants_fragment has already made the fragment-vs-document decision above, and HX-Target only
+        # refines WHICH fragment. The raw header this contract bans is HX-Request, and it is not read
+        # here or anywhere else in this module.
+        target = request.headers.get("HX-Target", "")
+        if stage == "propose" and target == PROPOSE_LIST_CONTAINER_ID:
+            return templates.TemplateResponse(request=request, name="pipeline/partials/_propose_list.html", context=context)
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
+    # A direct navigation, a bookmark, OR A HISTORY RESTORE lands here and gets the full shell. That
+    # third case is phaze-a6hm.2's acceptance criterion and it needs NO extra code: because the filter
+    # tabs, search box and pager all push /s/propose?... URLs (never a bare fragment endpoint), a restore
+    # of a filtered URL re-enters THIS function, re-parses the same query string into the same
+    # ListViewState above, and re-renders the same slice inside full chrome. The alternative design --
+    # pushing a dedicated fragment endpoint's URL -- would have made every restore a fragment served into
+    # <body>, i.e. the exact phaze-64uy defect response_shape.py rule 2 exists to prevent.
     return templates.TemplateResponse(request=request, name="shell/shell.html", context=context)
 
 
