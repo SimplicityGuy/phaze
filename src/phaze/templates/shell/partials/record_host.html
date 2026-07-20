@@ -34,6 +34,17 @@
                 if (heading) heading.focus();
             });
         },
+        // phaze-hltu: BOTH this host and cmdk_modal.html listen @keydown.escape.window, so with
+        // both layers open a single Esc would close both. The palette is the upper layer (z-50 vs
+        // this host's z-40), so Esc belongs to it and this host must stand down. Read the palette's
+        // live visibility rather than relying on which window listener happens to run first —
+        // include order in shell.html is not a contract. x-show toggles inline display, and the
+        // palette root is position:fixed (so offsetParent is always null); getClientRects() is the
+        // check that is correct for both.
+        paletteIsOpen() {
+            const palette = document.getElementById('cmdk-dialog');
+            return !!palette && palette.getClientRects().length > 0;
+        },
         hide() {
             this.open = false;
             const target = this.opener || document.getElementById('stage-workspace');
@@ -47,7 +58,7 @@
         }
      }"
      @record:open.window="show($event.detail && $event.detail.el)"
-     @keydown.escape.window="if (open) hide()">
+     @keydown.escape.window="if (open && !paletteIsOpen()) hide()">
 
     <div x-show="open"
          style="display:none"
