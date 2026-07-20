@@ -82,13 +82,19 @@ async def test_proposals_list_returns_html(client: AsyncClient, session: AsyncSe
     """GET /proposals/ returns 200 with text/html content type.
 
     Phase 57 (SHELL-05): a plain GET /proposals/ now 302-redirects into the shell; the
-    in-page HX filter request returns the proposals content partial (filter tabs + table).
+    in-page HX request returns a proposals fragment.
+
+    phaze-7j50: that fragment is the #proposal-list-container INNER content (table + bulk bar +
+    pager), no longer the whole proposal_content.html -- every caller of this GET swaps it into the
+    container with innerHTML, so returning the chrome nested it. The chrome assertion that used to
+    live here encoded the buggy contract; see
+    test_list_fragment_is_container_inner_content_only for the replacement.
     """
     await create_test_proposal(session)
     response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert 'aria-label="Status filter tabs"' in response.text
+    assert 'id="proposals-table"' in response.text
 
 
 @pytest.mark.asyncio
@@ -335,6 +341,73 @@ async def test_bulk_response_preserves_page_and_filter(client: AsyncClient, sess
     # Still showing page 2 of the filtered pending set (11 pending remain -> 1 row on page 2).
     assert f'id="proposal-{page_two[1].id}"' in response.text
     assert f'id="proposal-{page_two[0].id}"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_fragment_is_container_inner_content_only(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7j50 (symptom 1): the pagination/sort/search GET must not nest chrome in the container.
+
+    Every pagination button, page-size button, sort header and the search box issue
+    ``hx-get="/proposals/?..."`` with ``hx-target="#proposal-list-container"`` and
+    ``hx-swap="innerHTML"``. The handler used to answer with the whole proposal_content.html --
+    filter tabs, search box, the container div itself and the pager -- so ONE page change or column
+    sort swapped a duplicate #proposal-list-container, a duplicate filter-tab bar, a duplicate
+    search box and a duplicate pager INSIDE the live container. Subsequent swaps then resolved to
+    the outer element while the stale inner copy stayed on screen.
+
+    The response is asserted to be safely innerHTML-swappable: zero occurrences of the container id
+    (not merely "at most one"), and none of the chrome that lives outside it.
+    """
+    for i in range(12):
+        await create_test_proposal(session, original_filename=f"7j50_{i:02d}.mp3", proposed_filename=f"7J50 {i:02d}.mp3")
+
+    response = await client.get("/proposals/?status=pending&page=1&page_size=10", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+
+    # (a) swapping this in cannot produce a duplicate id.
+    assert response.text.count('id="proposal-list-container"') == 0
+    # ...nor a duplicate filter-tab bar or search box.
+    assert 'aria-label="Status filter tabs"' not in response.text
+    assert 'placeholder="Search by filename..."' not in response.text
+    # It IS the container's content: table + selection toolbar + exactly one pager.
+    assert 'id="proposals-table"' in response.text
+    assert 'hx-patch="/proposals/bulk"' in response.text
+    assert response.text.count("Per page:") == 1
+    assert "Showing 1-10 of 12 proposals" in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_response_refreshes_pager(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7j50 (symptom 2): after a bulk action the pager reports POST-action totals.
+
+    The pager used to render outside #proposal-list-container, so the bulk response -- which
+    re-renders the container -- could not update it and the operator was left reading
+    "Showing 1-N of <pre-action total> proposals" plus page buttons for rows that had just left the
+    filtered set. Moving the pager inside the container makes the bulk re-render carry it.
+    """
+    created = [
+        await create_test_proposal(session, original_filename=f"7j50pager_{i:02d}.mp3", proposed_filename=f"7J50 Pager {i:02d}.mp3") for i in range(6)
+    ]
+
+    before = await client.get("/proposals/?status=pending&q=7j50pager&page=1&page_size=10", headers={"HX-Request": "true"})
+    assert "Showing 1-6 of 6 proposals" in before.text
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={
+            "action": "approve",
+            "proposal_ids": [str(created[0].id), str(created[1].id)],
+            "status": "pending",
+            "q": "7j50pager",
+            "page": "1",
+            "page_size": "10",
+        },
+    )
+    assert response.status_code == 200
+    # Two rows left the pending set: the pager in the swapped body reflects that, and only once.
+    assert "Showing 1-4 of 4 proposals" in response.text
+    assert "of 6 proposals" not in response.text
+    assert response.text.count("Per page:") == 1
 
 
 @pytest.mark.asyncio

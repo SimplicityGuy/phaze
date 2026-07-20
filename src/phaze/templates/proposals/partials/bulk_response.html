@@ -4,13 +4,13 @@
    must be the container's FULL contents -- the table plus the selection toolbar -- re-rendered
    for the same status/search/page/sort the action was issued from. approve_response.html cannot
    serve this path: its non-OOB body is gated on `{% if proposal %}` and bulk passes proposal=None,
-   which swapped emptiness into the container and wiped the list. #}
-{% if proposals %}
-    {% include "proposals/partials/proposal_table.html" %}
-    {% include "proposals/partials/bulk_actions.html" %}
-{% else %}
-    <p class="text-center text-gray-500 dark:text-gray-400 py-16">No proposals remaining in this view.</p>
-{% endif %}
+   which swapped emptiness into the container and wiped the list.
+
+   phaze-7j50: the body is now proposal_list.html -- the single definition of the container's
+   contents -- rather than a hand-rolled copy of part of it. That copy re-rendered the rows but not
+   the pager (which then lived outside the container), so after a bulk approve/reject the pager
+   still reported pre-action totals and page buttons. #}
+{% include "proposals/partials/proposal_list.html" %}
 
 {# OOB: update stats bar #}
 <div id="stats-bar" hx-swap-oob="true">
