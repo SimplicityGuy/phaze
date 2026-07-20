@@ -50,6 +50,8 @@ from phaze.services.tag_proposal import compute_proposed_tags
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.routers.column_sort import SortState
+
 
 logger = structlog.get_logger(__name__)
 
@@ -122,8 +124,7 @@ async def get_proposal_workspace_page(
     search: str,
     page: int,
     page_size: int,
-    sort: str,
-    order: str,
+    sort: SortState | None = None,
 ) -> ProposalWorkspacePage:
     """Return one page of proposals for the Propose workspace, with tab counts (degrade-safe).
 
@@ -143,9 +144,12 @@ async def get_proposal_workspace_page(
       (``PAGE_SIZE_CHOICES``) and the returned :class:`Pagination` carries the real total, so every
       row is reachable and the count the pager prints is the count the filter actually matched.
 
-    ``sort``/``order`` are accepted and forwarded but NOT interpreted here: ``get_proposals_page``
-    validates ``sort`` against its own whitelist and falls back to its default for anything
-    unrecognised. Wiring the propose workspace's column headers to these is phaze-a6hm.10.
+    ``sort`` arrives ALREADY RESOLVED (phaze-a6hm.10). It is a ``SortState`` produced by the router
+    from ``proposal_sort.PROPOSE_SORT``, not the raw wire strings this function used to take, so
+    neither this function nor ``get_proposals_page`` holds a whitelist -- there is one, in one
+    place, and an unrecognised ``sort`` was already degraded to the default before it got here.
+    Passing the strings through to be validated downstream, as this used to, is what let a second
+    validation ladder grow in the query layer.
 
     The whole read runs in one ``session.begin_nested()`` SAVEPOINT and degrades to an empty first
     page with zeroed stats on ANY DB error, so the render path can never 500 (no router
@@ -157,8 +161,7 @@ async def get_proposal_workspace_page(
         search: Free-text filename search; empty string for none.
         page: 1-based page number.
         page_size: Rows per page.
-        sort: Sort column key, validated downstream.
-        order: ``"asc"`` or ``"desc"``.
+        sort: A resolved ``SortState``, or ``None`` for the default confidence ordering.
 
     Returns:
         A :class:`ProposalWorkspacePage`. Never raises.
@@ -171,8 +174,7 @@ async def get_proposal_workspace_page(
                 search=search or None,
                 page=page,
                 page_size=page_size,
-                sort_by=sort,
-                sort_order=order,
+                sort=sort,
             )
             stats = await get_proposal_stats(session)
             rows = [

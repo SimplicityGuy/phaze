@@ -390,7 +390,7 @@ async def test_read_degrades_to_an_empty_page_instead_of_500ing(session: AsyncSe
     operator has no way to diagnose.
     """
     with patch("phaze.services.review.get_proposals_page", side_effect=OperationalError("boom", {}, Exception())):
-        page = await get_proposal_workspace_page(session, status="pending", search="", page=3, page_size=50, sort="confidence", order="asc")
+        page = await get_proposal_workspace_page(session, status="pending", search="", page=3, page_size=50)
 
     assert page.rows == []
     assert page.pagination.total == 0

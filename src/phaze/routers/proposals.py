@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.proposal_sort import LEGACY_PROPOSAL_SORT
 from phaze.routers.response_shape import wants_fragment
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
@@ -226,14 +227,21 @@ async def _proposal_list_context(
     # Default to pending filter when no status param provided (D-09)
     effective_status = status if status is not None else "pending"
 
+    # phaze-a6hm.10: this surface's `sort`/`order` now resolve against the SHARED proposal whitelist
+    # rather than a private ladder inside get_proposals_page. This template still hand-rolls its
+    # header URLs (phaze-a6hm.12 retires the family), so `url_for` is unused here -- but resolution
+    # and ORDER BY, the half that touches a column, are the shared ones. `current_sort`/`current_order`
+    # below are read off the RESOLVED state, so the carets can no longer claim a column the query did
+    # not actually order by.
+    sort_state = LEGACY_PROPOSAL_SORT.resolve(sort=sort, order=order)
+
     proposals, pagination = await get_proposals_page(
         session,
         status=effective_status,
         search=q,
         page=page,
         page_size=page_size,
-        sort_by=sort,
-        sort_order=order,
+        sort=sort_state,
     )
     stats = await get_proposal_stats(session)
     collision_ids = await get_collision_ids(session)
@@ -248,8 +256,8 @@ async def _proposal_list_context(
         "sparklines": sparklines,
         "current_status": effective_status,
         "search_query": q or "",
-        "current_sort": sort,
-        "current_order": order,
+        "current_sort": sort_state.key,
+        "current_order": sort_state.order,
         "current_page": "proposals",
     }
 

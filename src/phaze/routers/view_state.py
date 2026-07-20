@@ -23,23 +23,28 @@ WHOLE state with only the caller's explicit overrides applied, which inverts the
 control now says what it CHANGES (``view.query(page=2)``) and everything else rides along by
 construction. Forgetting to preserve a parameter is no longer expressible.
 
-ADDING A PARAMETER (the .10 hook)
----------------------------------
-``sort`` and ``order`` are already fields, already parsed, already re-emitted by
-:meth:`~ListViewState.query`, and already threaded through every control in the propose workspace
--- but this module deliberately does NOT decide what they MEAN. Sorting the propose workspace is
-phaze-a6hm.10's bead, layered on the shared sortable-column contract from phaze-a6hm.1. This module
-carries the two parameters so that .10 is an additive change to the TABLE HEADER and the QUERY, not
-a rewrite of the pager, the tabs and the search box:
+WHO SPELLS A SORT URL (settled by .10)
+--------------------------------------
+``sort`` and ``order`` are fields here, parsed here, and re-emitted here by
+:meth:`~ListViewState.query` -- but this module deliberately does NOT decide what they MEAN, and as
+of phaze-a6hm.10 it does not spell their URLs either. That split is worth stating plainly, because
+this module and ``column_sort`` each own a ``query``/``url``-shaped method and letting BOTH emit
+header URLs is how the two contracts would rot apart:
 
-* to READ the current sort, a header renders ``view.sort`` / ``view.order`` (e.g. for ``aria-sort``);
-* to SET a new sort, a header links ``view.query(sort="confidence", order="desc", page=1)`` --
-  resetting ``page`` explicitly, because page 4 of an old ordering is meaningless under a new one;
-* to APPLY it, pass ``view.sort`` / ``view.order`` into the service read.
+* ``column_sort.SortState.url_for`` owns SORT-HEADER urls. It is what ``_file_table.html`` calls,
+  for all nine workspaces that include it, so it is the only spelling that reaches a header at all.
+* :meth:`~ListViewState.query` owns every OTHER control's url -- the tabs, the search box, the pager
+  and the page-size selector -- and carries ``sort``/``order`` through them untouched, which is what
+  keeps a pager click inside the operator's chosen order.
+* :meth:`~ListViewState.sort_view_state` is the seam that joins them: it hands the sort contract the
+  state a header must preserve, derived from :meth:`~ListViewState.params` so neither side can
+  enumerate a parameter the other forgot.
 
-Nothing else changes. That last step is the only one still open: the propose read currently accepts
-the two values and lets ``get_proposals_page`` validate them, so an unrecognised ``sort`` degrades
-to that function's documented default rather than erroring.
+So a header does NOT link ``view.query(sort=..., order=..., page=1)``. Doing so would be a second
+implementation of sorting living beside the shared contract -- exactly what .10's acceptance
+forbids -- and it would bypass the whitelist that makes ``sort`` safe (``column_sort`` rule 2).
+Reading the CURRENT sort from ``view.sort`` / ``view.order`` is still correct and is how the router
+seeds ``resolve``.
 
 PARSING IS TOTAL
 ----------------
@@ -102,8 +107,9 @@ class ListViewState:
             templates can render it into an input's ``value`` without a guard.
         page: 1-based page number.
         page_size: Rows per page; always a member of :data:`PAGE_SIZE_CHOICES`.
-        sort: Sort column key. Carried and re-emitted here, INTERPRETED by the service read
-            (phaze-a6hm.10 -- see the module docstring's hook note).
+        sort: Sort column key. Carried and re-emitted here, RESOLVED against a
+            ``column_sort.SortContract`` whitelist by the router (phaze-a6hm.10). Untrusted until
+            that resolution: it arrives from a hand-editable URL and is never itself a column name.
         order: ``"asc"`` or ``"desc"``.
     """
 
@@ -170,6 +176,45 @@ class ListViewState:
         """Return a copy with ``overrides`` applied; the receiver is unchanged."""
         return replace(self, **overrides)
 
+    def params(self, **overrides: Any) -> dict[str, Any]:
+        """Return the WHOLE state as a plain mapping of wire name -> value.
+
+        THE single enumeration of this type's parameters. :meth:`query` encodes it, and
+        :meth:`sort_view_state` narrows it; neither re-lists the fields. That indirection is the
+        whole anti-drift property of this module (see the module docstring): adding a seventh
+        parameter is one edit here, not one edit per consumer.
+        """
+        state = self.with_(**overrides) if overrides else self
+        return {
+            "status": state.status,
+            "q": state.q,
+            "page": state.page,
+            "page_size": state.page_size,
+            "sort": state.sort,
+            "order": state.order,
+        }
+
+    def sort_view_state(self) -> dict[str, Any]:
+        """Return the parameters a SORT HEADER must carry, for ``SortContract.resolve(view_state=...)``.
+
+        THE seam between this module and the sortable-column contract (phaze-a6hm.1 / .10), and the
+        reason the propose workspace does not spell its URL twice. ``column_sort.SortState.url_for``
+        owns header URLs -- it is what ``_file_table.html`` calls, so re-spelling those URLs here
+        would mean a bespoke second sorting path, which phaze-a6hm.10 forbids. This method instead
+        feeds that owner the state it must preserve, derived from :meth:`params` so the two can
+        never enumerate different parameter sets.
+
+        Three keys are withheld, each for a reason the contract states:
+
+        * ``page`` -- ``resolve`` documents that a re-sort returns to page 1, so carrying an offset
+          across a change of order would show an arbitrary window (column_sort rule 4);
+        * ``sort`` / ``order`` -- ``url_for`` appends the NEW key and the TOGGLED direction itself,
+          so including the current ones would emit each parameter twice and Starlette would read
+          the stale first occurrence (the same duplicate-parameter trap ``query(omit=...)`` exists
+          for).
+        """
+        return {key: value for key, value in self.params().items() if key not in {"page", "sort", "order"}}
+
     def query(self, *, omit: tuple[str, ...] = (), **overrides: Any) -> str:
         """Return the FULL state as a URL-encoded query string, with ``overrides`` applied.
 
@@ -194,15 +239,7 @@ class ListViewState:
         Returns:
             An encoded query string WITHOUT a leading ``?``.
         """
-        state = self.with_(**overrides) if overrides else self
-        params = {
-            "status": state.status,
-            "q": state.q,
-            "page": state.page,
-            "page_size": state.page_size,
-            "sort": state.sort,
-            "order": state.order,
-        }
+        params = self.params(**overrides)
         return urlencode({key: value for key, value in params.items() if key not in omit})
 
     def url(self, path: str, *, omit: tuple[str, ...] = (), **overrides: Any) -> str:

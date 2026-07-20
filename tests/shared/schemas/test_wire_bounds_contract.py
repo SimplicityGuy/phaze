@@ -135,9 +135,20 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # from instead of resetting to page 1 of the default filter. They are the identical params the
     # ``/proposals/`` entries above govern, and they reach the database through the identical path:
     # ``bulk_action`` hands them to ``_proposal_list_context``, the helper it SHARES with
-    # ``list_proposals``, which passes ``sort``/``order`` to ``get_proposals_page`` where
-    # ``proposal_queries.py:148`` rejects anything outside ``valid_sort_columns`` before a column is
-    # touched. Same param, same helper, same whitelist -> same classification.
+    # ``list_proposals``. phaze-a6hm.10 moved WHERE that whitelist lives without changing the
+    # classification: ``_proposal_list_context`` now resolves ``sort``/``order`` through
+    # ``proposal_sort.LEGACY_PROPOSAL_SORT`` (the shared column_sort contract) instead of the
+    # private ``valid_sort_columns`` set ``get_proposals_page`` used to hold, which that bead
+    # deleted. The guarantee is strictly stronger -- resolution is a lookup in a mapping to
+    # already-constructed column objects, so an unwhitelisted value has no column to reach at all
+    # (column_sort rule 2) -- so these stay _WHITELIST. Same param, same helper, same whitelist.
+    #
+    # The v7 ``/s/propose`` workspace sorts the same table but has NO entry here, deliberately: it
+    # reads its display state off ``request.query_params`` via ``ListViewState.from_request`` rather
+    # than declaring FastAPI ``Query`` params, so it produces no ``_param_cases()`` rows and an entry
+    # for it would be rejected as stale by ``test_registries_have_no_stale_entries``. Its bound comes
+    # from the same ``PROPOSE_SORT`` whitelist, asserted directly in
+    # tests/shared/core/test_propose_workspace_sorting.py.
     ("/proposals/bulk", "status"): _WHITELIST,
     ("/proposals/bulk", "q"): _TEXT,
     ("/proposals/bulk", "sort"): _WHITELIST,
@@ -203,7 +214,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # mechanism as the six entries above, classified the same way for the same reason.
     ("/tags/", "sort"): _WHITELIST,
     ("/tags/", "order"): _WHITELIST,
-
     # phaze-a6hm.8: same EXEC_AGENTS_SORT contract, adapted for a table with no backing SQL SELECT
     # (execution.py's per-agent rollup is a Redis hash projection) -- the whitelist->accessor mapping
     # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.

@@ -9,6 +9,7 @@ import pytest
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.services.proposal_queries import (
     Pagination,
     ProposalStats,
@@ -197,7 +198,7 @@ async def test_get_proposals_page_sort_by_original_filename(session: AsyncSessio
     await _create_proposal(session, original_filename="zzz.mp3", proposed_filename="Z.mp3")
     await _create_proposal(session, original_filename="aaa.mp3", proposed_filename="A.mp3")
 
-    proposals, _ = await get_proposals_page(session, status="all", sort_by="original_filename", sort_order="asc")
+    proposals, _ = await get_proposals_page(session, status="all", sort=PROPOSE_SORT.resolve(sort="original_filename", order="asc"))
     assert len(proposals) == 2
     assert proposals[0].file.original_filename == "aaa.mp3"
 
@@ -207,7 +208,7 @@ async def test_get_proposals_page_sort_by_proposed_filename(session: AsyncSessio
     await _create_proposal(session, original_filename="x.mp3", proposed_filename="Zebra.mp3")
     await _create_proposal(session, original_filename="y.mp3", proposed_filename="Alpha.mp3")
 
-    proposals, _ = await get_proposals_page(session, status="all", sort_by="proposed_filename", sort_order="asc")
+    proposals, _ = await get_proposals_page(session, status="all", sort=PROPOSE_SORT.resolve(sort="proposed_filename", order="asc"))
     assert len(proposals) == 2
     assert proposals[0].proposed_filename == "Alpha.mp3"
 
@@ -217,7 +218,7 @@ async def test_get_proposals_page_sort_desc(session: AsyncSession) -> None:
     await _create_proposal(session, original_filename="low.mp3", confidence=0.3)
     await _create_proposal(session, original_filename="high.mp3", confidence=0.9)
 
-    proposals, _ = await get_proposals_page(session, status="all", sort_by="confidence", sort_order="desc")
+    proposals, _ = await get_proposals_page(session, status="all", sort=PROPOSE_SORT.resolve(sort="confidence", order="desc"))
     assert proposals[0].confidence > proposals[1].confidence
 
 
@@ -225,7 +226,7 @@ async def test_get_proposals_page_sort_desc(session: AsyncSession) -> None:
 async def test_get_proposals_page_invalid_sort_falls_back(session: AsyncSession) -> None:
     await _create_proposal(session, original_filename="a.mp3")
 
-    proposals, _ = await get_proposals_page(session, status="all", sort_by="nonexistent")
+    proposals, _ = await get_proposals_page(session, status="all", sort=PROPOSE_SORT.resolve(sort="nonexistent"))
     assert len(proposals) == 1  # falls back to confidence sort without error
 
 

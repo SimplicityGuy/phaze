@@ -36,6 +36,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
 from phaze.services.pipeline import (
@@ -348,14 +349,26 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # move (see view_state.py). Defaults to status="pending": the workspace's job is the review queue,
         # and landing on "all" would bury it under already-executed rows.
         context["propose_view"] = view = ListViewState.from_request(request)
+        # phaze-a6hm.10: the ONE resolution of this table's sort. `view.sort`/`view.order` are still
+        # untrusted here -- ListViewState is a total PARSER, not a validator, so it will happily hand
+        # back `sort="; DROP"` from a hand-edited URL. `resolve` is the gate: it matches by equality
+        # against the enumerated keys and degrades anything else to `confidence`, so the string
+        # cannot reach a column (column_sort rule 2) and does not 422 a render-path GET (rule 3).
+        #
+        # `sort_view_state()` is what makes the two contracts compose instead of compete. Header URLs
+        # are spelled by SortState.url_for -- that is what _file_table.html calls, for all nine
+        # workspaces that include it -- and this feeds it the status/search/page_size to preserve,
+        # derived from ListViewState.params so the two can never enumerate different parameters. The
+        # pager, tabs and search box keep spelling their own URLs with view.query(), which already
+        # carries sort/order through, so a page change stays inside the operator's chosen order.
+        context["sort"] = sort_state = PROPOSE_SORT.resolve(sort=view.sort, order=view.order, view_state=view.sort_view_state())
         page = await get_proposal_workspace_page(
             session,
             status=view.status,
             search=view.q,
             page=view.page,
             page_size=view.page_size,
-            sort=view.sort,
-            order=view.order,
+            sort=sort_state,
         )
         context["propose_proposals"] = page.rows
         context["propose_pagination"] = page.pagination
