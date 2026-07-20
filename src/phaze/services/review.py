@@ -8,6 +8,9 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
 :func:`phaze.services.pipeline.get_analyze_working_set`). No enqueue, no commit, no schema change.
 
 * :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02).
+* :func:`get_proposal_workspace_page` -- the FILTERED, SEARCHED, PAGINATED sibling of the above,
+  plus the filter-tab counts, for the Propose workspace (phaze-a6hm.2 / .9). Same row dict shape,
+  so both feed ``_file_table.html`` interchangeably.
 * :func:`get_tagwrite_review_rows`  -- applied files (``applied_clause()``, READ-05/D-01) with a
   pending, >=1-change tag comparison (Tag-write, Plan 60-03; Pitfall 3 -- only applied files without
   a COMPLETED ``TagWriteLog``).
@@ -20,7 +23,7 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import selectinload
@@ -39,7 +42,7 @@ from phaze.routers.tags import (
 )
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
-from phaze.services.proposal_queries import get_proposals_page
+from phaze.services.proposal_queries import Pagination, ProposalStats, get_proposal_stats, get_proposals_page
 from phaze.services.stage_status import applied_clause
 from phaze.services.tag_proposal import compute_proposed_tags
 
@@ -94,6 +97,103 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
     except Exception:
         logger.warning("pending_proposal_rows_degraded", exc_info=True)
         return []
+
+
+class ProposalWorkspacePage(NamedTuple):
+    """One filtered, searched, paginated page of the Propose workspace, plus the tab counts.
+
+    ``stats`` is bundled with the rows rather than fetched separately by the router because the
+    filter tabs and the pager are two halves of ONE answer to "what am I looking at": the tabs
+    report the corpus-wide counts, the pager reports the filtered total. Fetching them through one
+    degrade-safe seam means they can never disagree about whether the read succeeded -- a partial
+    failure that left real tab counts above an empty table would read as "23 pending" over "no
+    proposals", which is a lie the operator has no way to diagnose.
+    """
+
+    rows: list[dict[str, Any]]
+    pagination: Pagination
+    stats: ProposalStats
+
+
+async def get_proposal_workspace_page(
+    session: AsyncSession,
+    *,
+    status: str,
+    search: str,
+    page: int,
+    page_size: int,
+    sort: str,
+    order: str,
+) -> ProposalWorkspacePage:
+    """Return one page of proposals for the Propose workspace, with tab counts (degrade-safe).
+
+    The paginated sibling of :func:`get_pending_proposal_rows`, and the read behind
+    ``/s/propose``'s filter tabs, search box and pager (phaze-a6hm.2 / .9). It emits the SAME row
+    dict shape that helper does -- ``id`` · ``filename`` · ``original_path`` · ``proposed_filename``
+    · ``proposed_path`` · ``confidence`` -- so ``_file_table.html`` and the workspaces built on it
+    are unaffected by which of the two produced the rows.
+
+    Three differences from ``get_pending_proposal_rows``, all of them the point of this function:
+
+    * the status filter is the OPERATOR's, not hardcoded ``"pending"``;
+    * ``search`` is threaded into the query rather than dropped;
+    * the page is a real page. ``get_pending_proposal_rows`` passes ``page_size=200``, which is a
+      cap wearing a page's clothing: proposal 201 is not on a later page, it is simply absent, and
+      nothing in the UI says so. Here ``page_size`` is bounded by ``ListViewState``
+      (``PAGE_SIZE_CHOICES``) and the returned :class:`Pagination` carries the real total, so every
+      row is reachable and the count the pager prints is the count the filter actually matched.
+
+    ``sort``/``order`` are accepted and forwarded but NOT interpreted here: ``get_proposals_page``
+    validates ``sort`` against its own whitelist and falls back to its default for anything
+    unrecognised. Wiring the propose workspace's column headers to these is phaze-a6hm.10.
+
+    The whole read runs in one ``session.begin_nested()`` SAVEPOINT and degrades to an empty first
+    page with zeroed stats on ANY DB error, so the render path can never 500 (no router
+    try/except needed) -- identical in contract to its siblings above.
+
+    Args:
+        session: Active async session.
+        status: Status filter; ``"all"`` for unfiltered.
+        search: Free-text filename search; empty string for none.
+        page: 1-based page number.
+        page_size: Rows per page.
+        sort: Sort column key, validated downstream.
+        order: ``"asc"`` or ``"desc"``.
+
+    Returns:
+        A :class:`ProposalWorkspacePage`. Never raises.
+    """
+    try:
+        async with session.begin_nested():
+            proposals, pagination = await get_proposals_page(
+                session,
+                status=status,
+                search=search or None,
+                page=page,
+                page_size=page_size,
+                sort_by=sort,
+                sort_order=order,
+            )
+            stats = await get_proposal_stats(session)
+            rows = [
+                {
+                    "id": proposal.id,
+                    "filename": proposal.file.original_filename,
+                    "original_path": proposal.file.current_path,
+                    "proposed_filename": proposal.proposed_filename,
+                    "proposed_path": proposal.proposed_path,
+                    "confidence": proposal.confidence,
+                }
+                for proposal in proposals
+            ]
+            return ProposalWorkspacePage(rows=rows, pagination=pagination, stats=stats)
+    except Exception:
+        logger.warning("proposal_workspace_page_degraded", exc_info=True)
+        return ProposalWorkspacePage(
+            rows=[],
+            pagination=Pagination(page=1, page_size=page_size, total=0),
+            stats=ProposalStats(total=0, pending=0, approved=0, rejected=0, avg_confidence=None),
+        )
 
 
 async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
