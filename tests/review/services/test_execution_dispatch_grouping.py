@@ -25,7 +25,7 @@ agents use distinct kebab-case slugs.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
@@ -78,11 +78,18 @@ async def _seed_proposal(
     path_suffix: str,
     status: str = ProposalStatus.APPROVED,
     sha256: str | None = None,
+    proposal_id: uuid.UUID | None = None,
+    created_at: datetime | None = None,
 ) -> RenameProposal:
     """Insert a (FileRecord, RenameProposal) pair owned by ``agent_id``.
 
     ``path_suffix`` must be unique within a test to avoid the
     ``uq_files_agent_id_original_path`` partial-UQ collision.
+
+    ``proposal_id`` / ``created_at`` are injectable so a test can force the
+    exact primary key and timestamp instead of relying on ``uuid4()`` and the
+    ``server_default`` clock -- the tiebreaker regression test needs an
+    IDENTICAL ``created_at`` across rows, set explicitly rather than hoped for.
     """
     file_id = uuid.uuid4()
     fr = FileRecord(
@@ -99,13 +106,15 @@ async def _seed_proposal(
     await session.flush()
 
     prop = RenameProposal(
-        id=uuid.uuid4(),
+        id=proposal_id if proposal_id is not None else uuid.uuid4(),
         file_id=file_id,
         proposed_filename=f"{path_suffix}-renamed.mp3",
         proposed_path=f"organized/{agent_id}",
         status=status,
         confidence=0.9,
     )
+    if created_at is not None:
+        prop.created_at = created_at
     session.add(prop)
     await session.commit()
     await session.refresh(prop)
@@ -200,25 +209,70 @@ async def test_sha256_hash_populated_from_file_record(session: AsyncSession) -> 
     assert groups["agent-sha"][0].sha256_hash == known_hash
 
 
-async def test_deterministic_ordering_within_agent_group(session: AsyncSession) -> None:
-    """Per-agent list ordering matches RenameProposal.created_at ASC.
+async def test_tiebreaker_orders_tied_created_at_by_proposal_id(session: AsyncSession) -> None:
+    """Rows with an IDENTICAL created_at come back ordered by RenameProposal.id ASC.
 
-    Seeding sequentially with awaited commits guarantees monotonic created_at,
-    so insertion order is the expected ordering.
+    This proves the ORDER BY's stable ``RenameProposal.id`` tiebreaker, NOT the
+    wall clock. Every row is seeded with the SAME explicit ``created_at`` so
+    ``created_at`` alone leaves the block tied; only the primary-key suffix makes
+    the order total. Insertion order is deliberately scrambled relative to id
+    order so a query that fell back to heap/insertion order would produce a
+    DIFFERENT sequence and fail.
+
+    Regression guard for phaze-lrwz: reverting the ``, RenameProposal.id`` suffix
+    on execution_dispatch.get_approved_proposals_grouped_by_agent makes the
+    returned order depend on Postgres heap order and this assertion becomes
+    nondeterministic (verified: it fails without the tiebreaker).
+
+    Postgres orders ``uuid`` by byte comparison, which matches Python's
+    ``uuid.UUID`` ordering (both compare the 128-bit big-endian value), so the
+    expected order is simply the seeded ids sorted ascending.
     """
-    await _seed_agent(session, agent_id="agent-order")
-    expected_filenames = []
-    for i in range(5):
-        prop = await _seed_proposal(session, agent_id="agent-order", path_suffix=f"order-{i:02d}")
-        expected_filenames.append(prop.proposed_filename)
+    await _seed_agent(session, agent_id="agent-tie")
+
+    # One shared timestamp -> created_at ties for every row.
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)
+    # Fixed, distinct ids. Insertion order (below) is intentionally NOT id order.
+    proposal_ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{n:02d}") for n in (30, 10, 50, 20, 40)]
+
+    for i, pid in enumerate(proposal_ids):
+        await _seed_proposal(
+            session,
+            agent_id="agent-tie",
+            path_suffix=f"tie-{i:02d}",
+            proposal_id=pid,
+            created_at=tied_at,
+        )
 
     groups = await get_approved_proposals_grouped_by_agent(session)
-    actual = [
-        # the original_path encodes the path_suffix; round-trip via proposed_filename
-        # is also fine. We assert ordering by the seeded path_suffix index.
-        item.original_path.rsplit("/", 1)[-1]
-        for item in groups["agent-order"]
-    ]
+    actual_ids = [item.proposal_id for item in groups["agent-tie"]]
+
+    # Total order comes from the id tiebreaker: ascending id, regardless of
+    # insertion order or heap layout.
+    assert actual_ids == sorted(proposal_ids)
+
+
+async def test_ordering_within_agent_group_by_created_at_then_id(session: AsyncSession) -> None:
+    """Distinct created_at values dominate; the id tiebreaker only breaks exact ties.
+
+    Seeds explicit, strictly-increasing ``created_at`` values (not clock-derived)
+    with ids in the OPPOSITE order, and asserts the result follows created_at ASC
+    -- confirming the primary sort key still wins when timestamps differ.
+    """
+    await _seed_agent(session, agent_id="agent-order")
+    base = datetime(2026, 7, 20, 9, 0, 0)
+    # created_at increases with i; id decreases with i -> the two keys disagree.
+    for i in range(5):
+        await _seed_proposal(
+            session,
+            agent_id="agent-order",
+            path_suffix=f"order-{i:02d}",
+            proposal_id=uuid.UUID(f"00000000-0000-0000-0000-0000000000{(90 - i * 10):02d}"),
+            created_at=base + timedelta(seconds=i),
+        )
+
+    groups = await get_approved_proposals_grouped_by_agent(session)
+    actual = [item.original_path.rsplit("/", 1)[-1] for item in groups["agent-order"]]
     assert actual == [f"order-{i:02d}.mp3" for i in range(5)]
 
 
