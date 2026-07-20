@@ -4,13 +4,13 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 import hashlib
-import os
 import secrets
 import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -24,25 +24,17 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from tests.db_guard import coerce_async_dsn, database_name, resolve_test_dsn
 
 
-def _coerce_async_dsn(dsn: str) -> str:
-    """Coerce a libpq / psycopg2 Postgres DSN to the asyncpg driver the async fixtures need.
+# Re-exported under its historical private name: `tests/shared/test_conftest_dsn_coercion.py`
+# imports `_coerce_async_dsn` from here. The implementation now lives in `tests.db_guard`, the
+# single place that resolves and validates the test target.
+_coerce_async_dsn = coerce_async_dsn
 
-    ``async_engine`` feeds ``TEST_DATABASE_URL`` straight to ``create_async_engine``. A bare
-    ``postgresql://`` (or explicit ``postgresql+psycopg2://``) URL resolves SQLAlchemy's default
-    ``psycopg2`` sync dialect, which is not installed (the async stack uses asyncpg) — every
-    DB-fixture test then dies at setup with a cryptic ``No module named 'psycopg2'``. Operators
-    naturally export the libpq form (it matches ``PHAZE_QUEUE_URL``), so normalize it here rather
-    than leaking the footgun into each fixture.
-    """
-    for sync_prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://"):
-        if dsn.startswith(sync_prefix):
-            return "postgresql+asyncpg://" + dsn[len(sync_prefix) :]
-    return dsn
-
-
-TEST_DATABASE_URL = _coerce_async_dsn(os.environ.get("TEST_DATABASE_URL", "postgresql+asyncpg://phaze:phaze@localhost:5432/phaze_test"))
+# Defaults to the 5433 ephemeral harness, NOT 5432 -- the justfile reserves 5432 for the
+# developer's own database, and these fixtures create and drop schema. See `tests/db_guard.py`.
+TEST_DATABASE_URL = resolve_test_dsn()
 
 DB_FIXTURES = {"async_engine", "_db_connection", "session", "verify", "client", "authenticated_client", "seed_test_agent"}
 
@@ -142,6 +134,17 @@ def _route_structlog_through_stdlib() -> "AsyncGenerator[None]":  # type: ignore
     root = logging.getLogger()
     for handler in root.handlers[:]:
         root.removeHandler(handler)
+
+
+def pytest_report_header() -> str:
+    """State the resolved test database in the pytest header, on every run.
+
+    Silent misconfiguration was only possible because nothing in the default output said which
+    database the suite had targeted. Printing it unconditionally means a wrong target is visible
+    in any captured log, including a passing one.
+    """
+    url = make_url(TEST_DATABASE_URL)
+    return f"phaze test database: {database_name(TEST_DATABASE_URL)!r} on {url.host}:{url.port} (from TEST_DATABASE_URL)"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
