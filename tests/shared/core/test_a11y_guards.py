@@ -281,3 +281,120 @@ def test_rail_root_carries_alpine_x_data() -> None:
         "the rail <aside> must carry a bare x-data so Alpine binds the rail subtree — without "
         "it every store-bound numeral/badge in the rail is inert and renders 0 forever"
     )
+
+
+# --- phaze-am7c: detail-pane own-tick must not steal focus every 5s ------------------
+
+# The wave-2 bodies swapped into #detail-pane carry a bounded self-refresh own-tick
+# (`hx-trigger="every 5s" hx-target="#detail-pane" hx-swap="innerHTML"` —
+# _lane_detail.html and _agent_activity.html both do it). htmx fires htmx:afterSwap on the
+# swap TARGET for every swap into it, including the poll, so the shell's
+# `hx-on::after-swap -> Alpine.$data(this).onLoaded()` runs every 5 seconds for as long as
+# the pane is open. onLoaded() parks focus on the pane <h2 tabindex="-1"> — correct exactly
+# ONCE, on the closed->open transition, and an a11y defect on every tick after that: the
+# operator cannot tab to ✕ Close, read the recent-completions list, or type in the ⌘K
+# palette / status filter without focus being yanked back every 5s.
+#
+# The invariant below is behavioural, not textual: the focus call must still EXIST (initial
+# open must keep moving focus), but it must be reachable only through a conditional whose
+# predicate reads the pane's open state as it was BEFORE this swap flipped it true. Any fix
+# shape satisfying that passes — `if (!this.open) { focus } ... this.open = true`, or a
+# `const wasOpen = this.open` capture consulted after the flip.
+
+
+def _detail_pane_component() -> str:
+    """Return the shell <section x-data> expression from _detail_pane.html."""
+    html = _strip_comments(_DETAIL_PANE.read_text())
+    m = re.search(r'x-data="([^"]*)"', html, re.DOTALL)
+    assert m, "expected the shell <section x-data> component"
+    return m.group(1)
+
+
+def _method_body(component: str, name: str) -> str:
+    """Return the brace-delimited body of the Alpine method ``name``."""
+    start = component.find(f"{name}()")
+    assert start != -1, f"expected an Alpine method {name}() on the detail-pane shell"
+    open_brace = component.find("{", start)
+    assert open_brace != -1, f"{name}() has no body"
+    depth = 0
+    for i in range(open_brace, len(component)):
+        if component[i] == "{":
+            depth += 1
+        elif component[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return component[open_brace + 1 : i]
+    raise AssertionError(f"unbalanced braces in {name}()")
+
+
+def _enclosing_block_predicate(body: str, index: int) -> str | None:
+    """Return the ``if (...)`` predicate of the innermost block enclosing ``body[index]``.
+
+    ``None`` means the statement sits at the method's top level (unconditional), or its
+    innermost enclosing block is not an ``if``.
+    """
+    stack: list[int] = []
+    for i in range(index):
+        if body[i] == "{":
+            stack.append(i)
+        elif body[i] == "}" and stack:
+            stack.pop()
+    if not stack:
+        return None
+    head = body[: stack[-1]].rstrip()
+    if not head.endswith(")"):
+        return None
+    depth = 0
+    for i in range(len(head) - 1, -1, -1):
+        if head[i] == ")":
+            depth += 1
+        elif head[i] == "(":
+            depth -= 1
+            if depth == 0:
+                return head[i + 1 : len(head) - 1] if re.search(r"\bif\s*$", head[:i]) else None
+    return None
+
+
+def test_detail_pane_own_tick_does_not_resteal_focus() -> None:
+    """onLoaded() must move focus to the pane heading ONLY on the closed->open transition.
+
+    The 5s own-tick re-swaps #detail-pane and re-fires after-swap, so an unconditional
+    focus() in onLoaded() rips focus off whatever the operator is using, every 5 seconds,
+    on both the lane pane and the /admin/agents pane (same shell).
+    """
+    body = _method_body(_detail_pane_component(), "onLoaded")
+
+    focus = re.search(r"[^;{}]*getElementById\('detail-pane-heading'\)\s*\??\.focus\(\)", body)
+    assert focus, "onLoaded() must still focus #detail-pane-heading — parking focus on the pane heading on OPEN is the intended a11y behaviour"
+
+    # The focus call is wrapped in a $nextTick callback; anchor on the statement that
+    # SCHEDULES it, so the arrow function's own braces are not mistaken for a guard.
+    stmt = body.rfind("this.$nextTick", 0, focus.start())
+    assert stmt != -1, "expected the heading focus to be scheduled via $nextTick"
+
+    predicate = _enclosing_block_predicate(body, stmt)
+    assert predicate is not None, (
+        "the heading focus in onLoaded() is UNCONDITIONAL — htmx fires afterSwap on "
+        "#detail-pane for the 5s own-tick too, so focus is yanked back to the heading every "
+        "tick. Guard it on the closed->open transition."
+    )
+
+    flip = body.find("open = true")
+    assert flip != -1, "expected onLoaded() to flip the pane open"
+
+    if re.search(r"\bopen\b", predicate):
+        # Direct form: the guard reads `open` itself, so it must run BEFORE the flip.
+        assert stmt < flip, (
+            f"the focus guard {predicate!r} reads `open` AFTER onLoaded() already set it true, so it "
+            "is true on the initial open too and the guard can never distinguish a poll tick"
+        )
+        return
+
+    # Capture form: a local bound to the pre-flip `open` value, consulted by the predicate.
+    for m in re.finditer(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:this\.)?open\b", body):
+        if m.start() < flip and re.search(rf"\b{re.escape(m.group(1))}\b", predicate):
+            return
+    raise AssertionError(
+        f"the focus guard {predicate!r} does not read the pane's PRE-swap open state, so it cannot "
+        "tell the initial card-click open from a 5s own-tick refresh"
+    )

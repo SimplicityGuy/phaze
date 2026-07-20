@@ -57,10 +57,19 @@
                      this.wipe();
                      return;
                  }
+                 // The swapped body carries the 5s own-tick, which re-swaps THIS target — htmx
+                 // fires afterSwap on the swap target for EVERY swap, so onLoaded() runs on each
+                 // refresh, not just the card-click open. Capture the pre-swap open state so the
+                 // focus park below stays a closed->open transition effect; re-focusing on every
+                 // tick rips focus off the ✕ Close, the completions list, or the ⌘K palette every
+                 // 5s and locks keyboard/screen-reader operators out of the whole pane.
+                 const wasOpen = this.open;
                  this.selectedId = this.triggerPrefix + id;
                  this.open = true;
                  this.refreshError = false;
-                 this.$nextTick(() => { document.getElementById('detail-pane-heading')?.focus(); });
+                 if (!wasOpen) {
+                     this.$nextTick(() => { document.getElementById('detail-pane-heading')?.focus(); });
+                 }
              },
              wipe() {
                  // Full dismiss: flipping `open` alone only hides the ✕ — the swapped wave-2 body is
