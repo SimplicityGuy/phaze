@@ -142,8 +142,14 @@
     {# D-03 own-tick "Last refreshed Ns ago" countdown (agents_table.html:82-86 idiom). This only advances
        the visible countdown; the 5s server poll is the self-removing tick below. #}
     <p class="text-xs text-gray-500 dark:text-gray-400"
-       x-data="{ refreshedAt: new Date('{{ refreshed_at_iso }}'), now: new Date(), get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); } }"
-       x-init="setInterval(() => now = new Date(), 1000)">
+       x-data="{
+           refreshedAt: new Date('{{ refreshed_at_iso }}'),
+           now: new Date(),
+           ticker: null,
+           get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); },
+           init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
+           destroy() { clearInterval(this.ticker); }
+       }">
         Last refreshed <span x-text="secondsAgo + 's ago'"></span>
     </p>
 
