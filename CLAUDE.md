@@ -25,6 +25,26 @@ uv run mypy .              # Type check
 uv run pre-commit run --all-files # Run all pre-commit hooks
 ```
 
+### Test databases
+
+The test suite resolves its target from `TEST_DATABASE_URL`, validated by a single guard in
+`tests/db_guard.py`:
+
+- **The database name must contain a `test` segment** — `phaze_test`, `phaze_test_<bead>`, and
+  `phaze_<bead>_test` are all accepted; `phaze` and `phaze_prod` are not. A name that fails this
+  check **errors the run**. It does not skip. A skip would silently drop ~18 integration tests
+  while pytest still reported green, which is exactly the defect this guard replaced.
+
+Every run prints its resolved target in the pytest header
+(`phaze test database: 'phaze_test' on localhost:5433`) — check it before trusting a green run.
+
+**Never share a test database between concurrent agents.** Each worktree gets its own pair:
+
+```bash
+just test-db-for <name>    # creates phaze_<name>_test + phaze_<name>_migrations_test
+                           # and prints the exports to use
+```
+
 ## Code Quality
 
 ### Ruff Configuration

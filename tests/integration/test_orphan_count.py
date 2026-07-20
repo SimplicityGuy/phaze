@@ -26,14 +26,12 @@ Real-PG ``db_session`` fixture + ``*_test`` guard + seed helpers mirror
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import os
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -47,6 +45,7 @@ from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, get_live_job_keys, 
 from phaze.services.scheduling_ledger import get_ledger_rows
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import _build_done_sets, _in_flight_cloud_job_ids, _ledger_fids, _natural_id, is_domain_completed
+from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -57,18 +56,9 @@ pytestmark = pytest.mark.integration
 
 
 # DSN derivation + destructive-DB guard, identical to test_stage_progress_buckets.py.
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
-
-_TARGET_DB = make_url(SA_DSN).database or ""
-if not _TARGET_DB.endswith("_test"):
-    pytest.skip(
-        f"Refusing to run orphan-count integration tests against non-test database {_TARGET_DB!r}; "
-        "set TEST_DATABASE_URL to a *_test DSN (e.g. run `just test-db`).",
-        allow_module_level=True,
-    )
+# DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
+BROKER_DSN, SA_DSN = integration_dsns()
+_TARGET_DB = require_test_database(SA_DSN, context="orphan-count integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
 
