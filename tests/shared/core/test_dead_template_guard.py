@@ -60,10 +60,10 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # justification -- do NOT relax the closure logic below to force green.
 _ALLOWLIST: frozenset[str] = frozenset(
     {
-        # phaze-7j50 surfaced these three as orphans, and the orphaning is REAL -- this is the
+        # phaze-7j50 surfaced this as an orphan, and the orphaning is REAL -- this is the
         # allowlist's primary documented case (unreachable legacy templates awaiting deletion),
-        # not the secondary "reachable but statically un-discoverable" one. Do not read these
-        # entries as a reachability waiver.
+        # not the secondary "reachable but statically un-discoverable" one. Do not read this
+        # entry as a reachability waiver.
         #
         # The legacy proposals view has NO live entry point in the v7 shell: the rail never links
         # /proposals/, "propose" resolves to pipeline/partials/propose_workspace.html (a different
@@ -76,11 +76,16 @@ _ALLOWLIST: frozenset[str] = frozenset(
         # content (its callers all target #proposal-list-container), which left the chrome with no
         # consumer and made the pre-existing deadness visible.
         #
-        # Retiring them is a product decision about the legacy proposals UI, deliberately NOT taken
-        # inside a bug sweep -- tracked in phaze-fann. Delete all three together when that lands.
+        # Retiring it is a product decision about the legacy proposals UI, deliberately NOT taken
+        # inside a bug sweep -- tracked in phaze-fann / phaze-a6hm.12.
+        #
+        # phaze-a6hm.2 REMOVED two former entries from this list -- filter_tabs.html and
+        # search_box.html. They are no longer orphaned: the propose workspace now includes both
+        # (parameterised for its own URLs and swap target), which is the ADOPTION phaze-a6hm.12
+        # expects rather than the deletion it will apply to the rest of the legacy family. They are
+        # off the allowlist because they are genuinely reachable now, so the guard proves it; had
+        # they been left here the guard would simply have stopped checking them.
         "proposals/partials/proposal_content.html",
-        "proposals/partials/filter_tabs.html",  # included only by proposal_content.html
-        "proposals/partials/search_box.html",  # included only by proposal_content.html
     }
 )
 
