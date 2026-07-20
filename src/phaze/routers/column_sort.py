@@ -87,6 +87,20 @@ THE CONTRACT
    :meth:`SortState.query_state` exists for that direction -- pagers append it to their own URLs so
    Prev/Next stay inside the operator's chosen order.
 
+4a. A SELF-REFRESHING TABLE'S OWN POLL CARRIES THE SORT TOO.
+   The same rule pointed at ``hx-trigger="every 5s"``, called out separately because it is the
+   variant that fails INVISIBLY. A table that re-fetches itself hard-codes its endpoint in
+   ``hx-get``; that URL carries no sort, so the poll re-requests the DEFAULT order and swaps it over
+   the order the operator just chose. The sort survives for up to one poll interval and then snaps
+   back on its own, with no error and no interaction to blame it on -- and, crucially, NO manual
+   test shorter than the interval can see it.
+
+   :meth:`SortState.poll_url` is the single spelling; a self-refreshing sortable table writes
+   ``hx-get="{{ sort.poll_url() }}"`` and nothing else. It re-states the CURRENT order rather than
+   toggling (a poll is a re-read, not a click), and carries ``view_state`` so a poll cannot silently
+   drop a filter either. This applies to the recent-scans table (phaze-a6hm.6) and the admin agents
+   table (phaze-a6hm.4) alike; both are polls first and tables second.
+
    Sorting RESETS to page 1 by design: the operator asking for a different order is asking about the
    top of that order, and holding page 7 across a re-sort shows a window that means nothing.
 
@@ -286,6 +300,20 @@ class SortState:
             return ""
         return "▲" if self.order == ASCENDING else "▼"
 
+    def query_params(self) -> str:
+        """Return ``"sort=<key>&order=<order>"`` -- the active sort as a bare query fragment, no separator.
+
+        THE single spelling of "this sort, as URL parameters", which :meth:`query_state`,
+        :meth:`poll_url` and any caller needing the sort on a DIFFERENT endpoint all build on. It
+        exists so that no template hand-writes ``?sort={{ sort.key }}&order={{ sort.order }}``:
+        that spelling reads fine and is exactly how a table drifts out of the contract -- it is
+        also the spelling that silently omits ``view_state``.
+
+        Prefer :meth:`query_state` when appending to a URL that already has a query string, and
+        :meth:`poll_url` for a self-refreshing table's own ``hx-get``.
+        """
+        return urlencode([("sort", self.key), ("order", self.order)])
+
     def query_state(self) -> str:
         """Return ``"&sort=<key>&order=<order>"`` for a PAGER to append to its own URL (contract rule 4).
 
@@ -293,7 +321,34 @@ class SortState:
         the operator back into the default order mid-scan. Leads with ``&`` because every pager in
         this repo builds its query string by concatenation onto an existing ``?page=N``.
         """
-        return f"&{urlencode([('sort', self.key), ('order', self.order)])}"
+        return f"&{self.query_params()}"
+
+    def poll_url(self) -> str:
+        """Return the URL a SELF-REFRESHING table's own poll must re-request (contract rule 4a).
+
+        The third direction of rule 4, and the one that fails INVISIBLY. A table that re-fetches
+        itself on ``hx-trigger="every 5s"`` hard-codes its own endpoint in ``hx-get``. That URL
+        carries no sort, so the operator clicks a header, sees the table re-order, and up to five
+        seconds later watches it silently snap back to the default -- the poll re-requested the
+        unsorted view and swapped it over the sorted one. No error, no flicker worth noticing, and
+        invisible to any manual test shorter than one poll interval.
+
+        The fix is the same one rule 4 already applies to pagers: the poll re-states the ACTIVE view
+        rather than the default one. Every self-refreshing sortable table spells its ``hx-get`` as
+        ``{{ sort.poll_url() }}`` and inherits poll survival; none of them concatenates its own query
+        string, so none of them can forget a parameter the others remember.
+
+        Differs from :meth:`url_for` in the one way that matters: ``url_for`` is a CLICK, so it
+        TOGGLES via :meth:`next_order`; a poll is a RE-READ of the view the operator is already
+        looking at, so it re-states :attr:`order` unchanged. A poll that toggled would invert the
+        table every five seconds.
+
+        Like ``url_for`` this deliberately omits ``page``: a poll re-reads the top of the current
+        order. Preserved ``view_state`` (filter, search, page size) rides along, so a poll cannot
+        quietly drop a filter either -- the same defect one parameter over.
+        """
+        params = [*self.view_state, ("sort", self.key), ("order", self.order)]
+        return f"{self.contract.endpoint}?{urlencode(params)}"
 
     def order_by(self) -> tuple[Any, ...]:
         """Return the ORDER BY clause to hand ``paged_stmt(order_by=...)`` (contract rule 1).

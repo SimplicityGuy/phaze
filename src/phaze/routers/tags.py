@@ -17,6 +17,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import applied_clause, is_applied
@@ -281,11 +282,30 @@ def _tagwrite_stale_toast_response(request: Request, toast_message: str) -> HTML
     )
 
 
+# phaze-a6hm.7 sortable-column contract for the tag review list (phaze-a6hm.1). Declared at import
+# time next to the handler it serves (contract rule 6). Only ``FileRecord`` columns are whitelisted
+# here -- "Changes" and "Status" are computed per-row in Python from the tracklist/Discogs proposal
+# and the latest ``TagWriteLog`` (see the loop below), not a single SQL expression, so they stay
+# plain (non-sortable) headers rather than being forced through a fabricated column (contract rule
+# 2: the whitelist maps to REAL column objects, never a name reached some other way).
+TAGS_SORT = SortContract(
+    endpoint="/tags/",
+    target="#tags-table-view",
+    columns=(
+        SortableColumn(key="filename", label="Filename", expression=FileRecord.original_filename),
+        SortableColumn(key="file_type", label="Format", expression=FileRecord.file_type),
+    ),
+    default_key="filename",
+)
+
+
 @router.get("/", response_class=HTMLResponse)
 async def list_tags(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=10, le=100),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Render the tag review list page or HTMX partial."""
@@ -298,8 +318,17 @@ async def list_tags(
     if not wants_fragment(request):
         return RedirectResponse(url="/s/tagwrite", status_code=302)
 
-    # Query applied files with metadata (an executed proposal exists, READ-05/D-01)
-    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(applied_clause()).order_by(FileRecord.original_filename)
+    # phaze-a6hm.7: resolve BEFORE the read -- ``sort``/``order`` are raw wire strings here and a
+    # whitelisted key/direction afterwards; the query below never sees the untrusted value
+    # (column_sort contract rules 2/3). ``page_size`` rides view_state so a header click preserves it
+    # (rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
+    sort_state = TAGS_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+
+    # Query applied files with metadata (an executed proposal exists, READ-05/D-01). The resolved
+    # sort supplies the DISPLAY order; ``FileRecord.id`` is the mandatory unique tiebreaker (never
+    # the sort column itself -- an operator-chosen key ties far more often than filename does) so
+    # OFFSET paging below can't silently skip or duplicate a row across two page renders.
+    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(applied_clause()).order_by(*sort_state.order_by(), FileRecord.id)
 
     # Count total
     count_stmt = select(func.count(FileRecord.id)).where(applied_clause())
@@ -344,6 +373,7 @@ async def list_tags(
         "files": files,
         "stats": stats,
         "pagination": pagination,
+        "sort": sort_state,
     }
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
