@@ -1,5 +1,6 @@
 """Unified search UI router -- serves the cross-entity search page."""
 
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -8,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.search_queries import SearchResult, distinct_artists, search
 
 
@@ -22,12 +24,16 @@ async def search_page(
     q: str | None = Query(None),
     artist: str | None = Query(None),
     genre: str | None = Query(None),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
+    # phaze-z3tx (wire_bounds rule 6): declared as `date`, not `str`, so FastAPI parses/rejects at
+    # the boundary. FileRecord.created_at is DateTime and Tracklist.date is Date -- a raw str bind
+    # renders `$1::VARCHAR` against both and Postgres has no `timestamp >= varchar` operator, so
+    # EVERY value 500s. The type is the bound; there is no width or range to additionally cap.
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
     bpm_min: float | None = Query(None),
     bpm_max: float | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Render the search page, or an HTMX results fragment."""

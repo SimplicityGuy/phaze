@@ -198,6 +198,35 @@ test-db:
     echo "✅ ${container} ready on localhost:${port} (phaze_test + phaze_migrations_test)"
     echo "✅ ${redis_container} ready on localhost:${redis_port}"
 
+[doc('Create a correctly-named isolated test DB pair for one worktree, e.g. `just test-db-for laqf`')]
+[group('test')]
+test-db-for name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Exists so nobody hand-rolls an isolated database name again. The natural instinct is to
+    # SUFFIX the standard name (`phaze_test_<name>`); that shape is accepted by the guard in
+    # `tests/db_guard.py`, but this recipe emits the canonical `phaze_<name>_test` pair and,
+    # more importantly, prints the exact exports to use. Requires `just test-db` first.
+    just test-db
+    container="{{test_db_container}}"
+    port="{{test_db_port}}"
+    main_db="phaze_{{name}}_test"
+    migrations_db="phaze_{{name}}_migrations_test"
+    for db in "$main_db" "$migrations_db"; do
+        if docker exec "$container" psql -U phaze -d phaze_test -tc \
+            "SELECT 1 FROM pg_database WHERE datname = '${db}'" | grep -q 1; then
+            echo "🐘 ${db} already exists"
+        else
+            docker exec "$container" psql -U phaze -d phaze_test \
+                -c "CREATE DATABASE ${db} OWNER phaze;" >/dev/null
+            echo "✅ created ${db}"
+        fi
+    done
+    echo ""
+    echo "Export these before running pytest in this worktree:"
+    echo "  export TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${main_db}\""
+    echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
+
 [doc('Stop and remove the ephemeral integration-test Postgres + Redis')]
 [group('test')]
 test-db-down:

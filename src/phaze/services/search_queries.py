@@ -13,10 +13,13 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, paged_stmt, split_sentinel
 from phaze.services.proposal_queries import Pagination
 
 
 if TYPE_CHECKING:
+    from datetime import date
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -40,12 +43,12 @@ async def search(
     *,
     artist: str | None = None,
     genre: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     bpm_min: float | None = None,
     bpm_max: float | None = None,
     page: int = 1,
-    page_size: int = 50,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> tuple[list[SearchResult], Pagination]:
     """Search across files and tracklists using full-text search with facet filters."""
     ts_query = func.plainto_tsquery("simple", query)
@@ -142,10 +145,24 @@ async def search(
     total_result = await session.execute(count_q)
     total = total_result.scalar() or 0
 
-    # Fetch page
-    offset = (page - 1) * page_size
-    results_q = select(combined).order_by(combined.c.rank.desc()).offset(offset).limit(page_size)
-    rows = await session.execute(results_q)
+    # Fetch page -- ts_rank ties are common (the discogs/tracklist branches score only two
+    # concat_ws fields and single-term matches all land on the same default weight), so `rank`
+    # alone leaves the ORDER BY only partially defined. Route through the paging contract's
+    # paged_stmt (phaze.services.pagination, rule 4) so a MANDATORY unique tiebreaker is appended
+    # after `rank DESC`, giving every row a total order and keeping LIMIT/OFFSET from skipping or
+    # duplicating rows across pages (phaze-39ss). `combined.c.id` alone is NOT unique across the
+    # union -- it is a String-cast of three independent primary-key spaces (FileRecord / Tracklist
+    # / DiscogsLink), so a file id and a tracklist id can collide as the same string. Pairing it
+    # with `result_type` makes the tiebreaker tuple genuinely unique across the whole result set.
+    results_q = paged_stmt(
+        select(combined),
+        page=page,
+        page_size=page_size,
+        order_by=(combined.c.rank.desc(),),
+        tiebreaker=(combined.c.result_type.asc(), combined.c.id.asc()),
+    )
+    raw_rows = (await session.execute(results_q)).all()
+    rows, _has_next = split_sentinel(raw_rows, page_size)
 
     results = [
         SearchResult(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
@@ -15,8 +16,6 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
 if TYPE_CHECKING:
-    from datetime import date
-
     from httpx import AsyncClient
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,6 +163,40 @@ async def test_search_bpm_filter(client: AsyncClient, session: AsyncSession) -> 
     response = await client.get("/search/", params={"q": "deadmau5", "bpm_min": "120", "bpm_max": "130"}, headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Strobe" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_date_filter_narrows_results(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-z3tx: GET /search/?q=...&date_from=...&date_to=... actually WORKS end to end.
+
+    Before the fix, date_from/date_to were declared `str`, forwarded unparsed against
+    Tracklist.date (a Date column) / FileRecord.created_at (a DateTime column), and EVERY value
+    500'd -- q alone -> 200, q+date_from -> 500, q+date_to -> 500 (reproduced in the bead). This
+    proves the feature is not merely non-crashing but actually filters: a valid ISO date string
+    parses to a real `date` at the boundary and narrows to the in-range tracklist.
+    """
+    today = date.today()
+    await create_searchable_tracklist(session, artist="DJ Recent", event="Recent Fest", tracklist_date=today)
+    await create_searchable_tracklist(session, artist="DJ Old", event="Old Fest", tracklist_date=today - timedelta(days=365))
+    response = await client.get(
+        "/search/",
+        params={
+            "q": "fest",
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": (today + timedelta(days=1)).isoformat(),
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    assert "Recent Fest" in response.text
+    assert "Old Fest" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_date_filter_rejects_invalid_date(client: AsyncClient) -> None:
+    """An unparseable date_from is a clean 422 at the boundary, never a 500 (wire_bounds rule 4/6)."""
+    response = await client.get("/search/", params={"q": "deadmau5", "date_from": "not-a-date"}, headers={"HX-Request": "true"})
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

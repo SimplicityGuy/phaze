@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 import uuid
@@ -582,6 +583,46 @@ async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -
 
 
 @pytest.mark.asyncio
+async def test_cue_list_pagination_tie_group_no_skip_or_duplicate(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-hdho: paging a large tie group must never skip or duplicate a row across pages.
+
+    Every fixture here shares the SAME source/artist/event, so all rows tie completely on the CUE
+    list's display ORDER BY (``(source == 'fingerprint').desc(), artist, event``). Before the fix,
+    ``list_cue`` re-ran that non-unique ORDER BY on EVERY page request and sliced the fully
+    materialized list in Python -- Postgres gives no stability guarantee for a tie group across two
+    SEPARATE query executions, so a boundary row could land on both pages (duplicate) or on neither
+    (silently skipped). A test that only inspects page 1 would not catch this; this one pages through
+    the WHOLE set and asserts the union of every page is exact -- every row exactly once.
+    """
+    total_rows = 25
+    page_size = 10  # MIN_PAGE_SIZE -- forces 3 pages (10, 10, 5) over one fully-tied group.
+    expected_ids: set[str] = set()
+    for _ in range(total_rows):
+        tracklist, _file_record = await _create_approved_tracklist_with_file(
+            session, artist="Tied Artist", event="Tied Event", source="1001tracklists"
+        )
+        expected_ids.add(str(tracklist.id))
+
+    row_id_re = re.compile(r'id="cue-row-([0-9a-fA-F-]{36})"')
+    seen_per_page: list[list[str]] = []
+    page = 1
+    while True:
+        response = await client.get(f"/cue/?page={page}&page_size={page_size}", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        row_ids = row_id_re.findall(response.text)
+        if not row_ids:
+            break
+        seen_per_page.append(row_ids)
+        page += 1
+        assert page <= total_rows + 1, "pagination did not terminate -- possible duplicate/skip loop"
+
+    all_seen = [row_id for page_rows in seen_per_page for row_id in page_rows]
+    assert len(all_seen) == len(set(all_seen)), "a row appeared on more than one page (duplicate)"
+    assert set(all_seen) == expected_ids, "the union of all pages must contain every eligible row exactly once"
+    assert [len(page_rows) for page_rows in seen_per_page] == [10, 10, 5], "25 rows at page_size=10 must split into pages of 10/10/5"
+
+
+@pytest.mark.asyncio
 async def test_generate_cue_no_latest_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/{id}/generate with tracklist lacking latest_version_id returns error."""
     file_id = uuid.uuid4()
@@ -635,3 +676,44 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 
     unbounded = await _get_eligible_tracklist_query(session)
     assert len(unbounded) == 4, "no limit -> the full eligible set (count/pagination callers)"
+
+
+@pytest.mark.asyncio
+async def test_cue_list_paged_stmt_has_unique_tiebreaker(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-hdho: guard against silently dropping the paging contract's mandatory tiebreaker.
+
+    ``paged_stmt`` raises ``ValueError`` if ``tiebreaker`` is empty (services.pagination rule 4), but
+    that guard only fires if a future edit still CALLS ``paged_stmt`` WITHOUT a tiebreaker -- it would
+    not catch a regression that passes a non-unique column (e.g. reverting to ``Tracklist.artist``) or
+    reverts ``list_cue`` to raw offset/limit Python slicing (the original bug shape) entirely. This
+    wraps ``phaze.routers.cue.paged_stmt`` around the ACTUAL statement ``GET /cue/`` executes and
+    asserts the final compiled ``ORDER BY`` key is the unique ``Tracklist.id`` column.
+
+    Deliberately NOT relying on Postgres reproducing tie-order instability across two live queries to
+    prove the bug: the bead's own adversarial review notes the pure-tie-nondeterminism mechanism
+    "rarely fires on a static table with a stable plan between two close reads" -- an assertion tied to
+    that would be a flaky, unreliable regression guard. Asserting the compiled ORDER BY shape of the
+    router's OWN call is exact and deterministic regardless of the Postgres instance running the suite.
+    """
+    from phaze.services.pagination import paged_stmt as real_paged_stmt
+
+    await _create_approved_tracklist_with_file(session)
+
+    captured: list[str] = []
+
+    def _capturing_paged_stmt(*args: object, **kwargs: object) -> object:
+        stmt = real_paged_stmt(*args, **kwargs)  # type: ignore[arg-type]
+        captured.append(str(stmt))
+        return stmt
+
+    with patch("phaze.routers.cue.paged_stmt", side_effect=_capturing_paged_stmt):
+        response = await client.get("/cue/", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert captured, "list_cue must route its eligible-tracklist read through paged_stmt"
+
+    order_by_clause = captured[0].split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
+    sort_keys = [key.strip() for key in order_by_clause.split(",")]
+    assert sort_keys[-1] == "tracklists.id", (
+        f"the LAST ORDER BY key of the router's OWN paged_stmt call must be the unique Tracklist.id "
+        f"tiebreaker so OFFSET paging can never skip or duplicate a tied row across pages -- got: {sort_keys}"
+    )

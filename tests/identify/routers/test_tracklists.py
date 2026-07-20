@@ -810,6 +810,56 @@ async def test_link_tracklist(session: AsyncSession, client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confidence", [0, 100])
+async def test_link_tracklist_accepts_the_domain_boundary(session: AsyncSession, client: AsyncClient, confidence: int) -> None:
+    """phaze-k5ac: 0 and 100 are exactly the 0-100 match-score domain boundary -- must be ACCEPTED."""
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": confidence},
+    )
+    assert response.status_code == 200, response.text
+
+    await session.refresh(tl)
+    assert tl.match_confidence == confidence
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confidence", [-1, 101, 3000000000])
+async def test_link_tracklist_rejects_confidence_outside_the_domain(session: AsyncSession, client: AsyncClient, confidence: int) -> None:
+    """phaze-k5ac: confidence outside 0-100 -- including an int32-overflowing value -- is a 422, not a 500.
+
+    3000000000 (> int32 max 2147483647) previously reached `tracklist.match_confidence = confidence`
+    and raised Postgres NumericValueOutOfRange, unhandled, on commit. Asserting `match_confidence` is
+    left untouched proves the rejection happens before the assignment/commit ever runs.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(file.id), "confidence": confidence},
+    )
+    assert response.status_code == 422, response.text
+
+    await session.refresh(tl)
+    assert tl.match_confidence is None, "a rejected (422) link POST must not mutate match_confidence"
+    assert tl.file_id is None, "a rejected (422) link POST must not mutate file_id either"
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()
@@ -1125,6 +1175,85 @@ async def test_save_track_invalid_field(session: AsyncSession, client: AsyncClie
     fake_id = uuid.uuid4()
     response = await client.put(f"/tracklists/tracks/{fake_id}/edit/invalid_field", data={"invalid_field": "x"})
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_save_track_timestamp_overwidth_rejected_value_preserved(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-81au: an over-width timestamp edit must 422, not 500, and must not silently discard it.
+
+    ``TracklistTrack.timestamp`` is ``String(20)`` (models/tracklist.py). Before the fix, ``setattr`` +
+    ``commit`` handed Postgres a 27-char value, which raised an unhandled ``StringDataRightTruncation``
+    -> HTTP 500 and left the operator's edit lost. The fix rejects at the boundary (wire_bounds rule 4)
+    -- BEFORE the DB is touched -- and re-renders the same edit input with the typed value preserved
+    (not blanked) plus an inline reason, because this is an operator-facing inline edit, not the agent
+    wire path.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    overwidth = "2024-06-15 22:34:56.789 UTC"  # 27 chars, from the bead's own failure scenario
+    assert len(overwidth) > 20
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": overwidth})
+
+    assert response.status_code == 422
+    # The operator's typed value survives in the re-rendered input -- not blanked, not the stale DB value.
+    assert overwidth in response.text
+    assert 'name="timestamp"' in response.text
+    assert "hx-put" in response.text  # still editable -- the input round-trips, it is not a dead end
+    # An inline reason is present so the operator learns WHY, without leaving this surface.
+    assert "20 char" in response.text.lower()
+
+    await session.refresh(track)
+    assert track.timestamp == "00:00"  # untouched -- the rejected edit never reached the DB
+
+
+@pytest.mark.asyncio
+async def test_save_track_timestamp_at_column_width_boundary_saves(session: AsyncSession, client: AsyncClient) -> None:
+    """A timestamp exactly 20 chars (the column width) is accepted, not off-by-one rejected."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    exactly_20 = "1" * 20
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": exactly_20})
+
+    assert response.status_code == 200
+    await session.refresh(track)
+    assert track.timestamp == exactly_20
 
 
 # --- Discogs matching endpoints ---

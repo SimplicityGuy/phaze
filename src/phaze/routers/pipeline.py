@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 import structlog
 
 from phaze.config import settings
@@ -29,6 +30,7 @@ from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -43,6 +45,7 @@ from phaze.services.backends import (
 )
 from phaze.services.fingerprint import get_fingerprint_progress
 from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
     ANALYZE_FILTERS,
@@ -69,6 +72,7 @@ from phaze.services.pipeline import (
     get_match_pending_tracklists,
     get_metadata_failed_files,
     get_metadata_pending_files,
+    get_pending_files_page,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -81,6 +85,8 @@ from phaze.services.pipeline import (
     get_stage_controls,
     get_stage_progress,
     get_straggler_count,
+    get_trackid_files_page,
+    get_tracklist_sets_page,
     get_untracked_files,
     queue_progress_percent,
 )
@@ -647,14 +653,13 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # inadmissible_count. Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
     cloud_phase_counts = await get_cloud_phase_counts(session)
 
-    # Phase 58 (58-04, WORK-04 / D-03) + Phase 95 (phaze-zqvh.2, CONSOLE-04): the DEFAULT Analyze file
-    # list is now BOUNDED at the source -- the active-first working set (in-flight · awaiting-cloud ·
-    # failed) plus a LIMIT-ed recent-completions window (get_analyze_working_set), NOT the whole
-    # analyze-stage membership (which at 200K scale was 92,335 rows / ~105MB HTML -- phaze-zqvh.1
-    # baseline). The full corpus stays reachable via the status-filter bar -> GET /pipeline/analyze-files
-    # (paged). The service owns the never-500 SAVEPOINT degrade (-> [] on any DB error), so NO try/except
-    # here -- same service-owns-degrade idiom as the cloud counts above. Pure read; no enqueue, no schema change.
-    analyze_files = await get_analyze_working_set(session)
+    # phaze-5462: the Analyze workspace no longer server-renders ANY file rows inline. It used to seed
+    # `analyze_files` here from get_analyze_working_set, whose "active working set" branch was UNBOUNDED
+    # (10,132 rows / 12.7 MB in prod -- ~180x the metadata/fingerprint tabs, which render a ~70 KB shell
+    # with zero rows). phaze-zqvh bounded only the completions window and trusted a docstring assertion
+    # for the other half. The list now loads exactly like its siblings: the workspace ships an empty
+    # #analyze-files-view that hx-gets GET /pipeline/analyze-files on load, which serves the BOUNDED,
+    # paged working set. No DB read for the file list happens on this path at all any more.
 
     # quick 260622-i0w: the scanned/deduped reconciliation for the Discovery DAG-node subtitle.
     # Server-rendered on full-page load ONLY (the canvas is never OOB-swapped on the 5s poll); this
@@ -701,7 +706,6 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
         "reconcile_scanned": recon["scanned"],
         "reconcile_deduped": recon["deduped"],
         # Phase 58 (58-04): the all-in-stage Analyze file list (D-03).
-        "analyze_files": analyze_files,
         # Phase 71 (71-03, BEUI-01 / D-04): the N-lane grid snapshot (seeded above, mirrored identically
         # in pipeline_stats_partial). Retires the transitional single non-local lane-kind context key.
         "lanes": lanes,
@@ -943,7 +947,7 @@ _VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
 async def pipeline_files(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     stage: str | None = Query(None),
     bucket: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
@@ -981,7 +985,7 @@ async def pipeline_files(
 async def analyze_files_fragment(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     status: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
@@ -992,8 +996,8 @@ async def analyze_files_fragment(
     validated against the ``ANALYZE_FILTERS`` allowlist (T-57-01 / T-87-14: an unknown value NEVER reaches
     a template path or SQL string -- it degrades to the default view, never a 422 into the render):
 
-      * no / unknown ``status`` -> the DEFAULT bounded working-set view (active-first working set + the
-        LIMIT-ed recent-completions window), no pager.
+      * no / unknown ``status`` -> the DEFAULT bounded working-set view (the active-first working set,
+        PAGED, plus the LIMIT-ed recent-completions window on the final page), with a pager.
       * a valid ``status`` -> the full analyze-stage listing under that lens, served as a bounded page
         (``get_analyze_files_page``: OFFSET + ``page_size + 1`` sentinel, never a whole-corpus COUNT).
 
@@ -1003,13 +1007,16 @@ async def analyze_files_fragment(
     """
     status_val = status if status in ANALYZE_FILTERS else None
     if status_val is None:
-        # DEFAULT bounded working-set view (no explicit filter): the active-first set + completions window.
+        # DEFAULT bounded working-set view (no explicit filter): the active-first set, PAGED, with the
+        # completions window appended on the final page. phaze-5462: this branch is now paged like every
+        # other -- it used to return the whole unbounded working set.
+        working_set = await get_analyze_working_set(session, page=page, page_size=page_size)
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/_analyze_files.html",
             context={
-                "analyze_rows": await get_analyze_working_set(session),
-                "analyze_page": None,
+                "analyze_rows": working_set.rows,
+                "analyze_page": working_set,
                 "active_status": None,
             },
         )
@@ -1022,6 +1029,96 @@ async def analyze_files_fragment(
             "analyze_page": analyze_page,
             "active_status": status_val,
         },
+    )
+
+
+# phaze-5462: the stage allowlist for the shared pending-files fragment. Validated as a SET so an
+# unknown value can NEVER reach SQL or a template path (T-57-01 / T-87-14) -- it degrades to
+# "metadata", never a 422 into the render.
+_PENDING_STAGES: dict[str, Stage] = {"metadata": Stage.METADATA, "fingerprint": Stage.FINGERPRINT}
+
+
+@router.get("/pipeline/pending-files", response_class=HTMLResponse)
+async def pending_files_fragment(
+    request: Request,
+    stage: str = Query("metadata"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the Metadata / Fingerprint pending set (phaze-5462).
+
+    The sibling of :func:`analyze_files_fragment`, on the SAME paging contract
+    (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a ``page_size + 1`` sentinel
+    for ``has_next`` (never a whole-corpus COUNT), and the mandatory unique tiebreaker. Both enrich
+    workspaces hx-get this on load into their empty host div, so neither server-renders a file row
+    inline any more.
+
+    ``stage`` is validated against :data:`_PENDING_STAGES` (unknown -> metadata) and is carried into
+    the template only as an autoescaped query value -- never a template path (T-57-01).
+
+    NOTE: this is the RENDER read. The EXTRACT ALL / FINGERPRINT ALL buttons still enqueue the
+    UNBOUNDED pending set (paging contract rule 7) -- paging the enqueue would silently drop work.
+    """
+    stage_key = stage if stage in _PENDING_STAGES else "metadata"
+    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_pending_files.html",
+        context={
+            "pending_page": pending_page,
+            "stage": stage_key,
+            "host_id": f"{stage_key}-files-view",
+        },
+    )
+
+
+@router.get("/pipeline/trackid-files", response_class=HTMLResponse)
+async def trackid_files_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the Track-ID identity table (phaze-1wvb).
+
+    The sibling of :func:`analyze_files_fragment` / :func:`pending_files_fragment`, on the SAME
+    paging contract (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a
+    ``page_size + 1`` sentinel for ``has_next`` (never a whole-corpus COUNT), and the mandatory
+    unique tiebreaker. The Track-ID workspace hx-gets this into its empty host div on load, so it no
+    longer server-renders a single identity row inline.
+
+    NOTE (paging contract rule 7): there is no enqueue behind this read to under-serve -- the
+    Track-ID workspace is READ-ONLY (it has no trigger at all), and the neighbouring Tracklist
+    workspace's bulk triggers keep reading their own UNBOUNDED pending sets.
+    """
+    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_trackid_files.html",
+        context={"trackid_page": trackid_page, "host_id": "trackid-files-view"},
+    )
+
+
+@router.get("/pipeline/tracklist-sets", response_class=HTMLResponse)
+async def tracklist_sets_fragment(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Render ONE bounded page of the per-set Tracklist coverage table (phaze-1wvb).
+
+    Same paging contract as :func:`trackid_files_fragment`. The Tracklist workspace hx-gets this into
+    the empty host div BELOW its three step cards; the step cards themselves (and their SEARCH /
+    SCRAPE / MATCH ALL triggers, which enqueue the UNBOUNDED pending sets -- rule 7) are untouched
+    and still server-rendered by the shell.
+    """
+    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_tracklist_sets.html",
+        context={"sets_page": sets_page, "host_id": "tracklist-sets-view"},
     )
 
 
@@ -1516,6 +1613,24 @@ async def force_skip_stage(
 
     The pill flips to ``⊘ skipped`` on the NEXT poll tick (not optimistic) — the ack is a toast only.
     ``reason`` is never echoed back into the response (T-87-21 — no XSS surface via the free text).
+
+    UNKNOWN/CONCURRENTLY-DELETED FILE (request_guards.py contract rule 4): ``StageSkip.file_id`` is a
+    NOT NULL FK to ``files.id`` that ``on_conflict_do_nothing(index_elements=["file_id", "stage"])``
+    does not shield — that arbiter only absorbs the UNIQUE(file_id, stage) replay, not a FK whose
+    referent is missing. ``file_id`` is a typed ``uuid.UUID`` path param already well-formed by the
+    time this body runs, so no stricter signature could reject a nonexistent-but-well-formed id; this
+    is a genuine race (a concurrent ``delete_scan_cascade`` removing the row between page-render and
+    submit), not a wire-boundary defect. Two layers, not one:
+
+    - A pre-check (:func:`_force_skip_file_exists`) short-circuits the common case with a clean no-op
+      toast and skips the DB round trip through Postgres's error path -- but it is a TOCTOU hole on
+      its own, since the row can vanish between the check and the INSERT.
+    - The INSERT itself runs inside a SAVEPOINT (``session.begin_nested()``) and a caught
+      ``IntegrityError`` unwinds only the nested scope (rule 5), leaving the session usable for the
+      rest of the request, so the race window between the pre-check and the write is closed too.
+
+    Mirrors the sibling per-file endpoints' T-87-27 discipline: an unknown well-formed UUID is a safe
+    no-op, never a 500.
     """
     if stage not in STAGE_TO_FUNCTION:  # D-10 enrich-only — mirror pipeline_stages._validate_stage
         raise HTTPException(status_code=422, detail="stage not force-skippable")
@@ -1527,14 +1642,29 @@ async def force_skip_stage(
             '<p class="text-sm font-medium text-red-600 dark:text-red-400" role="alert">A reason is required.</p>',
             status_code=422,
         )
+    # Pre-check (T-87-27 discipline, mirrors the sibling retry endpoints): short-circuits the common
+    # "stale Files-matrix row" case with a clean no-op ack and no DB error round trip. NOT sufficient
+    # alone -- see the IntegrityError catch below for the race this cannot close.
+    if not await _force_skip_file_exists(session, file_id):
+        return _force_skip_no_op_toast(stage)
     # Idempotent additive write (CR-01): re-submitting a force-skip for the same (file, stage) is a NORMAL
     # path — `_force_skip_dialog.html` is not hidden after success — and the UNIQUE(file_id, stage) constraint
     # would turn a bare INSERT into an unhandled IntegrityError → HTTP 500. on_conflict_do_nothing mirrors
     # `insert_ledger_if_absent`: the marker's existence IS the desired end state, so a duplicate is a no-op
     # success. Never clears failed_at (additive-only, T-87-20).
-    await session.execute(
-        pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
-    )
+    #
+    # Rule 4 + rule 5: the pre-check above is TOCTOU-vulnerable (delete_scan_cascade can remove the file
+    # between the SELECT and this INSERT), so the INSERT itself runs inside a SAVEPOINT and a genuine FK
+    # violation is caught and converted to the same no-op ack rather than an unhandled 500. Rolling back
+    # only the nested scope (not a full session.rollback()) keeps the session usable for the rest of the
+    # request.
+    stmt = pg_insert(StageSkip).values(file_id=file_id, stage=stage, reason=clean_reason).on_conflict_do_nothing(index_elements=["file_id", "stage"])
+    try:
+        async with session.begin_nested():
+            await session.execute(stmt)
+    except IntegrityError:
+        logger.info("force_skip_stage race: file deleted between pre-check and insert", file_id=str(file_id), stage=stage)
+        return _force_skip_no_op_toast(stage)
     await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
     logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
     # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
@@ -1545,6 +1675,34 @@ async def force_skip_stage(
         f'x-init="setTimeout(() => show = false, 5000)" x-transition '
         f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
         f"Skipped {stage} — reason recorded.</div></div>"
+    )
+
+
+async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """``True`` iff a ``FileRecord`` row named by ``file_id`` currently exists.
+
+    Extracted to a named helper (rather than inlined) so a regression test can force the
+    :func:`force_skip_stage` race branch deterministically -- monkeypatching this to always return
+    ``True`` reproduces "file existed at pre-check time, vanished before the INSERT" without a second
+    concurrent connection.
+    """
+    result = await session.execute(select(FileRecord.id).where(FileRecord.id == file_id))
+    return result.scalar_one_or_none() is not None
+
+
+def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
+    """Benign toast for an unknown or concurrently-deleted ``file_id`` (T-87-27 discipline).
+
+    ``stage`` is allowlisted before this is ever called (``STAGE_TO_FUNCTION`` membership), so it is
+    safe to interpolate. Returned by both the pre-check miss and the ``IntegrityError`` race branch in
+    :func:`force_skip_stage` so the two failure paths are indistinguishable to the client.
+    """
+    return HTMLResponse(
+        '<div hx-swap-oob="beforeend:#toast-container">'
+        '<div role="status" aria-live="polite" x-data="{ show: true }" x-show="show" '
+        'x-init="setTimeout(() => show = false, 5000)" x-transition '
+        'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
+        f"File not found — nothing to skip {stage}.</div></div>"
     )
 
 
@@ -1835,6 +1993,12 @@ async def deepen_progress(
     0), never essentia strings (T-cvz-02). An unknown file_id returns a benign "gone" fragment,
     never a 500 (T-cvz-04).
 
+    phaze-zut8: being a valid ``float`` does not make ``since`` a valid Unix timestamp -- NaN,
+    +/-infinity, and magnitudes beyond ``datetime``'s year range all raise ``ValueError`` /
+    ``OverflowError`` out of ``datetime.fromtimestamp``. Per request_guards.py contract rule 1
+    this is an ENVELOPE failure (a single scalar, nothing partial to do), so it is rejected with
+    ``422`` rather than escaping as the 500 this docstring's "never a 500" promise forbids.
+
     COMPLETION PREDICATE (timestamp-gated): a re-run is complete only when ``put_analysis`` has
     stamped ``analysis_completed_at`` AFTER this click (``> requested_at``). A stale pre-click
     sampled result has ``completed_at <= requested_at`` and is NOT complete -- killing the
@@ -1842,10 +2006,18 @@ async def deepen_progress(
     ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
     completed_at until the fresh ``put_analysis`` lands.
 
-    State machine (evaluated in order): missing file -> gone (terminal); complete predicate ->
-    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
-    otherwise -> queued/starting (poll).
+    State machine (evaluated in order): malformed ``since`` -> 422 (terminal, no query run);
+    missing file -> gone (terminal); complete predicate -> complete (terminal); fine_total
+    truthy AND fine_done < fine_total -> running (poll); otherwise -> queued/starting (poll).
     """
+    try:
+        requested_at = datetime.fromtimestamp(since, tz=UTC)
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(
+            status_code=MALFORMED_PAYLOAD_STATUS,
+            detail=f"since is not a valid timestamp: {exc}",
+        ) from exc
+
     file_result = await session.execute(select(FileRecord).where(FileRecord.id == file_id))
     file = file_result.scalar_one_or_none()
 
@@ -1868,7 +2040,6 @@ async def deepen_progress(
     analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
     analysis = analysis_result.scalar_one_or_none()
 
-    requested_at = datetime.fromtimestamp(since, tz=UTC)
     complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
 
     fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0

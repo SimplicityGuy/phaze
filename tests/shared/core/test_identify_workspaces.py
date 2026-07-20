@@ -33,11 +33,22 @@ import uuid
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.dialects import postgresql
 
 from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.pipeline import get_trackid_stage_files, get_tracklist_set_rows
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from phaze.services.pipeline import (
+    _trackid_linked_conf_subq,
+    _trackid_page_stmt,
+    _tracklist_sets_page_stmt,
+    get_match_pending_tracklists,
+    get_scrape_pending_tracklists,
+    get_trackid_files_page,
+    get_tracklist_sets_page,
+    get_untracked_files,
+)
 
 
 if TYPE_CHECKING:
@@ -240,7 +251,8 @@ async def test_trackid_table_signals(client: AsyncClient, session: AsyncSession)
     await _seed_fingerprint_result(session, candidate.id, "audfprint", "success")
     await _seed_tracklist(session, file_id=None, match_confidence=77)
 
-    resp = await client.get("/s/trackid", headers={"HX-Request": "true"})
+    # phaze-1wvb: the rows live in the BOUNDED fragment now -- /s/trackid ships an empty host div.
+    resp = await client.get("/pipeline/trackid-files")
     assert resp.status_code == 200
     body = resp.text
     # D-03: exactly ONE combined per-file table (not two sub-sections).
@@ -274,7 +286,7 @@ async def test_trackid_success_renders_done(client: AsyncClient, session: AsyncS
     file = await _seed_file(session, original_filename="done.mp3")
     await _seed_fingerprint_result(session, file.id, "audfprint", "success")
     await _seed_fingerprint_result(session, file.id, "panako", "success")
-    resp = await client.get("/s/trackid", headers={"HX-Request": "true"})
+    resp = await client.get("/pipeline/trackid-files")
     assert resp.status_code == 200
     tbl = resp.text[resp.text.index('id="trackid-file-table"') :]
     assert "done" in tbl
@@ -324,12 +336,16 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     version = await _seed_tracklist_version(session, tl.id)
     await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
     await _seed_tracklist_track(session, version.id, position=2, confidence=None)
-    resp = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    # D-08: the per-set table's HOST still sits below the three step cards (aggregate on top,
+    # detail below) -- phaze-1wvb moved the ROWS into the bounded fragment, not the layout.
+    shell = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    assert shell.status_code == 200
+    assert shell.text.index("grid grid-cols-3") < shell.text.index('id="tracklist-sets-view"')
+
+    resp = await client.get("/pipeline/tracklist-sets")
     assert resp.status_code == 200
     body = resp.text
-    # D-08: the per-set table sits below the three step cards (aggregate on top, detail below).
     assert "tracklist-set-table" in body
-    assert body.index("grid grid-cols-3") < body.index('id="tracklist-set-table"')
     tbl = body[body.index('id="tracklist-set-table"') :]
     # D-07: N/M track-level coverage from TracklistTrack.confidence (1 confident of 2 total).
     assert "1/2" in tbl
@@ -372,7 +388,7 @@ class _ExplodingSession:
 
 
 @pytest.mark.asyncio
-async def test_get_trackid_stage_files_shape(session: AsyncSession) -> None:
+async def test_get_trackid_files_page_shape(session: AsyncSession) -> None:
     """IDENT-01 / D-01 / D-04 -- the Track-ID row carries per-engine badges + tracklist match/conf.
 
     A file with audfprint ``success`` + panako ``failed`` + a LINKED tracklist (match_confidence)
@@ -384,7 +400,7 @@ async def test_get_trackid_stage_files_shape(session: AsyncSession) -> None:
     await _seed_fingerprint_result(session, file.id, "panako", "failed")
     await _seed_tracklist(session, file_id=file.id, match_confidence=90)
 
-    rows = await get_trackid_stage_files(session)
+    rows = (await get_trackid_files_page(session)).rows
     assert len(rows) == 1
     row = rows[0]
     assert row["filename"] == "full.mp3"
@@ -396,7 +412,7 @@ async def test_get_trackid_stage_files_shape(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_trackid_stage_files_success_renders_done(session: AsyncSession) -> None:
+async def test_get_trackid_files_page_success_renders_done(session: AsyncSession) -> None:
     """Pitfall 1 (the load-bearing guard) -- a ``status="success"`` row maps to "done", NOT "pending".
 
     Guards against keying the done badge on ``"completed"`` (which ``get_stage_progress`` filters and
@@ -405,7 +421,7 @@ async def test_get_trackid_stage_files_success_renders_done(session: AsyncSessio
     file = await _seed_file(session, original_filename="success.mp3")
     await _seed_fingerprint_result(session, file.id, "audfprint", "success")
 
-    rows = await get_trackid_stage_files(session)
+    rows = (await get_trackid_files_page(session)).rows
     assert len(rows) == 1
     assert rows[0]["audfprint_status"] == "done"
     # panako has no row -> pending (Pitfall 2: absence == pending).
@@ -413,7 +429,7 @@ async def test_get_trackid_stage_files_success_renders_done(session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_get_trackid_stage_files_candidate_and_no_match(session: AsyncSession) -> None:
+async def test_get_trackid_files_page_candidate_and_no_match(session: AsyncSession) -> None:
     """D-04 -- the candidate fallback + the no-match branch.
 
     A file with only a fingerprint and NO linked tracklist surfaces "candidate" + the system-wide
@@ -423,27 +439,29 @@ async def test_get_trackid_stage_files_candidate_and_no_match(session: AsyncSess
     # No-match: a fingerprinted file, no tracklists anywhere.
     nomatch = await _seed_file(session, original_filename="nomatch.mp3")
     await _seed_fingerprint_result(session, nomatch.id, "audfprint", "success")
-    rows = await get_trackid_stage_files(session)
+    rows = (await get_trackid_files_page(session)).rows
     assert len(rows) == 1
     assert rows[0]["tracklist_state"] == "no match"
     assert rows[0]["confidence"] is None
 
     # Introduce an unlinked candidate tracklist -> the fingerprinted file now reads "candidate".
     await _seed_tracklist(session, file_id=None, match_confidence=77)
-    rows = await get_trackid_stage_files(session)
+    rows = (await get_trackid_files_page(session)).rows
     by_name = {r["filename"]: r for r in rows}
     assert by_name["nomatch.mp3"]["tracklist_state"] == "candidate"
     assert by_name["nomatch.mp3"]["confidence"] == 77
 
 
 @pytest.mark.asyncio
-async def test_get_trackid_stage_files_degrades_to_empty() -> None:
-    """T-59-DOS -- a DB error degrades to ``[]`` (never raises into the render/poll)."""
-    assert await get_trackid_stage_files(_ExplodingSession()) == []  # type: ignore[arg-type]
+async def test_get_trackid_files_page_degrades_to_empty() -> None:
+    """T-59-DOS / paging contract rule 6 -- a DB error degrades to an EMPTY Page, never raises."""
+    page = await get_trackid_files_page(_ExplodingSession())  # type: ignore[arg-type]
+    assert page.rows == []
+    assert page.has_next is False
 
 
 @pytest.mark.asyncio
-async def test_get_tracklist_set_rows_shape(session: AsyncSession) -> None:
+async def test_get_tracklist_sets_page_shape(session: AsyncSession) -> None:
     """IDENT-02 / D-07 -- the per-set row carries N/M track coverage + match state.
 
     A LINKED tracklist with a version of 1 confident (confidence set) + 1 unconfident (confidence
@@ -455,7 +473,7 @@ async def test_get_tracklist_set_rows_shape(session: AsyncSession) -> None:
     await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
     await _seed_tracklist_track(session, version.id, position=2, confidence=None)
 
-    rows = await get_tracklist_set_rows(session)
+    rows = (await get_tracklist_sets_page(session)).rows
     assert len(rows) == 1
     row = rows[0]
     assert row["set_name"] == "set.mp3"
@@ -467,7 +485,7 @@ async def test_get_tracklist_set_rows_shape(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_tracklist_set_rows_counts_latest_version_only(session: AsyncSession) -> None:
+async def test_get_tracklist_sets_page_counts_latest_version_only(session: AsyncSession) -> None:
     """WR-01 regression -- a re-scraped (multi-version) tracklist counts ONLY its latest version.
 
     Coverage must NOT sum tracks across versions: a stale v1 (3 tracks) plus a latest v2 (2 tracks,
@@ -482,7 +500,7 @@ async def test_get_tracklist_set_rows_counts_latest_version_only(session: AsyncS
     await _seed_tracklist_track(session, latest.id, position=1, confidence=0.95)
     await _seed_tracklist_track(session, latest.id, position=2, confidence=None)
 
-    rows = await get_tracklist_set_rows(session)
+    rows = (await get_tracklist_sets_page(session)).rows
     assert len(rows) == 1
     row = rows[0]
     assert row["tracks_confident"] == 1
@@ -490,10 +508,10 @@ async def test_get_tracklist_set_rows_counts_latest_version_only(session: AsyncS
 
 
 @pytest.mark.asyncio
-async def test_get_tracklist_set_rows_candidate(session: AsyncSession) -> None:
+async def test_get_tracklist_sets_page_candidate(session: AsyncSession) -> None:
     """D-04/D-08 -- an unlinked tracklist is a "candidate" set with no file path and zero counts."""
     await _seed_tracklist(session, file_id=None, match_confidence=None, external_id="cand-1")
-    rows = await get_tracklist_set_rows(session)
+    rows = (await get_tracklist_sets_page(session)).rows
     assert len(rows) == 1
     row = rows[0]
     assert row["tracklist_state"] == "candidate"
@@ -504,6 +522,208 @@ async def test_get_tracklist_set_rows_candidate(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_tracklist_set_rows_degrades_to_empty() -> None:
-    """T-59-DOS -- a DB error degrades to ``[]`` (never raises into the render/poll)."""
-    assert await get_tracklist_set_rows(_ExplodingSession()) == []  # type: ignore[arg-type]
+async def test_get_tracklist_sets_page_degrades_to_empty() -> None:
+    """T-59-DOS / paging contract rule 6 -- a DB error degrades to an EMPTY Page, never raises."""
+    page = await get_tracklist_sets_page(_ExplodingSession())  # type: ignore[arg-type]
+    assert page.rows == []
+    assert page.has_next is False
+
+
+# ---------------------------------------------------------------------------
+# phaze-1wvb -- the bound. These are the tests that would have caught the bug: both Identify reads
+# were whole-corpus (no LIMIT, `.all()`-materialised, server-rendered inline), so the render grew
+# without limit as the archive converged. Every assertion below fails against the pre-fix code.
+# ---------------------------------------------------------------------------
+
+
+# Seeding a full DEFAULT_PAGE_SIZE + a few is enough to prove the bound: an UNBOUNDED read returns
+# all of them, a bounded one returns exactly one page plus has_next. Keeping this small keeps the
+# test fast while still being decisive.
+_OVER_A_PAGE = DEFAULT_PAGE_SIZE + 3
+
+
+def test_identify_page_statements_carry_a_sql_limit() -> None:
+    """phaze-1wvb -- THE decisive guard: the bound must live in the SQL, not just in Python.
+
+    ``split_sentinel`` truncates the result list, so a test that only asserts ``len(page.rows) ==
+    page_size`` still passes when the underlying SELECT has NO ``LIMIT`` -- the read would keep
+    dragging the whole corpus into memory (the actual DoS) while looking perfectly bounded from the
+    outside. This was verified by mutation: removing ``paged_stmt`` from the reader left every
+    row-count assertion green. So compile the statements and assert on the emitted SQL.
+    """
+    stmts = {
+        "trackid": _trackid_page_stmt(_trackid_linked_conf_subq(), page=3, page_size=DEFAULT_PAGE_SIZE),
+        "tracklist": _tracklist_sets_page_stmt(page=3, page_size=DEFAULT_PAGE_SIZE),
+    }
+    for name, stmt in stmts.items():
+        sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        assert "LIMIT" in sql.upper(), f"the {name} render read has NO SQL LIMIT -- it is a whole-corpus read"
+        assert "OFFSET" in sql.upper(), f"the {name} render read does not page"
+        # rule 2: has_next rides the +1 sentinel, so the LIMIT is page_size + 1 and there is NO COUNT.
+        assert str(DEFAULT_PAGE_SIZE + 1) in sql, f"the {name} read must LIMIT page_size + 1 (the sentinel)"
+        assert "COUNT(*)" not in sql.upper().replace(" ", ""), f"the {name} read must never emit a whole-corpus COUNT"
+        # rule 4: the ORDER BY must end on the unique primary-key tiebreaker, not just created_at.
+        order_by = sql.upper().rsplit("ORDER BY", 1)[-1]
+        assert ".ID DESC" in order_by, f"the {name} read lost its unique tiebreaker -- paging can skip/duplicate rows"
+
+
+@pytest.mark.asyncio
+async def test_trackid_page_is_bounded_regardless_of_corpus_size(session: AsyncSession) -> None:
+    """phaze-1wvb -- a backlog larger than one page does NOT grow the Track-ID read.
+
+    The pre-fix ``get_trackid_stage_files`` returned EVERY signal-bearing file, so this seeding would
+    have yielded ``_OVER_A_PAGE`` rows. The bounded read returns exactly ``page_size`` rows and flags
+    ``has_next`` off the +1 sentinel -- never a whole-corpus COUNT (paging contract rule 2).
+    """
+    for i in range(_OVER_A_PAGE):
+        file = await _seed_file(session, original_filename=f"corpus-{i:03d}.mp3")
+        await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+
+    page = await get_trackid_files_page(session)
+    assert len(page.rows) == DEFAULT_PAGE_SIZE, "the render read must be bounded to one page"
+    assert page.has_next is True
+    assert page.has_prev is False
+
+    # The tail is reachable, and the page size itself is capped (rule 3) -- asking for more than
+    # MAX_PAGE_SIZE cannot widen the read back out to the corpus.
+    tail = await get_trackid_files_page(session, page=2, page_size=MAX_PAGE_SIZE * 10)
+    assert len(tail.rows) <= MAX_PAGE_SIZE
+    assert tail.has_next is False
+
+
+@pytest.mark.asyncio
+async def test_tracklist_sets_page_is_bounded_regardless_of_corpus_size(session: AsyncSession) -> None:
+    """phaze-1wvb -- a large tracklist corpus does NOT grow the per-set read (was one row per Tracklist)."""
+    for i in range(_OVER_A_PAGE):
+        await _seed_tracklist(session, file_id=None, match_confidence=i, external_id=f"cand-{i:03d}")
+
+    page = await get_tracklist_sets_page(session)
+    assert len(page.rows) == DEFAULT_PAGE_SIZE
+    assert page.has_next is True
+
+    tail = await get_tracklist_sets_page(session, page=2, page_size=MAX_PAGE_SIZE * 10)
+    assert len(tail.rows) <= MAX_PAGE_SIZE
+    assert tail.has_next is False
+
+
+@pytest.mark.asyncio
+async def test_identify_paging_never_skips_or_duplicates_a_row(session: AsyncSession) -> None:
+    """Paging contract rule 4 -- the unique tiebreaker gives tied rows a TOTAL order.
+
+    Every row here is inserted in its own transaction but ``created_at`` is a Postgres timestamp
+    default, so ties are routine; without the ``id`` tiebreaker OFFSET paging could silently skip or
+    duplicate rows between page 1 and page 2. Walking the whole set page-by-page must reconstruct it
+    exactly once each.
+    """
+    total = 25
+    page_size = 10
+    for i in range(total):
+        await _seed_tracklist(session, file_id=None, match_confidence=i, external_id=f"page-{i:03d}")
+
+    seen: list[str] = []
+    for page_num in (1, 2, 3):
+        page = await get_tracklist_sets_page(session, page=page_num, page_size=page_size)
+        seen.extend(str(row["set_name"]) for row in page.rows)
+    assert len(seen) == total
+    assert len(set(seen)) == total, "a row was duplicated across pages -- the tiebreaker is broken"
+
+
+@pytest.mark.asyncio
+async def test_identify_pages_clamp_instead_of_raising(session: AsyncSession) -> None:
+    """Paging contract rule 5 -- nonsense paging inputs CLAMP; they never raise into the render."""
+    await _seed_tracklist(session, file_id=None, external_id="only-one")
+
+    for page_num in (0, -1, -9999):
+        page = await get_tracklist_sets_page(session, page=page_num)
+        assert page.page == 1
+        assert len(page.rows) == 1
+
+    # A page far past the end is an EMPTY page, not an error (the total is deliberately unknown).
+    beyond = await get_tracklist_sets_page(session, page=9999)
+    assert beyond.rows == []
+    assert beyond.has_next is False
+
+    # Page size clamps into [MIN, MAX] at both extremes.
+    assert (await get_trackid_files_page(session, page_size=-5)).page_size >= 1
+    assert (await get_trackid_files_page(session, page_size=100_000)).page_size <= MAX_PAGE_SIZE
+
+
+@pytest.mark.asyncio
+async def test_identify_workspaces_server_render_zero_rows(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-1wvb -- neither Identify workspace server-renders a file row inline any more.
+
+    The workspace fragments ship an EMPTY host div that hx-gets the bounded fragment on load (the
+    same shape phaze-5462 gave the analyze/metadata/fingerprint tabs). This is the structural guard:
+    a regression that re-inlines the row loop puts the table markup back into the workspace response
+    and fails here even before the payload grows.
+    """
+    file = await _seed_file(session, original_filename="inline-check.mp3")
+    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    await _seed_tracklist(session, file_id=file.id, match_confidence=95)
+
+    trackid = await client.get("/s/trackid", headers={"HX-Request": "true"})
+    assert trackid.status_code == 200
+    assert 'id="trackid-files-view"' in trackid.text
+    assert 'hx-get="/pipeline/trackid-files"' in trackid.text
+    assert 'id="trackid-file-table"' not in trackid.text, "rows must NOT be server-rendered inline"
+    assert "inline-check.mp3" not in trackid.text
+
+    tracklist = await client.get("/s/tracklist", headers={"HX-Request": "true"})
+    assert tracklist.status_code == 200
+    assert 'id="tracklist-sets-view"' in tracklist.text
+    assert 'hx-get="/pipeline/tracklist-sets"' in tracklist.text
+    assert 'id="tracklist-set-table"' not in tracklist.text, "rows must NOT be server-rendered inline"
+
+
+@pytest.mark.asyncio
+async def test_identify_render_payload_does_not_grow_with_the_corpus(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-1wvb -- the DoS regression proper: a large backlog must not grow the response.
+
+    Renders the Track-ID surface (workspace + its bounded fragment) at a small corpus, then adds
+    ``_OVER_A_PAGE`` more signal-bearing files and renders again. Pre-fix, the second response
+    carried every extra row; post-fix the fragment is capped at one page, so the payload is flat.
+    """
+    seed = await _seed_file(session, original_filename="baseline.mp3")
+    await _seed_fingerprint_result(session, seed.id, "audfprint", "success")
+    small = (await client.get("/pipeline/trackid-files")).text
+
+    for i in range(_OVER_A_PAGE):
+        file = await _seed_file(session, original_filename=f"flood-{i:03d}.mp3")
+        await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    large_resp = await client.get("/pipeline/trackid-files")
+    assert large_resp.status_code == 200
+    large = large_resp.text
+
+    assert large.count("<tr") <= DEFAULT_PAGE_SIZE + 1, "the rendered table must stay bounded to one page"
+    # Bounded, not merely "smaller": the flood adds at most one page of rows, never the whole backlog.
+    assert len(large) < len(small) * (DEFAULT_PAGE_SIZE + 5)
+    # Rule 2: the pager offers Prev/Next, never a "page X of Y" total (that needs a whole-corpus COUNT).
+    assert "Next" in large
+    assert " of " not in large.split("Page ", 1)[-1][:40]
+
+
+@pytest.mark.asyncio
+async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSession) -> None:
+    """PAGING CONTRACT RULE 7 -- bounding the render must NOT bound the enqueue sets.
+
+    The Tracklist workspace's SEARCH / SCRAPE / MATCH ALL triggers read their own pending sets, which
+    are UNBOUNDED BY DESIGN. This is the rule-7 guard: with a backlog larger than one render page,
+    the enqueue readers must still return the FULL set. If someone "unifies" these with the paged
+    render reader, the buttons silently under-enqueue the backlog -- a far worse bug than a long
+    table -- and this test is what catches it.
+    """
+    for i in range(_OVER_A_PAGE):
+        await _seed_file(session, original_filename=f"untracked-{i:03d}.mp3")
+
+    # The RENDER read is bounded...
+    render_page = await get_trackid_files_page(session)
+    assert len(render_page.rows) <= DEFAULT_PAGE_SIZE
+
+    # ...while the ENQUEUE read still covers every pending file (no LIMIT, ever).
+    enqueue_set = await get_untracked_files(session)
+    assert len(enqueue_set) == _OVER_A_PAGE, "SEARCH ALL must enqueue the FULL backlog, not one page"
+    assert len(enqueue_set) > DEFAULT_PAGE_SIZE
+
+    # The sibling scrape/match enqueue readers are likewise unpaged (they take no paging args at all).
+    assert isinstance(await get_scrape_pending_tracklists(session), list)
+    assert isinstance(await get_match_pending_tracklists(session), list)

@@ -19,16 +19,20 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from phaze.schemas.wire_bounds import INT32_MAX
+
 
 class TracklistTrackPayload(BaseModel):
     """One row in the tracks[] array of a TracklistCreatePayload."""
 
     model_config = ConfigDict(extra="forbid")  # nested-class strictness per RESEARCH Pitfall 5
 
-    position: int = Field(ge=0)
-    artist: str | None = None
-    title: str | None = None
-    timestamp: str | None = None
+    # position has no real domain narrower than "a row index" -- tracklist_tracks.position is a
+    # plain Integer (int4), so the fallback column bound applies (wire_bounds rule 3).
+    position: int = Field(ge=0, le=INT32_MAX)
+    artist: str | None = None  # -> tracklist_tracks.artist Text -- unbounded column, no cap (wire_bounds rule 2)
+    title: str | None = None  # -> tracklist_tracks.title Text -- unbounded column, no cap (wire_bounds rule 2)
+    timestamp: str | None = Field(default=None, max_length=20)  # -> tracklist_tracks.timestamp String(20) (wire_bounds rule 1)
     confidence: float | None = None
 
 
@@ -39,7 +43,9 @@ class TracklistCreatePayload(BaseModel):
 
     file_id: uuid.UUID
     source: Literal["fingerprint"]  # D-27 -- only fingerprint-sourced tracklists for now
-    external_id: str
+    # -> tracklists.external_id String(50) NOT NULL, the ON CONFLICT idempotency key (wire_bounds rule 1).
+    # min_length=1 because a NOT NULL column accepts '' and an empty idempotency key would collide across files.
+    external_id: str = Field(min_length=1, max_length=50)
     tracks: list[TracklistTrackPayload] = Field(min_length=1, max_length=2000)  # T-26-07-DoS control
     request_id: uuid.UUID  # idempotency key (Stripe-style)
 

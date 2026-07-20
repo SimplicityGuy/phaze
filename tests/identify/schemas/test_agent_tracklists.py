@@ -146,3 +146,93 @@ def test_tracklist_create_response_shape() -> None:
     assert resp.tracklist_id == tl_id
     assert resp.version == 1
     assert resp.track_count == 42
+
+
+# ------------------------------------------------------------------------------------------------
+# phaze-btlu: width caps matching the mapped column (wire_bounds rules 1 and 2).
+# ------------------------------------------------------------------------------------------------
+def test_track_timestamp_accepts_the_column_width_boundary() -> None:
+    """20 chars is exactly tracklist_tracks.timestamp varchar(20) -- must be ACCEPTED, not rejected."""
+    track = TracklistTrackPayload.model_validate({"position": 0, "timestamp": "x" * 20})
+
+    assert track.timestamp == "x" * 20
+
+
+def test_track_timestamp_rejects_over_width() -> None:
+    """21 chars would raise StringDataRightTruncation in Postgres -- reject at the boundary as 422."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        TracklistTrackPayload.model_validate({"position": 0, "timestamp": "x" * 21})
+
+    assert any(e.get("type") == "string_too_long" for e in exc_info.value.errors())
+
+
+def test_track_artist_and_title_stay_uncapped() -> None:
+    """artist/title map to Text columns -- unbounded, so a long value must still validate (rule 2)."""
+    track = TracklistTrackPayload.model_validate({"position": 0, "artist": "a" * 5000, "title": "t" * 5000})
+
+    assert len(track.artist or "") == 5000
+    assert len(track.title or "") == 5000
+
+
+def test_external_id_accepts_the_column_width_boundary() -> None:
+    """50 chars is exactly tracklists.external_id varchar(50) -- must be ACCEPTED."""
+    payload = TracklistCreatePayload(
+        file_id=uuid.uuid4(),
+        source="fingerprint",
+        external_id="e" * 50,
+        tracks=[_valid_track()],
+        request_id=uuid.uuid4(),
+    )
+
+    assert payload.external_id == "e" * 50
+
+
+def test_external_id_rejects_over_width() -> None:
+    """51 chars overflows the ON CONFLICT idempotency key column -- reject before the lock is taken."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        TracklistCreatePayload.model_validate(
+            {
+                "file_id": str(uuid.uuid4()),
+                "source": "fingerprint",
+                "external_id": "e" * 51,
+                "tracks": [{"position": 0}],
+                "request_id": str(uuid.uuid4()),
+            }
+        )
+
+    assert any(e.get("type") == "string_too_long" for e in exc_info.value.errors())
+
+
+def test_external_id_rejects_empty_string() -> None:
+    """NOT NULL still admits '' -- an empty idempotency key would collide across files, so min_length=1."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        TracklistCreatePayload.model_validate(
+            {
+                "file_id": str(uuid.uuid4()),
+                "source": "fingerprint",
+                "external_id": "",
+                "tracks": [{"position": 0}],
+                "request_id": str(uuid.uuid4()),
+            }
+        )
+
+    assert any(e.get("type") == "string_too_short" for e in exc_info.value.errors())
+
+
+# ------------------------------------------------------------------------------------------------
+# phaze-p9k7: position is capped at the int32 column bound (wire_bounds rule 3, fallback -- position
+# has no narrower domain than "a row index").
+# ------------------------------------------------------------------------------------------------
+def test_track_position_accepts_the_int32_boundary() -> None:
+    """2147483647 (int32 max) is exactly tracklist_tracks.position Integer -- must be ACCEPTED."""
+    track = TracklistTrackPayload.model_validate({"position": 2147483647})
+
+    assert track.position == 2147483647
+
+
+def test_track_position_rejects_over_int32() -> None:
+    """2147483648 would raise NumericValueOutOfRange in Postgres -- reject at the boundary as 422."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        TracklistTrackPayload.model_validate({"position": 2147483648})
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())

@@ -18,7 +18,9 @@ comes from the bearer-token resolver, never from the wire.
 from typing import Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from phaze.schemas.wire_bounds import INT32_MAX
 
 
 class ScanBatchPatch(BaseModel):
@@ -33,8 +35,13 @@ class ScanBatchPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    total_files: int | None = None
-    processed_files: int | None = None
+    # -> scan_batches.total_files / processed_files Integer (int4), rule 3. A scan batch counts
+    # files found on one agent's filesystem walk -- there is no established real-world cap on how
+    # many files a single scan directory can hold (an arbitrary round number here would be a guess,
+    # not a domain fact, per the contract's own caution against picking one), so the int4 column
+    # bound is the honest fallback rather than an invented domain.
+    total_files: int | None = Field(default=None, ge=0, le=INT32_MAX)
+    processed_files: int | None = Field(default=None, ge=0, le=INT32_MAX)
     status: Literal["running", "completed", "failed"] | None = None
     error_message: str | None = None
 

@@ -26,13 +26,11 @@ a scalar ``state == 'fingerprinted'`` read drops ``completed`` from 2 to 0 (RED)
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -41,6 +39,7 @@ from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.services.fingerprint import get_fingerprint_progress
+from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -51,20 +50,11 @@ pytestmark = pytest.mark.integration
 
 
 # Raw libpq broker DSN + SQLAlchemy async DSN, derived exactly as tests/integration/test_shadow_compare.py.
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
-
+# DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
 # This test only reads (per-test rollback), so it is not destructive; still refuse a non-`_test` DB so a
 # bare run against a dev stack can never seed rows into it. `just test-db` points at `phaze_test`.
-_TARGET_DB = make_url(SA_DSN).database or ""
-if not _TARGET_DB.endswith("_test"):
-    pytest.skip(
-        f"Refusing to run integration tests against non-test database {_TARGET_DB!r}; "
-        "set TEST_DATABASE_URL to a *_test DSN (e.g. run `just test-db`).",
-        allow_module_level=True,
-    )
+BROKER_DSN, SA_DSN = integration_dsns()
+_TARGET_DB = require_test_database(SA_DSN, context="integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
 

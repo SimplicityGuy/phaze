@@ -14,10 +14,10 @@
    second bulk enqueue can't fire while the agent churns. D-02: NO EXTRACT SELECTED button, NO
    per-row checkbox/selection state -- a subset enqueue would need a new backend endpoint.
 
-   Body = the metadata-pending queue (shell._render_stage -> metadata_files) rendered through the
-   reusable _file_table.html. Rows are inert-but-present (D-06 / R-1): cursor-pointer + a stable id,
-   but no click binding in Phase 58 (row->record is Phase 61). Pending files have not been enriched
-   yet, so "Existing tags" shows a neutral placeholder -- the rich per-file record is Phase 61.
+   Body = the metadata-pending queue, BOUNDED and PAGED (phaze-5462) -- lazy-loaded from
+   GET /pipeline/pending-files?stage=metadata into an empty host div, rendered by the shared
+   _pending_files.html. Pending files have not been enriched yet, so "Existing tags" shows a neutral
+   placeholder -- the rich per-file record is Phase 61.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = '`${$store.pipeline.metadataDone} extracted · ${Math.max($store.pipeline.metadataTotal - $store.pipeline.metadataDone, 0)} pending · manual stage`' %}
@@ -37,25 +37,15 @@
     {# Trigger response lands here (trigger_response.html branches: no_active_agent / count>0 / none ready). #}
     <div id="metadata-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     <div class="p-6">
-        {# Phase 87 (87-05, UI-01 cutover): the raw-enum "State" column is RETIRED here -- it rendered
-           FileRecord.state directly ({'text': f.state}), which the anti-feature table forbids ("rendering
-           raw internal status strings"). Per-stage status now lives in ONE canonical home: the derived
-           _stage_matrix pill row on the files table (files_table_view.html). test_no_raw_state_render.py
-           guards this so the raw render can never silently return. #}
-        {% set columns = ["File", "Format", "Size", "Existing tags"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for f in metadata_files %}
-            {% set _ = ns.rows.append([
-                {'text': f.original_filename, 'mono': True, 'title': f.original_path},
-                {'text': f.file_type},
-                {'text': f.file_size | filesizeformat, 'mono': True},
-                {'text': '—'},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "Nothing pending" %}
-        {% set empty_body = "Every discovered file already has extracted metadata." %}
-        {% set row_id_prefix = "metadata-row" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the shared
+           bounded/paged fragment on load -- the SAME contract as #analyze-files-view. It used to render
+           the ENTIRE unbounded metadata pending set inline; that measured harmlessly only because the
+           backlog is empty today. Do NOT reintroduce an inline row loop on this path. #}
+        <div id="metadata-files-view"
+             hx-get="/pipeline/pending-files?stage=metadata"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+        </div>
     </div>
 {% endcall %}

@@ -60,8 +60,9 @@ async def time_get_analyze_working_set(dsn: str, iterations: int) -> None:
 
     Replaces the Phase-58 ``get_analyze_stage_files`` DIRECT timing: that read returned the ENTIRE
     analyze-stage membership (92,335 rows at 200K scale -- the phaze-zqvh.1 baseline); this measures its
-    bounded replacement (the active-first working set + a LIMIT-ed recent-completions window). The
-    returned row count is the "after" number to cite against the 92,335 "before".
+    bounded replacement. phaze-5462: get_analyze_working_set now returns ONE PAGE (AnalyzeFilesPage),
+    so the count below is a page's worth -- bounded by DEFAULT_PAGE_SIZE plus the tail completions
+    window -- not the whole working set. That is the "after" number to cite against 92,335.
     """
     sa_url = dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
     engine = create_async_engine(sa_url)
@@ -70,7 +71,7 @@ async def time_get_analyze_working_set(dsn: str, iterations: int) -> None:
     row_count = 0
     try:
         async with factory() as s:
-            row_count = len(await get_analyze_working_set(s))  # warm-up (excluded), also captures the count
+            row_count = len((await get_analyze_working_set(s)).rows)  # warm-up (excluded), also captures the count
             print(f"\n===== get_analyze_working_set() DIRECT ({iterations} iterations) =====")  # noqa: T201
             print(f"returned row count: {row_count}")  # noqa: T201
             for _ in range(iterations):

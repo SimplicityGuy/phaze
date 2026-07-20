@@ -204,6 +204,82 @@ async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 
+# ------------------------------------------------------------------------------------------------
+# phaze-bd4n: year/track_number/bitrate are capped at a realistic domain, not left unbounded (or
+# ge=0-only) against their int4 columns (wire_bounds rule 3).
+# ------------------------------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("year", 10000),
+        ("year", 9999999999),
+        ("track_number", -1),
+        ("track_number", 10000),
+        ("bitrate", -1),
+        ("bitrate", 1_000_001),
+        ("bitrate", 5_000_000_000),
+    ],
+)
+async def test_metadata_put_rejects_out_of_domain_integer_tag_and_persists_no_row(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    field: str,
+    value: int,
+) -> None:
+    """An out-of-domain (or int32-overflowing) tag integer is a 422 at the wire, never a 500.
+
+    Previously `year` was fully unbounded, `track_number` had no `Field(...)` at all, and `bitrate`
+    was `ge=0` only -- any of them could reach `pg_insert(FileMetadata)` and raise Postgres
+    `NumericValueOutOfRange`, unhandled. Asserting no row is persisted proves the rejection happens
+    before the insert ever runs, so a buggy tag reader emitting one bad field does not force a
+    repeatable 500 + re-enqueue on every callback for that file.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={field: value})
+
+    assert response.status_code == 422, response.text
+    assert field in response.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) metadata PUT must not persist any row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("year", 0), ("year", 9999), ("track_number", 0), ("track_number", 9999), ("bitrate", 0), ("bitrate", 1_000_000)],
+)
+async def test_metadata_put_accepts_integer_tag_at_the_domain_boundary(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    field: str,
+    value: int,
+) -> None:
+    """The domain boundary itself must be ACCEPTED, not merely "one past it" rejected."""
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={field: value})
+
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert getattr(row, field) == value
+
+
 @pytest.mark.asyncio
 async def test_metadata_partial_put_preserves_other_fields(
     seed_test_agent: tuple[Agent, str],

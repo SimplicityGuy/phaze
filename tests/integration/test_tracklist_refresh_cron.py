@@ -19,11 +19,15 @@ covered by the cheaper mocked-session unit test
 (``test_refresh_tracklists_query_failure_is_reported_as_error`` in
 ``tests/identify/tasks/test_tracklist.py``).
 
-Deliberately does NOT use the ``committed_db`` fixture (``tests/integration/conftest.py``): its
-``target_db.endswith("_test")`` safety guard skips per-developer test databases named
-``phaze_test_<dev>`` (per the parallel-test-DB dispatch protocol), which do not end in the literal
-suffix ``_test``. The session-scoped ``async_engine`` fixture has no such guard and is already the
-repo's default real-Postgres harness.
+Uses the session-scoped ``async_engine`` fixture (the repo's default real-Postgres harness)
+rather than ``committed_db``, because this test needs no committed-row visibility across
+sessions -- a per-test rollback is sufficient.
+
+Historical note: this module previously avoided ``committed_db`` because that fixture's guard
+was ``target_db.endswith("_test")``, which REJECTED per-developer databases named
+``phaze_test_<dev>`` and silently skipped. That guard now lives in ``tests/db_guard.py``,
+accepts a ``test`` segment anywhere in the name, and ERRORS instead of skipping, so the
+workaround is no longer needed.
 """
 
 from __future__ import annotations

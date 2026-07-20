@@ -90,20 +90,32 @@
         {% include "pipeline/partials/analyzing_cloud_card.html" %}
     </div>
 
-    {# (c) the BOUNDED all-in-stage per-file lane + window table (D-03/D-04 + Phase 95 phaze-zqvh.2):
-       the default view renders the active-first working set (in-flight · awaiting-cloud · failed) plus a
-       LIMIT-ed recent-completions window (get_analyze_working_set), with the full corpus reachable via the
-       status-filter bar -> GET /pipeline/analyze-files (paged). This retires the Phase-58 unbounded
-       per-file render (92,335 rows / ~105MB at 200K scale, phaze-zqvh.1 baseline). The derived lane badge +
-       windowed-progress "Progress" cell (DERIVED window-progress text: window N/M · running · pending
-       (quota) · complete -- NEVER a raw FileRecord.state) live in _analyze_files.html, which is rendered
-       BOTH here (default working set, analyze_page=None) and by the filter/pager endpoint (paged). Each row
-       opens the full-record slide-in (Phase 61 RECORD-01). #analyze-files-view is a SIBLING of the poll's
-       OOB targets and is NEVER re-emitted by the 5s poll, so the operator's filter/page state survives every
-       tick (phaze-zqvh.2: the file grid stays outside the poll's OOB fan-out). #}
+    {# (c) the per-file lane + window table -- BOUNDED, PAGED and LAZY-LOADED (phaze-5462).
+
+       This workspace used to render the table inline off get_analyze_working_set, whose active branch
+       was UNBOUNDED: 10,132 rows / 12.7 MB in prod, ~180x the metadata/fingerprint tabs. phaze-zqvh
+       bounded only the completions window and left the other half to an assumption. The host div below
+       now ships EMPTY and pulls GET /pipeline/analyze-files on load, which serves the paged working set
+       (active-first, with the completions window on the final page) and the status-filter lenses.
+
+       The derived lane badge + windowed-progress "Progress" cell (window N/M · running · pending
+       (quota) · complete -- NEVER a raw FileRecord.state) live in _analyze_files.html, now rendered
+       ONLY by that endpoint. Each row opens the full-record slide-in (Phase 61 RECORD-01).
+       #analyze-files-view is a SIBLING of the poll's OOB targets and is NEVER re-emitted by the 5s
+       poll, so the operator's filter/page state survives every tick. #}
     <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
-        {% with analyze_rows = analyze_files, analyze_page = None, active_status = None %}
-            {% include "pipeline/partials/_analyze_files.html" %}
-        {% endwith %}
+        {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the paged
+           fragment on load, exactly like the metadata/fingerprint tabs -- which is what makes the
+           initial /s/analyze payload ~70 KB instead of 12.7 MB. Do NOT reintroduce an inline
+           {% include %} of _analyze_files.html on this path: the include is what made the whole
+           (unbounded) working set land in the first response. #analyze-files-view remains a SIBLING
+           of the 5s poll's OOB targets and is never re-emitted by it, so the operator's filter/page
+           state survives every tick. #}
+        <div id="analyze-files-view"
+             hx-get="/pipeline/analyze-files"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading files…</p>
+        </div>
     </div>
 {% endcall %}

@@ -16,21 +16,14 @@
    branch), SCRAPE/MATCH return trigger_tracklist_response.html (controller tasks, no agent branch);
    each lands in its own local *-trigger-response sink.
 
-   Body (b) -- the per-set table (D-08: aggregate cards on top, per-set detail below), rendered
-   through the reusable _file_table.html over get_tracklist_set_rows (tracklist_sets). Columns:
-   Set · Tracklist · Tracks · Matched to file. The Tracks cell is the D-07 N/M track-level coverage
-   (confident/total) from TracklistTrack.confidence. Rows are inert-but-present (D-06 / R-1): a
-   stable id via row_id_prefix, but the click is UNBOUND in Phase 59 (row->record is Phase 61).
-   Every DB-sourced `text` crosses the DB->render trust boundary through _file_table.html autoescape
-   -- never the raw passthrough filter (T-59-XSS).
+   Body (b) -- the per-set table (D-08: aggregate cards on top, per-set detail below). phaze-1wvb: an
+   EMPTY host div that hx-gets the BOUNDED, paged GET /pipeline/tracklist-sets fragment on load
+   (_tracklist_sets.html, over get_tracklist_sets_page) -- nothing is server-rendered inline any more.
+   The rendering rules (D-07 N/M coverage, inert-but-present rows, autoescape) live in that fragment.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = '`${$store.pipeline.tracklistDone} sets matched · 1001Tracklists`' %}
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
-{% set _match_color = {
-    "matched": "text-emerald-600 dark:text-emerald-300",
-    "candidate": "text-amber-600 dark:text-amber-300",
-} %}
 {% call ws.workspace(title="TRACKLIST", subcount=subcount) %}
     {# (a) THREE sequential step cards (D-05) -- lane-card visual shape + a per-step ALL trigger (D-06). #}
     <div class="grid grid-cols-3 gap-4 p-6">
@@ -98,41 +91,18 @@
         </div>
     </div>
 
-    {# (b) the per-set table (D-07/D-08) -- N/M track coverage below the aggregate step cards. #}
+    {# (b) the per-set table (D-07/D-08) -- N/M track coverage below the aggregate step cards.
+       phaze-1wvb: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the BOUNDED,
+       paged GET /pipeline/tracklist-sets fragment on load (_tracklist_sets.html, over
+       get_tracklist_sets_page). It used to render one row per Tracklist inline, unbounded.
+       The step cards ABOVE are untouched: their SEARCH/SCRAPE/MATCH ALL triggers still enqueue the
+       UNBOUNDED pending sets (paging contract rule 7 -- a bounded render is never the enqueue set). #}
     <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
-        {% set columns = ["Set", "Tracklist", "Tracks", "Matched to file"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for s in tracklist_sets %}
-            {% if s.tracks_total == 0 %}
-                {% set coverage_text = "—" %}
-                {% set coverage_color = "text-gray-500 dark:text-gray-400" %}
-            {% else %}
-                {% set coverage_text = "%d/%d" | format(s.tracks_confident, s.tracks_total) %}
-                {% if s.tracks_confident == s.tracks_total %}
-                    {% set coverage_color = "text-emerald-600 dark:text-emerald-300" %}
-                {% else %}
-                    {% set coverage_color = "text-blue-600 dark:text-blue-300" %}
-                {% endif %}
-            {% endif %}
-            {% if s.matched_to_file %}
-                {% set matched_text = "matched" %}
-                {% set matched_color = "text-emerald-600 dark:text-emerald-300" %}
-            {% else %}
-                {% set matched_text = "—" %}
-                {% set matched_color = "text-gray-500 dark:text-gray-400" %}
-            {% endif %}
-            {% set _ = ns.rows.append([
-                {'text': s.set_name, 'mono': True, 'title': s.path},
-                {'text': s.tracklist_state, 'color': _match_color.get(s.tracklist_state, "text-gray-500 dark:text-gray-400")},
-                {'text': coverage_text, 'mono': True, 'color': coverage_color},
-                {'text': matched_text, 'color': matched_color},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "No tracklists yet" %}
-        {% set empty_body = "Run SEARCH ALL to discover 1001Tracklists matches for your live sets." %}
-        {% set row_id_prefix = "tracklist-row" %}
-        {% set table_id = "tracklist-set-table" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        <div id="tracklist-sets-view"
+             hx-get="/pipeline/tracklist-sets"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading sets…</p>
+        </div>
     </div>
 {% endcall %}

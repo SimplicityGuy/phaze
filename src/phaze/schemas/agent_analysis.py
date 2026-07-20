@@ -18,6 +18,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from phaze.schemas.wire_bounds import INT32_MAX
+
 
 class AnalysisWindowPayload(BaseModel):
     """One per-window time-series row (Phase 31, ANL-01).
@@ -32,15 +34,50 @@ class AnalysisWindowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")  # strict body parsing
 
     tier: Literal["fine", "coarse"]
-    window_index: int = Field(ge=0)
+    # window_index has no domain narrower than "an index into a windowed analysis run" -- it maps
+    # to analysis_windows.window_index Integer (int4), so the fallback column bound applies
+    # (wire_bounds rule 3, phaze-01gh).
+    window_index: int = Field(ge=0, le=INT32_MAX)
     start_sec: float = Field(ge=0.0)
     end_sec: float = Field(ge=0.0)
     # Fine-tier fields
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_windows.musical_key String(10), rule 1. Written as f"{key} {scale}" by
+    # _analyze_fine_windows (services/analysis.py) from essentia's KeyExtractor(profileType="edma").
+    # NOT a guess: essentia's own MusicExtractor docs (essentia.upf.edu/tutorial_extractors_
+    # musicextractor.html) show tonal.key_edma/key_krumhansl/key_temperley all returning `key`
+    # and `scale` as separate descriptors -- `key` is a chromatic note name (<=2 chars: the 12
+    # pitch classes A..G#) and `scale` is exactly "major"/"minor" (<=5 chars), never a richer
+    # MIREX-style name. Empirically ran `es.KeyExtractor(profileType="edma")` against synthetic
+    # C#-major and A-minor triads on this checkout (the installed essentia-tensorflow binary) and
+    # got key="C#"/scale="major" and key="A"/scale="minor", confirming the theoretical 2+1+5=8-char
+    # max ("C# minor"/"A# major") is what's actually produced. The aggregate (non-window) value
+    # (`aggregate_key` in services/analysis.py) picks one of the SAME per-window strings unchanged
+    # (duration-weighted mode) -- it never appends the profile name or key-strength, so no richer
+    # value reaches AnalysisWritePayload.musical_key via job_runner.py/tasks/functions.py either.
+    # The column is tight but not too narrow for the data it actually receives (phaze-ty0o
+    # investigation), so the wire is capped to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     # Coarse-tier fields
-    mood: str | None = None
-    style: str | None = None
+    # -> analysis_windows.mood String(50), rule 1. derive_mood (services/analysis.py) returns one
+    # of the fixed `_MOOD_SET_NAMES` values with the "mood_" prefix stripped -- all seven are
+    # essentia's standard BINARY mood classifiers (mood_happy/mood_sad/etc., each a 3-variant
+    # musicnn/vggish head per `_make_standard_set`), not the multi-word MIREX mood-cluster head
+    # (which this codebase does not use anywhere in MODEL_SETS). Longest label is
+    # "electronic"/"aggressive" at 10 chars, well inside the column.
+    mood: str | None = Field(default=None, max_length=50)
+    # -> analysis_windows.style String(50), rule 1. derive_style (services/analysis.py) returns the
+    # top genre_discogs400 label from `GENRE_MODEL` (filename="discogs-effnet-bs64-1", the
+    # discogs-effnet head -- NOT the newer discogs519 taxonomy, which would need re-checking if
+    # ever swapped in), with "---" replaced by "/". MEASURED directly against the model's own class
+    # list metadata (essentia.upf.edu/models/feature-extractors/discogs-effnet/discogs-effnet-
+    # bs64-1.json, 400 classes): the longest raw label is "Folk, World, & Country---Canzone
+    # Napoletana" at 43 characters (== 43 bytes; 11 labels are non-ASCII but none is the longest,
+    # so byte width never exceeds char width here) -- after the "---"->"/" substitution (-2 chars)
+    # the stored value tops out at 41 chars, comfortably inside String(50). Postgres varchar(N) and
+    # Pydantic `max_length` both count characters, not encoded bytes, so the non-ASCII labels are
+    # not a separate risk even before that margin.
+    style: str | None = Field(default=None, max_length=50)
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
     features: dict | None = None
 
@@ -51,7 +88,11 @@ class AnalysisWritePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")  # D-26 -- strict body parsing
 
     bpm: float | None = Field(default=None, ge=0.0)
-    musical_key: str | None = None
+    # -> analysis_results.musical_key String(10), rule 1. Same essentia KeyExtractor provenance,
+    # same empirically-confirmed 8-char max ("C# minor"/"G# major"), as AnalysisWindowPayload.musical_key
+    # above -- the column is tight but sufficient for the data it actually receives (phaze-ty0o
+    # investigation), so the wire is capped to match rather than the column widened.
+    musical_key: str | None = Field(default=None, max_length=10)
     mood: dict[str, float] | None = None
     style: dict[str, float] | None = None
     danceability: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -59,16 +100,31 @@ class AnalysisWritePayload(BaseModel):
     # Phase 43 windowed-analysis coverage (the five-field contract analyze_file
     # returns). These land in dedicated `analysis` columns -- the router adds them
     # to `_ANALYSIS_COLUMN_FIELDS` so they do NOT funnel into `features` JSONB. All
-    # optional so partial-PUT preserves unset coverage; counts are `ge=0`.
-    fine_windows_analyzed: int | None = Field(default=None, ge=0)
-    fine_windows_total: int | None = Field(default=None, ge=0)
-    coarse_windows_analyzed: int | None = Field(default=None, ge=0)
-    coarse_windows_total: int | None = Field(default=None, ge=0)
+    # optional so partial-PUT preserves unset coverage. Bounded by the SAME
+    # realistic-windows-per-file domain as `windows` below (a 24h file at 30s
+    # windows is ~2,880 fine windows; 50000 is generous) rather than the wider
+    # int32 column fallback -- a count can never legitimately exceed the number of
+    # windows a run could produce (wire_bounds rule 3, phaze-01gh).
+    fine_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
+    fine_windows_total: int | None = Field(default=None, ge=0, le=50000)
+    coarse_windows_analyzed: int | None = Field(default=None, ge=0, le=50000)
+    coarse_windows_total: int | None = Field(default=None, ge=0, le=50000)
     sampled: bool | None = None
     # Per-window time-series (Phase 31). `| None` default preserves the partial-PUT
-    # contract (router only replaces windows when this is not None); `max_length`
-    # bounds the DoS-via-huge-bulk-insert threat (a 24h file at 30s windows is
-    # ~2,880 fine windows, so 50000 is generous).
+    # contract (router only replaces windows when this is not None).
+    #
+    # `max_length` here is a DoS bound on work-per-request, NOT a column width and NOT a
+    # storage-path limit (wire_bounds rule 7 -- do not "correct" it to either). It bounds the
+    # memory and time one PUT can demand; 50000 windows is ~17 days of audio at 30s fine
+    # windows, so it cannot refuse a real recording (a 24h file is ~2,880 fine windows).
+    #
+    # phaze-syxv: this cap USED to be a lie. The storage path persisted every window in one
+    # multi-row VALUES, which PostgreSQL's int16 Bind parameter count caps at 2,730 rows for
+    # this model -- so a payload well under 50000 (and under the 2,880 cited above) died with
+    # an asyncpg InterfaceError, and because FAILURE_IS_TERMINAL[ANALYZE] that discarded hours
+    # of analysis permanently. The router now chunks the insert (services/bulk_insert.py), so
+    # the wire cap is once again a statement about work-per-request only, and the whole range
+    # this field admits is actually storable.
     windows: list[AnalysisWindowPayload] | None = Field(default=None, max_length=50000)
 
 
@@ -87,8 +143,12 @@ class AnalysisProgressPayload(BaseModel):
     ``| None``, no default) -- a progress POST always carries both (the START
     call sends ``analyzed=0, total=N``; bumps send ``analyzed=k, total=N``).
     ``extra='forbid'`` rejects any attempt to ride an ``agent_id``/``file_id``
-    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``
-    guards bound malformed counts at the wire boundary.
+    along in the body (AUTH-01, T-57.1-02 -> 422 at the route); the ``ge=0``/``le=50000``
+    bound malformed counts at the wire boundary -- same realistic-windows-per-file domain
+    as ``AnalysisWritePayload.fine_windows_analyzed``/``.fine_windows_total`` (wire_bounds
+    rule 3, phaze-01gh): these land in the same ``analysis_results`` int4 counter columns,
+    so an out-of-range value would otherwise raise Postgres ``NumericValueOutOfRange``
+    unhandled, and here the abort happens BEFORE the ledger clear, re-queuing the file.
 
     Fine-only per Claude's Discretion (CONTEXT D-01): fine-only satisfies
     WORK-04; coarse counts are intentionally omitted (do NOT add coarse fields).
@@ -96,8 +156,8 @@ class AnalysisProgressPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # strict body parsing -- forged agent_id/file_id -> 422
 
-    fine_windows_analyzed: int = Field(ge=0)
-    fine_windows_total: int = Field(ge=0)
+    fine_windows_analyzed: int = Field(ge=0, le=50000)
+    fine_windows_total: int = Field(ge=0, le=50000)
 
 
 class AnalysisProgressResponse(BaseModel):

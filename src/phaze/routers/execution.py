@@ -43,6 +43,7 @@ from phaze.services.execution_dispatch import (
     get_approved_proposals_grouped_by_agent,
 )
 from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
+from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 
 
 if TYPE_CHECKING:
@@ -384,17 +385,17 @@ async def audit_log(
     request: Request,
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the audit log page, or an HTMX table fragment."""
-    logs, pagination = await get_execution_logs_page(session, status=status, page=page, page_size=page_size)
+    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size)
     stats = await get_execution_stats(session)
 
     context = {
         "request": request,
-        "logs": logs,
-        "pagination": pagination,
+        "logs": audit_page.rows,
+        "pagination": audit_page,
         "stats": stats,
         "current_status": status or "all",
         "current_page": "audit",

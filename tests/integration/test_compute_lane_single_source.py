@@ -156,7 +156,7 @@ async def test_all_three_surfaces_reflect_one_stubbed_lane_list(
     )
     await session.commit()
 
-    analyze_files = await get_analyze_working_set(session)
+    analyze_files = (await get_analyze_working_set(session)).rows
     vox_badges = [f for f in analyze_files if f["lane"] == "vox"]
     assert len(vox_badges) == 1, "the vox-stamped analyze file must carry a per-cluster lane badge"
     assert vox_badges[0]["lane_kind"] == "compute", "the file-badge kind must come from the registry projection"

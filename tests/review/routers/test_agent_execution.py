@@ -347,6 +347,71 @@ async def test_same_status_patch_terminal_failed_allowed(
 
 
 @pytest.mark.asyncio
+async def test_create_nonexistent_proposal_returns_404_not_500(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-stpl (request_guards.py rule 4): a well-formed but nonexistent ``proposal_id`` is a genuine
+    race (stale SAQ job state, or the proposal was deleted/rolled back concurrently) -- no stricter
+    Pydantic signature could have rejected it, so it is caught as ``IntegrityError`` and mapped to a
+    clean 404, never an unhandled 500. ``on_conflict_do_nothing(index_elements=["id"])`` does NOT
+    shield this: it only absorbs an ``id`` PK replay, not the separate ``proposal_id`` FK.
+    """
+    log_id = uuid.uuid4()
+    nonexistent_proposal_id = uuid.uuid4()  # genuinely nonexistent -- no RenameProposal was ever seeded
+
+    async for ac in _authed_client(authed_app):
+        response = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(nonexistent_proposal_id, log_id=log_id),
+        )
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "proposal not found"
+
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == log_id))
+    assert result.scalar_one_or_none() is None  # no row was left behind by the failed FK insert
+
+
+@pytest.mark.asyncio
+async def test_create_nonexistent_proposal_leaves_session_usable(
+    authed_app: tuple[FastAPI, str],
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """request_guards.py rule 5: the caught ``IntegrityError`` must unwind only the nested SAVEPOINT
+    (``session.begin_nested()``), NOT a full ``session.rollback()``. A full rollback expires every
+    already-loaded ORM object on the session, so the NEXT statement on it would 500 on exactly the
+    hiccup this fix was meant to survive (phaze-5tsj / phaze-yfj1). Proves the session -- the same
+    object the app's ``get_session`` override hands back on every request -- survives the caught race
+    and can still service a subsequent, genuinely valid create in the SAME session.
+    """
+    agent, _ = seed_test_agent
+    _, valid_proposal_id = await _seed_proposal_chain(session, agent.id)
+    doomed_log_id = uuid.uuid4()
+    good_log_id = uuid.uuid4()
+    nonexistent_proposal_id = uuid.uuid4()
+
+    async for ac in _authed_client(authed_app):
+        failed = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(nonexistent_proposal_id, log_id=doomed_log_id),
+        )
+        assert failed.status_code == 404
+
+        # The session must still be usable -- neither PendingRollbackError nor a refresh-against-an-
+        # aborted-transaction 500 on the very next statement.
+        recovered = await ac.post(
+            "/api/internal/agent/execution-log",
+            json=_make_create_body(valid_proposal_id, log_id=good_log_id),
+        )
+        assert recovered.status_code == 200, recovered.text
+
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == good_log_id))
+    assert result.scalar_one().proposal_id == valid_proposal_id
+
+
+@pytest.mark.asyncio
 async def test_terminal_completed_to_failed_still_rejected(
     authed_app: tuple[FastAPI, str],
     seed_test_agent: tuple[Agent, str],
