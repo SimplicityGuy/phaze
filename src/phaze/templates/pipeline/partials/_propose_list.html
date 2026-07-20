@@ -97,7 +97,8 @@
 {% endif %}
 {% set row_id_prefix = "propose-row" %}
 {# phaze-a6hm.11: the SELECTION SCOPE. `x-data` here (rather than outside the container, where the
-   legacy proposal_content.html puts it) is deliberate and is the correct choice for THIS container:
+   legacy proposal_content.html used to put it -- phaze-a6hm.12 deleted that template) is
+   deliberate and is the correct choice for THIS container:
    every swap into #propose-workspace-list replaces these rows wholesale, so a selection that
    survived the swap would be a set of ids that are no longer on screen -- after a bulk approve the
    acted rows have left the pending tab entirely, and after a page change the ticked ids are not
