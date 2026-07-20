@@ -1,12 +1,56 @@
+{# Filename search box -- ADAPTED (phaze-a6hm.2), not rewritten.
+
+   Same input, same placeholder, same debounce, same full-width styling as the legacy proposals
+   view. As with filter_tabs.html the change is that it no longer hardcodes its destination
+   (`/proposals/?status=...` into `#proposal-list-container`), which is what left it stranded when
+   the v7 cutover replaced that page.
+
+   Context contract (all required):
+     * view          -- a ListViewState (routers/view_state.py); supplies the current text
+                        (view.q) and the rest of the state for the URL.
+     * search_url    -- the path to query (e.g. "/s/propose").
+     * search_target -- css selector of the swap target (e.g. "#propose-workspace-list").
+     * search_id     -- OPTIONAL id for the input, defaulting to "list-search". It is a parameter
+                        rather than a literal because the label's `for` must point at THIS input:
+                        two search boxes on one page sharing an id would give both labels the same
+                        target, so the second control would be mislabelled to assistive tech. One
+                        caller exists today (the propose workspace), so the default is safe now and
+                        the seam is there before it is needed.
+
+   THREE things here are load-bearing and easy to break:
+
+   1. `omit=("q",)`. The input carries `name="q"` and `hx-include="this"`, so htmx APPENDS the
+      typed value to the query string. If the URL also carried the previous q, the server would
+      receive `?q=old&q=new` and Starlette's query_params.get would return `old` -- the box would
+      lag one keystroke forever, and the bug would look like a debounce problem. See
+      ListViewState.query's `omit` docs.
+
+   2. `page=1`. Every keystroke narrows the result set, so staying on page 7 would routinely land
+      the operator past the end of their own search and show an empty table for a query that
+      matched plenty.
+
+   3. search_target must be the LIST container, never a target enclosing this input. The response
+      must not replace the element the operator is typing into: doing so destroys focus and caret
+      position mid-word on every debounce tick. This is why /s/propose serves a narrow list-only
+      fragment for this swap (see _render_stage) instead of re-rendering the whole workspace.
+
+   hx-push-url="true" keeps the search in the address bar so it is bookmarkable and survives Back;
+   safe because search_url is a full-page route that answers a history restore with a whole
+   document (response_shape.py rule 2). #}
+{% set _search_id = search_id | default("list-search", true) %}
 <div class="mb-4">
+    <label for="{{ _search_id }}" class="sr-only">Search proposals by filename</label>
     <input type="text"
+           id="{{ _search_id }}"
            name="q"
-           value="{{ search_query }}"
+           value="{{ view.q }}"
            placeholder="Search by filename..."
-           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 dark:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
-           hx-get="/proposals/?status={{ current_status }}"
+           autocomplete="off"
+           class="w-full rounded-md border border-gray-300 dark:border-phaze-border px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
+           hx-get="{{ search_url }}?{{ view.query(omit=('q',), page=1) }}"
            hx-trigger="keyup changed delay:300ms"
-           hx-target="#proposal-list-container"
+           hx-target="{{ search_target }}"
            hx-swap="innerHTML"
+           hx-push-url="true"
            hx-include="this">
 </div>

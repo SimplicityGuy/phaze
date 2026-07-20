@@ -1054,7 +1054,10 @@ async def test_get_recent_scans_partial_is_self_arming(
 
     response = await ac.get("/pipeline/scans/recent")
     assert response.status_code == 200
-    assert 'hx-get="/pipeline/scans/recent"' in response.text
+    # phaze-a6hm.6: the poll URL now carries the resolved sort (column_sort rule 4a), so it is
+    # "/pipeline/scans/recent?sort=...&order=..." rather than the bare path. The endpoint is still
+    # the same self-referential one -- that is what this test is about.
+    assert 'hx-get="/pipeline/scans/recent?' in response.text
     assert 'hx-trigger="every 5s"' in response.text
     assert 'hx-swap="outerHTML"' in response.text
 
@@ -1259,7 +1262,9 @@ async def test_recent_scans_table_delete_control_on_terminal_rows_only(
     # Actions column header present.
     assert ">Actions</th>" in response.text
     # The completed row exposes a delete control wired to its id + the HTMX swap target.
-    assert f'hx-delete="/pipeline/scans/{completed_id}"' in response.text
+    # phaze-a6hm.6: the delete url now carries the active sort so removing a row cannot reset the
+    # table's order (column_sort rule 4a); the id-bearing path prefix is what this test is about.
+    assert f'hx-delete="/pipeline/scans/{completed_id}?' in response.text
     assert 'hx-target="#recent-scans"' in response.text
     assert 'hx-swap="outerHTML"' in response.text
     assert "Delete this scan and all associated data?" in response.text
@@ -1618,3 +1623,238 @@ async def test_post_scans_missing_form_field_is_still_a_422_envelope_rejection(
     assert response.status_code == 422, response.text
     assert 'role="alert"' not in response.text
     mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# phaze-a6hm.6 -- sortable Recent Scans table (routers/column_sort.py contract)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_scan_batches(session: AsyncSession) -> None:
+    """Seed three terminal batches whose path order is the exact REVERSE of the default order.
+
+    The inversion is load-bearing, not decoration. The default order is ``created_at DESC``, so
+    seeding paths in ASCENDING creation order makes "path asc" (alpha, bravo, charlie) and the
+    default (charlie, bravo, alpha) disagree in EVERY position -- most importantly the first one.
+
+    An earlier version of this helper seeded the paths in descending creation order, which made
+    path-ascending and the default agree on the first row. Every ordering assertion below then
+    passed against a deliberately broken implementation: the poll-survival test in particular was
+    checking a value that was identical whether or not the sort survived. If you change the seed,
+    re-verify by breaking the template on purpose and watching these tests fail.
+    """
+    from datetime import datetime, timedelta
+
+    # NAIVE on purpose: the test schema comes from create_all, which emits TIMESTAMP WITHOUT TIME
+    # ZONE, so a tz-aware value is rejected on INSERT. Production is tz-aware; the sort under test
+    # is ordering, not tz handling (elapsed_seconds owns that and has its own tz-aware unit test).
+    base = datetime(2026, 1, 1)
+    for index, path in enumerate(["/data/music/alpha", "/data/music/bravo", "/data/music/charlie"]):
+        session.add(
+            ScanBatch(
+                id=uuid.uuid4(),
+                agent_id="test-agent",
+                scan_path=path,
+                status=ScanStatus.COMPLETED.value,
+                total_files=10,
+                processed_files=10,
+                created_at=base + timedelta(hours=index),
+            )
+        )
+    await session.commit()
+
+
+def _path_order(html: str) -> list[str]:
+    """Return the seeded scan paths in the order they appear in the rendered table."""
+    import re
+
+    return re.findall(r"/data/music/(?:alpha|bravo|charlie)", html)[::2] or re.findall(r"/data/music/(?:alpha|bravo|charlie)", html)
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_sorts_server_side_by_path(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """?sort=path&order=asc reorders the ROWS, not just the header decoration.
+
+    Contract rule 1: the ORDER BY lands in SQL. The seeded rows' path order is the reverse of
+    their created_at order, so this ordering is unreachable without a real server-side re-query.
+    """
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    response = await ac.get("/pipeline/scans/recent?sort=path&order=asc")
+    assert response.status_code == 200
+    paths = _path_order(response.text)
+    assert paths == sorted(paths), f"rows not in ascending path order: {paths}"
+    assert paths[0].endswith("alpha")
+
+    descending = await ac.get("/pipeline/scans/recent?sort=path&order=desc")
+    assert _path_order(descending.text)[0].endswith("charlie")
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_poll_url_carries_the_active_sort(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """REGRESSION (the bead's core acceptance): the 5s poll re-requests the CHOSEN sort.
+
+    This table is a poll first and a table second, and it swaps ``outerHTML`` -- so the response
+    REPLACES the polling element and whatever its ``hx-get`` says becomes the next tick's request.
+    A hard-coded ``hx-get="/pipeline/scans/recent"`` therefore does not merely skip one tick: it
+    writes the SORTLESS url into the DOM, so ~5s after the operator clicks a header the table
+    silently snaps back to the default order and stays there.
+
+    Asserting the first render is sorted does NOT catch this -- that assertion passes against the
+    broken implementation. The load-bearing assertion is on the url the response ARMS ITSELF with.
+    """
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    response = await ac.get("/pipeline/scans/recent?sort=path&order=asc")
+    assert response.status_code == 200
+    assert 'hx-get="/pipeline/scans/recent?sort=path&amp;order=asc"' in response.text
+    # ...and specifically NOT the bare, sort-losing url this table used to hard-code.
+    assert 'hx-get="/pipeline/scans/recent"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_sort_actually_survives_a_simulated_poll_tick(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """REGRESSION: replay the poll the way htmx would and assert the order is still the chosen one.
+
+    Walks the real loop rather than trusting the url: sort -> read the ``hx-get`` the response
+    armed -> issue THAT request (this is exactly what the 5s trigger does) -> assert the second
+    response is still path-ascending AND still arms the same sorted url, so the order is stable
+    across arbitrarily many ticks rather than surviving only the first.
+    """
+    import re
+
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    first = await ac.get("/pipeline/scans/recent?sort=path&order=asc")
+    assert _path_order(first.text)[0].endswith("alpha")
+
+    match = re.search(r'hx-get="([^"]+)"', first.text)
+    assert match is not None, "table did not arm a poll url at all"
+    poll_url = match.group(1).replace("&amp;", "&")
+
+    tick = await ac.get(poll_url)
+    assert tick.status_code == 200
+    assert _path_order(tick.text)[0].endswith("alpha"), "the poll reverted the operator's chosen sort"
+    assert re.search(r'hx-get="([^"]+)"', tick.text).group(1).replace("&amp;", "&") == poll_url  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_unknown_sort_degrades_to_default_not_422(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Contract rule 3: an unrecognised sort renders the DEFAULT order; it does not 422 the poll.
+
+    A stale bookmark or an evicted history entry can carry an old key innocently, and this url is
+    re-requested every 5 seconds -- 422-ing it would blank the table to punish a display preference.
+    """
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    response = await ac.get("/pipeline/scans/recent?sort=drop+table&order=sideways")
+    assert response.status_code == 200
+    # Degrades to the contract default (started/desc = newest first = charlie, the last seeded) --
+    # which is the OPPOSITE end from path-ascending, so this cannot pass by coincidence.
+    assert _path_order(response.text)[0].endswith("charlie")
+    assert 'hx-get="/pipeline/scans/recent?sort=started&amp;order=desc"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_unknown_sort_cannot_reach_a_column(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Contract rule 2 as a REGRESSION: an unwhitelisted key never becomes a column.
+
+    Asserting the status alone would pass against a ``getattr(ScanBatch, sort)`` implementation, so
+    this asserts the resolved STATE: a key naming a real-but-unoffered ORM attribute (``error_message``,
+    a real column this table deliberately does not expose) still resolves to the default key.
+    """
+    from phaze.routers.pipeline_scans import RECENT_SCANS_SORT
+
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    # A real ScanBatch column that is NOT whitelisted -- the exact input a getattr-based
+    # implementation would happily turn into an ORDER BY.
+    state = RECENT_SCANS_SORT.resolve(sort="error_message", order="asc")
+    assert state.key == "started"
+    assert "error_message" not in str(state.order_by()[0])
+
+    response = await ac.get("/pipeline/scans/recent?sort=error_message&order=asc")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_headers_announce_sort_state_via_aria(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Contract rule 5: the ACTIVE column announces its direction; other sortable columns say "none".
+
+    Non-sortable headers (Elapsed is computed in Python, Actions is a control column) must carry NO
+    aria-sort at all -- the attribute's absence means "not sortable", where ``none`` would advertise
+    a sorting affordance that does not exist.
+    """
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+
+    response = await ac.get("/pipeline/scans/recent?sort=path&order=desc")
+    assert 'aria-sort="descending"' in response.text
+    assert 'aria-sort="none"' in response.text
+    # Exactly one column is active.
+    assert response.text.count('aria-sort="descending"') == 1
+    assert response.text.count('aria-sort="ascending"') == 0
+    # Five whitelisted columns => five aria-sort attributes; Elapsed/Actions carry none.
+    assert response.text.count("aria-sort=") == 5
+
+
+@pytest.mark.asyncio
+async def test_recent_scans_delete_preserves_the_active_sort(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """The delete re-render is the third producer of #recent-scans and must not reset the order.
+
+    Deleting a row re-renders the whole section, so without the sort it would both reorder the
+    table under the operator AND arm a sortless poll -- the same defect one interaction over.
+    """
+    ac, _ = smoke
+    await _seed_scan_batches(session)
+    doomed = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/bravo"))).scalars().one()
+
+    response = await ac.delete(f"/pipeline/scans/{doomed.id}?sort=path&order=asc")
+    assert response.status_code == 200
+    assert "/data/music/bravo" not in response.text
+    assert _path_order(response.text)[0].endswith("alpha")
+    assert 'hx-get="/pipeline/scans/recent?sort=path&amp;order=asc"' in response.text
+
+
+def test_recent_scans_contract_is_wired_at_import_time() -> None:
+    """Contract rule 6: the contract is a module-level constant whose invariants hold.
+
+    Elapsed/Actions are asserted ABSENT deliberately -- Elapsed is computed by ``elapsed_seconds``
+    in Python and has no column to ORDER BY, so offering it would mean sorting the fetched rows
+    after the read, which rule 1 forbids.
+    """
+    from phaze.routers.pipeline_scans import RECENT_SCANS_SORT
+
+    assert RECENT_SCANS_SORT.endpoint == "/pipeline/scans/recent"
+    assert RECENT_SCANS_SORT.target == "#recent-scans"
+    assert RECENT_SCANS_SORT.default_key == "started"
+    # Newest-first, matching the pre-sort behaviour of a table literally called "Recent Scans".
+    assert RECENT_SCANS_SORT.default_order == "desc"
+    assert {column.label for column in RECENT_SCANS_SORT.columns} == {"Agent", "Path", "Status", "Files", "Started"}
+    assert "Elapsed" not in {column.label for column in RECENT_SCANS_SORT.columns}

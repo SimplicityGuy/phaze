@@ -40,6 +40,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
@@ -64,6 +65,36 @@ _TERMINAL_STATUSES = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED})
 # reaper actually marks the scan FAILED. e.g. scan_stall_seconds=600 -> the UI
 # warns once a RUNNING scan has been quiet for >300s.
 _UI_STALL_WARN_FRACTION = 0.5
+
+# phaze-a6hm.6: THE sortable-column contract for the Recent Scans table (see
+# `routers/column_sort.py` -- that docstring is the contract, this is only its wiring).
+# Module-level per contract rule 6, so a mis-wired column fails at import, not per click.
+#
+# The AGENT column sorts by the agent's NAME, not its id: the cell displays `_agent_name`, and a
+# header that visibly reads "Agent" but orders by an opaque id would be a sort the operator cannot
+# verify by looking. A correlated scalar subquery is a legal `expression` (rule 2) and keeps
+# `build_recent_scans`' single-query shape -- no join, so the LIMIT still applies to ScanBatch rows.
+#
+# ELAPSED and ACTIONS are deliberately NOT whitelisted. Elapsed is computed in PYTHON
+# (`elapsed_seconds`, which branches on completed_at/updated_at) and has no column to ORDER BY;
+# offering it would mean sorting `rows` after the read, which contract rule 1 forbids because it
+# reorders only the fetched window. Their headers render as plain text -- the template gates on
+# `sort.is_sortable(...)`, so an un-whitelisted label needs no per-column branching here.
+RECENT_SCANS_SORT = SortContract(
+    endpoint="/pipeline/scans/recent",
+    target="#recent-scans",
+    columns=(
+        SortableColumn(key="agent", label="Agent", expression=select(Agent.name).where(Agent.id == ScanBatch.agent_id).scalar_subquery()),
+        SortableColumn(key="path", label="Path", expression=ScanBatch.scan_path),
+        SortableColumn(key="status", label="Status", expression=ScanBatch.status),
+        SortableColumn(key="files", label="Files", expression=ScanBatch.processed_files),
+        SortableColumn(key="started", label="Started", expression=ScanBatch.created_at),
+    ),
+    default_key="started",
+    # The pre-sort behaviour was `ORDER BY created_at DESC LIMIT 10` and operators read this table
+    # newest-first; defaulting to ASC would silently re-point "Recent Scans" at the OLDEST scans.
+    default_order=DESCENDING,
+)
 
 
 def elapsed_seconds(batch: ScanBatch) -> int:
@@ -177,6 +208,8 @@ async def agent_roots_swap(
 async def recent_scans_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    sort: Annotated[str | None, Query()] = None,
+    order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """HTMX poll endpoint: re-render the Recent Scans mini-table.
 
@@ -189,12 +222,24 @@ async def recent_scans_partial(
 
     Registered BEFORE ``GET /pipeline/scans/{batch_id}`` so the literal ``/recent``
     path is matched here instead of being captured as a ``batch_id`` UUID path param.
+
+    phaze-a6hm.6: this endpoint serves BOTH the header-click re-sort and the 5s poll, which is why
+    it takes ``sort``/``order`` -- and why the partial it returns spells its own ``hx-get`` as
+    ``sort.poll_url()`` (column_sort contract rule 4a). Because the swap is ``outerHTML``, the
+    response REPLACES the polling element, so each tick's sort is whatever the previous response
+    wrote into ``hx-get``. Rendering the default here while the operator has a sort chosen would
+    therefore not merely skip one tick: the swapped-in copy would carry the default URL forward and
+    the chosen sort would be gone for good, ~5s after the click.
+
+    Both values are untrusted strings from the wire; ``resolve`` maps anything unrecognised to the
+    contract default (rule 3) rather than 422-ing a poll that fires every five seconds.
     """
-    rows = await build_recent_scans(session)
+    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order)
+    rows = await build_recent_scans(session, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows},
+        context={"request": request, "recent_scans": rows, "sort": sort_state},
     )
 
 
@@ -227,7 +272,7 @@ async def scan_progress(
     )
 
 
-async def build_recent_scans(session: AsyncSession) -> list[ScanBatch]:
+async def build_recent_scans(session: AsyncSession, sort: SortState | None = None) -> list[ScanBatch]:
     """Query the last 10 non-LIVE ScanBatches and attach the transient UI attrs.
 
     Shared by ``pipeline.dashboard`` (initial render) and ``delete_scan`` (HTMX
@@ -239,8 +284,24 @@ async def build_recent_scans(session: AsyncSession) -> list[ScanBatch]:
     Attaches ``_agent_name``, ``_elapsed_seconds``, ``_seconds_since_progress`` and
     ``_is_stalled`` as transient attributes the template consumes (avoids N+1).
     The LIVE sentinel batches are excluded (UI-SPEC line 401).
+
+    phaze-a6hm.6: ``sort`` is a resolved :class:`~phaze.routers.column_sort.SortState` (never a raw
+    request string -- it has already passed the whitelist, so no key from the wire reaches a column
+    here). It becomes the ORDER BY, which is what makes this sort SERVER-SIDE: the ordering is
+    applied BEFORE the ``LIMIT 10``, so "the 10 most recent scans" and "the 10 longest paths" are
+    genuinely different row SETS. Sorting the returned list in Python instead would only reorder the
+    ten rows already chosen by created_at -- contract rule 1's exact failure, and here it would mean
+    the operator sorting by Path never sees a row outside the ten newest.
+
+    ``ScanBatch.id`` is appended as a tiebreaker so a sort on a low-cardinality column (status, or an
+    agent with many scans) has a stable, deterministic order rather than one Postgres may vary
+    between the poll and the render it replaces.
+
+    ``sort=None`` keeps the historical ``created_at DESC`` ordering, so callers that never sort
+    (and any future one) behave exactly as before.
     """
-    recent_scans_stmt = select(ScanBatch).where(ScanBatch.status != ScanStatus.LIVE.value).order_by(ScanBatch.created_at.desc()).limit(10)
+    order_by = (*sort.order_by(), ScanBatch.id) if sort is not None else (ScanBatch.created_at.desc(), ScanBatch.id)
+    recent_scans_stmt = select(ScanBatch).where(ScanBatch.status != ScanStatus.LIVE.value).order_by(*order_by).limit(10)
     rows = list((await session.execute(recent_scans_stmt)).scalars().all())
 
     # One query for the id -> name map (avoids N+1). Include every agent so a scan
@@ -270,6 +331,8 @@ async def delete_scan(
     request: Request,
     batch_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    sort: Annotated[str | None, Query()] = None,
+    order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Delete a terminal scan + all associated DB data, then re-render the table.
 
@@ -282,6 +345,11 @@ async def delete_scan(
     On a deletable row: run the ordered cascade, commit atomically, then return the
     re-rendered Recent Scans section for the HTMX ``outerHTML`` swap into
     ``#recent-scans``.
+
+    phaze-a6hm.6: this is the THIRD producer of ``#recent-scans`` and it swaps ``outerHTML`` like
+    the poll, so it carries ``sort``/``order`` for the same reason (column_sort rule 4a) -- deleting
+    a row must not silently re-sort the table underneath the operator, and the copy it swaps in
+    must keep polling in the chosen order rather than reverting one tick later.
     """
     batch = await session.get(ScanBatch, batch_id)
     if batch is None:
@@ -295,11 +363,12 @@ async def delete_scan(
     await session.commit()
     logger.info("scan deleted", batch_id=str(batch_id), **counts)
 
-    rows = await build_recent_scans(session)
+    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order)
+    rows = await build_recent_scans(session, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows},
+        context={"request": request, "recent_scans": rows, "sort": sort_state},
     )
 
 

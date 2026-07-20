@@ -135,9 +135,20 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # from instead of resetting to page 1 of the default filter. They are the identical params the
     # ``/proposals/`` entries above govern, and they reach the database through the identical path:
     # ``bulk_action`` hands them to ``_proposal_list_context``, the helper it SHARES with
-    # ``list_proposals``, which passes ``sort``/``order`` to ``get_proposals_page`` where
-    # ``proposal_queries.py:148`` rejects anything outside ``valid_sort_columns`` before a column is
-    # touched. Same param, same helper, same whitelist -> same classification.
+    # ``list_proposals``. phaze-a6hm.10 moved WHERE that whitelist lives without changing the
+    # classification: ``_proposal_list_context`` now resolves ``sort``/``order`` through
+    # ``proposal_sort.LEGACY_PROPOSAL_SORT`` (the shared column_sort contract) instead of the
+    # private ``valid_sort_columns`` set ``get_proposals_page`` used to hold, which that bead
+    # deleted. The guarantee is strictly stronger -- resolution is a lookup in a mapping to
+    # already-constructed column objects, so an unwhitelisted value has no column to reach at all
+    # (column_sort rule 2) -- so these stay _WHITELIST. Same param, same helper, same whitelist.
+    #
+    # The v7 ``/s/propose`` workspace sorts the same table but has NO entry here, deliberately: it
+    # reads its display state off ``request.query_params`` via ``ListViewState.from_request`` rather
+    # than declaring FastAPI ``Query`` params, so it produces no ``_param_cases()`` rows and an entry
+    # for it would be rejected as stale by ``test_registries_have_no_stale_entries``. Its bound comes
+    # from the same ``PROPOSE_SORT`` whitelist, asserted directly in
+    # tests/shared/core/test_propose_workspace_sorting.py.
     ("/proposals/bulk", "status"): _WHITELIST,
     ("/proposals/bulk", "q"): _TEXT,
     ("/proposals/bulk", "sort"): _WHITELIST,
@@ -162,6 +173,55 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/files", "bucket"): _WHITELIST,
     ("/pipeline/analyze-files", "status"): _WHITELIST,
     ("/pipeline/pending-files", "stage"): _WHITELIST,
+    # phaze-a6hm.1 sortable-column contract (src/phaze/routers/column_sort.py). These are the
+    # STRONGEST form of _WHITELIST in the repo: the allowlist is not a set of accepted NAMES that a
+    # later line turns into a column, it is a mapping straight TO already-constructed SQLAlchemy
+    # column objects. SortContract.resolve() matches the wire value against those keys by equality
+    # and discards anything else, so an unwhitelisted value has no column to reach by construction --
+    # never getattr, never text() interpolation. See tests/shared/routers/test_column_sort.py.
+    ("/pipeline/pending-files", "sort"): _WHITELIST,
+    ("/pipeline/pending-files", "order"): _WHITELIST,
+    ("/pipeline/trackid-files", "sort"): _WHITELIST,
+    ("/pipeline/trackid-files", "order"): _WHITELIST,
+    ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
+    ("/pipeline/tracklist-sets", "order"): _WHITELIST,
+    # phaze-a6hm.4 wired the same contract into the /admin/agents table (AGENTS_SORT). Identical
+    # posture: both routes resolve through SortContract.resolve() before any column is reached, and
+    # BOTH are polled every 5s -- which is exactly why they degrade an unknown value to the default
+    # rather than 422-ing (contract rule 3). A 422 here would blank the operator's page on a tick.
+    ("/admin/agents", "sort"): _WHITELIST,
+    ("/admin/agents", "order"): _WHITELIST,
+    ("/admin/agents/_table", "sort"): _WHITELIST,
+    ("/admin/agents/_table", "order"): _WHITELIST,
+    # phaze-a6hm.6 extends that same contract to the Recent Scans table: RECENT_SCANS_SORT in
+    # routers/pipeline_scans.py is a SortContract, so these four resolve through the identical
+    # equality-match-then-discard path as the six above -- same helper, same structural guarantee,
+    # same classification. DELETE /pipeline/scans/{batch_id} carries them for the same reason its
+    # poll does: it re-renders the whole #recent-scans section, so it must not reset the operator's
+    # chosen order (column_sort contract rule 4a).
+    ("/pipeline/scans/recent", "sort"): _WHITELIST,
+    ("/pipeline/scans/recent", "order"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "sort"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "order"): _WHITELIST,
+    # phaze-a6hm.3: same FILES_SORT contract wiring as the four pairs above (src/phaze/routers/pipeline.py).
+    ("/pipeline/files", "sort"): _WHITELIST,
+    ("/pipeline/files", "order"): _WHITELIST,
+    # phaze-a6hm.5: the audit log's own AUDIT_SORT contract (routers/execution.py). Same
+    # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
+    ("/audit/", "sort"): _WHITELIST,
+    ("/audit/", "order"): _WHITELIST,
+    # phaze-a6hm.7: the tag review list's TAGS_SORT contract -- same SortContract/SortState
+    # mechanism as the six entries above, classified the same way for the same reason.
+    ("/tags/", "sort"): _WHITELIST,
+    ("/tags/", "order"): _WHITELIST,
+    # phaze-a6hm.8: same EXEC_AGENTS_SORT contract, adapted for a table with no backing SQL SELECT
+    # (execution.py's per-agent rollup is a Redis hash projection) -- the whitelist->accessor mapping
+    # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.
+    ("/execution/agents-table", "sort"): _WHITELIST,
+    ("/execution/agents-table", "order"): _WHITELIST,
+    # Same classification as /execution/progress/{batch_id}'s batch_id below: a Redis hash KEY
+    # suffix, never a column.
+    ("/execution/agents-table", "batch_id"): _NOT_STORED,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,

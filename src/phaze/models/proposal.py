@@ -34,6 +34,22 @@ class ProposalStatus(enum.StrEnum):
     FAILED = "failed"
 
 
+# The review-UI state machine (phaze-uu17), stated ONCE next to the enum it constrains.
+#
+# It lived in routers/proposals.py until phaze-a6hm.11, which needed the SAME fact in two places:
+# the router, which enforces it on the write, and the propose workspace render, which greys out the
+# checkbox of a row that cannot legally transition. Those two must never disagree -- a UI that
+# offers a checkbox the server will silently refuse is how "50 approved" gets reported for 12 real
+# transitions -- and they cannot import each other (routers/proposals imports routers/shell for the
+# propose list context, so the reverse edge would be a cycle). Hoisting it to the model, which both
+# already import, is what makes ONE definition reachable from both.
+#
+# Terminal EXECUTED/FAILED rows are the authoritative record that a rename was applied and must
+# never be flipped back by the UI, so PENDING is the only legal from-state for approve/reject.
+APPROVE_REJECT_FROM = frozenset({ProposalStatus.PENDING})
+UNDO_FROM = frozenset({ProposalStatus.PENDING, ProposalStatus.APPROVED, ProposalStatus.REJECTED})
+
+
 class RenameProposal(TimestampMixin, Base):
     """AI-generated rename/move proposal for a file."""
 

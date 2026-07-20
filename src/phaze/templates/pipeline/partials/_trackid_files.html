@@ -66,7 +66,10 @@
     {% if trackid_page.show_pager %}
     {# Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the paging
        contract forbids (rule 2). Same affordance the Analyze and pending-files pagers render. #}
-    {% set _qs = '&page_size=' ~ trackid_page.page_size %}
+    {# phaze-a6hm.1 contract rule 4, the easy-to-forget direction: the PAGER carries the active
+       sort forward via sort.query_state(), so Prev/Next stays inside the operator's chosen order
+       instead of silently snapping back to the default mid-scan. Empty when unsorted. #}
+    {% set _qs = '&page_size=' ~ trackid_page.page_size ~ (sort.query_state() if sort else '') %}
     {% set _pbtn = 'text-sm px-3 py-1 rounded border border-gray-300 dark:border-phaze-border text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel' %}
     {% set _pdis = 'text-sm px-3 py-1 rounded border border-gray-200 dark:border-phaze-border text-gray-400 dark:text-gray-500 cursor-not-allowed' %}
     <nav aria-label="Track-ID files pagination" class="flex items-center justify-between mt-6">
