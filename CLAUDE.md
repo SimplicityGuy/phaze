@@ -28,12 +28,17 @@ uv run pre-commit run --all-files # Run all pre-commit hooks
 ### Test databases
 
 The test suite resolves its target from `TEST_DATABASE_URL`, validated by a single guard in
-`tests/db_guard.py`:
+`tests/db_guard.py`. Two rules, both enforced:
 
 - **The database name must contain a `test` segment** — `phaze_test`, `phaze_test_<bead>`, and
   `phaze_<bead>_test` are all accepted; `phaze` and `phaze_prod` are not. A name that fails this
   check **errors the run**. It does not skip. A skip would silently drop ~18 integration tests
   while pytest still reported green, which is exactly the defect this guard replaced.
+- **Port 5433, never 5432.** 5433 is the ephemeral test harness (`just test-db`); 5432 is
+  reserved for the developer's own database. The fixtures create and drop schema, so a default
+  pointing at 5432 is a live-data-loss shape, not just a confusing error. An unset
+  `TEST_DATABASE_URL` defaults to `postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_test`,
+  so the bare `uv run pytest` above stays safe and needs no extra setup.
 
 Every run prints its resolved target in the pytest header
 (`phaze test database: 'phaze_test' on localhost:5433`) — check it before trusting a green run.

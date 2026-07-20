@@ -5,8 +5,8 @@ are specifically defended against, because both were live defects:
 
 * a wrongly-named database ``skip``ping instead of erroring (phaze-laqf) -- roughly 18
   integration tests vanished from runs that still reported green;
-* a permissive predicate paired with a silent failure -- the combination that would be worse
-  than either defect alone.
+* a DSN defaulting to port 5432 (phaze-osgt), the port the justfile reserves for the
+  developer's own database, against which these fixtures create and drop schema.
 """
 
 from __future__ import annotations
@@ -98,7 +98,17 @@ def test_valid_test_database_returns_its_name() -> None:
     assert name == "phaze_test_m7ya"
 
 
-# --- resolution ----------------------------------------------------------------------------
+# --- the default target: 5433, never the dev port ------------------------------------------
+
+
+def test_default_dsn_targets_the_test_port_not_the_dev_port() -> None:
+    """phaze-osgt: bare ``uv run pytest`` must never resolve to 5432.
+
+    5432 is where the justfile says the DEVELOPER's database lives. These fixtures create and
+    drop schema, so resolving there is a data-loss shape, not merely a confusing error.
+    """
+    assert ":5433/" in DEFAULT_TEST_DATABASE_URL
+    assert ":5432/" not in DEFAULT_TEST_DATABASE_URL
 
 
 def test_default_dsn_is_itself_accepted_by_the_guard() -> None:
@@ -145,6 +155,7 @@ def test_integration_dsns_default_is_a_valid_test_target(monkeypatch: pytest.Mon
     broker, sa = integration_dsns()
 
     assert database_name(broker) == database_name(sa) == "phaze_test"
+    assert ":5433/" in broker and ":5433/" in sa
     require_test_database(sa, context="integration tests")  # must not raise
 
 

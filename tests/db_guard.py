@@ -43,10 +43,13 @@ import re
 from sqlalchemy.engine import make_url
 
 
-# NOTE: 5432 preserves the pre-existing default verbatim. It is WRONG -- the justfile provisions
-# the test harness on 5433 and reserves 5432 for the developer's own database -- but correcting it
-# is phaze-osgt's job, and conflating the two changes would make neither bisectable.
-DEFAULT_TEST_DB_PORT = os.environ.get("PHAZE_TEST_DB_PORT", "5432")
+# The ephemeral integration-test Postgres lives on 5433. The justfile reserves 5432 for the
+# DEVELOPER's own database (justfile:4-5, whose comment says so explicitly), so 5432 must never
+# be a default here: on a machine where 5432 holds a reachable phaze database with matching
+# credentials, these fixtures' create/drop-schema cycle would run against live developer data.
+# `tests/integration/test_migrations/conftest.py` already defaults to 5433 for this exact
+# reason; this brings the main harness into line with it.
+DEFAULT_TEST_DB_PORT = os.environ.get("PHAZE_TEST_DB_PORT", "5433")
 DEFAULT_TEST_DATABASE_URL = f"postgresql+asyncpg://phaze:phaze@localhost:{DEFAULT_TEST_DB_PORT}/phaze_test"
 
 # A ``test`` segment anywhere in the name: ``phaze_test``, ``phaze_test_m7ya``, ``phaze_m7ya_test``.
@@ -89,7 +92,7 @@ def database_name(dsn: str) -> str:
 
 
 def resolve_test_dsn() -> str:
-    """Return the async DSN the suite should target, from ``TEST_DATABASE_URL`` or the default."""
+    """Return the async DSN the suite should target, defaulting to the 5433 test harness."""
     return coerce_async_dsn(os.environ.get("TEST_DATABASE_URL") or DEFAULT_TEST_DATABASE_URL)
 
 
