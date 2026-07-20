@@ -723,3 +723,59 @@ async def test_router_registered_in_main_app() -> None:
     # Both handlers must be reachable on the production app.
     assert "/admin/agents" in paths
     assert "/admin/agents/_table" in paths
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/agents history-restore response shape (phaze-64uy)
+#
+# admin/partials/agents_table.html sets hx-push-url="/admin/agents?agent=<id>" on each drill-in row
+# (DRILL-03 / D-02), so that URL enters browser history. A Back with the snapshot evicted from
+# htmx's 10-entry cache re-fetches it as a RESTORE carrying BOTH HX-Request: true and
+# HX-History-Restore-Request: true -- and on a restore htmx IGNORES hx-target and swaps the
+# response into <body>.
+#
+# This handler used to ask the question through a LOCAL ``_is_htmx`` helper that re-derived the
+# decision from the raw header, which routers/response_shape.py rule 1 bans outright for exactly
+# this reason: it answered the restore with the chrome-less agents_table partial, replacing the
+# whole admin page with a bare table. The helper is deleted; the shared ``wants_fragment`` predicate
+# is the only sanctioned way to ask.
+# ---------------------------------------------------------------------------
+
+
+_RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+
+
+@pytest.mark.asyncio
+async def test_history_restore_returns_full_page_not_partial(smoke: AsyncClient) -> None:
+    """A history-restore GET /admin/agents returns the FULL page, chrome included.
+
+    Asserts the CHROME, not merely a 200 -- the buggy handler returned 200 with the partial, so a
+    status-only assertion passes against the bug.
+    """
+    response = await smoke.get("/admin/agents?agent=alive-agent", headers=_RESTORE_HEADERS)
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must return a full document, not the table partial"
+    assert 'aria-label="Main navigation"' in body, "the app nav must survive a history restore"
+    assert 'id="agents-table-section"' in body, "the polling section must still be present inside the page"
+
+
+@pytest.mark.asyncio
+async def test_restore_header_alone_returns_full_page(smoke: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await smoke.get("/admin/agents", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower()
+    assert 'aria-label="Main navigation"' in body
+
+
+@pytest.mark.asyncio
+async def test_local_is_htmx_helper_is_gone(smoke: AsyncClient) -> None:
+    """``admin_agents`` must not carry its own shape predicate (response_shape rule 1).
+
+    The module-level guard in tests/shared/routers/test_response_shape.py already forbids the raw
+    header read; this pins the specific helper by NAME so it cannot be reintroduced under its old
+    identity with a different implementation.
+    """
+    assert not hasattr(admin_agents, "_is_htmx"), "re-deriving the shape decision locally is banned -- use response_shape.wants_fragment"

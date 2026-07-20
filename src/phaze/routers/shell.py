@@ -3,8 +3,8 @@
 This is the load-bearing spine of the v7.0 three-column "Hybrid Console" shell
 (Phase 57). It serves the structural shell (header · DAG rail · ``#stage-workspace`` ·
 right pane) on a direct/bookmark navigation, and a bare content fragment on an HTMX
-rail swap -- the same HX-Request-aware full-page-vs-partial fork used by
-``admin_agents.page`` (``routers/admin_agents.py``).
+rail swap -- the fork decided by ``response_shape.wants_fragment`` (contract rule 1),
+the same predicate ``admin_agents.page`` (``routers/admin_agents.py``) composes.
 
 Stage resolution is a strict whitelist: ``STAGE_PARTIALS`` maps each rail-node id to the
 content partial that bridges it (D-01). ``stage`` is NEVER interpolated into a template
@@ -35,6 +35,7 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.pipeline import (
     analyze_lanes_content_hash,
     get_files_page,
@@ -159,12 +160,25 @@ async def _analyze_file_count(session: AsyncSession) -> int:
 async def _render_stage(request: Request, stage: str, session: AsyncSession) -> HTMLResponse:
     """Render ``stage`` as the full shell (direct nav) or a bare fragment (HX rail swap).
 
-    The fork is the same HX-Request-aware pattern as ``admin_agents.page``: an
-    ``HX-Request: true`` swap gets the content-only ``shell/_stage_fragment.html``
+    The fork is ``response_shape.wants_fragment`` (contract rule 1 -- the ONLY sanctioned
+    way to ask): a LIVE htmx rail swap gets the content-only ``shell/_stage_fragment.html``
     (which NEVER extends ``base.html`` -- a fragment carrying ``<html>``/``<head>``
-    corrupts the shell, a ROADMAP-locked anti-pattern); a direct or bookmark
-    navigation gets the full ``shell/shell.html``
-    chrome. ``oob_counts=False`` so the initial render never emits the ``hx-swap-oob``
+    corrupts the shell, a ROADMAP-locked anti-pattern); a direct navigation, a bookmark,
+    OR A HISTORY RESTORE gets the full ``shell/shell.html``
+    chrome.
+
+    That last shape is why this is not the raw ``HX-Request`` check it used to be
+    (phaze-64uy). Every rail node in ``shell/partials/rail.html`` carries
+    ``hx-get="/s/<stage>" hx-target="#stage-workspace" hx-push-url="true"``, so EVERY stage
+    the operator visits pushes a ``/s/*`` URL into history. Press Back with that snapshot
+    evicted from htmx's 10-entry ``historyCacheSize`` (routine -- a fresh session or cleared
+    ``localStorage`` does it too) and htmx re-fetches the URL as a restore carrying BOTH
+    ``HX-Request: true`` and ``HX-History-Restore-Request: true``. On a restore htmx IGNORES
+    ``hx-target`` and swaps the response into ``<body>`` (nothing here carries
+    ``[hx-history-elt]``), so the old raw check answered with ``_stage_fragment.html`` and
+    DESTROYED the rail, header, palette launcher and status strip -- leaving a bare workspace
+    with no navigation and no way out but a manual reload. Reachable from every stage in the
+    app, which is what made this the worst instance of the class. ``oob_counts=False`` so the initial render never emits the ``hx-swap-oob``
     "files ready" paragraphs (Pitfall 5 -- they would collide on duplicate ids with the
     DAG canvas seeds; they are honored only during a real ``/pipeline/stats`` swap).
 
@@ -315,7 +329,7 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # oob_counts stays False (Pitfall 5).
         context["cue_cards"] = await get_cue_review_cards(session)
 
-    if request.headers.get("HX-Request") == "true":
+    if wants_fragment(request):
         return templates.TemplateResponse(request=request, name="shell/_stage_fragment.html", context=context)
     return templates.TemplateResponse(request=request, name="shell/shell.html", context=context)
 

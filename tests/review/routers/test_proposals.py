@@ -952,3 +952,72 @@ async def test_approve_without_hx_target_returns_legacy_response(client: AsyncCl
     response = await client.patch(f"/proposals/{proposal.id}/approve")
     assert response.status_code == 200
     assert "stats-bar" in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /proposals/ history-restore response shape (phaze-64uy)
+#
+# proposals/partials/filter_tabs.html and proposals/partials/pagination.html BOTH set
+# hx-push-url="true" on their /proposals/?... controls, so those URLs enter browser history. A Back
+# with the snapshot evicted from htmx's 10-entry cache re-fetches the URL carrying BOTH
+# HX-Request: true and HX-History-Restore-Request: true -- and on a restore htmx IGNORES hx-target
+# and swaps into <body>. The handler branched on the raw HX-Request header, so it answered with the
+# chrome-less proposal_list.html fragment and REPLACED THE WHOLE DOCUMENT with it (the dispatcher
+# measured /proposals/?status=pending at 3707 bytes, full_document=False).
+#
+# response_shape.py rule 1 bans that raw check; wants_fragment is the predicate.
+# ---------------------------------------------------------------------------
+
+
+_RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+
+
+@pytest.mark.asyncio
+async def test_proposals_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET /proposals/ falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- the buggy handler answered this with a 200 fragment,
+    so a status-only assertion would pass against the bug.
+    """
+    response = await client.get("/proposals/?status=pending", headers=_RESTORE_HEADERS)
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/propose"
+
+
+@pytest.mark.asyncio
+async def test_proposals_history_restore_resolves_to_the_full_shell(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with the shell chrome intact.
+
+    The end-to-end guarantee the operator actually experiences: press Back, land on a real page
+    with navigation, rather than on a bare proposal table with no way out but a manual reload.
+    Note the redirect is followed WITH the restore headers still set, so this also pins the
+    dependency on shell.py answering a restore with the full shell (phaze-64uy fixes both).
+    """
+    response = await client.get("/proposals/?status=pending", headers=_RESTORE_HEADERS, follow_redirects=True)
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the rail must be present after a restore"
+    assert 'id="stage-workspace"' in body, "the shell's swap target must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_proposals_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx swap must still get the chrome-less fragment.
+
+    Every control that issues this GET targets #proposal-list-container with hx-swap="innerHTML"
+    (phaze-7j50), so a full document here would nest an entire page inside the container.
+    """
+    response = await client.get("/proposals/?status=pending", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry the shell rail"
+
+
+@pytest.mark.asyncio
+async def test_proposals_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/proposals/", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/propose"

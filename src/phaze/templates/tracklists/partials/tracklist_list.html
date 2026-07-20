@@ -1,4 +1,11 @@
-{% set is_hx = request and request.headers.get('HX-Request') == 'true' %}
+{# ``is_hx`` is supplied by the HANDLER as ``wants_fragment(request)`` -- see
+   routers/response_shape.py, whose rule 1 BANS deriving it from the raw ``HX-Request`` header.
+   This template used to compute it here with exactly that banned expression, and got exactly the
+   history-restore case wrong: a restore sets ``HX-Request: true`` too, so the old expression
+   suppressed the ``#tracklists-list`` wrapper and emitted a document carrying ZERO copies of the
+   id every later swap targets (phaze-64uy; same defect scan_tab.html carried, fixed by phaze-xc84).
+   Undefined ``is_hx`` is falsy, so any future render that forgets to pass it emits the wrapper --
+   the recoverable direction. #}
 {% if not is_hx %}<div id="tracklists-list">{% endif %}
     {% if tracklists %}
     <div class="space-y-3">

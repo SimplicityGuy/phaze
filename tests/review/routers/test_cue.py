@@ -717,3 +717,60 @@ async def test_cue_list_paged_stmt_has_unique_tiebreaker(client: AsyncClient, se
         f"the LAST ORDER BY key of the router's OWN paged_stmt call must be the unique Tracklist.id "
         f"tiebreaker so OFFSET paging can never skip or duplicate a tied row across pages -- got: {sort_keys}"
     )
+
+
+# ---------------------------------------------------------------------------
+# ``/cue/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
+#
+# This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
+# bans outright. But NOTHING in the template corpus pushes a ``/cue/`` URL into history
+# (no template carries hx-push-url on a /cue/ control), so no history restore can currently REACH this handler and the raw check was not
+# reachable-broken the way shell.py / proposals.py / duplicates.py / admin_agents.py were.
+#
+# It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
+# silently re-introduce the defect: the shape would already be correct on the day the URL starts
+# entering history.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cue_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET ``/cue/`` falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- before the fix this returned a 200 fragment, which htmx
+    would have swapped into ``<body>``, replacing the whole page.
+    """
+    response = await client.get("/cue/", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/cue"
+
+
+@pytest.mark.asyncio
+async def test_cue_history_restore_resolves_to_a_full_document(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with chrome intact."""
+    response = await client.get(
+        "/cue/",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the page chrome must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_cue_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx swap must still get the chrome-less fragment."""
+    response = await client.get("/cue/", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+
+
+@pytest.mark.asyncio
+async def test_cue_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/cue/", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/cue"
