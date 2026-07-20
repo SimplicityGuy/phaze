@@ -231,7 +231,7 @@ async def test_dispatch_summary_in_redis_hash(
     session: AsyncSession,
 ) -> None:
     """POST /execution/start seeds the D-04 hash fields including dispatch_summary JSON."""
-    ac, _mock_router, redis_client = smoke
+    ac, mock_router, redis_client = smoke
     await _seed_agent(session, agent_id="agent-a", name="Agent Alpha")
     await _seed_agent(session, agent_id="agent-b", name="Agent Beta")
     for i in range(5):
@@ -242,10 +242,15 @@ async def test_dispatch_summary_in_redis_hash(
     response = await ac.post("/execution/start")
     assert response.status_code == 200, response.text
 
-    # Find the exec:{batch_id} key the dispatch wrote.
-    exec_keys = [k async for k in redis_client.scan_iter(match="exec:*", count=100)]
-    assert len(exec_keys) == 1, f"expected exactly one exec:* key, found {exec_keys}"
-    key = exec_keys[0]
+    # Address the exec:{batch_id} key DIRECTLY via the batch id this dispatch minted, rather than
+    # scanning for `exec:*` and asserting the global keyspace holds exactly one match. The scan form
+    # made this test a function of every other key on the logical database, so any concurrent seat
+    # sharing it failed the assertion -- the observed phaze-fwo7 symptom. Per-worktree Redis DBs fix
+    # the sharing; addressing the key by id means this assertion cannot depend on foreign keys even
+    # if the isolation export is ever forgotten.
+    batch_id = mock_router.enqueue_for_agent.await_args_list[0].kwargs["payload"].batch_id
+    key = f"exec:{batch_id}"
+    assert await redis_client.exists(key) == 1, f"dispatch did not write {key}"
     data = await redis_client.hgetall(key)
 
     # D-04 schema verification
@@ -395,13 +400,19 @@ async def test_collision_short_circuits_dispatch(
     )
     await session.commit()
 
+    # Snapshot the exec:* keyspace so the "no Redis writes" claim below is a DELTA on this test's
+    # own actions rather than an assertion that the whole database is empty. The absolute form
+    # (`exec_keys == []`) failed whenever any other seat held an exec:* key, which is a property of
+    # the environment, not of the collision path under test.
+    keys_before = {k async for k in redis_client.scan_iter(match="exec:*", count=100)}
+
     response = await ac.post("/execution/start")
     assert response.status_code == 200
     # Collision-block content (not the progress card).
     assert "Path collisions detected" in response.text
-    # NO Redis writes.
-    exec_keys = [k async for k in redis_client.scan_iter(match="exec:*", count=100)]
-    assert exec_keys == []
+    # NO Redis writes: the collision path must not mint an exec:{batch_id} hash.
+    keys_after = {k async for k in redis_client.scan_iter(match="exec:*", count=100)}
+    assert keys_after - keys_before == set(), f"collision path wrote unexpected exec:* keys: {keys_after - keys_before}"
     # NO enqueues.
     mock_router.enqueue_for_agent.assert_not_awaited()
 
