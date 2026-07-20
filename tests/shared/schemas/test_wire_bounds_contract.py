@@ -174,6 +174,16 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/trackid-files", "order"): _WHITELIST,
     ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
     ("/pipeline/tracklist-sets", "order"): _WHITELIST,
+    # phaze-a6hm.6 extends that same contract to the Recent Scans table: RECENT_SCANS_SORT in
+    # routers/pipeline_scans.py is a SortContract, so these four resolve through the identical
+    # equality-match-then-discard path as the six above -- same helper, same structural guarantee,
+    # same classification. DELETE /pipeline/scans/{batch_id} carries them for the same reason its
+    # poll does: it re-renders the whole #recent-scans section, so it must not reset the operator's
+    # chosen order (column_sort contract rule 4a).
+    ("/pipeline/scans/recent", "sort"): _WHITELIST,
+    ("/pipeline/scans/recent", "order"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "sort"): _WHITELIST,
+    ("/pipeline/scans/{batch_id}", "order"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,
