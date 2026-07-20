@@ -191,6 +191,10 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
     ("/audit/", "sort"): _WHITELIST,
     ("/audit/", "order"): _WHITELIST,
+    # phaze-a6hm.7: the tag review list's TAGS_SORT contract -- same SortContract/SortState
+    # mechanism as the six entries above, classified the same way for the same reason.
+    ("/tags/", "sort"): _WHITELIST,
+    ("/tags/", "order"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,
