@@ -7,11 +7,21 @@
   STATIC role="option" with a stable id for aria-activedescendant — NO Alpine islands, so no
   Alpine.initTree() is needed after a swap (contrast the record body).
 
+  ROLE="OPTION" IS A PROMISE OF ACTIONABILITY (phaze-vxg6). cmdk_modal.html's onResults()
+  builds its roving-index list from querySelectorAll('[role="option"]') and activate() runs
+  el.click() on the active one. A row that carries role="option" but no href / hx-* / @click
+  is therefore a silent no-op on Enter, while still being announced as the active option and
+  painted with the active-row highlight. Use `row_class` (cursor-pointer + hover) ONLY on rows
+  that actually do something; informational rows use `row_static_class` and no role/tabindex so
+  the roving nav skips them entirely. tests/shared/core/test_cmdk_palette_row_actionability.py
+  enforces this by role + attribute, not by id or position.
+
   Security: every DB-sourced cell (filename / title / artist) is Jinja2-autoescaped (T-61-01);
   artist names entering an hx-get URL are urlencoded. No value is emitted into an Alpine/JS
   attribute context, so no |tojson is required here.
 #}
 {% set row_class = "cmdk-row rounded-lg px-3 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-phaze-border" %}
+{% set row_static_class = "cmdk-row-static rounded-lg px-3 py-2 flex items-center gap-3" %}
 {% set head_class = "px-3 pt-3 pb-1 font-jura text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-500" %}
 {% set badge_base = "shrink-0 text-[11px] px-1.5 py-0.5 rounded" %}
 
@@ -51,14 +61,26 @@
   {% endfor %}
 {% endif %}
 
+{# Discogs hits are INFORMATIONAL, not navigable (phaze-vxg6).
+
+   A search row here is a DiscogsLink — denormalized Discogs metadata attached to a tracklist
+   TRACK (D-09). Nothing in the app can be opened from a DiscogsLink id: the only routes that
+   take one are POST /tracklists/discogs-links/{id}/accept and DELETE .../{id} (both writes, both
+   wrong for a palette row), the candidate list is an HX fragment keyed by tracklist+track
+   (GET /tracklists/{tracklist_id}/tracks/{track_id}/discogs) whose ids the SearchResult does not
+   carry, there is no per-tracklist page (GET /tracklists/{id}/tracks returns a partial, which is
+   why even the Tracklists group above links to the generic /s/tracklist stage), and the app links
+   out to discogs.com from nowhere. So these rows get NO role="option" / tabindex and NO
+   cursor-pointer/hover: onResults() skips them, ↑/↓ arrows past them, and a screen reader no
+   longer announces a row whose activation would do nothing. They remain visible as context —
+   "an accepted Discogs release matches this query" — and are acted on from the track detail view.
+
+   If a real DiscogsLink destination is ever added, restore role="option"/tabindex and give the
+   row an href or hx-get in the SAME change; the actionability test will fail otherwise. #}
 {% if discogs_results %}
   <div role="presentation" class="{{ head_class }}">Discogs</div>
   {% for r in discogs_results %}
-    <div id="cmdk-discogs-{{ loop.index }}"
-         role="option"
-         aria-selected="false"
-         tabindex="-1"
-         class="{{ row_class }}">
+    <div class="{{ row_static_class }}">
       <span aria-hidden="true">💿</span>
       <span class="flex-1 truncate text-gray-900 dark:text-gray-100">{{ r.title }}</span>
       <span class="{{ badge_base }} bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-400">Discogs</span>
