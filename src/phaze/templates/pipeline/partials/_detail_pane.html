@@ -28,6 +28,7 @@
     {% set _base_path = '/admin/agents' %}
     {% set _param = 'agent' %}
     {% set _selected = selected_agent | default(none) %}
+    {% set _detail_url = '/admin/agents/' ~ _selected ~ '/_activity' if _selected else none %}
     {% set _empty_head = 'No agent selected' %}
     {% set _empty_body = 'Select an agent to see its stage activity, queue depths, and liveness.' %}
 {% else %}
@@ -35,6 +36,7 @@
     {% set _base_path = '/s/analyze' %}
     {% set _param = 'lane' %}
     {% set _selected = selected_lane | default(none) %}
+    {% set _detail_url = '/pipeline/lanes/' ~ _selected if _selected else none %}
     {% set _empty_head = 'No lane selected' %}
     {% set _empty_body = 'Select a lane to see its queues, in-flight work, and recent completions.' %}
 {% endif %}
@@ -90,7 +92,15 @@
                  this.$nextTick(() => { if (id) document.getElementById(id)?.focus(); });
              }
          }"
-         x-init="const _id = new URLSearchParams(location.search).get(param); if (_id) { selectedId = triggerPrefix + _id; open = true; }"
+         {# phaze-m662: x-init records the deep-linked selection but must NEVER set `open` itself.
+           A reload/bookmark of ?{{ _param }}={id} is a plain full server render — nothing has swapped
+           a body into #detail-pane yet. Flipping `open` here suppressed the `x-show="!open"` empty
+           state and showed the ✕ over a BLANK pane that never self-refreshed. `open` is now owned by
+           ONE path — onLoaded(), fired by a real after-swap — shared by the click and the deep link.
+           The deep-link body is fetched by the server-emitted hx-trigger="load" on the swap target
+           below; until it lands the resting empty state stays visible (never a blank open pane), and
+           if the fetch fails the pane simply stays closed instead of lying about being open. #}
+        x-init="const _id = new URLSearchParams(location.search).get(param); if (_id) { selectedId = triggerPrefix + _id; }"
          @keydown.escape.window="if (open && ![...document.querySelectorAll('[role=&quot;dialog&quot;]')].some(d => d.offsetParent !== null)) hide()"
          role="region"
          aria-labelledby="detail-pane-heading"
@@ -117,9 +127,22 @@
        scope, where a bare `onLoaded()` is undefined (ReferenceError → open never flips true → the ✕/Esc
        dismiss and the body's self-removing own-tick all break). Reach the component scope explicitly via
        Alpine.$data(this) (this = #detail-pane, inside the section) so the method runs with the right
-       `this`. Guarded on window.Alpine so a pre-hydration swap degrades to the innerHTML render. #}
+       `this`. Guarded on window.Alpine so a pre-hydration swap degrades to the innerHTML render.
+
+       phaze-m662 (deep link / reload): the body used to be loadable ONLY by a trigger click, so a
+       bookmarked /s/analyze?lane=X (or /admin/agents?agent=X) rendered this target EMPTY. The route
+       already resolves the ?param against the known set for the selection ring (shell.py
+       `selected_lane` / admin_agents `_resolve_selected_agent`); we now spend that same resolved id
+       on a one-shot hx-trigger="load" self-fetch of the wave-2 body. Emitted ONLY when the id
+       resolved, so an absent/unknown ?param fetches nothing and the resting empty state stands.
+
+       This fires EXACTLY ONCE and cannot race the body's 5s own-tick: htmx evaluates `load` when it
+       processes this node (initial page render only), and the own-tick swaps innerHTML *into* this
+       element — an inner swap never reprocesses the parent's own triggers. The response lands through
+       the same after-swap handler as the click, so onLoaded() is the single owner of `open`. #}
     <div id="detail-pane"
          class="mt-3"
+         {% if _detail_url %}hx-get="{{ _detail_url }}" hx-trigger="load" hx-swap="innerHTML"{% endif %}
          hx-on::after-swap="if (window.Alpine) { Alpine.initTree(this); Alpine.$data(this).onLoaded(); }"></div>
 
     {# Resting empty state — a SIBLING of the swap target, never inside it: the trigger's
