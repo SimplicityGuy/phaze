@@ -19,6 +19,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
+from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
@@ -241,16 +242,29 @@ async def scan_tab(
 
     pagination = Pagination(page=page, page_size=page_size, total=total)
 
-    return templates.TemplateResponse(
-        request=request,
-        name="tracklists/partials/scan_tab.html",
-        context={
-            "request": request,
-            "files": files,
-            "pagination": pagination,
-            "total_unscanned": total,
-        },
-    )
+    # Shape decision per routers/response_shape.py. ``wants_fragment`` is the ONLY sanctioned way
+    # to ask (rule 1); branching on the raw ``HX-Request`` header here would answer a history
+    # restore -- which also carries that header -- with a chrome-less fragment that htmx swaps
+    # into <body>, ignoring hx-target (rule 2).
+    #
+    # ``is_hx`` is ALSO what scan_tab.html gates its ``#scan-panel`` wrapper on, and the two
+    # decisions are the same decision: a live swap is landing INSIDE the existing wrapper and must
+    # not carry a second one, while every full-document shape must supply exactly one. Passing the
+    # same predicate to both keeps the id count at exactly one on every path.
+    is_fragment = wants_fragment(request)
+    context: dict[str, Any] = {
+        "request": request,
+        "files": files,
+        "pagination": pagination,
+        "total_unscanned": total,
+        "is_hx": is_fragment,
+        "current_page": "tracklists",
+    }
+
+    if is_fragment:
+        return templates.TemplateResponse(request=request, name="tracklists/partials/scan_tab.html", context=context)
+
+    return templates.TemplateResponse(request=request, name="tracklists/scan.html", context=context)
 
 
 @router.post("/scan", response_class=HTMLResponse)
