@@ -13,6 +13,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.pagination import MIN_PAGE_SIZE
 from phaze.services.search_queries import SearchResult, get_summary_counts, search
 
 
@@ -255,14 +256,52 @@ async def test_search_date_filter(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_search_pagination(session: AsyncSession) -> None:
-    """Results paginated correctly, Pagination object has correct total."""
-    for i in range(5):
+    """Results paginated correctly, Pagination object has correct total.
+
+    ``page_size`` must satisfy the paging contract's ``MIN_PAGE_SIZE`` floor
+    (phaze.services.pagination) -- ``paged_stmt`` clamps anything smaller, so this exercises a
+    real, un-clamped page size.
+    """
+    for i in range(25):
         await create_test_file(session, original_filename=f"searchable_track_{i}.mp3", artist="Searchable")
-    results, pagination = await search(session, "searchable", page=2, page_size=2)
-    assert len(results) == 2
-    assert pagination.total == 5
+    results, pagination = await search(session, "searchable", page=2, page_size=MIN_PAGE_SIZE)
+    assert len(results) == MIN_PAGE_SIZE
+    assert pagination.total == 25
     assert pagination.page == 2
     assert pagination.total_pages == 3
+
+
+@pytest.mark.asyncio
+async def test_search_pagination_partitions_tied_ranks_without_loss_or_duplication(session: AsyncSession) -> None:
+    """Regression test for phaze-39ss: ``ts_rank`` alone is not a stable ``ORDER BY`` key.
+
+    Every file here matches the query on exactly one lexeme, occurring exactly once, so
+    ``ts_rank`` -- unnormalized by default -- is IDENTICAL across the WHOLE set: a heavily-tied
+    result exactly like the production bug report (rows that match trivially all share one rank).
+    Without a unique tiebreaker appended after ``rank DESC``, LIMIT/OFFSET has no guarantee of a
+    stable partition across the tied block, so a row can be silently skipped on one page and/or
+    duplicated onto another. Walking every page and comparing the union against the full id set is
+    the only way to catch that -- a test that only inspects page 1 would not.
+    """
+    page_size = MIN_PAGE_SIZE
+    total_files = page_size * 3 + 4  # several full pages plus one partial page
+    expected_ids = set()
+    for i in range(total_files):
+        record = await create_test_file(session, original_filename=f"tiedrank_{i:03d}.mp3", artist="TiedRankArtist")
+        expected_ids.add(str(record.id))
+
+    seen_ids: list[str] = []
+    page = 1
+    while True:
+        results, pagination = await search(session, "tiedrankartist", page=page, page_size=page_size)
+        seen_ids.extend(r.id for r in results)
+        if not pagination.has_next:
+            break
+        page += 1
+
+    assert len(seen_ids) == len(expected_ids), "row count across the full page walk must equal the total distinct rows"
+    assert set(seen_ids) == expected_ids, "every row must appear exactly once across the full page walk"
+    assert len(seen_ids) == len(set(seen_ids)), "no row may be duplicated across pages"
 
 
 # ---------------------------------------------------------------------------

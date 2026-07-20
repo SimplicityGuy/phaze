@@ -203,6 +203,37 @@ async def test_duplicates_pagination(client: AsyncClient, session: AsyncSession)
 
 
 @pytest.mark.asyncio
+async def test_duplicates_negative_limit_returns_422_not_500(client: AsyncClient) -> None:
+    """phaze-hpo9: a negative limit is a clean 422, never an unhandled 500.
+
+    Before the fix, ``limit``/``offset`` were bare ``int`` defaults with no ``Query`` guard, so
+    ``limit=-1`` reached ``.limit(limit)`` on the dup_hashes subquery and Postgres rejected it
+    with "LIMIT must not be negative", surfacing as an unhandled 500. This route builds its own
+    raw limit/offset pair (it does not go through ``phaze.services.pagination``), so wire_bounds
+    rule 8's last clause applies: it needs its own ``ge=`` guard.
+    """
+    response = await client.get("/api/v1/duplicates?limit=-1")
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_duplicates_negative_offset_returns_422_not_500(client: AsyncClient) -> None:
+    """phaze-hpo9: a negative offset is a clean 422, never an unhandled 500 (see limit sibling test)."""
+    response = await client.get("/api/v1/duplicates?offset=-1")
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_duplicates_zero_and_valid_limit_offset_still_work(client: AsyncClient) -> None:
+    """Non-negative limit/offset within bounds are unaffected by the new guard (belt-and-braces)."""
+    response = await client.get("/api/v1/duplicates?limit=10&offset=0")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["limit"] == 10
+    assert data["offset"] == 0
+
+
+@pytest.mark.asyncio
 async def test_duplicates_response_shape(client: AsyncClient) -> None:
     """GET /api/v1/duplicates should return response matching DuplicateGroupsResponse schema."""
     response = await client.get("/api/v1/duplicates")

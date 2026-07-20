@@ -13,6 +13,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 from phaze.config import settings
+from phaze.schemas.wire_bounds import INT64_MAX
 
 
 _CHUNK_MAX: int = settings.agent_file_chunk_max
@@ -32,7 +33,11 @@ class FileUpsertRecord(BaseModel):
     original_filename: str
     current_path: str
     file_type: str = Field(min_length=1, max_length=10)
-    file_size: int = Field(ge=0)
+    # -> files.file_size BigInteger (int8), rule 3. No narrower real-world domain is established
+    # for a single music/concert-video file's byte size (the archive intentionally holds full
+    # concert video sets, so an arbitrary GB-scale cap would be a guess, not a domain fact) --
+    # the int8 column bound is the honest fallback.
+    file_size: int = Field(ge=0, le=INT64_MAX)
 
 
 class FileUpsertChunk(BaseModel):

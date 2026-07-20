@@ -539,6 +539,98 @@ rather than crashing on settings construction. Verbose output for triaging a run
 model download: set `PHAZE_LOG_LEVEL=DEBUG` (see
 [Configuration → Logging / observability](configuration.md#logging--observability-all-roles)).
 
+## 📄 List Paging Contract
+
+Every operator-facing list in phaze is bounded by ONE shared contract, owned by
+`src/phaze/services/pagination.py`. Read that module's docstring before adding a paged read — this
+is a summary, the module is the source of truth.
+
+**Why it exists.** The Analyze workspace once server-rendered its entire working set inline —
+10,132 rows / 12.7 MB, ~180x the sibling tabs — behind a docstring that merely *asserted* the set
+was "naturally bounded". Nothing enforced it. An assumption is not a bound; a bound is a `LIMIT`.
+
+| Rule | Decision |
+| ---- | -------- |
+| Paging style | **OFFSET**, not cursor. One shape everywhere; supports the Prev/Next affordance and arbitrary sort orders. |
+| Totals | **Never a whole-corpus `COUNT`.** `has_next` rides a `page_size + 1` sentinel row. The UI shows "Page N" with Prev/Next, never "page X of Y". |
+| Page size | `DEFAULT_PAGE_SIZE = 50`, clamped to `[MIN_PAGE_SIZE=10, MAX_PAGE_SIZE=100]`. Owned in one place; routers import the constant rather than spelling a default. |
+| **Tiebreaker** | **Mandatory and unique.** `paged_stmt()` raises `ValueError` without one. A non-unique `ORDER BY` (`ts_rank`, `executed_at`, `created_at`, a score) silently *skips and duplicates* rows across pages. `created_at` is NOT valid here — Postgres timestamp defaults are transaction-time constant, so rows inserted together tie exactly. Use a primary key. |
+| Out-of-range input | **Clamps, never raises.** Negative/zero page → 1; page size → `[MIN, MAX]`. A page past the end is a normal empty page, not an error. |
+| Degradation | Paged render reads run in a `begin_nested()` SAVEPOINT and return an empty `Page` on error — they never 500 a render. |
+| Render vs enqueue | A bounded render read is **never** the enqueue set. Where a "pending" set feeds both a table and a bulk-enqueue button, the render pages and the enqueue stays unbounded — paging it would silently under-enqueue. |
+
+```python
+stmt = paged_stmt(
+    select(Thing).where(...),
+    page=page, page_size=page_size,
+    order_by=(Thing.created_at.desc(),),  # display order; may tie
+    tiebreaker=(Thing.id.desc(),),        # REQUIRED, unique
+)
+rows, has_next = split_sentinel((await session.execute(stmt)).all(), page_size)
+```
+
+All three enrich workspaces (metadata / fingerprint / analyze) ship an empty host `div` that
+`hx-get`s a bounded fragment on load; none server-renders a file row inline.
+
+## 🧮 Wire Bounds Contract
+
+Every value crossing the HTTP boundary is bounded to fit the column it lands in. The contract is
+owned by `src/phaze/schemas/wire_bounds.py` and **mechanically enforced** by
+`tests/shared/schemas/test_wire_bounds_contract.py` — read the module docstring before adding an
+inbound field; this table is a summary.
+
+**Why it exists.** `agent_tracklists` accepted an unbounded `timestamp` into a `varchar(20)` and an
+unbounded `external_id` into the `varchar(50)` NOT NULL idempotency key. Postgres answers
+over-width input with `StringDataRightTruncation`, and there is no DB exception handler anywhere in
+the app — so the aborted transaction escaped as an unhandled **500 instead of a 422**, after the
+1-hour idempotency lock was already taken. Seven sibling defects shared the exact shape. The
+convention that prevents it already existed and was applied exactly; it was simply never written
+down, so it was possible to deviate silently.
+
+| Rule | Decision |
+| ---- | -------- |
+| Strings | `max_length` **equals** the mapped `String(N)` width. Not less (you reject what the column accepts), not more (you hand Postgres a value it must raise on). |
+| `Text` columns | **No cap.** `Text` is unbounded; a cap invents a limit the storage does not have. Don't add one "for safety". |
+| Integers | Prefer a **real domain bound** (`ge=0, le=100` for a 0–100 score) over the storage bound. Fall back to the column's range — int4 is `[-2147483648, 2147483647]` (`INT32_MIN`/`INT32_MAX`); int2/int8 constants are exported too. |
+| **Layer** | **422 at the boundary, never a caught DB exception downstream.** A `try/except` around the insert is the wrong layer: it still admits the value, still opens the transaction, still takes the lock, and turns a poison payload into a politer infinite retry. |
+| Entry shapes | Applies to **all four**: `Field` bodies, `Path` segments, `Query` params, `Form` fields. "It's only a path parameter" is not an exemption. |
+| Types, not just ranges | Declare the type that **matches the column** — a `date` filter declared `str` and forwarded unparsed renders `$1::VARCHAR` and 500s on the cast. A bound would not have helped; the type was wrong. |
+| DoS bounds | A bound that exists to cap work per request (e.g. `tracks` `max_length=2000`) is **not** a width cap and says so, so nobody "corrects" it to a column width that doesn't exist. |
+| Paging params | Defer to the [paging contract](#-list-paging-contract) **and** still declare the route guard. The service-layer clamp is the belt; `ge=`/`le=` is the braces. A raw `limit`/`offset` that bypasses `services/pagination.py` needs its own `ge=`. |
+
+The enforcing test is a live checklist, not a suppression list: known gaps are recorded as
+**strict xfail**, so when a fix lands the entry stops matching and the suite fails until the entry
+is deleted. A new unclassified wire field also fails — that is what stops the next regression.
+||||||| 83c75fe
+## 🛡️ Untrusted-Input Contract
+
+Every request path that parses a raw client string, or looks up a row an earlier request named,
+follows ONE shared contract, owned by `src/phaze/routers/request_guards.py`. Read that module's
+docstring before adding such a handler — this is a summary, the module is the source of truth.
+
+**Why it exists.** The duplicate undo endpoints called `json.loads(file_states)` bare on a raw form
+string and fed the result into `undo_resolve`, whose docstring advertised "a malformed id is dropped
+(no HTTP 500)". That was true only for the id *value* inside a well-formed dict. `not-json` raised
+`JSONDecodeError`; `[1,2]` raised `AttributeError` on `int.get`. Both escaped as HTTP 500 through a
+handler documenting a graceful no-op. An asserted invariant is not an invariant; a tested one is.
+
+| Rule | Decision |
+| ---- | -------- |
+| Parse guards | **No bare `json.loads` / `uuid.UUID` / `int` / `datetime.fromtimestamp` on a wire value.** An unparseable or wrong-container **envelope** is **HTTP 422** — the same code FastAPI's own validation returns. Never a parallel 400. |
+| **Shape ≠ parse** | **Parsing successfully is not receiving the expected structure.** `"[1,2]"`, `"{}"` and `"null"` all decode fine and explode at the first attribute access. Assert shape *separately, at the same boundary*: a **Pydantic model** where fields are named, an explicit container check where the payload is a loose best-effort id-set. |
+| Envelope vs element | **Envelope malformed → 422** (whole request unintelligible). **Element malformed → skip it, keep going, return the count acted on** (browser-held id-sets are arbitrarily stale; one bad id must not void a valid bulk action). This is the repo-wide answer to "malformed id: 4xx or skip?". |
+| Row lookups | **`scalar_one()` is the bug.** Use `scalar_one_or_none()` + an explicit `None` branch. What the branch returns (clean 200 hold / 404 / skip) is the handler's call; an escaping `NoResultFound` never is. In-repo reference: `report_push_mismatch`'s over-cap branch. |
+| Integrity errors | Catch `IntegrityError` around the flush for a **genuine race** (referent deleted between render and POST). `ON CONFLICT (id)` does **not** absorb an FK violation. **Boundary vs constrain-at-the-wire:** if a stricter signature could have rejected the value, it 422s at the wire and catching `IntegrityError` for it is wrong; if it was valid when checked and another transaction invalidated it, this contract owns it. |
+| Transaction state | A failed statement aborts the Postgres transaction. Run the risky statement in a **`session.begin_nested()` SAVEPOINT** and roll back only that scope — same mechanism as the paging contract's degrade-safe reads. **Never** a full `session.rollback()` as recovery: it expires loaded ORM objects and 500s on the very hiccup it claims to survive. |
+| Documented guarantees | **A docstring promising "no HTTP 500" is a test obligation.** Ship regression tests for unparseable input, wrong-container and wrong-element-type input, and the specific malformed value the docstring names. Untested shape → the docstring may not claim it. |
+
+```python
+from phaze.routers.request_guards import parse_json_array_payload
+
+parsed_states = parse_json_array_payload(file_states, field="file_states")  # 422 on non-JSON / non-array
+restored = await undo_resolve(session, parsed_states)                       # drops unusable elements
+```
+
 ## 🧱 Key Abstractions
 
 ### Models (`src/phaze/models/`)

@@ -4,11 +4,11 @@
    which at 200K scale was 92,335 rows / ~105MB of HTML (phaze-zqvh.1 baseline). That per-row build is
    MOVED here and driven off a BOUNDED row set so it can be rendered TWO ways off ONE partial (mirroring
    the _analyze_lanes.html two-way idiom):
-     * analyze_workspace.html includes it with the DEFAULT working set (get_analyze_working_set: the
-       active-first in-flight/awaiting-cloud/failed set + a LIMIT-ed recent-completions window) and
-       analyze_page=None -> the initial full-page grid, no pager.
-     * GET /pipeline/analyze-files swaps it into #analyze-files-view under a status filter -> a bounded
-       page (analyze_page set) with Prev/Next.
+   phaze-5462: analyze_workspace.html NO LONGER includes this partial inline. It ships an empty
+   #analyze-files-view that hx-gets the fragment on load, so EVERY render of this partial now comes
+   from GET /pipeline/analyze-files and ALWAYS carries an analyze_page (both the default working-set
+   view and the filtered lenses are paged). The old "include it with the whole working set and no
+   pager" path is exactly what shipped 10,132 rows / 12.7 MB inline.
 
    #analyze-files-view is a SIBLING of the poll's OOB targets, NEVER re-emitted by the 5s /pipeline/stats
    poll (the poll only OOB-swaps #analyze-lanes + the cloud cards). So the operator's filter selection and
@@ -18,9 +18,9 @@
      * analyze_rows   -- list of projected analyze-file dicts (working set + window, OR a page's rows).
                          Each: {file_id, filename, path, awaiting_cloud, analysis_failed, lane, lane_kind,
                          fine_done, fine_total, duration, completed}. The SAME shape both service reads emit.
-     * analyze_page   -- OPTIONAL phaze.services.pipeline.AnalyzeFilesPage (rows/page/page_size/has_next/
-                         status). Present => filtered/paged mode (renders the pager); absent => the default
-                         working-set view (no pager).
+     * analyze_page   -- phaze.services.pipeline.AnalyzeFilesPage (rows/page/page_size/has_next/status).
+                         ALWAYS present now -- the default working-set view is paged too. The pager nav
+                         renders whenever a neighbouring page exists.
      * active_status  -- OPTIONAL current status-filter value (ANALYZE_FILTERS member) or None (default view).
 
    T-57-01: `status` is validated against the ANALYZE_FILTERS allowlist in the router and NEVER spliced
@@ -40,7 +40,11 @@
     ('completed', 'completed'),
 ] %}
 {% set _select = 'text-sm rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-bg text-gray-900 dark:text-gray-100 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500' %}
-<div id="analyze-files-view">
+{# phaze-5462: this root div deliberately carries NO id. The HOST (analyze_workspace.html) owns
+   id="analyze-files-view" and every hx-get here swaps innerHTML INTO it. When this fragment also
+   carried the id, each swap nested a second #analyze-files-view inside the first -- duplicate ids
+   that grew one level deeper per filter/page click. The host owns the id; the fragment is content. #}
+<div>
     <form id="analyze-filter-bar"
           hx-get="/pipeline/analyze-files" hx-target="#analyze-files-view" hx-swap="innerHTML"
           hx-trigger="change"

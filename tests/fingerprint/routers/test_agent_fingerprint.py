@@ -103,6 +103,40 @@ async def test_fingerprint_put_happy_path(seed_test_agent: tuple[Agent, str], se
 
 
 @pytest.mark.asyncio
+async def test_fingerprint_put_unknown_engine_returns_422_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-94zs: an engine outside the closed {audfprint, panako} set is a clean 422, never a 500.
+
+    Before the fix, `engine: str` had no constraint, so an over-width value reached
+    `fingerprint_results.engine` (String(30)) and Postgres raised StringDataRightTruncation,
+    aborting the transaction as an unhandled 500. The engine set is genuinely closed (only the
+    two hardcoded adapters ever call this route), so the fix is a `Literal` whitelist -- this
+    also rejects a same-width-but-unknown engine, not merely an over-length one.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        over_width = await ac.put(
+            f"/api/internal/agent/fingerprints/{file_id}/{'x' * 31}",
+            json={"status": "completed"},
+        )
+        unknown_but_short = await ac.put(
+            f"/api/internal/agent/fingerprints/{file_id}/shazam",
+            json={"status": "completed"},
+        )
+
+    assert over_width.status_code == 422, over_width.text
+    assert unknown_but_short.status_code == 422, unknown_but_short.text
+
+    # No row was written for either rejected request.
+    count_result = await session.execute(select(sa_func.count()).select_from(FingerprintResult).where(FingerprintResult.file_id == file_id))
+    assert count_result.scalar_one() == 0
+
+
+@pytest.mark.asyncio
 async def test_fingerprint_replay_overwrites(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """DIST-05 (3/5): same (file_id, engine) twice -> one row, last write wins."""
     agent, raw_token = seed_test_agent

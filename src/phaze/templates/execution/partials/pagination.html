@@ -1,7 +1,10 @@
-{% if pagination.total > 0 %}
+{# phaze-mft5: Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the
+   paging contract forbids (rule 2). ``pagination`` is a phaze.services.pagination.Page
+   (rows/page/page_size/has_next), the same shape the Analyze/metadata/fingerprint pagers use. #}
+{% if pagination.show_pager %}
 <div class="flex items-center justify-between mt-4 px-4 py-3">
     <span class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">
-        Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} operations
+        Page {{ pagination.page }}
     </span>
     <div class="flex gap-1">
         {% if pagination.has_prev %}
@@ -12,21 +15,6 @@
             Previous
         </button>
         {% endif %}
-
-        {% for p in range(1, pagination.total_pages + 1) %}
-        <button
-            hx-get="/audit/?status={{ current_status }}&page={{ p }}&page_size={{ pagination.page_size }}"
-            hx-target="#audit-content"
-            class="rounded px-3 py-1 text-sm
-                {% if p == pagination.page %}
-                    bg-blue-600 dark:bg-blue-700 text-white
-                {% else %}
-                    text-gray-600 dark:text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-phaze-panel dark:bg-phaze-panel
-                {% endif %}
-            ">
-            {{ p }}
-        </button>
-        {% endfor %}
 
         {% if pagination.has_next %}
         <button

@@ -23,6 +23,7 @@ from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
+from phaze.routers import agent_analysis as agent_analysis_module
 from phaze.routers.agent_analysis import router as agent_analysis_router
 from phaze.services.scheduling_ledger import upsert_ledger_entry
 
@@ -378,6 +379,84 @@ async def test_analysis_window_idempotent_delete_scoped_to_path_file_id(
     assert rows_b[0].bpm == 99.0
 
 
+# phaze-syxv: 2,731 rows x 12 bind parameters = 32,772 > the 32,767 the PostgreSQL Bind message can
+# carry in an int16 count, so an UNCHUNKED insert raises asyncpg
+# `InterfaceError: the number of query arguments cannot exceed 32767` from here up. 2,800 is just
+# past that break AND is roughly the fine-window count of a real 24h recording at 30s windows -- the
+# figure the schema's own comment cites as realistic. These tests FAIL on the pre-fix code.
+_BIND_LIMIT_BREAK_ROWS = 2800
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_insert_exceeds_pg_bind_parameter_limit(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """A window set past the int16 bind-parameter limit persists in full (phaze-syxv regression).
+
+    Before the fix this was TERMINAL data loss, not a transient 500: the PUT passed schema
+    validation (well under ``max_length=50000``), the single multi-row VALUES raised, and because
+    ``FAILURE_IS_TERMINAL[ANALYZE]`` the analyze stage was marked permanently FAILED -- discarding
+    hours of essentia CPU, with every retry reproducing the same deterministic error.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    windows = [_window("fine", i, i * 30.0, (i + 1) * 30.0, bpm=120.0 + (i % 7), musical_key="C major") for i in range(_BIND_LIMIT_BREAK_ROWS)]
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0, "windows": windows})
+
+    assert response.status_code == 200, response.text
+    rows = await _window_rows(session, file_id)
+    assert len(rows) == _BIND_LIMIT_BREAK_ROWS, "every window must persist -- chunking must not drop or truncate rows"
+    # Chunk boundaries are where a naive split silently loses or duplicates rows, so pin the ends
+    # and the count of distinct indices rather than only the total.
+    assert rows[0].window_index == 0
+    assert rows[-1].window_index == _BIND_LIMIT_BREAK_ROWS - 1
+    assert len({r.window_index for r in rows}) == _BIND_LIMIT_BREAK_ROWS, "no duplicated window_index across chunk boundaries"
+
+
+@pytest.mark.asyncio
+async def test_analysis_window_chunked_insert_is_atomic_on_mid_write_failure(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure BETWEEN chunks commits nothing -- the window replace stays all-or-nothing (phaze-syxv).
+
+    Chunking splits one statement into several, which would be a regression if the chunks could
+    land independently: a file holding half its windows reads as a complete analysis and is worse
+    than a clean failure. All chunks share ``put_analysis``'s single transaction, so a mid-write
+    raise leaves ZERO windows committed.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    real_chunk_rows = agent_analysis_module.chunk_rows
+
+    def _explode_after_first_chunk(rows: object) -> object:
+        """Yield the first chunk (so rows really are written), then fail like a dropped connection."""
+        for index, chunk in enumerate(real_chunk_rows(rows)):  # type: ignore[arg-type]
+            if index > 0:
+                raise RuntimeError("simulated mid-write failure")
+            yield chunk
+
+    monkeypatch.setattr(agent_analysis_module, "chunk_rows", _explode_after_first_chunk)
+
+    windows = [_window("fine", i, i * 30.0, (i + 1) * 30.0, bpm=120.0) for i in range(_BIND_LIMIT_BREAK_ROWS)]
+
+    async with _make_client(session, raw_token) as ac:
+        with pytest.raises(RuntimeError, match="simulated mid-write failure"):
+            await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0, "windows": windows})
+
+    # The route never reached its single `session.commit()`, so unwinding the transaction must
+    # discard the chunks that DID execute.
+    await session.rollback()
+    rows = await _window_rows(session, file_id)
+    assert rows == [], "a mid-write failure must leave NO partially-written window set committed"
+
+
 @pytest.mark.asyncio
 async def test_analysis_put_advances_state_and_persists_coverage_columns(
     seed_test_agent: tuple[Agent, str],
@@ -524,6 +603,77 @@ async def test_analysis_extra_field_422(seed_test_agent: tuple[Agent, str], sess
     assert any(e.get("type") == "extra_forbidden" and list(e.get("loc")) == ["body", "agent_id"] for e in errors), errors
 
 
+@pytest.mark.asyncio
+async def test_analysis_put_overwidth_musical_key_422s_without_persisting(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-ty0o: an over-width ``musical_key`` is rejected 422 BEFORE the pg_insert runs.
+
+    ``analysis_results.musical_key`` is ``String(10)``. Pre-fix, an unbounded string reaching
+    Postgres over that width raises ``StringDataRightTruncation``, aborting the transaction --
+    since the analyze stage is FAILURE_IS_TERMINAL (Phase 43), a repeatable over-width value from a
+    misbehaving upstream would 500 every retry rather than degrade cleanly. 11 chars is the
+    smallest over-width value; real essentia ``KeyExtractor`` output never exceeds 8 chars
+    (`f"{key} {scale}"`), so this is a malformed/adversarial value, not a realistic one.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"musical_key": "x" * 11})
+
+    assert r.status_code == 422, r.text
+    assert "musical_key" in r.text
+    assert "string_too_long" in r.text, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "over_width"),
+    [
+        ("musical_key", "x" * 11),
+        ("mood", "x" * 51),
+        ("style", "x" * 51),
+    ],
+)
+async def test_analysis_window_overwidth_field_422s_without_persisting(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    field: str,
+    over_width: str,
+) -> None:
+    """phaze-ty0o: an over-width window ``musical_key``/``mood``/``style`` is rejected 422 first.
+
+    ``analysis_windows.musical_key`` is ``String(10)``; ``.mood``/``.style`` are ``String(50)``. Same
+    FAILURE_IS_TERMINAL exposure as the aggregate ``musical_key`` field above -- an unhandled
+    ``StringDataRightTruncation`` would abort the transaction on a stage the agent cannot cleanly
+    retry past.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(
+            f"/api/internal/agent/analysis/{file_id}",
+            json={"windows": [_window("fine" if field == "musical_key" else "coarse", 0, 0.0, 30.0, **{field: over_width})]},
+        )
+
+    assert r.status_code == 422, r.text
+    assert field in r.text
+    assert "string_too_long" in r.text, r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
+    rows = await _window_rows(session, file_id)
+    assert not rows, "a rejected (422) PUT must not persist any AnalysisWindow row"
+
+
 # ---------------------------------------------------------------------------
 # Phase 57.1 (Plan 03): AnalysisProgressPayload schema validation
 # ---------------------------------------------------------------------------
@@ -547,6 +697,18 @@ def test_progress_schema_rejects_negative_count() -> None:
 
     with pytest.raises(ValidationError):
         AnalysisProgressPayload(fine_windows_analyzed=-1, fine_windows_total=40)
+
+
+def test_progress_schema_rejects_int32_overflowing_count() -> None:
+    """phaze-01gh: a count >= 2^31 would overflow analysis_results' int4 counter columns -- reject at 422."""
+    from pydantic import ValidationError
+
+    from phaze.schemas.agent_analysis import AnalysisProgressPayload
+
+    with pytest.raises(ValidationError) as exc_info:
+        AnalysisProgressPayload(fine_windows_analyzed=1, fine_windows_total=2147483648)
+
+    assert any(e.get("type") == "less_than_equal" for e in exc_info.value.errors())
 
 
 def test_progress_schema_requires_both_counts() -> None:
@@ -672,6 +834,35 @@ async def test_progress_post_forged_body_key_422(seed_test_agent: tuple[Agent, s
 
 
 @pytest.mark.asyncio
+async def test_progress_post_overflowing_count_422s_without_stranding_the_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-01gh: an int32-overflowing progress count is rejected 422 before the pg_insert / ledger touch.
+
+    Bare unhandled 500 in the pre-fix code (post_analysis_progress has no ledger-clear step of its
+    own to skip, but the same DataError -> 500 -> no clean signal for the agent to stop retrying with
+    the same bad count applies). Asserting no AnalysisResult row is written proves the rejection
+    happens before any transaction opens.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 2147483648},
+        )
+
+    assert r.status_code == 422, r.text
+    assert "fine_windows_total" in r.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) progress POST must not persist any AnalysisResult row"
+
+
+@pytest.mark.asyncio
 async def test_analysis_failed_sets_marker(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """POST /{file_id}/failed stamps the derived analyze-failure marker (analysis.failed_at, the sole
     authority after Phase 90 D-09 removed the files.state = ANALYSIS_FAILED write) and echoes agent_id/file_id."""
@@ -787,6 +978,39 @@ async def test_analysis_put_success_clears_ledger(seed_test_agent: tuple[Agent, 
 
     assert r.status_code == 200, r.text
     assert not await _ledger_present(session, key), "successful analyze callback must clear the ledger row"
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_overflowing_coverage_count_422s_without_stranding_the_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-01gh: an int32-overflowing coverage count is rejected 422 BEFORE the pg_insert runs.
+
+    In the pre-fix code, ``fine_windows_total=2147483648`` reached ``pg_insert(AnalysisResult)`` and
+    Postgres raised ``NumericValueOutOfRange``, aborting the transaction BEFORE `clear_ledger_entry`
+    (agent_analysis.py) ran -- leaving ``process_file:<file_id>`` in the ledger, which the recovery
+    sweep re-enqueues, re-running the SAME failing analysis forever (a poison loop). The schema bound
+    now rejects the value before the handler body -- and therefore before any transaction -- ever
+    runs, so the pre-existing ledger row is left EXACTLY as it was (not cleared, not corrupted) for a
+    future corrected retry to clear normally, and no partial/bad AnalysisResult row is ever written.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    key = f"process_file:{file_id}"
+    await _seed_ledger(session, key, "process_file", file_id)
+    assert await _ledger_present(session, key)
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"fine_windows_total": 2147483648})
+
+    assert r.status_code == 422, r.text
+    assert "fine_windows_total" in r.text
+    assert await _ledger_present(session, key), "a rejected (422) PUT must not strand or clear the ledger row"
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
+    assert row is None, "a rejected (422) PUT must not persist any AnalysisResult row"
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
+from phaze.routers.request_guards import parse_json_array_payload
 from phaze.services.dedup import (
     count_duplicate_groups,
+    find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
     find_duplicate_groups_with_metadata,
     get_duplicate_stats,
@@ -121,10 +123,10 @@ async def compare_group(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Return the comparison table partial for a single duplicate group."""
-    groups = await find_duplicate_groups_with_metadata(session, limit=1000, offset=0)
-
-    # Find the specific group by hash
-    group = next((g for g in groups if g["sha256_hash"] == group_hash), None)
+    # phaze-m7ya: a LOOKUP by hash, not a paged read. This used to fetch a hardcoded first 1000
+    # groups and linear-scan them, so any group past that arbitrary boundary answered "Group not
+    # found" forever while the list page still offered it a Compare button.
+    group = await find_duplicate_group_by_hash(session, group_hash)
     if group is None:
         return HTMLResponse(content="<p class='text-sm text-gray-500'>Group not found.</p>", status_code=200)
 
@@ -179,14 +181,21 @@ async def undo_resolve_endpoint(
     file_states: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Undo a group resolution, restoring files to previous states."""
-    parsed_states = json.loads(file_states)
+    """Undo a group resolution, restoring files to previous states.
+
+    phaze-wkqk: ``file_states`` is a raw client string, so the parse is guarded (untrusted-input
+    contract rule 1, ``routers/request_guards.py``) -- a stale tab replaying a truncated payload
+    gets a 422, not the unhandled ``JSONDecodeError`` 500 this used to raise. Rule 2's element half
+    lives in ``undo_resolve``, which drops entries that are not dicts.
+    """
+    parsed_states = parse_json_array_payload(file_states, field="file_states")
     await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the undo is rolled back.
 
     # Re-fetch group data after undo
-    groups = await find_duplicate_groups_with_metadata(session, limit=1000, offset=0)
-    group = next((g for g in groups if g["sha256_hash"] == group_hash), None)
+    # phaze-m7ya: keyed lookup, same reason as compare_group -- the capped scan silently dropped the
+    # restored card (group=None) for any group outside the first 1000, so undo appeared to erase it.
+    group = await find_duplicate_group_by_hash(session, group_hash)
     dupe_group_card = None
     if group:
         score_group(group)
@@ -265,8 +274,11 @@ async def bulk_undo(
     exists in the v7 shell, so the request never fired. Bulk resolve doesn't OOB-touch individual
     group cards either (R-2), so there's no per-card DOM state to restore here -- just confirm
     the undo landed.
+
+    phaze-wkqk: same guarded parse as ``undo_resolve_endpoint`` -- see the untrusted-input contract
+    in ``routers/request_guards.py``.
     """
-    parsed_states = json.loads(file_states)
+    parsed_states = parse_json_array_payload(file_states, field="file_states")
     restored_count = await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the bulk undo is rolled back.
 
