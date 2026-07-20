@@ -244,6 +244,42 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sync_rail_selection_root_maps_to_summary(client: AsyncClient) -> None:
+    """phaze-iunq -- the client-side rail reconciler maps "/" to the SAME stage the server renders.
+
+    ``syncRailSelection(path)`` in shell.html is the ONLY thing that re-applies
+    ``aria-current="page"`` after an HTMX navigation, and the active rail visual (blue tint +
+    inset bar) plus the screen-reader "current page" semantic both follow from that attribute.
+    Its ``/`` branch was left at ``analyze`` when quick 260707-sq3 (SQ3-02) repointed the
+    landing stage to Summary server-side, so a browser Back to ``/`` fired ``htmx:historyRestore``
+    -> ``syncRailSelection('/')`` -> the Analyze node got highlighted while the restored Summary
+    workspace was on screen.
+
+    This asserts the JS root branch agrees with the server: whatever stage ``GET /`` marks
+    ``aria-current="page"`` server-side is the stage the JS re-applies it to on history restore.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    # The stage the SERVER treats as the "/" landing -- read off the rail node it marks active.
+    server_landing = re.search(r'data-rail-stage="([^"]+)"[^>]*aria-current="page"', body)
+    assert server_landing is not None, 'no rail node carries aria-current="page" on the shell root'
+    server_stage = server_landing.group(1)
+    assert server_stage == "summary", f'GET / should render the summary landing, not "{server_stage}"'
+
+    # The stage the CLIENT-side reconciler assigns for path "/" in syncRailSelection.
+    js_root_branch = re.search(r"""if \(path === ['"]/['"].*?\)\s*\{\s*stage = ['"]([^'"]+)['"]""", body, re.DOTALL)
+    assert js_root_branch is not None, "syncRailSelection has no recognizable root-path branch in shell.html"
+    js_stage = js_root_branch.group(1)
+
+    assert js_stage == server_stage, (
+        f'syncRailSelection maps "/" to stage "{js_stage}" but GET / renders "{server_stage}" -- '
+        "browser Back to the root will highlight the wrong rail node (phaze-iunq)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_tabbar_removed_header_present(client: AsyncClient) -> None:
     """SHELL-03 -- the legacy top <nav> tab-bar is gone; the ⌘K header + status strip is in.
 
