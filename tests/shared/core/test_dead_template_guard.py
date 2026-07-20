@@ -58,7 +58,31 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # so no template needs a reachability waiver any more. Keep it empty; if a future dynamic
 # `name=` makes a real template statically un-discoverable, add it back WITH an inline
 # justification -- do NOT relax the closure logic below to force green.
-_ALLOWLIST: frozenset[str] = frozenset()
+_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # phaze-7j50 surfaced these three as orphans, and the orphaning is REAL -- this is the
+        # allowlist's primary documented case (unreachable legacy templates awaiting deletion),
+        # not the secondary "reachable but statically un-discoverable" one. Do not read these
+        # entries as a reachability waiver.
+        #
+        # The legacy proposals view has NO live entry point in the v7 shell: the rail never links
+        # /proposals/, "propose" resolves to pipeline/partials/propose_workspace.html (a different
+        # UI), and a non-fragment GET /proposals/ 302s to /s/propose. The only requests that reach
+        # proposal_content.html's family come from pagination.html / proposal_table.html, which are
+        # themselves rendered only by that same endpoint -- a closed loop nothing outside can enter.
+        #
+        # Before phaze-7j50 the HX branch returned proposal_content.html, so the guard counted it
+        # reachable via that loop. 7j50 correctly narrowed the branch to the container's inner
+        # content (its callers all target #proposal-list-container), which left the chrome with no
+        # consumer and made the pre-existing deadness visible.
+        #
+        # Retiring them is a product decision about the legacy proposals UI, deliberately NOT taken
+        # inside a bug sweep -- tracked in phaze-fann. Delete all three together when that lands.
+        "proposals/partials/proposal_content.html",
+        "proposals/partials/filter_tabs.html",  # included only by proposal_content.html
+        "proposals/partials/search_box.html",  # included only by proposal_content.html
+    }
+)
 
 # Router ``"...html"`` literals that are intentionally NOT on-disk templates — a redirect
 # target, an ``href`` string, a docstring example. ``_HTML_LITERAL`` captures ANY quoted

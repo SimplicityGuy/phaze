@@ -1685,7 +1685,7 @@ async def force_skip_stage(
     return HTMLResponse(_stage_pill_oob(file_id, stage, buckets.get(stage, "skipped")) + toast)
 
 
-# The record pane's enrich stage labels (record_body.html's stage loop) — informational text inside the
+# The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
 _ENRICH_STAGE_LABELS = {"metadata": "Meta", "fingerprint": "FP", "analyze": "Analyze"}

@@ -112,9 +112,9 @@ USING IT
         # Fragment ONLY for a live in-page swap. A history restore falls through to the full
         # page, because htmx will put this response in <body>.
         if wants_fragment(request):
-            return templates.TemplateResponse(request=request, name=".../audit_content.html", context=context)
+            return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
-        return templates.TemplateResponse(request=request, name=".../audit_log.html", context=context)
+        return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
 """
 
 from fastapi import Request
