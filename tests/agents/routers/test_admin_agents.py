@@ -18,16 +18,21 @@ get_session to use the project-wide session fixture.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import html
+import re
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers import admin_agents
+from phaze.services.agent_liveness import sort_key
 
 
 if TYPE_CHECKING:
@@ -85,6 +90,39 @@ async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
 
 
 @pytest_asyncio.fixture
+async def sort_smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    """Smoke client seeded so name-ascending is a FULL DERANGEMENT of the default last-seen order.
+
+    The shared ``smoke`` fixture cannot prove poll survival on its own: its most-recently-seen agent
+    is also its alphabetically-first, so it leads BOTH orders and a template that silently reset to
+    the default would still look right at the top of the table. Here the four agents' names run
+    opposite to their last-seen recency, so the two orders differ at EVERY position and any reset is
+    detectable wherever it happens.
+
+    Pre-existing rows are cleared for the same reason ``empty_smoke`` clears them: the conftest
+    ``test-fileserver`` row has a NULL last_seen, so it would pin the tail of both orders and
+    reintroduce the coincidence this fixture exists to remove.
+    """
+    from sqlalchemy import delete
+
+    await session.execute(delete(Agent))
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            Agent(id="agent-1", name="Delta", scan_roots=[], last_seen_at=now - timedelta(seconds=1), kind="fileserver"),
+            Agent(id="agent-2", name="Charlie", scan_roots=[], last_seen_at=now - timedelta(seconds=2), kind="fileserver"),
+            Agent(id="agent-3", name="Bravo", scan_roots=[], last_seen_at=now - timedelta(seconds=3), kind="fileserver"),
+            Agent(id="agent-4", name="Alpha", scan_roots=[], last_seen_at=now - timedelta(seconds=4), kind="fileserver"),
+        ]
+    )
+    await session.commit()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
 async def empty_smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     """Smoke client with NO seeded agents beyond the conftest legacy row.
 
@@ -121,7 +159,10 @@ async def test_page_renders_full_html(smoke: AsyncClient) -> None:
     # The polling section is rendered.
     assert 'id="agents-table-section"' in body
     # The polling cadence + endpoint are wired correctly.
-    assert 'hx-get="/admin/agents/_table"' in body
+    # phaze-a6hm.4: the poll now arms sort.poll_url(), so the endpoint carries the active order as a
+    # query string rather than standing alone. Asserted as a prefix -- the invariant is that the poll
+    # re-requests THIS endpoint, not that it does so without parameters.
+    assert _poll_url(body).startswith("/admin/agents/_table")
     assert 'hx-trigger="every 5s"' in body
     assert 'hx-swap="outerHTML"' in body
 
@@ -149,7 +190,10 @@ async def test_dedicated_table_route_returns_partial(smoke: AsyncClient) -> None
     assert 'id="agents-table-section"' in body
     # Re-emits its own hx-trigger (NEVER halts polling per UI-SPEC).
     assert 'hx-trigger="every 5s"' in body
-    assert 'hx-get="/admin/agents/_table"' in body
+    # phaze-a6hm.4: the poll now arms sort.poll_url(), so the endpoint carries the active order as a
+    # query string rather than standing alone. Asserted as a prefix -- the invariant is that the poll
+    # re-requests THIS endpoint, not that it does so without parameters.
+    assert _poll_url(body).startswith("/admin/agents/_table")
 
 
 @pytest.mark.asyncio
@@ -575,12 +619,21 @@ async def test_kind_badge_in_poll_partial(smoke: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_kind_column_header_present(smoke: AsyncClient) -> None:
-    """A "Kind" column header sits AFTER "Agent" and BEFORE "Status" (UI-SPEC §Placement)."""
+    """A "Kind" column header sits AFTER "Agent" and BEFORE "Status" (UI-SPEC §Placement).
+
+    Scoped to the <thead> rather than the whole body: the section heading "Agents · heartbeating"
+    also contains the substring "Agent", so an unscoped search can satisfy this assertion off the
+    heading while the actual column order is wrong. Within the <thead> these capitalised labels
+    appear only as header text, so matching them bare is unambiguous AND shape-agnostic —
+    phaze-a6hm.4 wraps a SORTABLE header's label in a <button> (so the old ">Agent<" no longer
+    matches), and the invariant under test is the column ORDER, not the markup around it.
+    """
     response = await smoke.get("/admin/agents/_table")
     body = response.text
-    pos_agent = body.find(">Agent<")
-    pos_kind = body.find(">Kind<")
-    pos_status = body.find(">Status<")
+    thead = body[body.find("<thead") : body.find("</thead>")]
+    pos_agent = thead.find("Agent")
+    pos_kind = thead.find("Kind")
+    pos_status = thead.find("Status")
     assert pos_agent > 0, "Agent header missing"
     assert pos_kind > 0, "Kind header missing"
     assert pos_status > 0, "Status header missing"
@@ -779,3 +832,275 @@ async def test_local_is_htmx_helper_is_gone(smoke: AsyncClient) -> None:
     identity with a different implementation.
     """
     assert not hasattr(admin_agents, "_is_htmx"), "re-deriving the shape decision locally is banned -- use response_shape.wants_fragment"
+
+
+# ---------------------------------------------------------------------------
+# phaze-a6hm.4 — sortable columns via the shared column_sort contract
+# ---------------------------------------------------------------------------
+
+
+def _row_order(body: str) -> list[str]:
+    """Return the agent ids in the order they appear as rows in ``body``.
+
+    Reads the rendered row anchors rather than any header state, so these tests observe the order
+    the operator actually SEES rather than the order the handler claims to have asked for.
+    """
+    return re.findall(r'id="agent-trigger-([^"]+)"', body)
+
+
+def _poll_url(body: str) -> str:
+    """Return the URL the rendered self-poll has ARMED for its next 5s tick.
+
+    Read off the live ``hx-get`` of ``#agents-table-section`` (the element that re-requests itself)
+    rather than being assumed, so a change that stops threading the sort into the poll fails these
+    tests instead of passing against a hardcoded guess. Scoped to that opening tag specifically:
+    rows and sort buttons carry their own ``hx-get``, and any of them could satisfy a loose match.
+    """
+    start = body.find('<section id="agents-table-section"')
+    assert start != -1, "the polled section is missing"
+    tag = body[start : body.index(">", start)]
+    match = re.search(r'hx-get="([^"]+)"', tag)
+    assert match is not None, "the polled section must arm an hx-get"
+    return html.unescape(match.group(1))
+
+
+def _poll_vals(body: str) -> dict[str, str]:
+    """Return the ``sort``/``order`` the self-poll will re-request on its next tick."""
+    query = urlparse(_poll_url(body)).query
+    return {name: values[0] for name, values in parse_qs(query).items()}
+
+
+@pytest.mark.asyncio
+async def test_sortable_headers_use_the_shared_contract(smoke: AsyncClient) -> None:
+    """Whitelisted headers render as sort buttons pointed at this table's own endpoint."""
+    body = (await smoke.get("/admin/agents/_table")).text
+    thead = body[body.find("<thead") : body.find("</thead>")]
+    assert 'hx-get="/admin/agents/_table?sort=name&amp;order=asc"' in thead
+    # The target is the EXISTING self-replacing section, swapped outerHTML. An innerHTML swap here
+    # would nest a second #agents-table-section (duplicate id + duplicate 5s trigger) on every click.
+    assert 'hx-target="#agents-table-section"' in thead
+    assert 'hx-swap="outerHTML"' in thead
+
+
+@pytest.mark.asyncio
+async def test_sort_is_server_side_across_the_whole_set(smoke: AsyncClient) -> None:
+    """A sort click reorders rows in SQL, and the reverse direction is the exact mirror."""
+    ascending = _row_order((await smoke.get("/admin/agents/_table", params={"sort": "name", "order": "asc"})).text)
+    descending = _row_order((await smoke.get("/admin/agents/_table", params={"sort": "name", "order": "desc"})).text)
+    assert ascending == sorted(ascending, key=str.lower) or ascending == sorted(ascending)
+    assert descending == list(reversed(ascending))
+    # Revoked agents stay filtered out no matter how the table is ordered.
+    assert "revoked-agent" not in ascending
+
+
+@pytest.mark.asyncio
+async def test_default_order_matches_the_locked_sort_key(smoke: AsyncClient, session: AsyncSession) -> None:
+    """The SQL default reproduces the UI-SPEC LOCKED ``sort_key`` order exactly.
+
+    phaze-a6hm.4 moved this table's ORDER BY out of a Python ``rows.sort(key=sort_key)`` and into
+    SQL. That is only safe while the two agree, so the equivalence is pinned against ``sort_key``
+    ITSELF rather than a hand-copied expected list: if a future threshold change makes the status
+    tiers stop being a pure function of last-seen recency, this fails instead of silently reordering
+    the operator's default view.
+
+    Stated as "the rendered order is non-decreasing under ``sort_key``" rather than "equals
+    ``sorted(rows, key=sort_key)``", because ``sort_key`` genuinely TIES on never-seen agents (they
+    all share the +inf tiebreaker). Python's stable sort resolves those ties by whatever order the
+    unordered SELECT happened to return, so an equality assertion would pin a database accident. The
+    SQL path is strictly MORE determined here — it breaks the tie on ``Agent.id`` — and
+    ``test_ties_break_deterministically`` covers that half.
+    """
+    rendered = _row_order((await smoke.get("/admin/agents/_table")).text)
+
+    now = datetime.now(UTC)
+    rows = (await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))).scalars().all()
+    by_id = {a.id: a for a in rows}
+    keys = [sort_key(by_id[agent_id], now) for agent_id in rendered]
+    assert keys == sorted(keys), f"rendered order disagrees with the LOCKED sort_key order: {rendered}"
+
+
+@pytest.mark.asyncio
+async def test_ties_break_deterministically_across_polls(smoke: AsyncClient) -> None:
+    """Rows that tie on the sort key hold a stable position between ticks.
+
+    Never-seen agents all tie on last-seen, and an operator-chosen key ties far harder (every
+    fileserver agent shares a kind). Without the unique ``Agent.id`` tail on the ORDER BY, Postgres
+    is free to return tied rows in a different order each time — so rows would visibly swap places
+    every 5 seconds under a cursor that never moved.
+    """
+    for params in ({}, {"sort": "kind", "order": "asc"}):
+        first = _row_order((await smoke.get("/admin/agents/_table", params=params)).text)
+        again = _row_order((await smoke.get("/admin/agents/_table", params=params)).text)
+        assert first == again, f"tied rows re-shuffled between polls for {params}"
+
+
+@pytest.mark.asyncio
+async def test_never_seen_agents_sort_last_by_default(smoke: AsyncClient, session: AsyncSession) -> None:
+    """Never-seen agents occupy the BOTTOM of the default view, not the top.
+
+    Regression for the NULL-ordering trap: Postgres orders NULLS FIRST under DESC, so the obvious
+    ``Agent.last_seen_at.desc()`` puts every never-heartbeated agent ABOVE the live ones — inverting
+    the LOCKED alive→stale→dead→never order on the very first render, with no error to notice.
+
+    Asserts the whole never-seen BLOCK sits in the tail rather than naming one row, so the guarantee
+    still reads correctly however many never-seen agents the fixtures happen to seed.
+    """
+    order = _row_order((await smoke.get("/admin/agents/_table")).text)
+    rows = (await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))).scalars().all()
+    never = {a.id for a in rows if a.last_seen_at is None}
+
+    assert order[0] == "alive-agent", "the most recently seen agent must lead"
+    assert never, "fixture must seed at least one never-seen agent for this to mean anything"
+    tail = set(order[-len(never & set(order)) :])
+    assert tail == never & set(order), f"never-seen agents are not in the tail: {order}"
+
+
+@pytest.mark.asyncio
+async def test_poll_tick_preserves_operator_sort(sort_smoke: AsyncClient) -> None:
+    """THE bead: the 5s self-poll carries the chosen sort forward instead of resetting it.
+
+    #agents-table-section re-swaps ITSELF every 5s with hx-swap="outerHTML" and is spec'd never to
+    halt. So it is not enough that the click renders sorted — the NEXT tick must re-send the sort,
+    or the table snaps back to the default order 5 seconds after the operator clicked, silently, on
+    a fuse too long for any manual check to catch.
+
+    This replays the tick rather than asserting the first render: it reads the URL the response
+    ARMED via ``sort.poll_url()`` (contract rule 4a) and issues exactly that request, the way htmx
+    would, then asserts the follow-up render is still in the operator's order — and still arms the
+    same URL, so tick N+2 survives too.
+
+    The sort chosen here ("name" ascending) is one whose order differs from the default at EVERY
+    position (asserted below). A sort that merely agreed with the default on the first row would let
+    a completely broken template pass this test.
+    """
+    default = _row_order((await sort_smoke.get("/admin/agents/_table")).text)
+    first = await sort_smoke.get("/admin/agents/_table", params={"sort": "name", "order": "asc"})
+    chosen = _row_order(first.text)
+
+    # Without this the test could not fail: if the two orders agreed, a poll that reset to the
+    # default would still "preserve" the visible order and the regression would sail through.
+    assert set(chosen) == set(default)
+    assert all(a != b for a, b in zip(chosen, default, strict=True)), (
+        f"seed data too weak to detect a reset: sorted and default orders coincide somewhere.\nsorted={chosen}\ndefault={default}"
+    )
+
+    # What the rendered section will actually request on its next tick — read from the markup.
+    armed = _poll_url(first.text)
+    assert _poll_vals(first.text) == {"sort": "name", "order": "asc"}, f"the poll did not arm the operator's sort: {armed}"
+
+    # Tick N+1: fire the armed URL verbatim.
+    tick = await sort_smoke.get(armed)
+    assert tick.status_code == 200
+    assert _row_order(tick.text) == chosen, "the 5s poll reset the operator's chosen sort to the default"
+
+    # ...and the loop is self-sustaining: tick N+1 arms the same URL for tick N+2.
+    assert _poll_url(tick.text) == armed
+
+
+@pytest.mark.asyncio
+async def test_poll_default_tick_does_not_reset_to_a_different_order(smoke: AsyncClient) -> None:
+    """The unsorted case is stable across ticks too (no click, no drift)."""
+    first = await smoke.get("/admin/agents/_table")
+    second = await smoke.get("/admin/agents/_table", params=_poll_vals(first.text))
+    assert _row_order(second.text) == _row_order(first.text)
+
+
+@pytest.mark.asyncio
+async def test_drill_in_push_url_keeps_the_sort(smoke: AsyncClient) -> None:
+    """Opening a row must not rewrite the URL to a sort-less one.
+
+    The row pushes "/admin/agents?agent=<id>". Without the sort appended, a reload after drilling in
+    drops the operator back into the default order — the same reset as the poll bug, via a different
+    door.
+    """
+    body = (await smoke.get("/admin/agents/_table", params={"sort": "kind", "order": "desc"})).text
+    assert 'hx-push-url="/admin/agents?agent=alive-agent&amp;sort=kind&amp;order=desc"' in body
+
+
+@pytest.mark.asyncio
+async def test_page_route_honours_and_survives_sort(smoke: AsyncClient) -> None:
+    """A full-page load carries the sort too, so a reload/bookmark reproduces the chosen order."""
+    body = (await smoke.get("/admin/agents", params={"sort": "name", "order": "desc"})).text
+    assert "<html" in body.lower()
+    assert _poll_vals(body) == {"sort": "name", "order": "desc"}
+
+
+@pytest.mark.asyncio
+async def test_unknown_sort_degrades_to_default_and_never_reaches_a_column(smoke: AsyncClient) -> None:
+    """An unwhitelisted sort renders the DEFAULT order at 200 — it does not 422 and does not sort.
+
+    Asserting the status alone would pass against an implementation that happily ``getattr``-ed its
+    way to a column, so this pins the ORDER: a hostile key naming a real-but-unoffered attribute
+    (``token_hash``, ``revoked_at``) must produce output identical to sending no sort at all, which
+    is only possible if the key never selected a column. 422-ing instead would blank the whole
+    workspace on a poll to punish a stale bookmark (contract rule 3).
+
+    Only ``sort`` varies: ``order`` is deliberately left off so it degrades to the default too.
+    Pinning the direction as well would let a passing/failing result turn on the DIRECTION rather
+    than on whether the hostile key reached a column, which is the property under test.
+    """
+    default_order = _row_order((await smoke.get("/admin/agents/_table")).text)
+    for hostile in ("token_hash", "revoked_at", "id; drop table agents", "__class__", "name.desc()"):
+        response = await smoke.get("/admin/agents/_table", params={"sort": hostile})
+        assert response.status_code == 200, f"{hostile!r} must degrade, not 422"
+        assert _row_order(response.text) == default_order, f"{hostile!r} reached a column"
+        # The rejected key is discarded, never echoed back into the next poll.
+        assert _poll_vals(response.text)["sort"] == "last_seen"
+
+
+@pytest.mark.asyncio
+async def test_unknown_order_degrades_to_default_direction(smoke: AsyncClient) -> None:
+    """An unrecognised ``order`` falls back to the contract default direction rather than erroring."""
+    response = await smoke.get("/admin/agents/_table", params={"sort": "name", "order": "sideways"})
+    assert response.status_code == 200
+    # The contract's default_order is DESCENDING (it encodes "most recently seen first").
+    assert _poll_vals(response.text)["order"] == admin_agents.AGENTS_SORT.default_order
+
+
+@pytest.mark.asyncio
+async def test_active_column_announces_itself_via_aria_sort(smoke: AsyncClient) -> None:
+    """The active header carries aria-sort; other sortable headers say "none" (contract rule 5)."""
+    thead = (body := (await smoke.get("/admin/agents/_table", params={"sort": "name", "order": "desc"})).text)[
+        body.find("<thead") : body.find("</thead>")
+    ]
+    assert 'aria-sort="descending"' in thead
+    assert thead.count('aria-sort="descending"') == 1
+    assert 'aria-sort="none"' in thead
+    # "Status"/"Actions" are not sortable, so they must omit the attribute entirely rather than
+    # claim aria-sort="none" -- which would announce a sorting affordance that does not exist.
+    assert thead.count("aria-sort=") == len(admin_agents.AGENTS_SORT.columns)
+
+
+@pytest.mark.asyncio
+async def test_polling_never_halts_under_any_sort(smoke: AsyncClient) -> None:
+    """UI-SPEC §Polling LOCKED: every sorted render still re-emits its own 5s trigger."""
+    for params in ({}, {"sort": "name", "order": "asc"}, {"sort": "bogus", "order": "bogus"}):
+        body = (await smoke.get("/admin/agents/_table", params=params)).text
+        assert 'hx-trigger="every 5s"' in body
+        assert 'hx-swap="outerHTML"' in body
+
+
+@pytest.mark.asyncio
+async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> None:
+    """Sorting must not close the operator's open agent (contract rule 4: one click changes one thing).
+
+    ``?agent=`` is this table's other view state — it drives the selected-row ring and the detail
+    pane — but it travels differently from the sort, and the split is the point of this test.
+
+    It is carried in the section's ``hx-vals``, read LIVE from ``location.search``, which htmx
+    inherits to descendant elements — so the sort buttons send it without naming it. It is
+    deliberately absent from ``poll_url()``: a row click swaps only ``#detail-pane``, so this
+    section's rendered markup still holds the PREVIOUS selection, and a baked-in ``?agent=`` would
+    re-assert that stale id on every 5s tick and erase the ring the operator just clicked.
+
+    The two channels must also stay disjoint, because htmx APPENDS ``hx-vals`` to the ``hx-get``
+    query string — a key in both would be transmitted twice.
+    """
+    body = (await smoke.get("/admin/agents/_table", params={"agent": "alive-agent", "sort": "name", "order": "asc"})).text
+
+    # The live selection rides in hx-vals on the polled section, inherited by the sort buttons.
+    assert "hx-vals='js:{agent: new URLSearchParams(location.search).get(\"agent\")}'" in body
+    # ...and is NOT frozen into the armed poll URL, where it would go stale.
+    assert "agent" not in _poll_vals(body), "a stale ?agent= was baked into the poll and will erase the selection"
+    # The selection genuinely survived this render.
+    assert 'aria-current="true"' in body

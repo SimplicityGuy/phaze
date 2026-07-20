@@ -162,7 +162,7 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/files", "bucket"): _WHITELIST,
     ("/pipeline/analyze-files", "status"): _WHITELIST,
     ("/pipeline/pending-files", "stage"): _WHITELIST,
-    # phaze-a6hm.1 sortable-column contract (src/phaze/routers/column_sort.py). These six are the
+    # phaze-a6hm.1 sortable-column contract (src/phaze/routers/column_sort.py). These are the
     # STRONGEST form of _WHITELIST in the repo: the allowlist is not a set of accepted NAMES that a
     # later line turns into a column, it is a mapping straight TO already-constructed SQLAlchemy
     # column objects. SortContract.resolve() matches the wire value against those keys by equality
@@ -174,6 +174,14 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/trackid-files", "order"): _WHITELIST,
     ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
     ("/pipeline/tracklist-sets", "order"): _WHITELIST,
+    # phaze-a6hm.4 wired the same contract into the /admin/agents table (AGENTS_SORT). Identical
+    # posture: both routes resolve through SortContract.resolve() before any column is reached, and
+    # BOTH are polled every 5s -- which is exactly why they degrade an unknown value to the default
+    # rather than 422-ing (contract rule 3). A 422 here would blank the operator's page on a tick.
+    ("/admin/agents", "sort"): _WHITELIST,
+    ("/admin/agents", "order"): _WHITELIST,
+    ("/admin/agents/_table", "sort"): _WHITELIST,
+    ("/admin/agents/_table", "order"): _WHITELIST,
     # phaze-a6hm.6 extends that same contract to the Recent Scans table: RECENT_SCANS_SORT in
     # routers/pipeline_scans.py is a SortContract, so these four resolve through the identical
     # equality-match-then-discard path as the six above -- same helper, same structural guarantee,

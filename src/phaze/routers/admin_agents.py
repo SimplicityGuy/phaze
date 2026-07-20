@@ -7,12 +7,19 @@ are filtered out entirely (see ``_load_agents``). The page polls
 ``<section>`` (UI-SPEC §Polling LOCKED — never halts).
 
 Server-side classification: ``_load_agents`` queries non-revoked Agent rows
-(``revoked_at IS NULL``), computes ``classify(a, now)`` for each, injects the
+(``revoked_at IS NULL``), computes ``classify(a, now)`` for each and injects the
 result on a transient ``agent._status`` attribute (mirrors Phase 27's
-``_agent_name`` / ``_elapsed_seconds`` pattern), and sorts via ``sort_key`` so
-agents sort alive→stale→dead→never with last_seen DESC tiebreakers. (``classify``
-/ ``sort_key`` retain their revoked tier for callers elsewhere, but revoked
-agents never reach this panel.)
+``_agent_name`` / ``_elapsed_seconds`` pattern). Agents still render
+alive→stale→dead→never with last_seen DESC tiebreakers by default. (``classify``
+retains its revoked tier for callers elsewhere, but revoked agents never reach
+this panel.)
+
+Column sorting (phaze-a6hm.4): the ORDER BY now lands in SQL via :data:`AGENTS_SORT`
+rather than a Python ``rows.sort(key=sort_key)`` after the read. The default
+resolves to the SAME order ``sort_key`` produced — see :data:`AGENTS_SORT` for why
+the two are equivalent once revoked rows are filtered, and
+``test_default_matches_locked_sort_key`` for the pin that keeps them so.
+``sort_key`` itself is unchanged and still serves its other callers.
 
 Auth posture: NO ``get_authenticated_agent`` dependency — operator pages are
 open on the private LAN (consistent with pipeline.py / pipeline_scans.py
@@ -28,7 +35,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import DateTime, Integer, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
 import structlog
 
@@ -36,8 +43,9 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
+from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import wants_fragment
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds, sort_key
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -49,6 +57,61 @@ _ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.
 
 
 logger = structlog.get_logger(__name__)
+
+
+# ``last_seen_at`` with NULL folded to the OLDEST representable instant, so a direction alone decides
+# where never-seen agents land and no caller needs a nullslast() the sort contract cannot express.
+#
+# This is load-bearing, not cosmetic. Postgres orders NULLS FIRST under DESC, so a bare
+# ``Agent.last_seen_at.desc()`` puts every NEVER agent ABOVE the live ones — silently inverting the
+# UI-SPEC LOCKED order on the default render. Folding to ``-infinity`` reproduces ``sort_key``'s
+# "+inf tiebreaker → end of the bucket" exactly: DESC = most-recent first, never-seen last.
+_LAST_SEEN_ORDER = func.coalesce(Agent.last_seen_at, cast(literal("-infinity"), DateTime(timezone=True)))
+
+# Queue depth lives in the ``last_status`` JSONB blob and is absent for agents that never reported one
+# (the template renders those as "—"). Folded to -1 so they sort BELOW every real depth under ASC and
+# above nothing under DESC, rather than scattering on NULL ordering rules.
+_QUEUE_DEPTH_ORDER = func.coalesce(cast(Agent.last_status["queue_depth"].astext, Integer), -1)
+
+AGENTS_SORT = SortContract(
+    endpoint="/admin/agents/_table",
+    target="#agents-table-section",
+    columns=(
+        SortableColumn(key="name", label="Agent", expression=Agent.name),
+        SortableColumn(key="kind", label="Kind", expression=Agent.kind),
+        SortableColumn(key="queue", label="Queue", expression=_QUEUE_DEPTH_ORDER),
+        SortableColumn(key="last_seen", label="Last seen", expression=_LAST_SEEN_ORDER),
+        SortableColumn(key="scan_roots", label="Scan roots", expression=func.jsonb_array_length(Agent.scan_roots)),
+    ),
+    default_key="last_seen",
+    default_order=DESCENDING,
+)
+"""The whitelist for the /admin/agents table (contract rule 6, built at import time).
+
+``default_key="last_seen"`` + ``DESCENDING`` is not a new default — it is the UI-SPEC LOCKED order
+``sort_key`` already produced, re-expressed as SQL. With revoked rows filtered out by ``_load_agents``
+(they are the ONLY rows whose ``revoked_int`` differs), ``sort_key``'s tuple collapses to
+``(status_rank, -last_seen)``, and ``status_rank`` is a pure monotone bucketing of last-seen recency:
+alive = seen most recently, then stale, then dead, then never (``last_seen_at IS NULL``). Ordering by
+``last_seen_at DESC NULLS LAST`` therefore yields the SAME total order, alive→stale→dead→never, with
+the same within-bucket "most recently seen first" tiebreak. ``test_default_matches_locked_sort_key``
+pins that equivalence so a future threshold change cannot drift the two apart unnoticed.
+
+"Status" is deliberately NOT a separate key for the same reason: it would be a synonym for "Last seen"
+whose caret pointed the opposite way (status ascending = last-seen descending), which reads as the
+table having re-sorted itself in a direction the operator did not choose. "Actions" holds no data.
+
+``resolve()`` is called with NO ``view_state``, which is a deviation from rule 4 worth stating so it is
+not "corrected" later. This table's other view parameter is ``?agent=`` (the drill-in selection), and it
+must NOT ride in ``view_state``, because ``view_state`` feeds :meth:`SortState.poll_url` and the poll is
+exactly where a stale value does damage: a row click swaps only ``#detail-pane``, leaving THIS section's
+server-rendered markup — and therefore its ``poll_url`` — holding the PREVIOUS selection. A baked
+``?agent=`` would re-assert that stale id every 5 seconds and erase the ring the operator just clicked
+(Phase 88 D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search``,
+which htmx inherits to the sort buttons so a header click preserves the open pane too. The two channels
+are kept disjoint because htmx APPENDS ``hx-vals`` onto the ``hx-get`` query string — a key in both
+would be transmitted twice. See ``admin/partials/agents_table.html`` for the same note at the markup.
+"""
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -68,7 +131,7 @@ def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | Non
     return agent if agent is not None and any(a.id == agent for a in agents) else None
 
 
-async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
+async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Agent], datetime]:
     """Load non-revoked Agents, attach transient ``_status``, sort per UI-SPEC LOCKED.
 
     Revoked agents (``revoked_at IS NOT NULL``) are excluded via the shared
@@ -100,7 +163,12 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
     ``non_local_backend_agent_refs`` closes that gap with the STRUCTURAL binding (``agent_ref``) instead
     of name-coincidence, so the shadow row is suppressed regardless of what the operator named it.
     """
-    result = await session.execute(select(Agent).where(Agent.revoked_at.is_(None)))
+    # ORDER BY lands in SQL (sort contract rule 1), reached only through a whitelisted expression.
+    # Agent.id is the tiebreaker: an operator-chosen key ties heavily (every fileserver agent shares a
+    # kind, most share a scan-root count), and without a unique tail those ties would re-shuffle between
+    # 5s polls — rows visibly swapping places under a cursor that never moved.
+    stmt = select(Agent).where(Agent.revoked_at.is_(None)).order_by(*sort.order_by(), Agent.id.asc())
+    result = await session.execute(stmt)
     rows = list(result.scalars().all())
     now = datetime.now(UTC)
     for a in rows:
@@ -125,7 +193,8 @@ async def _load_agents(session: AsyncSession) -> tuple[list[Agent], datetime]:
         for a in rows
         if not (a.kind == "compute" and a._status == "never" and (a.id in shadow_keys or a.name in shadow_keys))  # type: ignore[attr-defined]
     ]
-    rows.sort(key=lambda a: sort_key(a, now))
+    # No Python re-sort: the order arrived from SQL above. Filtering never reorders a list, so the
+    # shadow-row removal preserves the ORDER BY rather than needing it re-applied.
     return rows, now
 
 
@@ -134,6 +203,8 @@ async def page(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    sort: Annotated[str | None, Query()] = None,
+    order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Render either the full ``admin/agents.html`` page or the partial.
 
@@ -150,7 +221,8 @@ async def page(
     ignoring ``hx-target``. The old helper answered that with the chrome-less table partial,
     replacing the whole admin page with a bare table. A restore now gets ``admin/agents.html``.
     """
-    agents, now = await _load_agents(session)
+    sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
+    agents, now = await _load_agents(session, sort_state)
     # Section 2 (RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity PER non-local
     # registry backend, synthesized read-only from the Phase-67 registry + in-flight CloudJob counts.
     # Injected on BOTH the full page and the partial so the existing 5s self-poll refreshes it too
@@ -171,6 +243,7 @@ async def page(
             # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
             # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
             "selected_agent": _resolve_selected_agent(agent, agents),
+            "sort": sort_state,
             "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
     )
@@ -181,6 +254,8 @@ async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    sort: Annotated[str | None, Query()] = None,
+    order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Return the agents_table partial UNCONDITIONALLY.
 
@@ -192,8 +267,22 @@ async def table_partial(
     ``?agent=`` via ``hx-vals`` (agents_table.html), so this tick re-emits the selected-row highlight
     (aria-current + ring) on the matching row. Resolved by lookup-in-known-set (T-88-01) — an
     unknown/absent id highlights nothing, never a 422/500 into the poll.
+
+    phaze-a6hm.4: the SAME mechanism now carries ``sort``/``order``, and it is what makes column
+    sorting on this table possible at all. This section re-swaps ITSELF every 5s with
+    ``hx-swap="outerHTML"`` and is spec'd never to halt, so a tick that omitted the operator's chosen
+    sort would re-render under the default order and silently undo their click — with a 5-second fuse
+    that no manual test shorter than 5 seconds can see. The partial renders its own resolved sort back
+    into ``hx-vals``, so each tick re-sends the order the previous tick rendered and the choice is
+    carried by the poll rather than merely surviving it. ``test_poll_tick_preserves_operator_sort``
+    replays the tick to hold that.
+
+    ``sort``/``order`` degrade to the default here (contract rule 3) rather than 422-ing: a stale
+    bookmark or an evicted history entry can carry an old key perfectly innocently, and answering 422
+    would blank the operator's whole page on a poll to punish a bad display preference.
     """
-    agents, now = await _load_agents(session)
+    sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
+    agents, now = await _load_agents(session, sort_state)
     compute_lanes = await derive_compute_lane_identities(session)
     return templates.TemplateResponse(
         request=request,
@@ -205,6 +294,7 @@ async def table_partial(
             "refreshed_at_iso": now.isoformat(),
             "compute_lanes": compute_lanes,
             "selected_agent": _resolve_selected_agent(agent, agents),
+            "sort": sort_state,
         },
     )
 
