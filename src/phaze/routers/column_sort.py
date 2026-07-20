@@ -58,8 +58,10 @@ THE CONTRACT
    :meth:`SortContract.resolve` maps any unrecognised ``sort`` to the contract's default key and any
    unrecognised ``order`` to its default direction.
 
-   This is the SAME answer ``services/proposal_queries.py`` already gives (``valid_sort_columns`` ->
-   fall back to ``confidence``), and the same answer this repo gives for every other render-path
+   This was the SAME answer ``services/proposal_queries.py`` used to give from its own
+   ``valid_sort_columns`` set -- phaze-a6hm.10 deleted that set and routed the propose workspace
+   through this contract instead, so the fallback now lives here ONCE rather than being restated
+   per query. It remains the same answer this repo gives for every other render-path
    allowlist: ``/pipeline/files`` degrades an unknown ``stage``/``bucket`` rather than 422-ing the
    poll (T-87-14), ``/pipeline/analyze-files`` degrades an unknown ``status`` to the default view, and
    the paging contract's rule 5 clamps an out-of-range page instead of raising. Be consistent with

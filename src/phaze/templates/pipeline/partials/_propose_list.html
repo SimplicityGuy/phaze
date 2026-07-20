@@ -25,8 +25,23 @@
 
    Every DB-sourced value autoescapes through _file_table.html (T-60-XSS -- never raw, never `| safe`).
 
-   Context: propose_proposals · propose_pagination · propose_view · llm_model, plus the pager's
-   pager_url / pager_target (set by the caller chain). #}
+   Context: propose_proposals · propose_pagination · propose_view · llm_model · sort, plus the
+   pager's pager_url / pager_target (set by the caller chain).
+
+   phaze-a6hm.10 -- SORTING. There is NO sorting markup in this file, and that is the point. The
+   `sort` context key is a resolved column_sort.SortState (routers/proposal_sort.PROPOSE_SORT) and
+   _file_table.html turns every header whose LABEL that state recognises into a server-side sort
+   button on its own. So the four labels below are load-bearing in a way that is easy to miss: they
+   are matched by STRING against PROPOSAL_SORT_COLUMNS, and renaming one here without renaming it
+   there silently degrades that header to plain text -- no error, just a column that stops sorting.
+
+   "Model" is deliberately NOT in that whitelist: it renders the single configured settings.llm_model
+   for every row on the page, so there is nothing to order by and offering the affordance would
+   promise an ordering that cannot exist. It renders as a plain header, which is the correct answer.
+
+   The click targets this container (#propose-workspace-list, via sort.contract.target), NOT the
+   whole workspace -- a workspace-wide swap would re-emit the search input mid-keystroke and destroy
+   focus and the caret. It introduces no new id and no OOB fragment. #}
 {% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
 {% set ns = namespace(rows=[]) %}
 {% for p in propose_proposals %}
