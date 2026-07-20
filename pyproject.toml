@@ -239,7 +239,7 @@ dev = [
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
     "moto[server]>=5.2.2",
-    "mypy>=2.2.0",
+    "mypy>=2.3.0",
     "pip-audit>=2.10.1",
     "pre-commit>=4.6.0",
     "pytest>=9.1.1",
