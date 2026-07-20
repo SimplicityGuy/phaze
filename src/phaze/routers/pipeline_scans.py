@@ -40,6 +40,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
 from phaze.services.pipeline import get_agent_reconciliations
@@ -322,8 +323,23 @@ async def trigger_scan(
     On success: create a RUNNING ScanBatch, enqueue `scan_directory`, return
     the in-progress `scan_progress_card.html` for HTMX swap.
 
-    On enqueue failure: rollback the just-created batch and return 503 +
+    On enqueue failure: mark the just-created batch FAILED and return
     `scan_submit_error.html` (UI-SPEC failure-surfacing copy).
+
+    STATUS CONTRACT (phaze-u1gf, `routers/response_shape.py` rule 3): EVERY failure
+    branch above renders `scan_submit_error.html` with
+    :data:`~phaze.routers.response_shape.RENDERABLE_ALERT_STATUS` (200), NOT the 400/503
+    it used to. All five are *renderable alerts*: the form posts with
+    `hx-target="#scan-submit-result" hx-swap="innerHTML"`, so there is a swap target the
+    operator is looking at right now -- which is exactly the test in contract rule 4 that
+    separates this module from `request_guards` rule 1's 422. htmx 2.x's default
+    `responseHandling` maps `[45]..` to `{swap: false, error: true}`, so the old non-2xx
+    statuses meant the `role="alert"` card was fetched and then DISCARDED: the operator saw
+    the spinner flash, an empty `#scan-submit-result`, and no indication the scan was
+    rejected. The error semantics live in the BODY (`role="alert"` + prose), not the status
+    line. Note this is NOT "errors are 200" in general -- a genuinely unintelligible
+    envelope (e.g. a missing `agent_id` form field) is still FastAPI's own 422, because
+    there is no meaningful answer to render into anything.
     """
     form = TriggerScanForm(agent_id=agent_id, scan_root=scan_root, subpath=subpath)
 
@@ -342,7 +358,7 @@ async def trigger_scan(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
             context={"request": request, "error_message": "Subpath must not contain '..' path traversal."},
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=RENDERABLE_ALERT_STATUS,
         )
 
     # Lookup agent; reject unknown/revoked. Server-side authoritative gate even
@@ -354,7 +370,7 @@ async def trigger_scan(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
             context={"request": request, "error_message": "Unknown or revoked agent."},
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=RENDERABLE_ALERT_STATUS,
         )
 
     # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
@@ -369,7 +385,7 @@ async def trigger_scan(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
             context={"request": request, "error_message": "Selected scan root is not configured for this agent."},
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=RENDERABLE_ALERT_STATUS,
         )
 
     # D-06 prefix validation: joined path must match (or descend from) one of
@@ -380,7 +396,7 @@ async def trigger_scan(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
             context={"request": request, "error_message": "Resolved path is outside the selected scan root."},
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=RENDERABLE_ALERT_STATUS,
         )
 
     # Create RUNNING ScanBatch (D-08 + D-14).
@@ -448,7 +464,7 @@ async def trigger_scan(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
             context={"request": request, "error_message": "The application server could not enqueue the scan. Try again in a moment."},
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            status_code=RENDERABLE_ALERT_STATUS,
         )
 
     # Render scan_progress_card.html in RUNNING state for HTMX swap.

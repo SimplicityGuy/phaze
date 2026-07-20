@@ -36,6 +36,7 @@ from phaze.config import get_settings
 from phaze.database import get_session
 from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds, sort_key
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
@@ -56,15 +57,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["humanize_relative_time"] = relative_time
 
 router = APIRouter(prefix="/admin/agents", tags=["admin"])
-
-
-def _is_htmx(request: Request) -> bool:
-    """Return True if the request has the HTMX-set ``HX-Request: true`` header.
-
-    Matches the project-wide pattern documented in STATE.md
-    ("Search UI: HTMX partial detection via truthy HX-Request header check").
-    """
-    return request.headers.get("hx-request") == "true"
 
 
 def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | None:
@@ -145,11 +137,18 @@ async def page(
 ) -> HTMLResponse:
     """Render either the full ``admin/agents.html`` page or the partial.
 
-    HX-Request-aware: when the operator's HTMX client sends ``HX-Request: true``
-    (most polling clients do), we return only the partial so the response
-    stays under a kilobyte. Otherwise the dedicated ``/_table`` route is
-    the canonical polling target — this page handler exists primarily for
-    the first-load full-page render and direct navigation.
+    Shape decided by ``response_shape.wants_fragment`` (contract rule 1): a LIVE htmx swap
+    gets only the partial so the response stays under a kilobyte. Otherwise the dedicated
+    ``/_table`` route is the canonical polling target — this page handler exists primarily
+    for the first-load full-page render and direct navigation.
+
+    phaze-64uy replaced a local ``_is_htmx`` helper here, which re-derived the decision from
+    the raw ``HX-Request`` header (banned by contract rule 1) and so got the restore case
+    wrong. ``admin/partials/agents_table.html`` sets ``hx-push-url="/admin/agents?agent=<id>"``
+    on each drill-in row, so that URL enters history; a Back with the snapshot evicted arrives
+    here as a restore carrying BOTH headers, and htmx swaps a restore into ``<body>`` while
+    ignoring ``hx-target``. The old helper answered that with the chrome-less table partial,
+    replacing the whole admin page with a bare table. A restore now gets ``admin/agents.html``.
     """
     agents, now = await _load_agents(session)
     # Section 2 (RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity PER non-local
@@ -157,7 +156,7 @@ async def page(
     # Injected on BOTH the full page and the partial so the existing 5s self-poll refreshes it too
     # (no new loop, RESEARCH OQ-1).
     compute_lanes = await derive_compute_lane_identities(session)
-    template = "admin/partials/agents_table.html" if _is_htmx(request) else "admin/agents.html"
+    template = "admin/partials/agents_table.html" if wants_fragment(request) else "admin/agents.html"
     return templates.TemplateResponse(
         request=request,
         name=template,

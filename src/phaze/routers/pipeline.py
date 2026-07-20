@@ -63,6 +63,7 @@ from phaze.services.pipeline import (
     get_cached_stage_orphan_counts,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
+    get_file_stage_buckets,
     get_files_page,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -1667,15 +1668,56 @@ async def force_skip_stage(
         return _force_skip_no_op_toast(stage)
     await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
     logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
-    # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
-    # the operator reason is NOT echoed (T-87-21). The pill flips ⊘ skipped on the next 5s poll.
-    return HTMLResponse(
+    # HTMX ack: the refreshed stage pill (oob, outerHTML) + the success toast (oob to #toast-container).
+    # stage is allowlisted (safe to interpolate); the operator reason is NOT echoed (T-87-21).
+    # Re-derive the bucket AFTER the commit rather than hardcoding "skipped": precedence is
+    # ``in_flight ≻ done ≻ skipped ≻ failed``, so a stage that is genuinely done must keep reading
+    # ✓ done even once a skip marker exists. Reusing the record router's own derivation keeps the
+    # pane and the Files matrix on ONE status source (CONSOLE-01).
+    buckets = await get_file_stage_buckets(session, file_id)
+    toast = (
         f'<div hx-swap-oob="beforeend:#toast-container">'
         f'<div role="status" aria-live="polite" x-data="{{ show: true }}" x-show="show" '
         f'x-init="setTimeout(() => show = false, 5000)" x-transition '
         f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
         f"Skipped {stage} — reason recorded.</div></div>"
     )
+    return HTMLResponse(_stage_pill_oob(file_id, stage, buckets.get(stage, "skipped")) + toast)
+
+
+# The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
+# pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
+# rejected 422 before this is ever reached (D-10).
+_ENRICH_STAGE_LABELS = {"metadata": "Meta", "fingerprint": "FP", "analyze": "Analyze"}
+
+
+def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
+    """Render the shared five-bucket pill as an ``hx-swap-oob`` fragment addressed to ONE (file, stage).
+
+    phaze-5p43: ``_force_skip_dialog.html``'s header contract promises the pill flips to ``⊘ skipped``
+    "on the NEXT poll tick", but the dialog ships ONLY inside ``record_body.html``, which is a
+    deliberate SNAPSHOT (D-02: renders once, no ``hx-trigger="every"``) — so no tick ever comes and the
+    pill contradicts the operator's just-taken action for the life of the open record. Adding a
+    full-body poll is forbidden (it would clobber in-progress inline edits in the pending-approval
+    ``_diff_row`` islands), so the WRITER — which already knows the new bucket — pushes the single pill
+    it invalidated, and nothing else.
+
+    ID UNIQUENESS (load-bearing — this repo has a history of duplicate-id OOB bugs: phaze-gzrd,
+    phaze-op6f, phaze-7j50): ``stage-pill-{stage}-{file_id}`` is emitted from exactly ONE place,
+    ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open record, and
+    ``record_host.html`` hosts at most one record at a time. The Files matrix / ``_stage_matrix.html``
+    include ``_stage_pill.html`` id-lessly, so no second element in the composed document can collide.
+    The id lives on a WRAPPER span, not on the pill itself, so ``_stage_pill.html`` stays a pure,
+    id-free token shared verbatim with the matrix (a second id-bearing copy there IS the collision
+    this shape avoids).
+
+    ``bucket`` is a derived enum value and ``stage`` is allowlisted; the pill template autoescapes.
+    """
+    pill = templates.get_template("pipeline/partials/_stage_pill.html").render(
+        stage_label=_ENRICH_STAGE_LABELS.get(stage, stage),
+        bucket=bucket,
+    )
+    return f'<span id="stage-pill-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 
 
 async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:

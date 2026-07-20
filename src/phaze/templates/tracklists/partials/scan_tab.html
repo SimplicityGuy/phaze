@@ -1,4 +1,10 @@
-{% set is_hx = request and request.headers.get('HX-Request') == 'true' %}
+{# ``is_hx`` is supplied by the HANDLER as ``wants_fragment(request)`` -- see
+   routers/response_shape.py, whose rule 1 BANS deriving it from the raw ``HX-Request`` header.
+   This template used to compute it here from that header, which was wrong on exactly one shape:
+   a history restore sets ``HX-Request: true`` too, so the old expression suppressed the wrapper
+   and htmx swapped a full page carrying ZERO ``#scan-panel`` into <body> (phaze-xc84).
+   Undefined ``is_hx`` is falsy, so any future render that forgets to pass it emits the wrapper --
+   the safe direction, since a missing target is recoverable and a duplicate id is not. #}
 {% if not is_hx %}<div id="scan-panel">{% endif %}
     {% if files %}
     <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4" x-data="{ selectedFiles: [], selectAll: false }">

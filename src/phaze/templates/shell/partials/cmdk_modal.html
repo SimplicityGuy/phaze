@@ -25,11 +25,25 @@
      @keydown.window.cmd.k.prevent="show()"
      @keydown.window.ctrl.k.prevent="show()"
      @keydown.escape.window="if (open) hide()"
+     {# phaze-hltu: the palette is a MODAL layer (fixed inset-0 z-50, bg-black/60 backdrop,
+        x-trap.inert.noscroll). Anything it opens BEHIND itself — the record slide-in host is
+        z-40 — renders dimmed under the backdrop and inert inside the focus trap. So the palette
+        closes itself whenever a record:open is dispatched, wherever that dispatch came from.
+
+        Listening here rather than adding hide() to the Files row's @click fixes the whole class:
+        any current or future palette row that opens the record slide-in closes the palette, and
+        the modal-close knowledge stays in the component that owns the modal state. No loop is
+        possible — hide() dispatches nothing — and the `if (open)` guard makes this inert for the
+        non-modal file table (files_table_view.html), which dispatches the same event with the
+        palette closed. hide(false) skips the focus-return to #cmdk-trigger: the record host is
+        moving focus to its own heading on this same tick, and it owns focus from here. #}
+     @record:open.window="if (open) hide(false)"
      @htmx:after-swap="onResults()">
 
     <div x-show="open"
          style="display:none"
          class="fixed inset-0 z-50"
+         id="cmdk-dialog"
          role="dialog"
          aria-modal="true"
          aria-label="Command palette">
@@ -98,8 +112,11 @@
                     this.onResults();
                 });
             },
-            hide() {
+            // returnFocus=false when another layer is taking focus on this same tick — see the
+            // @record:open.window handler on the root. Every other caller wants the default.
+            hide(returnFocus = true) {
                 this.open = false;
+                if (!returnFocus) return;
                 // Defer focus-return to after Alpine tears the panel down: focusing the
                 // trigger synchronously here is undone when the browser resets focus to
                 // <body> as the just-focused in-panel element is hidden on the same tick.

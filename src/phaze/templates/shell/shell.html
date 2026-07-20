@@ -220,12 +220,14 @@
         function syncRailSelection(path) {
             // Re-apply aria-current="page" to the rail node matching `path`; the active
             // visual (blue tint + inset bar) follows from that attribute via the rail's
-            // aria-[current=page] variant. Map: "/" → analyze (the default node); "/s/<id>"
-            // → <id>. data-rail-stage is the rail-node hook (distinct from #stage-workspace's
-            // own data-stage marker, so the workspace div is never mis-selected).
+            // aria-[current=page] variant. Map: "/" → summary (the landing node, matching what
+            // GET / renders server-side since quick 260707-sq3 SQ3-02 repointed the default
+            // landing from Analyze to Summary); "/s/<id>" → <id>. data-rail-stage is the
+            // rail-node hook (distinct from #stage-workspace's own data-stage marker, so the
+            // workspace div is never mis-selected).
             var stage = null;
             if (path === '/' || path === '') {
-                stage = 'analyze';
+                stage = 'summary';
             } else {
                 var m = path.match(/^\/s\/([^/?#]+)/);
                 if (m) stage = m[1];

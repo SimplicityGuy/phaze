@@ -36,6 +36,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.routers import pipeline, pipeline_scans, shell
+from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 
 
 if TYPE_CHECKING:
@@ -399,7 +400,11 @@ async def test_post_scans_subpath_rejects_dotdot(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """T-27-03: subpath containing ``..`` rejects with 400 + error card; NO batch created."""
+    """T-27-03: subpath containing ``..`` rejects with a swappable error card; NO batch created.
+
+    Status is 200 per response_shape rule 3 (phaze-u1gf) -- see
+    ``test_post_scans_failure_branches_are_swappable_alerts`` for the contract rationale.
+    """
     ac, mock_router = smoke
     pre_count = await _count_batches(session)
 
@@ -407,7 +412,7 @@ async def test_post_scans_subpath_rejects_dotdot(
         "/pipeline/scans",
         data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "../../etc"},
     )
-    assert response.status_code == 400
+    assert response.status_code == RENDERABLE_ALERT_STATUS
     assert 'role="alert"' in response.text
     # Jinja autoescapes `'` to `&#39;`, so check on a substring that survives escaping.
     assert "Subpath must not contain" in response.text
@@ -453,7 +458,7 @@ async def test_post_scans_path_outside_scan_root(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """T-27-03: scan_root not in agent.scan_roots rejects with 400."""
+    """T-27-03: scan_root not in agent.scan_roots rejects with a swappable error card (200)."""
     ac, mock_router = smoke
 
     # /data/photos is NOT in the seeded agent's scan_roots (which are
@@ -462,7 +467,7 @@ async def test_post_scans_path_outside_scan_root(
         "/pipeline/scans",
         data={"agent_id": "test-agent", "scan_root": "/data/photos", "subpath": "vacation/"},
     )
-    assert response.status_code == 400
+    assert response.status_code == RENDERABLE_ALERT_STATUS
     # WR-05: scan_root membership check fires before the prefix check.
     assert "Selected scan root is not configured for this agent." in response.text
     assert await _count_batches(session) == 0
@@ -470,18 +475,18 @@ async def test_post_scans_path_outside_scan_root(
 
 
 @pytest.mark.asyncio
-async def test_post_scans_unknown_agent_400(
+async def test_post_scans_unknown_agent_renders_alert(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """Unknown agent_id rejects with 400 + 'Unknown or revoked agent.'."""
+    """Unknown agent_id rejects with a swappable (200) 'Unknown or revoked agent.' card."""
     ac, mock_router = smoke
 
     response = await ac.post(
         "/pipeline/scans",
         data={"agent_id": "nonexistent-agent", "scan_root": "/data/music", "subpath": ""},
     )
-    assert response.status_code == 400
+    assert response.status_code == RENDERABLE_ALERT_STATUS
     assert "Unknown or revoked agent." in response.text
     assert await _count_batches(session) == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
@@ -492,7 +497,7 @@ async def test_post_scans_scan_root_not_in_agent_roots(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """WR-05: scan_root NOT literally in agent.scan_roots rejects with 400."""
+    """WR-05: scan_root NOT literally in agent.scan_roots rejects with a swappable card (200)."""
     ac, mock_router = smoke
 
     response = await ac.post(
@@ -500,7 +505,7 @@ async def test_post_scans_scan_root_not_in_agent_roots(
         # /etc is not in seeded agent's scan_roots.
         data={"agent_id": "test-agent", "scan_root": "/etc", "subpath": ""},
     )
-    assert response.status_code == 400
+    assert response.status_code == RENDERABLE_ALERT_STATUS
     # WR-05: literal-membership check fires before the prefix check.
     assert "Selected scan root is not configured for this agent." in response.text
     mock_router.enqueue_for_agent.assert_not_awaited()
@@ -511,7 +516,7 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """WR-06: enqueue failure flips batch to FAILED + returns 503 (no DELETE).
+    """WR-06: enqueue failure flips batch to FAILED + returns a swappable alert (no DELETE).
 
     Previously the failure path tried to DELETE the just-created batch and
     commit; if that secondary commit also raised, the original 500-via-
@@ -527,7 +532,7 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
         "/pipeline/scans",
         data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
     )
-    assert response.status_code == 503, response.text
+    assert response.status_code == RENDERABLE_ALERT_STATUS, response.text
     assert "could not enqueue the scan" in response.text
 
     # The batch row survives but is FAILED with the documented error_message
@@ -569,8 +574,9 @@ async def test_post_scans_prefix_mismatch_via_direct_handler_invocation(
     the prefix-fail branch we monkeypatch ``unicodedata.normalize`` so the
     NFC pass rewrites the joined path out from under the prefix predicate
     (simulating a hypothetical normalization edge case that today's inputs
-    cannot produce). Pins the 400 envelope so a real future normalization
-    quirk surfaces as a clean 400, not a 500 or a silent enqueue.
+    cannot produce). Pins the swappable-alert envelope (200 + alert body, per
+    response_shape rule 3) so a real future normalization quirk surfaces as a
+    card the operator can actually see, not a 500 or a silent enqueue.
     """
     ac, mock_router = smoke
 
@@ -591,7 +597,7 @@ async def test_post_scans_prefix_mismatch_via_direct_handler_invocation(
         "/pipeline/scans",
         data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
     )
-    assert response.status_code == 400, response.text
+    assert response.status_code == RENDERABLE_ALERT_STATUS, response.text
     assert "Resolved path is outside the selected scan root." in response.text
     assert await _count_batches(session) == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
@@ -605,12 +611,12 @@ async def test_post_scans_enqueue_failure_with_secondary_commit_also_failing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """WR-06 inner-except: when enqueue fails AND the secondary commit also
-    raises, the handler MUST still return the 503 envelope (no 500 escape).
+    raises, the handler MUST still return the swappable alert envelope (no 500 escape).
 
     Covers pipeline_scans.py:255-260 — the defensive ``try/except`` around
     ``await session.commit()`` after marking the batch FAILED. A Postgres-down
     scenario can plausibly knock out the secondary commit too; the operator's
-    503 envelope is more important than the orphan-row cleanup.
+    alert envelope is more important than the orphan-row cleanup.
     """
     import logging as _logging
 
@@ -645,8 +651,8 @@ async def test_post_scans_enqueue_failure_with_secondary_commit_also_failing(
             data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
         )
 
-    # 503 envelope still surfaces; no 500 leak.
-    assert response.status_code == 503, response.text
+    # Swappable alert envelope still surfaces; no 500 leak.
+    assert response.status_code == RENDERABLE_ALERT_STATUS, response.text
     assert "could not enqueue the scan" in response.text
     # The secondary-commit failure was logged for triage.
     text = "\n".join(r.getMessage() for r in caplog.records)
@@ -677,7 +683,7 @@ async def test_post_scans_rejects_partial_scan_root_prefix(
         # /data is the *parent* of a real scan_root but is not configured itself.
         data={"agent_id": "test-agent", "scan_root": "/data", "subpath": "music/foo"},
     )
-    assert response.status_code == 400
+    assert response.status_code == RENDERABLE_ALERT_STATUS
     assert "Selected scan root is not configured for this agent." in response.text
     assert await _count_batches(session) == 0
     mock_router.enqueue_for_agent.assert_not_awaited()
@@ -1438,3 +1444,177 @@ def test_is_scan_stalled_false_for_non_running() -> None:
         b = _running_batch(datetime.now(UTC) - timedelta(days=1))
         b.status = status.value
         assert is_scan_stalled(b) is False, f"{status} must never be UI-stalled"
+
+
+# ---------------------------------------------------------------------------
+# phaze-u1gf: EVERY trigger_scan failure branch must be a SWAPPABLE alert.
+#
+# The Trigger Scan form (trigger_scan_card.html) posts with
+# ``hx-target="#scan-submit-result" hx-swap="innerHTML"``. htmx 2.x's default
+# ``responseHandling`` maps ``[45]..`` to ``{swap: false, error: true}``, and the only
+# global non-2xx opt-in in this repo (shell.html's ``htmx:beforeSwap``) fires solely for
+# ``status === 404 && target.id === 'record-body'``. So while these branches returned
+# 400/503, ``scan_submit_error.html`` -- ``role="alert"`` and all -- was fetched and then
+# DISCARDED: spinner flash, empty ``#scan-submit-result``, operator none the wiser.
+#
+# response_shape.py rule 3 owns this defect class: a renderable error is a 200 whose body
+# carries the error. Rule 4's boundary test -- "is there a swap target waiting to display
+# this answer?" -- is YES for all five branches, so none of them is a
+# request_guards rule 1 (422) malformed envelope. A genuinely unintelligible envelope
+# (missing form field) remains FastAPI's own 422; see
+# ``test_post_scans_missing_form_field_is_still_a_422_envelope_rejection``.
+#
+# Asserting the status alone would not have caught the bug's real cost, so each case below
+# also asserts the ALERT MARKUP the operator would actually see.
+# ---------------------------------------------------------------------------
+
+
+def _assert_swappable_alert(response: object, expected_fragment: str) -> None:
+    """Assert a trigger_scan failure response is one htmx will actually swap AND render.
+
+    Two obligations, both required (phaze-u1gf):
+
+    1. **Swappable.** The status must be in htmx's default swap range (``[23]..``).
+       ``RENDERABLE_ALERT_STATUS`` is the single spelling of that decision.
+    2. **Carries the alert.** The body must be the ``role="alert"`` card with the
+       operator-facing prose. A status-only assertion passes against a handler that
+       returns 200 with an empty body -- which is the very failure (blank
+       ``#scan-submit-result``) this bead exists to fix.
+    """
+    status_code = response.status_code  # type: ignore[attr-defined]
+    body = response.text  # type: ignore[attr-defined]
+    assert status_code == RENDERABLE_ALERT_STATUS, f"htmx will not swap status {status_code}; body dropped: {body!r}"
+    assert 200 <= status_code < 300, f"status {status_code} is outside htmx's default swap range"
+    assert 'role="alert"' in body, f"alert card missing from swapped body: {body!r}"
+    assert expected_fragment in body, f"operator-facing message missing: {body!r}"
+
+
+@pytest.mark.asyncio
+async def test_post_scans_dotdot_traversal_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Branch 1/5 -- ``..`` traversal.
+
+    Argued explicitly because it is the branch most tempting to call a protocol-level
+    rejection: it is a *security* refusal, and security refusals feel like they want a 4xx.
+    They do not, here. phaze UNDERSTOOD this request perfectly -- ``subpath`` is a
+    well-formed string, it parsed, it joined, it NFC-normalized, and only then did a
+    *policy* check refuse it. Rule 4's test is about whether a swap target is waiting, not
+    about how severe the failure is, and ``#scan-submit-result`` is waiting. Answering 422
+    would hide the refusal from the very operator who must correct it -- strictly worse
+    security UX, since a silently-dropped rejection is indistinguishable from a started
+    scan. The refusal itself is unchanged and still server-authoritative: no batch, no
+    enqueue.
+    """
+    ac, mock_router = smoke
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "../../etc"},
+    )
+    _assert_swappable_alert(response, "path traversal")
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_unknown_agent_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Branch 2/5 -- unknown/revoked agent. Well-formed id, no such row: bad news, not gibberish."""
+    ac, mock_router = smoke
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "nonexistent-agent", "scan_root": "/data/music", "subpath": ""},
+    )
+    _assert_swappable_alert(response, "Unknown or revoked agent.")
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_unconfigured_scan_root_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Branch 3/5 -- scan_root not in agent.scan_roots. A directly actionable operator mistake."""
+    ac, mock_router = smoke
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/photos", "subpath": "vacation/"},
+    )
+    _assert_swappable_alert(response, "Selected scan root is not configured for this agent.")
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_path_outside_root_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Branch 4/5 -- resolved path outside the scan root (the defensive prefix check).
+
+    Reached the same way the existing coverage-gap test reaches it: monkeypatch
+    ``unicodedata.normalize`` so the NFC pass rewrites the joined path out from under the
+    prefix predicate, since the literal-membership check dominates every input today.
+    """
+    ac, mock_router = smoke
+
+    from phaze.routers import pipeline_scans as ps_mod
+
+    original_normalize = ps_mod.unicodedata.normalize
+
+    def _normalize_rewriting_joined(form: str, text: str) -> str:
+        if text.startswith("/data/music/"):
+            return "/elsewhere/x"
+        return original_normalize(form, text)
+
+    monkeypatch.setattr(ps_mod.unicodedata, "normalize", _normalize_rewriting_joined)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    _assert_swappable_alert(response, "Resolved path is outside the selected scan root.")
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_enqueue_failure_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Branch 5/5 -- enqueue failure.
+
+    The only branch where a 5xx is even arguable, since the failure IS server-side. It is
+    still a 200: the operator triggered a scan, phaze understood the request completely,
+    and the answer it owes them is "I could not hand this to the worker, retry" -- rendered
+    into the target they are staring at. The FAILED ``ScanBatch`` row in Recent Scans is a
+    secondary surface the operator only sees if they scroll; it does not substitute for the
+    inline alert.
+    """
+    ac, mock_router = smoke
+    mock_router.enqueue_for_agent.side_effect = RuntimeError("worker unreachable")
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    _assert_swappable_alert(response, "could not enqueue the scan")
+
+
+@pytest.mark.asyncio
+async def test_post_scans_missing_form_field_is_still_a_422_envelope_rejection(
+    smoke: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """The rule-4 boundary, pinned: 200-with-alert did NOT become "every error is 200".
+
+    A POST missing the required ``scan_root`` field is an envelope phaze cannot understand.
+    There is no meaningful answer to render into ``#scan-submit-result``, so FastAPI's own
+    422 (``request_guards`` rule 1) is correct and must stay. This test fails loudly if a
+    future change mechanically converts the whole handler to 200.
+    """
+    ac, mock_router = smoke
+
+    response = await ac.post("/pipeline/scans", data={"agent_id": "test-agent"})
+    assert response.status_code == 422, response.text
+    assert 'role="alert"' not in response.text
+    mock_router.enqueue_for_agent.assert_not_awaited()

@@ -1,6 +1,8 @@
 """Integration tests for tracklists router."""
 
 from datetime import date
+from pathlib import Path
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -281,6 +283,130 @@ async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) 
     response = await client.get("/tracklists/scan")
     assert response.status_code == 200
     assert "No unscanned files" in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /tracklists/scan response shape (phaze-xc84)
+#
+# The handler owes a DOCUMENT SHAPE decision, and routers/response_shape.py owns it: rule 1 bans
+# branching on the raw ``HX-Request`` header, rule 2 says a history restore is a full-document
+# request even though it carries that header. Before the fix the handler made no decision at all --
+# it returned the bare scan_tab fragment unconditionally, so a plain browser navigation got a
+# chrome-less page with no base.html and no nav.
+#
+# The same predicate drives ``is_hx``, which scan_tab.html gates its ``#scan-panel`` wrapper on.
+# Getting it backwards yields either ZERO ``#scan-panel`` (htmx swap finds no target) or TWO
+# (duplicate id -- the class already on record in phaze-gzrd / op6f / 7j50 / 5p43), so every case
+# below asserts the exact count, never merely "present".
+# ---------------------------------------------------------------------------
+
+
+def _count_scan_panel(body: str) -> int:
+    """Count ``id="scan-panel"`` occurrences -- the invariant is EXACTLY one on every shape."""
+    return body.count('id="scan-panel"')
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_plain_navigation_returns_full_document(session: AsyncSession, client: AsyncClient) -> None:
+    """A plain browser GET /tracklists/scan returns a FULL document, chrome included (phaze-xc84).
+
+    Before the fix this returned the bare partial: no ``<html>``, no nav, and -- because base.html
+    never loaded -- no htmx, so the 'Scan Selected Files' button fell back to a native form submit
+    and silently enqueued nothing.
+
+    Asserts the CHROME, not merely a 200; the buggy handler returned 200 too.
+    """
+    file1 = _make_file(original_path="/music/plain-nav.mp3", file_type="mp3")
+    session.add(file1)
+    await session.flush()
+
+    response = await client.get("/tracklists/scan")
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a plain navigation must return a full document, not a fragment"
+    assert 'aria-label="Main navigation"' in body, "the app nav must be present on a plain navigation"
+    assert "plain-nav.mp3" in body, "the scan content itself must still render inside the full page"
+    assert _count_scan_panel(body) == 1, "the full page must carry exactly one #scan-panel wrapper"
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_htmx_swap_returns_fragment(session: AsyncSession, client: AsyncClient) -> None:
+    """A live htmx swap gets the chrome-less, wrapper-less fragment (phaze-xc84).
+
+    Guards the other direction: the fix must not turn every htmx request into a full page. The
+    fragment is swapped INTO the existing ``#scan-panel``, so it must not carry its own -- a second
+    one would duplicate the id in the live document.
+    """
+    file1 = _make_file(original_path="/music/hx-swap.mp3", file_type="mp3")
+    session.add(file1)
+    await session.flush()
+
+    response = await client.get("/tracklists/scan", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+    assert "hx-swap.mp3" in body
+    assert _count_scan_panel(body) == 0, "the fragment swaps INTO #scan-panel and must not carry a second one"
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_history_restore_returns_full_document(session: AsyncSession, client: AsyncClient) -> None:
+    """A history-restore GET returns the FULL document (phaze-xc84, response_shape rule 2).
+
+    The scan pagination buttons hx-get ``/tracklists/scan?page=N``. On a history-cache miss htmx
+    re-fetches with BOTH ``HX-Request`` and ``HX-History-Restore-Request`` set, IGNORES hx-target,
+    and swaps the response into ``<body>``. A fragment here replaces the whole page -- and, because
+    the old template suppressed its wrapper whenever ``HX-Request`` was set, the resulting document
+    contained ZERO ``#scan-panel``, so every later swap on that page had no target at all.
+
+    This is the case a raw ``HX-Request`` check gets wrong, which is why the handler composes
+    ``wants_fragment`` instead.
+    """
+    file1 = _make_file(original_path="/music/restore.mp3", file_type="mp3")
+    session.add(file1)
+    await session.flush()
+
+    response = await client.get(
+        "/tracklists/scan",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must return a full document, not a fragment"
+    assert 'aria-label="Main navigation"' in body, "the app nav must survive a history restore"
+    assert _count_scan_panel(body) == 1, "a restored document must carry exactly one #scan-panel to swap into"
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_restore_header_alone_returns_full_document(session: AsyncSession, client: AsyncClient) -> None:
+    """The restore header DOMINATES even without ``HX-Request`` (response_shape rule 2).
+
+    ``wants_fragment`` is deliberately ``is_htmx_request and not is_history_restore``; this pins the
+    fourth shape the contract enumerates so a future refactor cannot quietly drop the ``not``.
+    """
+    response = await client.get("/tracklists/scan", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower()
+    assert _count_scan_panel(body) == 1
+
+
+def test_scan_progress_cta_has_no_dead_alpine_refs() -> None:
+    """The scan-completion CTA references no nonexistent Alpine vars (phaze-xc84 item b).
+
+    ``@click="showScan = false; activeTab = 'proposed'"`` named two variables that do not exist in
+    the v7 shell, so the handler was a silent no-op; it also hx-targeted ``#tracklists-list``, which
+    is absent from the scan surface this fragment renders into. Both are gone -- the plain href
+    navigates for real.
+    """
+    source = (Path(__file__).parents[3] / "src/phaze/templates/tracklists/partials/scan_progress.html").read_text()
+    # Strip Jinja comments first: the markup is what ships to the browser, and the {# #} block
+    # above the CTA necessarily NAMES the dead identifiers in order to explain their removal.
+    template = re.sub(r"\{#.*?#\}", "", source, flags=re.DOTALL)
+    assert "showScan" not in template, "showScan does not exist in the v7 shell -- the @click was a no-op"
+    assert "activeTab" not in template, "activeTab does not exist in the v7 shell -- the @click was a no-op"
+    assert 'hx-target="#tracklists-list"' not in template, "the CTA renders inside #scan-panel, where #tracklists-list is absent"
+    assert 'href="/tracklists/?filter=proposed&page=1"' in template, "the CTA must still navigate to the proposed list"
 
 
 @pytest.mark.asyncio
@@ -1774,3 +1900,79 @@ async def test_list_tracklists_has_candidates_full_page(session: AsyncSession, c
     response = await client.get("/tracklists/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Bulk-link All" in response.text
+
+
+# ---------------------------------------------------------------------------
+# ``/tracklists/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
+#
+# This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
+# bans outright. But NOTHING in the template corpus pushes a ``/tracklists/`` URL into history
+# (tracklists/partials/pagination.html issues the GET WITHOUT hx-push-url), so no history restore can currently REACH this handler and the raw check was not
+# reachable-broken the way shell.py / proposals.py / duplicates.py / admin_agents.py were.
+#
+# It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
+# silently re-introduce the defect: the shape would already be correct on the day the URL starts
+# entering history.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tracklists_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET ``/tracklists/`` falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- before the fix this returned a 200 fragment, which htmx
+    would have swapped into ``<body>``, replacing the whole page.
+    """
+    response = await client.get("/tracklists/?filter=all", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/tracklist"
+
+
+@pytest.mark.asyncio
+async def test_tracklists_history_restore_resolves_to_a_full_document(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with chrome intact."""
+    response = await client.get(
+        "/tracklists/?filter=all",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the page chrome must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_tracklists_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx swap must still get the chrome-less fragment."""
+    response = await client.get("/tracklists/?filter=all", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+
+
+@pytest.mark.asyncio
+async def test_tracklists_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/tracklists/?filter=all", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tracklist"
+
+
+@pytest.mark.asyncio
+async def test_tracklists_live_swap_carries_no_duplicate_list_wrapper(client: AsyncClient) -> None:
+    """The live swap fragment carries ZERO ``#tracklists-list`` wrappers (phaze-64uy).
+
+    ``tracklist_list.html`` used to compute its own ``is_hx`` from
+    ``request.headers.get('HX-Request')`` -- the exact expression response_shape rule 1 bans, and
+    the exact defect phaze-xc84 had already found in the sibling ``scan_tab.html``. The handler now
+    supplies the flag as ``wants_fragment(request)``, so ONE predicate drives both the response
+    shape and the wrapper gate and they can no longer disagree.
+
+    The fragment is swapped INTO the existing ``#tracklists-list``, so a second copy would duplicate
+    the id in the live document and strand every later swap on the stale outer element (the class
+    already on record in phaze-gzrd / op6f / 7j50 / 5p43).
+    """
+    response = await client.get("/tracklists/?filter=all", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert response.text.count('id="tracklists-list"') == 0, "the fragment swaps INTO #tracklists-list and must not carry a second one"

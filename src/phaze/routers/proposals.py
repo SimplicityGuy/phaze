@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
     ProposalPendingConflictError,
@@ -204,23 +205,24 @@ async def _build_sparklines(session: AsyncSession, file_ids: list[uuid.UUID]) ->
     return sparklines
 
 
-@router.get("/", response_class=HTMLResponse)
-async def list_proposals(
+async def _proposal_list_context(
     request: Request,
-    status: str | None = Query(None),
-    q: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=10, le=100),
-    sort: str = Query("confidence"),
-    order: str = Query("asc"),
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render the proposal list page, or an HTMX table fragment."""
-    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
-    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
-        return RedirectResponse(url="/s/propose", status_code=302)
+    session: AsyncSession,
+    *,
+    status: str | None,
+    q: str | None,
+    page: int,
+    page_size: int,
+    sort: str,
+    order: str,
+) -> dict[str, object]:
+    """Build the render context for the proposal list container (table + bulk bar + pagination).
 
+    Shared by ``list_proposals`` (filter/sort/pagination swaps) and ``bulk_action`` (phaze-gc5d):
+    the bulk PATCH must re-render the SAME view -- same status filter, search, page, sort -- so a
+    bulk approve/reject neither wipes ``#proposal-list-container`` nor silently resets the user
+    back to page 1 of the default filter.
+    """
     # Default to pending filter when no status param provided (D-09)
     effective_status = status if status is not None else "pending"
 
@@ -237,7 +239,7 @@ async def list_proposals(
     collision_ids = await get_collision_ids(session)
     sparklines = await _build_sparklines(session, [p.file_id for p in proposals])
 
-    context = {
+    return {
         "request": request,
         "proposals": proposals,
         "pagination": pagination,
@@ -251,9 +253,46 @@ async def list_proposals(
         "current_page": "proposals",
     }
 
+
+@router.get("/", response_class=HTMLResponse)
+async def list_proposals(
+    request: Request,
+    status: str | None = Query(None),
+    q: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=10, le=100),
+    sort: str = Query("confidence"),
+    order: str = Query("asc"),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Render the proposal list page, or an HTMX table fragment."""
+    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
+    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
+    #
+    # phaze-64uy: the predicate is ``wants_fragment``, not the raw ``HX-Request`` header
+    # (response_shape.py contract rule 1). Both ``proposals/partials/filter_tabs.html`` and
+    # ``proposals/partials/pagination.html`` set ``hx-push-url="true"`` on their
+    # ``/proposals/?...`` controls, so those URLs enter history and a Back with the snapshot
+    # evicted arrives here as a restore carrying BOTH headers. htmx ignores ``hx-target`` on a
+    # restore and swaps into ``<body>``, so the raw check replaced the whole document with the
+    # chrome-less ``proposal_list.html`` fragment. A restore now falls through to this redirect
+    # and resolves into the full shell.
+    if not wants_fragment(request):
+        return RedirectResponse(url="/s/propose", status_code=302)
+
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
+
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
     # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
+    #
+    # phaze-7j50: every control that issues this GET (pagination buttons, page-size selector, sort
+    # headers, search box) targets #proposal-list-container with hx-swap="innerHTML", so the
+    # response must be the container's INNER content and nothing more. It used to return the whole
+    # proposal_content.html -- chrome included -- which nested a duplicate #proposal-list-container,
+    # a duplicate filter-tab bar, a duplicate search box and a duplicate pager INSIDE the container
+    # on every page change or column sort, and left subsequent swaps resolving to the outer element
+    # while the stale inner copy persisted.
+    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_list.html", context=context)
 
 
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
@@ -511,6 +550,12 @@ async def bulk_action(
     request: Request,
     action: str = Form(...),
     proposal_ids: list[str] = Form(...),
+    status: str | None = Form(None),
+    q: str | None = Form(None),
+    page: int = Form(1, ge=1),
+    page_size: int = Form(50, ge=10, le=100),
+    sort: str = Form("confidence"),
+    order: str = Form("asc"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk approve or reject multiple proposals.
@@ -518,6 +563,14 @@ async def bulk_action(
     phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
     guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
     rejecting the whole request, and the returned count is the authority on what actually happened.
+
+    phaze-gc5d: the bulk forms swap this response into ``#proposal-list-container`` with
+    ``innerHTML``, so the body MUST be the re-rendered list (table + bulk bar). It previously
+    rendered approve_response.html with ``proposal=None``, whose entire non-OOB body is gated on
+    ``{% if proposal %}`` -- the swap therefore emptied the container and destroyed both the table
+    and the selection toolbar until a full reload. The view state (status/q/page/page_size/sort/
+    order) rides along as hidden inputs on the form so the re-render lands on the SAME page and
+    filter the user acted from, rather than silently resetting them to page 1 / pending.
     """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
@@ -533,17 +586,12 @@ async def bulk_action(
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
     count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/approve_response.html",
-        context={
-            "request": request,
-            "proposal": None,
-            "stats": stats,
-            "action_label": action + "d",
-            "toast_message": f"{count} proposals {action}d.",
-            "is_bulk": True,
-            "bulk_ids": [str(uid) for uid in uuids],
-        },
-    )
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
+    context |= {
+        "proposal": None,
+        "action_label": action + "d",
+        "toast_message": f"{count} proposals {action}d.",
+        "is_bulk": True,
+        "bulk_ids": [str(uid) for uid in uuids],
+    }
+    return templates.TemplateResponse(request=request, name="proposals/partials/bulk_response.html", context=context)

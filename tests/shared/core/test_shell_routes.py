@@ -244,6 +244,42 @@ async def test_rail_nodes_wired(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sync_rail_selection_root_maps_to_summary(client: AsyncClient) -> None:
+    """phaze-iunq -- the client-side rail reconciler maps "/" to the SAME stage the server renders.
+
+    ``syncRailSelection(path)`` in shell.html is the ONLY thing that re-applies
+    ``aria-current="page"`` after an HTMX navigation, and the active rail visual (blue tint +
+    inset bar) plus the screen-reader "current page" semantic both follow from that attribute.
+    Its ``/`` branch was left at ``analyze`` when quick 260707-sq3 (SQ3-02) repointed the
+    landing stage to Summary server-side, so a browser Back to ``/`` fired ``htmx:historyRestore``
+    -> ``syncRailSelection('/')`` -> the Analyze node got highlighted while the restored Summary
+    workspace was on screen.
+
+    This asserts the JS root branch agrees with the server: whatever stage ``GET /`` marks
+    ``aria-current="page"`` server-side is the stage the JS re-applies it to on history restore.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+
+    # The stage the SERVER treats as the "/" landing -- read off the rail node it marks active.
+    server_landing = re.search(r'data-rail-stage="([^"]+)"[^>]*aria-current="page"', body)
+    assert server_landing is not None, 'no rail node carries aria-current="page" on the shell root'
+    server_stage = server_landing.group(1)
+    assert server_stage == "summary", f'GET / should render the summary landing, not "{server_stage}"'
+
+    # The stage the CLIENT-side reconciler assigns for path "/" in syncRailSelection.
+    js_root_branch = re.search(r"""if \(path === ['"]/['"].*?\)\s*\{\s*stage = ['"]([^'"]+)['"]""", body, re.DOTALL)
+    assert js_root_branch is not None, "syncRailSelection has no recognizable root-path branch in shell.html"
+    js_stage = js_root_branch.group(1)
+
+    assert js_stage == server_stage, (
+        f'syncRailSelection maps "/" to stage "{js_stage}" but GET / renders "{server_stage}" -- '
+        "browser Back to the root will highlight the wrong rail node (phaze-iunq)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_tabbar_removed_header_present(client: AsyncClient) -> None:
     """SHELL-03 -- the legacy top <nav> tab-bar is gone; the ⌘K header + status strip is in.
 
@@ -301,3 +337,86 @@ async def test_header_agent_count_sums_agent_online_and_compute_lanes_active(cli
     assert "computeLanesActive: 0" in body, "shell store must seed computeLanesActive to int 0 (no undefined flash)"
     assert "($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) > 0" in body
     assert "$store.pipeline.agentOnline + $store.pipeline.computeLanesActive" in body
+
+
+# ---------------------------------------------------------------------------
+# History-restore response shape for the /s/* rail (phaze-64uy) -- the WORST instance of the
+# defect class routers/response_shape.py names.
+#
+# Every rail node in shell/partials/rail.html carries
+#     hx-get="/s/<stage>" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+# so EVERY stage the operator visits pushes a /s/* URL into history. Press Back with that snapshot
+# evicted from htmx's 10-entry historyCacheSize (routine -- a fresh session or cleared localStorage
+# does it too) and htmx re-fetches the URL as a RESTORE carrying BOTH HX-Request: true and
+# HX-History-Restore-Request: true. On a restore htmx IGNORES hx-target and swaps the response into
+# the history element -- <body>, since nothing in this repo carries [hx-history-elt].
+#
+# _render_stage used to branch on the raw HX-Request header, so it answered that restore with the
+# chrome-less shell/_stage_fragment.html: the rail, header, palette launcher and status strip were
+# all destroyed, leaving a bare workspace with no navigation and no way out but a manual reload.
+# Reachable from every stage in the app.
+#
+# Each test below asserts the CHROME, never merely a 200 -- the buggy handler returned 200 too, so
+# a status-only assertion passes against the bug.
+# ---------------------------------------------------------------------------
+
+
+_RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+
+
+def _assert_full_shell(body: str, *, context: str) -> None:
+    """Assert ``body`` is the complete shell document, chrome and all."""
+    assert "<html" in body.lower(), f"{context}: must be a full document, not a chrome-less fragment"
+    assert 'aria-label="Pipeline navigation"' in body, f"{context}: the rail must survive"
+    assert 'aria-label="Pipeline stages"' in body, f"{context}: the rail's stage nav must survive"
+    assert 'id="stage-workspace"' in body, f"{context}: the swap target every rail node aims at must exist"
+
+
+@pytest.mark.parametrize("stage", ["analyze", "files", "discover", "summary", "dedupe"])
+@pytest.mark.asyncio
+async def test_stage_history_restore_returns_full_shell(client: AsyncClient, stage: str) -> None:
+    """A history-restore GET /s/<stage> returns the FULL shell, not the bare stage fragment.
+
+    This is the reproduction from the bead, one stage per parametrisation. Before the fix each of
+    these returned ``_stage_fragment.html`` -- the dispatcher measured /s/analyze at 5796 bytes,
+    /s/files at 5656 and /s/discover at 8652, all with ``full_document=False``.
+    """
+    response = await client.get(f"/s/{stage}", headers=_RESTORE_HEADERS)
+    assert response.status_code == 200
+    _assert_full_shell(response.text, context=f"history restore of /s/{stage}")
+
+
+@pytest.mark.asyncio
+async def test_stage_restore_header_alone_returns_full_shell(client: AsyncClient) -> None:
+    """The restore header DOMINATES even without ``HX-Request`` (response_shape rule 2).
+
+    Pins the fourth shape the contract enumerates so a refactor cannot quietly drop the ``not``
+    from ``is_htmx_request(request) and not is_history_restore(request)``.
+    """
+    response = await client.get("/s/analyze", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 200
+    _assert_full_shell(response.text, context="restore header alone on /s/analyze")
+
+
+@pytest.mark.asyncio
+async def test_root_history_restore_returns_full_shell(client: AsyncClient) -> None:
+    """``GET /`` shares ``_render_stage``, so the shell root owes the same guarantee."""
+    response = await client.get("/", headers=_RESTORE_HEADERS)
+    assert response.status_code == 200
+    _assert_full_shell(response.text, context="history restore of /")
+
+
+@pytest.mark.asyncio
+async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncClient) -> None:
+    """The OTHER direction: a live rail swap must still get the chrome-less fragment.
+
+    The fix must not turn every htmx request into a full page. ``_stage_fragment.html`` is swapped
+    INTO ``#stage-workspace``; a full document here would nest ``<html>``/duplicate landmarks
+    inside the live shell, a ROADMAP-locked anti-pattern.
+    """
+    response = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
+    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry a second rail"
+    assert 'id="stage-workspace"' not in body, "the fragment swaps INTO #stage-workspace, not around it"

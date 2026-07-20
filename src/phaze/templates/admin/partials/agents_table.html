@@ -97,10 +97,25 @@
 
     {# Happy-path footer: "Last refreshed Ns ago" (neutral). Alpine reads
        data-refreshed-at and ticks once per second so the user sees the
-       countdown advance even between 5s polls. #}
+       countdown advance even between 5s polls.
+
+       The 1s ticker MUST be cleared on teardown. This <p> lives inside
+       #agents-table-section, which re-swaps itself with hx-swap="outerHTML" every 5s
+       and never halts, so this node is destroyed and recreated on every tick. Alpine's
+       destroyTree clears only cleanups it knows about — a bare setInterval() in x-init
+       is not one, and would be orphaned (still firing, still retaining this scope)
+       once per poll, forever. init()/destroy() on the x-data object is the documented
+       Alpine lifecycle hook for exactly this (alpinejs.dev/globals/alpine-data), and is
+       public API in the pinned 3.15.12 build — unlike $el._x_cleanups, which is internal. #}
     <p class="text-xs text-gray-500 dark:text-gray-400 mt-2"
-       x-data="{ refreshedAt: new Date('{{ refreshed_at_iso }}'), now: new Date(), get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); } }"
-       x-init="setInterval(() => now = new Date(), 1000)">
+       x-data="{
+           refreshedAt: new Date('{{ refreshed_at_iso }}'),
+           now: new Date(),
+           ticker: null,
+           get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); },
+           init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
+           destroy() { clearInterval(this.ticker); }
+       }">
         Last refreshed <span x-text="secondsAgo + 's ago'"></span>
     </p>
 
@@ -114,14 +129,16 @@
        role="alert"
        x-data="{
            lastError: localStorage.getItem('phaze:agents:lastError'),
+           poller: null,
            refreshFromStorage() { this.lastError = localStorage.getItem('phaze:agents:lastError'); },
            get formattedTime() {
                if (!this.lastError) return '';
                try { return new Date(this.lastError).toLocaleTimeString(); }
                catch (e) { return this.lastError; }
-           }
+           },
+           init() { this.poller = setInterval(() => { this.refreshFromStorage(); }, 2000); },
+           destroy() { clearInterval(this.poller); }
        }"
-       x-init="setInterval(() => refreshFromStorage(), 2000)"
        x-show="lastError"
        x-cloak>
         Refresh failed at <span x-text="formattedTime"></span> — retrying every 5s.

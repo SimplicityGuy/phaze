@@ -5,12 +5,14 @@
     {% elif tracklists_created > 0 %}
     <p class="text-sm text-gray-900 dark:text-gray-100">
         Scan complete. {{ tracklists_created }} tracklist(s) created.
+        {# This fragment is only ever swapped into ``#scan-panel`` (the scan surface), which has no
+           ``#tracklists-list`` in it -- so the old hx-get/hx-target pair resolved to a missing
+           target and no-op'd, and the ``@click`` referenced ``showScan``/``activeTab``, two Alpine
+           vars that do not exist in the v7 shell (phaze-xc84). Both are removed: the plain href
+           navigates for real, and GET /tracklists/ 302s a non-htmx request into /s/tracklist
+           (SHELL-05/D-03), so the CTA now does what its label claims. #}
         <a href="/tracklists/?filter=proposed&page=1"
-           class="text-blue-600 dark:text-blue-400 hover:underline"
-           @click="showScan = false; activeTab = 'proposed'"
-           hx-get="/tracklists/?filter=proposed&page=1"
-           hx-target="#tracklists-list"
-           hx-swap="innerHTML">View proposed tracklists.</a>
+           class="text-blue-600 dark:text-blue-400 hover:underline">View proposed tracklists.</a>
     </p>
     {% elif not (errors is defined and errors) %}
     <p class="text-sm text-gray-900 dark:text-gray-100">Scan complete. No matching tracks found in the fingerprint database.</p>

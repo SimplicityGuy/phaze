@@ -82,13 +82,19 @@ async def test_proposals_list_returns_html(client: AsyncClient, session: AsyncSe
     """GET /proposals/ returns 200 with text/html content type.
 
     Phase 57 (SHELL-05): a plain GET /proposals/ now 302-redirects into the shell; the
-    in-page HX filter request returns the proposals content partial (filter tabs + table).
+    in-page HX request returns a proposals fragment.
+
+    phaze-7j50: that fragment is the #proposal-list-container INNER content (table + bulk bar +
+    pager), no longer the whole proposal_content.html -- every caller of this GET swaps it into the
+    container with innerHTML, so returning the chrome nested it. The chrome assertion that used to
+    live here encoded the buggy contract; see
+    test_list_fragment_is_container_inner_content_only for the replacement.
     """
     await create_test_proposal(session)
     response = await client.get("/proposals/", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert 'aria-label="Status filter tabs"' in response.text
+    assert 'id="proposals-table"' in response.text
 
 
 @pytest.mark.asyncio
@@ -269,6 +275,139 @@ async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
     assert updated1.status == ProposalStatus.APPROVED
     assert updated2 is not None
     assert updated2.status == ProposalStatus.APPROVED
+
+
+@pytest.mark.asyncio
+async def test_bulk_response_rerenders_list_container(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-gc5d: the bulk PATCH body must be the re-rendered list, not an OOB-only empty payload.
+
+    The forms swap this response into #proposal-list-container with innerHTML. Before the fix the
+    handler returned approve_response.html with proposal=None, whose non-OOB body is gated on
+    `{% if proposal %}` -- so htmx applied the OOB stats/toast and then blanked the container,
+    destroying the table AND the selection toolbar until a full page reload.
+    """
+    keep = await create_test_proposal(session, original_filename="gc5d_keep.mp3", proposed_filename="GC5D Keep.mp3")
+    acted = await create_test_proposal(session, original_filename="gc5d_acted.mp3", proposed_filename="GC5D Acted.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": [str(acted.id)], "status": "pending"},
+    )
+    assert response.status_code == 200
+
+    # The primary (non-OOB) body carries the table and the bulk-actions toolbar back.
+    assert 'id="proposals-table"' in response.text
+    assert f'id="proposal-{keep.id}"' in response.text
+    assert 'hx-patch="/proposals/bulk"' in response.text
+    # ...and the OOB stats/toast still fire.
+    assert 'id="stats-bar"' in response.text
+    assert "1 proposals approved." in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_response_preserves_page_and_filter(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-gc5d: a bulk action issued from page 2 with a search filter comes back on page 2 with it.
+
+    Re-rendering the container is only correct if it re-renders the SAME view; otherwise the wipe is
+    merely traded for a silent reset to page 1 of the default filter.
+    """
+    created = [
+        await create_test_proposal(session, original_filename=f"gc5dpage_{i:02d}.mp3", proposed_filename=f"GC5D Page {i:02d}.mp3") for i in range(12)
+    ]
+    # Filenames are zero-padded and created in ascending order, so page 2 of a 10-per-page
+    # original_filename-ascending listing holds the last two.
+    page_two = created[10:]
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={
+            "action": "approve",
+            "proposal_ids": [str(page_two[0].id)],
+            "status": "pending",
+            "q": "gc5dpage",
+            "page": "2",
+            "page_size": "10",
+            "sort": "original_filename",
+            "order": "asc",
+        },
+    )
+    assert response.status_code == 200
+
+    # The re-rendered bulk toolbar echoes the state back, so the NEXT bulk action stays put too.
+    assert 'name="page" value="2"' in response.text
+    assert 'name="q" value="gc5dpage"' in response.text
+    assert 'name="sort" value="original_filename"' in response.text
+    assert 'name="status" value="pending"' in response.text
+    # Still showing page 2 of the filtered pending set (11 pending remain -> 1 row on page 2).
+    assert f'id="proposal-{page_two[1].id}"' in response.text
+    assert f'id="proposal-{page_two[0].id}"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_list_fragment_is_container_inner_content_only(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7j50 (symptom 1): the pagination/sort/search GET must not nest chrome in the container.
+
+    Every pagination button, page-size button, sort header and the search box issue
+    ``hx-get="/proposals/?..."`` with ``hx-target="#proposal-list-container"`` and
+    ``hx-swap="innerHTML"``. The handler used to answer with the whole proposal_content.html --
+    filter tabs, search box, the container div itself and the pager -- so ONE page change or column
+    sort swapped a duplicate #proposal-list-container, a duplicate filter-tab bar, a duplicate
+    search box and a duplicate pager INSIDE the live container. Subsequent swaps then resolved to
+    the outer element while the stale inner copy stayed on screen.
+
+    The response is asserted to be safely innerHTML-swappable: zero occurrences of the container id
+    (not merely "at most one"), and none of the chrome that lives outside it.
+    """
+    for i in range(12):
+        await create_test_proposal(session, original_filename=f"7j50_{i:02d}.mp3", proposed_filename=f"7J50 {i:02d}.mp3")
+
+    response = await client.get("/proposals/?status=pending&page=1&page_size=10", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+
+    # (a) swapping this in cannot produce a duplicate id.
+    assert response.text.count('id="proposal-list-container"') == 0
+    # ...nor a duplicate filter-tab bar or search box.
+    assert 'aria-label="Status filter tabs"' not in response.text
+    assert 'placeholder="Search by filename..."' not in response.text
+    # It IS the container's content: table + selection toolbar + exactly one pager.
+    assert 'id="proposals-table"' in response.text
+    assert 'hx-patch="/proposals/bulk"' in response.text
+    assert response.text.count("Per page:") == 1
+    assert "Showing 1-10 of 12 proposals" in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_response_refreshes_pager(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-7j50 (symptom 2): after a bulk action the pager reports POST-action totals.
+
+    The pager used to render outside #proposal-list-container, so the bulk response -- which
+    re-renders the container -- could not update it and the operator was left reading
+    "Showing 1-N of <pre-action total> proposals" plus page buttons for rows that had just left the
+    filtered set. Moving the pager inside the container makes the bulk re-render carry it.
+    """
+    created = [
+        await create_test_proposal(session, original_filename=f"7j50pager_{i:02d}.mp3", proposed_filename=f"7J50 Pager {i:02d}.mp3") for i in range(6)
+    ]
+
+    before = await client.get("/proposals/?status=pending&q=7j50pager&page=1&page_size=10", headers={"HX-Request": "true"})
+    assert "Showing 1-6 of 6 proposals" in before.text
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={
+            "action": "approve",
+            "proposal_ids": [str(created[0].id), str(created[1].id)],
+            "status": "pending",
+            "q": "7j50pager",
+            "page": "1",
+            "page_size": "10",
+        },
+    )
+    assert response.status_code == 200
+    # Two rows left the pending set: the pager in the swapped body reflects that, and only once.
+    assert "Showing 1-4 of 4 proposals" in response.text
+    assert "of 6 proposals" not in response.text
+    assert response.text.count("Per page:") == 1
 
 
 @pytest.mark.asyncio
@@ -813,3 +952,72 @@ async def test_approve_without_hx_target_returns_legacy_response(client: AsyncCl
     response = await client.patch(f"/proposals/{proposal.id}/approve")
     assert response.status_code == 200
     assert "stats-bar" in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /proposals/ history-restore response shape (phaze-64uy)
+#
+# proposals/partials/filter_tabs.html and proposals/partials/pagination.html BOTH set
+# hx-push-url="true" on their /proposals/?... controls, so those URLs enter browser history. A Back
+# with the snapshot evicted from htmx's 10-entry cache re-fetches the URL carrying BOTH
+# HX-Request: true and HX-History-Restore-Request: true -- and on a restore htmx IGNORES hx-target
+# and swaps into <body>. The handler branched on the raw HX-Request header, so it answered with the
+# chrome-less proposal_list.html fragment and REPLACED THE WHOLE DOCUMENT with it (the dispatcher
+# measured /proposals/?status=pending at 3707 bytes, full_document=False).
+#
+# response_shape.py rule 1 bans that raw check; wants_fragment is the predicate.
+# ---------------------------------------------------------------------------
+
+
+_RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+
+
+@pytest.mark.asyncio
+async def test_proposals_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET /proposals/ falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- the buggy handler answered this with a 200 fragment,
+    so a status-only assertion would pass against the bug.
+    """
+    response = await client.get("/proposals/?status=pending", headers=_RESTORE_HEADERS)
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/propose"
+
+
+@pytest.mark.asyncio
+async def test_proposals_history_restore_resolves_to_the_full_shell(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with the shell chrome intact.
+
+    The end-to-end guarantee the operator actually experiences: press Back, land on a real page
+    with navigation, rather than on a bare proposal table with no way out but a manual reload.
+    Note the redirect is followed WITH the restore headers still set, so this also pins the
+    dependency on shell.py answering a restore with the full shell (phaze-64uy fixes both).
+    """
+    response = await client.get("/proposals/?status=pending", headers=_RESTORE_HEADERS, follow_redirects=True)
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the rail must be present after a restore"
+    assert 'id="stage-workspace"' in body, "the shell's swap target must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_proposals_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx swap must still get the chrome-less fragment.
+
+    Every control that issues this GET targets #proposal-list-container with hx-swap="innerHTML"
+    (phaze-7j50), so a full document here would nest an entire page inside the container.
+    """
+    response = await client.get("/proposals/?status=pending", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry the shell rail"
+
+
+@pytest.mark.asyncio
+async def test_proposals_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/proposals/", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/propose"

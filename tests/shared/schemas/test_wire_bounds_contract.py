@@ -131,6 +131,17 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
     ("/proposals/{proposal_id}/edit", "facet"): _WHITELIST,
     ("/proposals/bulk", "action"): _WHITELIST,
+    # phaze-gc5d added these four so a bulk approve/reject re-renders the SAME view it was issued
+    # from instead of resetting to page 1 of the default filter. They are the identical params the
+    # ``/proposals/`` entries above govern, and they reach the database through the identical path:
+    # ``bulk_action`` hands them to ``_proposal_list_context``, the helper it SHARES with
+    # ``list_proposals``, which passes ``sort``/``order`` to ``get_proposals_page`` where
+    # ``proposal_queries.py:148`` rejects anything outside ``valid_sort_columns`` before a column is
+    # touched. Same param, same helper, same whitelist -> same classification.
+    ("/proposals/bulk", "status"): _WHITELIST,
+    ("/proposals/bulk", "q"): _TEXT,
+    ("/proposals/bulk", "sort"): _WHITELIST,
+    ("/proposals/bulk", "order"): _WHITELIST,
     ("/execution/progress/{batch_id}", "batch_id"): _NOT_STORED,
     ("/audit/", "status"): _WHITELIST,
     ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,
