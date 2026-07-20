@@ -100,6 +100,17 @@ pins that equivalence so a future threshold change cannot drift the two apart un
 "Status" is deliberately NOT a separate key for the same reason: it would be a synonym for "Last seen"
 whose caret pointed the opposite way (status ascending = last-seen descending), which reads as the
 table having re-sorted itself in a direction the operator did not choose. "Actions" holds no data.
+
+``resolve()`` is called with NO ``view_state``, which is a deviation from rule 4 worth stating so it is
+not "corrected" later. This table's other view parameter is ``?agent=`` (the drill-in selection), and it
+must NOT ride in ``view_state``, because ``view_state`` feeds :meth:`SortState.poll_url` and the poll is
+exactly where a stale value does damage: a row click swaps only ``#detail-pane``, leaving THIS section's
+server-rendered markup — and therefore its ``poll_url`` — holding the PREVIOUS selection. A baked
+``?agent=`` would re-assert that stale id every 5 seconds and erase the ring the operator just clicked
+(Phase 88 D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search``,
+which htmx inherits to the sort buttons so a header click preserves the open pane too. The two channels
+are kept disjoint because htmx APPENDS ``hx-vals`` onto the ``hx-get`` query string — a key in both
+would be transmitted twice. See ``admin/partials/agents_table.html`` for the same note at the markup.
 """
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -210,7 +221,7 @@ async def page(
     ignoring ``hx-target``. The old helper answered that with the chrome-less table partial,
     replacing the whole admin page with a bare table. A restore now gets ``admin/agents.html``.
     """
-    sort_state = AGENTS_SORT.resolve(sort=sort, order=order, view_state={"agent": agent})
+    sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
     # Section 2 (RECORD-03 / D-07 → COMPUTE-01): one ephemeral compute-lane identity PER non-local
     # registry backend, synthesized read-only from the Phase-67 registry + in-flight CloudJob counts.
@@ -270,7 +281,7 @@ async def table_partial(
     bookmark or an evicted history entry can carry an old key perfectly innocently, and answering 422
     would blank the operator's whole page on a poll to punish a bad display preference.
     """
-    sort_state = AGENTS_SORT.resolve(sort=sort, order=order, view_state={"agent": agent})
+    sort_state = AGENTS_SORT.resolve(sort=sort, order=order)
     agents, now = await _load_agents(session, sort_state)
     compute_lanes = await derive_compute_lane_identities(session)
     return templates.TemplateResponse(

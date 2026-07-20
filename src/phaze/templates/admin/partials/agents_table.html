@@ -20,27 +20,34 @@
 {# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
    and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
 {% set selected_agent = selected_agent | default(none) %}
-{# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD.
+{# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD, via the SHARED spelling.
 
    This section re-swaps ITSELF every 5s with hx-swap="outerHTML" and never halts, so the sort is not
    something that merely has to survive the tick — the tick has to RE-SEND it, or the very next render
    silently reverts to the default order 5 seconds after the click. That is a bug with a 5-second fuse:
    invisible to any manual check that finishes in under 5 seconds.
 
-   sort/order are rendered from the SERVER-RESOLVED state, deliberately NOT read out of location.search
-   the way `agent` is. The row drill-in below pushes "/admin/agents?agent=<id>", a URL that does not
-   mention sort — so a location.search read would lose the order the moment the operator opened a
-   detail pane, which is the same reset bug through a second door. Rendering the resolved state means
-   each tick re-sends what the previous tick actually ordered by, and the chain is self-sustaining.
+   hx-get is `sort.poll_url()` (column_sort contract rule 4a, landed by phaze-a6hm.6) rather than a
+   hard-coded "/admin/agents/_table". That method re-states the CURRENT order rather than toggling it
+   (a poll is a re-read, not a click) and carries view_state along, so this table cannot drift from the
+   recent-scans table on the identical hazard.
 
-   Interpolating into a JS object literal is safe here BECAUSE of sort-contract rule 2/3: `sort.key` is
-   always one of the enumerated whitelist keys and `sort.order` is always "asc"/"desc" — both chosen by
-   equality against constants declared in admin_agents.py, so neither can carry a quote out of a
-   request. This is NOT a place to interpolate a raw query value. #}
+   ?agent= is deliberately NOT in the contract's view_state, and this is the one place this table
+   differs from its siblings. The selected agent is pushed into the URL by a row click that swaps only
+   #detail-pane — this <section> is NOT re-rendered then, so its server-rendered poll_url still holds
+   the PREVIOUS selection. Baking ?agent= into poll_url would therefore re-assert a stale id every 5s
+   and drop the drill-in ring the operator just clicked (Phase 88 D-02). It stays in hx-vals, read live
+   from location.search at request time. htmx inherits hx-vals to descendants, so the sort buttons
+   below send the live selection too — which is what keeps a header click from closing the open pane
+   (contract rule 4) without either producer hard-coding the parameter.
+
+   The two mechanisms must stay disjoint: htmx APPENDS hx-vals to the hx-get query string, so a key
+   appearing in BOTH poll_url() and hx-vals would be sent twice and the handler would read whichever
+   duplicate won. sort/order live in the URL; agent lives in hx-vals; neither repeats the other. #}
 <section id="agents-table-section"
-         hx-get="/admin/agents/_table"
+         hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
-         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent"), sort: "{{ sort.key }}", order: "{{ sort.order }}"}'
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
@@ -71,10 +78,12 @@
                    second #agents-table-section inside the first, duplicating the id AND the 5s trigger,
                    so the page would poll twice as fast on every click and keep doubling.
 
-                   hx-push-url keeps the address bar truthful so a reload or Back reproduces the chosen
-                   order. It reuses the query string url_for() already built rather than re-deriving the
-                   params, then re-points it at the PAGE route: pushing the /_table endpoint would make
-                   a reload answer with a chrome-less bare table.
+                   NO hx-push-url here, deliberately. A pushed URL is a static string, so it cannot
+                   carry the LIVE ?agent= that hx-vals reads from location.search — pushing sort alone
+                   would erase the selection from the address bar, and the next poll (which reads the
+                   selection from there) would drop the operator's open detail pane. The sort is DOM
+                   state carried across ticks by poll_url(); the URL stays the owner of the selection.
+                   The row drill-in below pushes both, because at that point both are known.
 
                    aria-sort comes from sort.aria_sort() (rule 5) — never hand-written. Non-sortable
                    headers omit the attribute entirely rather than claiming aria-sort="none", which
@@ -87,7 +96,6 @@
                                 hx-get="{{ sort.url_for(col) }}"
                                 hx-target="#agents-table-section"
                                 hx-swap="outerHTML"
-                                hx-push-url="/admin/agents?{{ sort.url_for(col).split('?')[1] }}"
                                 class="inline-flex items-center gap-1 uppercase hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                             {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                         </button>

@@ -203,7 +203,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # mechanism as the six entries above, classified the same way for the same reason.
     ("/tags/", "sort"): _WHITELIST,
     ("/tags/", "order"): _WHITELIST,
-
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,
