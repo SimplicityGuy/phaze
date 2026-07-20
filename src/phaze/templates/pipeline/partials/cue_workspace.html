@@ -14,8 +14,12 @@
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = "'" ~ (cue_cards | selectattr('eligible') | list | length) ~ " generated from matched tracklists'" %}
 {% call ws.workspace(title="Review & Apply · Cue sheets", subcount=subcount) %}
-    {# Landing target for the generate response's OOB toast (cue_row.html). #}
-    <div id="toast-container" class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2 [&>*]:pointer-events-auto"></div>
+    {# NO #toast-container here (phaze-gzrd): shell.html already declares the ONE container, and this
+       fragment mounts inside that same document. A second element with the same id makes htmx --
+       which resolves hx-swap-oob selectors via querySelectorAll, not getElementById -- append an
+       independent clone into EACH match, so the generate response's OOB toast (cue_row.html) renders
+       twice with separate Alpine state and timers. Same hazard the scaffold calls out at
+       _workspace_scaffold.html ("don't create duplicate ids that would steal the live OOB swap"). #}
     {% if cue_cards %}
     <div class="grid grid-cols-2 gap-4 p-6">
         {% for card in cue_cards %}
