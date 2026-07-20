@@ -444,6 +444,7 @@ async def test_audit_log_history_restore_of_a_sorted_url_returns_a_full_document
     assert 'aria-label="Main navigation"' in body, "the app nav must survive a sorted history restore"
     assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
 
+
 # --- phaze-a6hm.8: execution agents table sort ---------------------------------------------------
 # EXEC_AGENTS_SORT composes column_sort.py's whitelist/resolve/aria-sort machinery; the generic
 # resolution mechanics (unwhitelisted -> default, equality-only matching, aria-sort tokens, url

@@ -336,6 +336,47 @@ async def test_an_unknown_sort_renders_the_default_order_rather_than_422ing(
 
 
 @pytest.mark.asyncio
+async def test_no_self_refreshing_element_re_requests_the_list_without_the_sort(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Nothing polls this list back to the default order (column_sort rule 4a, added by phaze-a6hm.6).
+
+    ``SortState.poll_url()`` exists for SELF-REFRESHING tables: a table that re-fetches itself on
+    ``hx-trigger="every 5s"`` with a hard-coded ``hx-get`` re-requests the UNSORTED view and swaps it
+    over the sorted one, so the operator's chosen order silently snaps back seconds later. This bead
+    does NOT call ``poll_url()``, and this test is the evidence that not calling it is correct rather
+    than forgotten -- the propose list carries no self-refresh at all. Its live counts ride the
+    separate ``#pipeline-stats`` chrome poll, which swaps its own container and never re-requests
+    ``/s/propose``.
+
+    The one sort-less ``/s/propose`` link in the render is the RAIL button, and it must stay that
+    way: clicking the rail means "take me to Propose", which correctly lands on the default view
+    rather than resurrecting a previous session's ordering.
+
+    If a later bead (.11's bulk actions, say) gives this list a poll, this fails -- and the fix is
+    ``hx-get="{{ sort.poll_url() }}"``, not a hand-built query string.
+    """
+    await seed_pending_proposal(0.9, original_filename="a.mp3", proposed_filename="A.mp3")
+    body = (await client.get("/s/propose?sort=original_filename&order=desc")).text
+
+    polling = re.findall(r"<[^>]*hx-trigger=\"[^\"]*every[^\"]*\"[^>]*>", body)
+    for element in polling:
+        target = re.search(r'hx-get="([^"]*)"', element)
+        if target and "/s/propose" in target.group(1):
+            assert "sort=" in target.group(1), (
+                f"a self-refreshing element re-requests the propose list with no sort, so it will swap the "
+                f"DEFAULT order over the operator's chosen one within one poll interval: {element[:200]}. "
+                f"Spell it hx-get='{{{{ sort.poll_url() }}}}' (column_sort rule 4a)."
+            )
+
+    # The rail button is the one deliberate exception; assert it is genuinely a rail node and not a
+    # poll, so this test cannot be satisfied by simply having no elements at all.
+    assert 'data-rail-stage="propose"' in body, "expected the rail button to be present in a full-document render"
+
+
+@pytest.mark.asyncio
 async def test_paging_stays_inside_the_chosen_sort(
     client: AsyncClient,
     session: AsyncSession,

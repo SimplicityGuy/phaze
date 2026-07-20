@@ -28,6 +28,14 @@ whitelist even though its template still writes its own URLs. That split is deli
 injection surface (rule 2) and the ORDER BY are closed now, for both surfaces; the cosmetic URL
 duplication is left for .12 to delete along with the template.
 
+``SortState.poll_url()`` (contract rule 4a, added by phaze-a6hm.6) is deliberately NOT used here.
+It exists for tables that re-fetch THEMSELVES on ``hx-trigger="every 5s"``, whose hard-coded
+``hx-get`` would re-request the unsorted view and swap it over the sorted one. The propose list has
+no self-refresh: its live counts ride the separate ``#pipeline-stats`` chrome poll, which swaps its
+own container and never re-requests ``/s/propose``. That absence is pinned by a test rather than
+left to inspection, so a later bead adding a poll here fails loudly instead of shipping a table that
+silently reverts its order every five seconds.
+
 ``Model`` is absent from the whitelist on purpose. The propose workspace renders it from
 ``settings.llm_model`` -- one configured value for every row on the page -- so it is not a column,
 and offering to sort by it would promise an ordering that cannot exist.
