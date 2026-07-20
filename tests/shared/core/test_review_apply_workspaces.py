@@ -524,3 +524,30 @@ async def test_cue_gate_and_preview(
     # Gated card: opacity-60 + the awaiting-match copy, and no second approve control.
     assert "opacity-60" in body and "awaiting tracklist match" in body
     assert body.count("APPROVE") == 1, "only the eligible card carries an APPROVE control"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["dedupe", "cue"])
+async def test_workspace_declares_no_second_toast_container(client: AsyncClient, stage: str) -> None:
+    """phaze-gzrd -- the rendered document carries EXACTLY ONE ``id="toast-container"``.
+
+    ``shell.html`` already declares the single toast container, and every stage workspace mounts
+    inside that same document (full page render, or an HX fragment swapped into ``#stage-workspace``
+    of the live shell). A workspace that declares its own ``id="toast-container"`` therefore creates
+    a DUPLICATE id: htmx resolves an ``hx-swap-oob`` selector via ``querySelectorAll`` (ALL matches,
+    unlike ``getElementById``) and appends an independent ``cloneNode(true)`` into EACH one, so every
+    OOB toast renders twice with separate Alpine state and separate dismissal timers.
+
+    Same hazard class the shared scaffold already calls out ("don't create duplicate ids that would
+    steal the live OOB swap", ``_workspace_scaffold.html``). Asserted on the FULL-PAGE render, which
+    is the composed document the browser actually holds.
+    """
+    page = await client.get(f"/s/{stage}")
+    assert page.status_code == 200
+    declared = page.text.count('id="toast-container"')
+    assert declared == 1, f'/s/{stage} renders {declared} elements with id="toast-container"; the shell owns the only one.'
+
+    # And the bare fragment must not smuggle one back in -- it swaps into a shell that already has it.
+    frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    assert 'id="toast-container"' not in frag.text, f"the /s/{stage} fragment must not declare its own toast container"
