@@ -1,8 +1,29 @@
+{# phaze-a6hm.7: sortable headers via THE column_sort contract (phaze-a6hm.1, ``sort`` ==
+   phaze.routers.column_sort.SortState). Only "Filename" and "Format" are whitelisted by
+   ``TAGS_SORT`` (they map to real FileRecord columns); "Changes" and "Status" are computed
+   per-row from the tracklist/proposal comparison and the latest TagWriteLog, so they stay
+   plain headers. ``#tags-table-view`` is this table's OWN existing host container -- the
+   header click re-requests /tags/ under a new ORDER BY and swaps this exact element via
+   innerHTML, introducing no new id / OOB fragment (contract rule 6). #}
+<div id="tags-table-view">
 <table id="tags-table" class="w-full text-sm text-left">
     <thead>
         <tr class="border-b border-gray-200 dark:border-phaze-border">
-            <th scope="col" class="py-2 px-2" style="width: 40%">Filename</th>
-            <th scope="col" class="py-2 px-2" style="width: 10%">Format</th>
+            {% for label, width in [("Filename", "40%"), ("Format", "10%")] %}
+            {% if sort and sort.is_sortable(label) %}
+            <th scope="col" class="py-2 px-2" style="width: {{ width }}" aria-sort="{{ sort.aria_sort(label) }}">
+                <button type="button"
+                        hx-get="{{ sort.url_for(label) }}"
+                        hx-target="{{ sort.contract.target }}"
+                        hx-swap="innerHTML"
+                        class="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-300">
+                    {{ label }}<span aria-hidden="true">{{ sort.indicator(label) }}</span>
+                </button>
+            </th>
+            {% else %}
+            <th scope="col" class="py-2 px-2" style="width: {{ width }}">{{ label }}</th>
+            {% endif %}
+            {% endfor %}
             <th scope="col" class="py-2 px-2" style="width: 10%">Changes</th>
             <th scope="col" class="py-2 px-2" style="width: 15%">Status</th>
             <th scope="col" class="py-2 px-2" style="width: 25%">Action</th>
@@ -75,3 +96,4 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
