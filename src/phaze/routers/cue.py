@@ -17,6 +17,7 @@ from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.proposal_queries import Pagination
@@ -234,7 +235,12 @@ async def list_cue(
     """
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy (HYGIENE, not a live defect): ``wants_fragment`` per response_shape.py contract
+    # rule 1. No template pushes a ``/cue/`` URL, so no history restore can reach this handler
+    # today; the conversion removes the banned raw-header branch and makes the handler correct in
+    # advance of anything adding ``hx-push-url`` to the cue controls.
+    if not wants_fragment(request):
         return RedirectResponse(url="/s/cue", status_code=302)
 
     stats = await _get_cue_stats(session)

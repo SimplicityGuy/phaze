@@ -17,6 +17,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
@@ -290,7 +291,11 @@ async def list_tags(
     """Render the tag review list page or HTMX partial."""
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy (HYGIENE, not a live defect): ``wants_fragment`` per response_shape.py contract
+    # rule 1. No template pushes a ``/tags/`` URL, so no history restore can reach this handler
+    # today; converted to close the banned raw-header branch rather than to fix a live symptom.
+    if not wants_fragment(request):
         return RedirectResponse(url="/s/tagwrite", status_code=302)
 
     # Query applied files with metadata (an executed proposal exists, READ-05/D-01)

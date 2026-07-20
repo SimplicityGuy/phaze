@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
     ProposalPendingConflictError,
@@ -267,7 +268,16 @@ async def list_proposals(
     """Render the proposal list page, or an HTMX table fragment."""
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy: the predicate is ``wants_fragment``, not the raw ``HX-Request`` header
+    # (response_shape.py contract rule 1). Both ``proposals/partials/filter_tabs.html`` and
+    # ``proposals/partials/pagination.html`` set ``hx-push-url="true"`` on their
+    # ``/proposals/?...`` controls, so those URLs enter history and a Back with the snapshot
+    # evicted arrives here as a restore carrying BOTH headers. htmx ignores ``hx-target`` on a
+    # restore and swaps into ``<body>``, so the raw check replaced the whole document with the
+    # chrome-less ``proposal_list.html`` fragment. A restore now falls through to this redirect
+    # and resolves into the full shell.
+    if not wants_fragment(request):
         return RedirectResponse(url="/s/propose", status_code=302)
 
     context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
