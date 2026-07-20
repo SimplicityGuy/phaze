@@ -34,8 +34,27 @@
                         When ABSENT (Jinja Undefined ⇒ falsy) every header renders exactly as it
                         did before, so a workspace that has not been wired yet is unaffected.
 
+     * row_select_ids — OPTIONAL parallel list (one id per row, aligned to `rows`) that turns this
+                        table into a SELECTABLE one (phaze-a6hm.11): a leading checkbox column plus
+                        a select-all in the header. Absent (Jinja Undefined ⇒ falsy) ⇒ not one
+                        checkbox is emitted, so the eight workspaces that do not pass it render
+                        byte-identically to before. Spelled HERE, once, for the same reason `sort`
+                        is: a per-workspace selection column would be the fourth hand-rolled copy
+                        of markup this partial exists to own.
+     * select_name    — the wire name of those checkboxes (REQUIRED when row_select_ids is given).
+                        The caller names it because the caller owns the endpoint that reads it.
+     * row_select_locked — OPTIONAL parallel list of booleans. True ⇒ that row's checkbox renders
+                        DISABLED with a title saying why. This is an AFFORDANCE, never a control:
+                        the server's from-state guard is the authority on what may transition, and
+                        it re-checks every id regardless of what the browser sent (phaze-uu17 +
+                        request_guards rule 2 — a browser-held id-set is always assumed stale).
+                        The two must agree, and when they disagree the SERVER wins silently and the
+                        reported count, not the selection size, is what the operator is told.
+
    D-06 / R-1: rows always carry `cursor-pointer` + a stable id + hover; the row→record click is
-   bound ONLY when `row_file_ids` is provided (Phase 61) — otherwise the row is inert.
+   bound ONLY when `row_file_ids` is provided (Phase 61) — otherwise the row is inert. A selection
+   checkbox therefore carries `@click.stop` so ticking a box in a record-bound table cannot also
+   open the slide-in.
 #}
 {% if not rows %}
 <div class="px-6 py-12 text-center">
@@ -51,6 +70,19 @@
     <table class="w-full text-left text-sm"{% if table_id %} id="{{ table_id }}"{% endif %}>
         <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
             <tr>
+                {% if row_select_ids %}
+                {# Select-all toggles only the checkboxes it is ALLOWED to: `:not(:disabled)` skips
+                   the rows the from-state guard would reject anyway, so "select all" on the All tab
+                   never quietly loads the submission with terminal ids. It is scoped to `$root`
+                   (the caller's x-data element), so a page holding two selectable tables could not
+                   have one header toggle the other's rows. #}
+                <th scope="col" class="w-10 px-6 py-2.5">
+                    <input type="checkbox"
+                           @change="$root.querySelectorAll('input[name=\'{{ select_name }}\']:not(:disabled)').forEach(cb => cb.checked = $event.target.checked); $dispatch('selection-changed')"
+                           class="rounded border-gray-300 dark:border-phaze-border"
+                           aria-label="Select all rows on this page">
+                </th>
+                {% endif %}
                 {% for col in columns %}
                 {% if sort and sort.is_sortable(col) %}
                 {# phaze-a6hm.1 sortable-column contract. SERVER-SIDE: the click re-requests this
@@ -79,6 +111,19 @@
         <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
             {% for row in rows %}
             <tr {% if row_id_prefix %}id="{{ row_id_prefix }}-{{ loop.index }}" {% endif %}class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5"{% if row_file_ids and row_file_ids | length > loop.index0 %} hx-get="/record/{{ row_file_ids[loop.index0] }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })"{% endif %}>
+                {% if row_select_ids and row_select_ids | length > loop.index0 %}
+                {% set _locked = row_select_locked and row_select_locked | length > loop.index0 and row_select_locked[loop.index0] %}
+                <td class="w-10 px-6 py-3">
+                    <input type="checkbox"
+                           name="{{ select_name }}"
+                           value="{{ row_select_ids[loop.index0] }}"
+                           {% if _locked %}disabled title="Already actioned — this row cannot be approved or rejected"{% endif %}
+                           @click.stop
+                           @change="$dispatch('selection-changed')"
+                           class="rounded border-gray-300 disabled:opacity-40 dark:border-phaze-border"
+                           aria-label="Select row {{ loop.index }}">
+                </td>
+                {% endif %}
                 {% for cell in row %}
                 <td class="px-6 py-3 {% if cell.color %}{{ cell.color }}{% elif loop.first %}text-gray-900 dark:text-gray-200{% else %}text-gray-500 dark:text-gray-400{% endif %}{% if cell.mono %} max-w-md truncate font-mono text-xs{% endif %}"{% if cell.title %} title="{{ cell.title }}"{% endif %}>{{ cell.text }}</td>
                 {% endfor %}

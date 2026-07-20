@@ -7,11 +7,17 @@
    content must be exactly ONE thing and every producer must return exactly that. This partial IS
    that thing:
 
-       _file_table (rows) + _list_pager
+       _file_table (rows, with the selection column) + _propose_bulk_bar + _list_pager
 
-   Producers, both of which render this file and nothing more:
+   Producers, all THREE of which render this file and nothing more:
      * propose_workspace.html            -- wraps it in the container div (full workspace render)
      * GET /s/propose (HX, targeting the container) -- returns it bare (filter / search / page swaps)
+     * PATCH /proposals/bulk (HX, targeting the container) -- returns it bare inside
+       _propose_bulk_response.html, plus an OOB toast (phaze-a6hm.11)
+
+   phaze-a6hm.11 added the bulk approve/reject bar INSIDE this partial, for the same reason .9 moved
+   the pager in: it must be re-rendered by the swap that re-renders the rows. A bar living outside
+   the container would keep offering to act on a selection whose rows the swap has just replaced.
 
    This is a DIFFERENT container from the legacy #proposal-list-container, and the two shapes are
    deliberately not interchangeable: that one holds proposal_table + bulk_actions + pagination,
@@ -90,7 +96,23 @@
     {% set empty_body = "Run the AI proposal generation pipeline to get started." %}
 {% endif %}
 {% set row_id_prefix = "propose-row" %}
+{# phaze-a6hm.11: the SELECTION SCOPE. `x-data` here (rather than outside the container, where the
+   legacy proposal_content.html puts it) is deliberate and is the correct choice for THIS container:
+   every swap into #propose-workspace-list replaces these rows wholesale, so a selection that
+   survived the swap would be a set of ids that are no longer on screen -- after a bulk approve the
+   acted rows have left the pending tab entirely, and after a page change the ticked ids are not
+   rendered at all, yet the bar would still offer to act on them. Resetting with the rows is the
+   honest behaviour: the selection means "these visible rows", and the visible rows just changed.
+
+   `picked` is recomputed from the DOM on every `selection-changed` (dispatched by the checkboxes
+   and the select-all in _file_table.html) rather than incremented, so it cannot drift out of sync
+   with the boxes that are actually ticked -- and it is the boxes, not this number, that the request
+   serialises. The count is a readout of the truth, never a second copy of it. #}
+<div x-data="{ picked: 0 }"
+     @selection-changed="picked = $el.querySelectorAll('input[name=\'proposal_ids\']:checked').length">
 {% include "pipeline/partials/_file_table.html" %}
+{% include "pipeline/partials/_propose_bulk_bar.html" %}
+</div>
 {# pager_url / pager_target / page_size_choices come from the ROUTER context, not a {% with %} here,
    because this partial has two producers: the full workspace render and the bare HX swap that the
    router returns directly. Anything the pager needs must therefore be present in the base context,
