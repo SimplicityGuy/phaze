@@ -35,12 +35,12 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.base import Base
 from phaze.tasks._shared import stage_control as stage_control_module
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
+from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -50,16 +50,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
-# Raw libpq broker DSN (NOT the ``+asyncpg`` dialect form psycopg3 cannot parse). Derived
-# the same way the Phase 36 live-broker tests derive it: prefer PHAZE_QUEUE_URL, else the
-# integration harness' TEST_DATABASE_URL with the SQLAlchemy dialect suffix stripped.
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-# SQLAlchemy async (asyncpg) DSN for the service-helper session, pointing at the SAME DB as
-# the broker. ``"postgresql+asyncpg://"`` does not contain the ``"postgresql://"`` substring,
-# so the replace is a no-op when TEST_DATABASE_URL is already in dialect form.
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
+# Raw libpq broker DSN (NOT the ``+asyncpg`` dialect form psycopg3 cannot parse) plus the
+# SQLAlchemy async DSN for the service-helper session, both pointing at the SAME database.
+# Prefer PHAZE_QUEUE_URL for the broker, else the integration harness' TEST_DATABASE_URL.
+# Derived in `tests.db_guard` so every integration module resolves one identical target.
+BROKER_DSN, SA_DSN = integration_dsns()
 # Cache-handle Redis DSN the factory attaches; the enqueued-counter hook is best-effort, so
 # this never blocks an enqueue even when Redis is down.
 CACHE_REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
@@ -187,9 +182,9 @@ async def committed_db() -> AsyncGenerator[tuple[AsyncEngine, async_sessionmaker
     """
     import psycopg
 
-    target_db = make_url(SA_DSN).database or ""
-    if not target_db.endswith("_test"):
-        pytest.skip(f"Refusing to TRUNCATE a non-test database {target_db!r}; set TEST_DATABASE_URL to a *_test DSN (run `just test-db`).")
+    # Raises rather than skips: this fixture TRUNCATEs every ORM table, so a wrong target is a
+    # data-loss event, and a skip would hide that the run never exercised the integration path.
+    require_test_database(SA_DSN, context="TRUNCATE")
 
     try:
         probe = await psycopg.AsyncConnection.connect(BROKER_DSN)

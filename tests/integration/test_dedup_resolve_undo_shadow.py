@@ -20,14 +20,12 @@ Real-PG ``db_session`` fixture (no SAQ dependency). Run via ``just test-bucket i
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import false as sa_false, select
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -35,6 +33,7 @@ from phaze.models.base import Base
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.services.dedup import resolve_group, undo_resolve
+from tests.db_guard import integration_dsns, require_test_database
 
 
 if TYPE_CHECKING:
@@ -43,18 +42,9 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-BROKER_DSN = (os.environ.get("PHAZE_QUEUE_URL") or os.environ.get("TEST_DATABASE_URL", "postgresql://phaze:phaze@localhost:5432/phaze")).replace(
-    "postgresql+asyncpg://", "postgresql://"
-)
-SA_DSN = (os.environ.get("TEST_DATABASE_URL") or BROKER_DSN).replace("postgresql://", "postgresql+asyncpg://")
-
-_TARGET_DB = make_url(SA_DSN).database or ""
-if not _TARGET_DB.endswith("_test"):
-    pytest.skip(
-        f"Refusing to run dedup resolve/undo integration tests against non-test database {_TARGET_DB!r}; "
-        "set TEST_DATABASE_URL to a *_test DSN (e.g. run `just test-db`).",
-        allow_module_level=True,
-    )
+# DSN pair + destructive-DB guard, shared with every other integration module via `tests.db_guard`.
+BROKER_DSN, SA_DSN = integration_dsns()
+_TARGET_DB = require_test_database(SA_DSN, context="dedup resolve/undo integration tests")
 
 _LEGACY_AGENT_ID = "test-fileserver"
 HASH_A = "a" * 64

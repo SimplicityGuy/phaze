@@ -1,9 +1,9 @@
 """Fixtures for tests that actually run Alembic migrations against a real Postgres DB.
 
 Pre-condition: the database ``phaze_migrations_test`` must exist on
-``localhost:5432`` with the same credentials as ``phaze_test`` (operator-created,
-matching the standing requirement for integration tests -- see
-``tests/conftest.py``).
+``localhost:5433`` (the ephemeral harness port -- 5432 is reserved for the developer's own
+database) with the same credentials as ``phaze_test`` (operator-created, matching the standing
+requirement for integration tests -- see ``tests/conftest.py`` and ``tests/db_guard.py``).
 
 Unlike the parent ``tests/conftest.py``'s ``async_engine`` fixture (which uses
 SQLAlchemy's metadata-driven table creation and so never exercises migration
@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
 from phaze.config import settings
+from tests.db_guard import require_test_database
 
 
 MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
@@ -51,6 +52,10 @@ MIGRATIONS_TEST_DATABASE_URL = os.environ.get(
     # failure mode land on CI (which is pinned and therefore cannot hit it) rather than on humans.
     "postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_migrations_test",
 )
+# This package DROPs and recreates the public schema (`_reset_schema`), so it is at least as
+# destructive as the TRUNCATE harness and gets the same guard. Raises on a non-test target --
+# see `tests/db_guard.py` for why this is an error and not a skip.
+require_test_database(MIGRATIONS_TEST_DATABASE_URL, context="Alembic migration tests")
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[3] / "alembic.ini"
 
 
