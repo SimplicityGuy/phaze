@@ -195,6 +195,15 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # mechanism as the six entries above, classified the same way for the same reason.
     ("/tags/", "sort"): _WHITELIST,
     ("/tags/", "order"): _WHITELIST,
+
+    # phaze-a6hm.8: same EXEC_AGENTS_SORT contract, adapted for a table with no backing SQL SELECT
+    # (execution.py's per-agent rollup is a Redis hash projection) -- the whitelist->accessor mapping
+    # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.
+    ("/execution/agents-table", "sort"): _WHITELIST,
+    ("/execution/agents-table", "order"): _WHITELIST,
+    # Same classification as /execution/progress/{batch_id}'s batch_id below: a Redis hash KEY
+    # suffix, never a column.
+    ("/execution/agents-table", "batch_id"): _NOT_STORED,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,

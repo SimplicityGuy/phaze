@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
 
+from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -73,6 +75,44 @@ async def create_test_execution_log(
     session.add(log_entry)
     await session.commit()
     return log_entry
+
+
+async def create_approved_proposal_for_agent(session: AsyncSession, *, agent_id: str, agent_name: str, proposed_filename: str) -> None:
+    """Seed one APPROVED proposal (with its Agent + FileRecord) for phaze-a6hm.8's sort tests.
+
+    ``get_approved_proposals_grouped_by_agent`` INNER JOINs through ``Agent``, so a proposal whose
+    agent_id has no matching row is silently dropped from dispatch -- the Agent row is not optional.
+    """
+    existing = await session.get(Agent, agent_id)
+    if existing is None:
+        session.add(Agent(id=agent_id, name=agent_name))
+        await session.flush()
+
+    file_id = uuid.uuid4()
+    file_record = FileRecord(
+        agent_id=agent_id,
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path=f"/music/{uuid.uuid4().hex}/test.mp3",
+        original_filename="test.mp3",
+        current_path=f"/music/{uuid.uuid4().hex}/test.mp3",
+        file_type="music",
+        file_size=1_000_000,
+    )
+    session.add(file_record)
+    await session.flush()
+
+    proposal = RenameProposal(
+        id=uuid.uuid4(),
+        file_id=file_id,
+        proposed_filename=proposed_filename,
+        confidence=0.9,
+        status=ProposalStatus.APPROVED,
+        context_used={"artist": "Test"},
+        reason="Test",
+    )
+    session.add(proposal)
+    await session.commit()
 
 
 @pytest.mark.asyncio
@@ -403,3 +443,167 @@ async def test_audit_log_history_restore_of_a_sorted_url_returns_a_full_document
     assert "<h1" in body, "the <h1> page heading must survive a sorted history restore"
     assert 'aria-label="Main navigation"' in body, "the app nav must survive a sorted history restore"
     assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
+
+# --- phaze-a6hm.8: execution agents table sort ---------------------------------------------------
+# EXEC_AGENTS_SORT composes column_sort.py's whitelist/resolve/aria-sort machinery; the generic
+# resolution mechanics (unwhitelisted -> default, equality-only matching, aria-sort tokens, url
+# encoding) are already covered exhaustively by tests/shared/routers/test_column_sort.py against the
+# shared SortContract/SortState classes themselves. These tests cover what is SPECIFIC to this
+# table's composition: the actual server-side reorder (Python, not SQL -- there is no backing
+# SELECT), the persist-for-future-SSE-ticks behavior, and that an unwhitelisted sort key never
+# reaches anything but the default column.
+
+
+@pytest.mark.asyncio
+async def test_start_execution_agents_table_default_sort_is_name_ascending(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /execution/start's first render sorts by the contract's default (Agent, ascending)."""
+    await create_approved_proposal_for_agent(session, agent_id="zeta-agent", agent_name="Zeta Agent", proposed_filename="z.mp3")
+    await create_approved_proposal_for_agent(session, agent_id="alpha-agent", agent_name="Alpha Agent", proposed_filename="a.mp3")
+
+    mock_task_router = AsyncMock()
+    mock_redis = AsyncMock()
+    # Non-empty `groups` (two approved proposals seeded above) drives start_execution into the
+    # `redis.pipeline(transaction=True)` branch, which is used as an async context manager -- a
+    # bare AsyncMock().pipeline(...) returns a coroutine, not a context manager, so it needs its
+    # own mock: an async context manager whose queuing methods (hset/expire) are synchronous, as
+    # the real redis-py pipeline API is -- only `.execute()` is awaited.
+    mock_pipe = MagicMock()
+    mock_pipe.hset = MagicMock()
+    mock_pipe.expire = MagicMock()
+    mock_pipe.execute = AsyncMock()
+    mock_pipe.__aenter__ = AsyncMock(return_value=mock_pipe)
+    mock_pipe.__aexit__ = AsyncMock(return_value=None)
+    mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+    client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    response = await client.post("/execution/start")
+    assert response.status_code == 200
+    body = response.text
+    assert body.index("Alpha Agent") < body.index("Zeta Agent"), "default sort is name ascending"
+    assert 'aria-sort="ascending"' in body, "the default-active Agent header announces its own state"
+
+
+@pytest.mark.asyncio
+async def test_agents_table_sort_reorders_by_completed_descending(client: AsyncClient) -> None:
+    """GET /execution/agents-table?sort=completed&order=desc reorders the WHOLE rollup server-side."""
+    batch_id = uuid.uuid4().hex
+    dispatch_summary = [
+        {"agent_id": "a1", "name": "Agent One", "total": 10},
+        {"agent_id": "a2", "name": "Agent Two", "total": 20},
+    ]
+    mock_redis = MagicMock()
+    mock_redis.hgetall = AsyncMock(
+        return_value={
+            "dispatch_summary": json.dumps(dispatch_summary),
+            "agent:a1:completed": "3",
+            "agent:a1:failed": "0",
+            "agent:a1:total": "10",
+            "agent:a2:completed": "15",
+            "agent:a2:failed": "0",
+            "agent:a2:total": "20",
+        },
+    )
+    mock_redis.hset = AsyncMock()
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=completed&order=desc")
+    assert response.status_code == 200
+    body = response.text
+    assert body.index("Agent Two") < body.index("Agent One"), "Agent Two (completed=15) sorts before Agent One (completed=3)"
+    assert 'aria-sort="descending"' in body
+
+    # Persisted so the NEXT SSE tick (which re-resolves from this same hash) keeps honouring the
+    # click instead of reverting to the default order within ~1s.
+    mock_redis.hset.assert_awaited_once_with(f"exec:{batch_id}", mapping={"agents_sort": "completed", "agents_order": "desc"})
+
+
+@pytest.mark.asyncio
+async def test_agents_table_sort_unwhitelisted_key_degrades_to_default_not_422(client: AsyncClient) -> None:
+    """An unwhitelisted ``sort`` value can never reach a column -- it degrades, it does not 422 or 500.
+
+    Regression per column_sort.py rule 7: asserting the STATUS alone would pass against an
+    implementation that happily reached an arbitrary attribute via ``getattr``/``__class__``-style
+    lookup. This asserts the actual row ORDER stayed at the contract's default too.
+    """
+    batch_id = uuid.uuid4().hex
+    dispatch_summary = [
+        {"agent_id": "a1", "name": "Agent One", "total": 10},
+        {"agent_id": "a2", "name": "Agent Two", "total": 20},
+    ]
+    mock_redis = MagicMock()
+    mock_redis.hgetall = AsyncMock(
+        return_value={
+            "dispatch_summary": json.dumps(dispatch_summary),
+            "agent:a1:completed": "3",
+            "agent:a1:failed": "0",
+            "agent:a1:total": "10",
+            "agent:a2:completed": "15",
+            "agent:a2:failed": "0",
+            "agent:a2:total": "20",
+        },
+    )
+    mock_redis.hset = AsyncMock()
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=__class__.__mro__")
+    assert response.status_code == 200
+    body = response.text
+    assert body.index("Agent One") < body.index("Agent Two"), "unwhitelisted sort degrades to the default (name asc)"
+    mock_redis.hset.assert_awaited_once_with(f"exec:{batch_id}", mapping={"agents_sort": "name", "agents_order": "asc"})
+
+
+@pytest.mark.asyncio
+async def test_agents_table_sort_unknown_batch_renders_empty_state(client: AsyncClient) -> None:
+    """A batch with no (or already-reaped) Redis hash renders the same empty state, not a 404/500."""
+    mock_redis = MagicMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    mock_redis.hset = AsyncMock()
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    response = await client.get("/execution/agents-table?batch_id=does-not-exist&sort=total")
+    assert response.status_code == 200
+    assert "No active sub-jobs." in response.text
+    mock_redis.hset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClient) -> None:
+    """The SSE ``agents_table`` event re-resolves sort from the SAME hash every tick.
+
+    A header click (the previous test) persists ``agents_sort``/``agents_order`` onto the batch's
+    hash; this asserts the long-lived SSE generator -- which never sees that HTTP request -- still
+    honours it on its own next read, and that the header's aria-sort/caret state travels with it
+    (not just the row order).
+    """
+    batch_id = uuid.uuid4().hex
+    dispatch_summary = [
+        {"agent_id": "a1", "name": "Agent One", "total": 10},
+        {"agent_id": "a2", "name": "Agent Two", "total": 20},
+    ]
+    mock_redis = MagicMock()
+    mock_redis.hgetall = AsyncMock(
+        return_value={
+            "total": "30",
+            "completed": "18",
+            "failed": "0",
+            "status": "complete",
+            "subjobs_expected": "1",
+            "dispatch_summary": json.dumps(dispatch_summary),
+            "agents_sort": "total",
+            "agents_order": "desc",
+            "agent:a1:completed": "3",
+            "agent:a1:failed": "0",
+            "agent:a1:total": "10",
+            "agent:a2:completed": "15",
+            "agent:a2:failed": "0",
+            "agent:a2:total": "20",
+        },
+    )
+    client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
+
+    response = await client.get(f"/execution/progress/{batch_id}")
+    assert response.status_code == 200
+    body = response.text
+    assert body.index("Agent Two") < body.index("Agent One"), "total=20 sorts before total=10, descending"
+    assert 'aria-sort="descending"' in body
