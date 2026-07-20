@@ -20,10 +20,27 @@
 {# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
    and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
 {% set selected_agent = selected_agent | default(none) %}
+{# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD.
+
+   This section re-swaps ITSELF every 5s with hx-swap="outerHTML" and never halts, so the sort is not
+   something that merely has to survive the tick — the tick has to RE-SEND it, or the very next render
+   silently reverts to the default order 5 seconds after the click. That is a bug with a 5-second fuse:
+   invisible to any manual check that finishes in under 5 seconds.
+
+   sort/order are rendered from the SERVER-RESOLVED state, deliberately NOT read out of location.search
+   the way `agent` is. The row drill-in below pushes "/admin/agents?agent=<id>", a URL that does not
+   mention sort — so a location.search read would lose the order the moment the operator opened a
+   detail pane, which is the same reset bug through a second door. Rendering the resolved state means
+   each tick re-sends what the previous tick actually ordered by, and the chain is self-sustaining.
+
+   Interpolating into a JS object literal is safe here BECAUSE of sort-contract rule 2/3: `sort.key` is
+   always one of the enumerated whitelist keys and `sort.order` is always "asc"/"desc" — both chosen by
+   equality against constants declared in admin_agents.py, so neither can carry a quote out of a
+   request. This is NOT a place to interpolate a raw query value. #}
 <section id="agents-table-section"
          hx-get="/admin/agents/_table"
          hx-trigger="every 5s"
-         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent"), sort: "{{ sort.key }}", order: "{{ sort.order }}"}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
@@ -44,14 +61,41 @@
         <table class="w-full text-sm text-left">
             <caption class="sr-only">Registered agents</caption>
             <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+                {# phaze-a6hm.4 sortable headers, driven by the shared column_sort contract.
+
+                   SERVER-SIDE: a click re-requests this table from its own endpoint under a new ORDER
+                   BY. It does not reorder the rows already in the DOM.
+
+                   hx-swap is outerHTML (not the innerHTML that _file_table.html uses) because the
+                   contract's target IS this self-replacing <section> — an innerHTML swap would nest a
+                   second #agents-table-section inside the first, duplicating the id AND the 5s trigger,
+                   so the page would poll twice as fast on every click and keep doubling.
+
+                   hx-push-url keeps the address bar truthful so a reload or Back reproduces the chosen
+                   order. It reuses the query string url_for() already built rather than re-deriving the
+                   params, then re-points it at the PAGE route: pushing the /_table endpoint would make
+                   a reload answer with a chrome-less bare table.
+
+                   aria-sort comes from sort.aria_sort() (rule 5) — never hand-written. Non-sortable
+                   headers omit the attribute entirely rather than claiming aria-sort="none", which
+                   would announce a sorting affordance that is not there. #}
                 <tr>
-                    <th scope="col" class="px-4 py-3">Agent</th>
-                    <th scope="col" class="px-4 py-3">Kind</th>
-                    <th scope="col" class="px-4 py-3">Status</th>
-                    <th scope="col" class="px-4 py-3">Queue</th>
-                    <th scope="col" class="px-4 py-3">Last seen</th>
-                    <th scope="col" class="px-4 py-3">Scan roots</th>
-                    <th scope="col" class="px-4 py-3">Actions</th>
+                    {% for col in ["Agent", "Kind", "Status", "Queue", "Last seen", "Scan roots", "Actions"] %}
+                    {% if sort.is_sortable(col) %}
+                    <th scope="col" class="px-4 py-3" aria-sort="{{ sort.aria_sort(col) }}">
+                        <button type="button"
+                                hx-get="{{ sort.url_for(col) }}"
+                                hx-target="#agents-table-section"
+                                hx-swap="outerHTML"
+                                hx-push-url="/admin/agents?{{ sort.url_for(col).split('?')[1] }}"
+                                class="inline-flex items-center gap-1 uppercase hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
+                        </button>
+                    </th>
+                    {% else %}
+                    <th scope="col" class="px-4 py-3">{{ col }}</th>
+                    {% endif %}
+                    {% endfor %}
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
@@ -68,7 +112,11 @@
                     hx-get="/admin/agents/{{ agent.id }}/_activity"
                     hx-target="#detail-pane"
                     hx-swap="innerHTML"
-                    hx-push-url="/admin/agents?agent={{ agent.id }}"
+                    {# query_state() appends "&sort=..&order=..", the pager-side half of contract rule 4.
+                       Without it this push would rewrite the URL to a sort-less "?agent=<id>", so a
+                       reload after drilling into a row would drop the operator back into the default
+                       order — the same reset the poll fix closes, arriving by a different route. #}
+                    hx-push-url="/admin/agents?agent={{ agent.id }}{{ sort.query_state() }}"
                     hx-trigger="click, keyup[key=='Enter']"
                     onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
                     class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-phaze-panel{% if selected_agent == agent.id %} ring-2 ring-blue-500{% endif %}">
