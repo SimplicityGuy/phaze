@@ -139,6 +139,45 @@ class TestViewStatePreservation:
     def test_query_state_lets_a_pager_carry_the_sort_forward(self) -> None:
         assert FILES_SORT.resolve(sort="file_size", order=DESCENDING).query_state() == "&sort=file_size&order=desc"
 
+    def test_query_params_is_the_separator_free_spelling_query_state_builds_on(self) -> None:
+        state = FILES_SORT.resolve(sort="file_size", order=DESCENDING)
+        assert state.query_params() == "sort=file_size&order=desc"
+        assert state.query_state() == f"&{state.query_params()}"
+
+
+class TestPollUrlKeepsASelfRefreshingTableInTheChosenOrder:
+    """Contract rule 4a: a table that re-fetches itself must re-request the ACTIVE sort.
+
+    The invisible variant of rule 4. A self-polling table hard-codes its endpoint in ``hx-get``;
+    with ``hx-swap="outerHTML"`` the response REPLACES the polling element, so a sortless url is
+    written back into the DOM and the operator's chosen order is silently discarded one tick later.
+    """
+
+    def test_poll_url_carries_the_active_sort(self) -> None:
+        state = FILES_SORT.resolve(sort="file_size", order=DESCENDING)
+        assert state.poll_url() == "/pipeline/pending-files?sort=file_size&order=desc"
+
+    def test_poll_url_restates_the_current_order_rather_than_toggling(self) -> None:
+        """A poll is a RE-READ, not a click. A toggling poll would invert the table every tick."""
+        state = FILES_SORT.resolve(sort="file_size", order=ASCENDING)
+        assert "order=asc" in state.poll_url()
+        # The CLICK on that same active column is the one that toggles.
+        assert "order=desc" in state.url_for("Size")
+
+    def test_poll_url_preserves_view_state_so_a_poll_cannot_drop_a_filter(self) -> None:
+        state = FILES_SORT.resolve(sort="file_size", order=DESCENDING, view_state={"page_size": 50, "search": "kick"})
+        poll_url = state.poll_url()
+        assert "page_size=50" in poll_url
+        assert "search=kick" in poll_url
+
+    def test_poll_url_omits_page_because_a_poll_re_reads_the_top_of_the_order(self) -> None:
+        assert "page=" not in FILES_SORT.resolve(sort="filename").poll_url()
+
+    def test_an_unknown_sort_polls_the_default_rather_than_echoing_the_bad_key(self) -> None:
+        """The degraded key must not survive into the armed url, or the poll re-sends it forever."""
+        poll_url = FILES_SORT.resolve(sort="; DROP TABLE files", order="sideways").poll_url()
+        assert poll_url == "/pipeline/pending-files?sort=filename&order=asc"
+
 
 class TestToggleSemantics:
     """Contract rule 4: clicking the active column toggles; clicking another starts ascending."""
