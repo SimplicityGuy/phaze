@@ -79,7 +79,7 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
     Reuses ``get_proposals_page(status="pending")`` inside a ``session.begin_nested()`` SAVEPOINT and
     maps each proposal (plus its ``selectinload``'d file) to a plain dict keyed for both diff facets:
     ``id`` · ``filename`` (``file.original_filename``) · ``original_path`` (``file.current_path``) ·
-    ``proposed_filename`` · ``proposed_path`` · ``confidence``. Returns ``[]`` on any DB error so the
+    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status``. Returns ``[]`` on any DB error so the
     render/poll path degrades instead of 500ing (no router try/except needed).
     """
     try:
@@ -93,6 +93,7 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
                     "proposed_filename": proposal.proposed_filename,
                     "proposed_path": proposal.proposed_path,
                     "confidence": proposal.confidence,
+                    "status": proposal.status,
                 }
                 for proposal in proposals
             ]
@@ -131,7 +132,7 @@ async def get_proposal_workspace_page(
     The paginated sibling of :func:`get_pending_proposal_rows`, and the read behind
     ``/s/propose``'s filter tabs, search box and pager (phaze-a6hm.2 / .9). It emits the SAME row
     dict shape that helper does -- ``id`` · ``filename`` · ``original_path`` · ``proposed_filename``
-    · ``proposed_path`` · ``confidence`` -- so ``_file_table.html`` and the workspaces built on it
+    · ``proposed_path`` · ``confidence`` · ``status`` -- so ``_file_table.html`` and the workspaces built on it
     are unaffected by which of the two produced the rows.
 
     Three differences from ``get_pending_proposal_rows``, all of them the point of this function:
@@ -185,6 +186,7 @@ async def get_proposal_workspace_page(
                     "proposed_filename": proposal.proposed_filename,
                     "proposed_path": proposal.proposed_path,
                     "confidence": proposal.confidence,
+                    "status": proposal.status,
                 }
                 for proposal in proposals
             ]
