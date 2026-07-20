@@ -187,6 +187,10 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # phaze-a6hm.3: same FILES_SORT contract wiring as the four pairs above (src/phaze/routers/pipeline.py).
     ("/pipeline/files", "sort"): _WHITELIST,
     ("/pipeline/files", "order"): _WHITELIST,
+    # phaze-a6hm.5: the audit log's own AUDIT_SORT contract (routers/execution.py). Same
+    # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
+    ("/audit/", "sort"): _WHITELIST,
+    ("/audit/", "order"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,
