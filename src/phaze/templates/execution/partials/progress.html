@@ -22,6 +22,8 @@
      - agents (list[dict]): first-render per-agent rollup rows
        (same shape as agents_table.html context)
      - status (str): "running" at first render
+     - sort (phaze.routers.column_sort.SortState, phaze-a6hm.8): resolved EXEC_AGENTS_SORT state for
+       the per-agent table, shared into agents_table.html by this include's inherited context.
 #}
 <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6 border border-gray-200 dark:border-phaze-border"
      hx-ext="sse"
@@ -74,8 +76,11 @@
         </div>
     </span>
 
-    {# Per-agent table (sse-swap="agents_table" — SSE re-renders every tick). #}
-    <div sse-swap="agents_table" class="mt-6 block">
+    {# Per-agent table (sse-swap="agents_table" — SSE re-renders every tick). id="execution-agents-table"
+       is EXEC_AGENTS_SORT's hx-target (phaze-a6hm.8): a header sort click's own response swaps into
+       this SAME existing host, so it introduces no new element id and cannot collide with the SSE
+       swap that also targets it. #}
+    <div id="execution-agents-table" sse-swap="agents_table" class="mt-6 block">
         {% include "execution/partials/agents_table.html" %}
     </div>
     {% endif %}
