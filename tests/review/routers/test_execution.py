@@ -231,3 +231,40 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
     assert "sse-connect" in response.text
     # No approved proposals in this empty fixture -> no enqueues.
     mock_task_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_audit_log_history_restore_returns_full_page(client: AsyncClient, session: AsyncSession) -> None:
+    """A history-restore GET returns the FULL page, chrome included (phaze-qi9j).
+
+    The filter tabs push ``/audit/?status=...`` via ``hx-push-url``. On a history-cache miss htmx
+    re-fetches that URL with BOTH ``HX-Request`` and ``HX-History-Restore-Request`` set, ignores
+    ``hx-target``, and swaps the response into ``<body>``. A fragment here replaces the whole page
+    with an orphaned tab bar and table.
+
+    Asserts the CHROME, not merely a 200 -- the buggy handler returned 200 too.
+    """
+    await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="Hash mismatch")
+    response = await client.get(
+        "/audit/?status=failed",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "history restore must return a full document, not a fragment"
+    assert "<h1" in body, "the <h1> page heading must survive a history restore"
+    assert 'aria-label="Main navigation"' in body, "the app nav must survive a history restore"
+    assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
+
+
+@pytest.mark.asyncio
+async def test_audit_log_plain_htmx_still_returns_fragment(client: AsyncClient, session: AsyncSession) -> None:
+    """HX-Request WITHOUT the restore header still gets the chrome-less fragment (phaze-qi9j).
+
+    Guards the other direction: the fix must not turn every htmx swap into a full page.
+    """
+    await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="Hash mismatch")
+    response = await client.get("/audit/?status=failed", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "<html" not in response.text.lower()
+    assert "audit-table-container" in response.text

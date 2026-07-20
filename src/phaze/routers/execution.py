@@ -35,6 +35,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.routers.agent_exec_batches import _get_promote_status_script
+from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
@@ -401,8 +402,10 @@ async def audit_log(
         "current_page": "audit",
     }
 
-    # HTMX requests get tabs + table fragment (so tab active state updates)
-    if request.headers.get("HX-Request") == "true":
+    # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history
+    # restore falls through to the full page: htmx ignores hx-target there and swaps the response
+    # into <body>, so a fragment would replace the whole page. See routers/response_shape.py.
+    if wants_fragment(request):
         return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
