@@ -184,6 +184,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/scans/recent", "order"): _WHITELIST,
     ("/pipeline/scans/{batch_id}", "sort"): _WHITELIST,
     ("/pipeline/scans/{batch_id}", "order"): _WHITELIST,
+    # phaze-a6hm.3: same FILES_SORT contract wiring as the four pairs above (src/phaze/routers/pipeline.py).
+    ("/pipeline/files", "sort"): _WHITELIST,
+    ("/pipeline/files", "order"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,

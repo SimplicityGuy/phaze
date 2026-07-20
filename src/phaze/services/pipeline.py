@@ -2506,25 +2506,33 @@ class FilesPage:
     has_next: bool = False
 
 
-def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None) -> Select[Any]:
+def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None, sort: SortState | None = None) -> Select[Any]:
     """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
 
-    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by the
-    ``FileRecord.id`` PK index and LIMITed to ``page_size + 1`` (the sentinel that yields ``has_next``
-    with NO COUNT). Each ``stage_status_case`` is a correlated CASE over the Phase-77 partial indexes
-    (``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed`` / ``ix_fprint_success``),
-    so the derivation touches only the page rows. The optional ``stage``+``bucket`` filter is applied as
-    ``stage_status_case(stage) == bucket`` -- a pure ORM bound-param comparison (never f-string SQL,
-    T-87-14); the caller validates ``stage``/``bucket`` against the ``Stage``/``Status`` allowlists.
+    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by
+    ``sort`` (phaze-a6hm.3) -- or, absent a resolved sort, the ``FileRecord.id`` PK index -- and LIMITed
+    to ``page_size + 1`` (the sentinel that yields ``has_next`` with NO COUNT). Each ``stage_status_case``
+    is a correlated CASE over the Phase-77 partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
+    / ``ix_analysis_failed`` / ``ix_fprint_success``), so the derivation touches only the page rows. The
+    optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
+    ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
+    against the ``Stage``/``Status`` allowlists.
     """
     cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
     stmt = select(FileRecord, *cols)
     if stage is not None and bucket is not None:
         stmt = stmt.where(stage_status_case(stage) == bucket)
     # The paging contract (phaze.services.pagination): OFFSET + a page_size+1 sentinel for has_next
-    # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is BOTH the display order and the unique
-    # tiebreaker here, so the order is already total.
-    return paged_stmt(stmt, page=page, page_size=page_size, order_by=(), tiebreaker=(FileRecord.id,))
+    # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is the mandatory unique tiebreaker
+    # (paging contract rule 4) regardless of `sort` -- an operator-chosen column ties far more often
+    # than the PK does (column_sort contract, SortState.order_by docstring).
+    return paged_stmt(
+        stmt,
+        page=page,
+        page_size=page_size,
+        order_by=sort.order_by() if sort is not None else (),
+        tiebreaker=(FileRecord.id,),
+    )
 
 
 async def get_files_page(
@@ -2534,6 +2542,7 @@ async def get_files_page(
     page_size: int = DEFAULT_PAGE_SIZE,
     stage: Stage | None = None,
     bucket: str | None = None,
+    sort: SortState | None = None,
 ) -> FilesPage:
     """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
 
@@ -2547,12 +2556,18 @@ async def get_files_page(
 
     ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
     wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
+
+    ``sort`` (phaze-a6hm.3) is an already-resolved :class:`~phaze.routers.column_sort.SortState` from
+    the router's ``FILES_SORT`` contract -- this layer never sees the raw wire ``sort``/``order``
+    strings, only the whitelisted expression :meth:`~phaze.routers.column_sort.SortState.order_by`
+    hands back. ``None`` (e.g. a caller that predates phaze-a6hm.3) falls back to the original
+    ``FileRecord.id`` order.
     """
     page = clamp_page(page)
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket)
+            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket, sort=sort)
             result = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)

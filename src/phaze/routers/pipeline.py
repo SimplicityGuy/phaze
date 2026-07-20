@@ -990,6 +990,22 @@ TRACKLIST_SETS_SORT = SortContract(
     default_key="artist",
 )
 
+# phaze-a6hm.3: the Files matrix (:func:`pipeline_files`). Only the two REAL FileRecord columns it
+# renders are whitelisted -- the six stage-matrix cells are per-page DERIVED `stage_status_case` CASE
+# expressions (see :func:`_files_page_stmt`), not stable columns a SQL ORDER BY can address, so they
+# are deliberately absent here rather than faked with a getattr. `key="file"` orders by the SAME
+# column the File cell renders (`FileRecord.current_path`, the full path -- this table has no
+# separate filename-only column), matching the sibling tables' "sort what you show" precedent.
+FILES_SORT = SortContract(
+    endpoint="/pipeline/files",
+    target="#files-table-view",
+    columns=(
+        SortableColumn(key="file", label="File", expression=FileRecord.current_path),
+        SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
+    ),
+    default_key="file",
+)
+
 
 @router.get("/pipeline/files", response_class=HTMLResponse)
 async def pipeline_files(
@@ -998,6 +1014,8 @@ async def pipeline_files(
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     stage: str | None = Query(None),
     bucket: str | None = Query(None),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
@@ -1009,6 +1027,11 @@ async def pipeline_files(
     an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
     bar is templates-only. The read is SAVEPOINT degrade-safe at the service layer, so NO router
     try/except -- a DB hiccup renders a safe empty page, never a 500.
+
+    phaze-a6hm.3 sortable-column contract -- see :func:`pending_files_fragment`. ``stage``/``bucket``
+    ride ``sort``'s ``view_state`` (contract rule 4) alongside ``page_size``, so a header click keeps
+    the operator's filter lens and a Prev/Next click keeps the operator's chosen order via
+    :meth:`~phaze.routers.column_sort.SortState.query_state` in the template.
     """
     stage_enum: Stage | None = None
     if stage:
@@ -1017,7 +1040,12 @@ async def pipeline_files(
         except ValueError:
             stage_enum = None
     bucket_val = bucket if bucket in _VALID_BUCKETS else None
-    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val)
+    sort_state = FILES_SORT.resolve(
+        sort=sort,
+        order=order,
+        view_state={"page_size": page_size, "stage": stage_enum.value if stage_enum is not None else None, "bucket": bucket_val},
+    )
+    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/files_table_view.html",
@@ -1025,6 +1053,7 @@ async def pipeline_files(
             "files_page": files_page,
             "active_stage": stage_enum.value if stage_enum is not None else None,
             "active_bucket": bucket_val,
+            "sort": sort_state,
         },
     )
 

@@ -34,6 +34,7 @@ from phaze.config import settings
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
+from phaze.routers.pipeline import FILES_SORT
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.response_shape import wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
@@ -260,12 +261,17 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # does (pipeline.pipeline_files): the bounded, per-page-derived, SAVEPOINT degrade-safe
         # get_files_page over the default first page (stage/bucket filters are UNSET here -- the
         # unfiltered overview; the _status_filter_bar in the partial drives filtering via
-        # /pipeline/files links). The three keys mirror the route verbatim. stage/stage_partial/
-        # oob_counts are re-asserted AFTER (defensive; the merge above only added base keys) so the
-        # files context can never shadow the shell fork discriminators.
-        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None)
+        # /pipeline/files links). The four keys mirror the route verbatim (phaze-a6hm.3 added `sort`).
+        # stage/stage_partial/oob_counts are re-asserted AFTER (defensive; the merge above only added
+        # base keys) so the files context can never shadow the shell fork discriminators.
+        # phaze-a6hm.3: this is the UNSORTED default landing, so resolve against no wire sort/order --
+        # reuses the SAME FILES_SORT contract instance pipeline.pipeline_files() resolves against
+        # (contract rule 6: one contract object per table), never a second one built here.
+        files_sort_state = FILES_SORT.resolve(sort=None, order=None, view_state={"page_size": 25, "stage": None, "bucket": None})
+        context["files_page"] = await get_files_page(session, page=1, page_size=25, stage=None, bucket=None, sort=files_sort_state)
         context["active_stage"] = None
         context["active_bucket"] = None
+        context["sort"] = files_sort_state
         # 87-09 gap-fix: mounted as a WORKSPACE, so host the shared OOB seed-target placeholders (like
         # every other workspace via _workspace_scaffold) — else the single chrome /pipeline/stats poll's
         # OOB seeds (rail orphan badge, priority store, agent-busy gating) land nowhere on /s/files and log
