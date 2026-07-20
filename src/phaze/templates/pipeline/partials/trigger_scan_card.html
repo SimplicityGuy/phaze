@@ -3,7 +3,14 @@
    Form layout: vertical stack. Agent dropdown triggers an HTMX swap into
    #scan-path-picker on `change`. Submit posts to /pipeline/scans with HTMX
    target #scan-submit-result -- the controller returns either the in-progress
-   scan_progress_card.html (success) or scan_submit_error.html (400/503).
+   scan_progress_card.html (success) or scan_submit_error.html on failure.
+
+   BOTH arrive as HTTP 200 (phaze-u1gf; response_shape.py rule 3 /
+   RENDERABLE_ALERT_STATUS). The error card is a *renderable alert* aimed at the
+   #scan-submit-result target below, and htmx 2.x does not swap 4xx/5xx -- so the
+   error partial must NOT be given a non-2xx status, and this form deliberately
+   carries no hx-on::before-swap opt-in. The failure lives in the body's
+   role="alert", not in the status line.
 
    The form itself stays open after submit (UI-SPEC Interaction Contract §5).
 #}
