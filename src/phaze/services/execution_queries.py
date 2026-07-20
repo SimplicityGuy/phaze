@@ -14,6 +14,8 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.routers.column_sort import SortState
+
 logger = structlog.get_logger(__name__)
 
 
@@ -42,8 +44,14 @@ async def get_execution_logs_page(
     status: str | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
+    sort: SortState | None = None,
 ) -> Page[ExecutionLog]:
-    """Return ONE bounded page of the audit log ordered by executed_at DESC (paging contract, phaze-mft5).
+    """Return ONE bounded page of the audit log, ordered by ``sort`` or ``executed_at`` DESC by default.
+
+    ``sort`` is a RESOLVED :class:`phaze.routers.column_sort.SortState` (phaze-a6hm.5) -- so it can only
+    ever carry an enumerated, whitelisted expression, never an untrusted string. ``None`` (no table
+    wired to a contract, or a caller that predates sorting) falls back to the original ``executed_at
+    DESC`` order.
 
     ``executed_at`` is populated purely by ``server_default=func.now()`` (models/execution.py) --
     Postgres timestamp defaults are transaction-time constant, so every row written by a bulk audit
@@ -51,7 +59,10 @@ async def get_execution_logs_page(
     paging: without a unique tiebreaker Postgres may order the tied block differently between the
     query that renders page N and the one that renders page N+1, silently DUPLICATING one row across
     the boundary while another is SKIPPED entirely -- an audit entry a reviewer never sees. This is an
-    append-only audit trail, so completeness of the paginated view is the whole point.
+    append-only audit trail, so completeness of the paginated view is the whole point. A caller-chosen
+    ``sort`` ties even more often than the default (e.g. sorting by ``status`` or ``operation`` puts
+    thousands of rows on one value), which is why ``ExecutionLog.id`` remains the dedicated
+    ``tiebreaker`` below rather than ever being folded into the display order.
 
     ``ExecutionLog.id`` is a client-generated ``uuid.uuid4`` -- random, not sequential, so it does not
     order ties by recency -- but it is the only column guaranteed UNIQUE across the tied block, which
@@ -67,11 +78,12 @@ async def get_execution_logs_page(
     stmt = select(ExecutionLog)
     if status is not None and status != "all":
         stmt = stmt.where(ExecutionLog.status == status)
+    order_by = sort.order_by() if sort is not None else (ExecutionLog.executed_at.desc(),)
     stmt = paged_stmt(
         stmt,
         page=page,
         page_size=page_size,
-        order_by=(ExecutionLog.executed_at.desc(),),
+        order_by=order_by,
         tiebreaker=(ExecutionLog.id.desc(),),
     )
 

@@ -7,8 +7,12 @@
             ("in_progress", "In Progress", stats.in_progress),
         ] %}
         {% for value, label, count in tabs %}
+        {# phaze-a6hm.5 / column_sort.py contract rule 4, the easy-to-forget direction: a filter-tab
+           click must not silently drop the operator's chosen sort. sort.query_state() re-emits
+           `&sort=<key>&order=<order>` (empty when unsorted), so switching tabs stays inside the
+           active order instead of snapping back to the default mid-scan. #}
         <button
-            hx-get="/audit/?status={{ value }}"
+            hx-get="/audit/?status={{ value }}{{ sort.query_state() if sort else '' }}"
             hx-target="#audit-content"
             hx-push-url="true"
             class="px-3 py-2 text-sm font-semibold border-b-2 transition-colors

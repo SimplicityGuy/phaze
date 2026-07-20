@@ -12,6 +12,7 @@ import pytest
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.services.pagination import MIN_PAGE_SIZE
 
 
 if TYPE_CHECKING:
@@ -268,3 +269,137 @@ async def test_audit_log_plain_htmx_still_returns_fragment(client: AsyncClient, 
     assert response.status_code == 200
     assert "<html" not in response.text.lower()
     assert "audit-table-container" in response.text
+
+
+# phaze-a6hm.5: the audit table joins the shared sortable-column contract (column_sort.py). The
+# structural rule-2 guarantee (an unwhitelisted key can never reach a column) already ships a
+# generic regression in tests/shared/routers/test_column_sort.py -- these tests cover the wiring
+# specific to THIS table: that sorting is server-side and reaches the whitelisted column, that a
+# sort composes with the audit filter tabs in BOTH directions, and that a history restore of a
+# SORTED url still returns a full document (response_shape.py rule 2).
+
+
+def _compiled_audit_order_by(sort_value: str | None, order_value: str | None = None) -> str:
+    """Compile AUDIT_SORT's resolved ORDER BY against a real SELECT; return just that clause.
+
+    Mirrors ``test_column_sort.py``'s ``_compiled_order_by`` helper: the assertion that matters is
+    over the emitted SQL, not merely a status code, so an implementation that quietly regressed to
+    ``getattr()`` would still fail this even though it "worked".
+    """
+    from sqlalchemy import select
+
+    from phaze.routers.execution import AUDIT_SORT
+
+    state = AUDIT_SORT.resolve(sort=sort_value, order=order_value)
+    stmt = select(ExecutionLog).order_by(*state.order_by())
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    return sql.split("ORDER BY", 1)[1]
+
+
+class TestAuditSortReachesOnlyWhitelistedColumns:
+    """Contract rule 2, specialised to AUDIT_SORT's actual wiring in routers/execution.py."""
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "id",  # a real ExecutionLog column deliberately NOT offered
+            "proposal_id",  # a real column, not offered
+            "__class__",  # would resolve under getattr()
+            "status; DROP TABLE execution_log",  # catastrophic under text() interpolation
+        ],
+    )
+    def test_unwhitelisted_value_never_reaches_a_column(self, hostile: str) -> None:
+        sql = _compiled_audit_order_by(hostile)
+        assert hostile not in sql
+        assert "execution_log.executed_at DESC" in sql  # AUDIT_SORT's default
+
+    def test_every_whitelisted_key_reaches_its_own_column(self) -> None:
+        assert "execution_log.operation ASC" in _compiled_audit_order_by("operation", "asc")
+        assert "execution_log.status DESC" in _compiled_audit_order_by("status", "desc")
+        assert "execution_log.source_path ASC" in _compiled_audit_order_by("source_path", "asc")
+
+
+@pytest.mark.asyncio
+async def test_audit_log_sorts_server_side_by_source_path(client: AsyncClient, session: AsyncSession) -> None:
+    """A ``sort``/``order`` query pair reorders the rendered rows via SQL, not client-side JS."""
+    await create_test_execution_log(session, source_path="/music/c-third.mp3")
+    await create_test_execution_log(session, source_path="/music/a-first.mp3")
+    await create_test_execution_log(session, source_path="/music/b-second.mp3")
+
+    response = await client.get("/audit/?sort=source_path&order=asc")
+    assert response.status_code == 200
+    body = response.text
+    first, second, third = (body.index(name) for name in ("a-first.mp3", "b-second.mp3", "c-third.mp3"))
+    assert first < second < third
+
+
+@pytest.mark.asyncio
+async def test_audit_log_unwhitelisted_sort_degrades_to_default_instead_of_422(client: AsyncClient, session: AsyncSession) -> None:
+    """Contract rule 3: an unrecognised sort key never 422s the render, it just uses the default."""
+    await create_test_execution_log(session)
+    response = await client.get("/audit/?sort=proposal_id&order=sideways")
+    assert response.status_code == 200
+    assert "Audit Log" in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_headers_announce_sort_state_via_aria_sort(client: AsyncClient, session: AsyncSession) -> None:
+    """Contract rule 5: the active column's header carries the ARIA state, inactive ones say 'none'."""
+    await create_test_execution_log(session)
+    response = await client.get("/audit/?sort=status&order=asc")
+    assert response.status_code == 200
+    body = response.text
+    assert 'aria-sort="ascending"' in body
+    assert 'aria-sort="none"' in body
+    # "Error" is deliberately NOT wired into AUDIT_SORT (sparse free-text column) and stays plain.
+    assert '<th scope="col" class="px-4 py-3">Error</th>' in body
+
+
+@pytest.mark.asyncio
+async def test_audit_log_sort_click_preserves_the_active_filter_tab(client: AsyncClient, session: AsyncSession) -> None:
+    """A sort header's own hx-get carries the active ``status`` filter forward (contract rule 4)."""
+    await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="boom")
+    response = await client.get("/audit/?status=failed", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "status=failed" in response.text
+    assert 'hx-get="/audit/?status=failed&amp;page_size=50&amp;sort=status&amp;order=asc"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_filter_tab_click_preserves_the_active_sort(client: AsyncClient, session: AsyncSession) -> None:
+    """The inverse (contract rule 4): switching filter tabs must not silently drop the active sort."""
+    await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="boom")
+    response = await client.get("/audit/?status=failed&sort=operation&order=desc", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert 'hx-get="/audit/?status=all&amp;sort=operation&amp;order=desc"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_pager_preserves_the_active_sort(client: AsyncClient, session: AsyncSession) -> None:
+    """The pager (contract rule 4, easy-to-forget direction): Prev/Next must carry the sort forward."""
+    for i in range(MIN_PAGE_SIZE + 1):
+        await create_test_execution_log(session, source_path=f"/music/{i}.mp3")
+
+    response = await client.get(f"/audit/?page_size={MIN_PAGE_SIZE}&sort=operation&order=asc", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "sort=operation&amp;order=asc" in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_history_restore_of_a_sorted_url_returns_a_full_document(client: AsyncClient, session: AsyncSession) -> None:
+    """response_shape.py rule 2: a history restore returns the full document even when SORTED.
+
+    Guards the exact composition this bead was assigned: sorting must not reopen the phaze-qi9j
+    defect for a URL that also carries ``sort``/``order``.
+    """
+    await create_test_execution_log(session, status=ExecutionStatus.FAILED, error_message="Hash mismatch")
+    response = await client.get(
+        "/audit/?status=failed&sort=status&order=desc",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "history restore of a sorted url must return a full document, not a fragment"
+    assert "<h1" in body, "the <h1> page heading must survive a sorted history restore"
+    assert 'aria-label="Main navigation"' in body, "the app nav must survive a sorted history restore"
+    assert 'id="audit-content"' in body, "the swap target itself must be present in the full page"
