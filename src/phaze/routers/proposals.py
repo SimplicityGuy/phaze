@@ -274,7 +274,15 @@ async def list_proposals(
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
     # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
+    #
+    # phaze-7j50: every control that issues this GET (pagination buttons, page-size selector, sort
+    # headers, search box) targets #proposal-list-container with hx-swap="innerHTML", so the
+    # response must be the container's INNER content and nothing more. It used to return the whole
+    # proposal_content.html -- chrome included -- which nested a duplicate #proposal-list-container,
+    # a duplicate filter-tab bar, a duplicate search box and a duplicate pager INSIDE the container
+    # on every page change or column sort, and left subsequent swaps resolving to the outer element
+    # while the stale inner copy persisted.
+    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_list.html", context=context)
 
 
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
