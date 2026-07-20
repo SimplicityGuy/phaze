@@ -272,6 +272,72 @@ async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bulk_response_rerenders_list_container(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-gc5d: the bulk PATCH body must be the re-rendered list, not an OOB-only empty payload.
+
+    The forms swap this response into #proposal-list-container with innerHTML. Before the fix the
+    handler returned approve_response.html with proposal=None, whose non-OOB body is gated on
+    `{% if proposal %}` -- so htmx applied the OOB stats/toast and then blanked the container,
+    destroying the table AND the selection toolbar until a full page reload.
+    """
+    keep = await create_test_proposal(session, original_filename="gc5d_keep.mp3", proposed_filename="GC5D Keep.mp3")
+    acted = await create_test_proposal(session, original_filename="gc5d_acted.mp3", proposed_filename="GC5D Acted.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={"action": "approve", "proposal_ids": [str(acted.id)], "status": "pending"},
+    )
+    assert response.status_code == 200
+
+    # The primary (non-OOB) body carries the table and the bulk-actions toolbar back.
+    assert 'id="proposals-table"' in response.text
+    assert f'id="proposal-{keep.id}"' in response.text
+    assert 'hx-patch="/proposals/bulk"' in response.text
+    # ...and the OOB stats/toast still fire.
+    assert 'id="stats-bar"' in response.text
+    assert "1 proposals approved." in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_response_preserves_page_and_filter(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-gc5d: a bulk action issued from page 2 with a search filter comes back on page 2 with it.
+
+    Re-rendering the container is only correct if it re-renders the SAME view; otherwise the wipe is
+    merely traded for a silent reset to page 1 of the default filter.
+    """
+    created = [
+        await create_test_proposal(session, original_filename=f"gc5dpage_{i:02d}.mp3", proposed_filename=f"GC5D Page {i:02d}.mp3") for i in range(12)
+    ]
+    # Filenames are zero-padded and created in ascending order, so page 2 of a 10-per-page
+    # original_filename-ascending listing holds the last two.
+    page_two = created[10:]
+
+    response = await client.patch(
+        "/proposals/bulk",
+        data={
+            "action": "approve",
+            "proposal_ids": [str(page_two[0].id)],
+            "status": "pending",
+            "q": "gc5dpage",
+            "page": "2",
+            "page_size": "10",
+            "sort": "original_filename",
+            "order": "asc",
+        },
+    )
+    assert response.status_code == 200
+
+    # The re-rendered bulk toolbar echoes the state back, so the NEXT bulk action stays put too.
+    assert 'name="page" value="2"' in response.text
+    assert 'name="q" value="gc5dpage"' in response.text
+    assert 'name="sort" value="original_filename"' in response.text
+    assert 'name="status" value="pending"' in response.text
+    # Still showing page 2 of the filtered pending set (11 pending remain -> 1 row on page 2).
+    assert f'id="proposal-{page_two[1].id}"' in response.text
+    assert f'id="proposal-{page_two[0].id}"' not in response.text
+
+
+@pytest.mark.asyncio
 async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-3st0: a malformed proposal_ids entry is SKIPPED (never a 500); valid ids still act."""
     p1 = await create_test_proposal(session, original_filename="bulkmal1.mp3")
