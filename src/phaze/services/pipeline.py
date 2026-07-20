@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from sqlalchemy.sql import Select
 
     from phaze.config import ControlSettings
+    from phaze.routers.column_sort import SortState
 
 
 logger = structlog.get_logger(__name__)
@@ -1591,7 +1592,7 @@ def _trackid_files_select(linked_conf_subq: Any) -> Select[Any]:
     )
 
 
-def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int) -> Select[Any]:
+def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the BOUNDED Track-ID page SELECT (phaze-1wvb).
 
     Extracted (like :func:`_pending_page_stmt`) so the bound is assertable at the SQL level: a test
@@ -1607,12 +1608,13 @@ def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int) -> S
         _trackid_files_select(linked_conf_subq),
         page=page,
         page_size=page_size,
-        order_by=(FileRecord.created_at.desc(),),
+        # phaze-a6hm.1 sortable-column contract -- see _pending_page_stmt.
+        order_by=sort.order_by() if sort is not None else (FileRecord.created_at.desc(),),
         tiebreaker=(FileRecord.id.desc(),),
     )
 
 
-def _tracklist_sets_page_stmt(*, page: int, page_size: int) -> Select[Any]:
+def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the BOUNDED per-set Tracklist page SELECT (phaze-1wvb).
 
     Extracted for the same reason as :func:`_trackid_page_stmt`: the LIMIT must be assertable in the
@@ -1644,12 +1646,15 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int) -> Select[Any]:
         .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id),
         page=page,
         page_size=page_size,
-        order_by=(Tracklist.created_at.desc(),),
+        # phaze-a6hm.1 sortable-column contract -- see _pending_page_stmt.
+        order_by=sort.order_by() if sort is not None else (Tracklist.created_at.desc(),),
         tiebreaker=(Tracklist.id.desc(),),
     )
 
 
-async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+async def get_trackid_files_page(
+    session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[dict[str, Any]]:
     """Return ONE BOUNDED page of the Track-ID identity-signal rows (IDENT-01), degrade-safe.
 
     The membership is UNCHANGED from Phase 59 -- music/video files that carry at least one
@@ -1702,7 +1707,7 @@ async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_s
             has_candidate = bool((await session.execute(select(exists(select(Tracklist.id).where(Tracklist.file_id.is_(None)))))).scalar())
 
             # Per-file best LINKED tracklist confidence (D-04 "matched" branch).
-            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size)
+            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size, sort=sort)
             raw = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("trackid_files_page_degraded", page=page, page_size=page_size, exc_info=True)
@@ -1733,7 +1738,9 @@ async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_s
     return Page(rows=files, page=page, page_size=page_size, has_next=has_next)
 
 
-async def get_tracklist_sets_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+async def get_tracklist_sets_page(
+    session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[dict[str, Any]]:
     """Return ONE BOUNDED page of the per-set Tracklist rows (IDENT-02 / D-07/D-08), degrade-safe.
 
     One row per ``Tracklist`` (a "set"), carrying the set name + path, the match-state +
@@ -1763,7 +1770,7 @@ async def get_tracklist_sets_page(session: AsyncSession, *, page: int = 1, page_
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            stmt = _tracklist_sets_page_stmt(page=page, page_size=page_size)
+            stmt = _tracklist_sets_page_stmt(page=page, page_size=page_size, sort=sort)
             raw = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("tracklist_sets_page_degraded", page=page, page_size=page_size, exc_info=True)
@@ -2175,7 +2182,7 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     return list(result.scalars().all())
 
 
-def _pending_page_stmt(stage: Stage, *, page: int, page_size: int) -> Select[Any]:
+def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the bounded pending-set page SELECT shared by the metadata and fingerprint workspaces.
 
     The SAME membership predicate the unbounded enqueue readers use
@@ -2188,12 +2195,16 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int) -> Select[Any
         select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause()),
         page=page,
         page_size=page_size,
-        order_by=(FileRecord.created_at.desc(),),
+        # phaze-a6hm.1: the operator's whitelisted column when they picked one, else the newest-first
+        # default. `sort` is a RESOLVED SortState, so this can only ever be an enumerated expression.
+        order_by=sort.order_by() if sort is not None else (FileRecord.created_at.desc(),),
         tiebreaker=(FileRecord.id.desc(),),
     )
 
 
-async def get_pending_files_page(session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[FileRecord]:
+async def get_pending_files_page(
+    session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[FileRecord]:
     """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
 
     phaze-5462: the metadata and fingerprint workspaces used to render
@@ -2214,7 +2225,7 @@ async def get_pending_files_page(session: AsyncSession, stage: Stage, *, page: i
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size))).scalars().all()
+            raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size, sort=sort))).scalars().all()
     except Exception:
         logger.warning("pending_files_page_degraded", stage=stage.value, page=page, page_size=page_size, exc_info=True)
         return Page(rows=[], page=page, page_size=page_size, has_next=False)

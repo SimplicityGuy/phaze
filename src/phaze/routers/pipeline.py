@@ -29,6 +29,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
@@ -944,6 +945,52 @@ async def lane_detail(
 _VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
 
 
+# --- phaze-a6hm.1 sortable-column contracts ------------------------------------------------------
+# One SortContract per table, declared at import time so a mis-wired whitelist fails on startup
+# rather than degrading every header click (column_sort contract rule 6). Each `expression` is a real
+# column bound HERE -- a request `sort=` value is matched against these keys by equality and can
+# never name anything else (rule 2). Every `target` is the table's EXISTING host container: this
+# feature adds no OOB fragment and no new element id, so it cannot introduce a duplicate one.
+
+# The Metadata and Fingerprint workspaces share /pipeline/pending-files but render DIFFERENT column
+# labels, so they need one contract each -- labels are how the shared partial recognises a header.
+_PENDING_SORTS: dict[str, SortContract] = {
+    "metadata": SortContract(
+        endpoint="/pipeline/pending-files",
+        target="#metadata-files-view",
+        columns=(
+            SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),
+            SortableColumn(key="file_type", label="Format", expression=FileRecord.file_type),
+            SortableColumn(key="file_size", label="Size", expression=FileRecord.file_size),
+        ),
+        default_key="filename",
+    ),
+    "fingerprint": SortContract(
+        endpoint="/pipeline/pending-files",
+        target="#fingerprint-files-view",
+        columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
+        default_key="filename",
+    ),
+}
+
+TRACKID_SORT = SortContract(
+    endpoint="/pipeline/trackid-files",
+    target="#trackid-files-view",
+    columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
+    default_key="filename",
+)
+
+TRACKLIST_SETS_SORT = SortContract(
+    endpoint="/pipeline/tracklist-sets",
+    target="#tracklist-sets-view",
+    columns=(
+        SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
+        SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+    ),
+    default_key="artist",
+)
+
+
 @router.get("/pipeline/files", response_class=HTMLResponse)
 async def pipeline_files(
     request: Request,
@@ -1045,6 +1092,8 @@ async def pending_files_fragment(
     stage: str = Query("metadata"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the Metadata / Fingerprint pending set (phaze-5462).
@@ -1062,7 +1111,12 @@ async def pending_files_fragment(
     UNBOUNDED pending set (paging contract rule 7) -- paging the enqueue would silently drop work.
     """
     stage_key = stage if stage in _PENDING_STAGES else "metadata"
-    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size)
+    # phaze-a6hm.1: resolve BEFORE the read. `sort`/`order` are raw wire strings here and whitelisted
+    # strings after; the query below never sees the untrusted value. `stage` rides view_state so a
+    # header click keeps the operator on their own lens (contract rule 4). `page` deliberately does
+    # NOT -- a re-sort returns to page 1.
+    sort_state = _PENDING_SORTS[stage_key].resolve(sort=sort, order=order, view_state={"stage": stage_key, "page_size": page_size})
+    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_pending_files.html",
@@ -1070,6 +1124,7 @@ async def pending_files_fragment(
             "pending_page": pending_page,
             "stage": stage_key,
             "host_id": f"{stage_key}-files-view",
+            "sort": sort_state,
         },
     )
 
@@ -1079,6 +1134,8 @@ async def trackid_files_fragment(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the Track-ID identity table (phaze-1wvb).
@@ -1093,11 +1150,13 @@ async def trackid_files_fragment(
     Track-ID workspace is READ-ONLY (it has no trigger at all), and the neighbouring Tracklist
     workspace's bulk triggers keep reading their own UNBOUNDED pending sets.
     """
-    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size)
+    # phaze-a6hm.1 sortable-column contract -- see :func:`pending_files_fragment`.
+    sort_state = TRACKID_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_trackid_files.html",
-        context={"trackid_page": trackid_page, "host_id": "trackid-files-view"},
+        context={"trackid_page": trackid_page, "host_id": "trackid-files-view", "sort": sort_state},
     )
 
 
@@ -1106,6 +1165,8 @@ async def tracklist_sets_fragment(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the per-set Tracklist coverage table (phaze-1wvb).
@@ -1115,11 +1176,13 @@ async def tracklist_sets_fragment(
     SCRAPE / MATCH ALL triggers, which enqueue the UNBOUNDED pending sets -- rule 7) are untouched
     and still server-rendered by the shell.
     """
-    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size)
+    # phaze-a6hm.1 sortable-column contract -- see :func:`pending_files_fragment`.
+    sort_state = TRACKLIST_SETS_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_tracklist_sets.html",
-        context={"sets_page": sets_page, "host_id": "tracklist-sets-view"},
+        context={"sets_page": sets_page, "host_id": "tracklist-sets-view", "sort": sort_state},
     )
 
 
