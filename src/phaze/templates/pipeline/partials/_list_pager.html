@@ -1,0 +1,106 @@
+{# The reusable list pager (phaze-a6hm.9): showing-range · page numbers · page-size selector.
+
+   Adapted from proposals/partials/pagination.html, whose layout and affordances this reproduces
+   (same three-zone bar, same "Showing X-Y of N", same 7-link window with ellipses, same Per-page
+   choices). The substantive change is how the URLs are built.
+
+   The legacy pager spelled
+       ?page={{ }}&status={{ }}&q={{ }}&sort={{ }}&order={{ }}&page_size={{ }}
+   out by hand SIX times, once per control. That is six independent chances to forget a parameter,
+   and a pager that "preserves the filter" only in the sense that six separate authors each
+   remembered to. Here every control calls view.query(...) and states ONLY what it changes, so
+   preserving filter, search, page size and sort is structural rather than repeated. It is also why
+   phaze-a6hm.10 can add sorting without touching this file at all: sort/order are already carried.
+
+   The legacy interpolation was additionally wrong for real inputs -- a search containing a space or
+   an `&` produced a broken or truncated URL, because `q={{ search_query }}` never encoded anything.
+   view.query() goes through urlencode.
+
+   Context contract:
+     * view        -- ListViewState; the current state and the URL builder.
+     * pagination  -- Pagination (services/proposal_queries.py): .page .page_size .total
+                      .total_pages .has_prev .has_next .start .end.
+     * pager_url    -- path to request (e.g. "/s/propose").
+     * pager_target -- css selector of the swap target (e.g. "#propose-workspace-list").
+
+   POST-ACTION TOTALS (phaze-a6hm.9 acceptance): this partial renders INSIDE the list container, so
+   it is re-rendered by the same swap that re-renders the rows and always reports the totals of the
+   view it is sitting in. Rendering it OUTSIDE the container is the specific defect phaze-7j50 fixed
+   on the legacy view, where a bulk approve/reject replaced the rows but left "Showing 1-50 of 312"
+   from before the action. phaze-a6hm.11 adds bulk actions to this workspace and inherits the
+   correct behaviour for free -- provided the pager stays inside the container.
+
+   Page-size changes reset to page=1: page 7 at 25/page is past the end at 100/page.
+
+   The pager is a <nav> with an aria-label, and the current page carries aria-current="page", so the
+   control is navigable and its state announced rather than conveyed by background colour alone
+   (WCAG 1.4.1) -- the legacy markup coloured the active page and said nothing.
+
+   Emits NO id of its own: it is re-rendered wholesale on every swap and appears exactly once per
+   container, so it adds no id-collision surface (this repo has four duplicate-id OOB bugs on
+   record). #}
+{% if pagination.total_pages > 1 or pagination.total %}
+<div class="flex items-center justify-between mt-4 px-6 pb-4 text-sm">
+    <div class="text-gray-500 dark:text-gray-400">
+        Showing {{ pagination.start }}-{{ pagination.end }} of {{ pagination.total }} proposals
+    </div>
+
+    {% if pagination.total_pages > 1 %}
+    <nav class="flex items-center gap-1" aria-label="Pagination">
+        {% macro page_link(target_page, label, is_current=false) %}
+            <button
+                hx-get="{{ pager_url }}?{{ view.query(page=target_page) }}"
+                hx-target="{{ pager_target }}"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                {% if is_current %}aria-current="page"{% endif %}
+                aria-label="{{ 'Page ' ~ target_page if label is none else label }}"
+                class="{% if is_current %}bg-blue-600 dark:bg-blue-700 text-white{% else %}text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-phaze-panel{% endif %} rounded px-3 py-1"
+            >{{ label if label is not none else target_page }}</button>
+        {% endmacro %}
+
+        {% set total_pages = pagination.total_pages %}
+        {% set current_page = pagination.page %}
+
+        {% if pagination.has_prev %}{{ page_link(current_page - 1, "« Prev") }}{% endif %}
+
+        {# Up to 7 links: all of them when they fit, otherwise first + a window around current +
+           last, with ellipses standing in for the gaps. #}
+        {% if total_pages <= 7 %}
+            {% for p in range(1, total_pages + 1) %}
+                {{ page_link(p, none, p == current_page) }}
+            {% endfor %}
+        {% else %}
+            {{ page_link(1, none, current_page == 1) }}
+            {% if current_page > 3 %}
+                <span class="px-2 text-gray-400 dark:text-gray-500" aria-hidden="true">…</span>
+            {% endif %}
+            {% for p in range([current_page - 1, 2] | max, [current_page + 2, total_pages] | min + 1) %}
+                {{ page_link(p, none, p == current_page) }}
+            {% endfor %}
+            {% if current_page < total_pages - 2 %}
+                <span class="px-2 text-gray-400 dark:text-gray-500" aria-hidden="true">…</span>
+            {% endif %}
+            {{ page_link(total_pages, none, current_page == total_pages) }}
+        {% endif %}
+
+        {% if pagination.has_next %}{{ page_link(current_page + 1, "Next »") }}{% endif %}
+    </nav>
+    {% endif %}
+
+    <div class="flex items-center gap-2">
+        <span class="text-gray-500 dark:text-gray-400">Per page:</span>
+        {% for size in page_size_choices %}
+            <button
+                hx-get="{{ pager_url }}?{{ view.query(page_size=size, page=1) }}"
+                hx-target="{{ pager_target }}"
+                hx-swap="innerHTML"
+                hx-push-url="true"
+                aria-label="Show {{ size }} per page"
+                {% if pagination.page_size == size %}aria-current="true"{% endif %}
+                class="{% if pagination.page_size == size %}font-semibold text-blue-600 dark:text-blue-400{% else %}text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300{% endif %} px-1"
+            >{{ size }}</button>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

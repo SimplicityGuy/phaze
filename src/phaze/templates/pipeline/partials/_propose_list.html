@@ -1,0 +1,85 @@
+{# phaze-a6hm.2 / .9: THE single definition of what #propose-workspace-list holds.
+
+   Deliberately modelled on proposals/partials/proposal_list.html, which plays the identical role
+   for the legacy view's #proposal-list-container, and for the identical reason: every control that
+   swaps into this container -- the filter tabs, the search box, the pager, the page-size selector,
+   and the bulk actions phaze-a6hm.11 will add -- uses hx-swap="innerHTML". So the container's inner
+   content must be exactly ONE thing and every producer must return exactly that. This partial IS
+   that thing:
+
+       _file_table (rows) + _list_pager
+
+   Producers, both of which render this file and nothing more:
+     * propose_workspace.html            -- wraps it in the container div (full workspace render)
+     * GET /s/propose (HX, targeting the container) -- returns it bare (filter / search / page swaps)
+
+   This is a DIFFERENT container from the legacy #proposal-list-container, and the two shapes are
+   deliberately not interchangeable: that one holds proposal_table + bulk_actions + pagination,
+   this one holds a _file_table. Reusing the id would have created a second, disagreeing definition
+   of one id -- the phaze-7j50 defect. See PROPOSE_LIST_CONTAINER_ID in routers/shell.py for the
+   full uniqueness argument.
+
+   The pager lives INSIDE the container on purpose (phaze-a6hm.9): it must be re-rendered by the
+   same swap that re-renders the rows, so it always reports POST-action totals. Moving it out
+   reintroduces the stale "Showing 1-50 of 312" defect 7j50 fixed on the legacy view.
+
+   Every DB-sourced value autoescapes through _file_table.html (T-60-XSS -- never raw, never `| safe`).
+
+   Context: propose_proposals · propose_pagination · propose_view · llm_model, plus the pager's
+   pager_url / pager_target (set by the caller chain). #}
+{% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
+{% set ns = namespace(rows=[]) %}
+{% for p in propose_proposals %}
+    {% if p.confidence is none %}
+        {% set _conf_text = "—" %}
+        {% set _conf_color = "text-gray-500" %}
+    {% else %}
+        {% set _pct = (p.confidence * 100) | round | int %}
+        {% set _conf_text = _pct ~ "%" %}
+        {% if _pct >= 90 %}
+            {% set _conf_color = "text-emerald-600 dark:text-emerald-300" %}
+        {% elif _pct >= 70 %}
+            {% set _conf_color = "text-amber-600 dark:text-amber-300" %}
+        {% else %}
+            {% set _conf_color = "text-gray-500" %}
+        {% endif %}
+    {% endif %}
+    {% set _ = ns.rows.append([
+        {'text': p.filename, 'mono': True, 'title': p.original_path},
+        {'text': p.proposed_filename},
+        {'text': (p.proposed_path or "—"), 'mono': True},
+        {'text': llm_model, 'mono': True, 'color': 'text-gray-500 dark:text-gray-500'},
+        {'text': _conf_text, 'mono': True, 'color': _conf_color},
+    ]) %}
+{% endfor %}
+{% set rows = ns.rows %}
+{# The empty state is now filter-aware. A flat "Nothing to propose / every file already has a
+   proposal" was true when this list was unconditionally the pending set, but under a filter or a
+   search it would assert something false and unactionable -- the operator searched "coachella",
+   got no hits, and was told their archive is fully proposed. Each branch names the reason the list
+   is empty and the action that clears it. #}
+{% if propose_view.q %}
+    {% set empty_heading = "No matches" %}
+    {% set empty_body = "No proposals match that search in this filter. Clear the search or switch tabs." %}
+{% elif propose_view.status == "approved" %}
+    {% set empty_heading = "Nothing approved yet" %}
+    {% set empty_body = "Approved proposals will appear here once you review the pending queue." %}
+{% elif propose_view.status == "rejected" %}
+    {% set empty_heading = "Nothing rejected" %}
+    {% set empty_body = "Rejected proposals will appear here." %}
+{% elif propose_view.status == "pending" %}
+    {% set empty_heading = "Nothing to propose" %}
+    {% set empty_body = "Every discovered file already has a rename proposal. Run enrichment first to surface more." %}
+{% else %}
+    {% set empty_heading = "No proposals yet" %}
+    {% set empty_body = "Run the AI proposal generation pipeline to get started." %}
+{% endif %}
+{% set row_id_prefix = "propose-row" %}
+{% include "pipeline/partials/_file_table.html" %}
+{# pager_url / pager_target / page_size_choices come from the ROUTER context, not a {% with %} here,
+   because this partial has two producers: the full workspace render and the bare HX swap that the
+   router returns directly. Anything the pager needs must therefore be present in the base context,
+   or the narrow swap would render a pager with empty URLs. #}
+{% with view = propose_view, pagination = propose_pagination %}
+    {% include "pipeline/partials/_list_pager.html" %}
+{% endwith %}
