@@ -1,6 +1,6 @@
 """Integration tests for tracklists router."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -353,6 +353,109 @@ async def test_scan_tab_pagination_stable_across_a_filename_tie_boundary(session
         union_ids |= page_ids
     assert union_ids == all_ids, "the union of all pages must be exactly the seeded file set"
     assert sum(len(p) for p in seen_per_page) == len(all_ids), "a tied file was skipped or duplicated across the page sweep"
+
+
+def _tracklist_card_ids(body: str) -> list[str]:
+    """Extract every ``id="tracklist-{uuid}"`` card wrapper IN RENDER ORDER (tracklist_card.html)."""
+    return re.findall(r'id="tracklist-([0-9a-fA-F-]{36})"', body)
+
+
+def _seed_tied_tracklists(session: AsyncSession, *, n_distinct: int, n_tied: int, tied_at: object) -> set[uuid.UUID]:
+    """Seed ``n_distinct`` uniquely-ranked tracklists followed by an ``n_tied``-way tie block.
+
+    Distinct rows carry strictly descending ``match_confidence`` (200 down), all ABOVE the tied
+    block's confidence (50), so they deterministically fill the front of the order. The tied block
+    shares one EXPLICIT ``match_confidence`` AND one EXPLICIT ``created_at`` (a tie on the FULL
+    compound sort key, never a clock/insertion race) -- the exact shape ``list_tracklists`` /
+    ``_render_tracklist_list`` order by. Returns every seeded id.
+    """
+    rows: list[Tracklist] = []
+    for i in range(n_distinct):
+        t = Tracklist(id=uuid.uuid4(), external_id=f"filler-{uuid.uuid4().hex[:8]}", source_url="https://x/filler", match_confidence=200 - i)
+        t.created_at = tied_at  # type: ignore[assignment]
+        rows.append(t)
+    for _ in range(n_tied):
+        t = Tracklist(id=uuid.uuid4(), external_id=f"tied-{uuid.uuid4().hex[:8]}", source_url="https://x/tied", match_confidence=50)
+        t.created_at = tied_at  # type: ignore[assignment]
+        rows.append(t)
+    session.add_all(rows)
+    return {t.id for t in rows}
+
+
+@pytest.mark.asyncio
+async def test_list_tracklists_pagination_stable_across_a_confidence_and_created_at_tie_boundary(session: AsyncSession, client: AsyncClient) -> None:
+    """A large (match_confidence, created_at) tie block spanning several pages is never skipped or repeated.
+
+    Drives ``GET /tracklists/`` (``list_tracklists``) directly. Both ``match_confidence`` and
+    ``created_at`` are non-unique, so two tracklists can tie on the FULL compound sort key; without
+    a unique tiebreaker, ``ORDER BY match_confidence DESC NULLS LAST, created_at DESC LIMIT 20
+    OFFSET N`` for each page is a separate query that Postgres is free to plan (and break the tie)
+    differently per page -- the same unstable-pagination failure mode as ``scan_tab`` above,
+    empirically confirmed to reproduce reliably at this scale (19 distinct + 80 tied = 99 rows, 5
+    pages of 20): reverting the ``Tracklist.id`` tiebreaker drops one tied row from the page sweep
+    while duplicating another, every run.
+
+    Regression guard for phaze-rgxg: the assertions below -- every page's ids disjoint from every
+    other page, and the union across ALL pages exactly the seeded set -- are verified to FAIL when
+    the ``, Tracklist.id.desc()`` tiebreaker in ``routers/tracklists.py``'s ``list_tracklists`` is
+    reverted.
+    """
+    page_size = 20
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive on purpose (created_at is TIMESTAMP WITHOUT TZ)
+    all_ids = {str(i) for i in _seed_tied_tracklists(session, n_distinct=19, n_tied=80, tied_at=tied_at)}
+    await session.commit()
+    assert len(all_ids) == 99
+    total_pages = -(-len(all_ids) // page_size)  # ceil division -- 5 pages of 20
+
+    seen_per_page: list[set[str]] = []
+    for page in range(1, total_pages + 1):
+        response = await client.get(f"/tracklists/?filter=all&page={page}", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        seen_per_page.append(set(_tracklist_card_ids(response.text)))
+
+    for i, page_i in enumerate(seen_per_page):
+        for j, page_j in enumerate(seen_per_page):
+            if i != j:
+                assert page_i.isdisjoint(page_j), f"a tied tracklist appeared on both page {i + 1} and page {j + 1}"
+
+    union_ids: set[str] = set()
+    for page_ids in seen_per_page:
+        union_ids |= page_ids
+    assert union_ids == all_ids, "the union of all pages must be exactly the seeded tracklist set"
+    assert sum(len(p) for p in seen_per_page) == len(all_ids), "a tied tracklist was skipped or duplicated across the page sweep"
+
+
+@pytest.mark.asyncio
+async def test_render_tracklist_list_page_one_matches_direct_list_tracklists_page_one(session: AsyncSession, client: AsyncClient) -> None:
+    """``_render_tracklist_list`` (the POST-mutation re-render helper) renders the SAME page 1 as ``list_tracklists``.
+
+    Every real caller of ``_render_tracklist_list`` (link/unlink/rescrape/undo-link) renders page 1
+    with the SAME ``ORDER BY match_confidence DESC NULLS LAST, created_at DESC`` as ``list_tracklists``
+    -- it is a second call SITE for the identical statement, not a second query shape, so this test
+    drives it through a REAL POST endpoint (``POST /tracklists/{id}/unlink`` with a nonexistent
+    ``tracklist_id`` -- a safe no-op mutation that still unconditionally re-renders the list) rather
+    than duplicating the full multi-page sweep above.
+
+    Regression guard for phaze-rgxg: with the tied dataset from the sibling test above, this
+    asserts the ``unlink`` response's page-1 card ids are EXACTLY the ``list_tracklists`` GET's
+    page-1 card ids -- reverting the ``, Tracklist.id.desc()`` tiebreaker on EITHER call site makes
+    this comparison flaky (both sides independently susceptible to a different tie-break per call),
+    so it is verified to fail when the tiebreaker in ``_render_tracklist_list`` is reverted.
+    """
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)
+    _seed_tied_tracklists(session, n_distinct=19, n_tied=80, tied_at=tied_at)
+    await session.commit()
+
+    get_response = await client.get("/tracklists/?filter=all&page=1", headers={"HX-Request": "true"})
+    assert get_response.status_code == 200
+    get_page1_ids = _tracklist_card_ids(get_response.text)
+    assert len(get_page1_ids) == 20
+
+    post_response = await client.post(f"/tracklists/{uuid.uuid4()}/unlink")
+    assert post_response.status_code == 200
+    post_page1_ids = _tracklist_card_ids(post_response.text)
+
+    assert post_page1_ids == get_page1_ids, "_render_tracklist_list's page 1 must match list_tracklists' page 1 exactly, in order"
 
 
 # ---------------------------------------------------------------------------

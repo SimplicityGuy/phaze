@@ -148,6 +148,5 @@ async def test_execution_history_tiebreaker_orders_tied_executed_at_by_id_desc(s
     expected_order = [log_id_to_path[log_id] for log_id in sorted(ids, reverse=True)]
 
     assert rendered_order == expected_order, (
-        "execution history must render in executed_at DESC, id DESC order on a tie -- "
-        f"got {rendered_order!r}, expected {expected_order!r}"
+        f"execution history must render in executed_at DESC, id DESC order on a tie -- got {rendered_order!r}, expected {expected_order!r}"
     )
