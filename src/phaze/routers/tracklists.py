@@ -153,7 +153,15 @@ async def list_tracklists(
     elif filter == "proposed":
         stmt = stmt.where(Tracklist.status == "proposed")
 
-    stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc())
+    # ``match_confidence`` and ``created_at`` are both non-unique, so two tracklists can tie on the
+    # FULL compound key; with a partial ORDER BY the OFFSET/LIMIT boundary is arbitrary on such a
+    # tie (heap order, which shifts with page layout, vacuum, and plan choice) -- the same
+    # stable-pagination bug fixed for ``scan_tab`` (phaze-rgxg): a tied row can appear on TWO
+    # consecutive pages, or be skipped entirely between page N and N+1. Appending the unique
+    # ``Tracklist.id`` (DESC, matching the descending secondary sort) makes the order TOTAL, so
+    # every page boundary is deterministic across repeated calls. Same rationale as the paging
+    # contract's mandatory unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
+    stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc(), Tracklist.id.desc())
 
     # Count total for pagination
     total = await _get_tracklist_count(session, filter)
@@ -246,8 +254,17 @@ async def scan_tab(
     total = count_result.scalar() or 0
 
     # Paginate
+    #
+    # ``original_filename`` carries no uniqueness constraint, so two files can share a value; with
+    # a partial ORDER BY the OFFSET/LIMIT boundary is arbitrary on a tie (heap order, which shifts
+    # with page layout, vacuum, and plan choice). Unlike a bare display LIMIT, this is a stable-
+    # pagination bug: a tied row can appear on TWO consecutive pages, or be skipped entirely between
+    # page N and N+1, because Postgres is free to reorder the tied block differently per query.
+    # Appending the unique ``FileRecord.id`` (ASC, matching the ascending filename sort) makes the
+    # order TOTAL, so every page boundary is deterministic across repeated calls. Same rationale as
+    # the paging contract's mandatory unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
     offset = (page - 1) * page_size
-    stmt = stmt.order_by(FileRecord.original_filename).offset(offset).limit(page_size)
+    stmt = stmt.order_by(FileRecord.original_filename, FileRecord.id).offset(offset).limit(page_size)
 
     result = await session.execute(stmt)
     files = list(result.scalars().all())
@@ -1063,7 +1080,11 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
     elif filter_value == "proposed":
         stmt = stmt.where(Tracklist.status == "proposed")
 
-    stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc())
+    # Same unique-tiebreaker rationale as ``list_tracklists`` above (phaze-rgxg): ``match_confidence``
+    # + ``created_at`` are both non-unique, so appending ``Tracklist.id`` DESC keeps the OFFSET/LIMIT
+    # boundary this helper renders (always page 1 today -- every caller uses the default) consistent
+    # with the page-2+ boundary ``list_tracklists`` computes from the SAME ORDER BY.
+    stmt = stmt.order_by(Tracklist.match_confidence.desc().nulls_last(), Tracklist.created_at.desc(), Tracklist.id.desc())
 
     total = await _get_tracklist_count(session, filter_value)
     offset = (page - 1) * page_size
