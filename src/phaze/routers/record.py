@@ -88,11 +88,17 @@ async def file_record(
     analysis = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one_or_none()
 
     # Pending approvals for THIS file -- reuse the Phase 60 approve/edit/undo routes verbatim.
+    #
+    # ``created_at`` carries no uniqueness constraint, so two proposals for the same file can share
+    # a value; with a partial ORDER BY, tied rows would come back in ANY order (heap order, which
+    # shifts with page layout, vacuum, and plan choice). Appending the unique ``RenameProposal.id``
+    # makes the order TOTAL and deterministic. Same rationale as the paging contract's mandatory
+    # unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
     proposals_stmt = (
         select(RenameProposal)
         .options(selectinload(RenameProposal.file))
         .where(RenameProposal.file_id == file_id, RenameProposal.status == ProposalStatus.PENDING.value)
-        .order_by(RenameProposal.created_at)
+        .order_by(RenameProposal.created_at, RenameProposal.id)
     )
     proposals = list((await session.execute(proposals_stmt)).scalars().all())
     pending_rows = [
@@ -109,11 +115,18 @@ async def file_record(
     identity = proposals[0] if proposals else None
 
     # History (read-only, file_id-scoped): ExecutionLog (via its proposal) + TagWriteLog (direct).
+    #
+    # ``executed_at`` carries no uniqueness constraint, so two execution log rows for the same file
+    # can share a value; with a partial ORDER BY, tied rows would come back in ANY order (heap
+    # order, which shifts with page layout, vacuum, and plan choice). Appending the unique
+    # ``ExecutionLog.id`` (DESC, matching the descending timestamp sort) makes the order TOTAL and
+    # deterministic. Same rationale as the paging contract's mandatory unique tiebreaker (rule 4,
+    # see :mod:`phaze.services.pagination`).
     exec_stmt = (
         select(ExecutionLog)
         .join(RenameProposal, ExecutionLog.proposal_id == RenameProposal.id)
         .where(RenameProposal.file_id == file_id)
-        .order_by(ExecutionLog.executed_at.desc())
+        .order_by(ExecutionLog.executed_at.desc(), ExecutionLog.id.desc())
     )
     exec_logs = list((await session.execute(exec_stmt)).scalars().all())
     tag_stmt = select(TagWriteLog).where(TagWriteLog.file_id == file_id).order_by(TagWriteLog.written_at.desc())

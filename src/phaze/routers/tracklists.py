@@ -246,8 +246,17 @@ async def scan_tab(
     total = count_result.scalar() or 0
 
     # Paginate
+    #
+    # ``original_filename`` carries no uniqueness constraint, so two files can share a value; with
+    # a partial ORDER BY the OFFSET/LIMIT boundary is arbitrary on a tie (heap order, which shifts
+    # with page layout, vacuum, and plan choice). Unlike a bare display LIMIT, this is a stable-
+    # pagination bug: a tied row can appear on TWO consecutive pages, or be skipped entirely between
+    # page N and N+1, because Postgres is free to reorder the tied block differently per query.
+    # Appending the unique ``FileRecord.id`` (ASC, matching the ascending filename sort) makes the
+    # order TOTAL, so every page boundary is deterministic across repeated calls. Same rationale as
+    # the paging contract's mandatory unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
     offset = (page - 1) * page_size
-    stmt = stmt.order_by(FileRecord.original_filename).offset(offset).limit(page_size)
+    stmt = stmt.order_by(FileRecord.original_filename, FileRecord.id).offset(offset).limit(page_size)
 
     result = await session.execute(stmt)
     files = list(result.scalars().all())

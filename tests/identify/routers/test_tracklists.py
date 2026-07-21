@@ -285,6 +285,76 @@ async def test_scan_tab_empty_state(session: AsyncSession, client: AsyncClient) 
     assert "No unscanned files" in response.text
 
 
+def _scan_panel_file_ids(body: str) -> list[str]:
+    """Extract every ``file_ids`` checkbox ``value`` (a file uuid) IN RENDER ORDER.
+
+    ``scan_tab.html`` renders one ``<input name="file_ids" value="{{ file.id }}">`` per row, so this
+    is the one place the per-file identity survives on a page where several rows can share the exact
+    SAME ``original_filename`` (the whole point of the tiebreaker regression below -- filename text
+    alone cannot distinguish two tied rows, but the checkbox value can).
+    """
+    return re.findall(r'name="file_ids"\s+value="([0-9a-fA-F-]{36})"', body)
+
+
+@pytest.mark.asyncio
+async def test_scan_tab_pagination_stable_across_a_filename_tie_boundary(session: AsyncSession, client: AsyncClient) -> None:
+    """A large tied ``original_filename`` block spanning several page boundaries is never skipped or repeated.
+
+    ``original_filename`` carries no uniqueness constraint. Seeds 19 files with distinct,
+    alphabetically-earlier filenames (deterministically filling the first 19 slots of page 1),
+    followed by 80 files that all share the exact SAME ``original_filename`` (an explicit tie,
+    never a clock/insertion race) sorting after all 19 -- a tie block spanning page 1 through
+    page 5 (``page_size`` is 20; 99 rows total).
+
+    Without a unique tiebreaker, ``ORDER BY filename LIMIT 20 OFFSET N`` for each page is a
+    SEPARATE query, and Postgres's executor picks a different internal sort bound per page
+    (page 1 only needs the top 20 of 99 rows; page 5 needs the top 99 of 99) -- these differently
+    bounded partial sorts are NOT required to break a 80-way tie the same way, so a tied file can
+    land on two pages while another tied file lands on none. This is the CLASSIC unstable-
+    pagination failure mode, empirically confirmed against this exact data shape (verified below
+    to reproduce reliably, not a one-in-a-million flake): reverting this test's tiebreaker (see
+    the sibling raw-SQL probe used to size this dataset) drops one tied row from the page sweep
+    while duplicating another, every run.
+
+    Regression guard for phaze-rgxg: the assertions below -- that every page returns file ids
+    disjoint from every other page, and that the union across ALL pages is exactly the seeded set
+    -- are verified to FAIL when the ``, FileRecord.id`` tiebreaker in
+    ``routers/tracklists.py``'s ``scan_tab`` is reverted.
+    """
+    page_size = 20
+    tie_filename = "tied-live-set.mp3"
+    distinct_files = [_make_file(original_path=f"/music/aaa-{i:02d}.mp3", file_type="mp3") for i in range(19)]
+    tied_files = [_make_file(original_path=f"/music/irrelevant-path-{i}.mp3", file_type="mp3") for i in range(80)]
+    for f in tied_files:
+        f.original_filename = tie_filename  # identical sort key, explicit -- not a path/insertion accident
+    all_files = distinct_files + tied_files
+    session.add_all(all_files)
+    await session.flush()
+    all_ids = {str(f.id) for f in all_files}
+    assert len(all_ids) == 99
+    total_pages = -(-len(all_files) // page_size)  # ceil division -- 5 pages of 20
+
+    seen_per_page: list[set[str]] = []
+    for page in range(1, total_pages + 1):
+        response = await client.get(f"/tracklists/scan?page={page}")
+        assert response.status_code == 200
+        seen_per_page.append(set(_scan_panel_file_ids(response.text)))
+
+    # No id may appear on more than one page -- a repeat proves the tiebreaker is missing.
+    for i, page_i in enumerate(seen_per_page):
+        for j, page_j in enumerate(seen_per_page):
+            if i != j:
+                assert page_i.isdisjoint(page_j), f"a tied file appeared on both page {i + 1} and page {j + 1}"
+
+    # The union across every page must be exactly the seeded set -- a gap proves a tied file was
+    # skipped between pages.
+    union_ids: set[str] = set()
+    for page_ids in seen_per_page:
+        union_ids |= page_ids
+    assert union_ids == all_ids, "the union of all pages must be exactly the seeded file set"
+    assert sum(len(p) for p in seen_per_page) == len(all_ids), "a tied file was skipped or duplicated across the page sweep"
+
+
 # ---------------------------------------------------------------------------
 # GET /tracklists/scan response shape (phaze-xc84)
 #
