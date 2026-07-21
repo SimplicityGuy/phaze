@@ -1081,6 +1081,12 @@ async def get_lane_recent_completions(session: AsyncSession, backend_id: str, ki
     resolution: omit, don't fabricate). For compute/kueue lanes the query is bounded by ``updated_at``
     DESC + ``LIMIT limit`` (D-07); any query error degrades to ``[]`` with a guarded rollback so it can
     never raise into the hot 5s tick (D-00b). Secret-free: only the CloudJob row scalars leave here.
+
+    ``updated_at`` carries no uniqueness constraint, so two jobs can share a value; with a partial
+    ORDER BY, rows tied at the ``LIMIT`` boundary would come back in ANY order (heap order, which
+    shifts with page layout, vacuum, and plan choice). Appending the unique ``CloudJob.id`` makes the
+    order TOTAL, so the LIMIT boundary is deterministic across repeated calls. Same rationale as the
+    paging contract's mandatory unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
     """
     if kind == "local":
         return []
@@ -1091,7 +1097,7 @@ async def get_lane_recent_completions(session: AsyncSession, backend_id: str, ki
                 CloudJob.backend_id == backend_id,
                 CloudJob.status == CloudJobStatus.SUCCEEDED.value,
             )
-            .order_by(CloudJob.updated_at.desc())
+            .order_by(CloudJob.updated_at.desc(), CloudJob.id.desc())
             .limit(limit)
         )
         rows = list((await session.execute(stmt)).scalars().all())

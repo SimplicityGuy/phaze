@@ -101,6 +101,64 @@ async def test_recent_completions_local_is_empty(session: AsyncSession, make_fil
     assert await get_lane_recent_completions(session, "local", "local") == []
 
 
+async def _seed_succeeded_tied(session: AsyncSession, make_file, backend_id: str, job_ids: list[uuid.UUID], tied_at: datetime) -> None:  # type: ignore[no-untyped-def]
+    """Seed one succeeded CloudJob per id in ``job_ids``, ALL sharing the SAME explicit ``updated_at``.
+
+    ``job_ids`` order is the INSERTION order, deliberately unrelated to id order, so a query
+    that fell back to heap/insertion order on the ``updated_at`` tie would produce a different
+    sequence than the id-descending tiebreaker and the regression assertion would fail.
+    """
+    jobs = []
+    for job_id in job_ids:
+        file = await make_file(original_filename=f"tied-{job_id}.mp3")
+        jobs.append(
+            CloudJob(
+                id=job_id,
+                file_id=file.id,
+                s3_key=f"staging/{file.id}",
+                status=CloudJobStatus.SUCCEEDED.value,
+                backend_id=backend_id,
+                created_at=tied_at,
+                updated_at=tied_at,
+            )
+        )
+    session.add_all(jobs)
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_recent_completions_tiebreaker_orders_tied_updated_at_by_id_desc(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """Rows with an IDENTICAL updated_at come back ordered by CloudJob.id DESC, not heap order.
+
+    Seeds ``LANE_RECENT_N`` + 1 (21) succeeded rows sharing ONE explicit ``updated_at`` -- so
+    ``updated_at`` alone leaves every row tied -- with ids assigned in a SCRAMBLED order
+    relative to insertion (the exact flaky-test mistake this regression guards against: no
+    clock-raced seeding, no hoping timestamps differ). Only the ``CloudJob.id`` tiebreaker on
+    ``services.backends.get_lane_recent_completions`` makes the LIMIT-20 boundary total and
+    deterministic.
+
+    Regression guard for phaze-c6j5: reverting the ``, CloudJob.id.desc()`` suffix makes both
+    the boundary membership and the in-page order depend on Postgres heap layout (verified:
+    this assertion fails without the tiebreaker for the scrambled ids below).
+    """
+    from phaze.services.backends import LANE_RECENT_N, get_lane_recent_completions
+
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive on purpose (naive TIMESTAMP column)
+    seed_count = LANE_RECENT_N + 1
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{i:02d}") for i in range(seed_count)]
+    scrambled = ids[::2] + ids[1::2]  # e.g. [0,2,4,...,20,1,3,...,19]
+
+    await _seed_succeeded_tied(session, make_file, "compute-x", scrambled, tied_at)
+
+    rows = await get_lane_recent_completions(session, "compute-x", "compute")
+    actual_ids = [row.id for row in rows]
+
+    # LIMIT is LANE_RECENT_N (20 of the 21 seeded); the boundary + in-page order come entirely
+    # from the id tiebreaker: the 20 LARGEST ids, strictly descending.
+    assert len(actual_ids) == LANE_RECENT_N
+    assert actual_ids == sorted(ids, reverse=True)[:LANE_RECENT_N]
+
+
 @pytest.mark.asyncio
 async def test_recent_completions_degrades_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A forced query error degrades to [] with a guarded rollback -- never raises (D-00b)."""
