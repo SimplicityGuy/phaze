@@ -76,9 +76,18 @@
                                 class="inline-flex items-center gap-1 rounded-full border border-gray-300 bg-white px-3 py-0.5 text-xs font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-phaze-border dark:bg-phaze-bg dark:text-gray-200 dark:hover:bg-white/5">
                             {{ stage_label }}
                         </button>
+                        {# phaze-5p43: the pill gets a per-(file, stage) OOB address. The record is a
+                           SNAPSHOT (D-02) with no poll, so _force_skip_dialog.html's "the pill flips
+                           on the NEXT poll tick" contract is unsatisfiable here — the force-skip
+                           writer instead returns THIS wrapper as an hx-swap-oob fragment carrying the
+                           freshly re-derived bucket. The id is unique per (file, stage) and the
+                           wrapper (not the pill span) carries it, so _stage_pill.html stays a pure,
+                           id-less token shared verbatim with the Files matrix. #}
+                        <span id="stage-pill-{{ stage_value }}-{{ file.id }}" class="inline-flex">
                         {% with stage_label=stage_label, bucket=stage_buckets[stage_value] %}
                             {% include "pipeline/partials/_stage_pill.html" %}
                         {% endwith %}
+                        </span>
                         {% if is_enrich %}
                             {% with stage_value=stage_value, stage_label=stage_label, file_id=file.id %}
                                 {% include "pipeline/partials/_force_skip_dialog.html" %}

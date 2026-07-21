@@ -32,6 +32,7 @@ from sqlalchemy import select
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.stage_skip import StageSkip
 
 
@@ -238,3 +239,82 @@ async def test_skip_race_deleted_between_precheck_and_insert_is_no_op_and_sessio
     # And the session can still commit further real work afterward.
     other_file_id = await _seed_file(session)
     assert other_file_id is not None
+
+
+# --------------------------------------------------------------------------------------------------
+# phaze-5p43: the success ack must ALSO refresh the record's stage pill.
+#
+# ``_force_skip_dialog.html``'s own header contract promises "the pill flips to ⊘ skipped on the NEXT
+# poll tick". That tick never comes: the dialog ships ONLY inside ``record_body.html``, a deliberate
+# SNAPSHOT (D-02 — renders once, no ``hx-trigger="every"``, and a full-body poll is forbidden because
+# it would clobber in-progress inline edits). So the writer pushes the ONE pill it invalidated as an
+# ``hx-swap-oob`` fragment addressed to that (file, stage). These lock the OOB shape, the honest
+# re-derived bucket, and — load-bearing, given this repo's duplicate-id OOB history (phaze-gzrd,
+# phaze-op6f, phaze-7j50) — that the OOB target id is UNIQUE in the composed record document.
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_successful_skip_returns_oob_pill_showing_skipped(client: AsyncClient, session: AsyncSession) -> None:
+    """The 200 ack carries an OOB ``⊘ skipped`` pill for that (file, stage) — not a toast alone.
+
+    Regression for phaze-5p43: before the fix the response body was ONLY the toast, so the record's
+    Analyze pill kept reading ``✗ failed`` for the life of the open record and the operator had no
+    durable confirmation once the 5s toast auto-dismissed.
+    """
+    file_id = await _seed_file(session)
+    session.add(AnalysisResult(file_id=file_id, failed_at=datetime.now(UTC), error_message="analyze crashed"))
+    await session.commit()
+
+    # BEFORE: the open record shows the pre-skip bucket.
+    assert 'aria-label="Analyze: failed"' in (await client.get(f"/record/{file_id}")).text
+
+    response = await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "corrupt source file"})
+
+    assert response.status_code == 200
+    body = response.text
+    assert f'id="stage-pill-analyze-{file_id}"' in body, "the ack must address the record's per-(file, stage) pill"
+    assert 'hx-swap-oob="true"' in body, "the pill fragment must be an out-of-band swap (the ack's own target is the error box)"
+    assert 'aria-label="Analyze: skipped (force-completed)"' in body, "the pushed pill must carry the honest SKIPPED bucket"
+    assert "⊘" in body
+    assert "Skipped analyze — reason recorded." in body, "the existing toast ack must survive alongside the pill"
+
+
+@pytest.mark.asyncio
+async def test_oob_pill_id_is_unique_in_the_composed_record(client: AsyncClient, session: AsyncSession) -> None:
+    """The OOB target id occurs EXACTLY once in the record document and once in the ack fragment.
+
+    A duplicate id would make HTMX swap an arbitrary one of them (the phaze-gzrd / op6f / 7j50 shape).
+    The id lives on a wrapper span emitted from ONE place — ``record_body.html``'s stage loop, once per
+    (stage, file) — while ``_stage_pill.html`` itself stays id-less and shared verbatim with the Files
+    matrix, so no second element in the composed document can collide.
+    """
+    file_id = await _seed_file(session)
+    marker = f'id="stage-pill-analyze-{file_id}"'
+
+    record = (await client.get(f"/record/{file_id}")).text
+    assert record.count(marker) == 1, "the OOB target id must be unique in the composed record document"
+    # ... and no OTHER stage on the same record reuses it (the id is per (file, stage), not per file).
+    for stage_value in ("metadata", "fingerprint", "propose", "review", "apply"):
+        assert record.count(f'id="stage-pill-{stage_value}-{file_id}"') == 1
+
+    ack = (await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "corrupt source file"})).text
+    assert ack.count(marker) == 1, "the ack must push exactly one pill, not a duplicate set"
+
+
+@pytest.mark.asyncio
+async def test_oob_pill_reports_done_not_skipped_when_precedence_says_done(client: AsyncClient, session: AsyncSession) -> None:
+    """The pushed bucket is RE-DERIVED, never hardcoded ``skipped``.
+
+    Precedence is ``in_flight ≻ done ≻ skipped ≻ failed``, so skipping an already-done metadata stage
+    must still render ``✓ done``. Hardcoding the pill would make the record lie in the other direction.
+    """
+    file_id = await _seed_file(session)
+    session.add(FileMetadata(file_id=file_id, failed_at=None))  # metadata derives DONE
+    await session.commit()
+
+    body = (await client.post(f"/pipeline/files/{file_id}/skip/metadata", data={"reason": "belt and braces"})).text
+
+    assert f'id="stage-pill-metadata-{file_id}"' in body
+    assert 'aria-label="Meta: done"' in body, "precedence keeps a genuinely-done stage reading done, even with a skip marker"
+    assert "skipped (force-completed)" not in body

@@ -268,8 +268,10 @@ async def test_trackid_table_signals(client: AsyncClient, session: AsyncSession)
     assert "candidate" in tbl
     # D-02/D-04: the linked tracklist confidence renders as a percent, not a fabricated score.
     assert "90%" in tbl
-    # R-1 / D-06: rows are inert this phase (row->record is Phase 61; no row-click fetch wired).
-    assert "hx-get" not in tbl
+    # R-1 / D-06: ROWS are inert -- scoped to <tbody> because phaze-a6hm.1 gave the <thead> its own
+    # hx-get sort buttons (the sortable-column contract). An unscoped "hx-get" not in tbl would now
+    # be asserting that the table is UNSORTABLE, which is the opposite of what this test means.
+    assert "hx-get" not in tbl[tbl.index("<tbody") :]
 
 
 @pytest.mark.asyncio
@@ -351,8 +353,10 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     assert "1/2" in tbl
     # D-04/D-08: a linked tracklist reads "matched" to its file.
     assert "matched" in tbl
-    # R-1 / D-06: rows are inert this phase (row->record is Phase 61; no row-click fetch wired).
-    assert "hx-get" not in tbl
+    # R-1 / D-06: ROWS are inert -- scoped to <tbody> because phaze-a6hm.1 gave the <thead> its own
+    # hx-get sort buttons (the sortable-column contract). An unscoped "hx-get" not in tbl would now
+    # be asserting that the table is UNSORTABLE, which is the opposite of what this test means.
+    assert "hx-get" not in tbl[tbl.index("<tbody") :]
 
 
 # ---------------------------------------------------------------------------
@@ -727,3 +731,110 @@ async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSes
     # The sibling scrape/match enqueue readers are likewise unpaged (they take no paging args at all).
     assert isinstance(await get_scrape_pending_tracklists(session), list)
     assert isinstance(await get_match_pending_tracklists(session), list)
+
+
+# --- phaze-a6hm.1: the sortable-column contract, END TO END through a real handler ----------------
+#
+# tests/shared/routers/test_column_sort.py proves the contract object in isolation. These prove the
+# WIRING: that a header click actually reorders the SET (not the page), that the whitelist holds at
+# the HTTP boundary, and that the header announces itself. Without these, a contract with perfect
+# unit tests could still be connected to nothing.
+
+
+@pytest.mark.asyncio
+async def test_trackid_headers_are_sortable_and_announce_state(client: AsyncClient, session: AsyncSession) -> None:
+    """The shared _file_table renders a sort button + aria-sort for a whitelisted header (rules 1/5).
+
+    ``File`` is whitelisted on the Track-ID contract; ``Panako`` is not. Asserting BOTH is what makes
+    this a test of the label-recognition mechanism rather than of "the template emits buttons" -- a
+    partial that made every header sortable would pass a one-sided check and then 500 on click.
+    """
+    file = await _seed_file(session, original_filename="a.mp3")
+    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+
+    body = (await client.get("/pipeline/trackid-files")).text
+    head = body[body.index("<thead") : body.index("<tbody")]
+
+    # The whitelisted header is a real server-side sort control aimed at its own endpoint.
+    assert 'hx-get="/pipeline/trackid-files?' in head
+    assert "sort=filename" in head
+    # Rule 5: the ACTIVE column announces its direction; the caret is decorative only.
+    assert 'aria-sort="ascending"' in head
+    assert 'aria-hidden="true"' in head
+    # A non-whitelisted header stays plain text -- no button, no aria-sort.
+    panako = head[head.index("Panako") - 200 : head.index("Panako")]
+    assert "hx-get" not in panako
+
+
+@pytest.mark.asyncio
+async def test_trackid_sort_reorders_the_set_server_side(client: AsyncClient, session: AsyncSession) -> None:
+    """Rule 1: the ORDER BY lands in SQL, so asc and desc return genuinely different row orders.
+
+    Seeded out of alphabetical order so a handler that ignored ``sort`` entirely (returning
+    insertion/newest-first order) fails at least one of the two direction assertions.
+    """
+    for name in ("banana.mp3", "apple.mp3", "cherry.mp3"):
+        seeded = await _seed_file(session, original_filename=name)
+        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+
+    asc = (await client.get("/pipeline/trackid-files?sort=filename&order=asc")).text
+    desc = (await client.get("/pipeline/trackid-files?sort=filename&order=desc")).text
+
+    def order_of(body: str) -> list[str]:
+        rows = body[body.index("<tbody") :]
+        return sorted(("apple.mp3", "banana.mp3", "cherry.mp3"), key=rows.index)
+
+    assert order_of(asc) == ["apple.mp3", "banana.mp3", "cherry.mp3"]
+    assert order_of(desc) == ["cherry.mp3", "banana.mp3", "apple.mp3"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hostile", ["original_path", "__class__", "id", "file_size; DROP TABLE files", "1) OR 1=1 --"])
+async def test_unwhitelisted_sort_is_rejected_at_the_http_boundary(client: AsyncClient, session: AsyncSession, hostile: str) -> None:
+    """THE regression the bead requires, at the boundary: an unwhitelisted sort cannot reach a column.
+
+    Asserts three things, because any one alone is too weak:
+      * the request does not 500 (a getattr-based implementation would, on ``__class__``),
+      * the response is the DEFAULT order (the hostile value was discarded, not honoured), and
+      * the hostile value is not echoed back as a ``sort=`` parameter in any header URL, which would
+        make the operator's next click carry it further.
+
+    That last assertion is deliberately scoped to ``sort=<value>`` rather than to the bare string:
+    short keys like ``id`` occur legitimately in every ``id="..."`` attribute on the page, so an
+    unscoped substring check would fail on markup that is entirely correct.
+
+    Rule 3: this degrades rather than 422-ing, matching every other render-path allowlist in phaze.
+    """
+    for name in ("banana.mp3", "apple.mp3"):
+        seeded = await _seed_file(session, original_filename=name)
+        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+
+    resp = await client.get(f"/pipeline/trackid-files?sort={hostile}&order=asc")
+    assert resp.status_code == 200
+    rows = resp.text[resp.text.index("<tbody") :]
+    assert rows.index("apple.mp3") < rows.index("banana.mp3")  # the default (filename asc) order
+    assert f"sort={hostile}" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(client: AsyncClient, session: AsyncSession) -> None:
+    """Rule 4, both directions: a sort keeps the other view state, and a pager keeps the sort.
+
+    The second half is the one that rots silently -- Prev/Next dropping the sort looks fine on page 1
+    and only misbehaves once the operator scrolls, which is exactly when they are relying on it.
+    """
+    for index in range(12):
+        seeded = await _seed_file(session, original_filename=f"file-{index:02d}.mp3")
+        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+
+    body = (await client.get("/pipeline/trackid-files?sort=filename&order=desc&page_size=10")).text
+    head = body[body.index("<thead") : body.index("<tbody")]
+
+    # A header click re-emits page_size, and resets to page 1 rather than holding a stale offset.
+    assert "page_size=10" in head
+    assert "page=" not in head
+
+    # The pager carries the ACTIVE sort forward, so Next stays inside the chosen order.
+    pager = body[body.index("</table>") :]
+    assert "sort=filename" in pager
+    assert "order=desc" in pager

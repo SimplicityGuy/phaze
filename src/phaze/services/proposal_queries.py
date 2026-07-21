@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.routers.column_sort import SortState
+
 from phaze.models.file import FileRecord
 
 
@@ -121,10 +123,21 @@ async def get_proposals_page(
     search: str | None = None,
     page: int = 1,
     page_size: int = 50,
-    sort_by: str = "confidence",
-    sort_order: str = "asc",
+    sort: SortState | None = None,
 ) -> tuple[list[RenameProposal], Pagination]:
-    """Get a paginated, filtered, sorted page of proposals with eager-loaded file data."""
+    """Get a paginated, filtered, sorted page of proposals with eager-loaded file data.
+
+    ``sort`` is a RESOLVED :class:`~phaze.routers.column_sort.SortState`, never a raw wire string
+    (phaze-a6hm.10). This function therefore holds NO whitelist of its own: it used to map a
+    ``sort_by`` string to a column through an ``if``/``elif`` ladder, which was a second, drifting
+    implementation of the shared sortable-column contract and the exact defect that contract's rule
+    2 exists to close. Resolution -- and with it the guarantee that an untrusted string never
+    reaches a column -- now happens once, in the caller, against
+    :data:`~phaze.routers.proposal_sort.PROPOSAL_SORT_COLUMNS`.
+
+    ``None`` means "no operator preference", answered with the default confidence ordering rather
+    than an unordered read: an OFFSET page over an unordered query is not a stable page.
+    """
     base = select(RenameProposal).options(selectinload(RenameProposal.file))
     count_base = select(func.count()).select_from(RenameProposal)
 
@@ -143,21 +156,21 @@ async def get_proposals_page(
         base = base.where(search_filter)
         count_base = count_base.where(search_filter)
 
-    # Sorting
-    valid_sort_columns = {"confidence", "proposed_filename", "original_filename"}
-    if sort_by not in valid_sort_columns:
-        sort_by = "confidence"
+    # Sorting. The join is UNCONDITIONAL now that the ORDER BY is opaque: the whitelist may hand
+    # back a FileRecord column (`original_filename`) and this function no longer knows which key it
+    # resolved, so it can no longer decide per-key whether the join is needed. Joining always is
+    # safe rather than merely convenient -- `RenameProposal.file_id` is a NOT NULL foreign key to
+    # `files.id`, so this INNER join is row-preserving by schema constraint and cannot silently
+    # drop proposals the old conditional join kept.
+    base = base.join(RenameProposal.file)
 
-    sort_col: Any
-    if sort_by == "original_filename":
-        base = base.join(RenameProposal.file)
-        sort_col = FileRecord.original_filename
-    elif sort_by == "proposed_filename":
-        sort_col = RenameProposal.proposed_filename
-    else:
-        sort_col = RenameProposal.confidence
-
-    base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+    # `sort.order_by()` is the ONLY place a direction becomes SQL, and it can only ever yield an
+    # expression some developer enumerated at import time. The trailing `RenameProposal.id` is a
+    # TIEBREAKER, not display order (paging contract rule 4): the operator-chosen key ties often --
+    # `confidence` is nullable and coarse, `proposed_path` repeats across a whole album -- and
+    # OFFSET paging over a non-total order lets a row appear on two pages or none.
+    order_by = sort.order_by() if sort is not None else (RenameProposal.confidence.asc(),)
+    base = base.order_by(*order_by, RenameProposal.id.asc())
 
     # Count total
     count_result = await session.execute(count_base)

@@ -1,0 +1,37 @@
+{# phaze-7j50: the SINGLE definition of what #proposal-list-container holds.
+
+   Every control that swaps into #proposal-list-container -- the pagination buttons and page-size
+   selector (pagination.html), the sort headers (proposal_table.html), the search box
+   (search_box.html) and the bulk approve/reject forms (bulk_actions.html) -- uses
+   hx-swap="innerHTML". So the container's inner content must be exactly ONE thing, and every
+   producer must return exactly that. This partial IS that thing:
+
+       proposal_table + bulk_actions + pagination
+
+   Producers, all of which render this file and nothing more:
+     * GET  /proposals/ (HX)  -- returns it bare (pagination / sort / search swaps)
+     * PATCH /proposals/bulk  -- returns it bare inside bulk_response.html, plus OOB fragments
+
+   phaze-a6hm.12 deleted the third producer, proposal_content.html (the legacy full-view chrome
+   that wrapped this partial in the container div). Its deletion is why the list above is now two
+   entries: both survivors return this file BARE, so the container div itself is supplied by
+   whatever already owns it on the page rather than by a wrapper partial.
+
+   The pager lives INSIDE the container deliberately. It used to render outside it (in the deleted
+   proposal_content.html, after the div closed), which meant a bulk approve/reject re-rendered the
+   rows but left "Showing 1-50 of 312 proposals" and the page buttons reporting pre-action totals. #}
+{% if proposals %}
+    {% include "proposals/partials/proposal_table.html" %}
+    {% include "proposals/partials/bulk_actions.html" %}
+    {% include "proposals/partials/pagination.html" %}
+{% elif current_status == "pending" and stats.pending == 0 and stats.total > 0 %}
+    <div class="text-center py-16">
+        <h2 class="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">All caught up!</h2>
+        <p class="text-gray-500 dark:text-gray-400 dark:text-gray-500">No pending proposals remaining. View approved or rejected proposals using the tabs above.</p>
+    </div>
+{% else %}
+    <div class="text-center py-16">
+        <h2 class="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">No proposals yet</h2>
+        <p class="text-gray-500 dark:text-gray-400 dark:text-gray-500">Run the AI proposal generation pipeline to get started. Proposals will appear here for your review.</p>
+    </div>
+{% endif %}

@@ -43,12 +43,35 @@ The test suite resolves its target from `TEST_DATABASE_URL`, validated by a sing
 Every run prints its resolved target in the pytest header
 (`phaze test database: 'phaze_test' on localhost:5433`) — check it before trusting a green run.
 
-**Never share a test database between concurrent agents.** Each worktree gets its own pair:
+**Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
+default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
+defect: it taught agents to isolate Postgres and left every seat on the same logical Redis.
 
 ```bash
-just test-db-for <name>    # creates phaze_<name>_test + phaze_<name>_migrations_test
-                           # and prints the exports to use
+just test-db-for <name>    # creates phaze_<name>_test + phaze_<name>_migrations_test,
+                           # allocates a dedicated Redis logical DB, and prints all three exports
 ```
+
+Export all three lines it prints:
+
+```bash
+export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_test"
+export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_migrations_test"
+export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
+```
+
+**Why Redis matters as much as Postgres.** Several redis-backed test modules run a global
+`scan_iter`+`delete` sweep over `exec:*`, `exec_progress_req:*` and `tracklist_req:*` in fixture
+setup *and* teardown. On a shared logical database one agent's fixture deletes another agent's live
+keys mid-test, and assertions that count the keyspace see foreign keys. The result is a failure
+indistinguishable from a real regression that passes on isolated re-run — the worst possible shape,
+because it trains reviewers to dismiss red runs.
+
+Redis DB indices are allocated from an atomic registry on the test container (DB 0 holds the
+registry; seats get 1 upward), so re-running `test-db-for` for the same worktree is idempotent and
+two worktrees can never collide. The container is started with 64 logical databases; allocation
+past that fails loudly rather than wrapping onto a shared index. **Leaving `PHAZE_REDIS_URL` unset
+is still valid for single-agent and CI runs** — it defaults to DB 0.
 
 ## Code Quality
 

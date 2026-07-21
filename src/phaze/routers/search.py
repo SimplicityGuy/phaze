@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.search_queries import SearchResult, distinct_artists, search
 
@@ -41,7 +42,14 @@ async def search_page(
     # (non-HX) GET / bookmark redirects to the shell root with ?palette=1, which the shell
     # Alpine reads to auto-open the palette. The in-page HX results fragment branch below
     # is left intact so live search-as-you-type still works (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy (HYGIENE, not a live defect): ``wants_fragment`` per response_shape.py contract
+    # rule 1, which bans the raw header outright. Nothing currently pushes a ``/search/`` URL --
+    # ``shell/partials/cmdk_modal.html`` and ``search/partials/palette_results.html`` both issue
+    # the GET without ``hx-push-url`` -- so no restore can reach this handler today and the raw
+    # check was not reachable-broken. It is converted so that adding ``hx-push-url`` to the
+    # palette later cannot silently re-introduce the defect.
+    if not wants_fragment(request):
         return RedirectResponse(url="/?palette=1", status_code=302)
 
     # v7.0 (RECORD-02, D-03/D-05): the /search HX branch IS the ⌘K grouped command palette.

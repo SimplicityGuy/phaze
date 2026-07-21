@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from sqlalchemy.sql import Select
 
     from phaze.config import ControlSettings
+    from phaze.routers.column_sort import SortState
 
 
 logger = structlog.get_logger(__name__)
@@ -483,10 +484,17 @@ async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit:
     scope ALONE -- recovering the aborted transaction WITHOUT expiring the caller's already-loaded
     ``agent`` ORM object (a plain ``session.rollback()`` would expire it and 500 the render on the next
     lazy load) -- and the function returns ``[]``. It NEVER raises into the 5s agent-pane poll.
+
+    ``created_at`` carries no uniqueness constraint, so two scan batches for the same agent can share a
+    value; with a partial ORDER BY, rows tied at the ``LIMIT`` boundary would come back in ANY order
+    (heap order, which shifts with page layout, vacuum, and plan choice), letting a batch flap in/out
+    between polls. Appending the unique ``ScanBatch.id`` makes the order TOTAL, so the LIMIT boundary is
+    deterministic. Same rationale as the paging contract's mandatory unique tiebreaker (rule 4, see
+    :mod:`phaze.services.pagination`).
     """
     try:
         async with session.begin_nested():
-            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc()).limit(limit)
+            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc(), ScanBatch.id.desc()).limit(limit)
             rows = (await session.execute(stmt)).scalars().all()
         return list(rows)
     except Exception:
@@ -1591,7 +1599,7 @@ def _trackid_files_select(linked_conf_subq: Any) -> Select[Any]:
     )
 
 
-def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int) -> Select[Any]:
+def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the BOUNDED Track-ID page SELECT (phaze-1wvb).
 
     Extracted (like :func:`_pending_page_stmt`) so the bound is assertable at the SQL level: a test
@@ -1607,12 +1615,13 @@ def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int) -> S
         _trackid_files_select(linked_conf_subq),
         page=page,
         page_size=page_size,
-        order_by=(FileRecord.created_at.desc(),),
+        # phaze-a6hm.1 sortable-column contract -- see _pending_page_stmt.
+        order_by=sort.order_by() if sort is not None else (FileRecord.created_at.desc(),),
         tiebreaker=(FileRecord.id.desc(),),
     )
 
 
-def _tracklist_sets_page_stmt(*, page: int, page_size: int) -> Select[Any]:
+def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the BOUNDED per-set Tracklist page SELECT (phaze-1wvb).
 
     Extracted for the same reason as :func:`_trackid_page_stmt`: the LIMIT must be assertable in the
@@ -1644,12 +1653,15 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int) -> Select[Any]:
         .outerjoin(track_counts_subq, track_counts_subq.c.version_id == Tracklist.latest_version_id),
         page=page,
         page_size=page_size,
-        order_by=(Tracklist.created_at.desc(),),
+        # phaze-a6hm.1 sortable-column contract -- see _pending_page_stmt.
+        order_by=sort.order_by() if sort is not None else (Tracklist.created_at.desc(),),
         tiebreaker=(Tracklist.id.desc(),),
     )
 
 
-async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+async def get_trackid_files_page(
+    session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[dict[str, Any]]:
     """Return ONE BOUNDED page of the Track-ID identity-signal rows (IDENT-01), degrade-safe.
 
     The membership is UNCHANGED from Phase 59 -- music/video files that carry at least one
@@ -1702,7 +1714,7 @@ async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_s
             has_candidate = bool((await session.execute(select(exists(select(Tracklist.id).where(Tracklist.file_id.is_(None)))))).scalar())
 
             # Per-file best LINKED tracklist confidence (D-04 "matched" branch).
-            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size)
+            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size, sort=sort)
             raw = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("trackid_files_page_degraded", page=page, page_size=page_size, exc_info=True)
@@ -1733,7 +1745,9 @@ async def get_trackid_files_page(session: AsyncSession, *, page: int = 1, page_s
     return Page(rows=files, page=page, page_size=page_size, has_next=has_next)
 
 
-async def get_tracklist_sets_page(session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[dict[str, Any]]:
+async def get_tracklist_sets_page(
+    session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[dict[str, Any]]:
     """Return ONE BOUNDED page of the per-set Tracklist rows (IDENT-02 / D-07/D-08), degrade-safe.
 
     One row per ``Tracklist`` (a "set"), carrying the set name + path, the match-state +
@@ -1763,7 +1777,7 @@ async def get_tracklist_sets_page(session: AsyncSession, *, page: int = 1, page_
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            stmt = _tracklist_sets_page_stmt(page=page, page_size=page_size)
+            stmt = _tracklist_sets_page_stmt(page=page, page_size=page_size, sort=sort)
             raw = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("tracklist_sets_page_degraded", page=page, page_size=page_size, exc_info=True)
@@ -2175,7 +2189,7 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
     return list(result.scalars().all())
 
 
-def _pending_page_stmt(stage: Stage, *, page: int, page_size: int) -> Select[Any]:
+def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the bounded pending-set page SELECT shared by the metadata and fingerprint workspaces.
 
     The SAME membership predicate the unbounded enqueue readers use
@@ -2188,12 +2202,16 @@ def _pending_page_stmt(stage: Stage, *, page: int, page_size: int) -> Select[Any
         select(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), eligible_clause(stage), ~dedup_resolved_clause()),
         page=page,
         page_size=page_size,
-        order_by=(FileRecord.created_at.desc(),),
+        # phaze-a6hm.1: the operator's whitelisted column when they picked one, else the newest-first
+        # default. `sort` is a RESOLVED SortState, so this can only ever be an enumerated expression.
+        order_by=sort.order_by() if sort is not None else (FileRecord.created_at.desc(),),
         tiebreaker=(FileRecord.id.desc(),),
     )
 
 
-async def get_pending_files_page(session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE) -> Page[FileRecord]:
+async def get_pending_files_page(
+    session: AsyncSession, stage: Stage, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
+) -> Page[FileRecord]:
     """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
 
     phaze-5462: the metadata and fingerprint workspaces used to render
@@ -2214,7 +2232,7 @@ async def get_pending_files_page(session: AsyncSession, stage: Stage, *, page: i
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size))).scalars().all()
+            raw = (await session.execute(_pending_page_stmt(stage, page=page, page_size=page_size, sort=sort))).scalars().all()
     except Exception:
         logger.warning("pending_files_page_degraded", stage=stage.value, page=page, page_size=page_size, exc_info=True)
         return Page(rows=[], page=page, page_size=page_size, has_next=False)
@@ -2495,25 +2513,33 @@ class FilesPage:
     has_next: bool = False
 
 
-def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None) -> Select[Any]:
+def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: str | None, sort: SortState | None = None) -> Select[Any]:
     """Build the bounded per-page derivation SELECT (extracted so the EXPLAIN test can probe it directly).
 
-    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by the
-    ``FileRecord.id`` PK index and LIMITed to ``page_size + 1`` (the sentinel that yields ``has_next``
-    with NO COUNT). Each ``stage_status_case`` is a correlated CASE over the Phase-77 partial indexes
-    (``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed`` / ``ix_fprint_success``),
-    so the derivation touches only the page rows. The optional ``stage``+``bucket`` filter is applied as
-    ``stage_status_case(stage) == bucket`` -- a pure ORM bound-param comparison (never f-string SQL,
-    T-87-14); the caller validates ``stage``/``bucket`` against the ``Stage``/``Status`` allowlists.
+    ``select(FileRecord, stage_status_case(METADATA), ... , stage_status_case(APPLY))`` ordered by
+    ``sort`` (phaze-a6hm.3) -- or, absent a resolved sort, the ``FileRecord.id`` PK index -- and LIMITed
+    to ``page_size + 1`` (the sentinel that yields ``has_next`` with NO COUNT). Each ``stage_status_case``
+    is a correlated CASE over the Phase-77 partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
+    / ``ix_analysis_failed`` / ``ix_fprint_success``), so the derivation touches only the page rows. The
+    optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
+    ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
+    against the ``Stage``/``Status`` allowlists.
     """
     cols = [stage_status_case(s) for s in _FILES_PAGE_STAGES]
     stmt = select(FileRecord, *cols)
     if stage is not None and bucket is not None:
         stmt = stmt.where(stage_status_case(stage) == bucket)
     # The paging contract (phaze.services.pagination): OFFSET + a page_size+1 sentinel for has_next
-    # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is BOTH the display order and the unique
-    # tiebreaker here, so the order is already total.
-    return paged_stmt(stmt, page=page, page_size=page_size, order_by=(), tiebreaker=(FileRecord.id,))
+    # (never a whole-corpus COUNT -- T-87-11). FileRecord.id is the mandatory unique tiebreaker
+    # (paging contract rule 4) regardless of `sort` -- an operator-chosen column ties far more often
+    # than the PK does (column_sort contract, SortState.order_by docstring).
+    return paged_stmt(
+        stmt,
+        page=page,
+        page_size=page_size,
+        order_by=sort.order_by() if sort is not None else (),
+        tiebreaker=(FileRecord.id,),
+    )
 
 
 async def get_files_page(
@@ -2523,6 +2549,7 @@ async def get_files_page(
     page_size: int = DEFAULT_PAGE_SIZE,
     stage: Stage | None = None,
     bucket: str | None = None,
+    sort: SortState | None = None,
 ) -> FilesPage:
     """Return one bounded, per-row-derived page of files -- SAVEPOINT degrade-safe, never a whole-corpus scan.
 
@@ -2536,12 +2563,18 @@ async def get_files_page(
 
     ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
     wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.
+
+    ``sort`` (phaze-a6hm.3) is an already-resolved :class:`~phaze.routers.column_sort.SortState` from
+    the router's ``FILES_SORT`` contract -- this layer never sees the raw wire ``sort``/``order``
+    strings, only the whitelisted expression :meth:`~phaze.routers.column_sort.SortState.order_by`
+    hands back. ``None`` (e.g. a caller that predates phaze-a6hm.3) falls back to the original
+    ``FileRecord.id`` order.
     """
     page = clamp_page(page)
     page_size = clamp_page_size(page_size)
     try:
         async with session.begin_nested():
-            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket)
+            stmt = _files_page_stmt(page=page, page_size=page_size, stage=stage, bucket=bucket, sort=sort)
             result = (await session.execute(stmt)).all()
     except Exception:
         logger.warning("files_page_degraded", page=page, page_size=page_size, exc_info=True)

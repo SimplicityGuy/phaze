@@ -1,0 +1,73 @@
+{# phaze-a6hm.11: the bulk APPROVE / REJECT controls for the Propose workspace.
+
+   WHAT THIS IS NOT. The workspace header carries a GENERATE ALL button, and these two are the
+   easiest pair of controls in the app to confuse. They are different operations on different
+   states and the confusion is not cosmetic -- one spends money and hours of litellm time, the
+   other is the human-in-the-loop gate the whole product exists to provide:
+
+     GENERATE ALL (header)  -- CREATES proposals for files that have none. Acts on the corpus-wide
+                               PENDING-FILE set, is unaffected by tab/search/page, enqueues jobs.
+     APPROVE / REJECT (here) -- DECIDES on proposals that already exist. Acts on EXACTLY the rows
+                               the operator ticked on this page. Writes status, enqueues nothing.
+
+   So the wording is load-bearing and deliberately asymmetric with the header's: these buttons say
+   "Approve"/"Reject", never "all"; the count they quote is the SELECTION, never a corpus total;
+   and the hx-confirm names the operation, the number of rows, and the fact that the rows were
+   selected. The header's confirm quotes propose_stats.pending (the corpus) for the mirror-image
+   reason -- see propose_workspace.html. Neither may be reworded into the other's shape.
+
+   WHY THIS POSTS TO /proposals/bulk RATHER THAN A NEW ENDPOINT. That route already owns bulk
+   approve/reject: the phaze-uu17 from-state guard, the phaze-3st0 stale-id tolerance and the count
+   that reports REAL transitions all live there, once. A propose-specific endpoint would be a third
+   bulk path and would have to re-derive all three -- the bead forbids exactly that. Only the
+   RESPONSE SHAPE differs between the two callers, and the router forks it on HX-Target, which is
+   the established in-tree pattern for "same URL, two swap shapes" (see _render_stage, _v7_row_target).
+
+   WHY THE VIEW STATE RIDES IN THE URL AND NOT IN HIDDEN INPUTS. The legacy bulk_actions.html spells
+   six hidden <input>s per form, twice -- twelve independent chances to drop a parameter, which is
+   the precise failure mode view_state.py was built to end. Here the state is `propose_view.query()`:
+   ONE call that emits the WHOLE state, so these controls state only what they change (nothing) and
+   cannot omit what they do not mention. The endpoint re-parses it with the same
+   ListViewState.from_request that GET /s/propose uses, so the post-action re-render lands on the
+   same filter/search/sort/page by construction rather than by both sides remembering to agree.
+
+   ID UNIQUENESS: this partial declares NO id at all. The checkboxes are addressed by a descendant
+   selector rooted at the EXISTING container id, and the busy-gate uses `this`. Nothing here can
+   duplicate an id because nothing here introduces one.
+
+   CONCURRENCY: `hx-disabled-elt="this"` closes the double-click window client-side (the phaze-fa2p
+   double-dispatch guard, same shape as GENERATE ALL). The real guarantee is server-side and does
+   not depend on the browser: the UPDATE is constrained to `allowed_from=PENDING`, so a second,
+   concurrent or replayed submission of the same ids matches zero rows and reports 0 -- the action
+   is idempotent by construction rather than by locking (phaze-u28m TOCTOU). #}
+<div class="flex items-center gap-3 border-t border-gray-200 px-6 py-3 dark:border-phaze-border"
+     x-show="picked > 0"
+     x-cloak
+     x-transition>
+    <span class="font-jura text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400"
+          x-text="picked + (picked === 1 ? ' proposal selected' : ' proposals selected')"></span>
+    <span class="flex-1"></span>
+    {# Both buttons carry the SELECTION, not the page: hx-include serialises the ticked checkboxes
+       inside this container. Unticked and disabled boxes are not serialised, so the request body is
+       exactly the operator's selection -- acceptance criterion 1 holds at the wire, not just in JS. #}
+    <button type="button"
+            hx-patch="/proposals/bulk?{{ propose_view.query() }}"
+            hx-target="#{{ propose_list_id }}"
+            hx-swap="innerHTML"
+            hx-vals='{"action": "approve"}'
+            hx-include="#{{ propose_list_id }} input[name='proposal_ids']:checked"
+            hx-confirm="Approve the selected proposals? Approved renames become eligible to execute."
+            hx-disabled-elt="this"
+            aria-label="Approve selected proposals"
+            class="inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">Approve</button>
+    <button type="button"
+            hx-patch="/proposals/bulk?{{ propose_view.query() }}"
+            hx-target="#{{ propose_list_id }}"
+            hx-swap="innerHTML"
+            hx-vals='{"action": "reject"}'
+            hx-include="#{{ propose_list_id }} input[name='proposal_ids']:checked"
+            hx-confirm="Reject the selected proposals? Rejected renames will not be executed."
+            hx-disabled-elt="this"
+            aria-label="Reject selected proposals"
+            class="inline-flex h-9 items-center justify-center rounded-lg bg-red-600 px-3 font-jura text-xs font-medium uppercase tracking-wider text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:cursor-not-allowed disabled:opacity-50">Reject</button>
+</div>

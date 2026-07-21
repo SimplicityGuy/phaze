@@ -29,6 +29,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tracklist import Tracklist
+from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
@@ -63,6 +64,7 @@ from phaze.services.pipeline import (
     get_cached_stage_orphan_counts,
     get_cloud_phase_counts,
     get_discovered_files_with_duration,
+    get_file_stage_buckets,
     get_files_page,
     get_fingerprint_pending_files,
     get_global_reconciliation,
@@ -943,6 +945,68 @@ async def lane_detail(
 _VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
 
 
+# --- phaze-a6hm.1 sortable-column contracts ------------------------------------------------------
+# One SortContract per table, declared at import time so a mis-wired whitelist fails on startup
+# rather than degrading every header click (column_sort contract rule 6). Each `expression` is a real
+# column bound HERE -- a request `sort=` value is matched against these keys by equality and can
+# never name anything else (rule 2). Every `target` is the table's EXISTING host container: this
+# feature adds no OOB fragment and no new element id, so it cannot introduce a duplicate one.
+
+# The Metadata and Fingerprint workspaces share /pipeline/pending-files but render DIFFERENT column
+# labels, so they need one contract each -- labels are how the shared partial recognises a header.
+_PENDING_SORTS: dict[str, SortContract] = {
+    "metadata": SortContract(
+        endpoint="/pipeline/pending-files",
+        target="#metadata-files-view",
+        columns=(
+            SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),
+            SortableColumn(key="file_type", label="Format", expression=FileRecord.file_type),
+            SortableColumn(key="file_size", label="Size", expression=FileRecord.file_size),
+        ),
+        default_key="filename",
+    ),
+    "fingerprint": SortContract(
+        endpoint="/pipeline/pending-files",
+        target="#fingerprint-files-view",
+        columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
+        default_key="filename",
+    ),
+}
+
+TRACKID_SORT = SortContract(
+    endpoint="/pipeline/trackid-files",
+    target="#trackid-files-view",
+    columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
+    default_key="filename",
+)
+
+TRACKLIST_SETS_SORT = SortContract(
+    endpoint="/pipeline/tracklist-sets",
+    target="#tracklist-sets-view",
+    columns=(
+        SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
+        SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
+    ),
+    default_key="artist",
+)
+
+# phaze-a6hm.3: the Files matrix (:func:`pipeline_files`). Only the two REAL FileRecord columns it
+# renders are whitelisted -- the six stage-matrix cells are per-page DERIVED `stage_status_case` CASE
+# expressions (see :func:`_files_page_stmt`), not stable columns a SQL ORDER BY can address, so they
+# are deliberately absent here rather than faked with a getattr. `key="file"` orders by the SAME
+# column the File cell renders (`FileRecord.current_path`, the full path -- this table has no
+# separate filename-only column), matching the sibling tables' "sort what you show" precedent.
+FILES_SORT = SortContract(
+    endpoint="/pipeline/files",
+    target="#files-table-view",
+    columns=(
+        SortableColumn(key="file", label="File", expression=FileRecord.current_path),
+        SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
+    ),
+    default_key="file",
+)
+
+
 @router.get("/pipeline/files", response_class=HTMLResponse)
 async def pipeline_files(
     request: Request,
@@ -950,6 +1014,8 @@ async def pipeline_files(
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
     stage: str | None = Query(None),
     bucket: str | None = Query(None),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the paginated, per-row-derived files table (UI-01 / D-02).
@@ -961,6 +1027,11 @@ async def pipeline_files(
     an unfiltered page rather than 422-ing the poll) and plumbed through NOW so Plan 05's status-filter
     bar is templates-only. The read is SAVEPOINT degrade-safe at the service layer, so NO router
     try/except -- a DB hiccup renders a safe empty page, never a 500.
+
+    phaze-a6hm.3 sortable-column contract -- see :func:`pending_files_fragment`. ``stage``/``bucket``
+    ride ``sort``'s ``view_state`` (contract rule 4) alongside ``page_size``, so a header click keeps
+    the operator's filter lens and a Prev/Next click keeps the operator's chosen order via
+    :meth:`~phaze.routers.column_sort.SortState.query_state` in the template.
     """
     stage_enum: Stage | None = None
     if stage:
@@ -969,7 +1040,12 @@ async def pipeline_files(
         except ValueError:
             stage_enum = None
     bucket_val = bucket if bucket in _VALID_BUCKETS else None
-    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val)
+    sort_state = FILES_SORT.resolve(
+        sort=sort,
+        order=order,
+        view_state={"page_size": page_size, "stage": stage_enum.value if stage_enum is not None else None, "bucket": bucket_val},
+    )
+    files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/files_table_view.html",
@@ -977,6 +1053,7 @@ async def pipeline_files(
             "files_page": files_page,
             "active_stage": stage_enum.value if stage_enum is not None else None,
             "active_bucket": bucket_val,
+            "sort": sort_state,
         },
     )
 
@@ -1044,6 +1121,8 @@ async def pending_files_fragment(
     stage: str = Query("metadata"),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the Metadata / Fingerprint pending set (phaze-5462).
@@ -1061,7 +1140,12 @@ async def pending_files_fragment(
     UNBOUNDED pending set (paging contract rule 7) -- paging the enqueue would silently drop work.
     """
     stage_key = stage if stage in _PENDING_STAGES else "metadata"
-    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size)
+    # phaze-a6hm.1: resolve BEFORE the read. `sort`/`order` are raw wire strings here and whitelisted
+    # strings after; the query below never sees the untrusted value. `stage` rides view_state so a
+    # header click keeps the operator on their own lens (contract rule 4). `page` deliberately does
+    # NOT -- a re-sort returns to page 1.
+    sort_state = _PENDING_SORTS[stage_key].resolve(sort=sort, order=order, view_state={"stage": stage_key, "page_size": page_size})
+    pending_page = await get_pending_files_page(session, _PENDING_STAGES[stage_key], page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_pending_files.html",
@@ -1069,6 +1153,7 @@ async def pending_files_fragment(
             "pending_page": pending_page,
             "stage": stage_key,
             "host_id": f"{stage_key}-files-view",
+            "sort": sort_state,
         },
     )
 
@@ -1078,6 +1163,8 @@ async def trackid_files_fragment(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the Track-ID identity table (phaze-1wvb).
@@ -1092,11 +1179,13 @@ async def trackid_files_fragment(
     Track-ID workspace is READ-ONLY (it has no trigger at all), and the neighbouring Tracklist
     workspace's bulk triggers keep reading their own UNBOUNDED pending sets.
     """
-    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size)
+    # phaze-a6hm.1 sortable-column contract -- see :func:`pending_files_fragment`.
+    sort_state = TRACKID_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_trackid_files.html",
-        context={"trackid_page": trackid_page, "host_id": "trackid-files-view"},
+        context={"trackid_page": trackid_page, "host_id": "trackid-files-view", "sort": sort_state},
     )
 
 
@@ -1105,6 +1194,8 @@ async def tracklist_sets_fragment(
     request: Request,
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render ONE bounded page of the per-set Tracklist coverage table (phaze-1wvb).
@@ -1114,11 +1205,13 @@ async def tracklist_sets_fragment(
     SCRAPE / MATCH ALL triggers, which enqueue the UNBOUNDED pending sets -- rule 7) are untouched
     and still server-rendered by the shell.
     """
-    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size)
+    # phaze-a6hm.1 sortable-column contract -- see :func:`pending_files_fragment`.
+    sort_state = TRACKLIST_SETS_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+    sets_page = await get_tracklist_sets_page(session, page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_tracklist_sets.html",
-        context={"sets_page": sets_page, "host_id": "tracklist-sets-view"},
+        context={"sets_page": sets_page, "host_id": "tracklist-sets-view", "sort": sort_state},
     )
 
 
@@ -1667,15 +1760,56 @@ async def force_skip_stage(
         return _force_skip_no_op_toast(stage)
     await session.commit()  # get_session does NOT auto-commit (Pitfall 7)
     logger.info("force_skip_stage wrote marker", file_id=str(file_id), stage=stage)
-    # HTMX ack: the success toast (oob to #toast-container). stage is allowlisted (safe to interpolate);
-    # the operator reason is NOT echoed (T-87-21). The pill flips ⊘ skipped on the next 5s poll.
-    return HTMLResponse(
+    # HTMX ack: the refreshed stage pill (oob, outerHTML) + the success toast (oob to #toast-container).
+    # stage is allowlisted (safe to interpolate); the operator reason is NOT echoed (T-87-21).
+    # Re-derive the bucket AFTER the commit rather than hardcoding "skipped": precedence is
+    # ``in_flight ≻ done ≻ skipped ≻ failed``, so a stage that is genuinely done must keep reading
+    # ✓ done even once a skip marker exists. Reusing the record router's own derivation keeps the
+    # pane and the Files matrix on ONE status source (CONSOLE-01).
+    buckets = await get_file_stage_buckets(session, file_id)
+    toast = (
         f'<div hx-swap-oob="beforeend:#toast-container">'
         f'<div role="status" aria-live="polite" x-data="{{ show: true }}" x-show="show" '
         f'x-init="setTimeout(() => show = false, 5000)" x-transition '
         f'class="rounded bg-gray-800 px-4 py-2 text-sm text-white shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border">'
         f"Skipped {stage} — reason recorded.</div></div>"
     )
+    return HTMLResponse(_stage_pill_oob(file_id, stage, buckets.get(stage, "skipped")) + toast)
+
+
+# The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
+# pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
+# rejected 422 before this is ever reached (D-10).
+_ENRICH_STAGE_LABELS = {"metadata": "Meta", "fingerprint": "FP", "analyze": "Analyze"}
+
+
+def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
+    """Render the shared five-bucket pill as an ``hx-swap-oob`` fragment addressed to ONE (file, stage).
+
+    phaze-5p43: ``_force_skip_dialog.html``'s header contract promises the pill flips to ``⊘ skipped``
+    "on the NEXT poll tick", but the dialog ships ONLY inside ``record_body.html``, which is a
+    deliberate SNAPSHOT (D-02: renders once, no ``hx-trigger="every"``) — so no tick ever comes and the
+    pill contradicts the operator's just-taken action for the life of the open record. Adding a
+    full-body poll is forbidden (it would clobber in-progress inline edits in the pending-approval
+    ``_diff_row`` islands), so the WRITER — which already knows the new bucket — pushes the single pill
+    it invalidated, and nothing else.
+
+    ID UNIQUENESS (load-bearing — this repo has a history of duplicate-id OOB bugs: phaze-gzrd,
+    phaze-op6f, phaze-7j50): ``stage-pill-{stage}-{file_id}`` is emitted from exactly ONE place,
+    ``record_body.html``'s stage loop, once per (stage, file) — six ids for the one open record, and
+    ``record_host.html`` hosts at most one record at a time. The Files matrix / ``_stage_matrix.html``
+    include ``_stage_pill.html`` id-lessly, so no second element in the composed document can collide.
+    The id lives on a WRAPPER span, not on the pill itself, so ``_stage_pill.html`` stays a pure,
+    id-free token shared verbatim with the matrix (a second id-bearing copy there IS the collision
+    this shape avoids).
+
+    ``bucket`` is a derived enum value and ``stage`` is allowlisted; the pill template autoescapes.
+    """
+    pill = templates.get_template("pipeline/partials/_stage_pill.html").render(
+        stage_label=_ENRICH_STAGE_LABELS.get(stage, stage),
+        bucket=bucket,
+    )
+    return f'<span id="stage-pill-{stage}-{file_id}" class="inline-flex" hx-swap-oob="true">{pill}</span>'
 
 
 async def _force_skip_file_exists(session: AsyncSession, file_id: uuid.UUID) -> bool:

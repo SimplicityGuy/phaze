@@ -106,6 +106,77 @@ async def test_list_tags_htmx_partial(client: AsyncClient, session: AsyncSession
 
 
 @pytest.mark.asyncio
+async def test_list_tags_default_order_is_filename_ascending(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-a6hm.7: with no ``sort``/``order``, rows come back filename-ascending (TAGS_SORT default)."""
+    await _create_executed_file(session, filename="Zulu - Track.mp3")
+    await _create_executed_file(session, filename="Alpha - Track.mp3")
+
+    response = await client.get("/tags/", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert response.text.index("Alpha - Track.mp3") < response.text.index("Zulu - Track.mp3")
+
+
+@pytest.mark.asyncio
+async def test_list_tags_sort_by_filename_desc_reverses_rows(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-a6hm.7: ``sort=filename&order=desc`` is server-side -- the SQL ORDER BY reverses, not the DOM."""
+    await _create_executed_file(session, filename="Alpha - Track.mp3")
+    await _create_executed_file(session, filename="Zulu - Track.mp3")
+
+    response = await client.get("/tags/?sort=filename&order=desc", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert response.text.index("Zulu - Track.mp3") < response.text.index("Alpha - Track.mp3")
+
+
+@pytest.mark.asyncio
+async def test_list_tags_sort_by_format(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-a6hm.7: "Format" is whitelisted onto ``FileRecord.file_type``."""
+    await _create_executed_file(session, filename="A.flac", file_type="flac")
+    await _create_executed_file(session, filename="B.mp3", file_type="mp3")
+
+    response = await client.get("/tags/?sort=file_type&order=desc", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert response.text.index("B.mp3") < response.text.index("A.flac")
+
+
+@pytest.mark.asyncio
+async def test_list_tags_unwhitelisted_sort_degrades_to_default_not_422(client: AsyncClient, session: AsyncSession) -> None:
+    """column_sort contract rule 3: an unrecognised ``sort`` degrades to the default; it never 422s.
+
+    ``sort`` and ``order`` resolve independently (SortContract.resolve): an unwhitelisted ``sort``
+    (a real ``FileRecord`` column that is deliberately NOT offered) falls back to the default KEY
+    (``filename``) but a valid ``order`` still applies to it -- so this asserts on the DEFAULT KEY's
+    direction, not that ``order`` is ignored too.
+    """
+    await _create_executed_file(session, filename="Alpha - Track.mp3")
+    await _create_executed_file(session, filename="Zulu - Track.mp3")
+
+    response = await client.get("/tags/?sort=original_path&order=desc", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    # "original_path" never reached a column (rule 2): the response 200s with the default key
+    # (filename) under the requested "desc" direction, rather than 422-ing or raising.
+    assert response.text.index("Zulu - Track.mp3") < response.text.index("Alpha - Track.mp3")
+
+
+@pytest.mark.asyncio
+async def test_list_tags_sort_headers_carry_aria_sort_and_preserve_page_size(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-a6hm.7: the active header announces its direction; header links preserve page_size (rule 4)."""
+    await _create_executed_file(session)
+
+    response = await client.get("/tags/?sort=file_type&order=desc&page_size=50", headers={"HX-Request": "true"})
+
+    assert response.status_code == 200
+    assert 'aria-sort="descending"' in response.text
+    assert 'aria-sort="none"' in response.text
+    assert "page_size=50" in response.text
+    assert "sort=filename" in response.text  # the Filename header's own (inactive) link
+    assert "sort=file_type" in response.text
+
+
+@pytest.mark.asyncio
 async def test_list_tags_empty_state(client: AsyncClient, session: AsyncSession) -> None:
     """Phase 57 (SHELL-05): the tags empty-state moved to the shell workspace node.
 
@@ -629,3 +700,60 @@ async def test_tag_stats_file_with_both_completed_and_discrepancy_counted_once(c
     assert stats["pending"] == 1, "file B is still pending; file A must not be subtracted twice"
     assert stats["completed"] == 1, "one distinct file has a COMPLETED write"
     assert stats["discrepancies"] == 1, "one distinct file has a DISCREPANCY write"
+
+
+# ---------------------------------------------------------------------------
+# ``/tags/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
+#
+# This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
+# bans outright. But NOTHING in the template corpus pushes a ``/tags/`` URL into history
+# (no template carries hx-push-url on a /tags/ control), so no history restore can currently REACH this handler and the raw check was not
+# reachable-broken the way shell.py / proposals.py / duplicates.py / admin_agents.py were.
+#
+# It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
+# silently re-introduce the defect: the shape would already be correct on the day the URL starts
+# entering history.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tags_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET ``/tags/`` falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- before the fix this returned a 200 fragment, which htmx
+    would have swapped into ``<body>``, replacing the whole page.
+    """
+    response = await client.get("/tags/", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/tagwrite"
+
+
+@pytest.mark.asyncio
+async def test_tags_history_restore_resolves_to_a_full_document(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with chrome intact."""
+    response = await client.get(
+        "/tags/",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the page chrome must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_tags_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx swap must still get the chrome-less fragment."""
+    response = await client.get("/tags/", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+
+
+@pytest.mark.asyncio
+async def test_tags_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/tags/", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tagwrite"

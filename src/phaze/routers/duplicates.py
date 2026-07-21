@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.routers.request_guards import parse_json_array_payload
+from phaze.routers.response_shape import wants_fragment
 from phaze.services.dedup import (
     count_duplicate_groups,
     find_duplicate_group_by_hash,
@@ -90,7 +91,14 @@ async def list_duplicates(
     """Render the duplicate groups list page, or an HTMX group list fragment."""
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy: ``wants_fragment``, not the raw ``HX-Request`` header (response_shape.py
+    # contract rule 1). ``duplicates/partials/pagination.html`` sets ``hx-push-url="true"`` on
+    # every ``/duplicates/?page=...`` control, so a Back with the snapshot evicted arrives as a
+    # restore carrying BOTH headers -- and htmx swaps a restore into ``<body>``, ignoring
+    # ``hx-target``. The raw check answered that with the ~284-byte ``group_list.html``
+    # fragment, replacing the entire document with it. Restores now redirect into the shell.
+    if not wants_fragment(request):
         return RedirectResponse(url="/s/dedupe", status_code=302)
 
     offset = (page - 1) * page_size

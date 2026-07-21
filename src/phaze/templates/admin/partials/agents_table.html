@@ -20,8 +20,32 @@
 {# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
    and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
 {% set selected_agent = selected_agent | default(none) %}
+{# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD, via the SHARED spelling.
+
+   This section re-swaps ITSELF every 5s with hx-swap="outerHTML" and never halts, so the sort is not
+   something that merely has to survive the tick — the tick has to RE-SEND it, or the very next render
+   silently reverts to the default order 5 seconds after the click. That is a bug with a 5-second fuse:
+   invisible to any manual check that finishes in under 5 seconds.
+
+   hx-get is `sort.poll_url()` (column_sort contract rule 4a, landed by phaze-a6hm.6) rather than a
+   hard-coded "/admin/agents/_table". That method re-states the CURRENT order rather than toggling it
+   (a poll is a re-read, not a click) and carries view_state along, so this table cannot drift from the
+   recent-scans table on the identical hazard.
+
+   ?agent= is deliberately NOT in the contract's view_state, and this is the one place this table
+   differs from its siblings. The selected agent is pushed into the URL by a row click that swaps only
+   #detail-pane — this <section> is NOT re-rendered then, so its server-rendered poll_url still holds
+   the PREVIOUS selection. Baking ?agent= into poll_url would therefore re-assert a stale id every 5s
+   and drop the drill-in ring the operator just clicked (Phase 88 D-02). It stays in hx-vals, read live
+   from location.search at request time. htmx inherits hx-vals to descendants, so the sort buttons
+   below send the live selection too — which is what keeps a header click from closing the open pane
+   (contract rule 4) without either producer hard-coding the parameter.
+
+   The two mechanisms must stay disjoint: htmx APPENDS hx-vals to the hx-get query string, so a key
+   appearing in BOTH poll_url() and hx-vals would be sent twice and the handler would read whichever
+   duplicate won. sort/order live in the URL; agent lives in hx-vals; neither repeats the other. #}
 <section id="agents-table-section"
-         hx-get="/admin/agents/_table"
+         hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
          hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
          hx-swap="outerHTML"
@@ -44,14 +68,42 @@
         <table class="w-full text-sm text-left">
             <caption class="sr-only">Registered agents</caption>
             <thead class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase border-b border-gray-200 dark:border-phaze-border">
+                {# phaze-a6hm.4 sortable headers, driven by the shared column_sort contract.
+
+                   SERVER-SIDE: a click re-requests this table from its own endpoint under a new ORDER
+                   BY. It does not reorder the rows already in the DOM.
+
+                   hx-swap is outerHTML (not the innerHTML that _file_table.html uses) because the
+                   contract's target IS this self-replacing <section> — an innerHTML swap would nest a
+                   second #agents-table-section inside the first, duplicating the id AND the 5s trigger,
+                   so the page would poll twice as fast on every click and keep doubling.
+
+                   NO hx-push-url here, deliberately. A pushed URL is a static string, so it cannot
+                   carry the LIVE ?agent= that hx-vals reads from location.search — pushing sort alone
+                   would erase the selection from the address bar, and the next poll (which reads the
+                   selection from there) would drop the operator's open detail pane. The sort is DOM
+                   state carried across ticks by poll_url(); the URL stays the owner of the selection.
+                   The row drill-in below pushes both, because at that point both are known.
+
+                   aria-sort comes from sort.aria_sort() (rule 5) — never hand-written. Non-sortable
+                   headers omit the attribute entirely rather than claiming aria-sort="none", which
+                   would announce a sorting affordance that is not there. #}
                 <tr>
-                    <th scope="col" class="px-4 py-3">Agent</th>
-                    <th scope="col" class="px-4 py-3">Kind</th>
-                    <th scope="col" class="px-4 py-3">Status</th>
-                    <th scope="col" class="px-4 py-3">Queue</th>
-                    <th scope="col" class="px-4 py-3">Last seen</th>
-                    <th scope="col" class="px-4 py-3">Scan roots</th>
-                    <th scope="col" class="px-4 py-3">Actions</th>
+                    {% for col in ["Agent", "Kind", "Status", "Queue", "Last seen", "Scan roots", "Actions"] %}
+                    {% if sort.is_sortable(col) %}
+                    <th scope="col" class="px-4 py-3" aria-sort="{{ sort.aria_sort(col) }}">
+                        <button type="button"
+                                hx-get="{{ sort.url_for(col) }}"
+                                hx-target="#agents-table-section"
+                                hx-swap="outerHTML"
+                                class="inline-flex items-center gap-1 uppercase hover:text-gray-700 dark:hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
+                        </button>
+                    </th>
+                    {% else %}
+                    <th scope="col" class="px-4 py-3">{{ col }}</th>
+                    {% endif %}
+                    {% endfor %}
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
@@ -68,7 +120,11 @@
                     hx-get="/admin/agents/{{ agent.id }}/_activity"
                     hx-target="#detail-pane"
                     hx-swap="innerHTML"
-                    hx-push-url="/admin/agents?agent={{ agent.id }}"
+                    {# query_state() appends "&sort=..&order=..", the pager-side half of contract rule 4.
+                       Without it this push would rewrite the URL to a sort-less "?agent=<id>", so a
+                       reload after drilling into a row would drop the operator back into the default
+                       order — the same reset the poll fix closes, arriving by a different route. #}
+                    hx-push-url="/admin/agents?agent={{ agent.id }}{{ sort.query_state() }}"
                     hx-trigger="click, keyup[key=='Enter']"
                     onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"
                     class="cursor-pointer hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:hover:bg-phaze-panel{% if selected_agent == agent.id %} ring-2 ring-blue-500{% endif %}">
@@ -97,10 +153,25 @@
 
     {# Happy-path footer: "Last refreshed Ns ago" (neutral). Alpine reads
        data-refreshed-at and ticks once per second so the user sees the
-       countdown advance even between 5s polls. #}
+       countdown advance even between 5s polls.
+
+       The 1s ticker MUST be cleared on teardown. This <p> lives inside
+       #agents-table-section, which re-swaps itself with hx-swap="outerHTML" every 5s
+       and never halts, so this node is destroyed and recreated on every tick. Alpine's
+       destroyTree clears only cleanups it knows about — a bare setInterval() in x-init
+       is not one, and would be orphaned (still firing, still retaining this scope)
+       once per poll, forever. init()/destroy() on the x-data object is the documented
+       Alpine lifecycle hook for exactly this (alpinejs.dev/globals/alpine-data), and is
+       public API in the pinned 3.15.12 build — unlike $el._x_cleanups, which is internal. #}
     <p class="text-xs text-gray-500 dark:text-gray-400 mt-2"
-       x-data="{ refreshedAt: new Date('{{ refreshed_at_iso }}'), now: new Date(), get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); } }"
-       x-init="setInterval(() => now = new Date(), 1000)">
+       x-data="{
+           refreshedAt: new Date('{{ refreshed_at_iso }}'),
+           now: new Date(),
+           ticker: null,
+           get secondsAgo() { return Math.floor((this.now - this.refreshedAt) / 1000); },
+           init() { this.ticker = setInterval(() => { this.now = new Date(); }, 1000); },
+           destroy() { clearInterval(this.ticker); }
+       }">
         Last refreshed <span x-text="secondsAgo + 's ago'"></span>
     </p>
 
@@ -114,14 +185,16 @@
        role="alert"
        x-data="{
            lastError: localStorage.getItem('phaze:agents:lastError'),
+           poller: null,
            refreshFromStorage() { this.lastError = localStorage.getItem('phaze:agents:lastError'); },
            get formattedTime() {
                if (!this.lastError) return '';
                try { return new Date(this.lastError).toLocaleTimeString(); }
                catch (e) { return this.lastError; }
-           }
+           },
+           init() { this.poller = setInterval(() => { this.refreshFromStorage(); }, 2000); },
+           destroy() { clearInterval(this.poller); }
        }"
-       x-init="setInterval(() => refreshFromStorage(), 2000)"
        x-show="lastError"
        x-cloak>
         Refresh failed at <span x-text="formattedTime"></span> — retrying every 5s.

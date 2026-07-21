@@ -21,8 +21,10 @@ Three exports:
 
 The grouping query uses an explicit JOIN (RenameProposal -> FileRecord -> Agent)
 with ``Agent.revoked_at.is_(None)`` filter and ``ORDER BY file.agent_id,
-proposal.created_at`` so re-runs produce deterministic chunk boundaries
-(downstream callers depend on this for idempotent SAQ enqueues).
+proposal.created_at, proposal.id`` so re-runs produce deterministic chunk
+boundaries (downstream callers depend on this for idempotent SAQ enqueues). The
+trailing ``proposal.id`` is the mandatory unique tiebreaker -- ``created_at`` is
+not unique, so without it a tied block orders arbitrarily (heap order).
 """
 
 from __future__ import annotations
@@ -58,8 +60,21 @@ async def get_approved_proposals_grouped_by_agent(
     step 2). The companion :func:`count_revoked_skipped_proposals` returns the
     count of those excluded rows so the controller can surface a banner.
 
-    The returned dict's values are ordered by ``RenameProposal.created_at`` ASC
-    so re-runs produce deterministic chunk boundaries.
+    The returned dict's values are ordered by ``RenameProposal.created_at`` ASC,
+    then by the unique ``RenameProposal.id`` ASC, so re-runs produce deterministic
+    chunk boundaries.
+
+    The ``id`` suffix is load-bearing, not decoration. ``created_at`` is
+    ``server_default=func.now()`` and carries no uniqueness constraint, so two
+    proposals can share a value; with a partial ORDER BY Postgres may return the
+    tied block in ANY order (typically heap order, which shifts with page layout,
+    vacuum, and plan choice). Appending the primary key makes the order TOTAL,
+    which is what this function's callers actually depend on: the per-agent list
+    is the order approved renames are handed to an agent for EXECUTION, and it is
+    sliced into batches by :func:`chunk_proposals`. Same rationale as the paging
+    contract's mandatory unique tiebreaker (rule 4, see
+    :mod:`phaze.services.pagination`) -- and note that contract's explicit
+    warning that ``created_at`` is NOT itself a valid tiebreaker in phaze.
 
     Returns an empty dict when (a) no proposals are ``APPROVED`` OR (b) every
     approved proposal's Agent is revoked.
@@ -72,7 +87,7 @@ async def get_approved_proposals_grouped_by_agent(
             RenameProposal.status == ProposalStatus.APPROVED,
             Agent.revoked_at.is_(None),
         )
-        .order_by(FileRecord.agent_id, RenameProposal.created_at)
+        .order_by(FileRecord.agent_id, RenameProposal.created_at, RenameProposal.id)
     )
     result = await session.execute(stmt)
 

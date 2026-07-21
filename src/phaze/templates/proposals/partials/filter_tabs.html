@@ -1,3 +1,30 @@
+{# Status filter tabs -- ADAPTED (phaze-a6hm.2), not rewritten.
+
+   The visual language is unchanged from the legacy proposals view: the same bottom-bordered nav,
+   the same four All/Pending/Approved/Rejected tabs in the same order, the same blue underline on
+   the active tab and the same pill-shaped count badge. What changed is that the markup no longer
+   hardcodes WHERE it points. It used to build its own `/proposals/?status={{ value }}` URL and
+   target `#proposal-content`, which is what tied it to a single page and left it orphaned when the
+   v7 cutover replaced that page.
+
+   Context contract (all required; no defaults, so a caller that forgets one fails loudly at render
+   rather than silently emitting tabs that navigate somewhere wrong):
+     * view        -- a ListViewState (routers/view_state.py). Supplies BOTH the active-tab test
+                      (view.status) and the URL for every tab, via view.query(...). Because query()
+                      re-emits the whole state, clicking a tab preserves the search text, the page
+                      size and the sort -- the caller does not have to remember to thread them, and
+                      phaze-a6hm.10's sort params ride along with no edit to this file.
+     * stats       -- ProposalStats; the .total/.pending/.approved/.rejected counts in the badges.
+     * tabs_url    -- the path tabs navigate to (e.g. "/s/propose").
+     * tabs_target -- css selector of the swap target (e.g. "#propose-workspace-list").
+
+   `page=1` is reset on every tab: if the operator is on page 3 of Pending and clicks Approved,
+   page 3 of the new filter is not where they meant to land, and may not exist at all.
+
+   hx-push-url="true" puts the filtered URL in the address bar so the view is bookmarkable and
+   survives Back. That is safe here ONLY because tabs_url is a real full-page route: a restore of
+   the pushed URL re-renders the whole document (response_shape.py rule 2). Do NOT repoint this at
+   a fragment-only endpoint. #}
 <div class="border-b border-gray-200 dark:border-phaze-border mb-4">
     <nav class="flex space-x-4" aria-label="Status filter tabs">
         {% set tabs = [
@@ -7,16 +34,21 @@
             ("rejected", "Rejected", stats.rejected),
         ] %}
         {% for value, label, count in tabs %}
+            {% set is_active = view.status == value %}
             <button
-                hx-get="/proposals/?status={{ value }}"
-                hx-target="#proposal-content"
+                hx-get="{{ tabs_url }}?{{ view.query(status=value, page=1) }}"
+                hx-target="{{ tabs_target }}"
                 hx-swap="innerHTML"
                 hx-push-url="true"
+                {# The active tab is the current view, not merely a highlighted link, so it is
+                   announced as the selected one rather than leaving screen-reader users to infer
+                   state from a colour the legacy markup conveyed visually only (WCAG 1.4.1). #}
+                aria-current="{{ 'page' if is_active else 'false' }}"
                 class="px-3 py-2 text-sm transition-colors
-                    {% if current_status == value %}
+                    {% if is_active %}
                         text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 font-semibold
                     {% else %}
-                        text-gray-500 dark:text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 dark:text-gray-300
+                        text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300
                     {% endif %}
                 "
             >

@@ -753,3 +753,60 @@ async def test_undo_mixed_payload_undoes_the_valid_entries(session: AsyncSession
     assert undo.status_code == 200
     remaining = (await session.execute(select(func.count()).select_from(DedupResolution))).scalar_one()
     assert remaining == 0, "a junk entry suppressed the undo of a valid id"
+
+
+# ---------------------------------------------------------------------------
+# GET /duplicates/ history-restore response shape (phaze-64uy)
+#
+# duplicates/partials/pagination.html sets hx-push-url="true" on every /duplicates/?page=... control,
+# so those URLs enter history. A Back with the snapshot evicted arrives as a restore carrying BOTH
+# HX-Request and HX-History-Restore-Request, and htmx swaps a restore into <body> while ignoring
+# hx-target. The handler's raw HX-Request check answered that with the group_list.html fragment --
+# the starkest case in the bead: the dispatcher measured a 284-BYTE fragment replacing the entire
+# document.
+#
+# routers/response_shape.py rule 1 bans the raw check; wants_fragment is the predicate.
+# ---------------------------------------------------------------------------
+
+
+_RESTORE_HEADERS = {"HX-Request": "true", "HX-History-Restore-Request": "true"}
+
+
+@pytest.mark.asyncio
+async def test_duplicates_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """A history-restore GET /duplicates/ falls through to the shell redirect, not the fragment.
+
+    Asserts the SHAPE, not merely a 200 -- the buggy handler returned a 200 here too.
+    """
+    response = await client.get("/duplicates/", headers=_RESTORE_HEADERS)
+    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+    assert response.headers["location"] == "/s/dedupe"
+
+
+@pytest.mark.asyncio
+async def test_duplicates_history_restore_resolves_to_the_full_shell(client: AsyncClient) -> None:
+    """Following that redirect yields a FULL document with the shell chrome intact."""
+    response = await client.get("/duplicates/?page=2", headers=_RESTORE_HEADERS, follow_redirects=True)
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" in body.lower(), "a history restore must resolve to a full document"
+    assert 'aria-label="Pipeline navigation"' in body, "the rail must be present after a restore"
+    assert 'id="stage-workspace"' in body, "the shell's swap target must be present after a restore"
+
+
+@pytest.mark.asyncio
+async def test_duplicates_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
+    """The other direction: an ordinary htmx pagination swap must still get the fragment."""
+    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry the shell rail"
+
+
+@pytest.mark.asyncio
+async def test_duplicates_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
+    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
+    response = await client.get("/duplicates/", headers={"HX-History-Restore-Request": "true"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/dedupe"

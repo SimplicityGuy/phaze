@@ -9,6 +9,10 @@ test_db_container := "phaze-test-db"
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
 # Fixed container name for the ephemeral integration-test Redis
 test_redis_container := "phaze-test-redis"
+# Logical database count on the test Redis. Redis defaults to 16; we raise it so the per-worktree
+# index space (DB 0 is the allocation registry, seats get 1..N-1) comfortably exceeds any realistic
+# concurrent-seat count. `just test-db-for <name>` allocates out of this space.
+test_redis_databases := env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64")
 # Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
 # (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
 # (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
@@ -155,14 +159,27 @@ test-db:
             -p "${port}:5432" \
             postgres:18-alpine >/dev/null
     fi
+    redis_databases="{{test_redis_databases}}"
+    start_redis=1
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
-        echo "🟥 ${redis_container} already running on port ${redis_port}"
-    else
+        # A container started before this setting existed (or with a smaller value) only has 16
+        # logical databases. Recreate it rather than silently handing out indices it cannot address.
+        current_databases="$(docker exec "$redis_container" redis-cli CONFIG GET databases 2>/dev/null | tail -n1 || echo 0)"
+        if [ "${current_databases:-0}" -ge "$redis_databases" ]; then
+            echo "🟥 ${redis_container} already running on port ${redis_port} (${current_databases} logical DBs)"
+            start_redis=0
+        else
+            echo "♻️  ${redis_container} has only ${current_databases:-0} logical DBs (need ${redis_databases}); recreating."
+            echo "    This CLEARS the test Redis, including per-worktree DB allocations. Re-run"
+            echo "    'just test-db-for <name>' in each active worktree afterwards."
+        fi
+    fi
+    if [ "$start_redis" = "1" ]; then
         docker rm -f "$redis_container" >/dev/null 2>&1 || true
-        echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port}..."
+        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
         docker run -d --name "$redis_container" \
             -p "${redis_port}:6379" \
-            redis:7-alpine >/dev/null
+            redis:7-alpine redis-server --databases "$redis_databases" >/dev/null
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
@@ -222,10 +239,46 @@ test-db-for name:
             echo "✅ created ${db}"
         fi
     done
+    # Redis isolation. Postgres-only isolation was the phaze-fwo7 defect: every worktree landed on
+    # the same logical Redis DB 0, where fixtures run global `scan_iter`+`delete` sweeps over
+    # `exec:*` / `tracklist_req:*` and assertions count the global keyspace. One seat's cleanup then
+    # deletes another seat's live keys mid-test, producing failures indistinguishable from a real
+    # regression. Allocation is an atomic registry in DB 0, NOT a hash of the name: hash % N collides
+    # ~35% of the time across 8 seats, which would reintroduce the bug intermittently.
+    redis_container="{{test_redis_container}}"
+    redis_port="{{test_redis_port}}"
+    redis_databases="{{test_redis_databases}}"
+    registry_key="phaze:test:redis-db-index"
+    counter_key="phaze:test:redis-db-counter"
+    # INCR reserves a candidate, HSETNX publishes it. Two shells racing on the same name both read
+    # back the single winner; the loser's candidate is merely skipped. Re-running for an already
+    # allocated name is therefore idempotent and returns the same index.
+    redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "{{name}}")"
+    if [ -z "$redis_db" ]; then
+        candidate="$(docker exec "$redis_container" redis-cli -n 0 INCR "$counter_key")"
+        docker exec "$redis_container" redis-cli -n 0 HSETNX "$registry_key" "{{name}}" "$candidate" >/dev/null
+        redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "{{name}}")"
+        echo "✅ allocated Redis logical DB ${redis_db} to '{{name}}'"
+    else
+        echo "🟥 '{{name}}' already holds Redis logical DB ${redis_db}"
+    fi
+    # Fail loudly rather than wrapping back onto a shared index: a silent wrap restores exactly the
+    # cross-seat interference this recipe exists to prevent.
+    if [ "$redis_db" -ge "$redis_databases" ]; then
+        echo "" >&2
+        echo "❌ Redis DB index ${redis_db} exceeds the ${redis_databases} logical DBs on ${redis_container}." >&2
+        echo "   Refusing to wrap onto a shared index -- that would silently reintroduce cross-worktree" >&2
+        echo "   Redis interference. Either raise the space:" >&2
+        echo "     PHAZE_TEST_REDIS_DATABASES=$((redis_databases * 2)) just test-db-down && just test-db-for {{name}}" >&2
+        echo "   or reclaim the exhausted allocations (clears the test Redis):" >&2
+        echo "     just test-db-down && just test-db-for {{name}}" >&2
+        exit 1
+    fi
     echo ""
     echo "Export these before running pytest in this worktree:"
     echo "  export TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${main_db}\""
     echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
+    echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
 
 [doc('Stop and remove the ephemeral integration-test Postgres + Redis')]
 [group('test')]

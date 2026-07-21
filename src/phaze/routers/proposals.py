@@ -13,7 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
-from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
+from phaze.routers.proposal_sort import LEGACY_PROPOSAL_SORT
+from phaze.routers.response_shape import wants_fragment
+
+# phaze-a6hm.11: the propose workspace's container id + list context, so a bulk action issued
+# from that surface re-renders it through the SAME builder its GET uses. The edge is one-way --
+# routers/shell.py does not import this module -- so there is no cycle.
+from phaze.routers.shell import PROPOSE_LIST_CONTAINER_ID, build_propose_list_context
 from phaze.services.collision import get_collision_ids
 from phaze.services.proposal_queries import (
     ProposalPendingConflictError,
@@ -28,10 +35,33 @@ from phaze.services.proposal_queries import (
 )
 
 
-# Documented review-UI state machine (phaze-uu17): terminal EXECUTED/FAILED rows are the
-# authoritative record that a rename was applied and must never be flipped back by the UI.
-_APPROVE_REJECT_FROM = frozenset({ProposalStatus.PENDING})
-_UNDO_FROM = frozenset({ProposalStatus.PENDING, ProposalStatus.APPROVED, ProposalStatus.REJECTED})
+# The review-UI state machine (phaze-uu17) now lives on the model, beside the enum it constrains --
+# phaze-a6hm.11 hoisted it there because the propose workspace render needs the SAME fact to decide
+# which rows may be offered a checkbox. These aliases keep this module's existing spelling.
+_APPROVE_REJECT_FROM = APPROVE_REJECT_FROM
+_UNDO_FROM = UNDO_FROM
+
+
+def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
+    """Phrase the bulk result so it reports REAL transitions, never selection size (phaze-uu17).
+
+    ``requested`` is how many well-formed ids the browser sent; ``applied`` is the UPDATE's rowcount
+    after the ``allowed_from`` guard. They differ whenever the selection contained rows that are no
+    longer PENDING -- terminal EXECUTED/FAILED rows reachable from the "All" tab, or rows another
+    tab/session actioned since this page was rendered. The gap is exactly the information the
+    operator needs and the one a naive ``f"{len(ids)} approved"`` destroys, so it is stated rather
+    than smoothed over: silence about 38 skipped rows reads as success on all 50.
+
+    The zero case gets its own sentence because "0 approved" alone invites the operator to conclude
+    the button is broken and click it harder, when in fact the answer is complete and stable.
+    """
+    verb = f"{action}d"
+    if applied == requested:
+        return f"{applied} proposal{'' if applied == 1 else 's'} {verb}."
+    skipped = requested - applied
+    if applied == 0:
+        return f"Nothing {verb} — all {skipped} selected proposal{'' if skipped == 1 else 's'} had already been actioned."
+    return f"{applied} proposal{'' if applied == 1 else 's'} {verb} · {skipped} skipped (already actioned)."
 
 
 async def _guarded_status_update(
@@ -204,6 +234,62 @@ async def _build_sparklines(session: AsyncSession, file_ids: list[uuid.UUID]) ->
     return sparklines
 
 
+async def _proposal_list_context(
+    request: Request,
+    session: AsyncSession,
+    *,
+    status: str | None,
+    q: str | None,
+    page: int,
+    page_size: int,
+    sort: str,
+    order: str,
+) -> dict[str, object]:
+    """Build the render context for the proposal list container (table + bulk bar + pagination).
+
+    Shared by ``list_proposals`` (filter/sort/pagination swaps) and ``bulk_action`` (phaze-gc5d):
+    the bulk PATCH must re-render the SAME view -- same status filter, search, page, sort -- so a
+    bulk approve/reject neither wipes ``#proposal-list-container`` nor silently resets the user
+    back to page 1 of the default filter.
+    """
+    # Default to pending filter when no status param provided (D-09)
+    effective_status = status if status is not None else "pending"
+
+    # phaze-a6hm.10: this surface's `sort`/`order` now resolve against the SHARED proposal whitelist
+    # rather than a private ladder inside get_proposals_page. This template still hand-rolls its
+    # header URLs (phaze-a6hm.12 retires the family), so `url_for` is unused here -- but resolution
+    # and ORDER BY, the half that touches a column, are the shared ones. `current_sort`/`current_order`
+    # below are read off the RESOLVED state, so the carets can no longer claim a column the query did
+    # not actually order by.
+    sort_state = LEGACY_PROPOSAL_SORT.resolve(sort=sort, order=order)
+
+    proposals, pagination = await get_proposals_page(
+        session,
+        status=effective_status,
+        search=q,
+        page=page,
+        page_size=page_size,
+        sort=sort_state,
+    )
+    stats = await get_proposal_stats(session)
+    collision_ids = await get_collision_ids(session)
+    sparklines = await _build_sparklines(session, [p.file_id for p in proposals])
+
+    return {
+        "request": request,
+        "proposals": proposals,
+        "pagination": pagination,
+        "stats": stats,
+        "collision_ids": collision_ids,
+        "sparklines": sparklines,
+        "current_status": effective_status,
+        "search_query": q or "",
+        "current_sort": sort_state.key,
+        "current_order": sort_state.order,
+        "current_page": "proposals",
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def list_proposals(
     request: Request,
@@ -218,42 +304,31 @@ async def list_proposals(
     """Render the proposal list page, or an HTMX table fragment."""
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy: the predicate is ``wants_fragment``, not the raw ``HX-Request`` header
+    # (response_shape.py contract rule 1). Both ``proposals/partials/filter_tabs.html`` and
+    # ``proposals/partials/pagination.html`` set ``hx-push-url="true"`` on their
+    # ``/proposals/?...`` controls, so those URLs enter history and a Back with the snapshot
+    # evicted arrives here as a restore carrying BOTH headers. htmx ignores ``hx-target`` on a
+    # restore and swaps into ``<body>``, so the raw check replaced the whole document with the
+    # chrome-less ``proposal_list.html`` fragment. A restore now falls through to this redirect
+    # and resolves into the full shell.
+    if not wants_fragment(request):
         return RedirectResponse(url="/s/propose", status_code=302)
 
-    # Default to pending filter when no status param provided (D-09)
-    effective_status = status if status is not None else "pending"
-
-    proposals, pagination = await get_proposals_page(
-        session,
-        status=effective_status,
-        search=q,
-        page=page,
-        page_size=page_size,
-        sort_by=sort,
-        sort_order=order,
-    )
-    stats = await get_proposal_stats(session)
-    collision_ids = await get_collision_ids(session)
-    sparklines = await _build_sparklines(session, [p.file_id for p in proposals])
-
-    context = {
-        "request": request,
-        "proposals": proposals,
-        "pagination": pagination,
-        "stats": stats,
-        "collision_ids": collision_ids,
-        "sparklines": sparklines,
-        "current_status": effective_status,
-        "search_query": q or "",
-        "current_sort": sort,
-        "current_order": order,
-        "current_page": "proposals",
-    }
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
     # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_content.html", context=context)
+    #
+    # phaze-7j50: every control that issues this GET (pagination buttons, page-size selector, sort
+    # headers, search box) targets #proposal-list-container with hx-swap="innerHTML", so the
+    # response must be the container's INNER content and nothing more. It used to return the whole
+    # proposal_content.html -- chrome included -- which nested a duplicate #proposal-list-container,
+    # a duplicate filter-tab bar, a duplicate search box and a duplicate pager INSIDE the container
+    # on every page change or column sort, and left subsequent swaps resolving to the outer element
+    # while the stale inner copy persisted.
+    return templates.TemplateResponse(request=request, name="proposals/partials/proposal_list.html", context=context)
 
 
 @router.patch("/{proposal_id}/approve", response_class=HTMLResponse)
@@ -511,6 +586,12 @@ async def bulk_action(
     request: Request,
     action: str = Form(...),
     proposal_ids: list[str] = Form(...),
+    status: str | None = Form(None),
+    q: str | None = Form(None),
+    page: int = Form(1, ge=1),
+    page_size: int = Form(50, ge=10, le=100),
+    sort: str = Form("confidence"),
+    order: str = Form("asc"),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk approve or reject multiple proposals.
@@ -518,6 +599,14 @@ async def bulk_action(
     phaze-3st0: ``proposal_ids`` is a browser-held id-set that may be arbitrarily stale (request_
     guards.py contract rule 2, ELEMENT case) -- a malformed/empty entry is SKIPPED rather than
     rejecting the whole request, and the returned count is the authority on what actually happened.
+
+    phaze-gc5d: the bulk forms swap this response into ``#proposal-list-container`` with
+    ``innerHTML``, so the body MUST be the re-rendered list (table + bulk bar). It previously
+    rendered approve_response.html with ``proposal=None``, whose entire non-OOB body is gated on
+    ``{% if proposal %}`` -- the swap therefore emptied the container and destroyed both the table
+    and the selection toolbar until a full reload. The view state (status/q/page/page_size/sort/
+    order) rides along as hidden inputs on the form so the re-render lands on the SAME page and
+    filter the user acted from, rather than silently resetting them to page 1 / pending.
     """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
@@ -532,18 +621,48 @@ async def bulk_action(
             continue
     # phaze-uu17: only PENDING rows may be bulk approved/rejected; terminal EXECUTED/FAILED
     # rows selected via the "All" tab are skipped, and count reflects only real transitions.
+    #
+    # phaze-a6hm.11: this single guarded UPDATE is also what makes the endpoint safe to
+    # double-submit. `allowed_from` is evaluated INSIDE the UPDATE's WHERE clause, in one statement,
+    # so there is no read-then-write window for a concurrent submission to slip through (the
+    # phaze-u28m TOCTOU shape) -- and a replay of the same ids after the first submit matches zero
+    # rows, because those rows are no longer PENDING. The action is therefore idempotent by
+    # construction rather than by locking or by a client-side guard, and `count` on the second
+    # submission is honestly 0 rather than a repeat of the first answer.
     count = await bulk_update_status(session, uuids, status_map[action], allowed_from=_APPROVE_REJECT_FROM)
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/approve_response.html",
-        context={
+
+    # phaze-a6hm.11: the propose workspace issues this same PATCH, and only the RESPONSE SHAPE
+    # differs -- the two surfaces render different containers (see _propose_bulk_response.html).
+    # Forking on HX-Target is the established in-tree pattern for "same URL, two swap shapes"
+    # (_v7_row_target above; _render_stage in routers/shell.py). It is NOT a response_shape rule-1
+    # violation: HX-Request is neither read here nor anywhere in this module -- HX-Target only
+    # refines WHICH fragment a caller that has already asked for a fragment receives.
+    #
+    # Sharing the endpoint rather than adding a propose-specific one is the point: the from-state
+    # guard above, the stale-id tolerance below it and the count that reports real transitions are
+    # written ONCE and both surfaces inherit them. A third bulk path would have had to restate all
+    # three, and the one that drifted would be the one nobody tested.
+    if request.headers.get("HX-Target", "") == PROPOSE_LIST_CONTAINER_ID:
+        propose_context = await build_propose_list_context(request, session)
+        propose_context |= {
             "request": request,
             "proposal": None,
-            "stats": stats,
-            "action_label": action + "d",
-            "toast_message": f"{count} proposals {action}d.",
+            # The toast quotes `count` -- the rows that ACTUALLY transitioned -- and names the
+            # skipped remainder explicitly when the two differ (phaze-uu17 acceptance). An operator
+            # who selects 50 rows of which 12 were still pending is told "12 approved · 38 skipped
+            # (already actioned)", never "50 approved". Reporting the selection size would be a
+            # confident lie about an irreplaceable archive, which is the failure this bead names.
+            "toast_message": _bulk_toast(action, requested=len(uuids), applied=count),
             "is_bulk": True,
-            "bulk_ids": [str(uid) for uid in uuids],
-        },
-    )
+        }
+        return templates.TemplateResponse(request=request, name="pipeline/partials/_propose_bulk_response.html", context=propose_context)
+
+    context = await _proposal_list_context(request, session, status=status, q=q, page=page, page_size=page_size, sort=sort, order=order)
+    context |= {
+        "proposal": None,
+        "action_label": action + "d",
+        "toast_message": f"{count} proposals {action}d.",
+        "is_bulk": True,
+        "bulk_ids": [str(uid) for uid in uuids],
+    }
+    return templates.TemplateResponse(request=request, name="proposals/partials/bulk_response.html", context=context)

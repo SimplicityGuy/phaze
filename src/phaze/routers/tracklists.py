@@ -19,6 +19,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
+from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
@@ -133,7 +134,14 @@ async def list_tracklists(
     """Render the tracklists list page or HTMX partial."""
     # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
     # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    if request.headers.get("HX-Request") != "true":
+    #
+    # phaze-64uy (HYGIENE for the shape branch, a REAL FIX for the template flag below):
+    # ``wants_fragment`` per response_shape.py contract rule 1, matching the sibling
+    # ``/tracklists/scan`` handler converted by phaze-xc84. ``tracklists/partials/pagination.html``
+    # issues ``/tracklists/?filter=...&page=...`` WITHOUT ``hx-push-url``, so no URL enters
+    # history and no restore can reach this handler today.
+    is_fragment = wants_fragment(request)
+    if not is_fragment:
         return RedirectResponse(url="/s/tracklist", status_code=302)
 
     stmt = select(Tracklist)
@@ -199,6 +207,11 @@ async def list_tracklists(
         "pagination": pagination,
         "current_page": "tracklists",
         "active_filter": filter,
+        # Same predicate feeds the template's ``#tracklists-list`` wrapper gate, so the two
+        # decisions come from ONE source (phaze-64uy, matching phaze-xc84's scan_tab shape). A live
+        # swap lands INSIDE the existing wrapper and must not carry a second one; every
+        # full-document shape must supply exactly one. Never zero, never two.
+        "is_hx": is_fragment,
     }
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
@@ -241,16 +254,29 @@ async def scan_tab(
 
     pagination = Pagination(page=page, page_size=page_size, total=total)
 
-    return templates.TemplateResponse(
-        request=request,
-        name="tracklists/partials/scan_tab.html",
-        context={
-            "request": request,
-            "files": files,
-            "pagination": pagination,
-            "total_unscanned": total,
-        },
-    )
+    # Shape decision per routers/response_shape.py. ``wants_fragment`` is the ONLY sanctioned way
+    # to ask (rule 1); branching on the raw ``HX-Request`` header here would answer a history
+    # restore -- which also carries that header -- with a chrome-less fragment that htmx swaps
+    # into <body>, ignoring hx-target (rule 2).
+    #
+    # ``is_hx`` is ALSO what scan_tab.html gates its ``#scan-panel`` wrapper on, and the two
+    # decisions are the same decision: a live swap is landing INSIDE the existing wrapper and must
+    # not carry a second one, while every full-document shape must supply exactly one. Passing the
+    # same predicate to both keeps the id count at exactly one on every path.
+    is_fragment = wants_fragment(request)
+    context: dict[str, Any] = {
+        "request": request,
+        "files": files,
+        "pagination": pagination,
+        "total_unscanned": total,
+        "is_hx": is_fragment,
+        "current_page": "tracklists",
+    }
+
+    if is_fragment:
+        return templates.TemplateResponse(request=request, name="tracklists/partials/scan_tab.html", context=context)
+
+    return templates.TemplateResponse(request=request, name="tracklists/scan.html", context=context)
 
 
 @router.post("/scan", response_class=HTMLResponse)
@@ -1092,5 +1118,10 @@ async def _render_tracklist_list(request: Request, session: AsyncSession, filter
             "pagination": pagination,
             "current_page": "tracklists",
             "active_filter": filter_value,
+            # phaze-64uy: the wrapper gate comes from the handler, never from the raw header
+            # inside the template. Every caller of this helper is an htmx POST landing in the
+            # existing ``#tracklists-list``, so a live swap suppresses the duplicate wrapper and
+            # any other shape (never a restore -- these are POSTs) emits exactly one.
+            "is_hx": wants_fragment(request),
         },
     )

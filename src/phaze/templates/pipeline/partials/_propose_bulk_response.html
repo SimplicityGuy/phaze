@@ -1,0 +1,33 @@
+{# phaze-a6hm.11: response for PATCH /proposals/bulk when the action came from the PROPOSE workspace.
+
+   The sibling of proposals/partials/bulk_response.html, and deliberately shaped the same way: the
+   body is the container's FULL inner content -- rendered by the ONE partial that defines it -- plus
+   OOB fragments. It is a separate file from that one for exactly one reason, and it is the reason
+   the ids differ in the first place: the two containers hold different things.
+   #proposal-list-container holds proposal_table + bulk_actions + pagination;
+   #propose-workspace-list holds _file_table + bulk bar + _list_pager. Rendering either body into
+   the other's container is the phaze-7j50 defect, so the response that targets each one includes
+   that container's own definition and never the other's.
+
+   ID UNIQUENESS. This file declares no id. It includes _propose_list.html -- the container's INNER
+   content, NOT the wrapper div, which only propose_workspace.html emits -- so a bulk response
+   cannot nest a second #propose-workspace-list inside the one it is swapped into (the recurring
+   shape of gzrd / op6f / 7j50). The single OOB target, #toast-container, is the ONE declared by
+   shell.html; this fragment appends to it with `beforeend` and does NOT redeclare it (the phaze-gzrd
+   rule -- a workspace that re-declares the toast container creates a second element with that id
+   and toasts start landing in whichever one the swap resolved first).
+
+   NO OOB STATS FRAGMENT, unlike the legacy sibling. That one updates #stats-bar out of band; the
+   propose workspace's equivalent counts are the filter-tab counts and the header sub-count, both of
+   which live OUTSIDE this container and would need ids of their own to be swapped -- new ids whose
+   uniqueness would have to be argued, to update numbers the operator can already see move via the
+   pager. The pager IS re-rendered here (it is inside _propose_list.html), and it carries the
+   post-action filtered total, which is the number the bulk action actually changed (phaze-7j50).
+   Leaving the corpus-wide tab counts to the next natural render is the smaller, safer contract. #}
+{% include "pipeline/partials/_propose_list.html" %}
+
+{# OOB: inject toast. `toast_message` reports the count of REAL transitions returned by the UPDATE,
+   never the size of the submitted selection -- see bulk_action for why those two differ. #}
+<div hx-swap-oob="beforeend:#toast-container">
+    {% include "proposals/partials/toast.html" %}
+</div>

@@ -58,6 +58,19 @@ _HTML_LITERAL = re.compile(r"""["']([^"']+\.html)["']""")
 # so no template needs a reachability waiver any more. Keep it empty; if a future dynamic
 # `name=` makes a real template statically un-discoverable, add it back WITH an inline
 # justification -- do NOT relax the closure logic below to force green.
+# phaze-a6hm.12 drained the 2026-07-20 sweep back to empty, and did so by DELETING the
+# waived template rather than re-justifying it. The single entry was
+# `proposals/partials/proposal_content.html` -- the legacy proposals chrome -- and it is now
+# gone from disk, so the guard proves its absence instead of excusing its presence.
+#
+# The other two entries the sweep added, filter_tabs.html and search_box.html, were removed by
+# phaze-a6hm.2 for the opposite reason: the propose workspace adopted both (parameterised via
+# tabs_url/tabs_target and search_url/search_target), making them genuinely reachable. Between
+# adoption and deletion the sweep is fully resolved and nothing needs a waiver.
+#
+# Keep this EMPTY. If a future dynamic `name=` ever makes a real template statically
+# un-discoverable, add it back WITH an inline justification -- do NOT relax the closure logic
+# below to force green, and do NOT park a merely-unreachable template here to defer deleting it.
 _ALLOWLIST: frozenset[str] = frozenset()
 
 # Router ``"...html"`` literals that are intentionally NOT on-disk templates — a redirect

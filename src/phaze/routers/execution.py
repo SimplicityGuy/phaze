@@ -13,6 +13,13 @@ HSET at dispatch; HINCRBY mutations come exclusively from the Plan 28-02 POST
 endpoint (``routers/agent_exec_batches.py``). Both writers use
 ``app.state.redis`` (decode_responses=True) so the SSE reader gets ``str``,
 not ``bytes``.
+
+phaze-a6hm.8: the per-agent rollup table (``agents_table.html``) composes
+``phaze.routers.column_sort`` for its header whitelist/resolve/aria-sort
+machinery, with ONE necessary adaptation documented on ``EXEC_AGENTS_SORT``
+below -- this table has no backing SQL SELECT, so the actual reorder happens
+in Python against the (small, whole, never-paginated) per-batch agent list
+rather than via ``SortState.order_by()`` + ``paged_stmt``.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ import asyncio
 from datetime import UTC, datetime
 import json
 import math
+from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
@@ -34,7 +42,10 @@ import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.execution import ExecutionLog
 from phaze.routers.agent_exec_batches import _get_promote_status_script
+from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
+from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.collision import detect_collisions
 from phaze.services.execution_dispatch import (
@@ -51,12 +62,82 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from phaze.routers.column_sort import SortState
+
 
 logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["execution"])
+
+# phaze-a6hm.5: ONE contract, declared at import time next to the handler it serves
+# (column_sort.py contract rule 6). ``target`` is "#audit-content" -- the SAME host div the filter
+# tabs and pager already swap into (execution/audit_log.html), so a sort click introduces no new
+# swap target and no OOB fragment. "Error" stays a plain header: it is a sparsely-populated free-text
+# column (most rows carry no error), so ordering by it is not a meaningful operator question the way
+# ordering by status, operation, or timestamp is.
+AUDIT_SORT = SortContract(
+    endpoint="/audit/",
+    target="#audit-content",
+    columns=(
+        SortableColumn(key="operation", label="Operation", expression=ExecutionLog.operation),
+        SortableColumn(key="source_path", label="Source Path", expression=ExecutionLog.source_path),
+        SortableColumn(key="destination_path", label="Destination Path", expression=ExecutionLog.destination_path),
+        SortableColumn(key="sha256_verified", label="SHA256 Verified", expression=ExecutionLog.sha256_verified),
+        SortableColumn(key="status", label="Status", expression=ExecutionLog.status),
+        SortableColumn(key="executed_at", label="Timestamp", expression=ExecutionLog.executed_at),
+    ),
+    default_key="executed_at",
+    default_order=DESCENDING,
+)
+
+# phaze-a6hm.8: the per-agent rollup table's sort whitelist, declared at import time (column_sort
+# rule 6) next to the handlers that serve it. UNLIKE every other table wired to this contract so
+# far, ``agents_table.html`` has no backing SQL SELECT -- its rows are a Redis hash projection
+# (``_agents_view_from_hash`` / ``_build_agents_view``), rebuilt whole on every SSE tick. So each
+# ``expression`` here is an ``itemgetter`` over that row dict, not a SQLAlchemy column: the whitelist
+# -> concrete-accessor structural guarantee (rule 2's crux -- equality lookup only, never getattr,
+# never a name later turned into a column) still holds, it just resolves to a dict accessor instead
+# of a column object. ``SortState.order_by()`` assumes SQL and is deliberately UNUSED for this table
+# -- reordering happens via ``_sort_agents_view`` below, sorting the Python list directly. That is
+# NOT the rule-1 defect (sorting rows already fetched, reordering a PAGE and presenting it as the
+# whole corpus): this table is never paginated, so every render already holds the WHOLE per-batch
+# agent list, and sorting it in Python sorts the true full set, not a slice of it.
+#
+# ``endpoint`` carries no ``batch_id`` (unlike a normal path-scoped table endpoint) because a
+# SortContract is one frozen object built once at import time (rule 6) and this table's identity
+# varies per execution batch. ``batch_id`` instead rides ``view_state`` like any other view
+# parameter a header click must preserve (rule 4) -- which is exactly the role it plays here: the
+# operator's "which batch am I sorting" is itself part of the view state, no different in kind from
+# a stage lens or a page size elsewhere in this contract's other tables.
+EXEC_AGENTS_SORT = SortContract(
+    endpoint="/execution/agents-table",
+    target="#execution-agents-table",
+    columns=(
+        SortableColumn(key="name", label="Agent", expression=itemgetter("name")),
+        SortableColumn(key="completed", label="Completed", expression=itemgetter("completed")),
+        SortableColumn(key="failed", label="Failed", expression=itemgetter("failed")),
+        SortableColumn(key="total", label="Total", expression=itemgetter("total")),
+    ),
+    default_key="name",
+)
+# "Status" is deliberately NOT a sortable column: it is a derived pill (PENDING/RUNNING/COMPLETE/
+# ERRORS computed from completed+failed+total in the template), not a raw stored value -- the same
+# reason the pipeline.py contracts never offer their derived stage-pill columns for sorting either.
+
+
+def _sort_agents_view(agents_view: list[dict[str, object]], sort_state: SortState) -> list[dict[str, object]]:
+    """Reorder the FULL per-agent rollup by the resolved, whitelisted sort (phaze-a6hm.8).
+
+    ``sort_state.key`` is guaranteed to name one of ``EXEC_AGENTS_SORT``'s columns (column_sort
+    rule 2/3 -- :meth:`SortContract.resolve` never hands back anything else), so the lookup below can
+    only ever reach an ``itemgetter`` some developer wrote down on purpose, never a name derived from
+    the request. A stable sort is required so agents that tie on the chosen key keep their
+    ``dispatch_summary`` order across ticks instead of visibly shuffling once a second.
+    """
+    column = next(column for column in sort_state.contract.columns if column.key == sort_state.key)
+    return sorted(agents_view, key=column.expression, reverse=sort_state.order == DESCENDING)
 
 
 def _build_agents_view(
@@ -226,7 +307,10 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         undispatched_proposals,
     )
 
-    # 8. First-render context for progress.html.
+    # 8. First-render context for progress.html. phaze-a6hm.8: a fresh dispatch has no operator
+    # sort choice yet, so resolve() with sort=None/order=None -- degrades to the contract's default
+    # (rule 3), exactly like every other table's unvisited state.
+    sort_state = EXEC_AGENTS_SORT.resolve(view_state={"batch_id": str(batch_id)})
     return templates.TemplateResponse(
         request=request,
         name="execution/partials/progress.html",
@@ -240,7 +324,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
             # failed at first render, and the status is already terminal when NOTHING landed.
             "failed": undispatched_proposals,
             "subjobs_expected": subjobs_expected,
-            "agents": _build_agents_view(groups, agent_names=agent_names),
+            "agents": _sort_agents_view(_build_agents_view(groups, agent_names=agent_names), sort_state),
+            "sort": sort_state,
             "status": render_status,
         },
     )
@@ -335,6 +420,17 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
 
             agents_view = _agents_view_from_hash(data, dispatch_summary)
 
+            # phaze-a6hm.8: re-resolve the operator's sort choice every tick from the SAME hash the
+            # rest of this loop already reads. ``/execution/agents-table`` (below) is the only writer
+            # of ``agents_sort``/``agents_order``, and it writes ONLY whitelisted values -- but
+            # resolve() re-validates them anyway (never trust a stored value either), so a hand-edited
+            # or stale hash degrades to the default order rather than erroring the whole poll.
+            sort_state = EXEC_AGENTS_SORT.resolve(
+                sort=data.get("agents_sort"),
+                order=data.get("agents_order"),
+                view_state={"batch_id": batch_id},
+            )
+
             # First-connect dispatch_summary event (D-11 / UI-SPEC C1 step 2).
             if first_connect:
                 first_connect = False
@@ -357,11 +453,13 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
             )
             yield {"event": "progress", "data": progress_html}
 
-            # Every-tick agents_table event (UI-SPEC C2).
+            # Every-tick agents_table event (UI-SPEC C2). phaze-a6hm.8: sorted by the resolved state
+            # so the header's active caret/aria-sort stays correct across every re-render, not just
+            # the one that followed the click.
             agents_html = _render_partial(
                 request,
                 "execution/partials/agents_table.html",
-                {"agents": agents_view},
+                {"agents": _sort_agents_view(agents_view, sort_state), "sort": sort_state, "batch_id": batch_id},
             )
             yield {"event": "agents_table", "data": agents_html}
 
@@ -380,16 +478,68 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
     return EventSourceResponse(event_generator())
 
 
+@router.get("/execution/agents-table", response_class=HTMLResponse)
+async def execution_agents_table_sort(
+    request: Request,
+    batch_id: str = Query(...),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
+) -> HTMLResponse:
+    """Re-render the per-agent table under a new header-chosen sort (phaze-a6hm.8, EXEC_AGENTS_SORT).
+
+    This table is SSE-pushed (``execution_progress`` re-renders it every tick from the same
+    ``exec:{batch_id}`` hash), so a header click cannot simply swap a re-sorted fragment into place
+    the way a plain GET-rendered table does -- the next poll tick would silently overwrite it with
+    the default order within ~1s (dropping the "sorting preserves view state" guarantee, contract
+    rule 4, on its own timer). So this handler does two things, both gated through the SAME
+    ``resolve()`` call:
+
+      1. Persists the RESOLVED (whitelisted, never the raw wire value) sort onto the batch's hash, so
+         every subsequent SSE tick's ``EXEC_AGENTS_SORT.resolve()`` picks it up and keeps honouring it.
+      2. Returns the freshly-sorted fragment immediately, so the click has the SAME instant feedback
+         as every other sortable table instead of waiting on the next tick.
+
+    A batch that has already reaped (empty hash -- 24h TTL, or a stale/garbage-collected id) renders
+    the same empty state ``agents_table.html`` already shows for zero agents, matching the SSE
+    reader's own empty-hash handling; it does not 404 a poll for a batch that simply finished.
+    """
+    redis_client = request.app.state.redis
+    key = f"exec:{batch_id}"
+    data: dict[str, str] = await redis_client.hgetall(key)
+    sort_state = EXEC_AGENTS_SORT.resolve(sort=sort, order=order, view_state={"batch_id": batch_id})
+
+    agents_view: list[dict[str, object]] = []
+    if data:
+        await redis_client.hset(key, mapping={"agents_sort": sort_state.key, "agents_order": sort_state.order})
+        try:
+            dispatch_summary: list[dict[str, object]] = json.loads(data.get("dispatch_summary", "[]"))
+        except json.JSONDecodeError:
+            dispatch_summary = []
+        agents_view = _sort_agents_view(_agents_view_from_hash(data, dispatch_summary), sort_state)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/agents_table.html",
+        context={"agents": agents_view, "sort": sort_state, "batch_id": batch_id},
+    )
+
+
 @router.get("/audit/", response_class=HTMLResponse)
 async def audit_log(
     request: Request,
     status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
+    sort: str | None = Query(None),
+    order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Render the audit log page, or an HTMX table fragment."""
-    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size)
+    # phaze-a6hm.5: resolve BEFORE the read, same as every other sortable table (column_sort.py
+    # USING IT). ``status`` rides view_state so a header click keeps the operator on their active
+    # filter tab (contract rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
+    sort_state = AUDIT_SORT.resolve(sort=sort, order=order, view_state={"status": status, "page_size": page_size})
+    audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size, sort=sort_state)
     stats = await get_execution_stats(session)
 
     context = {
@@ -399,10 +549,13 @@ async def audit_log(
         "stats": stats,
         "current_status": status or "all",
         "current_page": "audit",
+        "sort": sort_state,
     }
 
-    # HTMX requests get tabs + table fragment (so tab active state updates)
-    if request.headers.get("HX-Request") == "true":
+    # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history
+    # restore falls through to the full page: htmx ignores hx-target there and swaps the response
+    # into <body>, so a fragment would replace the whole page. See routers/response_shape.py.
+    if wants_fragment(request):
         return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
