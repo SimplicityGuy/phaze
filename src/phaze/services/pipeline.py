@@ -484,10 +484,17 @@ async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit:
     scope ALONE -- recovering the aborted transaction WITHOUT expiring the caller's already-loaded
     ``agent`` ORM object (a plain ``session.rollback()`` would expire it and 500 the render on the next
     lazy load) -- and the function returns ``[]``. It NEVER raises into the 5s agent-pane poll.
+
+    ``created_at`` carries no uniqueness constraint, so two scan batches for the same agent can share a
+    value; with a partial ORDER BY, rows tied at the ``LIMIT`` boundary would come back in ANY order
+    (heap order, which shifts with page layout, vacuum, and plan choice), letting a batch flap in/out
+    between polls. Appending the unique ``ScanBatch.id`` makes the order TOTAL, so the LIMIT boundary is
+    deterministic. Same rationale as the paging contract's mandatory unique tiebreaker (rule 4, see
+    :mod:`phaze.services.pagination`).
     """
     try:
         async with session.begin_nested():
-            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc()).limit(limit)
+            stmt = select(ScanBatch).where(ScanBatch.agent_id == agent_id).order_by(ScanBatch.created_at.desc(), ScanBatch.id.desc()).limit(limit)
             rows = (await session.execute(stmt)).scalars().all()
         return list(rows)
     except Exception:

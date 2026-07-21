@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -25,6 +25,7 @@ from phaze.services.pipeline import (
     count_backfill_candidates,
     count_inflight_jobs,
     deduped_count,
+    get_agent_recent_scans,
     get_agent_reconciliations,
     get_analysis_failed_count,
     get_analysis_failed_files,
@@ -1850,3 +1851,85 @@ async def test_backfill_candidates_boundary_is_inclusive(session: AsyncSession) 
     await session.commit()
 
     assert await count_backfill_candidates(session, threshold) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_agent_recent_scans (phaze-c6j5): the LIMIT boundary must be deterministic
+# on a created_at tie, not arbitrary heap order.
+# ---------------------------------------------------------------------------
+
+
+def _scan_batch(agent_id: str, *, batch_id: uuid.UUID, created_at: object = None) -> ScanBatch:
+    """Build a ScanBatch with an INJECTABLE id, for tiebreaker tests that need a fixed pk."""
+    batch = ScanBatch(
+        id=batch_id,
+        agent_id=agent_id,
+        scan_path="/music",
+        status=ScanStatus.RUNNING.value,
+        total_files=0,
+        processed_files=0,
+    )
+    if created_at is not None:
+        batch.created_at = created_at  # type: ignore[assignment]
+    return batch
+
+
+@pytest.mark.asyncio
+async def test_get_agent_recent_scans_tiebreaker_orders_tied_created_at_by_id_desc(session: AsyncSession) -> None:
+    """Rows with an IDENTICAL created_at come back ordered by ScanBatch.id DESC, not heap order.
+
+    Seeds ``_AGENT_RECENT_SCANS_N`` + 1 (11) rows sharing ONE explicit ``created_at`` -- so
+    ``created_at`` alone leaves every row tied -- with ids assigned in a SCRAMBLED order
+    relative to insertion. Only the ``ScanBatch.id`` tiebreaker on
+    ``services.pipeline.get_agent_recent_scans`` makes the LIMIT-10 boundary total and
+    deterministic: the 10 returned rows must be exactly the 10 largest ids (id DESC to match
+    the primary ``created_at DESC``), and their order must be strictly descending by id.
+
+    Regression guard for phaze-c6j5: reverting the ``, ScanBatch.id.desc()`` suffix makes
+    both the boundary membership and the in-page order depend on Postgres heap layout
+    (verified: this assertion fails without the tiebreaker -- heap/insertion order does not
+    match descending-id order for the scrambled ids below).
+    """
+    from phaze.services.pipeline import _AGENT_RECENT_SCANS_N
+
+    await seed_active_agent(session, "nox")
+
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive: test schema's created_at is TIMESTAMP WITHOUT TZ
+    # 11 fixed, distinct ids -- deliberately NOT inserted in id order.
+    seed_count = _AGENT_RECENT_SCANS_N + 1
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{i:02d}") for i in range(seed_count)]
+    scrambled = ids[::2] + ids[1::2]  # e.g. [0,2,4,6,8,10,1,3,5,7,9]
+
+    for bid in scrambled:
+        session.add(_scan_batch("nox", batch_id=bid, created_at=tied_at))
+    await session.commit()
+
+    rows = await get_agent_recent_scans(session, "nox")
+    actual_ids = [row.id for row in rows]
+
+    # LIMIT is _AGENT_RECENT_SCANS_N (10 of the 11 seeded); the boundary + in-page order come
+    # entirely from the id tiebreaker: the 10 LARGEST ids, strictly descending.
+    assert len(actual_ids) == _AGENT_RECENT_SCANS_N
+    assert actual_ids == sorted(ids, reverse=True)[:_AGENT_RECENT_SCANS_N]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_recent_scans_orders_by_created_at_then_id(session: AsyncSession) -> None:
+    """Distinct created_at values dominate; the id tiebreaker only breaks exact ties.
+
+    Seeds explicit, strictly-increasing ``created_at`` values with ids in the OPPOSITE
+    order, and asserts the result follows ``created_at`` DESC (newest first) -- confirming
+    the primary sort key still wins when timestamps differ.
+    """
+    await seed_active_agent(session, "nox")
+    base = datetime(2026, 7, 20, 9, 0, 0)
+    # created_at increases with i; id decreases with i -> the two keys disagree.
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{(90 - i * 10):02d}") for i in range(5)]
+    for i, bid in enumerate(ids):
+        session.add(_scan_batch("nox", batch_id=bid, created_at=base + timedelta(seconds=i)))
+    await session.commit()
+
+    rows = await get_agent_recent_scans(session, "nox")
+
+    # Newest created_at first: i=4 (last inserted, largest timestamp) down to i=0.
+    assert [row.id for row in rows] == list(reversed(ids))
