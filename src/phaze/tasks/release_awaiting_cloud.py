@@ -50,6 +50,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob
+from phaze.services import cloud_staging
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates
 from phaze.services.route_control import get_route_control
@@ -286,11 +287,19 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
                 else:
                     tally["skipped"] += 1
             await session.commit()
+            # phaze-grzo: fire the s3_upload enqueues KueueBackend.dispatch parked, ONLY now that the
+            # cloud_job UPLOADING rows are durably committed -- so the worker-visible job (and its
+            # report_uploaded callback) can never precede the row it reads. A parked-but-unfired enqueue
+            # on a later flush failure leaves a committed UPLOADING row the staging reaper spills back.
+            await cloud_staging.flush_pending_s3_enqueues(session)
         except Exception:
             # A poisoned transaction (or any unexpected raise from the pre-dispatch loop body / the commit)
             # must degrade to a clean hold, never a cron raise. Roll back the whole tick -- this discards any
             # uncommitted partial write, so a dispatch that raised AFTER a DB mutation can never leave a
             # committed limbo/phantom row -- and report every candidate held; they stay AWAITING_CLOUD.
+            # phaze-grzo: drop the parked s3_upload enqueues too -- firing a job whose cloud_job upsert
+            # was just rolled back is the ORPHANING half of the enqueue-before-commit hole.
+            cloud_staging.drop_pending_s3_enqueues(session)
             logger.warning("stage_cloud_window: tick aborted by an unexpected error -> rolling back, holding all", exc_info=True)
             await session.rollback()
             return {"staged": 0, "skipped": len(candidates)}

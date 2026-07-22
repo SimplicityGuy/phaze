@@ -603,7 +603,9 @@ async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any) -> None:
-    """Kueue dispatch runs the no-commit S3 core: cloud_job UPLOADING + s3_upload enqueue, no commit."""
+    """Kueue dispatch runs the no-commit S3 core: cloud_job UPLOADING + a PARKED s3_upload enqueue, no commit."""
+    from phaze.services import cloud_staging
+
     _stub_s3(monkeypatch)
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
@@ -619,6 +621,10 @@ async def test_kueue_dispatch_stages_s3_and_upserts_uploading(session: AsyncSess
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one_or_none()
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
+    # phaze-grzo: the enqueue is PARKED until the row commits, not fired inline by dispatch.
+    assert router.captures == []
+    await session.commit()
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 1
     assert [t for t, _ in router.queues["nox-io"].captured] == ["s3_upload"]
 
 
@@ -758,21 +764,23 @@ async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(s
 
 
 @pytest.mark.asyncio
-async def test_kueue_dispatch_enqueue_failure_rolls_back_write_via_savepoint(
+async def test_kueue_dispatch_defers_enqueue_past_the_committed_row(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
 ) -> None:
-    """An ``s3_upload`` enqueue failure AFTER the ``cloud_job`` upsert leaves the row re-pickable.
+    """phaze-grzo: ``KueueBackend.dispatch`` no longer FIRES the ``s3_upload`` enqueue -- it PARKS it.
 
-    The KueueBackend/``cloud_staging._stage_file_to_s3`` twin of
-    :func:`test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint`: pre-fix, the S3-staging
-    core upserted ``status='uploading'`` (+ ``s3_key``/``upload_id``/``staging_bucket``) BEFORE the
-    fallible ``s3_upload`` enqueue with no savepoint, so a raising enqueue left the row stranded. Post-fix
-    the upsert + enqueue run inside ``session.begin_nested()`` (``cloud_staging.py``), so the raise rolls
-    back ONLY that upsert -- restoring ``status='awaiting'`` -- and ``KueueBackend.dispatch``'s trailing
-    ``backend_id``/``staging_bucket`` write never runs (the SAVEPOINT raise short-circuits ``dispatch``
-    before that statement).
+    Supersedes the phaze-uciu.3 SAVEPOINT twin: pre-grzo the S3-staging core enqueued ``s3_upload``
+    inline (on SAQ's OWN psycopg pool, which commits the job durably + IMMEDIATELY), so a fast agent
+    could dequeue and POST ``/uploaded`` before this asyncpg session committed the ``cloud_job``
+    UPLOADING row -- ``report_uploaded`` then saw no UPLOADING row and no-op'd, stranding the file.
+    Post-grzo ``dispatch`` upserts the row and PARKS the enqueue; the drain commits FIRST and only then
+    flushes it, so the worker-visible job strictly follows its committed row. Because the enqueue is no
+    longer in the transaction, a raising enqueue can NOT roll back the upsert -- ``dispatch`` itself
+    never fires it, so it never raises here.
     """
     from sqlalchemy import select
+
+    from phaze.services import cloud_staging
 
     _stub_s3(monkeypatch)
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
@@ -783,16 +791,23 @@ async def test_kueue_dispatch_enqueue_failure_rolls_back_write_via_savepoint(
     await backends.hold_awaiting_cloud(session, file)
     await session.commit()
 
+    # A router whose enqueue always raises: dispatch must NOT touch it (the enqueue is deferred), so
+    # dispatch completes cleanly and stamps the UPLOADING row + backend_id + staging_bucket.
     router = _RaisingTaskRouter()
-    with pytest.raises(RuntimeError, match="saq enqueue blew up"):
-        await backend.dispatch(file, session, router)
+    await backend.dispatch(file, session, router)  # no raise: the enqueue is parked, not fired
 
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
-    assert job.status == CloudJobStatus.AWAITING.value
-    assert job.backend_id is None
-    assert job.staging_bucket is None
-    assert job.s3_key is None
-    assert await backend.in_flight_count(session) == 0
+    assert job.status == CloudJobStatus.UPLOADING.value
+    assert job.backend_id == "kueue-x64"
+    assert job.staging_bucket == "staging-a"
+    assert await backend.in_flight_count(session) == 1  # the staged row holds its cap slot
+
+    await session.commit()
+    # Flushing a parked enqueue whose queue raises is best-effort: it fires 0, swallows the error (never
+    # re-raises), and leaves the committed UPLOADING row for the age-bounded staging reaper to spill back.
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one()
+    assert job.status == CloudJobStatus.UPLOADING.value  # still staged; the reaper (not a rollback) recovers it
 
 
 @pytest.mark.asyncio

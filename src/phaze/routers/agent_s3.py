@@ -274,6 +274,12 @@ async def report_upload_failed(
     merged: dict[str, Any] = {**base_payload, "s3_upload_attempt": next_attempt}
     await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(payload=merged))
     await session.commit()
+    # phaze-grzo: redrive_upload PARKS its fresh s3_upload enqueue on the session; fire it ONLY now
+    # that the re-driven cloud_job (still UPLOADING) and the attempt stamp are durably committed, so the
+    # re-driven job (and its report_uploaded callback) can never precede the committed row it reads. A
+    # commit failure above raises before this line, so the parked enqueue is never fired against a
+    # rolled-back row (the request-scoped session is discarded, dropping the parked entry).
+    await cloud_staging.flush_pending_s3_enqueues(session)
 
     logger.info("report_upload_failed: re-driving upload (slot retained)", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
     return UploadFailedResponse(file_id=file_id, cleared=False)

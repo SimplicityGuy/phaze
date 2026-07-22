@@ -252,6 +252,10 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
 
     # redrive resolves the bucket from the RECORDED cloud_job.staging_bucket (MKUE-02) -- no bucket arg.
     await cloud_staging.redrive_upload(session, file, task_router)
+    # phaze-grzo: redrive PARKS its enqueue on the no-commit core; the caller fires it post-commit.
+    assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 1  # not yet fired
+    await session.commit()
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 1
 
     job = await _cloud_job(session, file_id)
     assert job is not None
@@ -338,3 +342,50 @@ async def test_redrive_upload_raises_when_no_staging_bucket_resolvable(
     with pytest.raises(s3_staging.S3StagingError, match="could not resolve a staging bucket"):
         await cloud_staging.redrive_upload(session, file, task_router)
     assert task_router.queues == {}  # nothing enqueued on the loud failure
+
+
+async def test_stage_core_parks_enqueue_until_row_committed(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-grzo: the no-commit core PARKS the s3_upload enqueue; it fires ONLY after a commit+flush.
+
+    Enqueue-before-commit let a fast agent POST /uploaded before the cloud_job UPLOADING row committed,
+    so report_uploaded saw no UPLOADING row and no-op'd -- stranding the file. The core must not make
+    the job worker-visible until the row it reads is durable.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    # The no-commit core: upserts the UPLOADING row but must NOT have fired the enqueue yet.
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    assert task_router.captures == []  # parked, not fired -- no job is worker-visible pre-commit
+
+    await session.commit()
+    fired = await cloud_staging.flush_pending_s3_enqueues(session)
+    assert fired == 1
+    assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 1
+    # A second flush is a clean no-op (the parked list was popped) -- never a double-fire.
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+
+
+async def test_drop_pending_discards_parked_enqueue_without_firing(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-grzo: dropping parked enqueues on a rollback prevents ORPHANING (a job vs a rolled-back row)."""
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    # Simulate the caller rolling the tick back: the upsert AND its parked enqueue must both vanish.
+    cloud_staging.drop_pending_s3_enqueues(session)
+    await session.rollback()
+
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+    assert task_router.captures == []  # the orphan job was never fired
