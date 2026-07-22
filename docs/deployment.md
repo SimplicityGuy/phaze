@@ -63,14 +63,14 @@ flowchart TB
 
 ## Deployment Targets
 
-The repo ships three deployment compose files plus a dev override:
+The repo ships three deployment compose files plus a dev overlay:
 
 | File | Host | Services | Notes |
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
 | `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-fingerprint`, `worker-meta`, `worker-io` (four per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher`, `audfprint`, `panako` | All services pull from GHCR via `PHAZE_IMAGE_TAG`: the lane workers/`watcher` from `ghcr.io/simplicityguy/phaze`, `audfprint`/`panako` from the `/audfprint` + `/panako` sub-paths. Each sidecar keeps a commented dev-only `build:` fallback. See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
 | `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, named scratch. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
-| `docker-compose.override.yml` | Application server (dev only) | overlays `api` + `worker` | Auto-merged by `docker compose` in dev. Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`. Do **not** rely on it in production (the override skips the cert-bootstrap entrypoint). |
+| `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
 ### Application-server services (`docker-compose.yml`)
 
@@ -215,7 +215,8 @@ mkdir -p certs   # phaze-he8m: own ./certs as the operator (uid 1000) BEFORE `up
 just up
 ```
 
-`just up` runs `docker compose up -d` (it also runs `mkdir -p certs` for you). The `api` container
+`just up` runs `docker compose -f docker-compose.yml up -d` (base compose only, so the dev overlay
+is never auto-merged — phaze-476w; it also runs `mkdir -p certs` for you). The `api` container
 bind-mounts `./certs:/certs:rw` and runs as the non-root `phaze` user (uid 1000). **The `./certs`
 dir must exist and be owned by uid 1000 before `up`** (phaze-he8m): on a rootful Linux docker engine
 a *missing* bind-mount source is auto-created by the daemon as `root:root`, and the uid-1000 cert
@@ -632,7 +633,7 @@ Before shipping a file-server host to production:
 - [ ] `phaze-ca.key` NEVER copied off the app-server host
 - [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.1`), not `latest`
 - [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
-- [ ] `docker-compose.override.yml` not present / not active on production hosts (it bypasses the cert-bootstrap entrypoint)
+- [ ] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint (phaze-476w)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
 - [ ] `/admin/agents` page shows **alive** status within ~60s of `just up-agent`
 
@@ -643,7 +644,7 @@ Before shipping a file-server host to production:
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
 - `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just cloud-agent-up` / `cloud-agent-down`)
-- `docker-compose.override.yml` — dev-only overlay (live reload)
+- `docker-compose.dev.yml` — dev-only overlay (live reload; `just up-dev`, explicit `-f`, never auto-merged)
 - `backends.toml` — the cloud-backend registry (mounted at `PHAZE_BACKENDS_CONFIG_FILE`; absent ⇒ implicit local-only)
 - [docs/cloud-burst.md](cloud-burst.md) — `kind=compute` agent deploy + runbook (deep-dive; config surface is `backends.toml`)
 - [docs/k8s-burst.md](k8s-burst.md) — `kind=kueue` cluster deploy + runbook (deep-dive; config surface is `backends.toml`)

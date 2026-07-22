@@ -30,7 +30,7 @@ tailwind_version := "v4.3.2"
 install: tailwind
     uv sync
 
-[doc('Start all services in Docker')]
+[doc('Start all services in Docker (production topology: base compose only)')]
 [group('dev')]
 up: tailwind
     # phaze-he8m: pre-create the ./certs bind-mount source owned by the invoking
@@ -38,7 +38,21 @@ up: tailwind
     # source dir as root:root and the uid-1000 cert bootstrap dies with
     # PermissionError writing /certs/phaze-ca.crt before uvicorn ever binds.
     mkdir -p certs
-    docker compose up -d
+    # phaze-476w: pass -f docker-compose.yml EXPLICITLY so the dev overlay is
+    # NEVER auto-merged. A bare `docker compose up` auto-merges the old
+    # docker-compose.override.yml, which replaced the api command with plain-HTTP
+    # `uvicorn --reload` and skipped the cert-bootstrap entrypoint. Use `just
+    # up-dev` for the live-reload dev overlay.
+    docker compose -f docker-compose.yml up -d
+
+[doc('Start all services with the live-reload DEV overlay (docker-compose.dev.yml)')]
+[group('dev')]
+up-dev: tailwind
+    # phaze-476w: the dev overlay (plain-HTTP uvicorn --reload, ./src bind mount,
+    # PHAZE_DEBUG=true) is now opt-in and included EXPLICITLY here — it is no
+    # longer auto-merged into `just up`. It deliberately skips the cert bootstrap.
+    mkdir -p certs
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
 [group('dev')]

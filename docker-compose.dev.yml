@@ -1,0 +1,25 @@
+---
+# docker-compose.dev.yml — LOCAL DEVELOPMENT overlay (phaze-476w).
+#
+# This file was formerly docker-compose.override.yml, which `docker compose up`
+# AUTO-MERGES by default. That silently hijacked the documented production
+# bring-up (`just up`): it replaced the api command with plain-HTTP
+# `uvicorn --reload` + PHAZE_DEBUG=true, so the cert-bootstrap entrypoint
+# (phaze.entrypoint → ensure_certs_present → uvicorn --ssl-*) never ran, no CA
+# was generated, and every agent's TLS handshake failed.
+#
+# It is now an EXPLICIT overlay, never auto-merged. Use it only via `just up-dev`:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Production `just up` runs `docker compose -f docker-compose.yml up -d` (base
+# only), so the cert bootstrap always runs.
+services:
+  api:
+    command: uv run uvicorn phaze.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./src:/app/src
+    environment:
+      - PHAZE_DEBUG=true
+
+  worker:
+    volumes:
+      - ./src:/app/src
