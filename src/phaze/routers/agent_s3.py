@@ -16,10 +16,21 @@ Mirrors ``agent_push.py`` (report_pushed / report_push_mismatch):
   ``s3_upload:<file_id>`` scheduling-ledger payload JSONB (Pitfall 4). Under
   ``push_max_attempts`` control re-drives the upload (``cloud_staging.redrive_upload``: abort the
   prior multipart + re-stage) keeping ``cloud_job`` UPLOADING and stamps the incremented attempt
-  back (T-53-16). At/over the cap control sets ``cloud_job`` FAILED, aborts the multipart, deletes
-  the staged object, and clears the ledger -- the terminal cleanup that prevents orphaned in-flight
-  uploads / leaked objects (KSTAGE-04 / T-53-17). With no fileserver online the re-drive is a clean
-  200 hold (NoActiveAgentError caught), never a 500 (T-53-19).
+  back (T-53-16). At/over the cap control spills ``cloud_job`` back to ``awaiting`` + clears the ledger
+  (committed FIRST), THEN aborts the multipart + deletes the staged object POST-COMMIT (phaze-1v37:
+  best-effort cleanup that holds no lock across the S3 round-trip; lifecycle TTL backstops a miss) --
+  the terminal cleanup that prevents orphaned in-flight uploads / leaked objects (KSTAGE-04 / T-53-17).
+  With no fileserver online the re-drive is a clean 200 hold (NoActiveAgentError caught), never a 500
+  (T-53-19).
+
+phaze-1v37: every control-side S3 SDK call runs OUTSIDE the request's DB transaction -- ``/uploaded``
+releases the (lock-free) read before ``complete_multipart_upload`` and re-opens a transaction for the
+idempotent CAS; ``/failed`` commits the spill CAS + ledger clear before the abort/delete cleanup -- so
+a wedged S3 endpoint never pins a pooled connection idle-in-transaction (draining the small PgBouncer
+pool and 500ing the control plane). The S3 client is additionally bounded with explicit connect/read
+timeouts (``s3_client_timeout_sec``). The under-cap ``redrive_upload`` S3 setup still runs under the
+attempt-counter advisory lock (its ledger RMW is coupled to that lock); the bounded client timeouts cap
+that residual pin.
 
 AUTH-01 discipline: ``file_id`` always travels on the URL PATH; the agent identity comes from the
 token dependency. The request bodies carry NO identity (``extra="forbid"`` on the schemas).
@@ -89,17 +100,72 @@ async def report_uploaded(
         logger.info("report_uploaded: idempotent no-op (cloud_job absent or not UPLOADING)", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
+    settings = cast("ControlSettings", get_settings())
+
+    # phaze-eo5x: an EMPTY parts list is a degenerate/zero-byte upload (the agent's _transfer_parts
+    # returns [] for a 0-byte source: the first read yields b'' and breaks before any PUT). S3 multipart
+    # REQUIRES >=1 part -- CompleteMultipartUpload rejects an empty list with MalformedXML, which
+    # s3_staging re-raises as S3StagingError (it swallows only NoSuchUpload/404). report_uploaded does not
+    # catch it, so it escaped as an unhandled 500 that the SAQ retry reproduced forever, permanently
+    # stranding cloud_job UPLOADING and leaking the in-flight cap slot + the multipart. There is NO valid
+    # completion for zero parts, so drive a clean terminal resolution that FREES the job instead: spill the
+    # cloud_job back to 'awaiting' with its cloud budget SPENT (so select_backend routes the file to LOCAL,
+    # where a 0-byte file terminally fails analysis -- the uniform failure funnel), abort the orphaned
+    # multipart + delete any staged object, and clear the ledger -- the SAME terminal cleanup the over-cap
+    # /failed branch runs (KSTAGE-04 / T-53-17). Return a definitive 200 so the agent stops retrying.
+    if not body.parts:
+        bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket)
+        # NULL-GUARD: hold_awaiting_cloud's spill CAS dereferences file.id (mirrors the /failed over-cap
+        # branch); an absent file (unreachable -- cloud_job.file_id FKs files.id) takes the full no-op.
+        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+        upload_id = cloud_job.upload_id
+        cleared = file is not None and await hold_awaiting_cloud(
+            session,
+            file,
+            attempts=settings.cloud_submit_max_attempts,
+            expect_status=(CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value),
+            clear_cloud_phase=True,
+        )
+        if cleared:
+            await clear_ledger_entry(session, f"s3_upload:{file_id}")
+        await session.commit()
+        # phaze-1v37: run the S3 abort + delete AFTER the commit (best-effort, lifecycle TTL backstop),
+        # so the spill CAS + ledger clear are durable and no transaction/row lock is held across the S3
+        # round-trip (mirrors the /failed over-cap branch and _delete_staged_object_if_cloud).
+        if cleared and bucket is not None:
+            if upload_id:
+                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+            await s3_staging.delete_staged_object(file_id, bucket)
+        logger.warning(
+            "report_uploaded: empty parts list (zero-byte/degenerate upload) -> cloud_job spilled to awaiting (routes local) + cleaned up",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            cleared=cleared,
+        )
+        return UploadedResponse(file_id=file_id)
+
     # Complete the multipart upload control-side with the agent-reported parts (KSTAGE-01), on the
     # RECORDED staging bucket (MKUE-02 -- a kueue UPLOADING row always carries the staging_bucket
     # KueueBackend.dispatch stamped; resolve it, never re-derive).
-    settings = cast("ControlSettings", get_settings())
     bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket)
     if bucket is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="staged upload has no resolvable staging bucket recorded",
         )
-    await s3_staging.complete_multipart_upload(file_id, cloud_job.upload_id, [(p.part_number, p.etag) for p in body.parts], bucket)
+    # phaze-1v37: capture the ORM values needed for the S3 call into locals, then RELEASE the read
+    # transaction BEFORE the multipart-complete round-trip so the pooled connection is not pinned
+    # idle-in-transaction across S3 network I/O (a wedged/blackholed endpoint would otherwise hold a
+    # PgBouncer SESSION-mode upstream connection for the full botocore window, and a handful of
+    # concurrent callbacks would drain the small pool and 500 the whole control plane). The SELECT above
+    # took NO row lock (READ COMMITTED) and wrote nothing, so committing here just returns the connection
+    # to the pool. The idempotent UPLOADING->UPLOADED CAS below re-opens a fresh transaction after the
+    # S3 call, and its rowcount guard still makes a concurrent duplicate a clean no-op.
+    upload_id = cloud_job.upload_id
+    parts = [(p.part_number, p.etag) for p in body.parts]
+    await session.commit()
+
+    await s3_staging.complete_multipart_upload(file_id, upload_id, parts, bucket)
 
     # Idempotent flip guarded on the CURRENT status so a concurrent duplicate that also passed the
     # pre-check above does not double-flip. An UPDATE returns a CursorResult at runtime (exposing
@@ -226,16 +292,22 @@ async def report_upload_failed(
         # cleared (helper CAS hit): gate S3 cleanup + ledger clear behind the CAS.
         # Phase 90 (D-09): the former AWAITING_CLOUD FileRecord.state dual-write was removed; the
         # cloud_job sidecar re-stamped to 'awaiting' by hold_awaiting_cloud is the sole derived authority.
-        # Cleanup PRESERVED on the spill path: abort the multipart + delete the staged object so no orphaned
-        # in-flight upload / leaked object survives (KSTAGE-04 / T-53-17) even though the file lives on locally.
         # MKUE-02: act on the RECORDED staging bucket; a bucketless row (no S3 object) skips the S3 ops cleanly.
+        # phaze-1v37: capture the bucket + upload_id into locals and COMMIT the spill CAS + ledger clear
+        # FIRST, then run the S3 abort + delete AFTER the commit. Pre-1v37 they ran while the transaction
+        # (holding the pg_advisory_xact_lock taken at the top AND the cloud_job row lock the spill CAS took)
+        # was still open, pinning the pooled connection across the S3 round-trip and blocking the staging
+        # reaper + sibling /failed callbacks for the full botocore window. Post-commit the cleanup is
+        # best-effort over durable state (the lifecycle TTL backstops a miss, KSTAGE-04 / T-53-17) and holds
+        # no lock -- mirroring _delete_staged_object_if_cloud's record-first discipline (phaze-uoiw).
         bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket) if cloud_job is not None else None
-        if bucket is not None:
-            if cloud_job is not None and cloud_job.upload_id:
-                await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id, bucket)
-            await s3_staging.delete_staged_object(file_id, bucket)
+        upload_id = cloud_job.upload_id if cloud_job is not None else None
         await clear_ledger_entry(session, ledger_key)
         await session.commit()
+        if bucket is not None:
+            if upload_id:
+                await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+            await s3_staging.delete_staged_object(file_id, bucket)
         logger.warning(
             "report_upload_failed: re-drive cap reached -> cloud_job re-stamped to awaiting + cleaned up + spill to AWAITING_CLOUD (routes to local)",
             file_id=str(file_id),
@@ -274,6 +346,12 @@ async def report_upload_failed(
     merged: dict[str, Any] = {**base_payload, "s3_upload_attempt": next_attempt}
     await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(payload=merged))
     await session.commit()
+    # phaze-grzo: redrive_upload PARKS its fresh s3_upload enqueue on the session; fire it ONLY now
+    # that the re-driven cloud_job (still UPLOADING) and the attempt stamp are durably committed, so the
+    # re-driven job (and its report_uploaded callback) can never precede the committed row it reads. A
+    # commit failure above raises before this line, so the parked enqueue is never fired against a
+    # rolled-back row (the request-scoped session is discarded, dropping the parked entry).
+    await cloud_staging.flush_pending_s3_enqueues(session)
 
     logger.info("report_upload_failed: re-driving upload (slot retained)", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
     return UploadFailedResponse(file_id=file_id, cleared=False)

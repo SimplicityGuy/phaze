@@ -566,11 +566,16 @@ class KueueBackend(_BaseBackend):
         and the drain's single post-loop commit would then persist a PUSHING file with no ``cloud_job``
         row -- the exact "limbo row" this ordering forbids.
 
-        phaze-uciu.3: ``_stage_file_to_s3`` itself wraps its ``cloud_job`` upsert + ``s3_upload`` enqueue
-        in a ``session.begin_nested()`` SAVEPOINT, so a failed enqueue (SAQ's own psycopg pool, not this
-        asyncpg session) rolls back ONLY that upsert -- restoring the row's prior ``status`` (typically
-        ``awaiting``) -- and re-raises out of this ``dispatch`` to the caller, leaving the outer
-        transaction (and the drain's ``pg_advisory_xact_lock``) alive.
+        phaze-grzo (supersedes phaze-uciu.3): ``_stage_file_to_s3`` no longer fires the ``s3_upload``
+        enqueue inline -- it PARKS it on the session and the drain fires it via
+        ``flush_pending_s3_enqueues`` AFTER the single post-loop commit. SAQ's ``PostgresQueue`` commits
+        the job on its OWN psycopg pool immediately, so an inline enqueue made the job (and its
+        ``report_uploaded`` callback) worker-visible BEFORE this asyncpg session committed the UPLOADING
+        row -- a fast callback then saw no UPLOADING row and no-op'd, stranding the file. Parking the
+        enqueue removes it from the transaction entirely, so this ``dispatch`` no longer raises on an
+        enqueue failure (there is no SAVEPOINT to roll back); the drain drops parked enqueues on a tick
+        rollback and a post-commit flush failure leaves the committed UPLOADING row for the age-bounded
+        ``_reap_stranded_staging`` reaper (phaze-ul2v).
         """
         cfg = cast("ControlSettings", get_settings())
         # D-06: deterministic per-file bucket over this backend's bound set; the returned id is authoritative.

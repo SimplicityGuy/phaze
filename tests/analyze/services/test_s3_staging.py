@@ -481,3 +481,32 @@ async def test_delete_staged_object_acts_on_the_called_bucket(two_buckets: tuple
         await s3_staging.delete_staged_object(fid, bucket_a)
         gone = await http.get(await s3_staging.presign_get(fid, bucket_a))
         assert gone.status_code in (403, 404)
+
+
+def test_client_is_bounded_with_explicit_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1v37: _client bounds every S3 call with explicit connect/read timeouts + no retries.
+
+    Botocore's minute-scale defaults plus its retry chain let a wedged S3 endpoint pin the calling
+    connection for minutes; the control-side staging callbacks run these S3 verbs, so an unbounded hang
+    drains the small DB pool. The AioConfig must carry connect_timeout == read_timeout ==
+    s3_client_timeout_sec and cap retries at a single attempt.
+    """
+    captured: dict[str, object] = {}
+
+    class _CapSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def client(self, _service: str, **kwargs: object) -> object:
+            captured["config"] = kwargs.get("config")
+            return SimpleNamespace()
+
+    monkeypatch.setattr(s3_staging.aioboto3, "Session", _CapSession)
+    monkeypatch.setattr(s3_staging, "get_settings", lambda: SimpleNamespace(s3_client_timeout_sec=17))
+
+    s3_staging._client(_bucket_config("http://s3.test", "b"))
+
+    cfg = captured["config"]
+    assert cfg.connect_timeout == 17
+    assert cfg.read_timeout == 17
+    assert cfg.retries == {"max_attempts": 1}

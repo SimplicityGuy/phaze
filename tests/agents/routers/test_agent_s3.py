@@ -275,6 +275,95 @@ async def test_uploaded_completes_multipart_control_side_and_flips_state(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
+async def test_uploaded_empty_parts_spills_to_awaiting_instead_of_500_looping(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-eo5x: an EMPTY parts list (zero-byte upload) must NOT reach complete_multipart_upload.
+
+    S3 multipart requires >=1 part; CompleteMultipartUpload rejects an empty list with MalformedXML,
+    which re-raised as an unhandled 500 that the SAQ retry reproduced forever -- stranding cloud_job
+    UPLOADING and leaking the cap slot. The handler must instead drive a clean terminal resolution:
+    spill the cloud_job back to awaiting (budget spent -> routes local), abort the orphaned multipart +
+    delete any staged object, clear the ledger, and return a definitive 200 so the agent stops retrying.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=0)
+    complete = AsyncMock()
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", complete)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json={"parts": []})
+
+    assert r.status_code == 200, r.text
+    complete.assert_not_awaited()  # the degenerate empty-parts upload is NEVER completed
+    abort.assert_awaited_once()  # the orphaned multipart is cleaned up
+    delete.assert_awaited_once()
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.AWAITING.value  # freed: spilled to awaiting (routes local)
+    assert job.cloud_phase is None
+    assert job.attempts >= settings.cloud_submit_max_attempts  # cloud budget spent -> local next tick
+    assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
+
+
+async def test_uploaded_releases_txn_before_the_multipart_complete_round_trip(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-1v37: the read transaction is released BEFORE complete_multipart_upload's S3 round-trip.
+
+    Pre-1v37 the pooled connection was pinned idle-in-transaction across the multipart-complete S3 call;
+    a handful of concurrent callbacks against a wedged endpoint drained the small pool and 500'd the
+    whole control plane. The handler must commit the (lock-free, write-free) read before the S3 call, so
+    we spy that a session commit is recorded strictly BEFORE complete_multipart_upload runs.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _complete_recording(*_args: Any, **_kwargs: Any) -> None:
+        order.append("complete")
+
+    monkeypatch.setattr(_AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", _complete_recording)
+
+    body = {"parts": [{"part_number": 1, "etag": '"etag-1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    assert r.status_code == 200, r.text
+    # A commit (releasing the read txn) precedes the S3 multipart-complete call.
+    assert "complete" in order
+    assert order.index("commit") < order.index("complete")
+    # The flip still lands (in the re-opened transaction after the S3 call).
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value
+
+
 async def test_uploaded_duplicate_is_idempotent_noop_without_recompleting(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

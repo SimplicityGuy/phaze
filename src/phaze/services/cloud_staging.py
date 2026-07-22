@@ -22,8 +22,9 @@ the ORM + queue orchestration only.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass, field
 import math
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 import uuid
 
 from sqlalchemy import func, select
@@ -50,6 +51,82 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+# phaze-grzo: the session.info key under which a staging body PARKS its s3_upload enqueue until the
+# caller has durably committed the cloud_job UPLOADING row. Enqueue-before-commit was a dual-write
+# ordering hole: SAQ's PostgresQueue enqueues on its OWN psycopg pool and commits the job durably +
+# immediately, independent of THIS asyncpg session, so a fast agent could dequeue s3_upload and POST
+# /uploaded before the cloud_job UPLOADING row the callback reads was committed -- report_uploaded
+# then sees no UPLOADING row and idempotently no-ops, stranding the file. The fix defers the enqueue
+# past the caller's commit so the worker-visible side effect can never precede the row it reads.
+_PENDING_ENQUEUE_KEY = "cloud_staging_pending_s3_enqueues"
+
+
+@dataclass(frozen=True)
+class _PendingS3Enqueue:
+    """One deferred ``s3_upload`` enqueue: the resolved queue + the enqueue kwargs, flushed post-commit."""
+
+    queue: Any
+    enqueue_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
+def _park_s3_enqueue(session: AsyncSession, pending: _PendingS3Enqueue) -> None:
+    """Record a deferred ``s3_upload`` enqueue on the session, to be flushed AFTER the caller commits."""
+    session.info.setdefault(_PENDING_ENQUEUE_KEY, []).append(pending)
+
+
+def drop_pending_s3_enqueues(session: AsyncSession) -> None:
+    """Discard any parked ``s3_upload`` enqueues WITHOUT firing them (phaze-grzo).
+
+    The caller MUST call this whenever the transaction that produced the parked enqueues is rolled
+    back: firing an enqueue whose ``cloud_job`` upsert was rolled back is the ORPHANING half of the
+    dual-write hole (a job runs against a row that never committed). Dropping the parked enqueues on
+    rollback closes that variant.
+    """
+    session.info.pop(_PENDING_ENQUEUE_KEY, None)
+
+
+async def flush_pending_s3_enqueues(session: AsyncSession) -> int:
+    """Fire every ``s3_upload`` enqueue parked on ``session`` and return the count fired (phaze-grzo).
+
+    MUST be called ONLY after the caller has committed the ``cloud_job`` UPLOADING row(s) the parked
+    jobs depend on, so the worker-visible side effect can never precede its committed row. Best-effort
+    per item: an enqueue failure leaves that file's row committed-but-UPLOADING (a stranded row the
+    age-bounded ``_reap_stranded_staging`` reaper spills back to awaiting -- phaze-ul2v), and must not
+    block the remaining enqueues. The list is popped up front so a partial flush never double-fires.
+    """
+    pending: list[_PendingS3Enqueue] = session.info.pop(_PENDING_ENQUEUE_KEY, [])
+    fired = 0
+    for item in pending:
+        try:
+            # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
+            await item.queue.connect()
+            job = await item.queue.enqueue("s3_upload", **item.enqueue_kwargs)
+            if job is None:
+                # phaze-oj7x: SAQ deduped the deterministic key against a still-incomplete
+                # ``s3_upload:<file_id>`` job (its ON CONFLICT only overwrites an aborted/complete/failed
+                # row). This is the re-drive-during-active-job window: the flush did NOT land a fresh job.
+                # It is benign rather than a silent poison -- the prior job carries retries=0, so it
+                # settles terminal (releasing the key) and the control re-drive / stranded-staging reaper
+                # re-enqueues cleanly on the next pass. Surface it loudly instead of claiming a re-drive
+                # that never ran.
+                logger.warning(
+                    "flush_pending_s3_enqueues: s3_upload enqueue deduped against a still-incomplete job "
+                    "(fresh job NOT landed; prior job settles terminal via retries=0, re-drive lands on next pass)",
+                    key=item.enqueue_kwargs.get("key"),
+                )
+            else:
+                fired += 1
+        except Exception:
+            # A parked enqueue that fails leaves the committed UPLOADING row for the staging reaper to
+            # spill back to awaiting; never let one failed enqueue abort the rest of the flush.
+            logger.warning(
+                "flush_pending_s3_enqueues: parked s3_upload enqueue failed -> row left for the staging reaper",
+                key=item.enqueue_kwargs.get("key"),
+                exc_info=True,
+            )
+    return fired
+
+
 async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router: AgentTaskRouter, bucket: BucketConfig) -> None:
     """Stage ``file`` to ``bucket`` and enqueue its upload, COMMITTING (upload-trigger seam, KSTAGE-01/D-01).
 
@@ -67,9 +144,19 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
     threaded into the S3 SDK calls AND recorded on ``cloud_job.staging_bucket`` (MKUE-02).
 
     Steps (mirroring the ``agent_push`` producer idiom): see :func:`_stage_file_to_s3`.
+
+    phaze-grzo: the core PARKS its ``s3_upload`` enqueue rather than firing it inline; this wrapper
+    commits the ``cloud_job`` UPLOADING row FIRST and only then flushes the parked enqueue, so the
+    worker-visible job (and its ``report_uploaded`` callback) can never precede the committed row it
+    reads. On a commit failure the parked enqueue is dropped (never fired against a rolled-back row).
     """
-    await _stage_file_to_s3(session, file, task_router, bucket)
-    await session.commit()
+    try:
+        await _stage_file_to_s3(session, file, task_router, bucket)
+        await session.commit()
+    except BaseException:
+        drop_pending_s3_enqueues(session)
+        raise
+    await flush_pending_s3_enqueues(session)
 
 
 async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router: AgentTaskRouter, bucket: BucketConfig) -> None:
@@ -89,114 +176,107 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
        1) PUT URLs via ``s3_staging`` (the only S3-SDK home).
     3. Upsert the ``cloud_job`` row (``UPLOADING`` + file_id-scoped key + multipart ``upload_id``)
        ON CONFLICT (file_id) so a re-stage is idempotent against the unique FK (no duplicate row).
-    4. Enqueue exactly one ``s3_upload`` job on the agent's queue carrying the presigned part URLs,
-       the part size, and the file_id, with the deterministic ``s3_upload:<file_id>`` key and the
-       explicit ``UPLOAD_FILE_SAQ_TIMEOUT_SEC`` job-net timeout (WR-03).
+    4. PARK exactly one ``s3_upload`` job on the session (phaze-grzo) carrying the presigned part
+       URLs, the part size, and the file_id, with the deterministic ``s3_upload:<file_id>`` key and
+       the part-count-scaled job-net timeout (WR-03). The caller fires it via
+       :func:`flush_pending_s3_enqueues` AFTER committing the ``cloud_job`` UPLOADING row.
 
-    phaze-uciu.3: step 3 (the ``cloud_job`` upsert) and step 4 (the enqueue) run inside a
-    ``session.begin_nested()`` SAVEPOINT. SAQ's ``PostgresQueue`` enqueue uses its OWN psycopg pool,
-    so a ``queue.connect()``/``queue.enqueue()`` failure raises WITHOUT poisoning this asyncpg
-    session -- a bare (un-savepointed) upsert-then-raise would leave the ``status='uploading'`` row
-    intact for the drain's post-loop commit: a stranded row (unrecoverable -- reconcile/orphan-
-    recovery both scope away from in-flight cloud_jobs) that permanently consumes an
-    ``in_flight_count`` cap slot. The SAVEPOINT rolls back ONLY the upsert on a raise, restoring the
-    row's prior state (typically ``status='awaiting'``, D-01) while the outer transaction (and its
-    ``pg_advisory_xact_lock``, when called from the drain) stays alive. The raise itself still
-    propagates to the caller (``KueueBackend.dispatch`` / the drain's per-candidate ``except``).
+    phaze-grzo: step 4 no longer fires the enqueue inline. SAQ's ``PostgresQueue`` enqueues on its
+    OWN psycopg pool and commits the job durably + IMMEDIATELY, independent of this asyncpg session's
+    commit boundary. Firing it inside the staging body (before the caller's commit) let a fast agent
+    dequeue ``s3_upload`` and POST ``/uploaded`` before the ``cloud_job`` UPLOADING row was committed;
+    ``report_uploaded`` then saw no UPLOADING row and idempotently no-op'd, STRANDING the file (the row
+    later commits UPLOADING with the multipart never completed -- nothing recovers it but the age
+    reaper, and it permanently consumes an ``in_flight_count`` cap slot). Parking the enqueue and
+    firing it post-commit makes the worker-visible job strictly follow its committed row. On a drain
+    rollback the caller drops the parked enqueues (:func:`drop_pending_s3_enqueues`) so a rolled-back
+    upsert never leaves an orphaned job. This supersedes the old phaze-uciu.3 ``begin_nested()``
+    SAVEPOINT: the enqueue is no longer in the transaction, so there is no enqueue-failure to isolate
+    from the upsert -- the upsert runs directly in the caller's transaction.
     """
     cfg = cast("ControlSettings", get_settings())
 
     # Gate on an online fileserver agent BEFORE mutating anything: with none available this is a
-    # clean hold (NoActiveAgentError propagates) -- no multipart, no cloud_job, no enqueue.
+    # clean hold (NoActiveAgentError propagates) -- no multipart, no cloud_job, no parked enqueue.
     agent = await select_active_agent(session, kind="fileserver")
 
     upload_id = await s3_staging.create_multipart_upload(file.id, bucket)
     part_count = max(1, math.ceil(file.file_size / cfg.s3_multipart_part_size_bytes))
     part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
 
-    async with session.begin_nested():
-        # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
-        # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
-        stmt = pg_insert(CloudJob).values(
-            # Stamp the PK explicitly: the single-row kwargs form of pg_insert DOES apply CloudJob.id's
-            # Python-side default=uuid.uuid4 today (verified against real Postgres), but the list/multi-
-            # values form does NOT -- mirror the agent_analysis.py AnalysisResult precedent so a future
-            # conversion to that form cannot regress into a NOT NULL violation (CR-01, defensive).
-            id=uuid.uuid4(),
-            file_id=file.id,
-            s3_key=s3_staging.staged_object_key(file.id),
-            status=CloudJobStatus.UPLOADING.value,
-            upload_id=upload_id,
-            # D-01/D-06 (MKUE-02): record WHICH bucket staged this file's object, authoritatively, so
-            # presign/cleanup READ this column and never re-derive via pick_bucket (config-set drift-safe).
-            staging_bucket=bucket.id,
-        )
-        stmt = stmt.on_conflict_do_update(
-            # id is intentionally OUT of set_: the PK is immutable, so an existing row keeps its id on a
-            # re-stage (only the key/status/upload_id/staging_bucket refresh).
-            index_elements=["file_id"],
-            set_={
-                "s3_key": stmt.excluded.s3_key,
-                "status": stmt.excluded.status,
-                "upload_id": stmt.excluded.upload_id,
-                "staging_bucket": stmt.excluded.staging_bucket,
-                # phaze-2hv9: bump the lane-entry / staleness clock on EVERY re-stage. CloudJob.updated_at is a
-                # client-side ``onupdate=func.now()`` (TimestampMixin), which SQLAlchemy does NOT inject into an
-                # ON CONFLICT DO UPDATE SET clause, and there is no DB trigger -- so without this the conflict
-                # (re-stage / re-drive) path would leave updated_at frozen at the FIRST dispatch. KueueBackend's
-                # ``_reap_stranded_staging`` ages a row off ``now - updated_at``: a frozen clock lets a live
-                # re-driven upload inherit the whole prior attempt's elapsed time and be reaped mid-transfer.
-                # Stamp it explicitly here so any re-stage resets that clock (mirrors agent_bootstrap.py's idiom).
-                "updated_at": func.now(),
+    # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
+    # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
+    stmt = pg_insert(CloudJob).values(
+        # Stamp the PK explicitly: the single-row kwargs form of pg_insert DOES apply CloudJob.id's
+        # Python-side default=uuid.uuid4 today (verified against real Postgres), but the list/multi-
+        # values form does NOT -- mirror the agent_analysis.py AnalysisResult precedent so a future
+        # conversion to that form cannot regress into a NOT NULL violation (CR-01, defensive).
+        id=uuid.uuid4(),
+        file_id=file.id,
+        s3_key=s3_staging.staged_object_key(file.id),
+        status=CloudJobStatus.UPLOADING.value,
+        upload_id=upload_id,
+        # D-01/D-06 (MKUE-02): record WHICH bucket staged this file's object, authoritatively, so
+        # presign/cleanup READ this column and never re-derive via pick_bucket (config-set drift-safe).
+        staging_bucket=bucket.id,
+    )
+    stmt = stmt.on_conflict_do_update(
+        # id is intentionally OUT of set_: the PK is immutable, so an existing row keeps its id on a
+        # re-stage (only the key/status/upload_id/staging_bucket refresh).
+        index_elements=["file_id"],
+        set_={
+            "s3_key": stmt.excluded.s3_key,
+            "status": stmt.excluded.status,
+            "upload_id": stmt.excluded.upload_id,
+            "staging_bucket": stmt.excluded.staging_bucket,
+            # phaze-2hv9: bump the lane-entry / staleness clock on EVERY re-stage. CloudJob.updated_at is a
+            # client-side ``onupdate=func.now()`` (TimestampMixin), which SQLAlchemy does NOT inject into an
+            # ON CONFLICT DO UPDATE SET clause, and there is no DB trigger -- so without this the conflict
+            # (re-stage / re-drive) path would leave updated_at frozen at the FIRST dispatch. KueueBackend's
+            # ``_reap_stranded_staging`` ages a row off ``now - updated_at``: a frozen clock lets a live
+            # re-driven upload inherit the whole prior attempt's elapsed time and be reaped mid-transfer.
+            # Stamp it explicitly here so any re-stage resets that clock (mirrors agent_bootstrap.py's idiom).
+            "updated_at": func.now(),
+        },
+    )
+    await session.execute(stmt)
+
+    payload = UploadFileS3Payload(
+        file_id=file.id,
+        original_path=file.original_path,
+        part_urls=part_urls,
+        part_size_bytes=cfg.s3_multipart_part_size_bytes,
+        agent_id=agent.id,
+    )
+    queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
+    # phaze-grzo: PARK the enqueue -- do NOT fire it here. The caller flushes it AFTER committing the
+    # cloud_job UPLOADING row so the job (and its report_uploaded callback) never precedes that row.
+    _park_s3_enqueue(
+        session,
+        _PendingS3Enqueue(
+            queue=queue,
+            enqueue_kwargs={
+                "key": f"s3_upload:{file.id}",
+                # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
+                # not deterministically cancelled by a fixed single-part cap. Each part carries its own
+                # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
+                "timeout": upload_file_saq_timeout_sec(part_count),
+                # phaze-oj7x: pin retries EXPLICITLY to 0 (S3_UPLOAD_SAQ_RETRIES). Control (re-drive + reaper)
+                # is the sole re-drive vehicle; an unset retries would be clobbered to worker_max_retries by the
+                # before_enqueue hook, re-arming SAQ to replay the ORIGINAL payload against a multipart this very
+                # re-drive already aborted (guaranteed NoSuchUpload). See S3_UPLOAD_SAQ_RETRIES for the full note.
+                "retries": S3_UPLOAD_SAQ_RETRIES,
+                **payload.model_dump(mode="json"),
             },
-        )
-        await session.execute(stmt)
+        ),
+    )
 
-        payload = UploadFileS3Payload(
-            file_id=file.id,
-            original_path=file.original_path,
-            part_urls=part_urls,
-            part_size_bytes=cfg.s3_multipart_part_size_bytes,
-            agent_id=agent.id,
-        )
-        queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
-        await queue.connect()
-        job = await queue.enqueue(
-            "s3_upload",
-            key=f"s3_upload:{file.id}",
-            # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
-            # not deterministically cancelled by a fixed single-part cap. Each part carries its own
-            # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
-            timeout=upload_file_saq_timeout_sec(part_count),
-            # phaze-oj7x: pin retries EXPLICITLY to 0 (S3_UPLOAD_SAQ_RETRIES). Control (re-drive + reaper)
-            # is the sole re-drive vehicle; an unset retries would be clobbered to worker_max_retries by the
-            # before_enqueue hook, re-arming SAQ to replay the ORIGINAL payload against a multipart this very
-            # re-drive already aborted (guaranteed NoSuchUpload). See S3_UPLOAD_SAQ_RETRIES for the full note.
-            retries=S3_UPLOAD_SAQ_RETRIES,
-            **payload.model_dump(mode="json"),
-        )
-
-    if job is None:
-        # phaze-oj7x: SAQ deduped the deterministic key against a still-incomplete ``s3_upload:<file_id>``
-        # job (its ON CONFLICT only overwrites an aborted/complete/failed row). This is the re-drive-during-
-        # active-job window: the enqueue did NOT land a fresh job. It is now benign rather than a silent
-        # poison -- the prior job carries retries=0, so it settles terminal (releasing the key) and the
-        # control re-drive / stranded-staging reaper re-enqueues cleanly on the next pass. Surface it loudly
-        # instead of claiming a re-drive that never ran.
-        logger.warning(
-            "stage_file_to_s3: s3_upload enqueue deduped against a still-incomplete job (fresh job NOT landed; "
-            "prior job settles terminal via retries=0, re-drive lands on next pass)",
-            file_id=str(file.id),
-            agent_id=agent.id,
-            part_count=part_count,
-        )
-    else:
-        logger.info(
-            "stage_file_to_s3: cloud_job staged + s3_upload enqueued",
-            file_id=str(file.id),
-            agent_id=agent.id,
-            part_count=part_count,
-        )
+    logger.info(
+        "stage_file_to_s3: cloud_job staged + s3_upload enqueue parked (fires post-commit, phaze-grzo)",
+        file_id=str(file.id),
+        agent_id=agent.id,
+        part_count=part_count,
+    )
 
 
 def _redrive_bucket(cfg: ControlSettings, existing: CloudJob | None, file: FileRecord) -> BucketConfig | None:

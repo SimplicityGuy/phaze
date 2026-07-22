@@ -111,7 +111,17 @@ def _client(bucket: BucketConfig) -> Any:
     Returns an ``async with``-able client. Credentials come from the control-plane-only
     ``SecretStr`` fields and are never logged. The region falls back to ``us-east-1`` so
     SigV4-style presigning has a region even when an S3-compatible backend leaves it unset.
+
+    phaze-1v37: bound the client with an EXPLICIT connect + read timeout (``s3_client_timeout_sec``,
+    default 30s). Botocore's minute-scale defaults plus its retry policy let a wedged/blackholed S3
+    endpoint hang a control-side S3 call (complete/abort/delete multipart) for minutes; on the control
+    plane those calls run from HTTP staging callbacks, so an unbounded hang pins resources far longer
+    than necessary. ``retries={"max_attempts": 1}`` keeps the worst-case bound at a single
+    connect+read window instead of the default exponential-backoff retry chain. Presigning is a local
+    signing op (no network round-trip), so the timeout only ever bounds the real S3 verbs.
     """
+    cfg = cast("ControlSettings", get_settings())
+    timeout = cfg.s3_client_timeout_sec
     session = aioboto3.Session(
         aws_access_key_id=bucket.access_key_id.get_secret_value() if bucket.access_key_id else None,
         aws_secret_access_key=bucket.secret_access_key.get_secret_value() if bucket.secret_access_key else None,
@@ -120,7 +130,12 @@ def _client(bucket: BucketConfig) -> Any:
     return session.client(
         "s3",
         endpoint_url=bucket.endpoint_url,
-        config=AioConfig(s3={"addressing_style": bucket.addressing_style}),
+        config=AioConfig(
+            s3={"addressing_style": bucket.addressing_style},
+            connect_timeout=timeout,
+            read_timeout=timeout,
+            retries={"max_attempts": 1},
+        ),
     )
 
 

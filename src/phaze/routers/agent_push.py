@@ -8,12 +8,16 @@ per-agent compute queue, and read the scratch directory off ``ControlSettings``.
 
 Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
 
-- ``/pushed``   (D-01 intent within the Postgres-free boundary): in ONE transaction
-  flip ``PUSHING -> PUSHED``, clear the ``push_file:<id>`` ledger row, and enqueue
+- ``/pushed``   (D-01 intent within the Postgres-free boundary): commit the cloud_job
+  ``SUBMITTED -> SUCCEEDED`` CAS + ``push_file:<id>`` ledger clear FIRST, THEN enqueue
   exactly one ``process_file`` job on the COMPUTE queue carrying the ORM-pinned
   ``expected_sha256`` (D-11) and a ``<active_compute_scratch_dir>/<file_id>.<ext>``
-  ``scratch_path``. With no compute agent online this is a clean 200 hold (never a
-  500): the file stays ``PUSHING`` with its ledger row, so the staging cron /
+  ``scratch_path``. phaze-v40v: the enqueue was moved AFTER the commit (it fires on
+  SAQ's own pool, which commits the job immediately + independently) so a commit
+  failure can never leave a dispatched process_file the control plane rolled back --
+  the enqueue-before-commit dual-write that leaked a compute in_flight slot and
+  re-processed the file. With no compute agent online this is a clean 200 hold (never
+  a 500): the file stays ``PUSHING`` with its ledger row, so the staging cron /
   recovery re-drives it once a compute agent appears.
 
 - ``/mismatch`` (D-12 integrity re-drive loop): increment the ``push_attempt`` counter
@@ -185,20 +189,50 @@ async def report_pushed(
     # sidecar (terminalized SUBMITTED -> SUCCEEDED above) is the sole derived authority PR-A reads.
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
+    # phaze-v40v: COMMIT the SUBMITTED -> SUCCEEDED CAS + push_file ledger clear BEFORE enqueuing
+    # process_file. enqueue_process_file runs on the compute queue's OWN SAQ PostgresQueue pool, which
+    # commits the job (and its process_file:<file_id> ledger row, via the before_enqueue hook) durably
+    # and IMMEDIATELY, independent of THIS session's commit. Enqueuing first meant a subsequent commit
+    # failure rolled the CAS + ledger clear back while the process_file job was already dispatched and
+    # running: cloud_job stuck SUBMITTED (a phantom in_flight_count(compute) slot put_analysis never
+    # reaps -- it clears only AWAITING rows), and the surviving push_file ledger row re-drove the push,
+    # enqueuing a SECOND process_file for an already-analyzed file (a full duplicate multi-hour run).
+    # Committing first makes the failure modes benign: a commit failure here raises BEFORE the enqueue,
+    # so no job is dispatched, the cloud_job stays SUBMITTED, and the surviving push_file ledger row
+    # cleanly re-drives the push (its next /pushed re-passes the still-SUBMITTED CAS and heals).
+    await session.commit()
+
+    # Post-commit: fire the compute analysis. The before_enqueue hook writes the process_file:<file_id>
+    # ledger row on the SAQ pool, which is the durable recovery handle recover_orphaned_work re-drives if
+    # the job is later lost. A post-commit enqueue failure (compute pool down) is best-effort: the control
+    # state is already correct + durable (cloud_job SUCCEEDED, push ledger cleared), so we log loudly and
+    # still return 200 rather than 500 -- a 500 would drive a wasteful push_file rsync retry whose /pushed
+    # re-run only hits the SUCCEEDED idempotent no-op (rowcount==0) and can never re-enqueue process_file.
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
     # (MCOMP-03); scratch resolution is per-agent off the recorded backend.
     compute_queue = request.app.state.task_router.queue_for(agent_ref, lane_for_task("process_file"))
     scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
-    await enqueue_process_file(
-        compute_queue,
-        file,
-        agent_ref,
-        settings.models_path,
-        expected_sha256=file.sha256_hash,
-        scratch_path=scratch_path,
-    )
-    await session.commit()
+    try:
+        await enqueue_process_file(
+            compute_queue,
+            file,
+            agent_ref,
+            settings.models_path,
+            expected_sha256=file.sha256_hash,
+            scratch_path=scratch_path,
+        )
+    except Exception:
+        logger.warning(
+            "report_pushed: cloud_job committed SUCCEEDED but the post-commit process_file enqueue "
+            "failed -- file needs a re-triggered analysis (control state is durable, not stranded)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            backend_id=backend.id,
+            compute_agent_id=agent_ref,
+            exc_info=True,
+        )
+        return PushedResponse(file_id=file_id)
 
     logger.info(
         "report_pushed: file -> PUSHED + process_file enqueued",

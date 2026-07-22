@@ -8,7 +8,9 @@ split (RESEARCH §Critical Finding 1):
   clears the ``push_file:<id>`` ledger row, and enqueues exactly one
   ``process_file`` job on the COMPUTE queue carrying the ORM-pinned
   ``expected_sha256`` (D-11) and a ``compute_scratch_dir``-rooted
-  ``scratch_path`` — all in one committed transaction.
+  ``scratch_path``. phaze-v40v: the cloud_job CAS + ledger clear COMMIT first,
+  then the process_file enqueue fires post-commit (it commits on SAQ's own pool),
+  so a commit failure can never leave a dispatched job the control plane rolled back.
 - ``POST /api/internal/agent/push/{file_id}/mismatch`` — the compute agent
   reports a sha256 mismatch; under ``push_max_attempts`` control re-drives
   ``push_file`` on the FILESERVER queue (keeping the PUSHING slot, Open-Q1) and
@@ -352,6 +354,48 @@ async def test_pushed_transitions_clears_ledger_and_enqueues_process_file(
     assert task_name == "process_file"
     assert payload["expected_sha256"] == sha == "a" * 64
     assert payload["scratch_path"] == f"{_SCRATCH_DIR}/{file_id}.flac"
+
+
+@pytest.mark.asyncio
+async def test_pushed_commits_cas_before_enqueue_so_enqueue_failure_leaves_durable_state(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-v40v: the SUBMITTED->SUCCEEDED CAS + push ledger clear COMMIT before process_file enqueues.
+
+    Enqueue-before-commit let a commit failure roll back the CAS while the process_file job was already
+    dispatched (a leaked compute in_flight slot + a duplicate re-analysis). With the enqueue moved after
+    the commit, a FAILED enqueue can no longer corrupt control state: the cloud_job is already durably
+    SUCCEEDED and the push ledger already cleared, and the callback still returns a clean 200 (a 500
+    would only drive a wasteful push retry whose /pushed re-run hits the SUCCEEDED idempotent no-op).
+    """
+    from phaze.routers import agent_push
+
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("compute queue unreachable")
+
+    # Patch the post-commit enqueue to fail; the CAS + ledger clear must already be committed by then.
+    monkeypatch.setattr(agent_push, "enqueue_process_file", _boom)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+
+    # 200 (not 500): the durable control state is correct even though the enqueue failed.
+    assert r.status_code == 200, r.text
+    # The CAS committed BEFORE the failing enqueue: cloud_job is SUCCEEDED and the push ledger is cleared.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
+    assert await _ledger_row(session, f"push_file:{file_id}") is None
 
 
 @pytest.mark.asyncio
