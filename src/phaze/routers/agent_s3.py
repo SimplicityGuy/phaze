@@ -89,10 +89,50 @@ async def report_uploaded(
         logger.info("report_uploaded: idempotent no-op (cloud_job absent or not UPLOADING)", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
+    settings = cast("ControlSettings", get_settings())
+
+    # phaze-eo5x: an EMPTY parts list is a degenerate/zero-byte upload (the agent's _transfer_parts
+    # returns [] for a 0-byte source: the first read yields b'' and breaks before any PUT). S3 multipart
+    # REQUIRES >=1 part -- CompleteMultipartUpload rejects an empty list with MalformedXML, which
+    # s3_staging re-raises as S3StagingError (it swallows only NoSuchUpload/404). report_uploaded does not
+    # catch it, so it escaped as an unhandled 500 that the SAQ retry reproduced forever, permanently
+    # stranding cloud_job UPLOADING and leaking the in-flight cap slot + the multipart. There is NO valid
+    # completion for zero parts, so drive a clean terminal resolution that FREES the job instead: spill the
+    # cloud_job back to 'awaiting' with its cloud budget SPENT (so select_backend routes the file to LOCAL,
+    # where a 0-byte file terminally fails analysis -- the uniform failure funnel), abort the orphaned
+    # multipart + delete any staged object, and clear the ledger -- the SAME terminal cleanup the over-cap
+    # /failed branch runs (KSTAGE-04 / T-53-17). Return a definitive 200 so the agent stops retrying.
+    if not body.parts:
+        bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket)
+        # NULL-GUARD: hold_awaiting_cloud's spill CAS dereferences file.id (mirrors the /failed over-cap
+        # branch); an absent file (unreachable -- cloud_job.file_id FKs files.id) takes the full no-op.
+        file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+        cleared = file is not None and await hold_awaiting_cloud(
+            session,
+            file,
+            attempts=settings.cloud_submit_max_attempts,
+            expect_status=(CloudJobStatus.UPLOADING.value, CloudJobStatus.UPLOADED.value),
+            clear_cloud_phase=True,
+        )
+        if cleared and bucket is not None:
+            # Gate S3 cleanup + ledger clear behind the CAS hit (mirrors the /failed over-cap branch).
+            if cloud_job.upload_id:
+                await s3_staging.abort_multipart_upload(file_id, cloud_job.upload_id, bucket)
+            await s3_staging.delete_staged_object(file_id, bucket)
+        if cleared:
+            await clear_ledger_entry(session, f"s3_upload:{file_id}")
+        await session.commit()
+        logger.warning(
+            "report_uploaded: empty parts list (zero-byte/degenerate upload) -> cloud_job spilled to awaiting (routes local) + cleaned up",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            cleared=cleared,
+        )
+        return UploadedResponse(file_id=file_id)
+
     # Complete the multipart upload control-side with the agent-reported parts (KSTAGE-01), on the
     # RECORDED staging bucket (MKUE-02 -- a kueue UPLOADING row always carries the staging_bucket
     # KueueBackend.dispatch stamped; resolve it, never re-derive).
-    settings = cast("ControlSettings", get_settings())
     bucket = s3_staging.resolve_bucket_config(settings, cloud_job.staging_bucket)
     if bucket is None:
         raise HTTPException(

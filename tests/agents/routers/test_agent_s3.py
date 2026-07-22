@@ -275,6 +275,48 @@ async def test_uploaded_completes_multipart_control_side_and_flips_state(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
+async def test_uploaded_empty_parts_spills_to_awaiting_instead_of_500_looping(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-eo5x: an EMPTY parts list (zero-byte upload) must NOT reach complete_multipart_upload.
+
+    S3 multipart requires >=1 part; CompleteMultipartUpload rejects an empty list with MalformedXML,
+    which re-raised as an unhandled 500 that the SAQ retry reproduced forever -- stranding cloud_job
+    UPLOADING and leaking the cap slot. The handler must instead drive a clean terminal resolution:
+    spill the cloud_job back to awaiting (budget spent -> routes local), abort the orphaned multipart +
+    delete any staged object, clear the ledger, and return a definitive 200 so the agent stops retrying.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING, cloud_phase="running")
+    await _seed_ledger(session, file_id, attempt=0)
+    complete = AsyncMock()
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", complete)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json={"parts": []})
+
+    assert r.status_code == 200, r.text
+    complete.assert_not_awaited()  # the degenerate empty-parts upload is NEVER completed
+    abort.assert_awaited_once()  # the orphaned multipart is cleaned up
+    delete.assert_awaited_once()
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.AWAITING.value  # freed: spilled to awaiting (routes local)
+    assert job.cloud_phase is None
+    assert job.attempts >= settings.cloud_submit_max_attempts  # cloud budget spent -> local next tick
+    assert await _ledger_row(session, f"s3_upload:{file_id}") is None  # ledger cleared
+
+
 async def test_uploaded_duplicate_is_idempotent_noop_without_recompleting(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
