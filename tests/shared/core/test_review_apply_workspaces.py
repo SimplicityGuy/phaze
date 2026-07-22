@@ -33,13 +33,13 @@ The per-shape ORM seed factories live in ``tests/conftest.py`` (``make_file``,
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
 
 from phaze.models.proposal import ProposalStatus
-from phaze.models.tag_write_log import TagWriteLog
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 
 
 if TYPE_CHECKING:
@@ -276,6 +276,122 @@ async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
                 break
 
     assert await _completed_count(qual.id) == 1, "the qualifying file behind the zero-change wall must eventually be written"
+
+
+async def _tagwrite_log_count(session: AsyncSession, file_id: object, *, status: str | None = None) -> int:
+    stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id)
+    if status is not None:
+        stmt = stmt.where(TagWriteLog.status == status)
+    return (await session.execute(stmt)).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-k7g6: a mid-loop failure must NOT discard the audit rows of files already written.
+
+    Two qualifying applied files; the SECOND (``bbb``) raises inside the loop, simulating a file
+    concurrently un-applied between the candidate SELECT and its iteration (``execute_tag_write``
+    raises ``ValueError``). Pre-fix -- one commit deferred to the end of the loop, no per-file error
+    isolation -- that exception aborted the request and rolled back the FIRST file's flushed
+    ``TagWriteLog``, so a written-on-disk file was left with no audit row (its before_tags UNDO
+    snapshot lost). Post-fix each audit row is committed atomically with its disk write, so the
+    first file's row survives and the bad file merely skips (the batch still returns 200).
+    """
+    f1, _ = await seed_executed_file_with_metadata(original_filename="aaa - New Title.mp3", artist=None, title=None, album="Keep Album")
+    f2, _ = await seed_executed_file_with_metadata(original_filename="bbb - New Title.mp3", artist=None, title=None, album="Keep Album")
+    # Capture ids up front: the router's per-file rollback (on the f2 abort) expires these ORM
+    # instances in the shared test session, so a post-request ``f1.id`` access would lazy-reload.
+    f1_id = f1.id
+    f2_id = f2.id
+
+    async def _fake_execute(sess: AsyncSession, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+        if fr.id == f2_id:
+            # The abort shape: a concurrently un-applied file raises straight out of execute_tag_write.
+            msg = "Only executed files can have tags written"
+            raise ValueError(msg)
+        entry = TagWriteLog(file_id=fr.id, before_tags={"album": "Keep Album"}, after_tags=tags, source=source, status=TagWriteStatus.COMPLETED.value)
+        sess.add(entry)
+        await sess.flush()
+        return entry
+
+    with patch("phaze.routers.tags.execute_tag_write", new=AsyncMock(side_effect=_fake_execute)):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200, "one bad file skips -- it must not 500 the whole batch"
+    # The first file's audit row was committed per-file, so the mid-loop abort on the second file
+    # cannot roll it back. Pre-fix this was 0 (all flushed rows discarded on the aborted request).
+    assert await _tagwrite_log_count(session, f1_id, status="completed") == 1, "the already-written file keeps its audit row"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_reports_failures_truthfully(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-5j82: a file whose write FAILS is never reported as 'tagged (no discrepancies)'.
+
+    The seeded file's ``current_path`` points at a nonexistent file, so the unpatched mutagen write
+    raises and ``execute_tag_write`` records a FAILED log (nothing written). Pre-fix the loop
+    incremented ``written`` unconditionally and the toast claimed a clean success; post-fix only a
+    COMPLETED outcome counts as written, and the failure is surfaced.
+    """
+    await seed_executed_file_with_metadata(original_filename="zzz - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "0 files tagged" in body, "a failed write is not counted as tagged"
+    assert "1 failed" in body, "the failure is surfaced to the operator"
+    assert "no discrepancies" not in body, "a failed write must never be reported as a clean success"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_concurrent_submit_is_blocked(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-u28m: when the bulk advisory lock is already held, a second submit writes NOTHING.
+
+    Simulates a concurrent/duplicate submit by forcing the lock acquire to fail. The endpoint must
+    short-circuit -- no candidate re-select, no disk writes, no audit rows -- and tell the operator a
+    bulk write is already in progress, instead of re-processing the identical still-non-terminal set.
+    """
+    f1, _ = await seed_executed_file_with_metadata(original_filename="qqq - New Title.mp3", artist=None, title=None, album="Keep Album")
+    f1_id = f1.id
+
+    with patch("phaze.routers.tags._acquire_bulk_tagwrite_lock", new=AsyncMock(return_value=False)):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    assert "already in progress" in resp.text
+    assert await _tagwrite_log_count(session, f1_id) == 0, "a blocked concurrent submit double-writes nothing"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_releases_lock_for_subsequent_submit(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-u28m: the advisory lock is released after a submit so the NEXT submit is not blocked.
+
+    Two sequential real submits must both proceed (neither sees 'already in progress'); this proves
+    the session-scoped lock taken under phaze-k7g6's per-file commits is properly released in the
+    ``finally`` and does not leak into the next request.
+    """
+    await seed_executed_file_with_metadata(original_filename="rrr - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    r1 = await client.post("/tags/bulk-write-no-discrepancies")
+    r2 = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert "already in progress" not in r2.text, "the lock must be released between submits"
 
 
 @pytest.mark.asyncio

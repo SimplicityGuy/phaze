@@ -16,6 +16,17 @@ from phaze.services.pg_text import sanitize_pg_text
 logger = structlog.get_logger(__name__)
 
 
+class TagReadError(Exception):
+    """Raised by :func:`extract_tags` in ``strict`` mode when a file cannot be read/parsed.
+
+    The default (non-strict) reader swallows every open/parse failure into an all-``None``
+    :class:`ExtractedTags`, which is correct for best-effort ingestion but wrong for
+    verify-after-write: there a swallowed re-read is indistinguishable from a file that
+    genuinely has no tags (phaze-vq3g). ``strict=True`` raises this instead so the caller can
+    tell "could not re-read" apart from "tags absent".
+    """
+
+
 @dataclass
 class ExtractedTags:
     """Normalized tag data extracted from an audio/video file."""
@@ -184,20 +195,34 @@ def _serialize_tags(tags: Any) -> dict[str, Any]:
     return result
 
 
-def extract_tags(file_path: str) -> ExtractedTags:
+def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     """Extract audio tags from a file using mutagen.
 
     Returns an ExtractedTags dataclass with normalized fields and raw tag dump.
     On any error or missing tags, returns ExtractedTags with all None fields
     and an empty raw_tags dict.
+
+    Args:
+        file_path: Path to the audio file.
+        strict: When ``True``, an open/parse failure (or an unrecognized-format file) raises
+            :class:`TagReadError` instead of being swallowed into an all-``None`` result. Verify
+            paths use this so a re-read failure is distinguishable from genuinely-absent tags
+            (phaze-vq3g). A file that opens cleanly but carries no tags is NOT an error -- it
+            returns an all-``None`` result in both modes.
     """
     try:
         audio = mutagen.File(file_path)
-    except Exception:
+    except Exception as exc:
+        if strict:
+            msg = f"failed to read tags from {file_path}: {exc}"
+            raise TagReadError(msg) from exc
         logger.debug("Failed to open file with mutagen: %s", file_path)
         return ExtractedTags()
 
     if audio is None:
+        if strict:
+            msg = f"{file_path} is not a recognized audio file on re-read"
+            raise TagReadError(msg)
         return ExtractedTags()
 
     # Extract duration and bitrate from audio.info
