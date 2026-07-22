@@ -162,6 +162,44 @@ async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_resolve_group_with_canonical_id_outside_group_resolves_nothing(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-xasy: POST /resolve with a canonical_id that belongs to a DIFFERENT file must be a no-op.
+
+    Regression for the reported failure scenario: a replayed form (e.g. a stale browser tab after the
+    original keeper was deleted and re-scanned under a new UUID) can carry a canonical_id that still
+    passes the FK because it names SOME live file -- just not a member of this group. Before the fix,
+    every member of the group (including whichever file would have been the intended keeper) got a
+    DedupResolution marker pointing at that unrelated file, silently orphaning the group with zero
+    surviving canonical.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    outsider = _make_file("/dir/unrelated.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, outsider])
+    await session.flush()
+
+    response = await client.post(
+        f"/duplicates/{HASH_A}/resolve",
+        data={"canonical_id": str(outsider.id)},
+    )
+
+    assert response.status_code == 200
+
+    # No member of group A -- keeper or otherwise -- got a marker.
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == set()
+
+    # The group is still visible, unresolved, in the listing (it did not silently vanish).
+    listing = await client.get("/duplicates/", headers={"HX-Request": "true"})
+    assert listing.status_code == 200
+    assert HASH_A[:12] in listing.text
+
+
+@pytest.mark.asyncio
 async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/{hash}/undo restores files to previous state."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)

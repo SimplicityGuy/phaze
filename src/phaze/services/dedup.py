@@ -325,7 +325,26 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     Returns (count_resolved, [{id}]) for undo tracking. Phase 90 (D-09): the DUPLICATE_RESOLVED
     files.state dual-write was removed -- the DedupResolution marker (dedup_resolved_clause) is the sole
     derived authority, so the returned payload no longer carries a previous_state.
+
+    phaze-xasy: ``canonical_id`` is caller-supplied (a browser Form field) and is NOT trusted to
+    actually be a member of ``group_hash`` -- the only DB backstop on ``canonical_file_id`` is a
+    plain FK to ``files.id``, which is satisfied by ANY live file, group member or not. Without this
+    membership check, a stale/mismatched ``canonical_id`` (e.g. a replayed form after the original
+    keeper was deleted and re-scanned under a new UUID) makes ``FileRecord.id != canonical_id`` below
+    exclude NO group member, so every copy -- including the intended keeper -- gets a
+    ``DedupResolution`` marker pointing at an unrelated file, and the group silently vanishes with
+    zero surviving canonical. Verify ``canonical_id`` names a currently-unresolved member of THIS
+    group first; a mismatch is a no-op (0 resolved), not a resolve against the wrong file.
     """
+    canonical_membership_stmt = select(FileRecord.id).where(
+        FileRecord.sha256_hash == group_hash,
+        FileRecord.id == canonical_id,
+        ~dedup_resolved_clause(),
+    )
+    canonical_membership = await session.execute(canonical_membership_stmt)
+    if canonical_membership.scalar_one_or_none() is None:
+        return 0, []
+
     # Find all files in this group except the canonical one
     stmt = select(FileRecord).where(
         FileRecord.sha256_hash == group_hash,
