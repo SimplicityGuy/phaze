@@ -337,6 +337,15 @@ async def _handle_no_callback_terminal(
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, kube)
     if not await _job_gone(name, kube):
+        # phaze-nq3c: COMMIT before returning. This deferral path makes no DB mutation worth persisting (only a
+        # kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at the top
+        # of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one committing
+        # per row to auto-release that transaction-scoped lock at row granularity. Returning without a commit
+        # was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary until some
+        # later row's commit (or session close if this was the last in-flight row), stalling a concurrent
+        # stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and release the lock,
+        # matching every other no-op path here (lines with 'release the per-row advisory lock (Pitfall 2)').
+        await session.commit()
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
     cloud_job.attempts = next_attempt
