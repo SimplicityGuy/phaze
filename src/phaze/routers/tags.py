@@ -762,7 +762,25 @@ async def undo_tag_write(
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()
 
-    toast_message = f"Reverted tags for {file_record.original_filename}."
+    # phaze-26t7: the toast must reflect the REAL on-disk outcome. execute_tag_write swallows
+    # mutagen/file errors into a FAILED log rather than raising, so an unconditional 'Reverted tags'
+    # lies whenever the reversal write did not land. Branch the message on status, mirroring
+    # write_file_tags: success only for COMPLETED, a distinct note for DISCREPANCY, and the error for
+    # FAILED.
+    filename = file_record.original_filename
+    if log_entry.status == TagWriteStatus.COMPLETED:
+        toast_message = f"Reverted tags for {filename}."
+    elif log_entry.status == TagWriteStatus.DISCREPANCY:
+        disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
+        toast_message = (
+            f"Reverted tags for {filename} with {disc_count} discrepancy. Re-read values differ from "
+            "what was restored -- usually encoding normalization. Review the audit log for details."
+        )
+    else:
+        toast_message = (
+            f"Undo failed for {filename}: {log_entry.error_message or 'Unknown error'}. The file may be "
+            "read-only or corrupted. Check file permissions and try again."
+        )
 
     if is_v7:
         # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
