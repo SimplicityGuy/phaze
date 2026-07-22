@@ -244,6 +244,85 @@ def test_same_filesystem_helper_true_within_one_tree(tmp_path: Path) -> None:
     assert _same_filesystem(a, tmp_path) is True
 
 
+# ---------------------------------------------------------------------------
+# phaze-timy: the blocking streamed copy and sha256 hashing must run OFF the
+# meta-lane worker's event loop (via asyncio.to_thread) so a multi-GB copy/hash
+# cannot freeze the loop, starving the co-scheduled lane slot, SAQ's timers, and
+# the Phase-46 heartbeat for minutes.
+# ---------------------------------------------------------------------------
+
+
+def _item_with_hash(orig: Path, proposed_path: str, filename: str, sha256_hash: str) -> ExecuteBatchProposalItem:
+    return ExecuteBatchProposalItem(
+        proposal_id=uuid.uuid4(),
+        file_id=uuid.uuid4(),
+        original_path=str(orig),
+        proposed_path=proposed_path,
+        proposed_filename=filename,
+        sha256_hash=sha256_hash,
+    )
+
+
+async def test_verify_hash_runs_off_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sha256 verify of the original is dispatched via asyncio.to_thread."""
+    import hashlib
+
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig = tmp_path / "orig" / "set.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    content = b"a" * (2 * 1024 * 1024)
+    orig.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+
+    real_to_thread = execmod.asyncio.to_thread
+    offloaded: list[str] = []
+
+    async def _spy(func: object, *args: object, **kwargs: object) -> object:
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(execmod.asyncio, "to_thread", _spy)
+
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item_with_hash(orig, "moved", "set.mp3", digest)])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    # The verify hash of the original was offloaded, not run on the event loop.
+    assert "_sha256_of_file" in offloaded
+
+
+async def test_cross_fs_copy_runs_off_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cross-filesystem streamed copy is dispatched via asyncio.to_thread."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig = tmp_path / "orig" / "huge.mkv"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    content = b"z" * (5 * 1024 * 1024)
+    orig.write_bytes(content)
+
+    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: False)
+
+    real_to_thread = execmod.asyncio.to_thread
+    offloaded: list[str] = []
+
+    async def _spy(func: object, *args: object, **kwargs: object) -> object:
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(execmod.asyncio, "to_thread", _spy)
+
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "out", "huge.mkv")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    dest = tmp_path / "out" / "huge.mkv"
+    assert dest.exists()
+    assert not orig.exists()
+    # The atomic cross-fs copy primitive was offloaded, not run on the event loop.
+    assert "_atomic_cross_fs_copy" in offloaded
+
+
 def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
     """The streamed copy reproduces bytes exactly and preserves mtime (copystat)."""
     src = tmp_path / "src.bin"

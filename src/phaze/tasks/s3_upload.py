@@ -133,7 +133,15 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
     try:
         async with httpx.AsyncClient(timeout=transport_timeout_sec) as http:
             for part_number, url in enumerate(payload.part_urls, start=1):
-                chunk = fh.read(payload.part_size_bytes)
+                # phaze-1lvp: read each 64 MiB (default) part off-loop. The source is the
+                # media mount (typically NFS/SMB on this deployment), so a plain fh.read()
+                # blocks the agent worker's event loop for the read's duration -- and a hard
+                # NFS stall blocks it indefinitely. That loop also runs the Phase-46 liveness
+                # heartbeat, so an on-loop read starves the heartbeat (its own asyncio.wait_for
+                # deadline cannot even fire on a blocked loop) and risks a false DEAD. Reads are
+                # sequential and the handle is not shared across coroutines, so offloading only
+                # fh.read to a thread is safe. Mirrors scan.py's to_thread discipline.
+                chunk = await asyncio.to_thread(fh.read, payload.part_size_bytes)
                 if not chunk:
                     # Source exhausted before all presigned URLs were used (e.g. a shorter file than
                     # the presign assumed). Stop -- the parts collected so far are the real upload.

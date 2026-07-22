@@ -1565,6 +1565,7 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     assert response.status_code == 200
     assert "re-queued 3 failed file(s)" in response.text.lower()
 
+    await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
     queue = task_router.queues["nox-analyze"]
     assert len(queue.captured) == 3
     assert queue.name == "phaze-agent-nox-analyze"

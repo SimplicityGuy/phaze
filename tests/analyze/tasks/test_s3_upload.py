@@ -301,3 +301,46 @@ async def test_httpx_read_timeout_reports_upload_failed(agent_env, tmp_path):  #
     assert api.complete_calls == []
     assert len(api.failed_calls) == 1
     assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_part_reads_run_off_loop(agent_env, tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-1lvp: every part chunk read is dispatched via asyncio.to_thread.
+
+    A plain fh.read() of a 64 MiB (default) part on the media mount blocks the agent
+    worker's event loop for the read's duration -- and the loop also runs the Phase-46
+    liveness heartbeat. The read must be offloaded to a worker thread so an NFS stall
+    cannot wedge the loop.
+    """
+    import phaze.tasks.s3_upload as s3_mod
+
+    src = _write_file(tmp_path, b"A" * 6 + b"B" * 4)  # 10 bytes -> 2 parts at size 6
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    url2 = "https://s3.test/bucket/key?partNumber=2"
+    respx.put(url1).mock(return_value=httpx.Response(200, headers={"ETag": '"e1"'}))
+    respx.put(url2).mock(return_value=httpx.Response(200, headers={"ETag": '"e2"'}))
+
+    real_to_thread = asyncio.to_thread
+    offloaded_names: list[str] = []
+
+    async def _spy(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        offloaded_names.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(s3_mod.asyncio, "to_thread", _spy)
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    result = await s3_mod.upload_file_s3(
+        {"api_client": api},
+        file_id=str(file_id),
+        original_path=str(src),
+        part_urls=[url1, url2],
+        part_size_bytes=6,
+        agent_id="fileserver-1",
+    )
+
+    assert result == {"file_id": str(file_id), "status": "uploaded"}
+    # Both part reads (6 bytes, then the final 4 bytes exhausting the source) were
+    # offloaded via to_thread rather than run on the event loop.
+    assert offloaded_names.count("read") == 2

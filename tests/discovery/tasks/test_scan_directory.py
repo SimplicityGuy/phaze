@@ -670,3 +670,77 @@ def test_scan_directory_registered_in_agent_worker_settings(monkeypatch: pytest.
     # under an explicit SAQ name (e.g. ("s3_upload", upload_file_s3), Phase 53).
     func_names = {(f[0] if isinstance(f, tuple) else f.__name__) for f in agent_settings["functions"]}
     assert "scan_directory" in func_names, f"scan_directory not registered: got {func_names}"
+
+
+# ---------------------------------------------------------------------------
+# phaze-bfd1: the synchronous pre-count os.walk must run OFF the event loop (via
+# asyncio.to_thread) so a long walk over a network mount cannot starve the
+# Phase-46 heartbeat and get a healthy agent classified DEAD.
+# ---------------------------------------------------------------------------
+
+
+def test_count_ingestible_counts_only_extractable(tmp_path: Path) -> None:
+    """_count_ingestible counts MUSIC/VIDEO files only and returns no errors on a clean walk."""
+    from phaze.tasks.scan import _count_ingestible
+
+    _touch(tmp_path / "a.mp3")
+    _touch(tmp_path / "b.flac")
+    _touch(tmp_path / "c.unknownext")  # UNKNOWN -- excluded
+    _touch(tmp_path / "d.txt")  # COMPANION -- excluded
+    (tmp_path / "sub").mkdir()
+    _touch(tmp_path / "sub" / "e.mp4")
+
+    count, errors = _count_ingestible(tmp_path)
+
+    assert count == 3  # mp3 + flac + mp4
+    assert errors == []
+
+
+def test_count_ingestible_collects_walk_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """_count_ingestible collects (does not swallow) the os.walk onerror OSErrors."""
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import _count_ingestible
+
+    exc = PermissionError("[Errno 13] Permission denied: '/blocked'")
+
+    def fake_walk(path: object, followlinks: bool = False, onerror: object = None) -> object:
+        if onerror is not None:
+            onerror(exc)  # type: ignore[operator]
+        return
+        yield  # pragma: no cover -- generator that yields nothing
+
+    monkeypatch.setattr(scan_module.os, "walk", fake_walk)
+
+    count, errors = _count_ingestible(tmp_path)
+
+    assert count == 0
+    assert errors == [exc]
+
+
+async def test_scan_directory_precount_runs_off_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """scan_directory dispatches the pre-count walk through asyncio.to_thread.
+
+    A guard against regressing phaze-bfd1: the full synchronous pre-count os.walk
+    must not run back-to-back on the agent worker's event loop (the sole heartbeat
+    source in all-mode).
+    """
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import _count_ingestible, scan_directory
+
+    _touch(tmp_path / "a.mp3")
+
+    real_to_thread = scan_module.asyncio.to_thread
+    offloaded: list[Any] = []
+
+    async def _spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        offloaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(scan_module.asyncio, "to_thread", _spy)
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    # The pre-count helper was dispatched off-loop via to_thread.
+    assert _count_ingestible in offloaded

@@ -7,6 +7,7 @@ NFC Unicode normalization. Creates TagWriteLog audit entries.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 import unicodedata
 
@@ -197,6 +198,45 @@ def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
     return {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
 
 
+def _write_and_verify_sync(
+    file_path: str,
+    proposed_tags: dict[str, str | int | None],
+) -> tuple[str, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | None]]:
+    """Synchronous disk work for one tag write: read-before, write, verify (phaze-qfxv).
+
+    Bundled into a single function so the ENTIRE blocking sequence -- ``_extract_before_tags``
+    (full read), ``write_tags`` (mutagen ``audio.save()``, which rewrites the whole file when the
+    tag area must grow), and ``verify_write`` (another full read) -- runs in exactly one
+    ``asyncio.to_thread`` offload from :func:`execute_tag_write`, instead of blocking the event
+    loop directly. The bulk caller (``bulk_write_no_discrepancies``) loops this up to
+    ``_MAX_BULK_TAG_WRITE`` (2000) times with no other await in between, so any synchronous slice
+    of this work left on the loop freezes every SSE stream, poll, and concurrent request for the
+    whole batch's duration -- an NFS stall inside one ``audio.save()`` would wedge the API
+    indefinitely.
+
+    Returns ``(status, discrepancies, error_message, before_tags)`` -- the four fields
+    ``execute_tag_write`` persists onto ``TagWriteLog``. ``before_tags`` is captured and returned
+    on EVERY path (including a failure in ``write_tags``/``verify_write`` after a successful
+    read) so the audit log's before/undo snapshot is preserved exactly as it was when this logic
+    ran inline on the event loop.
+    """
+    before_tags: dict[str, str | int | None] = {}
+    try:
+        before_tags = _extract_before_tags(file_path)
+        write_tags(file_path, proposed_tags)
+        discrepancies = verify_write(file_path, proposed_tags)
+        status = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
+        return status, discrepancies, None, before_tags
+    except TagReadError as exc:
+        # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
+        # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
+        # ``actual=None`` DISCREPANCY that misrepresents a correctly-tagged file as written-wrong.
+        # ``discrepancies`` stays None so no false per-field mismatch is persisted.
+        return TagWriteStatus.VERIFY_FAILED, None, f"verify failed: {exc}", before_tags
+    except Exception as exc:
+        return TagWriteStatus.FAILED, None, str(exc), before_tags
+
+
 async def execute_tag_write(
     session: AsyncSession,
     file_record: FileRecord,
@@ -222,27 +262,12 @@ async def execute_tag_write(
         raise ValueError(msg)
 
     file_path = file_record.current_path
-    status: str = TagWriteStatus.FAILED
-    discrepancies: dict[str, dict[str, str | None]] | None = None
-    error_message: str | None = None
-    before_tags: dict[str, str | int | None] = {}
 
-    try:
-        before_tags = _extract_before_tags(file_path)
-        write_tags(file_path, proposed_tags)
-        discrepancies = verify_write(file_path, proposed_tags)
-        status = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
-    except TagReadError as exc:
-        # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
-        # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
-        # ``actual=None`` DISCREPANCY that misrepresents a correctly-tagged file as written-wrong.
-        # ``discrepancies`` stays None so no false per-field mismatch is persisted.
-        status = TagWriteStatus.VERIFY_FAILED
-        error_message = f"verify failed: {exc}"
-        discrepancies = None
-    except Exception as exc:
-        status = TagWriteStatus.FAILED
-        error_message = str(exc)
+    # phaze-qfxv: the entire disk-touching sequence (read-before, mutagen save, verify re-read) runs
+    # off the event loop in a worker thread. Without this, a bulk submit loops this up to 2000 times
+    # inline on the API event loop with no yield between the blocking calls of one file, freezing
+    # every SSE stream, 5s poll, /health check, and agent callback for the whole batch.
+    status, discrepancies, error_message, before_tags = await asyncio.to_thread(_write_and_verify_sync, file_path, proposed_tags)
 
     log_entry = TagWriteLog(
         file_id=file_record.id,

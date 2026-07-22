@@ -82,6 +82,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
@@ -384,7 +385,10 @@ async def _execute_one(
             # an unrelated file landed at the destination), so treat it as a genuine
             # verify failure instead of silently reporting success.
             current_step = "verify"
-            actual = _sha256_of_file(proposed)
+            # phaze-timy: hash off-loop. _sha256_of_file streams a multi-GB file in
+            # 1 MiB reads -- on-loop that freezes the meta-lane worker's event loop for
+            # minutes, starving the co-scheduled lane slot and the Phase-46 heartbeat.
+            actual = await asyncio.to_thread(_sha256_of_file, proposed)
             if actual != item.sha256_hash:
                 msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual} (already-moved replay check against {proposed})"
                 raise ValueError(msg)
@@ -393,7 +397,9 @@ async def _execute_one(
             # 3. Optional sha256 verify (caller may supply None to skip)
             if item.sha256_hash is not None:
                 current_step = "verify"
-                actual = _sha256_of_file(original)
+                # phaze-timy: hash off-loop (see the already-moved branch above) so the
+                # multi-GB streaming read does not block the meta-lane event loop.
+                actual = await asyncio.to_thread(_sha256_of_file, original)
                 if actual != item.sha256_hash:
                     msg = f"sha256 mismatch for {item.original_path}: expected {item.sha256_hash}, got {actual}"
                     raise ValueError(msg)
@@ -427,7 +433,11 @@ async def _execute_one(
                 # flipping an already-succeeded move to FAILED while leaving the file
                 # duplicated. A genuinely foreign file (hash mismatch) is still
                 # refused, preserving the phaze-yu2e no-clobber guarantee.
-                if not same_fs and _destination_is_committed_copy(original, proposed, item.sha256_hash):
+                # phaze-timy: _destination_is_committed_copy hashes both `proposed` and
+                # (absent a supplied hash) `original` -- multi-GB streaming reads. Offload
+                # so the identity check does not freeze the meta-lane event loop. The
+                # subsequent original.unlink() is a cheap syscall and stays inline.
+                if not same_fs and await asyncio.to_thread(_destination_is_committed_copy, original, proposed, item.sha256_hash):
                     current_step = "delete"
                     original.unlink()
                 else:
@@ -441,7 +451,18 @@ async def _execute_one(
                 # phaze-k23z: copy through a temp sibling + os.replace so the
                 # destination materializes atomically. A copy that aborts
                 # mid-stream (ENOSPC/EIO) leaves no partial file at `proposed`.
-                _atomic_cross_fs_copy(original, proposed)
+                #
+                # phaze-timy: the streamed copy (bounded chunked read/write + flush +
+                # os.fsync on a multi-GB concert video) is blocking I/O that runs for
+                # minutes. Offload the whole primitive to a worker thread so the meta-lane
+                # event loop -- which also drives the co-scheduled lane slot, SAQ's
+                # dequeue/timeout timers, and the Phase-46 heartbeat -- keeps running. The
+                # fsync/atomic-rename crash-safety semantics are internal to
+                # _atomic_cross_fs_copy and are preserved verbatim inside the thread. The
+                # follow-up original.unlink() is a cheap syscall and stays inline; a crash
+                # in the (awaited) window between copy and unlink lands in the recoverable
+                # "copy committed, original present" state the replay logic completes forward.
+                await asyncio.to_thread(_atomic_cross_fs_copy, original, proposed)
                 # 5. Delete the original (a cross-filesystem copy leaves it in place).
                 current_step = "delete"
                 original.unlink()

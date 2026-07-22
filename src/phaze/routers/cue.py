@@ -1,5 +1,6 @@
 """CUE sheet management UI router -- generation, batch generation, and CUE management page."""
 
+import asyncio
 from pathlib import Path
 import re
 from typing import Any
@@ -20,7 +21,6 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.response_shape import wants_fragment
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
-from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import applied_clause, is_applied
 
 
@@ -101,21 +101,29 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
     return list(result.tuples().all())
 
 
-async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
-    """Compute CUE generation statistics."""
-    # Eligible: approved + EXECUTED file + has timestamps
-    eligible_pairs = await _get_eligible_tracklist_query(session)
-    eligible = len(eligible_pairs)
+def _count_generated_sync(pairs: list[tuple[Tracklist, FileRecord]]) -> int:
+    """Synchronous filesystem probe for the 'generated' stat (phaze-rkvb).
 
-    # Generated: count of eligible whose file has a .cue on disk
-    generated = 0
-    for _tl, fr in eligible_pairs:
-        if _get_cue_version(fr.current_path) > 0:
-            generated += 1
+    Bundles the per-file :func:`_get_cue_version` probe (``Path.exists`` plus, when a base ``.cue``
+    exists, a full ``iterdir`` of the audio file's parent directory) for the WHOLE eligible set into
+    ONE function, run via :func:`asyncio.to_thread` from :func:`_get_cue_stats`. The eligible set
+    carries no ``LIMIT`` and the media files live on the documented NFS/SMB file-server mount, so
+    looping this synchronously on the event loop -- as it did before this fix -- blocked every SSE
+    stream, poll, and concurrent request for the scan's duration, with no timeout if the mount
+    stalls (an unbounded, unrecoverable freeze of the single API worker).
+    """
+    return sum(1 for _tl, fr in pairs if _get_cue_version(fr.current_path) > 0)
 
-    # Missing timestamps: approved + EXECUTED file but NO tracks with timestamps on the LATEST
-    # version (phaze-dboy -- mirrors _eligible_tracklist_stmt's scope so this is the true inverse
-    # of "eligible", not a broader "any version" set that undercounts).
+
+async def _missing_timestamps_count(session: AsyncSession) -> int:
+    """Count approved + EXECUTED-file tracklists with NO tracks with timestamps on the LATEST
+    version (phaze-dboy -- mirrors ``_eligible_tracklist_stmt``'s scope so this is the true
+    inverse of "eligible", not a broader "any version" set that undercounts).
+
+    A pure ``SELECT count(...)`` -- NOT a full-corpus materialization -- so callers that already
+    hold the eligible set in memory (e.g. :func:`generate_batch`) can call this directly instead
+    of going through :func:`_get_cue_stats` and re-querying the eligible set a second time.
+    """
     has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
 
     missing_stmt = (
@@ -132,9 +140,26 @@ async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
         )
     )
     missing_result = await session.execute(missing_stmt)
-    missing_timestamps = missing_result.scalar() or 0
+    return missing_result.scalar() or 0
 
-    return {"eligible": eligible, "generated": generated, "missing_timestamps": missing_timestamps}
+
+async def _cue_stats_from_eligible_pairs(session: AsyncSession, eligible_pairs: list[tuple[Tracklist, FileRecord]]) -> dict[str, int]:
+    """Compute CUE generation statistics from an ALREADY-materialized eligible set (phaze-8lpg).
+
+    Shared by :func:`_get_cue_stats` (which materializes the eligible set itself) and
+    :func:`generate_batch` (which already holds it from its generation loop) so a caller that has
+    the eligible set in hand never re-queries it just to compute stats.
+    """
+    generated = await asyncio.to_thread(_count_generated_sync, eligible_pairs)
+    missing_timestamps = await _missing_timestamps_count(session)
+    return {"eligible": len(eligible_pairs), "generated": generated, "missing_timestamps": missing_timestamps}
+
+
+async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
+    """Compute CUE generation statistics."""
+    # Eligible: approved + EXECUTED file + has timestamps
+    eligible_pairs = await _get_eligible_tracklist_query(session)
+    return await _cue_stats_from_eligible_pairs(session, eligible_pairs)
 
 
 def _get_cue_version(file_path: str) -> int:
@@ -398,7 +423,19 @@ async def generate_batch(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Batch-generate CUE files for all eligible tracklists."""
+    """Batch-generate CUE files for all eligible tracklists.
+
+    phaze-8lpg: restructured from three full-corpus passes (the generation loop, a second full
+    re-materialization of the eligible set for the response, and ``_get_cue_stats``' own full pass)
+    down to exactly ONE full-corpus materialization -- the generation loop itself, which by
+    definition must visit every eligible file to generate its CUE. The response then renders a
+    single BOUNDED page through the SAME ``paged_stmt`` contract :func:`list_cue` uses, instead of
+    re-querying and rendering the whole corpus a second time behind a fabricated
+    ``Pagination(page=1, total=...)``. Each per-file disk write (:func:`write_cue_file`: synchronous
+    ``exists()``/``iterdir()`` probes plus ``open()``/``write()`` against the media mount) is
+    offloaded via ``asyncio.to_thread`` so the event loop is free between files rather than frozen
+    for the write's duration.
+    """
     eligible_pairs = await _get_eligible_tracklist_query(session)
     generated_count = 0
 
@@ -413,7 +450,10 @@ async def generate_batch(
         audio_path = Path(fr.current_path)
         try:
             content = generate_cue_content(audio_path.name, fr.file_type, cue_tracks)
-            write_cue_file(content, audio_path)
+            # phaze-8lpg: write_cue_file's next_cue_path() exists()/iterdir() probes plus the
+            # open()/write() itself are synchronous, blocking media-mount I/O -- offload to a
+            # worker thread instead of running them inline on the event loop.
+            await asyncio.to_thread(write_cue_file, content, audio_path)
             generated_count += 1
         except Exception:
             logger.exception("Failed to generate CUE for tracklist %s", tl.id)
@@ -421,17 +461,31 @@ async def generate_batch(
 
     toast_msg = f"Generated {generated_count} CUE files"
 
-    # Re-query for updated list
-    stats = await _get_cue_stats(session)
-    eligible_pairs = await _get_eligible_tracklist_query(session)
+    # phaze-8lpg: compute stats from the eligible_pairs ALREADY materialized above (the generation
+    # loop) instead of calling _get_cue_stats (which would re-run _get_eligible_tracklist_query),
+    # then render exactly ONE bounded page -- the SAME paged_stmt path list_cue uses -- instead of
+    # re-materializing and rendering the whole corpus a second time.
+    stats = await _cue_stats_from_eligible_pairs(session, eligible_pairs)
+    page_size = DEFAULT_PAGE_SIZE
+    try:
+        async with session.begin_nested():
+            stmt = paged_stmt(
+                _eligible_tracklist_stmt(),
+                page=1,
+                page_size=page_size,
+                order_by=_ELIGIBLE_DISPLAY_ORDER,
+                tiebreaker=(Tracklist.id,),
+            )
+            raw = (await session.execute(stmt)).tuples().all()
+    except Exception:
+        logger.warning("cue_generate_batch_render_degraded", exc_info=True)
+        raw = []
+    page_pairs, has_next = split_sentinel(list(raw), page_size)
 
     tracklists: list[dict[str, Any]] = []
-    for tl, fr in eligible_pairs:
+    for tl, fr in page_pairs:
         cue_version = _get_cue_version(fr.current_path)
-        track_count = 0
-        if tl.latest_version_id:
-            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
-            track_count = count_result.scalar() or 0
+        track_count = await _get_track_count(session, tl.latest_version_id)
 
         tracklists.append(
             {
@@ -445,7 +499,9 @@ async def generate_batch(
             }
         )
 
-    pagination = Pagination(page=1, page_size=DEFAULT_PAGE_SIZE, total=len(eligible_pairs))
+    # No whole-corpus total (mirrors list_cue -- paging contract rule 2): has_next comes off the
+    # page_size + 1 sentinel above, not a COUNT over the full eligible set.
+    pagination = Page[tuple[Tracklist, FileRecord]](page=1, page_size=page_size, has_next=has_next)
 
     return templates.TemplateResponse(
         request=request,

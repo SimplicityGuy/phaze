@@ -183,8 +183,22 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
     Retries with exponential backoff are handled by SAQ queue configuration.
     """
     logger.info("tracklist search started", file_id=file_id)
+
+    # phaze-1bcc: the OLD shape scraped-and-stored inside ONE transaction whose only commit was after
+    # the whole result loop. _store_scraped_tracklist takes a transaction-scoped advisory lock on
+    # hashtext(external_id) (phaze-5vmt), so after storing result #1 that lock was held across the
+    # scrape of results #2..N -- each carrying a 2-5s rate-limit sleep + 30s-timeout HTTP fetch. That
+    # (a) blocked any concurrent scrape touching an already-locked external_id for the whole remaining
+    # loop while pinning a pooled connection, and (b) let two overlapping searches acquire shared locks
+    # in opposite order -> a classic ABBA deadlock that Postgres aborts, discarding a whole batch.
+    #
+    # Restructure into three phases: (1) load the file + build the query in a short session, released
+    # before any network I/O; (2) scrape ALL results with NO connection held; (3) store them in ONE
+    # short transaction, in external_id-sorted order so every job acquires shared advisory locks in the
+    # same order (no ABBA) and no lock is ever held across a network scrape.
+
+    # 1. Load file + build query, then release the connection.
     async with ctx["async_session"]() as session:
-        # Load file with metadata
         result = await session.execute(select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(FileRecord.id == uuid.UUID(file_id)))
         file_record = result.scalar_one_or_none()
         if file_record is None:
@@ -212,56 +226,64 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
             logger.info("tracklist search completed", file_id=file_id, status="no_query", results_found=0)
             return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "no_query"}
 
-        # Search and scrape
-        scraper = TracklistScraper()
-        try:
-            results = await scraper.search(query)
-            any_auto_linked = False
-
-            for search_result in results:
-                scraped = await scraper.scrape_tracklist(search_result.url)
-                # phaze-rkxy: pass the scraped date so the Pitfall-3 date-mismatch cap actually
-                # fires in the auto-link path. Hardcoding None here made the cap dead and let a
-                # wrong-date tracklist auto-link on artist+event alone.
-                scraped_date = _parse_scraped_date(scraped.date)
-                confidence = compute_match_confidence(
-                    tracklist_artist=scraped.artist,
-                    tracklist_event=scraped.event,
-                    tracklist_date=scraped_date,
-                    file_artist=file_artist,
-                    file_event=file_event,
-                    file_date=file_date,
-                )
-
-                # phaze-rkxy: an auto-link MUST be corroborated by a confirmed same-window date.
-                # compute_match_confidence's Pitfall-3 cap only fires when BOTH dates are present, so
-                # guard the remaining holes here -- a missing scraped date, a missing file date (the
-                # metadata-fallback path, where file_event is also None), or a >3-day gap. Without
-                # this, a perfect artist+event match (score 100) auto-links a wrong-date tracklist
-                # with zero date corroboration, exactly the false auto-link the cap was meant to block.
-                date_confirmed = scraped_date is not None and file_date is not None and abs((scraped_date - file_date).days) <= 3
-                auto_link = should_auto_link(confidence) and date_confirmed
-                if auto_link:
-                    any_auto_linked = True
-
-                await _store_scraped_tracklist(
-                    session,
-                    scraped,
-                    file_id=uuid.UUID(file_id) if auto_link else None,
-                    confidence=confidence if auto_link else None,
-                    auto_linked=auto_link,
-                )
-
-            await session.commit()
-            logger.info(
-                "tracklist search completed",
-                file_id=file_id,
-                results_found=len(results),
-                auto_linked=any_auto_linked,
+    # 2. Search + scrape every result with NO DB connection held (phaze-1bcc). Collect the scraped
+    #    payloads plus their computed auto-link decision for the store phase.
+    scraped_items: list[tuple[ScrapedTracklist, bool, int | None]] = []
+    any_auto_linked = False
+    scraper = TracklistScraper()
+    try:
+        results = await scraper.search(query)
+        for search_result in results:
+            scraped = await scraper.scrape_tracklist(search_result.url)
+            # phaze-rkxy: pass the scraped date so the Pitfall-3 date-mismatch cap actually
+            # fires in the auto-link path. Hardcoding None here made the cap dead and let a
+            # wrong-date tracklist auto-link on artist+event alone.
+            scraped_date = _parse_scraped_date(scraped.date)
+            confidence = compute_match_confidence(
+                tracklist_artist=scraped.artist,
+                tracklist_event=scraped.event,
+                tracklist_date=scraped_date,
+                file_artist=file_artist,
+                file_event=file_event,
+                file_date=file_date,
             )
-            return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
-        finally:
-            await scraper.close()
+
+            # phaze-rkxy: an auto-link MUST be corroborated by a confirmed same-window date.
+            # compute_match_confidence's Pitfall-3 cap only fires when BOTH dates are present, so
+            # guard the remaining holes here -- a missing scraped date, a missing file date (the
+            # metadata-fallback path, where file_event is also None), or a >3-day gap. Without
+            # this, a perfect artist+event match (score 100) auto-links a wrong-date tracklist
+            # with zero date corroboration, exactly the false auto-link the cap was meant to block.
+            date_confirmed = scraped_date is not None and file_date is not None and abs((scraped_date - file_date).days) <= 3
+            auto_link = should_auto_link(confidence) and date_confirmed
+            if auto_link:
+                any_auto_linked = True
+            scraped_items.append((scraped, auto_link, confidence if auto_link else None))
+    finally:
+        await scraper.close()
+
+    # 3. Store all scraped results in ONE short transaction, sorted by external_id so overlapping
+    #    concurrent searches acquire the shared per-external_id advisory locks in a CONSISTENT order
+    #    (no ABBA deadlock) and no lock is ever held across a network scrape (phaze-1bcc).
+    file_uuid = uuid.UUID(file_id)
+    async with ctx["async_session"]() as session:
+        for scraped, auto_link, stored_confidence in sorted(scraped_items, key=lambda item: item[0].external_id):
+            await _store_scraped_tracklist(
+                session,
+                scraped,
+                file_id=file_uuid if auto_link else None,
+                confidence=stored_confidence,
+                auto_linked=auto_link,
+            )
+        await session.commit()
+
+    logger.info(
+        "tracklist search completed",
+        file_id=file_id,
+        results_found=len(results),
+        auto_linked=any_auto_linked,
+    )
+    return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
 
 
 async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) -> dict[str, Any]:
@@ -271,39 +293,48 @@ async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) 
     Retries with exponential backoff are handled by SAQ queue configuration.
     """
     logger.info("tracklist scrape started", tracklist_id=tracklist_id)
+    tl_uuid = uuid.UUID(tracklist_id)
+
+    # phaze-igwi: scrape_tracklist() sleeps 2-5s on the rate limiter then POSTs with a 30s timeout.
+    # Holding the session's implicit transaction (a pinned PgBouncer SESSION-mode pooled connection)
+    # idle-in-transaction across that ~2-35s of network I/O drains the capped pool -- refresh_tracklists
+    # / rescrape fan these out across the corpus. So read the source_url in a short session, RELEASE
+    # the connection before the scrape, then re-open a short session to store + commit.
     async with ctx["async_session"]() as session:
-        result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
+        result = await session.execute(select(Tracklist).where(Tracklist.id == tl_uuid))
         tracklist = result.scalar_one_or_none()
         if tracklist is None:
             logger.info("tracklist scrape completed", tracklist_id=tracklist_id, status="not_found", tracks_found=0)
             return {"tracklist_id": tracklist_id, "tracks_found": 0, "version": 0, "status": "not_found"}
+        source_url = tracklist.source_url
 
-        scraper = TracklistScraper()
-        try:
-            scraped = await scraper.scrape_tracklist(tracklist.source_url)
-            await _store_scraped_tracklist(session, scraped)
-            await session.commit()
+    # Scrape with NO DB connection held (phaze-igwi).
+    scraper = TracklistScraper()
+    try:
+        scraped = await scraper.scrape_tracklist(source_url)
+    finally:
+        await scraper.close()
 
-            # Get the version number we just created
-            version_result = await session.execute(
-                select(TracklistVersion)
-                .where(TracklistVersion.tracklist_id == tracklist.id)
-                .order_by(TracklistVersion.version_number.desc())
-                .limit(1)
-            )
-            latest = version_result.scalar_one_or_none()
-            version_number = latest.version_number if latest else 0
-            tracks_found = len(scraped.tracks)
+    # Re-open a short session only for the write + the version read-back (phaze-igwi).
+    async with ctx["async_session"]() as session:
+        await _store_scraped_tracklist(session, scraped)
+        await session.commit()
 
-            logger.info(
-                "tracklist scrape completed",
-                tracklist_id=tracklist_id,
-                tracks_found=tracks_found,
-                version=version_number,
-            )
-            return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
-        finally:
-            await scraper.close()
+        # Get the version number we just created
+        version_result = await session.execute(
+            select(TracklistVersion).where(TracklistVersion.tracklist_id == tl_uuid).order_by(TracklistVersion.version_number.desc()).limit(1)
+        )
+        latest = version_result.scalar_one_or_none()
+        version_number = latest.version_number if latest else 0
+        tracks_found = len(scraped.tracks)
+
+    logger.info(
+        "tracklist scrape completed",
+        tracklist_id=tracklist_id,
+        tracks_found=tracks_found,
+        version=version_number,
+    )
+    return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
 
 
 async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
