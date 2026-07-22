@@ -85,6 +85,35 @@ class TestParseTimestampString:
         # 2:15:30 = 2*3600 + 15*60 + 30 = 8130
         assert parse_timestamp_string("2:15:30") == 8130.0
 
+    def test_empty_string_returns_none(self):
+        # phaze-97u7: an empty scraped cue-time cell yields "" (not None) -- float("") must not raise.
+        assert parse_timestamp_string("") is None
+
+    def test_whitespace_returns_none(self):
+        assert parse_timestamp_string("   ") is None
+
+    def test_non_numeric_returns_none(self):
+        assert parse_timestamp_string("abc") is None
+
+    def test_decorated_time_returns_none(self):
+        assert parse_timestamp_string("~5:00") is None
+
+    def test_bracketed_time_returns_none(self):
+        assert parse_timestamp_string("[1:02:03]") is None
+
+    def test_trailing_garbage_returns_none(self):
+        assert parse_timestamp_string("05:24*") is None
+
+    def test_too_many_segments_returns_none(self):
+        assert parse_timestamp_string("1:2:3:4") is None
+
+    def test_fractional_seconds_segment_returns_none(self):
+        # int(part) rejects a fractional MM/SS segment -- documented as None, not a crash.
+        assert parse_timestamp_string("1:23:45.5") is None
+
+    def test_garbage_minutes_segment_returns_none(self):
+        assert parse_timestamp_string("12:xx") is None
+
 
 class TestGenerateCueContent:
     """Test CUE content string generation."""

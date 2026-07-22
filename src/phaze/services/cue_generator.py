@@ -68,21 +68,32 @@ def parse_timestamp_string(ts: str | None) -> float | None:
         - "MM:SS" -> minutes*60 + seconds
         - "123.45" -> raw seconds as float
 
+    Total function (phaze-97u7): ``ts`` is unvalidated free-form text -- scraped verbatim from
+    1001Tracklists markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
+    writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
+    ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
+    contract, NOT raise -- callers (routers/cue.py ``_build_cue_tracks``, both single and batch
+    generate) run this per track OUTSIDE their own try/except and rely on the documented None
+    contract to route to the friendly "No tracks have timestamps" toast instead of a 500.
+
     Args:
         ts: Timestamp string or None.
 
     Returns:
-        Total seconds as float, or None if input is None.
+        Total seconds as float, or None if input is None or unparseable.
     """
     if ts is None:
         return None
 
     parts = ts.split(":")
-    if len(parts) == 3:
-        return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
-    if len(parts) == 2:
-        return float(int(parts[0]) * 60 + int(parts[1]))
-    return float(ts)
+    try:
+        if len(parts) == 3:
+            return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+        if len(parts) == 2:
+            return float(int(parts[0]) * 60 + int(parts[1]))
+        return float(ts)
+    except ValueError:
+        return None
 
 
 def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTrackData]) -> str:
