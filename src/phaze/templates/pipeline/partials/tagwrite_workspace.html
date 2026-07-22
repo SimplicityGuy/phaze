@@ -6,7 +6,11 @@
    apply -- there is NO tag pending->approved status) and per-row UNDO POSTs /tags/{file_id}/undo (Plan
    60-01, before_tags restore). Both use the templated hx-*_method verb so the partial stays PATCH for
    rename/move. Tag inline-edit is OUT of the initial cut (show_edit=false -> NO SAVE-EDIT); there is no
-   tag-skip route, so show_skip=false too. show_undo=true surfaces the per-row reversibility affordance.
+   tag-skip route, so show_skip=false too. show_undo is gated per-row on ``f.has_prior_write``
+   (phaze-o5rf): a FRESH pending row (no TagWriteLog yet -- the overwhelming common case) has nothing
+   for undo_tag_write to revert (_get_latest_write_log returns None), so the control is suppressed
+   there; only a row already carrying a DISCREPANCY/FAILED log -- where undo genuinely restores the
+   prior snapshot -- advertises the affordance.
 
    Bulk header (REVIEW-02 / D-03): APPROVE ALL WITH NO DISCREPANCIES POSTs the id-less server-predicate
    /tags/bulk-write-no-discrepancies -- the server re-queries EXECUTED files whose comparison qualifies
@@ -49,7 +53,7 @@
                     undo_method="post",
                     show_edit=false,
                     show_skip=false,
-                    show_undo=true,
+                    show_undo=f.has_prior_write,
                     row_state="pending" %}
                 {% include "pipeline/partials/_diff_row.html" %}
             {% endwith %}
