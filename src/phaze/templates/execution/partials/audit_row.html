@@ -9,7 +9,13 @@
         {{ log.destination_path }}
     </td>
     <td class="px-4 py-3">
-        {% if log.operation == "verify" or log.operation == "copy" %}
+        {# phaze-0sv3: gate on the terminal status, not on operation. ``operation`` is only ever
+           written as "move" (tasks/execution.py), so the prior ``verify``/``copy`` gate matched no
+           real row and every audit row fell to the grey "Not applicable" dash. ``sha256_verified``
+           is populated on the completion PATCH, so it is meaningful exactly for COMPLETED rows;
+           non-terminal (pending / in_progress) and failed rows have not recorded a verification
+           result yet, so they keep the "—" placeholder. #}
+        {% if log.status == "completed" %}
             {% if log.sha256_verified %}
                 <span class="text-green-600 dark:text-green-400" aria-label="SHA256 verified">&#10003;</span>
             {% else %}

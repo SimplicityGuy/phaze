@@ -608,3 +608,62 @@ async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClie
     body = response.text
     assert body.index("Agent Two") < body.index("Agent One"), "total=20 sorts before total=10, descending"
     assert 'aria-sort="descending"' in body
+
+
+# ---------------------------------------------------------------------------
+# phaze-0sv3: audit SHA256-Verified column renders for real ("move") rows.
+#
+# ``operation`` is only ever written as "move" (tasks/execution.py). The prior
+# template gated the tick/cross on ``operation in {"verify", "copy"}``, so every
+# production row fell to the grey "Not applicable" dash and the verification
+# result the DB carries was never shown. These tests drive the real operation
+# value + terminal status and assert the check / cross now render.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_verified_check_shown_for_completed_move(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed 'move' row with sha256_verified=True renders the green check (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.COMPLETED,
+        sha256_verified=True,
+        source_path="/music/verified.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="SHA256 verified"' in response.text
+    assert 'aria-label="Not applicable"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_cross_shown_for_completed_move_unverified(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed 'move' row with sha256_verified=False renders the red cross (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.COMPLETED,
+        sha256_verified=False,
+        source_path="/music/unverified.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="SHA256 not verified"' in response.text
+    assert 'aria-label="Not applicable"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-terminal 'move' row keeps the "—" placeholder -- verification has not run yet (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.IN_PROGRESS,
+        sha256_verified=False,
+        source_path="/music/inflight.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="Not applicable"' in response.text
+    assert 'aria-label="SHA256 verified"' not in response.text
