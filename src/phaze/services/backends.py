@@ -724,12 +724,14 @@ class KueueBackend(_BaseBackend):
                     # cleanup (a live burst may still own the object), no ledger clear.
                     await session.rollback()
                     continue
-                # CAS hit -> gate the cleanup behind it, exactly like the over-cap spill.
-                bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
-                if bucket is not None:
-                    if upload_id:
-                        await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-                    await s3_staging.delete_staged_object(file_id, bucket)
+                # phaze-jwz0: CAS hit -> clear the ledger + COMMIT the spill FIRST, which releases the drain's
+                # global ``pg_advisory_xact_lock`` and the idle-in-transaction connection BEFORE any S3 network
+                # I/O. The prior structure held that single global lock + an open txn across
+                # ``abort_multipart_upload`` / ``delete_staged_object`` -- aioboto3 calls subject to botocore's
+                # full connect-timeout x retry cycle (minutes against a hung/unreachable bucket) -- so ONE bad
+                # endpoint wedged every ``stage_cloud_window`` drain tick and every reconcile row behind it, and
+                # ran DESTRUCTIVE cleanup before the commit (a commit failure then left the DB claiming an upload
+                # whose S3 substrate was already gone).
                 await clear_ledger_entry(session, f"s3_upload:{file_id}")
                 await session.commit()
                 tally["staging_reaped"] += 1
@@ -743,6 +745,26 @@ class KueueBackend(_BaseBackend):
                     bound_sec=bound_sec,
                     attempts=attempts,
                 )
+                # phaze-jwz0: S3 cleanup runs AFTER the commit, OUTSIDE the txn/lock. Both ops are idempotent
+                # (they swallow NoSuchUpload / absent-object) and the row is already 'awaiting' -> a re-drive
+                # re-stages a FRESH multipart, so the old object is irrelevant: a crash or a hung bucket here at
+                # worst leaks the OLD object until the next reap/spill re-runs the same idempotent cleanup.
+                # Failures are isolated locally so a slow bucket can neither hold the released lock nor turn a
+                # durable spill into a per-row rollback that undoes it.
+                bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
+                if bucket is not None:
+                    try:
+                        if upload_id:
+                            await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                        await s3_staging.delete_staged_object(file_id, bucket)
+                    except Exception:
+                        logger.warning(
+                            "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "
+                            "(row already spilled to awaiting; old object may leak until the re-drive re-stages)",
+                            cloud_job_id=str(cloud_job_id),
+                            file_id=str(file_id),
+                            exc_info=True,
+                        )
             except Exception:
                 await session.rollback()
                 logger.warning("KueueBackend.reconcile: stranded staging reap failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)

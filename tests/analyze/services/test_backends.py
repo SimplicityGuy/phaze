@@ -1872,3 +1872,43 @@ async def test_reap_still_fires_when_the_broker_key_is_terminal_not_live(session
     assert tally is not None
     assert tally["staging_reaped"] == 1  # terminal key is not live -> the lost row is reaped
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
+# === phaze-jwz0: the reaper commits the spill BEFORE the S3 cleanup (outside the txn/lock) ============
+
+
+@pytest.mark.asyncio
+async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_undoes_it(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-jwz0: the CAS spill + ledger clear COMMIT before the S3 cleanup, which runs outside the txn/lock.
+
+    Pre-fix, ``abort_multipart_upload`` / ``delete_staged_object`` ran INSIDE the still-open transaction under
+    the global drain lock (wedging every drain tick behind a hung bucket) and BEFORE the commit -- so an S3
+    raise hit the per-row ``except`` and rolled the spill back. Post-fix the spill is durable first; a failing
+    (or hung) bucket only leaks the old object (idempotently re-cleaned on a later pass), never un-spills.
+    """
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock(side_effect=RuntimeError("bucket unreachable"))
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-xyz",
+    )
+
+    tally = await backend.reconcile(session)  # must NOT raise despite the failing abort
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # the spill is counted -- it committed BEFORE the S3 failure
+    assert abort.await_count == 1  # cleanup was attempted (post-commit)
+    assert delete.await_count == 0  # abort raised first, so delete was skipped (both idempotent, retried later)
+    # The load-bearing assertion: the failing bucket did NOT roll the durable spill back.
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+    assert await backend.in_flight_count(session) == 0  # the cap slot is genuinely released
