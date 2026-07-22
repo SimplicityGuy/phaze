@@ -221,18 +221,16 @@ def test_sort_key_never_after_dead_within_non_revoked() -> None:
 
 
 class _RaisingSession:
-    """Stub session whose ``execute`` raises ``SQLAlchemyError`` and whose ``rollback`` is a no-op.
+    """Stub session whose ``begin_nested`` raises ``SQLAlchemyError`` the moment control enters the ``try``.
 
-    Drives ``derive_compute_lane_identities`` straight into its ``except SQLAlchemyError`` degrade
-    branch, which rolls back and returns the registry lanes all-``IDLE`` — a DB hiccup must NEVER
-    paint a compute lane DEAD/red.
+    ``derive_compute_lane_identities`` opens ``async with session.begin_nested():`` as the first
+    statement inside its ``try``. Raising synchronously from ``begin_nested`` drives control straight
+    into the ``except SQLAlchemyError`` degrade branch, which returns the registry lanes all-``IDLE``
+    — a DB hiccup must NEVER paint a compute lane DEAD/red.
     """
 
-    async def execute(self, *_args: object, **_kwargs: object) -> object:
+    def begin_nested(self) -> object:
         raise SQLAlchemyError("db down")
-
-    async def rollback(self) -> None:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -472,6 +470,42 @@ async def test_derive_degrades_to_registry_all_idle_on_db_error(monkeypatch: pyt
         ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0),
         ComputeLane(backend_id="a1", kind="compute", state="IDLE", running=0, waiting=0),
     ]
+
+
+@pytest.mark.asyncio
+async def test_derive_degrade_preserves_caller_loaded_agent_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: a CloudJob-read failure degrades via a SAVEPOINT that rolls back the NESTED scope ALONE.
+
+    ``admin_agents`` loads Agent rows on this SAME session BEFORE calling ``derive_compute_lane_identities``
+    and renders their attributes AFTER. The degrade must NOT roll back the outer transaction/session — a
+    plain ``session.rollback()`` there expires every mapped instance in the identity map, 500-ing the
+    template render on the next lazy load (MissingGreenlet from a sync context).
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell a SAVEPOINT rollback
+    apart from a plain one — a plain rollback expunges the pending flush to *transient*, not *expired*):
+    flush an Agent row, then force ONLY the inner CloudJob SELECT to fail. Under the SAVEPOINT fix the
+    earlier flush survives in the intact outer transaction, so ``session.get`` still finds the agent. Under
+    a plain ``session.rollback()`` the whole outer transaction unwinds and ``session.get`` returns ``None``.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(liveness_mod, "get_settings", lambda: _settings(_backend("k8s-a", "kueue")))
+
+    agent = Agent(id="cr01-lane-agent", name="Cr01LaneBox", scan_roots=[], last_seen_at=datetime.now(UTC), kind="fileserver")
+    session.add(agent)
+    await session.flush()
+
+    # Force ONLY the inner CloudJob SELECT to fail; the flush above already happened on the real execute.
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=SQLAlchemyError("boom")))
+    lanes = await derive_compute_lane_identities(session)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    # Degrades to the registry lanes all-IDLE, never raises (KDEPLOY-04).
+    assert lanes == [ComputeLane(backend_id="k8s-a", kind="kueue", state="IDLE", running=0, waiting=0)]
+    # CR-01: the outer transaction (and the earlier flush of the agent) must survive the degrade. A plain
+    # ``session.rollback()`` would unwind the outer txn and this lookup would be None.
+    assert await session.get(Agent, "cr01-lane-agent") is not None
 
 
 @pytest.mark.asyncio
