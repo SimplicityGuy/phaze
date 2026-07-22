@@ -29,7 +29,12 @@
     <div class="flex items-start justify-between gap-4 px-6 py-4 border-b border-gray-200 dark:border-phaze-border">
         <div>
             <h1 tabindex="-1" class="font-jura text-lg font-medium uppercase tracking-[0.15em] text-gray-900 dark:text-gray-100">{{ title }}</h1>
-            {% if subcount %}<p class="mt-1 text-sm text-gray-500 dark:text-gray-400" x-text="{{ subcount }}"></p>{% endif %}
+            {# id is a stable OOB target for a stage's own mutation response to refresh this text
+               without a full workspace re-render (phaze-gwe1: the tag facet's bulk-write toast used
+               to be the ONLY thing in its response, leaving this subcount frozen at its pre-bulk
+               value). Harmless for every other facet -- only one workspace is ever mounted into
+               #stage-workspace at a time, so the id is never duplicated. #}
+            {% if subcount %}<p id="stage-workspace-subcount" class="mt-1 text-sm text-gray-500 dark:text-gray-400" x-text="{{ subcount }}"></p>{% endif %}
         </div>
         {% if actions %}<div class="flex shrink-0 items-center gap-2">{{ actions }}</div>{% endif %}
     </div>

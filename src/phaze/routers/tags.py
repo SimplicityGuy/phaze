@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import structlog
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
@@ -24,6 +25,8 @@ from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
 
+
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -61,6 +64,38 @@ def _terminal_tagwrite_subq() -> Select[tuple[uuid.UUID]]:
     candidate window (WR-01).
     """
     return select(TagWriteLog.file_id).where(TagWriteLog.status.in_(_TERMINAL_TAGWRITE_STATUSES))
+
+
+# phaze-u28m: a fixed application-defined key for the bulk-tag-write Postgres advisory lock. It
+# serializes the whole ``bulk_write_no_discrepancies`` operation across requests so a duplicate or
+# concurrent submit cannot re-select the same still-non-terminal candidate set and double-write tags
+# on disk / append duplicate audit rows (the TOCTOU window the deferred single commit used to leave
+# open). SESSION-scoped (``pg_(try_)advisory_lock``), NOT xact-scoped: phaze-k7g6 makes the loop
+# commit per file, which would release a ``pg_advisory_xact_lock`` after the first file and reopen
+# the race. Arbitrary stable 63-bit constant (ASCII "phazetag" folded).
+_BULK_TAGWRITE_LOCK_KEY = 0x506861_7A657461
+
+
+async def _acquire_bulk_tagwrite_lock(session: AsyncSession) -> bool:
+    """Try to take the session-scoped bulk-tag-write advisory lock. ``True`` if acquired."""
+    result = await session.execute(select(func.pg_try_advisory_lock(_BULK_TAGWRITE_LOCK_KEY)))
+    return bool(result.scalar())
+
+
+async def _release_bulk_tagwrite_lock(session: AsyncSession) -> None:
+    """Release the session-scoped bulk-tag-write advisory lock (idempotent-safe on our own hold)."""
+    await session.execute(select(func.pg_advisory_unlock(_BULK_TAGWRITE_LOCK_KEY)))
+
+
+async def _has_terminal_tagwrite(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """Re-check under the lock whether ``file_id`` already carries a terminal TagWriteLog.
+
+    phaze-u28m: guards the interleaving with the per-file route (which the bulk advisory lock does
+    NOT block) -- a file that gained a COMPLETED/NO_OP log between the candidate SELECT and its turn
+    in the loop must be skipped rather than written a second time.
+    """
+    stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id, TagWriteLog.status.in_(_TERMINAL_TAGWRITE_STATUSES))
+    return bool((await session.execute(stmt)).scalar())
 
 
 async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
@@ -143,8 +178,47 @@ async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) 
 
 
 async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
-    """Get the most recent TagWriteLog for a file."""
-    stmt = select(TagWriteLog).where(TagWriteLog.file_id == file_id).order_by(TagWriteLog.written_at.desc()).limit(1)
+    """Get the most recent TagWriteLog for a file (any status/source), for status display."""
+    stmt = (
+        select(TagWriteLog)
+        .where(TagWriteLog.file_id == file_id)
+        # ``id`` tiebreaks equal ``written_at`` (server ``now()`` is per-transaction) so the "latest"
+        # row is deterministic.
+        .order_by(TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+# phaze-soph: statuses whose TagWriteLog actually mutated the file on disk and can therefore be
+# reverted. COMPLETED and DISCREPANCY both ran ``write_tags`` (DISCREPANCY = wrote, but verify found a
+# normalization mismatch), and VERIFY_FAILED (phaze-vq3g) also LANDED on disk -- only its confirming
+# re-read failed -- so all three carry a real before_tags snapshot to restore. FAILED never wrote and
+# NO_OP is a zero-change marker, so neither is a real write to undo.
+_UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED)
+
+
+async def _get_write_log_to_undo(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
+    """Get the latest TagWriteLog that is the ACTUAL write an undo should revert.
+
+    phaze-soph: ``_get_latest_write_log`` returns the newest row regardless of status/source, so a
+    FAILED retry (before_tags = the post-previous-write disk state) or a bulk NO_OP marker
+    (before_tags = {}) shadows the real write, and undo re-applies the wrong snapshot while toasting
+    'Reverted'. This selects the newest row that truly wrote to disk (COMPLETED/DISCREPANCY) and is
+    not itself a reversal (``source != 'undo'``) -- the row whose ``before_tags`` restores the
+    pre-write state.
+    """
+    stmt = (
+        select(TagWriteLog)
+        .where(
+            TagWriteLog.file_id == file_id,
+            TagWriteLog.status.in_(_UNDOABLE_TAGWRITE_STATUSES),
+            TagWriteLog.source != "undo",
+        )
+        .order_by(TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
+        .limit(1)
+    )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -541,6 +615,11 @@ async def write_file_tags(
         elif status == TagWriteStatus.DISCREPANCY:
             disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
             toast_message = f"Tags written with {disc_count} discrepancy. Re-read values differ from what was sent -- usually encoding normalization. Review the audit log for details."
+        elif status == TagWriteStatus.VERIFY_FAILED:
+            # phaze-vq3g: the write LANDED but the immediate verify re-read failed (transient I/O).
+            # Do not claim a discrepancy -- the on-disk tags are the ones sent; the file just could
+            # not be confirmed. It resurfaces for a later re-verify that self-heals to COMPLETED.
+            toast_message = f"Tags written to {file_record.original_filename}, but the file could not be re-read to verify ({log_entry.error_message or 'verify failed'}). The write itself succeeded; it will re-verify later."
         else:
             toast_message = f"Tag write failed: {log_entry.error_message or 'Unknown error'}. The file may be read-only or corrupted. Check file permissions and try again."
     except ValueError as exc:
@@ -549,9 +628,10 @@ async def write_file_tags(
 
     if is_v7:
         # phaze-nvll defects 1+2: the v7 row gets the shared _diff_row.html back, in "approved" (WITH
-        # a working UNDO) for a real write outcome (COMPLETED/DISCREPANCY), or "pending" (APPROVE
-        # still available to retry) when nothing was actually written (FAILED / a raised ValueError).
-        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY) else "pending"
+        # a working UNDO) for a write that LANDED on disk (COMPLETED/DISCREPANCY/VERIFY_FAILED -- all
+        # mutated the file), or "pending" (APPROVE still available to retry) when nothing was actually
+        # written (FAILED / a raised ValueError).
+        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED) else "pending"
         row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
         return _tagwrite_diff_row_response(request, row_context, toast_message)
 
@@ -576,6 +656,29 @@ async def write_file_tags(
     )
 
 
+def _bulk_write_toast(written: int, discrepancy: int, verify_failed: int, failed: int) -> str:
+    """Build a truthful bulk-write toast (phaze-5j82).
+
+    Only ``written`` (COMPLETED) files are reported as tagged. DISCREPANCY, VERIFY_FAILED, and
+    FAILED outcomes are surfaced separately so the operator is never told "N files tagged" when
+    zero tags actually landed.
+    """
+    if not (written or discrepancy or verify_failed or failed):
+        return "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+
+    parts = [f"{written} file{'s' if written != 1 else ''} tagged"]
+    extras: list[str] = []
+    if discrepancy:
+        extras.append(f"{discrepancy} with discrepancies")
+    if verify_failed:
+        extras.append(f"{verify_failed} written but unverified")
+    if failed:
+        extras.append(f"{failed} failed")
+    if extras:
+        return f"{parts[0]}; {', '.join(extras)}. Review the audit log for the non-clean writes."
+    return f"{parts[0]} (no discrepancies)."
+
+
 @router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
 async def bulk_write_no_discrepancies(
     request: Request,
@@ -591,57 +694,176 @@ async def bulk_write_no_discrepancies(
     mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip. The candidate set is capped at
     :data:`_MAX_BULK_TAG_WRITE` per submit (D-03) so a large first-time-visible applied backlog cannot
     blow up the loop. Each qualifying file is written via the EXISTING :func:`execute_tag_write`.
+
+    phaze-gwe1: the pending workspace's rows are NOT re-queried/re-rendered by anything else after
+    this commits (no self-poll, and the chrome ``/pipeline/stats`` poll is counts-only) -- every row
+    this handler resolves to a TERMINAL outcome (a fresh NO_OP marker, or a write that actually
+    COMPLETED) is stale on screen: still "pending" with a live APPROVE that would re-write an
+    already-written file and shadow the bulk write's own before/after snapshot in the undo chain. The
+    response therefore also OOB-removes exactly those rows (keyed by ``tagwrite-row-{id}``, the SAME
+    id the workspace renders) and refreshes the subcount. A DISCREPANCY or FAILED outcome is
+    deliberately left in place (both are non-terminal by design -- DISCREPANCY re-offers itself for a
+    retry, FAILED never wrote anything -- so the row staying pending is correct, not stale).
     """
-    terminal_subq = _terminal_tagwrite_subq()
-    stmt = (
-        select(FileRecord)
-        .options(selectinload(FileRecord.file_metadata))
-        .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
-        .order_by(FileRecord.original_filename)
-        .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
-    )
-    file_records = list((await session.execute(stmt)).scalars().all())
+    # phaze-u28m: serialize the whole bulk operation. A second concurrent/duplicate submit that
+    # cannot take the lock does NOTHING (no re-select, no double disk write, no duplicate audit rows)
+    # rather than racing the first. Fail-fast (``pg_try_advisory_lock``) suits a single-user tool: a
+    # double-click gets a clear "already in progress" toast instead of silently re-tagging every file.
+    if not await _acquire_bulk_tagwrite_lock(session):
+        stats = await _get_tag_stats(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="tags/partials/bulk_write_response.html",
+            context={
+                "request": request,
+                "stats": stats,
+                "written": 0,
+                "toast_message": "A bulk tag write is already in progress -- nothing was re-written. Wait for it to finish, then retry.",
+            },
+        )
 
     written = 0
-    for fr in file_records:
-        tracklist = await _get_tracklist_for_file(session, fr.id)
-        discogs_link = await _get_accepted_discogs_link(session, fr.id)
-        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-        comparison = _build_comparison(fr.file_metadata, proposed)
-        if _count_changes(comparison) < 1:
-            # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP marker
-            # so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same window on
-            # every submit and permanently starves the qualifying files behind it. This is the write
-            # path (it already commits below); the read-only render builder never writes.
-            session.add(
-                TagWriteLog(
-                    file_id=fr.id,
-                    before_tags={},
-                    after_tags={},
-                    source="bulk_noop",
-                    status=TagWriteStatus.NO_OP.value,
-                )
-            )
-            continue
-        if not _qualifies_for_bulk_write(comparison):
-            # A >=1-change file that would blank an existing tag: never bulk-written (stays per-file
-            # Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so this is a defensive path.
-            continue
-        tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-        await execute_tag_write(session, fr, tags, source="proposal")
-        written += 1
-    await session.commit()
+    failed = 0
+    discrepancy = 0
+    verify_failed = 0
+    # phaze-gwe1: files whose tag-write reached a TERMINAL state this pass (COMPLETED / NO_OP) --
+    # the response removes their stale pending rows. DISCREPANCY/VERIFY_FAILED/FAILED are
+    # non-terminal by design and stay in the queue.
+    resolved_ids: list[uuid.UUID] = []
+    try:
+        terminal_subq = _terminal_tagwrite_subq()
+        stmt = (
+            select(FileRecord)
+            .options(selectinload(FileRecord.file_metadata))
+            .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
+            .order_by(FileRecord.original_filename)
+            .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
+        )
+        file_records = list((await session.execute(stmt)).scalars().all())
+
+        for fr in file_records:
+            # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM instance,
+            # so a later ``fr.id`` access would trigger a lazy reload (async IO) from a sync context.
+            file_id = fr.id
+            # phaze-k7g6: isolate each file. A single bad file (e.g. a ValueError from a concurrently
+            # un-applied file, or a transient read error) must SKIP -- never abort the batch and never
+            # discard the already-committed audit rows of prior files.
+            try:
+                # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
+                # concurrent BULK submit, but a per-file write_file_tags could have landed a terminal
+                # log for this candidate since the SELECT -- skip it rather than write it twice.
+                if await _has_terminal_tagwrite(session, file_id):
+                    continue
+
+                tracklist = await _get_tracklist_for_file(session, file_id)
+                discogs_link = await _get_accepted_discogs_link(session, file_id)
+                proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+                comparison = _build_comparison(fr.file_metadata, proposed)
+                if _count_changes(comparison) < 1:
+                    # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP
+                    # marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this
+                    # same window on every submit and permanently starves the qualifying files behind it.
+                    session.add(
+                        TagWriteLog(
+                            file_id=file_id,
+                            before_tags={},
+                            after_tags={},
+                            source="bulk_noop",
+                            status=TagWriteStatus.NO_OP.value,
+                        )
+                    )
+                    # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
+                    await session.commit()
+                    resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
+                    continue
+                if not _qualifies_for_bulk_write(comparison):
+                    # A >=1-change file that would blank an existing tag: never bulk-written (stays
+                    # per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so defensive.
+                    continue
+                tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+                log_entry = await execute_tag_write(session, fr, tags, source="proposal")
+                # phaze-k7g6: commit the audit row atomically with the disk mutation it describes, so a
+                # mid-loop cancellation/crash can never leave a written file without its TagWriteLog
+                # (which holds the before_tags UNDO snapshot).
+                await session.commit()
+
+                # phaze-5j82: count outcomes truthfully -- only a real COMPLETED write is a success.
+                # FAILED (nothing written) and DISCREPANCY/VERIFY_FAILED (written but not confirmed
+                # clean) are tallied separately and surfaced, never reported as clean successes.
+                if log_entry.status == TagWriteStatus.COMPLETED:
+                    written += 1
+                    resolved_ids.append(file_id)  # phaze-gwe1: terminal clean write -- remove the stale pending row
+                elif log_entry.status == TagWriteStatus.DISCREPANCY:
+                    discrepancy += 1
+                elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
+                    verify_failed += 1
+                else:
+                    failed += 1
+            except Exception:
+                # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits
+                # stand) and keep going. A raised ValueError/DB error is a failed file, not a batch abort.
+                await session.rollback()
+                failed += 1
+                logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
+                continue
+    finally:
+        await _release_bulk_tagwrite_lock(session)
+        await session.commit()
 
     stats = await _get_tag_stats(session)
-    toast_message = (
-        f"{written} files tagged (no discrepancies)."
-        if written
-        else "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
-    )
+    toast_message = _bulk_write_toast(written, discrepancy, verify_failed, failed)
+    # phaze-gwe1: re-query the SAME builder the workspace itself renders from (deferred import --
+    # services.review imports helpers FROM this module, so importing it back at module scope would
+    # cycle; by call time this module is already fully loaded) so the refreshed subcount always
+    # matches the row count the operator actually sees after this OOB update lands.
+    from phaze.services.review import get_tagwrite_review_rows  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
+
+    remaining = len(await get_tagwrite_review_rows(session))
+    subcount = f"{remaining} awaiting approval · mutagen will write these tags"
     return templates.TemplateResponse(
         request=request,
         name="tags/partials/bulk_write_response.html",
-        context={"request": request, "stats": stats, "written": written, "toast_message": toast_message},
+        context={
+            "request": request,
+            "stats": stats,
+            "written": written,
+            "toast_message": toast_message,
+            "resolved_ids": resolved_ids,
+            "subcount": subcount,
+            "row_id_prefix": _V7_TAGWRITE_ROW_PREFIX,
+        },
+    )
+
+
+async def _undo_legacy_row_response(
+    request: Request,
+    session: AsyncSession,
+    file_record: FileRecord,
+    *,
+    status: str,
+    toast_message: str,
+) -> HTMLResponse:
+    """Render the legacy ``tag_row.html`` for an undo outcome (shared by the no-op and write paths)."""
+    tracklist = await _get_tracklist_for_file(session, file_record.id)
+    discogs_link = await _get_accepted_discogs_link(session, file_record.id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
+    comparison = _build_comparison(file_record.file_metadata, proposed)
+    changes = _count_changes(comparison)
+
+    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; toast/comparison values are escaped on render.
+        request=request,
+        name="tags/partials/tag_row.html",
+        context={
+            "request": request,
+            "file": {
+                "id": file_record.id,
+                "filename": file_record.original_filename,
+                "file_type": file_record.file_type,
+                "changes": changes,
+                "status": status,
+            },
+            "toast_message": toast_message,
+        },
     )
 
 
@@ -667,7 +889,9 @@ async def undo_tag_write(
             return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
         return HTMLResponse(content="File not found", status_code=404)
 
-    latest = await _get_latest_write_log(session, file_id)
+    # phaze-soph: target the latest row that ACTUALLY wrote to disk (COMPLETED/DISCREPANCY, not a
+    # prior undo), skipping FAILED/NO_OP shadows whose before_tags would restore the wrong state.
+    latest = await _get_write_log_to_undo(session, file_id)
     if latest is None:
         # phaze-nvll defect 3: nothing to undo (a race/stale row) -- redraw the row as pending
         # alongside the toast rather than silently doing nothing.
@@ -676,8 +900,39 @@ async def undo_tag_write(
             return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
         return HTMLResponse(content="No prior tag write to undo", status_code=404)
 
+    # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
+    # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
+    # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
+    newest = await _get_latest_write_log(session, file_id)
+    if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
+        already_message = f"Tags for {file_record.original_filename} were already reverted."
+        if is_v7:
+            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+            return _tagwrite_diff_row_response(request, row_context, already_message)
+        return await _undo_legacy_row_response(request, session, file_record, status="pending", toast_message=already_message)
+
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()
+
+    # phaze-26t7: the toast must reflect the REAL on-disk outcome. execute_tag_write swallows
+    # mutagen/file errors into a FAILED log rather than raising, so an unconditional 'Reverted tags'
+    # lies whenever the reversal write did not land. Branch the message on status, mirroring
+    # write_file_tags: success only for COMPLETED, a distinct note for DISCREPANCY, and the error for
+    # FAILED.
+    filename = file_record.original_filename
+    if log_entry.status == TagWriteStatus.COMPLETED:
+        toast_message = f"Reverted tags for {filename}."
+    elif log_entry.status == TagWriteStatus.DISCREPANCY:
+        disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
+        toast_message = (
+            f"Reverted tags for {filename} with {disc_count} discrepancy. Re-read values differ from "
+            "what was restored -- usually encoding normalization. Review the audit log for details."
+        )
+    else:
+        toast_message = (
+            f"Undo failed for {filename}: {log_entry.error_message or 'Unknown error'}. The file may be "
+            "read-only or corrupted. Check file permissions and try again."
+        )
 
     if is_v7:
         # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
@@ -685,27 +940,6 @@ async def undo_tag_write(
         # to retry) rather than claiming a revert that did not happen.
         row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
         row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
-        return _tagwrite_diff_row_response(request, row_context, f"Reverted tags for {file_record.original_filename}.")
+        return _tagwrite_diff_row_response(request, row_context, toast_message)
 
-    # Rebuild the row for the outerHTML swap.
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    discogs_link = await _get_accepted_discogs_link(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-    comparison = _build_comparison(file_record.file_metadata, proposed)
-    changes = _count_changes(comparison)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tags/partials/tag_row.html",
-        context={
-            "request": request,
-            "file": {
-                "id": file_record.id,
-                "filename": file_record.original_filename,
-                "file_type": file_record.file_type,
-                "changes": changes,
-                "status": log_entry.status,
-            },
-            "toast_message": f"Reverted tags for {file_record.original_filename}.",
-        },
-    )
+    return await _undo_legacy_row_response(request, session, file_record, status=log_entry.status, toast_message=toast_message)

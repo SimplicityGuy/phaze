@@ -12,3 +12,17 @@
         <span class="text-gray-400 dark:text-gray-500">&mdash;</span>
     {% endif %}
 </span>
+{% if field is defined %}
+{# phaze-8wzi: save_tag_field (the PUT /tags/{id}/edit/{field} handler) renders THIS template as its
+   response. The span above only swaps the comparison <td> (hx-target="closest td"); the Write Tags
+   form's hidden input for this field lives OUTSIDE the table entirely and is otherwise never touched,
+   so Write Tags would silently submit the stale pre-edit snapshot even though the edit "looks saved".
+   OOB-sync the hidden input to what the operator just typed (matching the id tag_comparison.html
+   renders) so Write Tags submits the value actually shown on screen. A no-op when this template is
+   instead included from tag_comparison.html's initial render loop (``field`` is undefined there). #}
+<input type="hidden"
+       id="tag-write-hidden-{{ display_field }}-{{ display_file_id }}"
+       name="{{ display_field }}"
+       value="{{ display_value if display_value is not none else '' }}"
+       hx-swap-oob="true">
+{% endif %}

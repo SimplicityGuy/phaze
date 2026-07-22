@@ -35,7 +35,12 @@
           hx-target="#row-{{ file.id }}"
           hx-swap="outerHTML">
         {% for item in comparison %}
-        <input type="hidden" name="{{ item.field }}" value="{{ item.proposed if item.proposed is not none else '' }}">
+        {# phaze-8wzi: this hidden input is the ONLY thing Write Tags submits -- it is a sibling of the
+           inline-edit <td> (outside the <table>), never inside it, so a successful inline edit (which
+           only swaps the <td>'s span) never touches it on its own. save_tag_field's PUT response
+           hx-swap-oob's this exact id (see inline_display.html) so the value the operator just typed
+           and saw "accepted" is what actually gets submitted. #}
+        <input type="hidden" id="tag-write-hidden-{{ item.field }}-{{ file.id }}" name="{{ item.field }}" value="{{ item.proposed if item.proposed is not none else '' }}">
         {% endfor %}
         <button type="submit"
                 class="bg-blue-600 dark:bg-blue-700 hover:bg-blue-700 dark:hover:bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-md mt-2">

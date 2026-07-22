@@ -13,7 +13,8 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
   so both feed ``_file_table.html`` interchangeably.
 * :func:`get_tagwrite_review_rows`  -- applied files (``applied_clause()``, READ-05/D-01) with a
   pending, >=1-change tag comparison (Tag-write, Plan 60-03; Pitfall 3 -- only applied files without
-  a COMPLETED ``TagWriteLog``).
+  a COMPLETED ``TagWriteLog``). Each row also carries ``has_prior_write`` (phaze-o5rf) so the
+  workspace only surfaces UNDO where it can actually revert something.
 * :func:`get_dedupe_groups`         -- scored duplicate groups + keeper flag (Dedupe, Plan 60-04;
   keeper == ``score_group``'s ``canonical_id``; the radio resolves via ``/duplicates/{hash}/resolve``).
 * :func:`get_cue_review_cards`      -- eligible + gated cue cards with an IN-MEMORY ``.cue`` preview
@@ -30,6 +31,7 @@ from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.models.file import FileRecord
+from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
 from phaze.routers.tags import (
@@ -213,7 +215,12 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
     ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the render/poll path degrades
     instead of 500ing (no router try/except needed). Per row: ``file_id`` · ``filename`` ·
     ``before_summary`` (current tags joined) · ``after_summary`` (proposed tags joined) · ``changed_count``
-    · ``has_blanking`` (any field whose current value would be erased). No enqueue, no commit, no write.
+    · ``has_blanking`` (any field whose current value would be erased) · ``has_prior_write`` (phaze-o5rf:
+    True iff the file already carries a ``TagWriteLog`` -- since ``_terminal_tagwrite_subq`` already
+    evicted every COMPLETED/NO_OP file from the candidate window, a row reaching here with a log can
+    only hold a DISCREPANCY or FAILED entry, both of which ``undo_tag_write`` can actually revert. A
+    FRESH row with no log at all has nothing for UNDO to revert -- ``_get_latest_write_log`` returns
+    ``None`` and the button would be dead in the common case). No enqueue, no commit, no write.
     """
     try:
         async with session.begin_nested():
@@ -239,6 +246,12 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
                 if not batch:
                     break
                 last_key = (batch[-1].original_filename, batch[-1].id)
+                # phaze-o5rf: batch-fetch which of THIS page's files already carry a TagWriteLog (can
+                # only be DISCREPANCY/FAILED here -- COMPLETED/NO_OP were excluded by terminal_subq
+                # above), one round-trip per scan batch rather than per row.
+                logged_ids = set(
+                    (await session.execute(select(TagWriteLog.file_id).where(TagWriteLog.file_id.in_([fr.id for fr in batch])))).scalars().all()
+                )
                 for fr in batch:
                     tracklist = await _get_tracklist_for_file(session, fr.id)
                     discogs_link = await _get_accepted_discogs_link(session, fr.id)
@@ -255,6 +268,7 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
                             "after_summary": _summarize_tags(comparison, "proposed"),
                             "changed_count": changed_count,
                             "has_blanking": any(c["current"] is not None and c["proposed"] is None for c in comparison),
+                            "has_prior_write": fr.id in logged_ids,
                         }
                     )
                     if len(rows) >= _MAX_REVIEW_ROWS:
