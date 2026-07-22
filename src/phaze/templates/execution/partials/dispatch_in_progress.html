@@ -1,0 +1,13 @@
+{# phaze-fa2p: rendered when POST /execution/start is attempted while another execution batch is
+   still running. The single-dispatch sentinel (exec:active, claimed with SET NX) is held until the
+   active batch reaches a terminal status, so this response is how a concurrent or repeated
+   Execute click is refused -- instead of double-dispatching the same still-APPROVED proposals. #}
+<div role="alert" class="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-900 rounded-lg p-4">
+    <div class="flex items-center gap-2">
+        <span class="text-orange-600 dark:text-orange-400">&#9888;</span>
+        <h3 class="text-sm font-semibold text-orange-800 dark:text-orange-300">Execution already in progress</h3>
+    </div>
+    <p class="text-sm text-orange-700 dark:text-orange-400 mt-1">
+        An execution batch is already running. Wait for it to finish before starting another dispatch.
+    </p>
+</div>

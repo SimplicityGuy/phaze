@@ -196,6 +196,29 @@ async def test_sse_emits_waiting_when_hash_absent(smoke_sse_app: tuple[FastAPI, 
     assert calls >= 2  # waiting branch fired at least once, then terminal hash closed the stream
 
 
+async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI, MagicMock]) -> None:
+    """phaze-5zyv: a hash that never appears -> stream emits a terminal 'complete' and returns, not an infinite wait."""
+    app, redis = smoke_sse_app
+    # hgetall always returns {} -- an empty dispatch, reaped batch, or unknown batch_id.
+    redis.hgetall = AsyncMock(return_value={})
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/execution/progress/never-seeded") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    # The generator closed on its own: a terminal 'complete' event was emitted and the stream ended.
+    assert b"event: complete" in body
+    assert b"no longer available" in body
+    # It did not poll forever: the empty-hash cap is small, so hgetall was called a bounded number
+    # of times (the cap), not unboundedly.
+    from phaze.routers.execution import _MAX_EMPTY_POLLS
+
+    assert redis.hgetall.await_count == _MAX_EMPTY_POLLS
+
+
 async def test_sse_falls_back_when_dispatch_summary_is_malformed_json(
     smoke_sse_app: tuple[FastAPI, MagicMock],
 ) -> None:
@@ -338,8 +361,13 @@ def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
     pipe.hset = MagicMock()
     pipe.hincrby = MagicMock()
     pipe.expire = MagicMock()
+    pipe.delete = MagicMock()
     pipe.execute = AsyncMock(return_value=None)
     redis_client.pipeline = MagicMock(return_value=pipe)
+    # phaze-fa2p: the single-dispatch guard claims ``exec:active`` via SET NX before seeding. Default
+    # to "claim won" so the enqueue-failure/reconcile tests exercise a live dispatch; the double-
+    # dispatch rejection is covered by its own test that overrides ``.set`` to return None.
+    redis_client.set = AsyncMock(return_value=True)
     app.state.redis = redis_client
     app.state.queue = MagicMock()
 
@@ -445,6 +473,12 @@ async def test_start_execution_partial_enqueue_failure_corrects_expected(
     # The promote check re-ran to close the race where the landed sub-job already reported terminal.
     promote.assert_awaited_once()
     assert pipe.hincrby.call_args.args[2] == 1  # one undispatched proposal counted as failed
+    # phaze-1h6j: the failing agent's PER-AGENT failed counter is also incremented so its row can
+    # reach a terminal pill (batch-level failed alone left it stuck RUNNING). agent-b lost its chunk.
+    hincrbys = [c.args for c in pipe.hincrby.call_args_list]
+    assert any(len(a) >= 3 and a[1] == "agent:agent-b:failed" and a[2] == 1 for a in hincrbys)
+    # agent-a landed, so it must NOT get a spurious per-agent failed increment.
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
 
 
 async def test_start_execution_skips_redis_seed_when_no_groups(
@@ -470,6 +504,33 @@ async def test_start_execution_skips_redis_seed_when_no_groups(
     assert resp.status_code == 200
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
+    # phaze-fa2p: an empty dispatch enqueues nothing, so it never claims the single-dispatch sentinel.
+    redis_client.set.assert_not_awaited()
+
+
+async def test_start_execution_rejected_when_dispatch_already_active(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A losing SET NX on ``exec:active`` -> the dispatch is refused, nothing is seeded or enqueued (phaze-fa2p)."""
+    app, mock_router, redis_client = dispatch_app
+    # Simulate a concurrent/active dispatch already holding the sentinel: SET NX returns None.
+    redis_client.set = AsyncMock(return_value=None)
+    groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" in resp.text
+    # The guard fires BEFORE any seed or enqueue -- no double-dispatch.
+    redis_client.set.assert_awaited_once()
+    redis_client.pipeline.assert_not_called()
+    mock_router.enqueue_for_agent.assert_not_awaited()
 
 
 async def test_start_execution_returns_collision_block_when_destinations_collide(

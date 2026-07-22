@@ -443,3 +443,137 @@ async def test_terminal_completed_to_failed_still_rejected(
         )
         assert response.status_code == 409
         assert response.json()["detail"] == "execution-log status is terminal"
+
+
+# ---------------------------------------------------------------------------
+# phaze-6zxs: concurrent PATCH must not regress the D-15 monotonic invariant.
+#
+# The hermetic ``session`` fixture binds every session to ONE connection inside a
+# single uncommitted outer transaction, so it cannot exercise a real row lock
+# between two genuinely concurrent transactions. This test therefore stands up a
+# dedicated NullPool engine against the same isolated test database, commits a
+# PENDING row, and races two endpoint calls (COMPLETED vs IN_PROGRESS) each on
+# its OWN connection. With the ``SELECT ... FOR UPDATE`` load the two PATCHes
+# serialize on the row lock and the loser re-evaluates the guards against the
+# committed status, so the final status can never regress below COMPLETED. With
+# the old plain ``session.get`` both transactions read the same stale PENDING and
+# the last write silently wins -- the regression this bead closes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_patch_does_not_regress_terminal_status(async_engine) -> None:  # type: ignore[no-untyped-def]
+    """Two concurrent PATCHes (COMPLETED vs IN_PROGRESS) leave the row COMPLETED, never regressed (phaze-6zxs).
+
+    Takes the session-scoped ``async_engine`` fixture purely so the schema exists on the isolated
+    test database (this test builds its own committed rows on that same NullPool engine so the two
+    racing PATCHes run on genuinely separate connections -- the hermetic ``session`` fixture binds
+    everything to ONE connection and cannot exercise a real row lock).
+    """
+    import asyncio
+    import hashlib
+    import secrets
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from phaze.models.agent import Agent
+    from phaze.routers.agent_execution import router as _router
+
+    engine = async_engine
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    agent_id = "g02-conc-agent"
+    file_id = uuid.uuid4()
+    proposal_id = uuid.uuid4()
+    log_id = uuid.uuid4()
+
+    # get_session override: a FRESH session (and, under NullPool, a fresh connection)
+    # per request so the two racing PATCHes run in genuinely separate transactions.
+    async def _override_session() -> AsyncGenerator[AsyncSession]:
+        async with factory() as s:
+            yield s
+
+    app = FastAPI(title="conc-agent-execution", version="test")
+    app.include_router(_router)
+    app.dependency_overrides[get_session] = _override_session
+
+    async def _reset_to_pending() -> None:
+        async with factory() as s:
+            row = await s.get(ExecutionLog, log_id)
+            row.status = ExecutionStatus.PENDING
+            await s.commit()
+
+    try:
+        # Seed committed prerequisites (own connection, real commit).
+        async with factory() as s:
+            s.add(Agent(id=agent_id, name=agent_id, token_hash=token_hash, scan_roots=["/test/music"]))
+            s.add(
+                FileRecord(
+                    id=file_id,
+                    agent_id=agent_id,
+                    sha256_hash="0" * 64,
+                    original_path=f"/test/conc-{file_id}.mp3",
+                    original_filename="conc.mp3",
+                    current_path=f"/test/conc-{file_id}.mp3",
+                    file_type="mp3",
+                    file_size=1234,
+                )
+            )
+            await s.flush()
+            s.add(RenameProposal(id=proposal_id, file_id=file_id, proposed_filename="conc-new.mp3"))
+            await s.flush()
+            s.add(
+                ExecutionLog(
+                    id=log_id,
+                    proposal_id=proposal_id,
+                    operation="move",
+                    source_path="/test/conc.mp3",
+                    destination_path="/test/out/conc.mp3",
+                    sha256_verified=False,
+                    status=ExecutionStatus.PENDING,
+                )
+            )
+            await s.commit()
+
+        headers = {"Authorization": f"Bearer {raw_token}"}
+        # Repeat rounds to make a stale-read interleaving overwhelmingly likely if the lock is absent.
+        for _ in range(15):
+            await _reset_to_pending()
+            async with (
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_a,
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_b,
+            ):
+                url = f"/api/internal/agent/execution-log/{log_id}"
+                r_a, r_b = await asyncio.gather(
+                    ac_a.patch(url, json={"status": "completed"}),
+                    ac_b.patch(url, json={"status": "in_progress"}),
+                    return_exceptions=False,
+                )
+            assert {r_a.status_code, r_b.status_code} <= {200, 409}, (r_a.status_code, r_b.status_code)
+
+            async with factory() as s:
+                row = await s.get(ExecutionLog, log_id)
+                assert row.status == ExecutionStatus.COMPLETED, (
+                    f"monotonic invariant regressed under concurrency: status={row.status!r} (a stale-read PATCH overwrote a terminal COMPLETED)"
+                )
+    finally:
+        # Clean up the committed rows so no residue survives into the rest of the suite.
+        async with factory() as s:
+            log = await s.get(ExecutionLog, log_id)
+            if log is not None:
+                await s.delete(log)
+            prop = await s.get(RenameProposal, proposal_id)
+            if prop is not None:
+                await s.delete(prop)
+            fr = await s.get(FileRecord, file_id)
+            if fr is not None:
+                await s.delete(fr)
+            ag = await s.get(Agent, agent_id)
+            if ag is not None:
+                await s.delete(ag)
+            await s.commit()
+        # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
+        # owned (and disposed) by conftest.
