@@ -862,6 +862,73 @@ async def test_vanished_job_with_completed_analysis_is_success_not_redrive(sessi
     assert tally.get("redriven", 0) == 0
 
 
+@pytest.mark.asyncio
+async def test_failed_job_with_completed_analysis_is_success_not_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-73sv: a Job reading Failed AFTER its success callback landed is finalized SUCCEEDED, never re-driven.
+
+    activeDeadlineSeconds firing (or an OOM/preempt) just after put_analysis recorded the result +
+    deleted the staged object (D-05) marks the Job Failed even though the analysis is DONE. Without the
+    guard the Job-Failed branch re-drives an already-analyzed file against a deleted staged object, whose
+    pod 404s (EXIT_DOWNLOAD) and re-fails, burning the whole cap. The guard mirrors the vanished-Job path.
+    """
+    from datetime import UTC, datetime
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=fid, analysis_completed_at=datetime.now(UTC)))
+    await session.commit()
+
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name)))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value  # finalized as success, not re-driven
+    assert cj.attempts == 0  # no attempt burned
+    assert dj.calls == [name]  # the Failed Job is reaped, not re-submitted
+    assert s3.calls == []  # success path makes ZERO S3 calls (callback already deleted the object)
+    assert [t for t, _ in queue.captured] == []  # NO re-drive enqueued
+    assert tally["succeeded"] == 1
+    assert tally.get("redriven", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_evicted_workload_with_completed_analysis_is_success_not_redrive(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-73sv: a Workload Evicted AFTER its success callback landed is finalized SUCCEEDED, never re-driven.
+
+    A Kueue eviction under quota pressure can land in the post-callback teardown window (put_analysis
+    already stamped the result + deleted the staged object). Without the guard the Evicted branch
+    re-drives an already-analyzed file against a deleted object and burns the cap. The guard mirrors the
+    Job-Failed and vanished-Job paths.
+    """
+    from datetime import UTC, datetime
+
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, attempts=0)
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=fid, analysis_completed_at=datetime.now(UTC)))
+    await session.commit()
+
+    queue = DedupFakeQueue("controller")
+    # Non-terminal Job read so reconcile reaches the Workload branch; Workload reads Evicted=True.
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name)),
+        get_workload=GetWorkloadSpy(EVICTED),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.SUCCEEDED.value  # finalized as success, not re-driven
+    assert cj.attempts == 0  # no attempt burned
+    assert dj.calls == [name]  # the Job is reaped, not re-submitted
+    assert s3.calls == []  # success path makes ZERO S3 calls
+    assert [t for t, _ in queue.captured] == []  # NO re-drive enqueued
+    assert tally["succeeded"] == 1
+    assert tally.get("redriven", 0) == 0
+
+
 # --- Per-row guard: one bad row never aborts the tick ----------------------------------------------
 
 
