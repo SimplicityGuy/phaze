@@ -648,26 +648,55 @@ async def link_search_result(
     if not _is_allowed_tracklist_url(url):
         return HTMLResponse(content="Invalid tracklist url", status_code=400)
 
-    # phaze-x4vi: validate the client-supplied file_id BEFORE the expensive (up-to-30s) network
-    # scrape. file_id is an FK to files.id; a stale/forged id -- e.g. the FileRecord deleted by a
-    # concurrent scan while this panel stayed open -- would otherwise sail through to the final
-    # commit and detonate as a ForeignKeyViolation -> 500, ALSO rolling back the just-scraped
-    # tracklist stored in the SAME transaction, so every retry re-hits the rate-limited site.
-    # Resolving the file up front (the render-vs-POST race in request_guards.py rule 4) returns a
-    # clean error and skips the wasted scrape entirely, so no scraped work is ever discarded.
+    # phaze-gkow: scrape_tracklist() first sleeps 2-5s on the rate limiter then POSTs with a 30s
+    # timeout. Holding the injected session's implicit transaction (a pinned PgBouncer SESSION-mode
+    # pooled connection) across that ~2-35s of network I/O drains the capped pool. So do the reads in
+    # a short transaction, RELEASE the connection before the scrape, then re-open a short transaction
+    # to store + link. Structure: (1) validate file + probe whether we already have this external_id,
+    # commit; (2) scrape with NO connection held; (3) store the scrape in its OWN transaction so a
+    # later stale-file 404 never discards it; (4) re-validate the file and link.
+    #
+    # phaze-x4vi (preserved): validate the client-supplied file_id BEFORE the expensive network scrape.
+    # file_id is an FK to files.id; a stale/forged id -- e.g. the FileRecord deleted by a concurrent
+    # scan while this panel stayed open -- would otherwise sail through to the final commit and detonate
+    # as a ForeignKeyViolation -> 500. Resolving the file up front returns a clean error and skips the
+    # wasted scrape entirely.
     if await session.get(FileRecord, file_id) is None:
         return HTMLResponse(content="File not found", status_code=404)
 
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
-    selected = result.scalar_one_or_none()
+    needs_scrape = result.scalar_one_or_none() is None
+    # Release the pooled connection before the rate-limit sleep + HTTP scrape (phaze-gkow).
+    await session.commit()
 
-    if selected is None:
+    scraped = None
+    if needs_scrape:
         scraper = TracklistScraper()
         try:
             scraped = await scraper.scrape_tracklist(url)
         finally:
             await scraper.close()
+
+    if scraped is not None:
+        # Store the scrape in its own transaction and commit it FIRST -- so if the file was deleted
+        # DURING the scrape, the stale-file 404 below never discards the freshly scraped tracklist
+        # (phaze-gkow preserves the phaze-x4vi "no scraped work discarded" property). _store_scraped_tracklist
+        # is idempotent under a per-external_id advisory lock, so a sibling job that stored the same
+        # external_id mid-scrape is folded in rather than duplicated.
         selected = await _store_scraped_tracklist(session, scraped)
+        await session.commit()
+    else:
+        result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
+        selected = result.scalar_one_or_none()
+        if selected is None:
+            # The row we saw before releasing the connection was deleted in the interim; nothing to link.
+            return HTMLResponse(content="Tracklist not found", status_code=404)
+
+    # phaze-gkow: re-validate the file in the (re-opened) linkage transaction -- it may have been deleted
+    # during the scrape. Returning 404 here leaves any freshly scraped tracklist persisted (unlinked),
+    # never discarded, and avoids a ForeignKeyViolation -> 500 on the final commit.
+    if await session.get(FileRecord, file_id) is None:
+        return HTMLResponse(content="File not found", status_code=404)
 
     file_artist, file_event, file_date = await _file_match_context(session, file_id)
     confidence = compute_match_confidence(

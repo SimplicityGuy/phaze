@@ -1215,6 +1215,112 @@ async def test_link_search_result_stale_file_id_skips_scrape_and_returns_clean_e
 
 
 @pytest.mark.asyncio
+async def test_link_search_result_releases_connection_before_scrape(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-gkow: the pooled DB connection is released BEFORE scrape_tracklist()'s rate-limit sleep + HTTP.
+
+    Pre-gkow the handler held the injected session's open transaction across scrape_tracklist()
+    (~2-35s: a 2-5s rate-limit sleep then a 30s-timeout POST), pinning one PgBouncer SESSION-mode
+    pooled connection idle-in-transaction and draining the capped pool. The handler must commit the
+    read transaction (releasing the connection) BEFORE the scrape, so we spy that a commit is recorded
+    strictly BEFORE scrape_tracklist runs -- while the scraped tracklist still lands linked.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+
+    scraped = ScrapedTracklist(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        artist="Real Artist",
+        event="Coachella",
+        date="2024-04-14",
+        tracks=[],
+        source_url="https://www.1001tracklists.com/tracklist/better1/x.html",
+    )
+
+    order: list[str] = []
+    real_commit = AsyncSession.commit
+
+    async def _spy_commit(self: AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _scrape_recording(_url: str) -> ScrapedTracklist:
+        order.append("scrape")
+        return scraped
+
+    with (
+        patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls,
+        patch.object(AsyncSession, "commit", _spy_commit),
+    ):
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = _scrape_recording
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(file.id), "external_id": "better1", "url": scraped.source_url},
+        )
+
+    assert response.status_code == 200, response.text
+    # A commit (releasing the read txn / pooled connection) precedes the network scrape.
+    assert "scrape" in order
+    assert order.index("commit") < order.index("scrape")
+    # The scrape still lands, stored and linked to the file.
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "better1"))
+    selected = result.scalar_one_or_none()
+    assert selected is not None
+    assert selected.file_id == file.id
+
+
+@pytest.mark.asyncio
+async def test_link_search_result_stale_file_during_scrape_keeps_scraped_tracklist(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-gkow: a file deleted DURING the scrape yields a clean 404 without discarding the scrape.
+
+    With the connection released across the scrape, the file can vanish between the up-front validation
+    and the linkage write. The scrape is stored+committed FIRST, so the stale-file 404 leaves the freshly
+    scraped tracklist persisted (unlinked) -- never discarded -- and never FK-violates into a 500.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+    file_id = file.id
+
+    scraped = ScrapedTracklist(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        artist="Real Artist",
+        event="Coachella",
+        date="2024-04-14",
+        tracks=[],
+        source_url="https://www.1001tracklists.com/tracklist/better1/x.html",
+    )
+
+    async def _scrape_then_delete_file(_url: str) -> ScrapedTracklist:
+        # Simulate a concurrent scan deleting the file while the (connection-free) scrape runs.
+        await session.delete(await session.get(FileRecord, file_id))
+        await session.commit()
+        return scraped
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = _scrape_then_delete_file
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(file_id), "external_id": "better1", "url": scraped.source_url},
+        )
+
+    assert response.status_code == 404, response.text
+    # The scraped tracklist is persisted (unlinked), never discarded.
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "better1"))
+    stored = result.scalar_one_or_none()
+    assert stored is not None
+    assert stored.file_id is None
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()
