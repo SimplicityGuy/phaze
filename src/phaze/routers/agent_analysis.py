@@ -120,12 +120,14 @@ async def _delete_staged_object_if_cloud(session: AsyncSession, file_id: uuid.UU
     never re-derived). A row whose ``staging_bucket`` is NULL (a compute row with no S3 object, or an
     unstaged file) ALSO short-circuits with zero S3 calls -- mirroring the all-local guard.
 
-    When a bucketed staging row IS present, the staged object is provably no longer needed the moment
-    the result lands, so it is deleted at that point (the inline-delete half of KSTAGE-04). The analysis
-    result was already recorded above (record-first discipline), so a transient cleanup error is
-    logged-and-swallowed -- a delete blip must never lose the recorded result (T-53-21). The
-    bucket-lifecycle TTL (Plan 02) is the backstop for a missed delete; Phase 54's reconcile may invoke
-    the same delete for an evicted Job. ``file_id`` is the PATH value only (AUTH-01).
+    When a bucketed staging row IS present, the staged object is provably no longer needed once the
+    result lands, so it is deleted (the delete half of KSTAGE-04). phaze-uoiw: both callers invoke this
+    AFTER their ``session.commit()`` -- the analysis result is already DURABLY recorded (record-first
+    discipline made literally true at the commit boundary, T-53-21), so a transient cleanup error is
+    logged-and-swallowed and never risks the committed result; running it post-commit also keeps the S3
+    round-trip out of the transaction's lock window. The bucket-lifecycle TTL (Plan 02) is the backstop
+    for a missed delete; Phase 54's reconcile may invoke the same delete for an evicted Job. ``file_id``
+    is the PATH value only (AUTH-01).
     """
     row = (await session.execute(select(CloudJob.id, CloudJob.staging_bucket).where(CloudJob.file_id == file_id))).first()
     if row is None:
@@ -269,10 +271,6 @@ async def put_analysis(
     # T-45-05: a body field cannot redirect the clear to another file's key).
     await clear_ledger_entry(session, f"process_file:{file_id}")
 
-    # D-02 inline delete: the staged S3 object is provably no longer needed now that the
-    # success result is recorded. No-op (zero S3 calls) when no cloud_job row exists (all-local).
-    await _delete_staged_object_if_cloud(session, file_id)
-
     # D-14 reaper: reap the inert `awaiting` cloud_job hold-over row this file may carry. D-05's
     # conjunct (chosen over row deletion) means a locally-dispatched long file keeps its `awaiting`
     # row forever; without this reaper the `*/5` drain tick scans a monotonically growing dead set at
@@ -282,6 +280,16 @@ async def put_analysis(
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
 
     await session.commit()
+
+    # phaze-uoiw: the staged-object S3 DELETE runs AFTER the commit, not inside the transaction. It is
+    # an irreversible external side effect; issuing it pre-commit meant a commit failure deleted the
+    # staged object while ROLLING BACK the recorded result -- violating record-first (T-53-21) exactly
+    # where it matters -- and pinned the pooled connection (holding the analysis + cloud_job row locks
+    # the upsert took) across a full S3 network round-trip, blocking a concurrent progress POST. Now the
+    # result is durably committed before the delete, so "the result is already written" is literally
+    # true; the delete stays best-effort (lifecycle TTL backstops a miss) and takes the S3 round-trip
+    # out of the lock/txn window. No-op (zero S3 calls) when no cloud_job row exists (all-local).
+    await _delete_staged_object_if_cloud(session, file_id)
     return AnalysisWriteResponse(agent_id=agent.id, file_id=file_id)
 
 
@@ -427,9 +435,6 @@ async def report_analysis_failed(
     # NOT recovery-re-queue. Clear the process_file:<file_id> ledger row in the SAME transaction
     # as the failure marker. Key from the PATH file_id ONLY (AUTH-01 / T-45-05).
     await clear_ledger_entry(session, f"process_file:{file_id}")
-    # D-02 inline delete: a terminal failure is also a result-callback terminal outcome -- the
-    # staged object is no longer needed. No-op (zero S3 calls) when no cloud_job row exists.
-    await _delete_staged_object_if_cloud(session, file_id)
     # D-14 reaper: a terminal failure is also an analyze-terminal seam -- reap the inert `awaiting`
     # cloud_job hold-over row (D-05's conjunct leaves it behind) so `ix_cloud_job_awaiting` stays
     # bounded and the `*/5` drain tick does not scan a growing dead set. Joins this seam's existing
@@ -437,6 +442,12 @@ async def report_analysis_failed(
     # `file_id` is the PATH value only (AUTH-01).
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
     await session.commit()
+    # phaze-uoiw: the staged-object S3 DELETE runs AFTER the commit (see put_analysis). Pre-commit it
+    # deleted the staged object even when the failure marker + ledger clear then rolled back, and pinned
+    # the pooled connection across the S3 round-trip while holding this file's analysis row lock. Post-
+    # commit ordering makes the delete best-effort over durable state (lifecycle TTL backstops a miss)
+    # and keeps the network I/O out of the lock/txn window. No-op (zero S3 calls) when no cloud_job row.
+    await _delete_staged_object_if_cloud(session, file_id)
     logger.warning(
         "analysis_failed reported",
         file_id=str(file_id),
