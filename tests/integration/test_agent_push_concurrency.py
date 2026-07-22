@@ -27,7 +27,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -124,9 +124,10 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
 
 async def _seed_push_ledger(session: AsyncSession, file_id: uuid.UUID, *, push_attempt: int | None = None) -> None:
     payload: dict[str, Any] = {"file_id": str(file_id)}
-    if push_attempt is not None:
-        payload["push_attempt"] = push_attempt
     await upsert_ledger_entry(session, key=f"push_file:{file_id}", function="push_file", kwargs=payload)
+    # phaze-2jl1: the push_attempt counter lives in the dedicated `redrive_attempt` column, not payload.
+    if push_attempt is not None:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == f"push_file:{file_id}").values(redrive_attempt=push_attempt))
     await session.commit()
 
 
@@ -230,7 +231,7 @@ async def test_mismatch_concurrent_no_lost_update(
     async with session_factory() as session:
         row = await _ledger_row(session, ledger_key)
         assert row is not None
-        assert row.payload.get("push_attempt") == 2, "two concurrent /mismatch must increment push_attempt to exactly 2"
+        assert row.redrive_attempt == 2, "two concurrent /mismatch must increment push_attempt to exactly 2"
 
 
 # --- Real before_enqueue hook: the under-cap re-drive must not self-deadlock ------------------------
@@ -315,8 +316,9 @@ async def test_mismatch_real_enqueue_hook_does_not_deadlock(
     assert resp.status_code == 200, resp.text
     assert resp.json()["cleared"] is False
     # The request's post-enqueue write-back is the source of truth for the counter (it runs AFTER the
-    # hook overwrote payload without push_attempt), so a single re-drive lands push_attempt == 1.
+    # hook overwrote payload). It stamps the dedicated `redrive_attempt` column (phaze-2jl1), which the
+    # hook never touches, so a single re-drive lands redrive_attempt == 1.
     async with session_factory() as session:
         row = await _ledger_row(session, ledger_key)
         assert row is not None
-        assert row.payload.get("push_attempt") == 1
+        assert row.redrive_attempt == 1

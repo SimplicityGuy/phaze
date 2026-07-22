@@ -86,6 +86,36 @@ async def test_upsert_inserts_then_updates_idempotently(session) -> None:  # typ
 
 
 @pytest.mark.asyncio
+async def test_upsert_preserves_redrive_attempt_across_the_crash_window(session) -> None:  # type: ignore[no-untyped-def]
+    """The WRITE-hook upsert must NEVER clobber the dedicated ``redrive_attempt`` column (phaze-2jl1 / phaze-y0j0).
+
+    This is the invariant that makes the push/S3 re-drive budget crash-safe: the ``before_enqueue``
+    hook rewrites ``payload`` wholesale from its OWN session and commits BEFORE the re-drive handler
+    stamps the incremented counter. If the counter lived in ``payload`` a crash in that window would
+    reset it to 0. Because it lives in ``redrive_attempt`` (absent from the hook's ON CONFLICT DO
+    UPDATE set-list), the hook's upsert leaves it at its prior value -- so a crash between the two
+    commits un-increments the budget at worst, never zeroes it.
+    """
+    fid = uuid.uuid4()
+    key = f"s3_upload:{fid}"
+    # A prior re-drive has advanced the bounded counter to 2 (in the dedicated column, not payload).
+    await upsert_ledger_entry(session, key=key, function="s3_upload", kwargs={"file_id": str(fid), "part_urls": ["stale"]})
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
+    row.redrive_attempt = 2
+    await session.commit()
+
+    # The enqueue hook fires again and rewrites payload WHOLESALE (fresh part_urls, no counter key) --
+    # exactly what apply_deterministic_key does from its own session on a re-drive enqueue.
+    await upsert_ledger_entry(session, key=key, function="s3_upload", kwargs={"file_id": str(fid), "part_urls": ["fresh"]})
+    await session.commit()
+
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
+    assert row.payload == {"file_id": str(fid), "part_urls": ["fresh"]}, "hook rewrites payload wholesale"
+    assert row.redrive_attempt == 2, "the bounded re-drive counter must survive the payload-clobbering upsert (crash window)"
+
+
+@pytest.mark.asyncio
 async def test_insert_if_absent_does_not_overwrite_existing(session) -> None:  # type: ignore[no-untyped-def]
     key = "generate_proposals:batch1"
     await upsert_ledger_entry(session, key=key, function="generate_proposals", kwargs={"file_ids": ["a"], "src": "hook"})

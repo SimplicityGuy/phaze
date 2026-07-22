@@ -31,6 +31,15 @@ Columns:
                      times out (the gap behind the recover-button timeout-loss bug).
   - ``retries``    : nullable SAQ Job ``retries`` budget, captured + replayed for the same reason
                      (``process_file`` pins retries=2 to kill the long-file re-analysis churn).
+  - ``redrive_attempt`` : nullable bounded re-drive counter for the ``push_file:<id>`` (push mismatch)
+                     and ``s3_upload:<id>`` (S3 upload failure) re-drive loops. It lives in a
+                     DEDICATED column rather than the ``payload`` JSONB precisely so the
+                     ``before_enqueue`` WRITE hook (which upserts ``payload`` wholesale on every
+                     re-drive enqueue) can NEVER clobber it (phaze-2jl1 / phaze-y0j0). The hook's
+                     ON CONFLICT DO UPDATE set-list excludes this column, so a crash between the
+                     hook's own-session commit and the handler's counter commit leaves the counter
+                     at its prior value (un-incremented) instead of resetting it to 0 -- the bounded
+                     push/upload budget survives the crash window. NULL == 0 (never re-driven).
 
 NO foreign keys to ``files`` / ``tracklists``: the row must survive even if its target row is
 mid-flight; the natural id lives inside ``payload``.
@@ -65,5 +74,10 @@ class SchedulingLedger(TimestampMixin, Base):
     # producer set no explicit value; replay falls back to the queue before_enqueue default).
     timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Bounded re-drive counter for the push_file / s3_upload re-drive loops. Lives OUTSIDE the
+    # hook-managed ``payload`` JSONB so the before_enqueue WRITE hook (which replaces ``payload``
+    # wholesale) can never reset it; a crash in the enqueue->stamp window leaves it un-incremented,
+    # not zeroed (phaze-2jl1 / phaze-y0j0). NULL == 0 (never re-driven).
+    redrive_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (Index("ix_scheduling_ledger_function", "function"),)
