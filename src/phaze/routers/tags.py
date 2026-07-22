@@ -541,6 +541,11 @@ async def write_file_tags(
         elif status == TagWriteStatus.DISCREPANCY:
             disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
             toast_message = f"Tags written with {disc_count} discrepancy. Re-read values differ from what was sent -- usually encoding normalization. Review the audit log for details."
+        elif status == TagWriteStatus.VERIFY_FAILED:
+            # phaze-vq3g: the write LANDED but the immediate verify re-read failed (transient I/O).
+            # Do not claim a discrepancy -- the on-disk tags are the ones sent; the file just could
+            # not be confirmed. It resurfaces for a later re-verify that self-heals to COMPLETED.
+            toast_message = f"Tags written to {file_record.original_filename}, but the file could not be re-read to verify ({log_entry.error_message or 'verify failed'}). The write itself succeeded; it will re-verify later."
         else:
             toast_message = f"Tag write failed: {log_entry.error_message or 'Unknown error'}. The file may be read-only or corrupted. Check file permissions and try again."
     except ValueError as exc:
@@ -549,9 +554,10 @@ async def write_file_tags(
 
     if is_v7:
         # phaze-nvll defects 1+2: the v7 row gets the shared _diff_row.html back, in "approved" (WITH
-        # a working UNDO) for a real write outcome (COMPLETED/DISCREPANCY), or "pending" (APPROVE
-        # still available to retry) when nothing was actually written (FAILED / a raised ValueError).
-        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY) else "pending"
+        # a working UNDO) for a write that LANDED on disk (COMPLETED/DISCREPANCY/VERIFY_FAILED -- all
+        # mutated the file), or "pending" (APPROVE still available to retry) when nothing was actually
+        # written (FAILED / a raised ValueError).
+        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED) else "pending"
         row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
         return _tagwrite_diff_row_response(request, row_context, toast_message)
 

@@ -16,7 +16,7 @@ from mutagen.mp4 import MP4
 import structlog
 
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.services.metadata import extract_tags
+from phaze.services.metadata import TagReadError, extract_tags
 from phaze.services.stage_status import is_applied
 
 
@@ -130,8 +130,15 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
     Returns:
         Dict of discrepancies: {field: {"expected": exp, "actual": act}}.
         Empty dict means perfect write.
+
+    Raises:
+        TagReadError: If the just-written file cannot be re-read/parsed (phaze-vq3g). This is a
+            VERIFY failure, NOT a discrepancy -- the re-read is done in ``strict`` mode so a
+            transient I/O/parse error surfaces as an exception the caller records distinctly,
+            instead of an all-field ``actual=None`` false discrepancy. A file that opens cleanly
+            but has no tags still returns a normal (all-field) discrepancy dict.
     """
-    actual_tags = extract_tags(file_path)
+    actual_tags = extract_tags(file_path, strict=True)
     discrepancies: dict[str, dict[str, str | None]] = {}
 
     for field, expected_val in expected.items():
@@ -197,6 +204,14 @@ async def execute_tag_write(
         write_tags(file_path, proposed_tags)
         discrepancies = verify_write(file_path, proposed_tags)
         status = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
+    except TagReadError as exc:
+        # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
+        # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
+        # ``actual=None`` DISCREPANCY that misrepresents a correctly-tagged file as written-wrong.
+        # ``discrepancies`` stays None so no false per-field mismatch is persisted.
+        status = TagWriteStatus.VERIFY_FAILED
+        error_message = f"verify failed: {exc}"
+        discrepancies = None
     except Exception as exc:
         status = TagWriteStatus.FAILED
         error_message = str(exc)
