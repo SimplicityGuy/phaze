@@ -15,9 +15,11 @@ Covers the cloud-agent invariants for ``docker-compose.cloud-agent.yml``:
 4. NEW (vs the agent test) — the ``worker`` image is a GHCR image pinned via
    ``${PHAZE_IMAGE_TAG...}`` that ENDS with ``-arm64`` (D-08, Pitfall 3, T-51-05:
    no multi-arch manifest exists, an x86 image would not run on the Ampere A1).
-5. NEW — the scratch mount's source is a NAMED volume (``cloud_scratch``; its
-   left side has no leading ``/`` or ``.``) declared under top-level ``volumes:``
-   (D-07 — ephemeral scratch is a docker-managed volume, not a host bind).
+5. NEW — the scratch mount is a HOST BIND of ``${PHAZE_CLOUD_SCRATCH_DIR}`` to
+   the identical container path, and NO ``cloud_scratch`` named volume is declared
+   (phaze-cri2 — the push side rsyncs onto the HOST filesystem at scratch_dir, so
+   the container must see that SAME host directory to read + reap pushed files; a
+   docker-managed named volume disconnected write from read/delete).
 6. NEW — NO volume string contains ``SCAN_PATH`` or ``/data/music`` (a compute
    agent has no media bind — the inverse of the agent compose's fail-fast check).
 7. The MODELS mount is ``:rw`` (D-07 model auto-download) and the CA mount is
@@ -207,26 +209,44 @@ def test_worker_command_invokes_system_python_not_uv() -> None:
     )
 
 
-def test_worker_uses_named_scratch_volume() -> None:
-    """D-07: the scratch mount source is a named docker volume declared under top-level volumes:.
+def test_worker_uses_host_bind_scratch() -> None:
+    """phaze-cri2: the scratch mount is a HOST BIND of ${PHAZE_CLOUD_SCRATCH_DIR}, NOT a named volume.
 
-    The ephemeral push-pipeline scratch is a docker-managed named volume
-    (``cloud_scratch``), NOT a host bind — its source segment has no leading
-    ``/`` or ``.`` and it must be declared in the top-level ``volumes:`` block.
+    push_file rsyncs each cloud-routed file onto the HOST filesystem at
+    ``{scratch_dir}/<id>.<ext>`` via the A1 host's sshd (push.py:152), then
+    process_file reads + verifies + deletes it from INSIDE the container.
+    ``network_mode: host`` shares only the network namespace — not mounts — so a
+    docker-managed named volume made the container's ``/scratch`` a docker-private
+    directory disconnected from the host ``/scratch`` sshd wrote into, breaking
+    every pushed file (FileNotFoundError) and leaking multi-GB copies the janitor
+    could never see. The mount MUST therefore bind ``${PHAZE_CLOUD_SCRATCH_DIR}``
+    to the identical container path so write (rsync) and read/reap (process_file +
+    janitor) target the same physical directory. This test ENFORCES the fix and
+    is the deliberate inverse of the retired ``test_worker_uses_named_scratch_volume``.
     """
     data = _load_cloud_agent_compose()
     volumes = data["services"]["worker"].get("volumes", []) or []
-    scratch_sources: list[str] = []
+    scratch_binds: list[str] = []
     for vol in volumes:
         assert isinstance(vol, str), f"expected string volume entries; got {vol!r}"
-        source = vol.split(":", 1)[0]
-        # Named-volume sources are bare identifiers; binds start with / or . (or ${VAR...} host paths).
-        if not source.startswith(("/", ".", "$")):
-            scratch_sources.append(source)
-    assert "cloud_scratch" in scratch_sources, f"worker must mount a named 'cloud_scratch' volume (no leading / or .); got volumes={volumes!r}"
+        source, _, rest = vol.partition(":")
+        target = rest.rsplit(":", 1)[0] if ":" in rest else rest
+        if "PHAZE_CLOUD_SCRATCH_DIR" in source:
+            # A host bind: source is a ${VAR...} host path (not a bare named-volume identifier),
+            # and source and target must resolve to the SAME ${PHAZE_CLOUD_SCRATCH_DIR} path.
+            assert source.startswith("$"), f"scratch source must be a host-path bind (${{PHAZE_CLOUD_SCRATCH_DIR}}...); got {vol!r}"
+            assert "PHAZE_CLOUD_SCRATCH_DIR" in target, (
+                f"scratch bind must map ${{PHAZE_CLOUD_SCRATCH_DIR}} to the IDENTICAL container path so rsync-write and "
+                f"process_file-read/reap hit the same host dir; got {vol!r}"
+            )
+            scratch_binds.append(vol)
+    assert scratch_binds, f"worker must host-bind ${{PHAZE_CLOUD_SCRATCH_DIR}} for scratch; got volumes={volumes!r}"
+    # No named-volume scratch source may survive (a bare identifier with no leading / . or $).
+    named_sources = [vol.split(":", 1)[0] for vol in volumes if not vol.split(":", 1)[0].startswith(("/", ".", "$"))]
+    assert "cloud_scratch" not in named_sources, f"the cloud_scratch NAMED volume must be gone (host bind replaces it); got {volumes!r}"
     top_level_volumes = data.get("volumes", {}) or {}
-    assert "cloud_scratch" in top_level_volumes, (
-        f"'cloud_scratch' must be declared under the top-level volumes: block; got {sorted(top_level_volumes)!r}"
+    assert "cloud_scratch" not in top_level_volumes, (
+        f"the top-level 'cloud_scratch' named-volume declaration must be removed (host bind replaces it); got {sorted(top_level_volumes)!r}"
     )
 
 

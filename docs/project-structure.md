@@ -206,7 +206,7 @@ phaze/
 │   ├── analyze_browser_soak.py #   Real-browser verification of the Analyze workspace at 200K scale
 │   └── parity/                 #   Fingerprint-engine parity fixtures (compare/dump analysis, reference.wav)
 ├── docker-compose.yml          # Service orchestration
-├── docker-compose.override.yml # Local development overrides
+├── docker-compose.dev.yml      # Local development overlay (opt-in: just up-dev; never auto-merged)
 ├── docker-compose.agent.yml    # Distributed file-server agent stack
 ├── docker-compose.cloud-agent.yml # OCI A1 cloud compute-agent stack
 ├── Dockerfile                  # Single-stage image (shared by API, worker, agent, watcher)

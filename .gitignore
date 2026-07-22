@@ -215,8 +215,14 @@ __marimo__/
 .Spotlight-V100
 .Trashes
 
-# ML models (downloaded via scripts/download-models.sh)
-models/
+# ML models (downloaded via scripts/download-models.sh). Ignore the CONTENTS
+# (models/*) rather than the dir itself so the committed models/.gitkeep can be
+# re-included — git cannot re-include a file whose parent DIRECTORY is excluded.
+models/*
+# phaze-he8m: keep the ./models/ mount-point dir tracked (via .gitkeep) so a git
+# clone materializes it owned by the operator (uid 1000) instead of dockerd
+# auto-creating it root:root — the downloaded weights themselves stay ignored.
+!models/.gitkeep
 # ...but the source package src/phaze/models/ is real code, not downloaded artifacts.
 !src/phaze/models/
 

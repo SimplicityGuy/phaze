@@ -23,8 +23,13 @@ COPY services/audfprint/app.py ./
 
 ENV UV_NO_SYNC=1
 
-# Non-root user
-RUN useradd -m -r audfprint && \
+# Non-root user pinned to uid/gid 1000 so the sidecar can read media owned by
+# uid 1000 (mode 700/770) — the same fix the main Dockerfile applies (phaze-v0vj).
+# The previous `-r` system account auto-assigned uid ~999, which could not open
+# the uid-1000-owned ${SCAN_PATH}:/data/music:ro media and made every audfprint
+# add/match subprocess exit EACCES → HTTP 500 for the whole fingerprint stage.
+RUN groupadd -g 1000 audfprint && \
+    useradd -m -u 1000 -g 1000 audfprint && \
     mkdir -p /data/fprint && \
     chown audfprint:audfprint /data/fprint
 USER audfprint

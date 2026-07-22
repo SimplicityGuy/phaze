@@ -238,6 +238,32 @@ def test_docker_compose_worker_command_is_controller_settings() -> None:
     assert "phaze.tasks.worker.settings" not in content, "Legacy phaze.tasks.worker.settings must be removed (Phase 26 D-04)"
 
 
+def test_docker_compose_app_services_declare_restart_policy() -> None:
+    """phaze-ewpa: every app-server service auto-restarts after a reboot/daemon-restart/blip.
+
+    docker-compose.yml is the documented production app-server bring-up. Without a
+    restart policy all services default to ``no``, so after a power blip or host
+    reboot the entire control plane (api, worker, postgres, redis) stays down until
+    the operator manually re-runs compose — while the agent stacks (which DO set
+    ``restart: unless-stopped`` on every service) come back up and hammer the dead
+    control plane. Match the sibling compose files: all four services must set
+    ``restart: unless-stopped``.
+    """
+    import yaml
+
+    compose_file = Path(__file__).parent.parent.parent.parent / "docker-compose.yml"
+    assert compose_file.exists(), "docker-compose.yml not found at project root"
+    data = yaml.safe_load(compose_file.read_text())
+    services = data.get("services", {})
+    for name in ("api", "worker", "postgres", "redis"):
+        assert name in services, f"docker-compose.yml is missing the '{name}' service"
+        assert services[name].get("restart") == "unless-stopped", (
+            f"docker-compose.yml service '{name}' must set restart: unless-stopped so the app-server "
+            f"control plane auto-recovers after a reboot/daemon restart (phaze-ewpa); "
+            f"got restart={services[name].get('restart')!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Phase 27 UAT gap-13: Docker Compose must include an agent-side SAQ worker
 # that consumes the per-agent queue. Without it, scan_directory and
