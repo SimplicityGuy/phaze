@@ -11,6 +11,7 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
@@ -143,11 +144,11 @@ async def test_get_analysis_failed_count_degrades_to_zero_on_db_error() -> None:
     """
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("files table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_analysis_failed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
@@ -1492,35 +1493,66 @@ async def test_get_scanned_total_empty_db_returns_none(session: AsyncSession) ->
 
 @pytest.mark.asyncio
 async def test_get_scanned_total_degrades_to_none_on_db_error() -> None:
-    """A forced read error degrades scanned to None (hidden state), never raising into the 5s poll."""
+    """A forced read error degrades scanned to None (hidden state), never raising into the 5s poll.
+
+    The read runs inside a SAVEPOINT (``begin_nested``); the exception propagates out of the nested
+    scope and is caught by the degrade ``except`` (CR-01 -- the caller's shared session is never
+    touched with a full ``session.rollback()``).
+    """
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("scan_batches table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_scanned_total(_ExplodingSession()) is None  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_get_scanned_total_degrades_when_rollback_also_fails() -> None:
-    """Even if the guarded rollback itself raises, scanned still degrades to None (no escape).
+async def test_get_scanned_total_degrades_when_begin_nested_itself_raises() -> None:
+    """Even if the session is so broken ``begin_nested()`` itself raises, scanned still degrades to None.
 
-    Exercises the nested ``except`` that logs ``scanned_total_rollback_failed`` — the last-ditch
-    branch where the session is so broken the rollback fails too. The function must still swallow
-    everything and return the hidden-state sentinel rather than propagating into the 5s poll.
+    Exercises the last-ditch branch where opening the SAVEPOINT fails synchronously (before any
+    query runs). The function must still swallow everything and return the hidden-state sentinel
+    rather than propagating into the 5s poll.
     """
 
     class _DoublyExplodingSession:
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise RuntimeError("scan_batches table unavailable")
-
-        async def rollback(self) -> None:
+        def begin_nested(self) -> object:
             raise RuntimeError("connection already closed")
 
     assert await get_scanned_total(_DoublyExplodingSession()) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_scanned_total_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this same session.
+
+    ``build_dashboard_context`` loads ``agents`` on the request session BEFORE calling
+    :func:`get_scanned_total` (transitively via :func:`get_global_reconciliation`). A plain
+    ``session.rollback()`` in the degrade branch would expire that already-loaded ``Agent`` row,
+    500-ing the template render on the next lazy load (MissingGreenlet from a sync context).
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell a SAVEPOINT
+    rollback apart from a plain one -- a plain rollback expunges the pending flush to *transient*,
+    not *expired*): flush an Agent row, force ONLY the scanned-total SELECT to fail, then assert
+    ``session.get`` still finds the agent afterwards -- proving the outer transaction survived.
+    """
+    from unittest.mock import AsyncMock
+
+    agent = Agent(id="cr01-scanned-total-agent", name="Cr01ScanBox", scan_roots=[], last_seen_at=datetime.now(UTC), kind="fileserver")
+    session.add(agent)
+    await session.flush()
+
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    result = await get_scanned_total(session)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    assert result is None
+    assert await session.get(Agent, "cr01-scanned-total-agent") is not None
 
 
 @pytest.mark.asyncio
@@ -1721,11 +1753,11 @@ async def test_get_awaiting_cloud_count_degrades_to_zero_on_db_error() -> None:
     """A forced read error degrades the count to 0 (poll-safe via _safe_count), never raising."""
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("files table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_awaiting_cloud_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
@@ -1775,11 +1807,11 @@ async def test_get_pushing_count_degrades_to_zero_on_db_error() -> None:
     """A forced read error degrades the PUSHING count to 0 (poll-safe via _safe_count)."""
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("files table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_pushing_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 
@@ -1789,11 +1821,11 @@ async def test_get_pushed_count_degrades_to_zero_on_db_error() -> None:
     """A forced read error degrades the PUSHED count to 0 (poll-safe via _safe_count)."""
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("files table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_pushed_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
 

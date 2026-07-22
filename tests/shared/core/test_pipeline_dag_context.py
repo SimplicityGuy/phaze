@@ -393,26 +393,34 @@ async def test_build_dag_context_degrades_to_default_stage_controls(session: Asy
 async def test_get_stage_controls_degrades_on_db_error() -> None:
     """get_stage_controls returns the 3-stage defaults and never raises when the SELECT fails.
 
-    This proves the actual T-38-DEGRADE mitigation (the except branch: warn → guarded rollback
+    This proves the actual T-38-DEGRADE mitigation (the except branch: warn → SAVEPOINT rollback
     → defaults) against a session whose ``execute`` raises — a missing ``pipeline_stage_control``
     table or a DB hiccup. The DB-backed ``_build_dag_context`` degrade test above only exercises
     the empty-table happy path (zero rows → defaults), so this fake-session test is what actually
-    covers the never-500 rollback branch that keeps the 5s poll alive.
+    covers the never-500 branch that keeps the 5s poll alive.
+
+    The read runs inside a SAVEPOINT (``session.begin_nested()``) rather than a full
+    ``session.rollback()`` (CR-01): a full rollback would expire every ORM row already loaded on the
+    caller's shared session (``build_dashboard_context`` loads ``agents`` / ``recent_scans`` before
+    ``_build_dag_context`` runs), 500-ing the render on the next lazy load.
     """
     from phaze.services.pipeline import get_stage_controls
 
-    rolled_back = False
+    class _NullSavepoint:
+        async def __aenter__(self) -> _NullSavepoint:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError('relation "pipeline_stage_control" does not exist')
 
-        async def rollback(self) -> None:
-            nonlocal rolled_back
-            rolled_back = True
-
     controls = await get_stage_controls(_ExplodingSession())  # type: ignore[arg-type]
-    assert rolled_back is True
     assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
 
 
@@ -430,6 +438,38 @@ async def test_get_stage_controls_overlays_present_rows(session: AsyncSession) -
     assert controls["analyze"] == {"paused": True, "priority": 20}
     assert controls["metadata"] == {"paused": False, "priority": 50}
     assert controls["fingerprint"] == {"paused": False, "priority": 50}
+
+
+@pytest.mark.asyncio
+async def test_get_stage_controls_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this same session.
+
+    ``_build_dag_context`` runs after ``build_dashboard_context`` loads ``agents`` on the request
+    session. A plain ``session.rollback()`` in the degrade branch would expire that already-loaded
+    ``Agent`` row, 500-ing the template render on the next lazy load (MissingGreenlet from a sync
+    context).
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell a SAVEPOINT
+    rollback apart from a plain one -- a plain rollback expunges the pending flush to *transient*,
+    not *expired*): flush an Agent row, force ONLY the stage-control SELECT to fail, then assert
+    ``session.get`` still finds the agent afterwards -- proving the outer transaction survived.
+    """
+    from unittest.mock import AsyncMock
+
+    from phaze.models.agent import Agent
+    from phaze.services.pipeline import get_stage_controls
+
+    agent = Agent(id="cr01-stage-controls-agent", name="Cr01ControlsBox", scan_roots=[], kind="fileserver")
+    session.add(agent)
+    await session.flush()
+
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    controls = await get_stage_controls(session)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+    assert await session.get(Agent, "cr01-stage-controls-agent") is not None
 
 
 # ---------------------------------------------------------------------------
