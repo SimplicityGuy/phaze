@@ -351,6 +351,50 @@ async def test_tag_bulk_reports_failures_truthfully(
 
 
 @pytest.mark.asyncio
+async def test_tag_bulk_concurrent_submit_is_blocked(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-u28m: when the bulk advisory lock is already held, a second submit writes NOTHING.
+
+    Simulates a concurrent/duplicate submit by forcing the lock acquire to fail. The endpoint must
+    short-circuit -- no candidate re-select, no disk writes, no audit rows -- and tell the operator a
+    bulk write is already in progress, instead of re-processing the identical still-non-terminal set.
+    """
+    f1, _ = await seed_executed_file_with_metadata(original_filename="qqq - New Title.mp3", artist=None, title=None, album="Keep Album")
+    f1_id = f1.id
+
+    with patch("phaze.routers.tags._acquire_bulk_tagwrite_lock", new=AsyncMock(return_value=False)):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    assert "already in progress" in resp.text
+    assert await _tagwrite_log_count(session, f1_id) == 0, "a blocked concurrent submit double-writes nothing"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_releases_lock_for_subsequent_submit(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-u28m: the advisory lock is released after a submit so the NEXT submit is not blocked.
+
+    Two sequential real submits must both proceed (neither sees 'already in progress'); this proves
+    the session-scoped lock taken under phaze-k7g6's per-file commits is properly released in the
+    ``finally`` and does not leak into the next request.
+    """
+    await seed_executed_file_with_metadata(original_filename="rrr - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    r1 = await client.post("/tags/bulk-write-no-discrepancies")
+    r2 = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert "already in progress" not in r2.text, "the lock must be released between submits"
+
+
+@pytest.mark.asyncio
 async def test_review_audit_one_row(
     client: AsyncClient,
     session: AsyncSession,
