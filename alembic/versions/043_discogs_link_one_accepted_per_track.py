@@ -13,6 +13,12 @@ every OTHER non-dismissed link for a track, status-blind, before accepting the w
 partial unique index is defense-in-depth so a concurrent double-accept race fails loudly with an
 ``IntegrityError`` instead of silently landing two accepted rows for the same track.
 
+The upgrade FIRST dismisses all but the newest accepted row per track (newest ``updated_at``,
+``id`` tiebreaker -- the same winner ``accept_discogs_link`` would keep): the bug this index
+guards against has been LIVE, so an existing database can already hold double-accepted rows,
+and creating the unique index over them would abort the migration (the migration-041 lesson,
+phaze-am5p). Deduplicating in the same transaction makes the index creation total.
+
 Revision ID: 043
 Revises: 042
 Create Date: 2026-07-22
@@ -27,16 +33,29 @@ down_revision = "042"
 branch_labels = None
 depends_on = None
 
-_INDEX_NAME = "ix_discogs_links_one_accepted_per_track"
-_CREATE = f"CREATE UNIQUE INDEX {_INDEX_NAME} ON public.discogs_links USING btree (track_id) WHERE (status = 'accepted')"
-_DROP = f"DROP INDEX {_INDEX_NAME}"
+# Static string-literal DDL/DML -- no interpolation, no user input reaches this SQL.
+_DEDUPE_EXISTING = """
+UPDATE public.discogs_links dl
+SET status = 'dismissed'
+WHERE dl.status = 'accepted'
+  AND EXISTS (
+    SELECT 1
+    FROM public.discogs_links newer
+    WHERE newer.track_id = dl.track_id
+      AND newer.status = 'accepted'
+      AND (newer.updated_at, newer.id) > (dl.updated_at, dl.id)
+  )
+"""
+_CREATE = "CREATE UNIQUE INDEX ix_discogs_links_one_accepted_per_track ON public.discogs_links USING btree (track_id) WHERE (status = 'accepted')"
+_DROP = "DROP INDEX ix_discogs_links_one_accepted_per_track"
 
 
 def upgrade() -> None:
-    """Add the one-accepted-link-per-track guard."""
+    """Dedupe pre-existing double-accepted rows, then add the one-accepted-link-per-track guard."""
+    op.execute(_DEDUPE_EXISTING)
     op.execute(_CREATE)
 
 
 def downgrade() -> None:
-    """Drop the one-accepted-link-per-track guard."""
+    """Drop the one-accepted-link-per-track guard (dismissed duplicates stay dismissed)."""
     op.execute(_DROP)
