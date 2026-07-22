@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.services.tag_writer import (
+    _extract_before_tags,
     _write_mp4,
     _write_vorbis,
     execute_tag_write,
@@ -111,13 +112,26 @@ class TestWriteTags:
         assert audio.tags is not None
         assert str(audio.tags["TPE1"]) == "New Artist"
 
-    def test_write_tags_skips_none_values(self, mp3_file: Path) -> None:
-        """write_tags skips fields with None values."""
+    def test_write_tags_none_leaves_absent_field_absent(self, mp3_file: Path) -> None:
+        """A None value for an already-absent field is a harmless no-op (nothing to delete)."""
         write_tags(str(mp3_file), {"artist": "Test", "title": None})
 
         audio = MP3(str(mp3_file))
         assert "TPE1" in audio.tags
         assert "TIT2" not in audio.tags
+
+    def test_write_tags_none_deletes_existing_id3_frame(self, mp3_file: Path) -> None:
+        """phaze-52qd: a None value DELETES an existing ID3 frame (the undo delete path)."""
+        write_tags(str(mp3_file), {"artist": "Sven Vath", "album": "Coachella 2024"})
+        audio = MP3(str(mp3_file))
+        assert "TPE1" in audio.tags
+        assert "TALB" in audio.tags
+
+        # Now re-apply a snapshot that marks both fields absent -- they must be removed.
+        write_tags(str(mp3_file), {"artist": None, "album": None})
+        audio = MP3(str(mp3_file))
+        assert "TPE1" not in audio.tags
+        assert "TALB" not in audio.tags
 
 
 class TestWriteVorbisFormat:
@@ -191,11 +205,86 @@ class TestVerifyWrite:
         assert discrepancies["artist"]["expected"] == "Expected Artist"
         assert discrepancies["artist"]["actual"] == "Actual Artist"
 
-    def test_verify_skips_none_expected(self, mp3_file: Path) -> None:
-        """verify_write skips fields where expected is None."""
+    def test_verify_none_expected_passes_when_field_absent(self, mp3_file: Path) -> None:
+        """An expected None for an absent field is NOT a discrepancy (a deletion that held)."""
         write_tags(str(mp3_file), {"artist": "Test"})
         discrepancies = verify_write(str(mp3_file), {"artist": "Test", "title": None})
         assert discrepancies == {}
+
+    def test_verify_none_expected_flags_surviving_field(self, mp3_file: Path) -> None:
+        """phaze-52qd: an expected None is a discrepancy when the field is still on disk.
+
+        This is what makes an undo that FAILED to delete an added tag report a real discrepancy
+        instead of a false 'completed' reversal.
+        """
+        write_tags(str(mp3_file), {"artist": "Should Be Deleted"})
+        discrepancies = verify_write(str(mp3_file), {"artist": None})
+        assert "artist" in discrepancies
+        assert discrepancies["artist"]["expected"] is None
+        assert discrepancies["artist"]["actual"] == "Should Be Deleted"
+
+
+class TestExtractBeforeTags:
+    """phaze-52qd: the before/undo snapshot must span every core field, marking absent tags None."""
+
+    def test_records_absent_fields_as_none(self, mp3_file: Path) -> None:
+        """A previously-untagged file yields an all-None snapshot -- not an empty dict.
+
+        Pre-fix this returned {} (only non-None fields), so undo had nothing to delete and the
+        tags a write ADDED survived the 'revert'.
+        """
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot == {
+            "artist": None,
+            "title": None,
+            "album": None,
+            "year": None,
+            "genre": None,
+            "track_number": None,
+        }
+
+    def test_records_present_and_absent_together(self, mp3_file: Path) -> None:
+        """Present fields keep their values; absent fields are explicit None."""
+        write_tags(str(mp3_file), {"artist": "Present Artist"})
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot["artist"] == "Present Artist"
+        assert snapshot["album"] is None
+        assert set(snapshot) == {"artist", "title", "album", "year", "genre", "track_number"}
+
+
+class TestUndoDeletesAddedTags:
+    """phaze-52qd end-to-end: reverting a write that ADDED tags removes them from disk."""
+
+    @pytest.mark.asyncio
+    async def test_undo_snapshot_removes_added_tags(self, mp3_file: Path) -> None:
+        """Write artist+album into an untagged file, then re-apply the before snapshot to revert.
+
+        The before snapshot (all-None for the untagged file) must delete both added frames and the
+        reversal must verify COMPLETED, not silently leave the tags on disk.
+        """
+        # Untagged file -> capture the true before snapshot (all None).
+        before = _extract_before_tags(str(mp3_file))
+
+        fr = MagicMock()
+        fr.id = uuid.uuid4()
+        fr.current_path = str(mp3_file)
+        session = AsyncMock()
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            write_log = await execute_tag_write(session, fr, {"artist": "Sven Vath", "album": "Coachella 2024"}, "tracklist")
+        assert write_log.status == TagWriteStatus.COMPLETED
+        audio = MP3(str(mp3_file))
+        assert "TPE1" in audio.tags
+        assert "TALB" in audio.tags
+
+        # Undo re-applies the captured before snapshot (source="undo").
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            undo_log = await execute_tag_write(session, fr, before, "undo")
+
+        assert undo_log.status == TagWriteStatus.COMPLETED
+        audio = MP3(str(mp3_file))
+        assert "TPE1" not in audio.tags
+        assert "TALB" not in audio.tags
 
     def test_verify_raises_on_unreadable_file(self, tmp_path: Path) -> None:
         """phaze-vq3g: an unreadable/absent file on re-read raises TagReadError, not a false discrepancy.

@@ -55,6 +55,11 @@ _WRITE_MP4_MAP: dict[str, str] = {
     "track_number": "trkn",
 }
 
+# phaze-52qd: the full set of core tag fields a write/undo snapshot must span. ``_extract_before_tags``
+# records EVERY one of these -- ``None`` where the field is absent on disk -- so an undo can DELETE a
+# frame the write added, not merely leave it.
+_CORE_TAG_FIELDS: tuple[str, ...] = ("artist", "title", "album", "year", "genre", "track_number")
+
 
 def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
     """Write tags to an audio file using format-aware mutagen methods.
@@ -63,7 +68,9 @@ def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
 
     Args:
         file_path: Path to the audio file.
-        tags: Dict of field names to values. None values are skipped.
+        tags: Dict of field names to values. A ``None`` value DELETES the corresponding
+            frame/atom/comment (phaze-52qd: this is how an undo removes a tag a prior write
+            added). A field that is simply absent from the dict is left untouched.
 
     Raises:
         ValueError: If the file is not a recognized audio format.
@@ -88,36 +95,43 @@ def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
 
 
 def _write_id3(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write ID3 frames to an MP3 file."""
+    """Write ID3 frames to an MP3 file. A ``None`` value DELETES the frame (phaze-52qd)."""
     for field, value in tags.items():
-        if value is None:
-            continue
         frame_cls = _WRITE_ID3_MAP.get(field)
-        if frame_cls is not None:
+        if frame_cls is None:
+            continue
+        if value is None:
+            audio.tags.delall(frame_cls.__name__)
+        else:
             audio.tags.add(frame_cls(encoding=3, text=[str(value)]))
 
 
 def _write_vorbis(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write Vorbis comments to an OGG/FLAC/OPUS file."""
+    """Write Vorbis comments to an OGG/FLAC/OPUS file. A ``None`` value DELETES the key (phaze-52qd)."""
     for field, value in tags.items():
-        if value is None:
-            continue
         vorbis_key = _WRITE_VORBIS_MAP.get(field)
-        if vorbis_key is not None:
+        if vorbis_key is None:
+            continue
+        if value is None:
+            if vorbis_key in audio:
+                del audio[vorbis_key]
+        else:
             audio[vorbis_key] = [str(value)]
 
 
 def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write MP4 atoms to an M4A file."""
+    """Write MP4 atoms to an M4A file. A ``None`` value DELETES the atom (phaze-52qd)."""
     for field, value in tags.items():
-        if value is None:
-            continue
         mp4_key = _WRITE_MP4_MAP.get(field)
-        if mp4_key is not None:
-            if field == "track_number":
-                audio[mp4_key] = [(int(value), 0)]
-            else:
-                audio[mp4_key] = [str(value)]
+        if mp4_key is None:
+            continue
+        if value is None:
+            if mp4_key in audio:
+                del audio[mp4_key]
+        elif field == "track_number":
+            audio[mp4_key] = [(int(value), 0)]
+        else:
+            audio[mp4_key] = [str(value)]
 
 
 def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[str, dict[str, str | None]]:
@@ -137,15 +151,27 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
             transient I/O/parse error surfaces as an exception the caller records distinctly,
             instead of an all-field ``actual=None`` false discrepancy. A file that opens cleanly
             but has no tags still returns a normal (all-field) discrepancy dict.
+
+    Note (phaze-52qd): an ``expected`` value of ``None`` means the field should have been
+    DELETED (an undo removing a tag a prior write added). Such a field is a discrepancy iff
+    it is still present on disk -- verifying deletions, not skipping them.
     """
     actual_tags = extract_tags(file_path, strict=True)
     discrepancies: dict[str, dict[str, str | None]] = {}
 
     for field, expected_val in expected.items():
+        actual_val = getattr(actual_tags, field, None)
+
         if expected_val is None:
+            # The field was meant to be absent (a deletion). It is a discrepancy only if a
+            # value survives on disk.
+            if actual_val is not None:
+                discrepancies[field] = {
+                    "expected": None,
+                    "actual": unicodedata.normalize("NFC", str(actual_val)),
+                }
             continue
 
-        actual_val = getattr(actual_tags, field, None)
         expected_norm = unicodedata.normalize("NFC", str(expected_val))
         actual_norm = unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None
 
@@ -159,14 +185,16 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
 
 
 def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
-    """Extract current tags as a serializable dict for before_tags snapshot."""
+    """Extract current tags as a COMPLETE before/undo snapshot.
+
+    phaze-52qd: records EVERY core field, mapping an absent tag to an explicit ``None`` rather
+    than omitting the key. Re-applying this snapshot through :func:`write_tags` therefore DELETES
+    any frame the write added to a previously-untagged file (``None`` -> delete), instead of
+    silently leaving it -- which is what made undo a no-op in the product's dominant "add tags to
+    an untagged file" scenario.
+    """
     tags = extract_tags(file_path)
-    result: dict[str, str | int | None] = {}
-    for field in ("artist", "title", "album", "year", "genre", "track_number"):
-        val = getattr(tags, field, None)
-        if val is not None:
-            result[field] = val
-    return result
+    return {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
 
 
 async def execute_tag_write(
