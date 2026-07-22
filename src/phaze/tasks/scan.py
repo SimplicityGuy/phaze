@@ -77,6 +77,33 @@ def _classify(filename: str) -> FileCategory:
     return EXTENSION_MAP.get(Path(filename).suffix.lower(), FileCategory.UNKNOWN)
 
 
+def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
+    """Pre-count pass over `scan_root`, run entirely off the event loop (phaze-bfd1).
+
+    Walks the tree once WITHOUT stat or hashing, counting only files whose extension
+    is ingestible (MUSIC/VIDEO), and collecting any directory-read OSError raised by
+    os.walk. Returns ``(count, errors)``; the caller logs the collected errors back
+    on the loop.
+
+    This whole function is dispatched via ``asyncio.to_thread`` so the full synchronous
+    os.walk -- tens of thousands of readdir round-trips on a large network mount with a
+    cold cache -- never runs back-to-back on the agent worker's event loop. In all-mode
+    (no lane split) that loop is the agent's ONLY heartbeat source, and a pre-count walk
+    that monopolizes it past the 300s DEAD threshold ages ``last_seen_at`` into the DEAD
+    band while the worker is perfectly healthy -- a false DEAD that re-enqueues the
+    agent's in-flight work, the exact cascade Phase 46 restructured the heartbeat to
+    prevent. Mirrors the hashing walk below, which already offloads its per-file stat/
+    sha256 via asyncio.to_thread.
+    """
+    errors: list[OSError] = []
+    count = 0
+    for _dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
+        for filename in filenames:
+            if _classify(filename) in _EXTRACTABLE:
+                count += 1
+    return count, errors
+
+
 def _resolve_chunk_size() -> int:
     """Read AgentSettings.scan_chunk_size if available; fall back to 500."""
     cfg = get_settings()
@@ -218,19 +245,18 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # NOT merged into the hashing walk's `walk_errors`. The zero-access failure check
     # (`total == 0 and walk_errors`) and its error-count message must stay driven solely
     # by the authoritative hashing walk, so a permission failure is counted exactly once
-    # there. We still pass an onerror callback so a pre-count read failure is logged
-    # rather than silently swallowed.
-    precount_walk_errors: list[OSError] = []
-
-    def _on_precount_error(exc: OSError) -> None:
-        precount_walk_errors.append(exc)
-        logger.warning("scan_directory: cannot read directory during pre-count walk: %s", exc)
-
-    precount = 0
-    for _dirpath, _dirnames, precount_filenames in os.walk(scan_root, followlinks=False, onerror=_on_precount_error):
-        for precount_filename in precount_filenames:
-            if _classify(precount_filename) in _EXTRACTABLE:
-                precount += 1
+    # there. We still collect pre-count read failures so they are logged rather than
+    # silently swallowed.
+    #
+    # phaze-bfd1: the entire synchronous os.walk runs OFF the event loop via
+    # asyncio.to_thread. On a large network mount (cold cache) this traversal is tens of
+    # thousands of readdir round-trips that would otherwise execute back-to-back on the
+    # loop with zero yields, starving the Phase-46 heartbeat past the 300s DEAD threshold
+    # and getting a healthy agent classified DEAD. The collected errors are logged here on
+    # the loop (structlog stays on the event loop, not the worker thread).
+    precount, precount_walk_errors = await asyncio.to_thread(_count_ingestible, scan_root)
+    for precount_error in precount_walk_errors:
+        logger.warning("scan_directory: cannot read directory during pre-count walk: %s", precount_error)
     logger.info("scan precount", batch_id=str(payload.batch_id), total=precount)
     try:
         await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(total_files=precount))
