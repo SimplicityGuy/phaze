@@ -105,6 +105,37 @@ class TestComputeMatchConfidence:
         )
         assert score >= 90
 
+    def test_date_mismatch_with_both_dates_present_caps_at_89(self):
+        """phaze-rkxy: with the scraped date now passed through, a >3-day mismatch caps at 89.
+
+        This is the concrete failure scenario the bead names: a Carl Cox @ Coachella tracklist from
+        a DIFFERENT year scored against a file. Once the auto-link path passes the real scraped date
+        (instead of a hardcoded None), this cap fires and the score cannot reach the auto-link
+        threshold on artist+event alone.
+        """
+        score = compute_match_confidence(
+            "Carl Cox",
+            "Coachella",
+            date(2019, 4, 13),  # scraped tracklist's real date
+            "Carl Cox",
+            "Coachella",
+            date(2024, 4, 13),  # the file's date -- a different year
+        )
+        assert score <= 89
+        assert score < AUTO_LINK_THRESHOLD
+
+    def test_confirmed_same_window_date_still_reaches_auto_link(self):
+        """phaze-rkxy: a genuine artist+event+same-window date match must STILL reach auto-link."""
+        score = compute_match_confidence(
+            "Carl Cox",
+            "Coachella",
+            date(2024, 4, 13),
+            "Carl Cox",
+            "Coachella",
+            date(2024, 4, 13),
+        )
+        assert score >= AUTO_LINK_THRESHOLD
+
 
 class TestParseLiveSetFilename:
     """Tests for parse_live_set_filename()."""

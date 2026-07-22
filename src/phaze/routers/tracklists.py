@@ -495,6 +495,14 @@ async def link_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
+        # phaze-29bv: file_id is a client-supplied FK to files.id. A well-formed but stale/forged id
+        # -- e.g. the FileRecord hard-deleted by a concurrent scan while this search panel stayed open
+        # -- passes wire validation and would detonate as an unhandled ForeignKeyViolation at commit,
+        # poisoning the request transaction with a 500 and leaving the tracklist silently unlinked.
+        # This is the render-vs-POST race request_guards.py rule 4 governs: resolve the FileRecord
+        # first and branch cleanly rather than writing an unvalidated FK.
+        if await session.get(FileRecord, file_id) is None:
+            return HTMLResponse(content="File not found", status_code=404)
         tracklist.file_id = file_id
         tracklist.match_confidence = confidence
         tracklist.auto_linked = False
@@ -622,6 +630,16 @@ async def link_search_result(
     """
     if not _is_allowed_tracklist_url(url):
         return HTMLResponse(content="Invalid tracklist url", status_code=400)
+
+    # phaze-x4vi: validate the client-supplied file_id BEFORE the expensive (up-to-30s) network
+    # scrape. file_id is an FK to files.id; a stale/forged id -- e.g. the FileRecord deleted by a
+    # concurrent scan while this panel stayed open -- would otherwise sail through to the final
+    # commit and detonate as a ForeignKeyViolation -> 500, ALSO rolling back the just-scraped
+    # tracklist stored in the SAME transaction, so every retry re-hits the rate-limited site.
+    # Resolving the file up front (the render-vs-POST race in request_guards.py rule 4) returns a
+    # clean error and skips the wasted scrape entirely, so no scraped work is ever discarded.
+    if await session.get(FileRecord, file_id) is None:
+        return HTMLResponse(content="File not found", status_code=404)
 
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
     selected = result.scalar_one_or_none()
