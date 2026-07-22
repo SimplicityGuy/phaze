@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -74,6 +75,50 @@ class TestDiscogsographyClient:
         client = DiscogsographyClient(base_url="http://test:8000")
         client._client = AsyncMock()
         client._client.get = AsyncMock(side_effect=httpx.TimeoutException("Timed out"))
+
+        results = await client.search_releases("deadmau5")
+        assert results == []
+
+    async def test_search_releases_handles_http_status_error(self) -> None:
+        """search_releases degrades to [] on a non-2xx response (regression for phaze-s6v6).
+
+        ``raise_for_status()`` raises ``httpx.HTTPStatusError``, a subclass of ``httpx.HTTPError``
+        but NOT of ``ConnectError``/``TimeoutException`` -- it must not propagate and crash the
+        caller's ``asyncio.gather``.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_request = MagicMock()
+        mock_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError("Service Unavailable", request=mock_request, response=mock_response)
+        )
+
+        client = DiscogsographyClient(base_url="http://test:8000")
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=mock_response)
+
+        results = await client.search_releases("deadmau5")
+        assert results == []
+
+    async def test_search_releases_handles_other_http_error(self) -> None:
+        """search_releases degrades to [] on any other httpx.HTTPError subclass (e.g. a DNS/proxy error)."""
+        client = DiscogsographyClient(base_url="http://test:8000")
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(side_effect=httpx.ProtocolError("bad protocol"))
+
+        results = await client.search_releases("deadmau5")
+        assert results == []
+
+    async def test_search_releases_handles_invalid_json(self) -> None:
+        """search_releases degrades to [] when resp.json() raises json.JSONDecodeError on a non-JSON body."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(side_effect=json.JSONDecodeError("Expecting value", "", 0))
+
+        client = DiscogsographyClient(base_url="http://test:8000")
+        client._client = AsyncMock()
+        client._client.get = AsyncMock(return_value=mock_response)
 
         results = await client.search_releases("deadmau5")
         assert results == []

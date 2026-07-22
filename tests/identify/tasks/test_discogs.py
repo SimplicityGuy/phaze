@@ -6,6 +6,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+import pytest
+
 
 def _make_ctx() -> dict[str, Any]:
     """Create a minimal SAQ context dict with async_session factory."""
@@ -135,6 +137,62 @@ async def test_rematch_deletes_candidates_preserves_accepted(
     # Verify that delete was called (third execute call is the delete for candidates)
     # The delete should target status="candidate" only, not "accepted"
     assert session.execute.call_count >= 3  # tracklist + tracks + at least one delete
+
+
+@patch("phaze.tasks.discogs.DiscogsographyClient")
+@patch("phaze.tasks.discogs.match_track_to_discogs")
+@patch("phaze.tasks.discogs.settings")
+async def test_match_tracklist_closes_client_on_exception(
+    mock_settings: MagicMock,
+    mock_match_fn: MagicMock,
+    mock_client_cls: MagicMock,
+) -> None:
+    """The client is closed even when an exception escapes the match/store phase (phaze-s6v6).
+
+    Regression: ``await client.close()`` used to sit on the success path AFTER
+    ``session.commit()`` with no ``finally``, so any exception between client creation and
+    that line (a DB error in the store loop, or -- before this fix -- an uncaught
+    HTTPStatusError/JSONDecodeError from search_releases) leaked the httpx.AsyncClient and its
+    connection pool.
+    """
+    from phaze.tasks.discogs import match_tracklist_to_discogs
+
+    mock_settings.discogsography_url = "http://test:8000"
+    mock_settings.discogs_match_concurrency = 5
+
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    tracklist = _make_tracklist()
+    tracks = [_make_track("deadmau5", "Strobe")]
+
+    mock_tracklist_result = MagicMock()
+    mock_tracklist_result.scalar_one_or_none.return_value = tracklist
+
+    mock_tracks_result = MagicMock()
+    mock_tracks_result.scalars.return_value.all.return_value = tracks
+
+    session.execute = AsyncMock(side_effect=[mock_tracklist_result, mock_tracks_result, None])
+    session.commit = AsyncMock(side_effect=RuntimeError("db exploded"))
+
+    mock_client_instance = AsyncMock()
+    mock_client_cls.return_value = mock_client_instance
+
+    mock_match_fn.return_value = [
+        {
+            "discogs_release_id": "r12345",
+            "discogs_artist": "deadmau5",
+            "discogs_title": "Strobe",
+            "discogs_label": None,
+            "discogs_year": 2009,
+            "confidence": 90.5,
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="db exploded"):
+        await match_tracklist_to_discogs(ctx, tracklist_id=str(tracklist.id))
+
+    mock_client_instance.close.assert_called_once()
 
 
 async def test_match_tracklist_missing_returns_not_found() -> None:

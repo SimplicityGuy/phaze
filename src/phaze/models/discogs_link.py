@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,4 +42,14 @@ class DiscogsLink(TimestampMixin, Base):
         Index("ix_discogs_links_track_id", "track_id"),
         Index("ix_discogs_links_status", "status"),
         Index("ix_discogs_links_discogs_release_id", "discogs_release_id"),
+        # Defense-in-depth for D-07 ("one accepted link per track"): the primary fix is
+        # application-level (bulk_link_discogs/accept_discogs_link dismiss siblings before
+        # accepting), but this partial unique index makes a concurrent double-accept fail
+        # loudly with an IntegrityError instead of silently landing two accepted rows.
+        Index(
+            "ix_discogs_links_one_accepted_per_track",
+            "track_id",
+            unique=True,
+            postgresql_where=text("status = 'accepted'"),
+        ),
     )

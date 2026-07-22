@@ -32,6 +32,7 @@ workaround is no longer needed.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 import uuid
@@ -103,6 +104,54 @@ async def test_refresh_tracklists_binds_naive_threshold_against_real_db(
 
         assert result == {"refreshed": 1, "errors": 0}, f"real-DB refresh did not process the seeded row: {result!r}"
         mock_scrape.assert_awaited_once()
+    finally:
+        async with session_factory() as session:
+            await session.execute(delete(Tracklist).where(Tracklist.id == tracklist_id))
+            await session.commit()
+
+
+async def test_refresh_tracklists_skips_fingerprint_sourced_stale_rows(
+    async_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-p1vy: a stale ``source='fingerprint'`` tracklist is never selected for re-scrape.
+
+    Fingerprint-sourced tracklists (routers/agent_tracklists.py) are created with
+    ``source_url=""`` -- structurally un-rescrapeable, ``TracklistScraper.scrape_tracklist("")``
+    always raises before storing anything, so ``updated_at`` never advances. Before the source
+    filter, such a row aged past the 90-day stale threshold re-entered EVERY monthly run forever,
+    each attempt burning the scraper's rate-limit delay plus the loop's 60-300s jitter sleep for a
+    guaranteed failure. Seeding one stale fingerprint row and asserting it is neither scraped nor
+    counted proves the query-level filter (not just the in-loop guard) excludes it.
+    """
+    session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    tracklist_id = uuid.uuid4()
+    stale_naive = (datetime.now(tz=UTC) - timedelta(days=120)).replace(tzinfo=None)
+
+    async with session_factory() as session:
+        session.add(
+            Tracklist(
+                id=tracklist_id,
+                external_id=f"fp-{uuid.uuid4().hex[:12]}",
+                source_url="",  # agent does not know source URL (agent_tracklists.py)
+                source="fingerprint",
+                file_id=None,
+                status="approved",
+                updated_at=stale_naive,
+            )
+        )
+        await session.commit()
+
+    try:
+        mock_scrape = AsyncMock(return_value={"tracklist_id": "x", "tracks_found": 0, "version": 1})
+        monkeypatch.setattr(tracklist_task, "scrape_and_store_tracklist", mock_scrape)
+        monkeypatch.setattr(tracklist_task.asyncio, "sleep", AsyncMock())
+
+        ctx = _make_ctx(async_engine)
+        result = await tracklist_task.refresh_tracklists(ctx)
+
+        assert result == {"refreshed": 0, "errors": 0}, f"fingerprint-sourced row was refreshed: {result!r}"
+        mock_scrape.assert_not_awaited()
     finally:
         async with session_factory() as session:
             await session.execute(delete(Tracklist).where(Tracklist.id == tracklist_id))

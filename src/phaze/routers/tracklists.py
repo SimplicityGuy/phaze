@@ -999,10 +999,11 @@ async def accept_discogs_link(
     if not link:
         return HTMLResponse(content="Link not found", status_code=404)
 
-    # Accept this link
-    link.status = "accepted"
-
-    # Dismiss all other links for the same track
+    # Dismiss all other links for the same track FIRST -- status-blind, so a pre-existing
+    # accepted link for this track (e.g. from a prior accept) is dismissed too, not just
+    # candidates. This must happen (and flush) before we set this link to "accepted" below,
+    # or the two writes could transiently coexist as two accepted rows for the same track
+    # and trip the one-accepted-per-track partial unique index (D-07).
     siblings_stmt = select(DiscogsLink).where(
         DiscogsLink.track_id == link.track_id,
         DiscogsLink.id != link.id,
@@ -1010,6 +1011,10 @@ async def accept_discogs_link(
     siblings_result = await session.execute(siblings_stmt)
     for sibling in siblings_result.scalars().all():
         sibling.status = "dismissed"
+    await session.flush()
+
+    # Accept this link
+    link.status = "accepted"
 
     await session.commit()
 
@@ -1082,10 +1087,15 @@ async def bulk_link_discogs(
     track_ids = [t.id for t in tracks]
 
     if track_ids:
-        # Load all candidate links for these tracks
+        # Load all non-dismissed links for these tracks -- status-blind, mirroring
+        # accept_discogs_link's sibling dismissal -- so a track that already carries an
+        # accepted link (e.g. from a prior individual accept, still present because
+        # match_tracklist_to_discogs only deletes candidate-status rows) is folded into
+        # this same accept/dismiss pass instead of being left as a second accepted row
+        # once a fresh candidate is promoted (D-07).
         candidates_stmt = select(DiscogsLink).where(
             DiscogsLink.track_id.in_(track_ids),
-            DiscogsLink.status == "candidate",
+            DiscogsLink.status != "dismissed",
         )
         candidates_result = await session.execute(candidates_stmt)
         all_candidates = list(candidates_result.scalars().all())
@@ -1095,14 +1105,23 @@ async def bulk_link_discogs(
         for c in all_candidates:
             by_track[c.track_id].append(c)
 
+        tops: list[DiscogsLink] = []
         for _tid, track_candidates in by_track.items():
-            # Sort by confidence descending, accept the top one
+            # Sort by confidence descending; the top link wins (it may already be the
+            # accepted one, in which case this is a no-op for that track).
             track_candidates.sort(key=lambda x: x.confidence, reverse=True)
             top = track_candidates[0]
-            top.status = "accepted"
-            # Dismiss the rest
+            tops.append(top)
+            # Dismiss the rest now, BEFORE accepting any top link below. Doing the accept
+            # first (or interleaved) could transiently leave two accepted rows for the same
+            # track and trip the one-accepted-per-track partial unique index (D-07).
             for other in track_candidates[1:]:
                 other.status = "dismissed"
+
+        await session.flush()
+
+        for top in tops:
+            top.status = "accepted"
 
         await session.commit()
 
