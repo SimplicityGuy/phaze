@@ -386,6 +386,16 @@ async def test_ensure_bucket_lifecycle_ttl_sets_expiration_on_prefix(s3_env: str
     assert prefix == "phaze-staging/"
 
 
+async def test_ensure_bucket_lifecycle_ttl_also_aborts_incomplete_multipart_uploads(s3_env: str, bucket: BucketConfig) -> None:
+    """The same rule reaps incomplete multipart uploads -- Expiration alone never touches them (phaze-sqpv)."""
+    cfg = get_settings()
+    await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+    s3 = boto3.client("s3", endpoint_url=s3_env, region_name="us-east-1", **_CREDS)
+    rules = s3.get_bucket_lifecycle_configuration(Bucket=_BUCKET)["Rules"]
+    rule = next(r for r in rules if r["ID"] == s3_staging._LIFECYCLE_RULE_ID)
+    assert rule["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] == cfg.s3_lifecycle_ttl_days
+
+
 # === per-bucket determinism: the CALLED bucket is the one acted on (MKUE-02, 2-bucket set) =====
 
 

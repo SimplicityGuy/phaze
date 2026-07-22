@@ -261,8 +261,12 @@ async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
     """Configure ``bucket``'s lifecycle so staged objects expire after ``s3_lifecycle_ttl_days``.
 
     The TTL backstop (KSTAGE-04, D-02) reaps any object the inline delete missed -- e.g. a
-    Kueue eviction with no completion callback. Scoped to the ``phaze-staging/`` prefix so it
-    never touches unrelated objects in an operator-shared bucket.
+    Kueue eviction with no completion callback -- via ``Expiration``, AND reaps any incomplete
+    multipart upload the inline abort missed (a Kueue eviction mid-upload, or a re-stage that
+    orphans a prior ``UploadId`` for the same key) via ``AbortIncompleteMultipartUpload``.
+    ``Expiration`` alone does NOT abort incomplete multipart uploads -- that is a distinct S3
+    lifecycle action, which is why both are configured on the same rule. Scoped to the
+    ``phaze-staging/`` prefix so it never touches unrelated objects in an operator-shared bucket.
     """
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     async with _client(bucket) as client:
@@ -275,6 +279,7 @@ async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
                         "Filter": {"Prefix": f"{_STAGING_PREFIX}/"},
                         "Status": "Enabled",
                         "Expiration": {"Days": cfg.s3_lifecycle_ttl_days},  # kept-global tuning knob (D-15)
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": cfg.s3_lifecycle_ttl_days},
                     }
                 ]
             },
