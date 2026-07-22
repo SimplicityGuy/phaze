@@ -21,7 +21,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.models.route_control import RouteControl
 from phaze.services import backends as backends_mod
-from phaze.services.backends import ComputeAgentBackend, derive_cloud_hold_reason
+from phaze.services.backends import ComputeAgentBackend, LocalBackend, derive_cloud_hold_reason
 from phaze.services.pipeline import get_cloud_phase_counts, get_inadmissible_count
 from tests._queue_fakes import seed_active_agent
 
@@ -275,6 +275,55 @@ async def test_derive_cloud_hold_reason_all_lanes_at_capacity(session: AsyncSess
     await session.commit()
 
     assert await derive_cloud_hold_reason(session) == "held — all lanes at capacity (2/2 slots busy)"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_ignores_always_available_local_lane_when_cloud_full(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-g4fh: a local lane (always available, in_flight=0) must NOT count as free cloud capacity.
+
+    Registry = local (cap 1, always available/idle) + one cloud lane (cap 4, fully busy). Before the
+    fix, the local lane's free slot made ``available_lanes``/``free_slots`` never reflect the cloud
+    lane being full, so this fell through to a false "queued -- 1 free slots" caption. The drain
+    itself gates local behind ``cloud_spill_to_local_after_seconds`` staleness -- it is NOT capacity
+    the drain would dispatch to next tick -- so the truthful caption is "all lanes at capacity".
+    """
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(
+        backends_mod,
+        "resolve_backends",
+        lambda _settings: [LocalBackend(id="local", rank=0, cap=1), ComputeAgentBackend(id="a1", rank=10, cap=4)],
+    )
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"local": True, "a1": True}))
+    files = [_file(i) for i in range(4)]
+    session.add_all(files)
+    await session.flush()
+    session.add_all([_cloud_job_backend(f.id, backend_id="a1", status=CloudJobStatus.RUNNING.value) for f in files])
+    await session.commit()
+
+    assert await derive_cloud_hold_reason(session) == "held — all lanes at capacity (4/4 slots busy)"
+
+
+@pytest.mark.asyncio
+async def test_derive_cloud_hold_reason_no_cloud_backend_reachable_even_with_local_lane(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-g4fh: every CLOUD lane offline -> "held -- no cloud backend reachable", local notwithstanding.
+
+    Before the fix this branch was dead code: the always-available local lane made
+    ``available_lanes`` never empty, so this exact "cloud is entirely down" state fell through to a
+    false "queued" caption instead of the truthful reachability hold.
+    """
+    monkeypatch.setattr(backends_mod, "get_settings", lambda: _cloud_hold_settings(cloud_enabled=True))
+    monkeypatch.setattr(
+        backends_mod,
+        "resolve_backends",
+        lambda _settings: [LocalBackend(id="local", rank=0, cap=1), ComputeAgentBackend(id="a1", rank=10, cap=4)],
+    )
+    monkeypatch.setattr(backends_mod, "_probe_availability", AsyncMock(return_value={"local": True, "a1": False}))
+
+    assert await derive_cloud_hold_reason(session) == "held — no cloud backend reachable"
 
 
 @pytest.mark.asyncio

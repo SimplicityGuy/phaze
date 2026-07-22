@@ -22,7 +22,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -148,9 +148,10 @@ async def _seed_cloud_job(
 
 async def _seed_ledger(session: AsyncSession, file_id: uuid.UUID, *, attempt: int | None = None) -> None:
     payload: dict[str, Any] = {"file_id": str(file_id)}
-    if attempt is not None:
-        payload["s3_upload_attempt"] = attempt
     await upsert_ledger_entry(session, key=f"s3_upload:{file_id}", function="s3_upload", kwargs=payload)
+    # phaze-y0j0: the s3_upload_attempt counter lives in the dedicated `redrive_attempt` column, not payload.
+    if attempt is not None:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == f"s3_upload:{file_id}").values(redrive_attempt=attempt))
     await session.commit()
 
 
@@ -227,4 +228,4 @@ async def test_failed_concurrent_under_cap_no_lost_update(
     async with session_factory() as session:
         row = await _ledger_row(session, f"s3_upload:{file_id}")
         assert row is not None
-        assert row.payload.get("s3_upload_attempt") == 2, "two concurrent under-cap /upload-failed must increment s3_upload_attempt to exactly 2"
+        assert row.redrive_attempt == 2, "two concurrent under-cap /upload-failed must increment s3_upload_attempt to exactly 2"

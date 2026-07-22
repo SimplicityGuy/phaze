@@ -386,6 +386,79 @@ async def test_ensure_bucket_lifecycle_ttl_sets_expiration_on_prefix(s3_env: str
     assert prefix == "phaze-staging/"
 
 
+async def test_ensure_bucket_lifecycle_ttl_also_aborts_incomplete_multipart_uploads(s3_env: str, bucket: BucketConfig) -> None:
+    """The same rule reaps incomplete multipart uploads -- Expiration alone never touches them (phaze-sqpv)."""
+    cfg = get_settings()
+    await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+    s3 = boto3.client("s3", endpoint_url=s3_env, region_name="us-east-1", **_CREDS)
+    rules = s3.get_bucket_lifecycle_configuration(Bucket=_BUCKET)["Rules"]
+    rule = next(r for r in rules if r["ID"] == s3_staging._LIFECYCLE_RULE_ID)
+    assert rule["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] == cfg.s3_lifecycle_ttl_days
+
+
+async def test_ensure_bucket_lifecycle_ttl_preserves_foreign_operator_rules(s3_env: str, bucket: BucketConfig) -> None:
+    """A pre-existing, non-phaze-owned rule on a shared bucket survives the call untouched (phaze-fu3w).
+
+    PutBucketLifecycleConfiguration is a full-replace API; a naive single-rule PUT would silently
+    delete every operator-defined rule on a shared bucket. This proves the read-modify-write merge
+    keeps the operator's own rule intact.
+    """
+    s3 = boto3.client("s3", endpoint_url=s3_env, region_name="us-east-1", **_CREDS)
+    s3.put_bucket_lifecycle_configuration(
+        Bucket=_BUCKET,
+        LifecycleConfiguration={
+            "Rules": [
+                {
+                    "ID": "operator-backups-expiry",
+                    "Filter": {"Prefix": "backups/"},
+                    "Status": "Enabled",
+                    "Expiration": {"Days": 30},
+                }
+            ]
+        },
+    )
+
+    await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+
+    rules = s3.get_bucket_lifecycle_configuration(Bucket=_BUCKET)["Rules"]
+    rule_ids = {r["ID"] for r in rules}
+    assert rule_ids == {"operator-backups-expiry", s3_staging._LIFECYCLE_RULE_ID}
+    operator_rule = next(r for r in rules if r["ID"] == "operator-backups-expiry")
+    assert operator_rule["Expiration"]["Days"] == 30
+
+
+async def test_ensure_bucket_lifecycle_ttl_is_idempotent_and_upserts_by_rule_id(s3_env: str, bucket: BucketConfig) -> None:
+    """Calling twice does not duplicate the phaze rule -- it upserts by ID (phaze-fu3w)."""
+    await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+    await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+
+    s3 = boto3.client("s3", endpoint_url=s3_env, region_name="us-east-1", **_CREDS)
+    rules = s3.get_bucket_lifecycle_configuration(Bucket=_BUCKET)["Rules"]
+    phaze_rules = [r for r in rules if r["ID"] == s3_staging._LIFECYCLE_RULE_ID]
+    assert len(phaze_rules) == 1
+
+
+async def test_ensure_bucket_lifecycle_ttl_wraps_client_error(bucket: BucketConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raw ClientError from the S3 SDK surfaces as S3StagingError, matching the module's WR-02 contract."""
+
+    class _BoomClient:
+        async def __aenter__(self) -> _BoomClient:
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> None:
+            return None
+
+        async def get_bucket_lifecycle_configuration(self, **_kwargs: object) -> dict[str, object]:
+            raise ClientError({"Error": {"Code": "NoSuchLifecycleConfiguration"}}, "GetBucketLifecycleConfiguration")
+
+        async def put_bucket_lifecycle_configuration(self, **_kwargs: object) -> None:
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "PutBucketLifecycleConfiguration")
+
+    monkeypatch.setattr(s3_staging, "_client", lambda _bucket: _BoomClient())
+    with pytest.raises(s3_staging.S3StagingError):
+        await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+
+
 # === per-bucket determinism: the CALLED bucket is the one acted on (MKUE-02, 2-bucket set) =====
 
 
@@ -481,3 +554,32 @@ async def test_delete_staged_object_acts_on_the_called_bucket(two_buckets: tuple
         await s3_staging.delete_staged_object(fid, bucket_a)
         gone = await http.get(await s3_staging.presign_get(fid, bucket_a))
         assert gone.status_code in (403, 404)
+
+
+def test_client_is_bounded_with_explicit_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1v37: _client bounds every S3 call with explicit connect/read timeouts + no retries.
+
+    Botocore's minute-scale defaults plus its retry chain let a wedged S3 endpoint pin the calling
+    connection for minutes; the control-side staging callbacks run these S3 verbs, so an unbounded hang
+    drains the small DB pool. The AioConfig must carry connect_timeout == read_timeout ==
+    s3_client_timeout_sec and cap retries at a single attempt.
+    """
+    captured: dict[str, object] = {}
+
+    class _CapSession:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def client(self, _service: str, **kwargs: object) -> object:
+            captured["config"] = kwargs.get("config")
+            return SimpleNamespace()
+
+    monkeypatch.setattr(s3_staging.aioboto3, "Session", _CapSession)
+    monkeypatch.setattr(s3_staging, "get_settings", lambda: SimpleNamespace(s3_client_timeout_sec=17))
+
+    s3_staging._client(_bucket_config("http://s3.test", "b"))
+
+    cfg = captured["config"]
+    assert cfg.connect_timeout == 17
+    assert cfg.read_timeout == 17
+    assert cfg.retries == {"max_attempts": 1}

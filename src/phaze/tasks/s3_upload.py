@@ -83,6 +83,22 @@ def upload_file_saq_timeout_sec(part_count: int, *, per_part_timeout_sec: int = 
 # MUST call ``upload_file_saq_timeout_sec(part_count)`` so the SAQ net scales with the transfer.
 UPLOAD_FILE_SAQ_TIMEOUT_SEC = upload_file_saq_timeout_sec(1)
 
+# phaze-oj7x: the EXPLICIT SAQ retries a producer MUST stamp on an ``s3_upload`` enqueue -- ZERO. The
+# control plane owns the sole re-drive vehicle (``/failed`` -> ``cloud_staging.redrive_upload``: abort the
+# prior multipart + re-stage a FRESH one, and the age/liveness-bounded stranded-staging reaper). SAQ's own
+# retry path MUST NOT independently replay the job: the agent calls ``report_upload_failed`` (which aborts
+# the prior multipart and re-stages) BEFORE it re-raises, so a SAQ retry would run the ORIGINAL payload
+# whose presigned part URLs point at the now-ABORTED multipart -- a guaranteed ``NoSuchUpload`` per part,
+# burning the bounded re-drive budget on dead-URL replays and orphaning a fresh multipart each cycle. With
+# ``retries=0`` the failing job settles ``failed`` (terminal) on the re-raise, releasing its deterministic
+# ``s3_upload:<file_id>`` key so the control re-drive's / reaper's next enqueue can actually LAND (SAQ's
+# ``_enqueue`` ON CONFLICT only overwrites a key whose status is in ('aborted','complete','failed')) instead
+# of being shadowed by a still-active self-retrying job. Must be passed EXPLICITLY: the
+# ``apply_project_job_defaults`` before_enqueue hook clobbers an unset ``retries`` (SAQ default 1) up to
+# ``worker_max_retries`` (=4), so omitting it re-arms exactly the multi-retry replay this closes. Mirrors
+# push.py's explicit ``PUSH_FILE_SAQ_RETRIES``.
+S3_UPLOAD_SAQ_RETRIES = 0
+
 
 def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (mirrors push._agent_settings).
@@ -165,13 +181,24 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # reaped before we re-raise. SAQ owns the re-drive; we do NOT report completion or failure on
         # a cancelled transfer (no partial-success callback, no premature terminal report).
         raise
-    except (RuntimeError, TimeoutError) as exc:
+    except (RuntimeError, TimeoutError, httpx.HTTPError, OSError) as exc:
         # phaze-lssv: a terminal/transfer failure (unreadable source, non-2xx part PUT, or a wedged
         # per-part wait_for). The control plane's bounded re-drive / at-cap spill machinery lives
         # behind report_upload_failed; without this callback the cloud_job stays UPLOADING forever
         # (leaking a kueue in-flight cap slot and a staged S3 object -- SAQ's default retries=1 means
         # the first raise is terminal). Notify control, then re-raise so SAQ still marks the job
         # failed. The notify is best-effort: a failure here must not mask the original error.
+        #
+        # phaze-7lxp: catch httpx.HTTPError and OSError alongside the two synthetic errors
+        # _transfer_parts raises itself. A real transport failure (connection reset, DNS blip, TLS
+        # error, ConnectError, ReadTimeout, RemoteProtocolError) surfaces as an httpx.HTTPError
+        # subclass -- NOT builtins.TimeoutError/RuntimeError -- and fires BEFORE the wait_for budget
+        # (httpx's own timeout is 30s tighter). A mid-loop fh.read() failure surfaces as OSError.
+        # Both previously bypassed this handler and propagated WITHOUT report_upload_failed, stranding
+        # the cloud_job in UPLOADING until the 6h reaper backstop. The narrow tuple only covered the
+        # transfer failures _transfer_parts raises by hand, missing the far more common transport
+        # class the callback exists for. asyncio.CancelledError (a BaseException on 3.14) is caught by
+        # the clause above and re-raised, so cancellation still never triggers a premature callback.
         with contextlib.suppress(Exception):
             await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
         raise

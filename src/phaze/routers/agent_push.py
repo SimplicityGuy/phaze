@@ -8,16 +8,22 @@ per-agent compute queue, and read the scratch directory off ``ControlSettings``.
 
 Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
 
-- ``/pushed``   (D-01 intent within the Postgres-free boundary): in ONE transaction
-  flip ``PUSHING -> PUSHED``, clear the ``push_file:<id>`` ledger row, and enqueue
+- ``/pushed``   (D-01 intent within the Postgres-free boundary): commit the cloud_job
+  ``SUBMITTED -> SUCCEEDED`` CAS + ``push_file:<id>`` ledger clear FIRST, THEN enqueue
   exactly one ``process_file`` job on the COMPUTE queue carrying the ORM-pinned
   ``expected_sha256`` (D-11) and a ``<active_compute_scratch_dir>/<file_id>.<ext>``
-  ``scratch_path``. With no compute agent online this is a clean 200 hold (never a
-  500): the file stays ``PUSHING`` with its ledger row, so the staging cron /
+  ``scratch_path``. phaze-v40v: the enqueue was moved AFTER the commit (it fires on
+  SAQ's own pool, which commits the job immediately + independently) so a commit
+  failure can never leave a dispatched process_file the control plane rolled back --
+  the enqueue-before-commit dual-write that leaked a compute in_flight slot and
+  re-processed the file. With no compute agent online this is a clean 200 hold (never
+  a 500): the file stays ``PUSHING`` with its ledger row, so the staging cron /
   recovery re-drives it once a compute agent appears.
 
 - ``/mismatch`` (D-12 integrity re-drive loop): increment the ``push_attempt`` counter
-  living in the ``push_file`` ledger payload JSONB (Pitfall 4). Under
+  living in the dedicated ``scheduling_ledger.redrive_attempt`` column (phaze-2jl1: OUTSIDE
+  the hook-rewritten ``payload`` JSONB so a crash in the enqueue->stamp window cannot reset
+  the bounded push budget). Under
   ``push_max_attempts`` re-enqueue ``push_file`` on the FILESERVER queue while the file
   stays ``PUSHING`` (the slot is retained, Open-Q1); at/over the cap SPILL the file back
   to ``FileState.AWAITING_CLOUD`` with its cloud budget marked spent and clear the ledger
@@ -185,20 +191,50 @@ async def report_pushed(
     # sidecar (terminalized SUBMITTED -> SUCCEEDED above) is the sole derived authority PR-A reads.
     await clear_ledger_entry(session, f"push_file:{file_id}")
 
+    # phaze-v40v: COMMIT the SUBMITTED -> SUCCEEDED CAS + push_file ledger clear BEFORE enqueuing
+    # process_file. enqueue_process_file runs on the compute queue's OWN SAQ PostgresQueue pool, which
+    # commits the job (and its process_file:<file_id> ledger row, via the before_enqueue hook) durably
+    # and IMMEDIATELY, independent of THIS session's commit. Enqueuing first meant a subsequent commit
+    # failure rolled the CAS + ledger clear back while the process_file job was already dispatched and
+    # running: cloud_job stuck SUBMITTED (a phantom in_flight_count(compute) slot put_analysis never
+    # reaps -- it clears only AWAITING rows), and the surviving push_file ledger row re-drove the push,
+    # enqueuing a SECOND process_file for an already-analyzed file (a full duplicate multi-hour run).
+    # Committing first makes the failure modes benign: a commit failure here raises BEFORE the enqueue,
+    # so no job is dispatched, the cloud_job stays SUBMITTED, and the surviving push_file ledger row
+    # cleanly re-drives the push (its next /pushed re-passes the still-SUBMITTED CAS and heals).
+    await session.commit()
+
+    # Post-commit: fire the compute analysis. The before_enqueue hook writes the process_file:<file_id>
+    # ledger row on the SAQ pool, which is the durable recovery handle recover_orphaned_work re-drives if
+    # the job is later lost. A post-commit enqueue failure (compute pool down) is best-effort: the control
+    # state is already correct + durable (cloud_job SUCCEEDED, push ledger cleared), so we log loudly and
+    # still return 200 rather than 500 -- a 500 would drive a wasteful push_file rsync retry whose /pushed
+    # re-run only hits the SUCCEEDED idempotent no-op (rowcount==0) and can never re-enqueue process_file.
     # D-06: route process_file to the RECORDED backend's agent_ref queue with its scratch_dir. The
     # transitional settings.active_compute_scratch_dir reduction accessor was DELETED in Phase 73
     # (MCOMP-03); scratch resolution is per-agent off the recorded backend.
     compute_queue = request.app.state.task_router.queue_for(agent_ref, lane_for_task("process_file"))
     scratch_path = f"{scratch_dir}/{file_id}.{file.file_type}"
-    await enqueue_process_file(
-        compute_queue,
-        file,
-        agent_ref,
-        settings.models_path,
-        expected_sha256=file.sha256_hash,
-        scratch_path=scratch_path,
-    )
-    await session.commit()
+    try:
+        await enqueue_process_file(
+            compute_queue,
+            file,
+            agent_ref,
+            settings.models_path,
+            expected_sha256=file.sha256_hash,
+            scratch_path=scratch_path,
+        )
+    except Exception:
+        logger.warning(
+            "report_pushed: cloud_job committed SUCCEEDED but the post-commit process_file enqueue "
+            "failed -- file needs a re-triggered analysis (control state is durable, not stranded)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            backend_id=backend.id,
+            compute_agent_id=agent_ref,
+            exc_info=True,
+        )
+        return PushedResponse(file_id=file_id)
 
     logger.info(
         "report_pushed: file -> PUSHED + process_file enqueued",
@@ -226,8 +262,9 @@ async def report_push_mismatch(
     token). The under-cap re-drive then stamps that backend's destination onto the ``PushFilePayload``
     (Landmine 1) -- never a destination-less push; an unattributed file (no backend) holds instead.
 
-    The ``push_attempt`` counter lives in the ``push_file:<file_id>`` ledger payload JSONB
-    (migration-free, Pitfall 4). Read it (default 0) and increment:
+    The ``push_attempt`` counter lives in the dedicated ``scheduling_ledger.redrive_attempt`` column
+    keyed by ``push_file:<file_id>`` (phaze-2jl1: OUTSIDE the hook-rewritten ``payload`` JSONB so the
+    bounded budget survives a crash in the enqueue->stamp window). Read it (default 0) and increment:
 
     - ``attempt + 1 > push_max_attempts`` -> SPILL to ``FileState.AWAITING_CLOUD`` via a CAS on
       ``cloud_job.status == 'submitted'`` (SC#1/D-12: the sidecar is the single CAS domain, no
@@ -238,7 +275,7 @@ async def report_push_mismatch(
       file whose cloud_job already advanced past ``submitted`` matches 0 rows and cannot clobber it.
     - otherwise -> re-enqueue ``push_file`` on the FILESERVER queue (the rsync initiator) keeping
       the file ``PUSHING`` (the slot is retained, Open-Q1), and stamp the incremented
-      ``push_attempt`` back onto the ledger row. The deterministic ``push_file:<id>`` key dedups a
+      ``push_attempt`` back onto the ledger row's ``redrive_attempt`` column. The deterministic ``push_file:<id>`` key dedups a
       still-live push. With no fileserver online the file is left ``PUSHING`` for the staging cron /
       recovery to re-drive.
 
@@ -265,7 +302,12 @@ async def report_push_mismatch(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="reporting agent is not the dispatched compute agent")
 
-    # The push_attempt counter rides the ledger payload JSONB (Pitfall 4); default 0 when absent.
+    # The push_attempt counter rides a DEDICATED ledger column (`redrive_attempt`), NOT the payload
+    # JSONB (phaze-2jl1). The before_enqueue WRITE hook rewrites `payload` wholesale from its own
+    # session on the re-drive enqueue below and commits BEFORE this handler can stamp the counter; if
+    # the counter lived in `payload` a crash in that window would RESET it to 0 (restarting the bounded
+    # push budget). The hook's ON CONFLICT DO UPDATE never touches `redrive_attempt`, so a crash leaves
+    # it un-incremented (at `current_attempt`), never zeroed -- the budget survives. NULL == 0.
     # D-05 (AR-73-02 / T-73-13 / WR-04): serialize the read->+1->write-back so two concurrent /mismatch
     # for one file (SAQ retries, N compute reporters) can't both read the same counter and lose an
     # increment, silently letting the file exceed its bounded push budget.
@@ -283,8 +325,8 @@ async def report_push_mismatch(
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(ledger_key))))
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
     current_attempt = 0
-    if row is not None and isinstance(row.payload, dict):
-        current_attempt = int(row.payload.get("push_attempt", 0) or 0)
+    if row is not None and row.redrive_attempt is not None:
+        current_attempt = int(row.redrive_attempt)
     next_attempt = current_attempt + 1
 
     # Over the cap: SPILL back to AWAITING_CLOUD + ledger clear, one transaction (Phase 69, SCHED-03/D-04).
@@ -421,12 +463,14 @@ async def report_push_mismatch(
         "push_file", key=ledger_key, timeout=push_file_saq_timeout_sec(file.file_size), retries=PUSH_FILE_SAQ_RETRIES, **dumped
     )
 
-    # Persist the incremented attempt counter in the ledger payload. The control-side before_enqueue
-    # hook upserts the row with the fresh PushFilePayload kwargs (no push_attempt) in its own session,
-    # so stamp push_attempt back on AFTER the enqueue -- this UPDATE is the source of truth for the
-    # counter. The file stays PUSHING (the slot is retained); no FileRecord state change.
-    merged: dict[str, Any] = {**dumped, "push_attempt": next_attempt}
-    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(payload=merged))
+    # Persist the incremented attempt counter into the DEDICATED `redrive_attempt` column. The
+    # control-side before_enqueue hook upserts the row with the fresh PushFilePayload kwargs in its own
+    # session (rewriting `payload`, which no longer carries the counter), so stamp the counter AFTER the
+    # enqueue. The hook's ON CONFLICT DO UPDATE never touches `redrive_attempt`; a crash between the
+    # hook's commit and this commit therefore leaves the counter at `current_attempt` (un-incremented),
+    # never reset to 0 -- the bounded push budget survives the crash window (phaze-2jl1). The file stays
+    # PUSHING (the slot is retained); no FileRecord state change.
+    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
     await session.commit()
 
     logger.info(

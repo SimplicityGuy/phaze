@@ -337,6 +337,15 @@ async def _handle_no_callback_terminal(
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, kube)
     if not await _job_gone(name, kube):
+        # phaze-nq3c: COMMIT before returning. This deferral path makes no DB mutation worth persisting (only a
+        # kube-side delete_job ran), but the per-row unit acquired pg_advisory_xact_lock(5_000_504) at the top
+        # of KueueBackend.reconcile and the design (SCHED-02 / Pitfall 2) RELIES on _reconcile_one committing
+        # per row to auto-release that transaction-scoped lock at row granularity. Returning without a commit
+        # was the ONLY non-committing exit in this file -- it leaked the lock past the row boundary until some
+        # later row's commit (or session close if this was the last in-flight row), stalling a concurrent
+        # stage_cloud_window drain tick that blocks on the same key. Commit to end the txn and release the lock,
+        # matching every other no-op path here (lines with 'release the per-row advisory lock (Pitfall 2)').
+        await session.commit()
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
     cloud_job.attempts = next_attempt
@@ -420,6 +429,16 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         await _record_success(session, cloud_job, name, tally, kube)
         return
     if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
+        # phaze-73sv: mirror the vanished-Job guard (line 412). A Job can read Failed AFTER its success
+        # callback landed -- activeDeadlineSeconds firing just after the callback PUT completed, an
+        # OOM/preempt in the post-callback teardown window -- because the /analysis callback records the
+        # result + deletes the staged object (D-05) but never advances cloud_job.status. Re-driving such a row
+        # (_handle_no_callback_terminal) re-submits a pod that 404s its now-deleted staged object
+        # (EXIT_DOWNLOAD) and re-fails, burning the whole cap. If the analysis already completed,
+        # finalize it as the success it is instead of re-driving an already-analyzed file.
+        if await _analysis_completed(session, cloud_job.file_id):
+            await _record_success(session, cloud_job, name, tally, kube)
+            return
         await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
@@ -434,6 +453,14 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
     evicted = _workload_condition(workload, _TYPE_EVICTED)
     if evicted is not None and evicted.get("status") == "True":
+        # phaze-73sv: same guard as the Job-Failed branch above. A Kueue eviction under quota pressure
+        # can land AFTER the pod's success callback PUT completed (the /analysis callback stamps the
+        # result + deletes the staged object but never advances cloud_job.status). Re-driving then re-submits a
+        # pod that 404s the deleted staged object and re-fails, burning the cap. Finalize a
+        # callback-completed row as the success it is rather than re-driving an already-analyzed file.
+        if await _analysis_completed(session, cloud_job.file_id):
+            await _record_success(session, cloud_job, name, tally, kube)
+            return
         await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 

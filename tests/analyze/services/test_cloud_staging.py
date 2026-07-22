@@ -25,9 +25,9 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
-from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
-from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task
+from phaze.tasks.s3_upload import S3_UPLOAD_SAQ_RETRIES, UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
+from tests._queue_fakes import DedupFakeTaskRouter, FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -216,6 +216,43 @@ async def test_stage_file_to_s3_is_idempotent_on_file_id(
     assert len(rows) == 1  # unique FK on file_id -- the re-stage updated, not duplicated
 
 
+async def test_stage_file_to_s3_restage_bumps_updated_at(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-2hv9: a re-stage (ON CONFLICT) resets ``cloud_job.updated_at``, not just status/upload_id.
+
+    ``updated_at`` is the stranded-staging reaper's age clock. Its client-side ``onupdate=func.now()`` is NOT
+    injected into an ON CONFLICT DO UPDATE SET, so pre-fix the conflict path left it frozen at the first
+    dispatch -- a re-driven upload inherited the entire prior attempt's elapsed time and was reaped live. The
+    fix stamps ``updated_at=func.now()`` in the set_. Here the first stamp is forced far into the past; a
+    re-stage must pull it back to ~now.
+    """
+    from sqlalchemy import text as sa_text
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    # Force the first stage's clock 10h into the past -- older than any staleness bound.
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(secs => 36000) WHERE file_id = :fid"),
+        {"fid": file_id},
+    )
+    await session.commit()
+    stale = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+
+    # A re-stage must bump the clock forward off that stale value.
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    bumped = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+    assert bumped > stale  # the ON CONFLICT path reset the reaper's age clock
+
+
 async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     s3_env: str,
     session: AsyncSession,
@@ -235,6 +272,142 @@ async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     assert task_router.queues == {}  # nothing enqueued
 
 
+async def test_stage_file_to_s3_aborts_orphaned_multipart_when_presign_fails(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-bbwx: presign_upload_parts raising after create_multipart_upload best-effort aborts it.
+
+    Before the fix, this exact failure ordering (create succeeds, presign raises before the
+    cloud_job upsert runs) discarded the only record of upload_id -- the multipart was orphaned
+    forever. Spies on the real (moto-backed) ``create_multipart_upload``/``abort_multipart_upload``
+    calls so the assertion proves the SAME upload_id that was created is the one actually aborted
+    against the real S3 SDK (not just that "some abort" ran) -- moto's ``ListMultipartUploads``
+    returns static example fixture data unrelated to bucket state, so it cannot be used to verify.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    real_create = s3_staging.create_multipart_upload
+    created_ids: list[str] = []
+
+    async def _spy_create(*args: object, **kwargs: object) -> str:
+        upload_id = await real_create(*args, **kwargs)  # type: ignore[arg-type]
+        created_ids.append(upload_id)
+        return upload_id
+
+    real_abort = s3_staging.abort_multipart_upload
+    aborted: list[tuple[object, ...]] = []
+
+    async def _spy_abort(*args: object, **kwargs: object) -> None:
+        aborted.append(args)
+        await real_abort(*args, **kwargs)  # type: ignore[arg-type]
+
+    async def _boom_presign(*_args: object, **_kwargs: object) -> list[str]:
+        raise s3_staging.S3StagingError("presign failed")
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _spy_abort)
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _boom_presign)
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="presign failed"):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert await _cloud_job(session, file_id) is None  # nothing persisted
+    assert len(created_ids) == 1
+    assert aborted == [(file_id, created_ids[0], bucket)]  # the exact orphaned upload was aborted
+
+    # The upload_id is now genuinely gone from S3: a raw re-abort surfaces NoSuchUpload, which
+    # abort_multipart_upload swallows as an idempotent no-op (no raise -> proves it was aborted).
+    await s3_staging.abort_multipart_upload(file_id, created_ids[0], bucket)
+
+
+async def test_stage_file_to_s3_enqueue_failure_leaves_committed_row_for_redrive(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-bbwx x phaze-grzo (integration): a flush-time enqueue failure is NOT an orphaned multipart.
+
+    Under the parked-enqueue design the enqueue fires only AFTER the cloud_job UPLOADING row (with
+    its upload_id) is committed, so an enqueue failure leaves a durable record every cleanup path
+    (redrive_upload's abort, the stranded-staging reaper) can find. The best-effort abort
+    compensation must therefore NOT fire here -- aborting would leave the committed row pointing at
+    a dead upload_id -- and the wrapper must not raise (the flush is best-effort per item).
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    real_create = s3_staging.create_multipart_upload
+    created_ids: list[str] = []
+
+    async def _spy_create(*args: object, **kwargs: object) -> str:
+        upload_id = await real_create(*args, **kwargs)  # type: ignore[arg-type]
+        created_ids.append(upload_id)
+        return upload_id
+
+    real_abort = s3_staging.abort_multipart_upload
+    aborted: list[tuple[object, ...]] = []
+
+    async def _spy_abort(*args: object, **kwargs: object) -> None:
+        aborted.append(args)
+        await real_abort(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _spy_abort)
+
+    task_router = FakeTaskRouter()
+    queue = task_router.queue_for(fileserver.id, lane_for_task("s3_upload"))
+
+    async def _boom_enqueue(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("SAQ pool hiccup")
+
+    queue.enqueue = _boom_enqueue  # type: ignore[method-assign]
+
+    # No raise: the wrapper commits, then the best-effort flush swallows the enqueue failure.
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    job = await _cloud_job(session, file_id)
+    assert job is not None  # the UPLOADING row committed despite the enqueue failure
+    assert len(created_ids) == 1
+    assert job.upload_id == created_ids[0]  # durable upload_id record -- redrive/reaper can find it
+    assert aborted == []  # multipart NOT aborted: recovery owns this row now
+
+
+async def test_stage_file_to_s3_logs_but_does_not_raise_when_abort_itself_fails(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed best-effort abort (e.g. network blip) never masks the ORIGINAL failure.
+
+    The lifecycle backstop (phaze-sqpv) is the last resort when the compensating abort itself
+    cannot reach S3; the caller must still see the original error, not an abort-related one.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+
+    async def _boom_presign(*_args: object, **_kwargs: object) -> list[str]:
+        raise s3_staging.S3StagingError("presign failed")
+
+    async def _boom_abort(*_args: object, **_kwargs: object) -> None:
+        raise s3_staging.S3StagingError("abort also failed")
+
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _boom_presign)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="presign failed"):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+
 async def test_redrive_upload_aborts_old_multipart_and_restages(
     s3_env: str,
     session: AsyncSession,
@@ -252,6 +425,10 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
 
     # redrive resolves the bucket from the RECORDED cloud_job.staging_bucket (MKUE-02) -- no bucket arg.
     await cloud_staging.redrive_upload(session, file, task_router)
+    # phaze-grzo: redrive PARKS its enqueue on the no-commit core; the caller fires it post-commit.
+    assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 1  # not yet fired
+    await session.commit()
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 1
 
     job = await _cloud_job(session, file_id)
     assert job is not None
@@ -262,6 +439,62 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_stage_file_to_s3_enqueue_pins_retries_to_zero(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: the s3_upload enqueue stamps an EXPLICIT retries=0 so SAQ never independently replays.
+
+    The control plane (``/failed`` re-drive + the stranded-staging reaper) is the sole re-drive vehicle. An
+    unset ``retries`` would be clobbered to ``worker_max_retries`` (=4) by ``apply_project_job_defaults``,
+    re-arming SAQ to replay the ORIGINAL payload against a multipart the re-drive already aborted (a
+    guaranteed ``NoSuchUpload`` per part). Pinning it to 0 lets the failing job settle terminal, releasing the
+    deterministic key so the next control/reaper enqueue can actually land.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
+    assert policy["retries"] == 0
+    assert policy["retries"] == S3_UPLOAD_SAQ_RETRIES
+
+
+async def test_stage_file_to_s3_deduped_enqueue_is_surfaced_not_silently_ignored(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: when SAQ dedups the deterministic key (a still-incomplete job), the no-op is LOGGED loudly.
+
+    Pre-fix the ``queue.enqueue`` return was ignored, so a re-drive whose fresh payload was silently dropped
+    (deduped against the still-active failed job) was reported as a successful re-drive. The dedup is now
+    surfaced at the flush (the only place the enqueue result is observable under the parked design,
+    phaze-grzo): no fresh job lands (only one enqueue is captured across two stages) and a warning fires.
+    """
+    from structlog.testing import capture_logs
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    # DedupFakeTaskRouter models SAQ's ON CONFLICT dedup: the second enqueue of a still-live key returns None.
+    task_router = DedupFakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # lands (key now live)
+    with capture_logs() as logs:
+        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)  # parks the enqueue
+        await session.commit()
+        await cloud_staging.flush_pending_s3_enqueues(session)  # deduped -> None, surfaced here
+
+    queue = task_router.queues[f"{fileserver_id}-io"]
+    assert len(queue.captured) == 1  # the second enqueue did NOT land a fresh job
+    assert any("deduped against a still-incomplete job" in log.get("event", "") for log in logs)
 
 
 async def test_redrive_upload_does_not_commit(
@@ -338,3 +571,50 @@ async def test_redrive_upload_raises_when_no_staging_bucket_resolvable(
     with pytest.raises(s3_staging.S3StagingError, match="could not resolve a staging bucket"):
         await cloud_staging.redrive_upload(session, file, task_router)
     assert task_router.queues == {}  # nothing enqueued on the loud failure
+
+
+async def test_stage_core_parks_enqueue_until_row_committed(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-grzo: the no-commit core PARKS the s3_upload enqueue; it fires ONLY after a commit+flush.
+
+    Enqueue-before-commit let a fast agent POST /uploaded before the cloud_job UPLOADING row committed,
+    so report_uploaded saw no UPLOADING row and no-op'd -- stranding the file. The core must not make
+    the job worker-visible until the row it reads is durable.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    # The no-commit core: upserts the UPLOADING row but must NOT have fired the enqueue yet.
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    assert task_router.captures == []  # parked, not fired -- no job is worker-visible pre-commit
+
+    await session.commit()
+    fired = await cloud_staging.flush_pending_s3_enqueues(session)
+    assert fired == 1
+    assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 1
+    # A second flush is a clean no-op (the parked list was popped) -- never a double-fire.
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+
+
+async def test_drop_pending_discards_parked_enqueue_without_firing(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-grzo: dropping parked enqueues on a rollback prevents ORPHANING (a job vs a rolled-back row)."""
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    # Simulate the caller rolling the tick back: the upsert AND its parked enqueue must both vanish.
+    cloud_staging.drop_pending_s3_enqueues(session)
+    await session.rollback()
+
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+    assert task_router.captures == []  # the orphan job was never fired

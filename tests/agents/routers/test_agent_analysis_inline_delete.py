@@ -268,3 +268,45 @@ async def test_delete_error_does_not_corrupt_recorded_result(
     assert row.bpm == 140.0
     # Phase 90 (D-09): completion derives from analysis_completed_at, not the removed files.state write.
     assert row.analysis_completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_put_analysis_deletes_object_after_the_result_commits(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-uoiw: the S3 delete fires AFTER session.commit(), not inside the still-open transaction.
+
+    Pre-fix the delete ran BEFORE commit, so a commit failure could delete the staged object while
+    rolling back the recorded result (record-first violated) and the S3 round-trip was held across the
+    analysis + cloud_job row locks. We spy on the ordering: the last ``AsyncSession.commit`` must be
+    recorded strictly before ``delete_staged_object`` runs.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+
+    backends_toml_env(_STAGING_REGISTRY)
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id)
+
+    order: list[str] = []
+    real_commit = _AsyncSession.commit
+
+    async def _spy_commit(self: _AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _delete_recording(_fid: uuid.UUID, _bucket: Any) -> None:
+        order.append("delete")
+
+    monkeypatch.setattr(_AsyncSession, "commit", _spy_commit)
+    monkeypatch.setattr(agent_analysis.s3_staging, "delete_staged_object", _delete_recording)
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 111.0})
+
+    assert response.status_code == 200, response.text
+    # The delete ran, and the commit that precedes it is recorded first: commit-then-delete ordering.
+    assert order[-2:] == ["commit", "delete"]

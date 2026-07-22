@@ -658,8 +658,8 @@ async def test_stage_file_to_s3_core_does_not_commit(
 
     The cron's advisory-locked loop calls this no-commit core per candidate and commits ONCE after
     the loop; a mid-loop commit would release ``pg_advisory_xact_lock`` and re-open the over-stage
-    class. Prove the core (a) does not commit, yet (b) still enqueues ``s3_upload`` and (c) upserts
-    the ``cloud_job`` row.
+    class. Prove the core (a) does not commit, yet (b) PARKS the ``s3_upload`` enqueue (phaze-grzo:
+    fired by the caller only after the commit) and (c) upserts the ``cloud_job`` row.
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     file = _make_file(file_type="flac")
@@ -677,7 +677,9 @@ async def test_stage_file_to_s3_core_does_not_commit(
 
     # (a) The core defers the commit -- the caller (the cron loop / the public wrapper) owns it.
     commit_spy.assert_not_awaited()
-    # (b) Exactly one s3_upload enqueued onto the fileserver's per-agent queue.
+    # (b) phaze-grzo: the enqueue is PARKED, not fired -- the caller flushes it AFTER committing the row.
+    assert router.captures == []
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 1
     upload_queue = router.queues["nox-io"]
     assert [t for t, _ in upload_queue.captured] == ["s3_upload"]
     # (c) The cloud_job row was upserted (visible via autoflush within this uncommitted transaction).
