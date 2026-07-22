@@ -83,6 +83,22 @@ def upload_file_saq_timeout_sec(part_count: int, *, per_part_timeout_sec: int = 
 # MUST call ``upload_file_saq_timeout_sec(part_count)`` so the SAQ net scales with the transfer.
 UPLOAD_FILE_SAQ_TIMEOUT_SEC = upload_file_saq_timeout_sec(1)
 
+# phaze-oj7x: the EXPLICIT SAQ retries a producer MUST stamp on an ``s3_upload`` enqueue -- ZERO. The
+# control plane owns the sole re-drive vehicle (``/failed`` -> ``cloud_staging.redrive_upload``: abort the
+# prior multipart + re-stage a FRESH one, and the age/liveness-bounded stranded-staging reaper). SAQ's own
+# retry path MUST NOT independently replay the job: the agent calls ``report_upload_failed`` (which aborts
+# the prior multipart and re-stages) BEFORE it re-raises, so a SAQ retry would run the ORIGINAL payload
+# whose presigned part URLs point at the now-ABORTED multipart -- a guaranteed ``NoSuchUpload`` per part,
+# burning the bounded re-drive budget on dead-URL replays and orphaning a fresh multipart each cycle. With
+# ``retries=0`` the failing job settles ``failed`` (terminal) on the re-raise, releasing its deterministic
+# ``s3_upload:<file_id>`` key so the control re-drive's / reaper's next enqueue can actually LAND (SAQ's
+# ``_enqueue`` ON CONFLICT only overwrites a key whose status is in ('aborted','complete','failed')) instead
+# of being shadowed by a still-active self-retrying job. Must be passed EXPLICITLY: the
+# ``apply_project_job_defaults`` before_enqueue hook clobbers an unset ``retries`` (SAQ default 1) up to
+# ``worker_max_retries`` (=4), so omitting it re-arms exactly the multi-retry replay this closes. Mirrors
+# push.py's explicit ``PUSH_FILE_SAQ_RETRIES``.
+S3_UPLOAD_SAQ_RETRIES = 0
+
 
 def _agent_settings() -> AgentSettings:
     """Return the AgentSettings for this worker process (mirrors push._agent_settings).

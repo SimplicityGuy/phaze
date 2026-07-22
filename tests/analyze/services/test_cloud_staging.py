@@ -26,8 +26,8 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
 from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
-from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from phaze.tasks.s3_upload import S3_UPLOAD_SAQ_RETRIES, UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
+from tests._queue_fakes import DedupFakeTaskRouter, FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -299,6 +299,59 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_stage_file_to_s3_enqueue_pins_retries_to_zero(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: the s3_upload enqueue stamps an EXPLICIT retries=0 so SAQ never independently replays.
+
+    The control plane (``/failed`` re-drive + the stranded-staging reaper) is the sole re-drive vehicle. An
+    unset ``retries`` would be clobbered to ``worker_max_retries`` (=4) by ``apply_project_job_defaults``,
+    re-arming SAQ to replay the ORIGINAL payload against a multipart the re-drive already aborted (a
+    guaranteed ``NoSuchUpload`` per part). Pinning it to 0 lets the failing job settle terminal, releasing the
+    deterministic key so the next control/reaper enqueue can actually land.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
+    assert policy["retries"] == 0
+    assert policy["retries"] == S3_UPLOAD_SAQ_RETRIES
+
+
+async def test_stage_file_to_s3_deduped_enqueue_is_surfaced_not_silently_ignored(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: when SAQ dedups the deterministic key (a still-incomplete job), the no-op is LOGGED loudly.
+
+    Pre-fix the ``queue.enqueue`` return was ignored, so a re-drive whose fresh payload was silently dropped
+    (deduped against the still-active failed job) was reported as a successful re-drive. The dedup is now
+    surfaced: no fresh job lands (only one enqueue is captured across two stages) and a warning fires.
+    """
+    from structlog.testing import capture_logs
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    # DedupFakeTaskRouter models SAQ's ON CONFLICT dedup: the second enqueue of a still-live key returns None.
+    task_router = DedupFakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # lands (key now live)
+    with capture_logs() as logs:
+        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)  # deduped -> None
+
+    queue = task_router.queues[f"{fileserver_id}-io"]
+    assert len(queue.captured) == 1  # the second enqueue did NOT land a fresh job
+    assert any("deduped against a still-incomplete job" in log.get("event", "") for log in logs)
 
 
 async def test_redrive_upload_does_not_commit(
