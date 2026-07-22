@@ -1039,7 +1039,15 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
             return "held — cloud routing paused (force-local)"
 
         lanes = await get_backend_lane_snapshot(session)
-        available_lanes = [lane for lane in lanes if lane["available"]]
+        # phaze-g4fh: restrict reachability/capacity math to CLOUD lanes. A local lane is always
+        # `available=True` with `in_flight=0` (LocalBackend.is_available/in_flight_count), so
+        # including it here made `available_lanes` never empty and `free_slots` always ≥1 -- both
+        # the "no cloud backend reachable" and "all lanes at capacity" branches below were dead code
+        # even when every real cloud lane was online-but-full. select_backend gates local behind
+        # `cloud_spill_to_local_after_seconds` staleness (D-01/D-03), so local is a delayed safety
+        # net the drain would NOT dispatch to next tick -- it is not free cloud capacity, and this
+        # derivation must mirror exactly what the drain would do next tick (T-83 anti-goal).
+        available_lanes = [lane for lane in lanes if lane["kind"] != "local" and lane["available"]]
         if not available_lanes:
             return "held — no cloud backend reachable"
 
