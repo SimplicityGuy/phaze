@@ -240,3 +240,64 @@ async def test_missing_original_path_is_terminal(agent_env, tmp_path):  # type: 
     # phaze-lssv: even the unreadable-source terminal leg notifies control (no silent strand).
     assert len(api.failed_calls) == 1
     assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_httpx_transport_error_reports_upload_failed(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-7lxp: an httpx transport error (e.g. ConnectError) must notify control before re-raising.
+
+    A real transport failure surfaces as an httpx.HTTPError subclass -- NOT builtins.TimeoutError or
+    RuntimeError -- so the pre-phaze-7lxp handler tuple ``(RuntimeError, TimeoutError)`` let it escape
+    ``upload_file_s3`` WITHOUT calling report_upload_failed, stranding the cloud_job in UPLOADING.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"Z" * 5)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(side_effect=httpx.ConnectError("connection refused"))
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    with pytest.raises(httpx.HTTPError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.complete_calls == []
+    # The transport failure now reaches the broadened handler, so control is notified before re-raise.
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_httpx_read_timeout_reports_upload_failed(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-7lxp: an httpx.ReadTimeout (fires before the wait_for budget) also notifies control.
+
+    httpx builds its client with ``timeout=transport_timeout_sec`` while the wait_for budget sits 30s
+    higher, so a stalled read raises httpx.ReadTimeout FIRST. It is neither TimeoutError nor
+    RuntimeError, so it previously bypassed the failure callback.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"Z" * 5)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(side_effect=httpx.ReadTimeout("read timed out"))
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    with pytest.raises(httpx.HTTPError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.complete_calls == []
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
