@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
@@ -757,3 +758,127 @@ async def test_tags_restore_header_alone_does_not_return_a_fragment(client: Asyn
     response = await client.get("/tags/", headers={"HX-History-Restore-Request": "true"})
     assert response.status_code == 302
     assert response.headers["location"] == "/s/tagwrite"
+
+
+# ---------------------------------------------------------------------------
+# UNDO snapshot selection + idempotency + honest outcome (phaze-soph / 04bz / 26t7)
+# ---------------------------------------------------------------------------
+
+
+async def _add_write_log(
+    session: AsyncSession,
+    file_id: uuid.UUID,
+    *,
+    status: TagWriteStatus,
+    source: str,
+    before_tags: dict[str, str | int | None],
+    written_at: datetime,
+    error_message: str | None = None,
+) -> TagWriteLog:
+    """Insert one fully-specified ``TagWriteLog`` (explicit ``written_at`` to pin ordering)."""
+    log = TagWriteLog(
+        id=uuid.uuid4(),
+        file_id=file_id,
+        before_tags=before_tags,
+        after_tags={"artist": "Written Artist"},
+        source=source,
+        status=status.value,
+        error_message=error_message,
+        written_at=written_at,
+    )
+    session.add(log)
+    await session.commit()
+    return log
+
+
+@pytest.mark.asyncio
+async def test_undo_skips_failed_shadow_and_restores_real_write_snapshot(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-soph: a FAILED retry must not shadow the real write's before_tags.
+
+    L1 is the real COMPLETED write (before_tags = original). L2 is a later FAILED retry whose
+    before_tags are the post-L1 disk state. Undo must re-apply L1's snapshot, not L2's.
+    """
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=base,
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.FAILED,
+        source="proposal",
+        before_tags={"artist": "Written Artist"},
+        written_at=base + timedelta(seconds=30),
+        error_message="boom",
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags") as mock_write,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    mock_write.assert_called_once()
+    # The reversal re-applies L1's before_tags (the original), never L2's post-write shadow.
+    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}
+
+
+@pytest.mark.asyncio
+async def test_undo_skips_no_op_marker_shadow(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-soph: a bulk NO_OP marker (before_tags={}) must not shadow the real DISCREPANCY write."""
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.DISCREPANCY,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=base,
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.NO_OP,
+        source="bulk_noop",
+        before_tags={},
+        written_at=base + timedelta(seconds=30),
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags") as mock_write,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    mock_write.assert_called_once()
+    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}
+
+
+@pytest.mark.asyncio
+async def test_undo_with_only_failed_write_reports_nothing_to_undo(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-soph: a file whose only log is FAILED never wrote to disk -> nothing to undo (404)."""
+    file_record, _ = await _create_executed_file(session)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.FAILED,
+        source="proposal",
+        before_tags={"artist": "Written Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+        error_message="boom",
+    )
+
+    response = await client.post(f"/tags/{file_record.id}/undo")
+    assert response.status_code == 404
+    assert "no prior tag write" in response.text.lower()
