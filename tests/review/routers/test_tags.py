@@ -557,6 +557,35 @@ async def test_write_tags_from_v7_workspace_returns_diff_row_with_undo(client: A
 
 
 @pytest.mark.asyncio
+async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-ldaq: the approved row's UNDO button must issue the SAME verb the router accepts.
+
+    /tags/{id}/undo is POST-only (@router.post). The shared _diff_row.html's lifecycle branch used
+    to hard-code hx-patch on the UNDO button regardless of the caller's undo_method, so every
+    post-approve row emitted a PATCH against a route that only serves POST -- 405, silently dropped
+    by htmx. Assert the rendered button uses hx-post (templated from undo_method="post") and never
+    hx-patch.
+    """
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist"},
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert f'hx-post="/tags/{file_record.id}/undo"' in body
+    assert "hx-patch=" not in body
+
+
+@pytest.mark.asyncio
 async def test_undo_tag_write_from_v7_workspace_restores_pending_row(client: AsyncClient, session: AsyncSession) -> None:
     """Undoing from the v7 workspace swaps the row back to the pending diff-row (phaze-nvll)."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
