@@ -26,6 +26,7 @@ from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,7 +119,17 @@ async def patch_execution_log(
     - 200 otherwise (same-status PATCH allowed for idempotent retry, including
       for terminal rows; comparator is strict `<`, NOT `<=`).
     """
-    existing = await session.get(ExecutionLog, execution_log_id)
+    # D-15 / phaze-6zxs: load the row under a row-level write lock (SELECT ... FOR UPDATE) rather
+    # than a plain PK SELECT. ExecutionLog carries no `version_id_col` and the engine runs at
+    # PostgreSQL's default READ COMMITTED, so a plain `session.get` read-modify-write is a TOCTOU:
+    # two concurrent PATCHes (e.g. an agent's COMPLETED racing a delayed/retried SAQ heartbeat's
+    # IN_PROGRESS) can both read the SAME stale status, both pass the terminal + monotonic guards,
+    # and the second commit silently regresses the row -- the exact invariant these guards exist to
+    # make impossible. FOR UPDATE serializes the two: the second PATCH blocks on the row lock until
+    # the first commits, then re-evaluates the guards against the committed status. The lock is held
+    # until this handler's terminal commit/rollback.
+    result = await session.execute(select(ExecutionLog).where(ExecutionLog.id == execution_log_id).with_for_update())
+    existing = result.scalar_one_or_none()
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="execution-log not found")
 
