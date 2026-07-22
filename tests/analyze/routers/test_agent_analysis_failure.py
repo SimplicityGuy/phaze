@@ -9,8 +9,9 @@ write (D-05). Because a pure analyze failure never wrote an ``analysis`` row, th
 also what lets its completion branch stamp ``analysis_completed_at`` without violating the CHECK.
 
 This suite covers the three behaviors: (a) failure with NO prior analysis row inserts the marker
-(RESEARCH OQ2); (b) failure on a previously-analyzed file clears ``analysis_completed_at`` and stamps
-``failed_at`` (the CHECK holds -- no mixed row is ever written); (c) a success after a failure clears
+(RESEARCH OQ2); (b) failure on a previously-COMPLETED file is a guarded no-op (phaze-ts1d WR-01
+equivalent) -- ``analysis_completed_at`` and the payload columns are left untouched, only the
+ledger/staged-object/awaiting-reap side effects fire; (c) a success after a failure clears
 the marker and stamps ``analysis_completed_at``. Every assertion re-checks the XOR invariant.
 
 Uses the inline smoke-app + authed-agent client pattern from tests/agents/routers/test_agent_analysis.py;
@@ -153,20 +154,28 @@ async def test_report_failed_error_message_bodyless_error(seed_test_agent: tuple
 
 
 # ---------------------------------------------------------------------------
-# (b) failure on a previously-analyzed file clears completed_at (the CHECK holds)
+# (b) failure on a previously-COMPLETED file is a guarded no-op (phaze-ts1d)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_report_failed_after_success_clears_completed_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
-    """A failure on a previously-analyzed file clears analysis_completed_at and stamps failed_at -- no mixed row.
+async def test_report_failed_after_success_is_guarded_and_leaves_completed_row_untouched(
+    seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-ts1d: a failure callback on an already-COMPLETED row must NOT regress it to FAILED.
 
-    The row starts done (analysis_completed_at set by put_analysis). If report_analysis_failed stamped
-    failed_at WITHOUT clearing analysis_completed_at, the migration-033 XOR CHECK would reject the write
-    (IntegrityError). This proves the writer clears completed_at so the CHECK holds through the flip.
+    ``deepen_analysis`` deliberately re-enqueues ``process_file`` for an already-analyzed file at an
+    unbounded budget; a timeout on that re-run reaches this endpoint for a row that already reads DONE.
+    Before the fix, the unconditional ``ON CONFLICT DO UPDATE`` nulled ``analysis_completed_at`` and
+    stamped ``failed_at`` here -- silently and PERMANENTLY regressing the file (analyze failures are
+    terminal / non-auto-retryable), even though the good bpm/key/mood data was never touched. The
+    conflict predicate (``WHERE analysis_completed_at IS NULL``) now makes this a benign no-op: the
+    completed row -- including its payload columns -- is left byte-for-byte untouched, exactly like
+    ``report_metadata_failed``'s WR-01 guard.
     """
     agent, raw_token = seed_test_agent
     file_id = await _seed_file(session, agent.id)
+    await _seed_ledger(session, file_id)
 
     app = _make_smoke_app(session)
     headers = {"Authorization": f"Bearer {raw_token}"}
@@ -177,17 +186,52 @@ async def test_report_failed_after_success_clears_completed_at(seed_test_agent: 
 
     pre = await _analysis_row(session, file_id)
     assert pre is not None and pre.analysis_completed_at is not None and pre.failed_at is None, "precondition: a done row"
+    completed_at_before = pre.analysis_completed_at
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
-        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "error", "error": "late crash"})
+        r = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout", "error": "unbounded deepen timeout"})
 
     assert r.status_code == 200, r.text
     row = await _analysis_row(session, file_id)
     assert row is not None
-    assert row.failed_at is not None, "failed_at is stamped on the flip"
-    assert row.analysis_completed_at is None, "analysis_completed_at is cleared so the XOR CHECK holds (D-06)"
-    assert row.error_message == "error: late crash"
-    # Phase 90 (D-09): failed status derives from analysis.failed_at, not the removed files.state write.
+    assert row.analysis_completed_at == completed_at_before, "a completed row's analysis_completed_at must survive a deepen-timeout callback"
+    assert row.failed_at is None, "the guard must skip the DO UPDATE entirely -- no failed_at stamp on a done row"
+    assert row.error_message is None, "the guard must not touch error_message on a done row either"
+    assert row.bpm == 128.0, "the good analysis payload must be untouched"
+    # The run still terminated, so the ledger clear (and staged-object delete / awaiting reap) must
+    # remain UNCONDITIONAL even though the marker write was skipped (fix hint's requirement).
+    assert not await _ledger_present(session, file_id), "the ledger clear must still fire even when the CAS guard skips the marker"
+    assert await _no_mixed_row_exists(session)
+
+
+@pytest.mark.asyncio
+async def test_report_failed_on_not_yet_completed_row_still_stamps_marker(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """The guard only protects a COMPLETED row -- a second failure on an already-failed row still refreshes.
+
+    Regression guard against an overly-broad predicate: an already-failed row (analysis_completed_at
+    IS NULL) must still take the new failed_at/error_message on a repeat failure.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        first = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout", "error": "first crash"})
+        assert first.status_code == 200, first.text
+
+    pre = await _analysis_row(session, file_id)
+    assert pre is not None and pre.analysis_completed_at is None and pre.error_message == "timeout: first crash"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        second = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "crashed", "error": "second crash"})
+        assert second.status_code == 200, second.text
+
+    row = await _analysis_row(session, file_id)
+    assert row is not None
+    assert row.failed_at is not None
+    assert row.error_message == "crashed: second crash", "a not-yet-completed row must still refresh the marker on repeat failure"
+    assert row.analysis_completed_at is None
     assert await _no_mixed_row_exists(session)
 
 
