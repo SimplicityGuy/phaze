@@ -1,0 +1,5 @@
+# phaze-he8m: keep ./certs/ in the repo so a git clone materializes it owned by
+# the cloning operator (uid 1000), NOT auto-created root:root by rootful dockerd.
+# The api service bind-mounts ./certs:/certs:rw and the uid-1000 cert bootstrap
+# writes phaze-ca.crt here on first start; a root-owned dir crashes it with
+# PermissionError before uvicorn binds.

@@ -27,8 +27,10 @@
 #   - No SCAN_PATH / /data/music media mount (a compute agent owns no media).
 #   - The worker image ends with -arm64 (D-08: no multi-arch manifest exists;
 #     an x86 image would not run on the Ampere A1 — Pitfall 3).
-#   - cloud_scratch is a NAMED docker volume (not a host bind); MODELS mount is
-#     rw (D-07 model auto-download), CA mount is ro (operator-distributed cert).
+#   - the scratch mount is a HOST BIND of ${PHAZE_CLOUD_SCRATCH_DIR} to the
+#     identical container path (phaze-cri2: it MUST be the same host dir sshd/rsync
+#     writes pushed files into — a named volume disconnected write from read/reap);
+#     MODELS mount is rw (D-07 model auto-download), CA mount is ro (operator cert).
 #   - network_mode: host is present on the worker (D-05 host tailscaled).
 #
 # Image tag pinning (D-08/D-16): default `latest-arm64` is convenient for first
@@ -81,10 +83,19 @@ services:
       # WORKER_MAX_JOBS=1 alone is inert in lane mode.
       - PHAZE_LANE_ANALYZE_CONCURRENCY=1
     volumes:
-      - "cloud_scratch:${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:rw"
+      # HOST BIND (phaze-cri2): the scratch dir MUST be the SAME host path that
+      # sshd/rsync writes each pushed file into (push.py:152 targets
+      # {ssh_user}@{dest_host}:{scratch_dir}/<id>.<ext> on the HOST filesystem).
+      # A docker-managed NAMED volume made the container's /scratch resolve to
+      # /var/lib/docker/volumes/<proj>_cloud_scratch/_data — a DIFFERENT directory
+      # from the host /scratch sshd wrote into (network_mode: host shares only the
+      # net namespace, not mounts), so compute_sha256 hit FileNotFoundError for
+      # every pushed file and the janitor could never reap the host copies. Binding
+      # ${PHAZE_CLOUD_SCRATCH_DIR} to the identical container path reconciles the
+      # push (write) and process (read+delete) sides. The host dir must be owned
+      # such that container uid-1000 (phaze) can read AND delete pushed files
+      # (see docs/cloud-burst.md).
+      - "${PHAZE_CLOUD_SCRATCH_DIR:?PHAZE_CLOUD_SCRATCH_DIR required}:${PHAZE_CLOUD_SCRATCH_DIR}:rw"
       - "${MODELS_PATH:-./models}:/models:rw"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
-
-volumes:
-  cloud_scratch:

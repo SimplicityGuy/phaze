@@ -63,14 +63,14 @@ flowchart TB
 
 ## Deployment Targets
 
-The repo ships three deployment compose files plus a dev override:
+The repo ships three deployment compose files plus a dev overlay:
 
 | File | Host | Services | Notes |
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
 | `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-fingerprint`, `worker-meta`, `worker-io` (four per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher`, `audfprint`, `panako` | All services pull from GHCR via `PHAZE_IMAGE_TAG`: the lane workers/`watcher` from `ghcr.io/simplicityguy/phaze`, `audfprint`/`panako` from the `/audfprint` + `/panako` sub-paths. Each sidecar keeps a commented dev-only `build:` fallback. See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
 | `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, named scratch. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
-| `docker-compose.override.yml` | Application server (dev only) | overlays `api` + `worker` | Auto-merged by `docker compose` in dev. Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`. Do **not** rely on it in production (the override skips the cert-bootstrap entrypoint). |
+| `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
 ### Application-server services (`docker-compose.yml`)
 
@@ -196,8 +196,8 @@ The env vars that gate this bootstrap on the agent side are `PHAZE_AGENT_CA_FILE
 - `just` installed on both hosts (or run `docker compose` directly)
 - Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Phase 36), or 8000 (API) between them
 - Postgres + Redis are NOT directly exposed to the public internet (LAN-only; the agent→Postgres:5432 edge is private-LAN scoped)
-- On the app-server host: `./certs/` (auto-populated on first start), `.env`
-- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (auto-downloads on first agent start), `.env`
+- On the app-server host: `./certs/` (materialized by `git clone` via a committed `.gitkeep`, then cert-populated on first start; must be owned by uid 1000 — phaze-he8m), `.env`
+- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (materialized by `git clone`, weights auto-download on first agent start; both owned by uid 1000 — phaze-he8m), `.env`
 
 ## Step 1 — Bring up the application server
 
@@ -211,10 +211,23 @@ cp .env.example .env
 # Edit .env: set REDIS_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10)
 # Edit .env: set PHAZE_QUEUE_URL (raw libpq postgresql:// DSN) — the SAQ Postgres broker.
 #            Defaults to the in-compose `postgres` service; treat as a secret (PHAZE_QUEUE_URL_FILE).
+mkdir -p certs   # phaze-he8m: own ./certs as the operator (uid 1000) BEFORE `up`
 just up
 ```
 
-`just up` runs `docker compose up -d`. On first start, the `api` container's entrypoint generates the internal CA + leaf cert into `./certs/`. Watch the logs:
+`just up` runs `docker compose -f docker-compose.yml up -d` (base compose only, so the dev overlay
+is never auto-merged — phaze-476w; it also runs `mkdir -p certs` for you). The `api` container
+bind-mounts `./certs:/certs:rw` and runs as the non-root `phaze` user (uid 1000). **The `./certs`
+dir must exist and be owned by uid 1000 before `up`** (phaze-he8m): on a rootful Linux docker engine
+a *missing* bind-mount source is auto-created by the daemon as `root:root`, and the uid-1000 cert
+bootstrap then dies with `PermissionError` writing `/certs/phaze-ca.crt` before uvicorn binds — an
+opaque crash-loop. A fresh `git clone` already materializes `./certs/` (it ships a committed
+`.gitkeep`) owned by the cloning operator, and `just up` re-creates it defensively; the explicit
+`mkdir -p certs` above is belt-and-suspenders. If you hit the crash anyway, the entrypoint now prints
+the exact fix: `sudo chown -R 1000:1000 certs`.
+
+On first start, the `api` container's entrypoint generates the internal CA + leaf cert into
+`./certs/`. Watch the logs:
 
 ```bash
 docker compose logs -f api
@@ -316,7 +329,15 @@ On the **file-server host**, get the compose file and the `.env` template. All f
 git clone https://github.com/simplicityguy/phaze.git
 cd phaze
 cp .env.example.agent .env
+mkdir -p models certs   # phaze-he8m: own ./models (weights auto-download) and ./certs as uid 1000
 ```
+
+The `mkdir -p models certs` (also run for you by `just up-agent`) is required for the same
+reason as Step 1 (phaze-he8m): the uid-1000 worker auto-downloads essentia weights into
+`./models:/models:rw` and reads the CA from `./certs`, so both bind-mount sources must exist
+owned by uid 1000 before `up` — otherwise rootful dockerd creates them `root:root` and the
+download fails with `EACCES`. A `git clone` already materializes both via committed `.gitkeep`
+files.
 
 Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` interpolation on `SCAN_PATH`, so docker compose fails fast at parse time if it is unset:
 
@@ -612,7 +633,7 @@ Before shipping a file-server host to production:
 - [ ] `phaze-ca.key` NEVER copied off the app-server host
 - [ ] `PHAZE_IMAGE_TAG` pinned to a specific version (`2026.7.1`), not `latest`
 - [ ] `SCAN_PATH` points at the actual music library root (compose parse fails if unset)
-- [ ] `docker-compose.override.yml` not present / not active on production hosts (it bypasses the cert-bootstrap entrypoint)
+- [ ] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint (phaze-476w)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
 - [ ] `/admin/agents` page shows **alive** status within ~60s of `just up-agent`
 
@@ -623,7 +644,7 @@ Before shipping a file-server host to production:
 - `docker-compose.yml` — app-server compose
 - `docker-compose.agent.yml` — file-server agent compose
 - `docker-compose.cloud-agent.yml` — OCI A1 cloud compute-agent compose (`just cloud-agent-up` / `cloud-agent-down`)
-- `docker-compose.override.yml` — dev-only overlay (live reload)
+- `docker-compose.dev.yml` — dev-only overlay (live reload; `just up-dev`, explicit `-f`, never auto-merged)
 - `backends.toml` — the cloud-backend registry (mounted at `PHAZE_BACKENDS_CONFIG_FILE`; absent ⇒ implicit local-only)
 - [docs/cloud-burst.md](cloud-burst.md) — `kind=compute` agent deploy + runbook (deep-dive; config surface is `backends.toml`)
 - [docs/k8s-burst.md](k8s-burst.md) — `kind=kueue` cluster deploy + runbook (deep-dive; config surface is `backends.toml`)

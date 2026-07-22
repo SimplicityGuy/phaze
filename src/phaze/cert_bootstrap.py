@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import datetime
 import ipaddress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -282,6 +282,26 @@ def _leaf_needs_reissue(server_crt: Path, server_key: Path, desired_sans: list[x
     return _san_set(existing_sans) != _san_set(desired_sans)
 
 
+def _reraise_actionable_permission_error(certs_dir: Path, exc: PermissionError) -> NoReturn:
+    """Translate a raw EACCES on the certs dir into an operator-actionable message (phaze-he8m).
+
+    The api image runs as the fixed non-root ``phaze`` user (uid/gid 1000) and
+    bind-mounts ``./certs:/certs:rw``. On a rootful Linux docker engine a MISSING
+    bind-mount source dir is auto-created by dockerd as ``root:root`` mode 755, so
+    the uid-1000 cert bootstrap cannot write ``phaze-ca.crt`` into it and dies with
+    a bare ``PermissionError`` before uvicorn ever binds — an opaque crash-loop.
+    Re-raise with the host-side fix spelled out.
+    """
+    raise PermissionError(
+        f"cert_bootstrap: permission denied writing into {certs_dir} ({exc}). This directory is almost "
+        f"certainly owned by root — rootful dockerd auto-creates a MISSING bind-mount source dir as "
+        f"root:root, but the api container runs as uid 1000 (the 'phaze' user). Fix on the HOST and "
+        f"restart: `mkdir -p certs && sudo chown -R 1000:1000 certs` (or just `just up`, which now "
+        f"pre-creates ./certs owned by the invoking operator; a fresh `git clone` also materializes "
+        f"./certs via its committed .gitkeep)."
+    ) from exc
+
+
 def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
     """Idempotent CA bootstrap + SAN/expiry-aware leaf re-issue.
 
@@ -310,7 +330,10 @@ def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
     emitted on a leaf-only re-issue, since the CA -- the thing every remote
     client trusts -- did not change.
     """
-    certs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        certs_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        _reraise_actionable_permission_error(certs_dir, exc)
     ca_crt = certs_dir / "phaze-ca.crt"
     ca_key_path = certs_dir / "phaze-ca.key"
     server_crt = certs_dir / "phaze-server.crt"
@@ -326,8 +349,11 @@ def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
             logger.warning("cert_bootstrap: existing certs unparseable; regenerating")
         ca_key, ca_cert = _generate_ca(cn=f"Phaze Internal CA ({cn})")
         leaf_key, leaf_cert = _generate_leaf(ca_key, ca_cert, cn=cn, sans=sans)
-        _write_ca(ca_crt, ca_key_path, ca_key, ca_cert)
-        _write_leaf(server_crt, server_key, leaf_key, leaf_cert)
+        try:
+            _write_ca(ca_crt, ca_key_path, ca_key, ca_cert)
+            _write_leaf(server_crt, server_key, leaf_key, leaf_cert)
+        except PermissionError as exc:
+            _reraise_actionable_permission_error(certs_dir, exc)
 
         # Banner emitted via BOTH channels (CONTEXT D-02 D-discretion "Both").
         banner = _BANNER.format(ca_path=ca_crt)
@@ -343,4 +369,7 @@ def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
 
     logger.info("cert_bootstrap: re-issuing leaf from existing CA at %s (SANs/expiry changed); CA untouched", certs_dir)
     leaf_key, leaf_cert = _generate_leaf(ca_key, ca_cert, cn=cn, sans=sans)
-    _write_leaf(server_crt, server_key, leaf_key, leaf_cert)
+    try:
+        _write_leaf(server_crt, server_key, leaf_key, leaf_cert)
+    except PermissionError as exc:
+        _reraise_actionable_permission_error(certs_dir, exc)

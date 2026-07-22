@@ -96,8 +96,14 @@ ENV UV_NO_SYNC=1
 # Panako needs writable home for LMDB
 ENV HOME=/data/fprint
 
-# Non-root user
-RUN useradd -m -r panako && \
+# Non-root user pinned to uid/gid 1000 so the sidecar can read media owned by
+# uid 1000 (mode 700/770) — the same fix the main Dockerfile applies (phaze-v0vj).
+# The previous `-r` system account auto-assigned uid ~999, which could not open
+# the uid-1000-owned ${SCAN_PATH}:/data/music:ro media and made every panako
+# store/query subprocess exit EACCES → HTTP 500 for the whole fingerprint stage.
+# HOME=/data/fprint (LMDB, above) stays writable: the chown pins it to uid 1000.
+RUN groupadd -g 1000 panako && \
+    useradd -m -u 1000 -g 1000 panako && \
     mkdir -p /data/fprint && \
     chown panako:panako /data/fprint
 USER panako

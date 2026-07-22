@@ -30,19 +30,43 @@ tailwind_version := "v4.3.2"
 install: tailwind
     uv sync
 
-[doc('Start all services in Docker')]
+[doc('Start all services in Docker (production topology: base compose only)')]
 [group('dev')]
 up: tailwind
-    docker compose up -d
+    # phaze-he8m: pre-create the ./certs bind-mount source owned by the invoking
+    # operator (uid 1000). Without it, rootful dockerd auto-creates the missing
+    # source dir as root:root and the uid-1000 cert bootstrap dies with
+    # PermissionError writing /certs/phaze-ca.crt before uvicorn ever binds.
+    mkdir -p certs
+    # phaze-476w: pass -f docker-compose.yml EXPLICITLY so the dev overlay is
+    # NEVER auto-merged. A bare `docker compose up` auto-merges the old
+    # docker-compose.override.yml, which replaced the api command with plain-HTTP
+    # `uvicorn --reload` and skipped the cert-bootstrap entrypoint. Use `just
+    # up-dev` for the live-reload dev overlay.
+    docker compose -f docker-compose.yml up -d
+
+[doc('Start all services with the live-reload DEV overlay (docker-compose.dev.yml)')]
+[group('dev')]
+up-dev: tailwind
+    # phaze-476w: the dev overlay (plain-HTTP uvicorn --reload, ./src bind mount,
+    # PHAZE_DEBUG=true) is now opt-in and included EXPLICITLY here — it is no
+    # longer auto-merged into `just up`. It deliberately skips the cert bootstrap.
+    mkdir -p certs
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
 [group('dev')]
 up-agent:
+    # phaze-he8m: pre-create ./models and ./certs so the uid-1000 worker can
+    # auto-download models and read the CA (avoids a root-owned daemon-created dir).
+    mkdir -p models certs
     docker compose -f docker-compose.agent.yml up -d
 
 [doc('Start the OCI A1 cloud compute-agent stack (standalone docker-compose.cloud-agent.yml)')]
 [group('dev')]
 cloud-agent-up:
+    # phaze-he8m: pre-create ./models and ./certs owned by the operator (uid 1000).
+    mkdir -p models certs
     docker compose -f docker-compose.cloud-agent.yml up -d
 
 [doc('Stop the OCI A1 cloud compute-agent stack')]
@@ -53,6 +77,10 @@ cloud-agent-down:
 [doc('Start both stacks on one host (developer convenience)')]
 [group('dev')]
 up-all:
+    # phaze-he8m: pre-create ./certs (api cert bootstrap) and ./models (agent
+    # model auto-download) owned by the operator (uid 1000) before the daemon
+    # auto-creates them root:root.
+    mkdir -p certs models
     docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
 
 [doc('Stop all services')]
