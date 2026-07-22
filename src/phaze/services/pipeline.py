@@ -140,26 +140,28 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
 
     Returns None (NOT 0) both when there are no completed batches and on any DB error: None is the
     "hide the reconciliation" sentinel, distinct from a genuine scanned total of 0. Mirrors the
-    :func:`_safe_count` / :func:`get_stage_controls` degrade discipline (log → guarded rollback →
+    :func:`_safe_count` / :func:`get_stage_controls` degrade discipline (log → SAVEPOINT rollback →
     sentinel) so it never raises into the 5s dashboard poll.
+
+    The read runs inside a SAVEPOINT (``session.begin_nested()``) so a query error rolls back the
+    NESTED scope ALONE, never the caller's shared session -- a plain ``session.rollback()`` here
+    would expire the ``agents`` / ``recent_scans`` rows ``build_dashboard_context`` already loaded
+    on this session and 500 the render on the next lazy load.
     """
     try:
-        ranked = (
-            select(
-                ScanBatch.total_files.label("total_files"),
-                func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+        async with session.begin_nested():
+            ranked = (
+                select(
+                    ScanBatch.total_files.label("total_files"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                )
+                .where(ScanBatch.status == ScanStatus.COMPLETED.value)
+                .subquery()
             )
-            .where(ScanBatch.status == ScanStatus.COMPLETED.value)
-            .subquery()
-        )
-        total = (await session.execute(select(func.sum(ranked.c.total_files)).where(ranked.c.rn == 1))).scalar()
+            total = (await session.execute(select(func.sum(ranked.c.total_files)).where(ranked.c.rn == 1))).scalar()
         return int(total) if total is not None else None
     except Exception:
         logger.warning("scanned_total_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("scanned_total_rollback_failed", exc_info=True)
         return None
 
 
@@ -193,22 +195,29 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
     — ``scanned`` is never None here so the value is always a plain int). The per-agent file counts
     come from one grouped ``SELECT agent_id, COUNT(id) GROUP BY agent_id`` joined in Python.
 
-    An empty map means "no annotations"; the template hides any agent whose deduped is 0. Wrapped in
-    the standard log → guarded rollback → ``{}`` degrade so it never raises into the dashboard poll.
+    An empty map means "no annotations"; the template hides any agent whose deduped is 0.
+
+    Both reads run inside ONE SAVEPOINT (``session.begin_nested()``) so a failure rolls back the
+    NESTED scope ALONE (CR-01): ``build_recent_scans`` (``routers.pipeline_scans``) loads ``ScanBatch``
+    ORM rows on this SAME session BEFORE calling here, and ``build_dashboard_context`` similarly loads
+    ``agents`` before it -- a plain ``session.rollback()`` would expire those already-loaded rows and
+    500 the render on the next lazy load. On any exception this logs a warning and degrades to ``{}``,
+    never raising into the dashboard poll.
     """
     try:
-        ranked = (
-            select(
-                ScanBatch.agent_id.label("agent_id"),
-                ScanBatch.total_files.label("total_files"),
-                func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+        async with session.begin_nested():
+            ranked = (
+                select(
+                    ScanBatch.agent_id.label("agent_id"),
+                    ScanBatch.total_files.label("total_files"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                )
+                .where(ScanBatch.status == ScanStatus.COMPLETED.value)
+                .subquery()
             )
-            .where(ScanBatch.status == ScanStatus.COMPLETED.value)
-            .subquery()
-        )
-        latest_rows = (await session.execute(select(ranked.c.agent_id, ranked.c.total_files).where(ranked.c.rn == 1))).all()
+            latest_rows = (await session.execute(select(ranked.c.agent_id, ranked.c.total_files).where(ranked.c.rn == 1))).all()
 
-        count_rows = (await session.execute(select(FileRecord.agent_id, func.count(FileRecord.id)).group_by(FileRecord.agent_id))).all()
+            count_rows = (await session.execute(select(FileRecord.agent_id, func.count(FileRecord.id)).group_by(FileRecord.agent_id))).all()
         counts_by_agent = {agent_id: int(count) for agent_id, count in count_rows}
 
         out: dict[str, dict[str, int]] = {}
@@ -219,10 +228,6 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
         return out
     except Exception:
         logger.warning("agent_reconciliations_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("agent_reconciliations_rollback_failed", exc_info=True)
         return {}
 
 
@@ -331,18 +336,22 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
 
     Per-source failure isolation mirroring :func:`get_queue_activity`: a bad source
     (a DB hiccup, an aborted transaction from a prior failed source) must degrade
-    THIS node to 0, never raise into the 5s dashboard poll. On error the session is
-    rolled back so a Postgres "current transaction is aborted" state from one failed
-    source does not poison the COUNT queries for every subsequent stage.
+    THIS node to 0, never raise into the 5s dashboard poll.
+
+    The COUNT runs inside a SAVEPOINT (``session.begin_nested()``), mirroring
+    :func:`get_stage_busy_counts`. On ANY error the nested scope is rolled back ALONE --
+    recovering a Postgres "current transaction is aborted" state (so it cannot poison the
+    COUNT queries for every subsequent stage) WITHOUT expiring the caller's already-loaded
+    ORM objects. Several direct-request-session callers (``build_dashboard_context`` et al.)
+    run this AFTER loading ``agents`` / ``recent_scans`` into the same session -- a plain
+    ``session.rollback()`` would expire those rows and 500 the dashboard render on the next
+    lazy load.
     """
     try:
-        return int((await session.execute(stmt)).scalar() or 0)
+        async with session.begin_nested():
+            return int((await session.execute(stmt)).scalar() or 0)
     except Exception:
         logger.warning("stage_progress_degraded", node=node, exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("stage_progress_rollback_failed", node=node, exc_info=True)
         return 0
 
 
@@ -736,15 +745,20 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
     Failure isolation mirrors :func:`_safe_count` / :func:`get_queue_activity`: the
     ``pipeline_stage_control`` table may be absent (pre-migration env) or a DB hiccup may occur, and
     EITHER must degrade to the three-stage defaults rather than raise into the hot 5s poll path
-    (T-38-DEGRADE). On any exception this logs a warning, rolls back the aborted transaction (guarded,
-    so a failed rollback cannot mask the original error or poison later COUNTs), and returns defaults.
+    (T-38-DEGRADE). The read runs inside a SAVEPOINT (``session.begin_nested()``) so ANY exception
+    rolls back the NESTED scope ALONE -- recovering the aborted transaction WITHOUT expiring the
+    caller's already-loaded ``agents`` / ``recent_scans`` ORM objects (``_build_dag_context`` runs
+    after ``build_dashboard_context`` loads them on the same session; a plain ``session.rollback()``
+    here would expire them and 500 the render on the next lazy load). This logs a warning and
+    returns defaults.
 
     The caller (:func:`phaze.routers.pipeline._build_dag_context`) coerces ``paused`` to ``int`` ``0``/``1``
     so the canvas's "every dag value is a server-computed int safe to interpolate into ``x-init``"
     invariant holds (Pitfall 3 / T-35-11) — never emit a Python ``bool`` through to the template.
     """
     try:
-        rows = (await session.execute(select(PipelineStageControl))).scalars().all()
+        async with session.begin_nested():
+            rows = (await session.execute(select(PipelineStageControl))).scalars().all()
         out: dict[str, dict[str, int | bool]] = {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
         for r in rows:
             if r.stage in out:
@@ -752,10 +766,6 @@ async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int |
         return out
     except Exception:
         logger.warning("stage_controls_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("stage_controls_rollback_failed", exc_info=True)
         return {s: dict(v) for s, v in _DEFAULT_CONTROLS.items()}
 
 

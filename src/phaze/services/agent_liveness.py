@@ -211,9 +211,13 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
     into ONE trailing ``"unattributed"``/``kind="cloud"`` lane, emitted only when its counts are
     non-zero.
 
-    Degrade-safe (KDEPLOY-04): a :class:`~sqlalchemy.exc.SQLAlchemyError` rolls the session back and
-    returns the registry lanes all-``IDLE`` (a DB hiccup must NEVER paint a lane DEAD/red); a
-    settings/registry read failure returns ``[]``. This must never raise on the hot poll path.
+    Degrade-safe (KDEPLOY-04): the ``CloudJob`` read runs inside a SAVEPOINT (``begin_nested``) so a
+    :class:`~sqlalchemy.exc.SQLAlchemyError` rolls back the NESTED scope ALONE and returns the registry
+    lanes all-``IDLE`` (a DB hiccup must NEVER paint a lane DEAD/red) WITHOUT expiring the caller's
+    already-loaded ``Agent`` rows — both ``admin_agents`` routes call ``_load_agents(session)`` on this
+    SAME session before deriving lanes, so a plain ``session.rollback()`` here would expire those rows
+    and 500 the template render on the next lazy load (CR-01 / D-00b). A settings/registry read failure
+    returns ``[]``. This must never raise on the hot poll path.
     """
     try:
         kinds = non_local_backend_kinds(cast("ControlSettings", get_settings()))
@@ -222,18 +226,18 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
         return []
 
     try:
-        stmt = select(
-            CloudJob.backend_id,
-            func.count().filter(CloudJob.status == CloudJobStatus.RUNNING.value).label("running"),
-            func.count().filter(CloudJob.status == CloudJobStatus.SUBMITTED.value, CloudJob.inadmissible.is_(True)).label("waiting"),
-        ).group_by(CloudJob.backend_id)
-        rows = (await session.execute(stmt)).all()
+        # SAVEPOINT degrade (CR-01 / D-00b): roll back the NESTED scope alone on error so the aborted
+        # transaction recovers WITHOUT expiring the caller's already-loaded Agent rows (a plain
+        # ``session.rollback()`` would expire them and 500 the admin_agents render on the next lazy load).
+        async with session.begin_nested():
+            stmt = select(
+                CloudJob.backend_id,
+                func.count().filter(CloudJob.status == CloudJobStatus.RUNNING.value).label("running"),
+                func.count().filter(CloudJob.status == CloudJobStatus.SUBMITTED.value, CloudJob.inadmissible.is_(True)).label("waiting"),
+            ).group_by(CloudJob.backend_id)
+            rows = (await session.execute(stmt)).all()
     except SQLAlchemyError:
         logger.warning("compute_lane_identity_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except SQLAlchemyError:
-            logger.warning("compute_lane_identity_rollback_failed", exc_info=True)
         return [ComputeLane(backend_id=backend_id, kind=kind, state="IDLE", running=0, waiting=0) for backend_id, kind in kinds.items()]
 
     counts = {backend_id: (int(running or 0), int(waiting or 0)) for backend_id, running, waiting in rows}

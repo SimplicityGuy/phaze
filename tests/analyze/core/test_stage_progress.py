@@ -258,16 +258,13 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
     assert progress["analyze"]["done"] == 1
 
 
-async def test_safe_count_swallows_rollback_failure() -> None:
-    """_safe_count isolation must hold even when the post-error rollback ALSO fails: it logs and
-    still returns 0 rather than letting either exception escape into the 5s poll."""
+async def test_safe_count_swallows_begin_nested_failure() -> None:
+    """_safe_count isolation must hold even when opening the SAVEPOINT itself fails: it logs and
+    still returns 0 rather than letting the exception escape into the 5s poll."""
 
     class _BoomSession:
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise RuntimeError("forced execute error")
-
-        async def rollback(self) -> None:
-            raise RuntimeError("forced rollback error")
+        def begin_nested(self) -> object:
+            raise RuntimeError("forced begin_nested error")
 
     result = await _safe_count(_BoomSession(), select(FileRecord), node="metadata")  # type: ignore[arg-type]
     assert result == 0

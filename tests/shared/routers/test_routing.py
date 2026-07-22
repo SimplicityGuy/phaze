@@ -3,8 +3,8 @@
 Two behaviors are proven here:
 
 * ``get_route_control`` (Task 2) -- the degrade-safe reader: True iff the seeded ``'global'`` row has
-  ``force_local`` True; absent row -> False; any DB exception -> guarded rollback -> False, never raises
-  (the reader is on the hot 5s poll + the routing gate, so a raise would 500 them -- T-71-03).
+  ``force_local`` True; absent row -> False; any DB exception -> SAVEPOINT rollback -> False, never
+  raises (the reader is on the hot 5s poll + the routing gate, so a raise would 500 them -- T-71-03).
 * the duration router (Task 3) -- with force-local engaged a new long file routes LOCAL and is NOT held
   in ``AWAITING_CLOUD``, behaving exactly like the all-local (``cloud_enabled=False``) path (D-08).
 """
@@ -70,39 +70,92 @@ async def test_route_control_reads_forced_true(session: AsyncSession) -> None:
     assert await get_route_control(session) is True
 
 
+class _NullSavepoint:
+    """Async-context-manager stand-in for ``session.begin_nested()`` in the fake-session tests.
+
+    ``__aexit__`` returns ``False`` so an exception raised inside the ``async with`` block (the
+    ``session.get`` read) propagates out to ``get_route_control``'s degrade ``except`` -- exactly as
+    a real SAVEPOINT does after ``ROLLBACK TO SAVEPOINT``.
+    """
+
+    async def __aenter__(self) -> _NullSavepoint:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
 @pytest.mark.asyncio
 async def test_route_control_degrades_on_db_error() -> None:
-    """Any DB exception degrades to False with a guarded rollback -- the reader NEVER raises (T-71-03)."""
-    rolled_back = False
+    """Any DB exception degrades to False -- the reader NEVER raises (T-71-03).
+
+    The read runs inside a SAVEPOINT (``begin_nested``); the exception propagates out of the nested
+    scope and is caught by the degrade ``except`` (CR-01 -- the caller's shared session is never
+    touched with a full ``session.rollback()``).
+    """
 
     class _BoomSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def get(self, *_a: Any, **_k: Any) -> Any:
             raise RuntimeError("boom")
 
-        async def rollback(self) -> None:
-            nonlocal rolled_back
-            rolled_back = True
-
     assert await get_route_control(_BoomSession()) is False  # type: ignore[arg-type]
-    assert rolled_back, "get_route_control must roll back the aborted transaction on a DB error"
 
 
 @pytest.mark.asyncio
-async def test_route_control_degrades_when_rollback_also_fails() -> None:
-    """A failed guarded rollback after a DB error is swallowed too -> still False, never raises (T-71-03).
-
-    Mirrors the get_backend_lane_snapshot double-fault guard: if BOTH the read and the recovery
-    rollback raise, the reader must still degrade to cloud-enabled (False) rather than propagate.
-    """
+async def test_route_control_degrades_when_begin_nested_itself_raises() -> None:
+    """Even if the session is so broken ``begin_nested()`` itself raises, the reader still degrades to
+    False rather than propagating (T-71-03)."""
 
     class _DoubleBoomSession:
-        async def get(self, *_a: Any, **_k: Any) -> Any:
-            raise RuntimeError("get boom")
-
-        async def rollback(self) -> None:
-            raise RuntimeError("rollback boom")
+        def begin_nested(self) -> object:
+            raise RuntimeError("begin_nested boom")
 
     assert await get_route_control(_DoubleBoomSession()) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_route_control_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this same session.
+
+    ``routers.pipeline`` loads ``files_with_duration`` (ORM ``FileRecord`` rows) BEFORE calling
+    ``get_route_control(session)`` on the SAME session. A plain ``session.rollback()`` in the degrade
+    branch would expire those already-loaded rows, 500-ing the render/enqueue path on the next lazy
+    load (MissingGreenlet from a sync context).
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell a SAVEPOINT
+    rollback apart from a plain one -- a plain rollback expunges the pending flush to *transient*,
+    not *expired*): flush a FileRecord row, force ONLY the route_control read to fail, then assert
+    ``session.get`` still finds the file afterwards -- proving the outer transaction survived.
+    """
+    from unittest.mock import AsyncMock
+
+    from phaze.models.agent import Agent
+
+    session.add(Agent(id="cr01-route-control-agent", name="Cr01RouteBox", scan_roots=[], kind="fileserver"))
+    file_id = uuid.uuid4()
+    rec = FileRecord(
+        id=file_id,
+        sha256_hash=uuid.uuid4().hex,
+        original_path=f"/media/{file_id}.mp3",
+        original_filename=f"{file_id}.mp3",
+        current_path=f"/media/{file_id}.mp3",
+        file_type="mp3",
+        file_size=1234,
+        agent_id="cr01-route-control-agent",
+    )
+    session.add(rec)
+    await session.flush()
+
+    real_get = session.get
+    monkeypatch.setattr(session, "get", AsyncMock(side_effect=RuntimeError("boom")))
+    result = await get_route_control(session)
+    monkeypatch.setattr(session, "get", real_get)  # restore for the assertion query
+
+    assert result is False
+    assert await session.get(FileRecord, file_id) is not None
 
 
 # --- Task 3: duration router routes-local when force-local engaged ----------------------
