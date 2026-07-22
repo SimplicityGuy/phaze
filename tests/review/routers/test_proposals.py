@@ -946,6 +946,34 @@ async def test_edit_from_v7_workspace_returns_diff_row(client: AsyncClient, sess
 
 
 @pytest.mark.asyncio
+async def test_edit_on_approved_proposal_returns_409(client: AsyncClient, session: AsyncSession) -> None:
+    """An edit that lands after approval is refused with 409 and does NOT redirect the approved move (phaze-3tj4).
+
+    Before the guard, edit_proposal wrote proposed_path unconditionally, so a stale edit tab could
+    rewrite the destination an APPROVED row feeds into execution_dispatch — moving the file somewhere
+    that was never reviewed. The edit is now gated to PENDING rows.
+    """
+    proposal = await create_test_proposal(session, status=ProposalStatus.APPROVED, proposed_path="performances/Reviewed")
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "performances/Unreviewed", "facet": "path"},
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_edit_on_pending_proposal_succeeds(client: AsyncClient, session: AsyncSession) -> None:
+    """The edit path still works for a PENDING proposal (the legal, pre-approve case)."""
+    proposal = await create_test_proposal(session, status=ProposalStatus.PENDING)
+    response = await client.patch(
+        f"/proposals/{proposal.id}/edit",
+        data={"proposed": "Renamed Track.mp3", "facet": "filename"},
+    )
+    assert response.status_code == 200
+    assert "Renamed Track.mp3" in response.text
+
+
+@pytest.mark.asyncio
 async def test_approve_without_hx_target_returns_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
     """The legacy proposals list (no v7 HX-Target) still gets approve_response.html with the stats-bar (phaze-3a2j)."""
     proposal = await create_test_proposal(session)

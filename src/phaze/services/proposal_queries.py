@@ -199,22 +199,42 @@ async def update_proposal_status(
     :class:`ProposalTransitionError` (routers translate it to 409) instead of
     silently overwriting a terminal EXECUTED/FAILED row. ``None`` preserves the
     legacy unconditional write for internal callers that already pre-filter.
+
+    phaze-upnj: the guard is evaluated INSIDE the UPDATE's WHERE clause, in one
+    statement (mirroring :func:`bulk_update_status`), NOT as a Python check on a
+    prior unlocked SELECT. The former select-check-then-blind-write shape was a
+    TOCTOU: under READ COMMITTED an operator Undo and a concurrent agent
+    EXECUTED report both read APPROVED, both passed the Python guard, and the
+    last committer silently reverted the terminal record. Folding ``allowed_from``
+    into the UPDATE predicate makes the write itself conditional, so a row that
+    left the allowed set between any read and this write matches zero rows and
+    the transition is refused rather than clobbered.
     """
-    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
-    result = await session.execute(stmt)
-    proposal = result.scalar_one_or_none()
-    if proposal is None:
-        return None
-    if allowed_from is not None and ProposalStatus(proposal.status) not in set(allowed_from):
-        raise ProposalTransitionError(proposal.status, new_status.value)
-    proposal.status = new_status.value
+    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    stmt = stmt.values(status=new_status.value)
     try:
+        cursor_result: Any = await session.execute(stmt)
         await session.commit()
     except IntegrityError as exc:
         # Reverting to PENDING can collide with the one-pending-per-file partial unique
         # index (uq_proposals_file_id_pending) if the file already has a pending proposal.
         await session.rollback()
         raise ProposalPendingConflictError(str(proposal_id)) from exc
+
+    if int(cursor_result.rowcount) == 0:
+        # The conditional UPDATE matched nothing: either the proposal does not exist,
+        # or (when allowed_from is set) its current status is outside the allowed set.
+        # Re-read to distinguish 404 (None) from an illegal transition (409).
+        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+        proposal = current.scalar_one_or_none()
+        if proposal is None:
+            return None
+        if allowed_from is not None:
+            raise ProposalTransitionError(proposal.status, new_status.value)
+        return proposal
+
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
     stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
@@ -253,6 +273,12 @@ async def approve_pending_above_confidence(session: AsyncSession, threshold: flo
     behavior for an irreplaceable archive; do NOT COALESCE), leaving them for per-file review.
     Reuses :func:`bulk_update_status` so the ``proposals.status`` write is identical to the existing
     bulk path. Returns the number of proposals approved.
+
+    phaze-bg4w: the ``allowed_from=[PENDING]`` guard is passed through to ``bulk_update_status`` so
+    the from-state predicate lands INSIDE the UPDATE's WHERE clause. Without it the UPDATE carried
+    only ``WHERE id IN (:ids)`` -- the ids snapshotted by the SELECT above -- so a proposal a
+    concurrent tab REJECTED between this function's SELECT and UPDATE was silently flipped back to
+    APPROVED (the same TOCTOU the single-row and existing bulk paths already close).
     """
     stmt = select(RenameProposal.id).where(
         RenameProposal.status == ProposalStatus.PENDING,
@@ -261,7 +287,7 @@ async def approve_pending_above_confidence(session: AsyncSession, threshold: flo
     ids = list((await session.execute(stmt)).scalars().all())
     if not ids:
         return 0
-    return await bulk_update_status(session, ids, ProposalStatus.APPROVED)
+    return await bulk_update_status(session, ids, ProposalStatus.APPROVED, allowed_from=frozenset({ProposalStatus.PENDING}))
 
 
 async def update_proposal_fields(
@@ -270,24 +296,46 @@ async def update_proposal_fields(
     *,
     proposed_filename: str | None = None,
     proposed_path: str | None = None,
+    allowed_from: Iterable[ProposalStatus] | None = None,
 ) -> RenameProposal | None:
     """Persist an operator edit to a proposal's ``proposed_filename`` / ``proposed_path`` (D-05).
 
-    Copies :func:`update_proposal_status` exactly but mutates the provided Text field(s) instead of
-    ``.status``: the row stays PENDING (edit is pre-approve -- no status change) and the LLM
-    is NOT re-run. Keeps the re-select-with-``selectinload(file)`` tail so the returned row can
-    render its diff. Returns ``None`` if the proposal does not exist.
+    Mirrors :func:`update_proposal_status` -- an atomic conditional UPDATE -- but mutates the
+    provided Text field(s) instead of ``.status``. The row keeps its status (edit is pre-approve --
+    no status change) and the LLM is NOT re-run. Keeps the re-select-with-``selectinload(file)``
+    tail so the returned row can render its diff. Returns ``None`` if the proposal does not exist.
+
+    phaze-3tj4: ``allowed_from`` gates the edit to the given from-states, evaluated INSIDE the
+    UPDATE's WHERE clause. The docstring's long-claimed "the row stays PENDING (edit is pre-approve)"
+    invariant used to be prose-only: the write was unconditional, so an edit that landed after a
+    concurrent approval silently rewrote the ``proposed_path`` an APPROVED row feeds straight into
+    ``execution_dispatch`` -- redirecting a reviewed move to an unreviewed destination -- and edits
+    to terminal EXECUTED/FAILED rows corrupted the historical record. With ``allowed_from`` the
+    edit refuses (``ProposalTransitionError`` -> 409) rather than mutating a non-editable row.
     """
-    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
-    result = await session.execute(stmt)
-    proposal = result.scalar_one_or_none()
-    if proposal is None:
-        return None
+    values: dict[str, Any] = {}
     if proposed_filename is not None:
-        proposal.proposed_filename = proposed_filename
+        values["proposed_filename"] = proposed_filename
     if proposed_path is not None:
-        proposal.proposed_path = proposed_path
+        values["proposed_path"] = proposed_path
+
+    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    stmt = stmt.values(**values)
+    cursor_result: Any = await session.execute(stmt)
     await session.commit()
+
+    if int(cursor_result.rowcount) == 0:
+        # No row matched: 404 (proposal gone) vs 409 (status outside allowed_from).
+        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+        proposal = current.scalar_one_or_none()
+        if proposal is None:
+            return None
+        if allowed_from is not None:
+            raise ProposalTransitionError(proposal.status, proposal.status)
+        return proposal
+
     # Re-fetch with selectinload to ensure the file relationship is available for the row render
     # (session.refresh does not honor selectinload on lazy='raise' relationships).
     stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)

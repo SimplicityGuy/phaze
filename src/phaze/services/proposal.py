@@ -18,6 +18,7 @@ import structlog
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.services.pg_text import sanitize_pg_text
 
 
 if TYPE_CHECKING:
@@ -100,6 +101,22 @@ def load_prompt_template(name: str = "naming") -> str:
 # ---------------------------------------------------------------------------
 # Companion content cleaning
 # ---------------------------------------------------------------------------
+
+
+def _sanitize_json(value: Any) -> Any:
+    """Recursively strip PostgreSQL-unstorable chars (NUL / lone surrogates) from a JSON-able value.
+
+    phaze-qj9e: applied to the ``context_used`` dict before it is written to the JSONB column so a
+    single NUL byte anywhere in the nested structure (companion text, LLM metadata fields, tags)
+    cannot abort the batch's write. Scalars other than ``str`` pass through unchanged.
+    """
+    if isinstance(value, str):
+        return sanitize_pg_text(value)
+    if isinstance(value, dict):
+        return {k: _sanitize_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json(v) for v in value]
+    return value
 
 
 def clean_companion_content(text: str, max_chars: int = MAX_COMPANION_CHARS) -> str:
@@ -350,6 +367,13 @@ async def store_proposals(
             "b2b_partners": proposal.b2b_partners,
             "input_context": files_context[idx],
         }
+        # phaze-qj9e: deep-sanitize every string reaching the context_used JSONB column. A raw NUL
+        # (U+0000) -- classically from a UTF-16LE .nfo companion, but also possible in any
+        # LLM-supplied field (artist/event_name/...) -- is rejected outright by PostgreSQL jsonb and
+        # aborts store_proposals for the WHOLE batch, poisoning every retry with identical content.
+        # load_companion_contents sanitizes the companion text at the read boundary; this closes the
+        # remaining LLM-string sinks in the same row.
+        context_used = _sanitize_json(context_used)
         path_raw = proposal.proposed_path
         if path_raw:
             path_raw = path_raw.strip("/")
@@ -360,12 +384,14 @@ async def store_proposals(
             # Explicit PK stamp -- pg_insert bypasses the Python-side default.
             "id": uuid.uuid4(),
             "file_id": uuid.UUID(fid),
-            "proposed_filename": proposal.proposed_filename,
-            "proposed_path": path_raw,
+            # phaze-qj9e: proposed_filename/proposed_path/reasoning come from LLM JSON that may
+            # legally carry U+0000 escapes; sanitize them too so no NUL reaches a text/jsonb column.
+            "proposed_filename": sanitize_pg_text(proposal.proposed_filename),
+            "proposed_path": sanitize_pg_text(path_raw) if path_raw else path_raw,
             "confidence": confidence,
             "status": ProposalStatus.PENDING,
             "context_used": context_used,
-            "reason": proposal.reasoning,
+            "reason": sanitize_pg_text(proposal.reasoning),
         }
         stmt = pg_insert(RenameProposal).values(**row)
         stmt = stmt.on_conflict_do_update(
@@ -423,8 +449,14 @@ async def load_companion_contents(
             continue
         try:
             raw = Path(rec.current_path).read_text(encoding="utf-8", errors="replace")
-            cleaned = clean_companion_content(raw, max_chars)
-            contents.append({"filename": rec.original_filename, "content": cleaned})
+            # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
+            # context_used JSONB column. errors="replace" leaves a raw 0x00 intact (U+0000 is valid
+            # UTF-8), and a UTF-16LE .nfo/.txt companion decodes to text riddled with U+0000. PostgreSQL
+            # jsonb rejects U+0000 outright, aborting store_proposals for the WHOLE batch and poisoning
+            # every retry with identical content -- the retry-forever loop sanitize_pg_text exists to
+            # prevent. Sanitizing at this boundary keeps the companion content storable.
+            cleaned = sanitize_pg_text(clean_companion_content(raw, max_chars))
+            contents.append({"filename": sanitize_pg_text(rec.original_filename), "content": cleaned})
         except OSError:
             continue
 

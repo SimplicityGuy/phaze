@@ -54,8 +54,16 @@ async def patch_proposal_state(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ProposalStateResponse:
     """Proposal status transition, plus an optional FileRecord.current_path update, in one transaction (D-28; Phase 86 SIDECAR-03)."""
-    # 404 if proposal_id does not exist
-    proposal = await session.get(RenameProposal, proposal_id)
+    # 404 if proposal_id does not exist.
+    #
+    # phaze-jlu6: take a row lock (SELECT ... FOR UPDATE) so the read-check-write transition guard
+    # is atomic. Without it two concurrent PATCHes (the phaze-fa2p double-dispatch: one job reports
+    # EXECUTED, the other FAILED) both read cur=APPROVED, both pass the APPROVED->{EXECUTED,FAILED}
+    # guard, and the last committer silently overwrites the winner -- a FAILED row whose file has
+    # actually moved. Locking the proposal row serializes the two: the loser blocks until the winner
+    # commits, then re-reads status=EXECUTED/FAILED, and its now-terminal from-state fails the guard
+    # (409) instead of clobbering the authoritative record.
+    proposal = await session.get(RenameProposal, proposal_id, with_for_update=True)
     if proposal is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="proposal not found")
 

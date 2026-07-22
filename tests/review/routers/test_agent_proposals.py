@@ -149,6 +149,40 @@ async def test_illegal_transition_409(session: AsyncSession, seed_test_agent: tu
     assert "illegal transition" in r.text.lower() or "executed -> failed" in r.text.lower()
 
 
+async def test_proposal_loaded_under_row_lock(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """The proposal row is loaded FOR UPDATE so the transition guard is atomic (phaze-jlu6).
+
+    The read-check-write was a TOCTOU: two concurrent PATCHes (the phaze-fa2p double-dispatch) both
+    read cur=APPROVED and the loser overwrote the winner. Taking a row lock on load serializes them.
+    We assert the lock is requested by spying on ``session.get``; genuine two-transaction contention
+    is not reproducible in the single-connection savepoint test harness.
+    """
+    agent, raw_token = seed_test_agent
+    _, proposal_id = await _seed_file_and_proposal(session, agent.id, proposal_status=ProposalStatus.APPROVED)
+
+    real_get = session.get
+    calls: list[dict[str, object]] = []
+
+    async def _spy_get(entity: object, ident: object, **kwargs: object) -> object:
+        if entity is RenameProposal:
+            calls.append(kwargs)
+        return await real_get(entity, ident, **kwargs)
+
+    session.get = _spy_get  # type: ignore[method-assign]
+    try:
+        async with _make_client(session, raw_token) as ac:
+            r = await ac.patch(
+                f"/api/internal/agent/proposals/{proposal_id}/state",
+                json={"proposal_state": "executed", "file_state": "moved", "current_path": "/new/x.mp3"},
+            )
+    finally:
+        session.get = real_get  # type: ignore[method-assign]
+
+    assert r.status_code == 200
+    assert calls, "expected the proposal to be loaded via session.get"
+    assert calls[0].get("with_for_update") is True
+
+
 async def test_pending_to_executed_409(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """PENDING is NOT in _PROPOSAL_TRANSITIONS allowed-from set -> 409."""
     agent, raw_token = seed_test_agent
