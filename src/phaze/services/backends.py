@@ -56,7 +56,7 @@ from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
-from phaze.services.pipeline import MUSIC_VIDEO_TYPES
+from phaze.services.pipeline import MUSIC_VIDEO_TYPES, get_live_job_keys
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.services.stage_status import inflight_clause
@@ -608,15 +608,22 @@ class KueueBackend(_BaseBackend):
         forever, reconcile scopes away from it, orphan recovery excludes it (it IS in-flight), and the
         slot leaks. Enough leaks and the lane wedges at "N/N in flight" with zero real workloads.
 
-        **The callback path stays PRIMARY -- this only catches LOST callbacks.** Two mechanisms enforce
-        that, and both are load-bearing:
+        **The callback path stays PRIMARY -- this only catches LOST callbacks.** Three mechanisms enforce
+        that, and all are load-bearing:
 
+        0. **The broker-liveness gate (phaze-31q3).** BEFORE the age bound, skip any row whose
+           ``s3_upload:<file_id>`` job is still ``queued``/``active`` in ``saq_jobs`` (the same
+           :func:`get_live_job_keys` probe recovery uses). The age bound alone CANNOT tell a lost callback
+           from live work: ``updated_at`` bumps only at dispatch/re-stage, not mid-transfer, and NOT while a
+           job waits in the io-lane backlog -- so a multi-GB upload that legitimately transfers past the bound,
+           or a still-queued job whose SAQ clock has not even started, genuinely reads UPLOADING with an old
+           timestamp and would be reaped mid-flight. A live broker key means the ``s3_upload`` job (and its
+           ``/uploaded`` /``/failed`` callback) still owns the row regardless of age; never reap it.
         1. **The age bound.** A row is a candidate only when ``now - updated_at`` exceeds its per-status
            bound (:meth:`_staging_stale_bound_sec`). ``updated_at`` moves on EVERY live-path write (the
-           initial stage stamp, and ``redrive_upload``'s re-stage), so an actively-progressing burst keeps
-           resetting the clock. The UPLOADING bound is deliberately sized above the largest real
-           ``upload_file_saq_timeout_sec`` net because a multi-GB multipart upload legitimately transfers
-           for hours while bumping NO timestamp.
+           initial stage stamp, and ``redrive_upload``'s re-stage -- phaze-2hv9), so an actively-progressing
+           burst keeps resetting the clock. It is a coarse backstop for the case where even the broker row is
+           gone (a lost/swept job), the liveness gate above being the precise live-vs-lost discriminator.
         2. **The CAS.** The spill goes through the single awaiting writer
            (:func:`hold_awaiting_cloud`) in SPILL mode with ``expect_status`` pinned to the status this
            reaper actually OBSERVED. A callback that lands between our read and our update advances the
@@ -658,6 +665,12 @@ class KueueBackend(_BaseBackend):
         # is made against that fresh read, never a stale snapshot.
         cloud_job_ids = [row.id for row in rows]
 
+        # phaze-31q3: snapshot the live-broker key set ONCE per sweep (degrade-safe: an empty set on any
+        # read failure falls the reaper back to age-only, never raising). A row whose ``s3_upload:<file_id>``
+        # key is queued/active is live work the callback path still owns -- reaping it would abort a live
+        # multipart mid-transfer AND leave the surviving job to shadow the re-drive enqueue.
+        live_keys = await get_live_job_keys(session)
+
         for cloud_job_id in cloud_job_ids:
             try:
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
@@ -674,6 +687,13 @@ class KueueBackend(_BaseBackend):
                     await session.rollback()
                     continue
                 observed_status = cloud_job.status
+                # phaze-31q3: broker-liveness gate BEFORE the age bound. A live ``s3_upload`` job means the
+                # callback path still owns this row -- never reap it, no matter how old ``updated_at`` looks
+                # (a legitimately hours-long transfer, or a job still waiting in the io-lane backlog, bumps no
+                # timestamp). Skip via rollback (releasing the xact lock), exactly like the young-row skip.
+                if f"s3_upload:{cloud_job.file_id}" in live_keys:
+                    await session.rollback()
+                    continue
                 # ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in
                 # production; assume-UTC before subtracting (a bare naive-minus-aware raises TypeError
                 # and would abort the whole sweep -- mirrors reenqueue.py's CR-02 coercion).

@@ -1793,3 +1793,82 @@ async def test_reap_re_reads_fresh_under_the_lock_and_honors_a_mid_sweep_restamp
     assert tally["staging_reaped"] == 0
     monkeypatch.undo()
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADING.value
+
+
+# === phaze-31q3: the reaper consults broker liveness before firing ===================================
+
+
+async def _seed_live_saq_job(session: AsyncSession, *, key: str, status: str = "active") -> None:
+    """Insert a saq_jobs row so :func:`get_live_job_keys` sees ``key`` as queued/active.
+
+    SAQ owns ``saq_jobs`` at runtime (Base.metadata does not), so create-if-absent first -- mirrors the
+    aborting_reaper tests. The reaper's liveness probe only reads ``key`` + ``status``.
+    """
+    from sqlalchemy import text as sa_text
+
+    await session.execute(
+        sa_text(
+            """
+            CREATE TABLE IF NOT EXISTS saq_jobs (
+                key TEXT PRIMARY KEY,
+                lock_key SERIAL NOT NULL,
+                job BYTEA NOT NULL,
+                queue TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority SMALLINT NOT NULL DEFAULT 0,
+                group_key TEXT,
+                scheduled BIGINT NOT NULL DEFAULT 0,
+                expire_at BIGINT
+            )
+            """
+        )
+    )
+    await session.execute(
+        sa_text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:key, :job, :queue, :status, 0)"),
+        {"key": key, "job": b"{}", "queue": "phaze-agent-nox-io", "status": status},
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_a_row_whose_s3_upload_job_is_live_in_the_broker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-31q3: an aged UPLOADING row with a LIVE ``s3_upload`` broker key is NEVER reaped.
+
+    The age bound alone cannot tell a lost callback from live work: ``updated_at`` bumps only at
+    dispatch/re-stage, so a multi-GB upload that legitimately transfers past the bound (or a job still
+    queued in the io-lane backlog) reads UPLOADING with an old timestamp. If the broker still holds the
+    ``s3_upload:<file_id>`` key queued/active, the callback path owns the row -- reaping it would abort a
+    live multipart mid-transfer. The reaper must consult :func:`get_live_job_keys` and skip.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="active")
+
+    assert await backend.in_flight_count(session) == 1
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # live broker key -> NOT reaped despite age
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADING.value
+    assert await backend.in_flight_count(session) == 1  # slot still (legitimately) held by the live job
+
+
+@pytest.mark.asyncio
+async def test_reap_still_fires_when_the_broker_key_is_terminal_not_live(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-31q3: a FAILED/terminal ``s3_upload`` broker row does NOT protect the aged row (only live keys do).
+
+    ``get_live_job_keys`` returns only ``queued``/``active`` keys. A row whose job settled ``failed`` (the
+    retries=0 terminal state) is genuinely lost, so the reaper's safety net must still fire.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="failed")  # terminal, NOT live
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # terminal key is not live -> the lost row is reaped
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
