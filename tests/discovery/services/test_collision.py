@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.collision import build_tree
@@ -22,6 +23,13 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+async def _ensure_agent(session: AsyncSession, agent_id: str, scan_roots: list[str]) -> None:
+    """Create an agent with the given scan_roots if it does not already exist."""
+    if await session.get(Agent, agent_id) is None:
+        session.add(Agent(id=agent_id, name=agent_id, kind="fileserver", scan_roots=scan_roots))
+        await session.flush()
+
+
 async def _create_proposal(
     session: AsyncSession,
     *,
@@ -30,17 +38,19 @@ async def _create_proposal(
     status: str = ProposalStatus.APPROVED,
     original_filename: str = "test.mp3",
     original_dir: str | None = None,
+    agent_id: str = "test-fileserver",
 ) -> RenameProposal:
     """Create a FileRecord + RenameProposal pair for testing.
 
     ``original_dir`` pins the file's source directory (used to reproduce two
     in-place renames sharing a directory); when omitted each file gets a unique
-    directory so it never collides with another by accident.
+    directory so it never collides with another by accident. ``agent_id`` selects
+    the owning agent (whose ``scan_roots`` drive the owning-root normalization).
     """
     file_id = uuid.uuid4()
     source_dir = original_dir if original_dir is not None else f"/music/{uuid.uuid4().hex}"
     file_record = FileRecord(
-        agent_id="test-fileserver",
+        agent_id=agent_id,
         id=file_id,
         sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
         original_path=f"{source_dir}/{original_filename}",
@@ -216,6 +226,188 @@ class TestGetCollisionIds:
         ids = await get_collision_ids(session)
         assert str(p1.id) in ids
         assert str(p2.id) in ids
+
+
+# ---------------------------------------------------------------------------
+# phaze-dqx8 — the collision key must identify a REAL destination: keyed per
+# agent + owning scan_root, with the in-place arm normalized into the same
+# root-relative namespace as proposed_path. Catches cross-form collisions;
+# never invents cross-agent / cross-scan-root phantoms.
+# ---------------------------------------------------------------------------
+
+
+class TestCollisionKeyNormalization:
+    """phaze-dqx8: like-with-like collision keying per agent/scan-root."""
+
+    @pytest.mark.asyncio
+    async def test_inplace_and_path_proposal_to_same_dest_collide(self, session: AsyncSession) -> None:
+        """A rename-in-place and a path proposal resolving to the SAME on-disk file now collide.
+
+        P1: in-place rename of ``/data/music/X/a.mp3`` -> ``b.mp3`` (dest
+        ``/data/music/X/b.mp3``). P2: path proposal for ``/data/music/Y/c.mp3``
+        with proposed_path ``X`` and filename ``b.mp3`` (dest
+        ``/data/music/X/b.mp3``). Pre-fix these keyed as ``/data/music/X/b.mp3``
+        vs ``X/b.mp3`` and never matched -- the missed collision.
+        """
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-norm", ["/data/music"])
+        await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path=None,  # in-place rename
+            original_filename="a.mp3",
+            original_dir="/data/music/X",
+            agent_id="srv-norm",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path="X",  # path proposal into the same dir
+            original_filename="c.mp3",
+            original_dir="/data/music/Y",
+            agent_id="srv-norm",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][1] == 2
+        assert result[0][0] == "X/b.mp3"
+
+    @pytest.mark.asyncio
+    async def test_same_relative_path_on_different_agents_is_not_a_phantom_collision(self, session: AsyncSession) -> None:
+        """Two agents each targeting the same RELATIVE dest are unrelated -> no phantom collision."""
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-a", ["/data/music"])
+        await _ensure_agent(session, "srv-b", ["/data/music"])
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-a",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-b",
+        )
+
+        result = await detect_collisions(session)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_same_relative_path_under_different_scan_roots_of_one_agent_is_not_a_collision(self, session: AsyncSession) -> None:
+        """One agent with two scan_roots: the same relative dest under each root is NOT a collision."""
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-multi", ["/data/music", "/mnt/archive"])
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-multi",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/mnt/archive/B",
+            agent_id="srv-multi",
+        )
+
+        result = await detect_collisions(session)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_same_agent_same_scan_root_same_relative_path_collides(self, session: AsyncSession) -> None:
+        """Positive control: same agent + scan_root + relative dest DOES collide."""
+        from phaze.services.collision import detect_collisions
+
+        await _ensure_agent(session, "srv-one", ["/data/music"])
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-one",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-one",
+        )
+
+        result = await detect_collisions(session)
+        assert len(result) == 1
+        assert result[0][1] == 2
+        assert result[0][0] == "Coachella 2024/set.mp3"
+
+    @pytest.mark.asyncio
+    async def test_cross_form_collision_ids_flag_both_proposals(self, session: AsyncSession) -> None:
+        """get_collision_ids flags BOTH the in-place and the path proposal of a cross-form collision."""
+        from phaze.services.collision import get_collision_ids
+
+        await _ensure_agent(session, "srv-ids", ["/data/music"])
+        p1 = await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path=None,
+            original_filename="a.mp3",
+            original_dir="/data/music/X",
+            agent_id="srv-ids",
+        )
+        p2 = await _create_proposal(
+            session,
+            proposed_filename="b.mp3",
+            proposed_path="X",
+            original_filename="c.mp3",
+            original_dir="/data/music/Y",
+            agent_id="srv-ids",
+        )
+
+        ids = await get_collision_ids(session)
+        assert str(p1.id) in ids
+        assert str(p2.id) in ids
+
+    @pytest.mark.asyncio
+    async def test_phantom_cross_agent_ids_are_not_flagged(self, session: AsyncSession) -> None:
+        """get_collision_ids must NOT badge unrelated cross-agent proposals sharing a relative dest."""
+        from phaze.services.collision import get_collision_ids
+
+        await _ensure_agent(session, "srv-x", ["/data/music"])
+        await _ensure_agent(session, "srv-y", ["/data/music"])
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="f.mp3",
+            original_dir="/data/music/A",
+            agent_id="srv-x",
+        )
+        await _create_proposal(
+            session,
+            proposed_filename="set.mp3",
+            proposed_path="Coachella 2024",
+            original_filename="g.mp3",
+            original_dir="/data/music/B",
+            agent_id="srv-y",
+        )
+
+        ids = await get_collision_ids(session)
+        assert ids == set()
 
 
 # ---------------------------------------------------------------------------

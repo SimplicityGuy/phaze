@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, ScalarSelect, String, and_, case, func, or_, select, type_coerce
 
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 
@@ -15,20 +16,65 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# The effective destination directory of an approved proposal, mirroring the executor
-# (tasks/execution.py:_resolve_destination): a non-null proposed_path is the relative
-# destination dir; a NULL/in-place proposed_path resolves to the file's own directory,
-# i.e. dirname(original_path). ``regexp_replace(..., '/[^/]*$', '')`` strips the trailing
-# ``/filename`` to yield that directory. Using COALESCE here is what lets rename-in-place
-# proposals (proposed_path IS NULL) be compared by their true on-disk destination instead
-# of collapsing to ``/filename`` (Postgres ``concat`` ignores NULLs) -- phaze-7czn.
-def _dest_path_expr() -> ColumnElement[str]:
-    """Build the ``<effective-dir>/<proposed_filename>`` key expression for collision grouping."""
-    effective_dir = func.coalesce(
-        RenameProposal.proposed_path,
-        func.regexp_replace(FileRecord.original_path, "/[^/]*$", ""),
+def _owning_root_expr() -> ScalarSelect[str]:
+    """Scalar subquery: the owning scan_root of a file's ``original_path``.
+
+    Mirrors the executor's ``_resolve_and_check_containment`` (tasks/execution.py):
+    a file's destination is resolved under whichever of its agent's ``scan_roots``
+    contains its ``original_path``. ``Agent.scan_roots`` is a JSONB array, so we
+    unnest it and pick the entry that is a prefix of ``original_path``. When
+    scan_roots overlap we take the LONGEST (most specific) match, which is
+    order-independent and deterministic. Returns NULL when no scan_root matches
+    (an unconfigured/legacy agent) -- callers keep the absolute dirname in that
+    case rather than fabricating a root-relative path.
+    """
+    roots = func.jsonb_array_elements_text(Agent.scan_roots).table_valued("value").lateral()
+    return (
+        select(roots.c.value)
+        .select_from(Agent, roots)
+        .where(Agent.id == FileRecord.agent_id)
+        .where(
+            or_(
+                FileRecord.original_path == roots.c.value,
+                func.starts_with(FileRecord.original_path, roots.c.value.op("||")("/")),
+            ),
+        )
+        .order_by(func.length(roots.c.value).desc())
+        .limit(1)
+        .correlate(FileRecord)
+        .scalar_subquery()
     )
-    return func.concat(effective_dir, "/", RenameProposal.proposed_filename)
+
+
+# A collision means two approved proposals would land the SAME physical file at the SAME
+# destination. Pre-fix, the grouping key mixed namespaces -- a RELATIVE proposed_path in one
+# COALESCE arm and an ABSOLUTE dirname(original_path) in the other -- and ignored the owning
+# agent and scan_root entirely. That both MISSED real collisions (an in-place rename and a
+# path proposal resolving to the same on-disk file keyed differently) and INVENTED phantom
+# ones (two agents, or two scan_roots of one agent, sharing a relative key though their real
+# destinations are unrelated), permanently blocking dispatch (phaze-dqx8). The key now
+# identifies a REAL destination with three parts compared like-with-like:
+#   * FileRecord.agent_id        -- a file server owns its own filesystem namespace;
+#   * the owning scan_root       -- distinguishes distinct roots of a single agent;
+#   * a root-relative dest path  -- proposed_path is already relative; the in-place arm's
+#                                   absolute dirname(original_path) is stripped of the owning
+#                                   scan_root prefix so both arms share one namespace.
+def _dest_key_columns() -> tuple[ColumnElement[str], ScalarSelect[str], ColumnElement[str]]:
+    """Return ``(agent_id, owning_root, dest_path)`` -- the composite collision-grouping key."""
+    owning_root = _owning_root_expr()
+    dirname = func.regexp_replace(FileRecord.original_path, "/[^/]*$", "")
+    # In-place (proposed_path IS NULL) dir, normalized into proposed_path's relative
+    # namespace: strip the owning scan_root prefix when known, else keep it absolute.
+    inplace_dir = case(
+        (
+            and_(owning_root.isnot(None), func.starts_with(dirname, owning_root)),
+            func.ltrim(func.substr(dirname, func.length(owning_root) + 1), "/"),
+        ),
+        else_=dirname,
+    )
+    effective_dir = func.coalesce(RenameProposal.proposed_path, inplace_dir)
+    dest_path = type_coerce(effective_dir.op("||")("/").op("||")(RenameProposal.proposed_filename), String)
+    return type_coerce(FileRecord.agent_id, String), owning_root, dest_path
 
 
 @dataclass
@@ -44,18 +90,21 @@ class TreeNode:
 async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
     """Find approved proposals that would collide at the same destination.
 
-    Returns list of (full_path, count) tuples where count > 1. Covers BOTH
-    path-relative renames and NULL-path (rename-in-place) proposals, keying each
-    on its effective on-disk destination so two in-place renames in the same
-    source directory that target the same filename are flagged (phaze-7czn).
+    Returns list of (dest_path, count) tuples where count > 1. Two proposals
+    collide only when they share the same agent, the same owning scan_root, AND
+    the same root-relative destination path (:func:`_dest_key_columns`), so
+    cross-form collisions are caught (an in-place rename and a path proposal
+    resolving to one on-disk file) while cross-agent / cross-scan-root phantoms
+    are not (phaze-dqx8). Covers both path-relative renames and NULL-path
+    (rename-in-place) proposals (phaze-7czn).
     """
-    full_path = _dest_path_expr()
+    agent_id, owning_root, dest_path = _dest_key_columns()
     stmt = (
-        select(full_path.label("dest"), func.count().label("cnt"))
+        select(dest_path.label("dest"), func.count().label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
         .where(RenameProposal.status == ProposalStatus.APPROVED)
-        .group_by(full_path)
+        .group_by(agent_id, owning_root, dest_path)
         .having(func.count() > 1)
     )
     result = await session.execute(stmt)
@@ -65,25 +114,22 @@ async def detect_collisions(session: AsyncSession) -> list[tuple[str, int]]:
 async def get_collision_ids(session: AsyncSession) -> set[str]:
     """Return set of string UUIDs for proposals that participate in collisions.
 
-    Used by template rendering to show collision badges on affected rows. Mirrors
-    :func:`detect_collisions`, including NULL-path (in-place) proposals so those
-    rows also render a collision badge (phaze-7czn).
+    Used by template rendering to show collision badges on affected rows. Uses
+    the SAME composite key as :func:`detect_collisions` via a window count, so a
+    proposal is flagged iff another approved proposal shares its agent, owning
+    scan_root, and root-relative destination (phaze-dqx8) -- including NULL-path
+    (in-place) proposals (phaze-7czn).
     """
-    collisions = await detect_collisions(session)
-    if not collisions:
-        return set()
-
-    collision_paths = [path for path, _ in collisions]
-    full_path = _dest_path_expr()
-    stmt = (
-        select(RenameProposal.id)
+    agent_id, owning_root, dest_path = _dest_key_columns()
+    cnt = func.count().over(partition_by=[agent_id, owning_root, dest_path])
+    scoped = (
+        select(RenameProposal.id.label("pid"), cnt.label("cnt"))
         .select_from(RenameProposal)
         .join(FileRecord, RenameProposal.file_id == FileRecord.id)
-        .where(
-            RenameProposal.status == ProposalStatus.APPROVED,
-            full_path.in_(collision_paths),
-        )
+        .where(RenameProposal.status == ProposalStatus.APPROVED)
+        .subquery()
     )
+    stmt = select(scoped.c.pid).where(scoped.c.cnt > 1)
     result = await session.execute(stmt)
     return {str(row[0]) for row in result.all()}
 
