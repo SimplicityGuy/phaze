@@ -13,6 +13,9 @@
      * approve_url / skip_url / undo_url / edit_url -- the VERIFIED routes (rename/move = PATCH).
      * approve_method -- the APPROVE verb, templated so a later facet (Tag, Plan 60-03) can pass
                          "post" WITHOUT editing this literal; rename/move leave it defaulted to patch.
+     * undo_method    -- the UNDO verb, templated in BOTH the pending and the approved/lifecycle
+                         branch (phaze-ldaq) so the tag facet's POST-only /tags/{id}/undo route
+                         works from either row state; rename/move pass none and stay defaulted patch.
      * edit_facet     -- "filename" or "path"; posted as the hidden `facet` field on SAVE EDIT.
      * row_state      -- "pending" (default) shows Approve/Edit/Skip; "approved"/"applied" show the
                          emerald lifecycle word + a neutral UNDO (Pattern 6). get_pending_proposal_rows
@@ -39,7 +42,12 @@
         {% set _life_tint = 'text-gray-500 dark:text-gray-400' if row_state == 'skipped' else 'text-emerald-600 dark:text-emerald-300' %}
         <div class="flex items-center gap-1.5 shrink-0 ml-4">
             <span class="font-jura text-[11px] font-medium uppercase tracking-wider {{ _life_tint }}">{{ _life_word }}</span>
-            <button type="button" hx-patch="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
+            {# phaze-ldaq: this branch is ALSO reached by the tag facet's post-write "approved" row,
+               which passes undo_method="post" because /tags/{id}/undo is POST-only -- unlike this
+               branch, the pending branch below already templates the verb. Rename/move pass no
+               undo_method (defaults to "patch") and their undo routes are PATCH, so templating the
+               verb here is a no-op for them and the fix for the tag facet. #}
+            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
         </div>
         {% else %}
         {# Pending action cluster -- Alpine LOCAL island (x-data above); swaps to Save edit / Discard while editing.

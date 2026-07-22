@@ -240,6 +240,73 @@ async def test_inline_edit_save(client: AsyncClient, session: AsyncSession) -> N
 
 
 @pytest.mark.asyncio
+async def test_compare_tags_renders_id_stamped_hidden_write_inputs(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8wzi: the Write Tags form's hidden inputs carry the stable id save_tag_field OOB-syncs.
+
+    Without a stable, predictable id, the PUT response has nothing to target and the operator's
+    inline edit can never reach the value the form actually submits.
+    """
+    # artist/title left None so the filename-parse fallback proposes a change (current None -> a
+    # non-None proposed value), which is what makes ``has_changes`` true and the form render at all.
+    file_record, _ = await _create_executed_file(session, filename="New Artist - New Title.mp3", artist=None, title=None)
+    response = await client.get(f"/tags/{file_record.id}/compare")
+    assert response.status_code == 200
+    assert f'id="tag-write-hidden-artist-{file_record.id}"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_save_oob_syncs_write_tags_hidden_input(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8wzi: saving an inline edit OOB-swaps the Write Tags form's hidden input to the typed
+    value, so the form -- which lives OUTSIDE the table the edited <td> is inside of and is otherwise
+    never touched by the edit's own "closest td" swap -- submits what the operator actually typed
+    instead of the stale pre-edit snapshot frozen at compare-render time.
+    """
+    file_record, _ = await _create_executed_file(session, artist="Sven Vath")
+    response = await client.put(
+        f"/tags/{file_record.id}/edit/artist",
+        data={"artist": "Sven Väth"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert 'hx-swap-oob="true"' in body
+    assert f'id="tag-write-hidden-artist-{file_record.id}"' in body
+    assert 'name="artist"' in body
+    assert 'value="Sven Väth"' in body
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_save_then_write_uses_edited_value(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8wzi end-to-end: the value the OOB sync carries is what write_file_tags receives and
+    writes, and the write is correctly classified as a manual edit (not silently reported as
+    source="proposal" when the operator's correction was in fact used).
+    """
+    file_record, _ = await _create_executed_file(session, artist="Sven Vath", title="Old Title")
+
+    edit_response = await client.put(
+        f"/tags/{file_record.id}/edit/artist",
+        data={"artist": "Sven Väth"},
+    )
+    assert "Sven Väth" in edit_response.text
+
+    # The browser's htmx runtime would have OOB-swapped the hidden input to "Sven Väth" by now; the
+    # test client has no DOM, so submit what that swap would have produced (the exact value asserted
+    # in the OOB fragment above) to prove the write path honors it end-to-end.
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Sven Vath", "title": "Old Title"}),
+        patch("phaze.services.tag_writer.write_tags") as mock_write_tags,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        write_response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "Sven Väth", "title": "Old Title"},
+        )
+
+    assert write_response.status_code == 200
+    written_tags = mock_write_tags.call_args.args[1]
+    assert written_tags["artist"] == "Sven Väth", "the operator's correction must be what mutagen writes"
+
+
+@pytest.mark.asyncio
 async def test_write_tags_success(client: AsyncClient, session: AsyncSession) -> None:
     """POST /tags/{file_id}/write with valid data returns success status."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
@@ -555,6 +622,35 @@ async def test_write_tags_from_v7_workspace_returns_diff_row_with_undo(client: A
     assert f'id="row-{file_record.id}"' not in body
     assert "<tr" not in body
     assert f'id="detail-{file_record.id}"' not in body
+
+
+@pytest.mark.asyncio
+async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-ldaq: the approved row's UNDO button must issue the SAME verb the router accepts.
+
+    /tags/{id}/undo is POST-only (@router.post). The shared _diff_row.html's lifecycle branch used
+    to hard-code hx-patch on the UNDO button regardless of the caller's undo_method, so every
+    post-approve row emitted a PATCH against a route that only serves POST -- 405, silently dropped
+    by htmx. Assert the rendered button uses hx-post (templated from undo_method="post") and never
+    hx-patch.
+    """
+    file_record, _ = await _create_executed_file(session, artist="Original Artist")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(
+            f"/tags/{file_record.id}/write",
+            data={"artist": "New Artist"},
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert f'hx-post="/tags/{file_record.id}/undo"' in body
+    assert "hx-patch=" not in body
 
 
 @pytest.mark.asyncio

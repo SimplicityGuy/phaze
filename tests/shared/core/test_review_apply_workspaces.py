@@ -395,6 +395,70 @@ async def test_tag_bulk_releases_lock_for_subsequent_submit(
 
 
 @pytest.mark.asyncio
+async def test_tag_bulk_write_oob_removes_terminal_rows_and_refreshes_subcount(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-gwe1: a bulk write that resolves rows to a TERMINAL outcome (COMPLETED write, or a fresh
+    NO_OP marker) must OOB-remove those rows and refresh the subcount -- otherwise they linger on
+    screen as still-pending rows with a live (and now redundant/undo-chain-corrupting) APPROVE.
+
+    A file whose write genuinely COMPLETES (mutagen write + verify both mocked to succeed) is
+    terminal and must be OOB-deleted by its ``tagwrite-row-{id}`` id; the subcount refresh must also
+    be present so the header doesn't keep advertising the pre-bulk count.
+    """
+    completed, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="tagwrite-row-{completed.id}" hx-swap-oob="delete"' in body, "a COMPLETED write's row must be OOB-removed"
+    assert 'id="stage-workspace-subcount" hx-swap-oob="true"' in body, "the subcount must be OOB-refreshed"
+    assert "0 awaiting approval" in body, "the just-written file is gone from the queue -- subcount reflects it"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-gwe1: DISCREPANCY and FAILED are non-terminal BY DESIGN (a DISCREPANCY row re-offers
+    itself for retry; a FAILED write never actually wrote anything) -- their rows must NOT be
+    OOB-removed, unlike a COMPLETED write.
+    """
+    discrepancy_file, _ = await seed_executed_file_with_metadata(
+        original_filename="Disc Artist - Disc Title.mp3", artist=None, title=None, album="Keep Album"
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"sent": "Disc Artist", "got": "Disc  Artist"}}),
+    ):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    assert f'id="tagwrite-row-{discrepancy_file.id}" hx-swap-oob="delete"' not in resp.text, "a DISCREPANCY row stays in the queue by design"
+
+    # FAILED path: mutagen write itself raises, so nothing was actually written.
+    failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("read-only file")),
+    ):
+        resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp2.status_code == 200
+    assert f'id="tagwrite-row-{failed_file.id}" hx-swap-oob="delete"' not in resp2.text, "a FAILED write never wrote anything -- row stays"
+
+
+@pytest.mark.asyncio
 async def test_review_audit_one_row(
     client: AsyncClient,
     session: AsyncSession,
@@ -495,9 +559,11 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
 
     An EXECUTED file whose filename parses to a new artist+title (a >=1-change comparison, no COMPLETED
     ``TagWriteLog``) surfaces in the queue. Its per-row APPROVE POSTs ``/tags/{id}/write`` (the write IS the
-    apply -- NOT a proposals PATCH) and its per-row UNDO POSTs ``/tags/{id}/undo``; the header bulk button
-    POSTs the id-less server-predicate ``/tags/bulk-write-no-discrepancies`` (D-03). Tag rows carry NO
-    SAVE-EDIT (tag inline-edit is out of the initial cut) and NO proposals-facet ``hx-patch``.
+    apply -- NOT a proposals PATCH); the header bulk button POSTs the id-less server-predicate
+    ``/tags/bulk-write-no-discrepancies`` (D-03). Tag rows carry NO SAVE-EDIT (tag inline-edit is out of
+    the initial cut) and NO proposals-facet ``hx-patch``. phaze-o5rf: a FRESH row (no TagWriteLog at
+    all yet) renders NO undo control -- undo_tag_write would 404 on it (nothing to revert), so the
+    control must not be advertised.
     """
     file, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
 
@@ -507,7 +573,9 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
 
     # Per-row apply wiring is the tag write path (POST), NOT a proposals PATCH.
     assert f'hx-post="/tags/{file.id}/write"' in body, "APPROVE posts the tag write, not a proposals PATCH"
-    assert f'hx-post="/tags/{file.id}/undo"' in body, "UNDO posts the tag undo route"
+    # phaze-o5rf: a fresh row (no prior TagWriteLog) has nothing to undo -- no undo control at all.
+    assert f"/tags/{file.id}/undo" not in body, "a fresh row with no prior write log must not advertise UNDO"
+    assert "UNDO" not in body
     # The bulk header is the id-less D-03 server predicate.
     assert 'hx-post="/tags/bulk-write-no-discrepancies"' in body
     assert "APPROVE ALL WITH NO DISCREPANCIES" in body
@@ -516,6 +584,35 @@ async def test_tagwrite_workspace_apply_and_bulk_wiring(
     assert "/proposals/" not in body, "tag apply never routes through a proposals PATCH"
     # The computed tag diff surfaces (before/after summaries autoescaped through the shared partial).
     assert "New Artist" in body and "grid-cols-[1fr_auto_1fr]" in body
+
+
+@pytest.mark.asyncio
+async def test_tagwrite_workspace_shows_undo_only_with_prior_write_log(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+    session: AsyncSession,
+) -> None:
+    """phaze-o5rf: UNDO is surfaced ONLY on a row that already carries a (non-terminal) TagWriteLog --
+    a DISCREPANCY entry -- where undo_tag_write can genuinely revert the file. This is the ONLY state
+    where the pending queue's advertised reversibility is actually reachable.
+    """
+    file, _ = await seed_executed_file_with_metadata(original_filename="Discrepant Artist - Some Title.mp3", artist=None, title=None)
+    session.add(
+        TagWriteLog(
+            file_id=file.id,
+            before_tags={"title": None},
+            after_tags={"title": "Some Title"},
+            source="review",
+            status="discrepancy",
+        )
+    )
+    await session.commit()
+
+    frag = await client.get("/s/tagwrite", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    assert f'hx-post="/tags/{file.id}/undo"' in body, "a row with a prior write log DOES advertise a working UNDO"
 
 
 @pytest.mark.asyncio

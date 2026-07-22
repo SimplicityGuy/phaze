@@ -193,9 +193,10 @@ async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> Ta
 
 # phaze-soph: statuses whose TagWriteLog actually mutated the file on disk and can therefore be
 # reverted. COMPLETED and DISCREPANCY both ran ``write_tags`` (DISCREPANCY = wrote, but verify found a
-# normalization mismatch); FAILED never wrote and NO_OP is a zero-change marker, so neither is a real
-# write to undo.
-_UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY)
+# normalization mismatch), and VERIFY_FAILED (phaze-vq3g) also LANDED on disk -- only its confirming
+# re-read failed -- so all three carry a real before_tags snapshot to restore. FAILED never wrote and
+# NO_OP is a zero-change marker, so neither is a real write to undo.
+_UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED)
 
 
 async def _get_write_log_to_undo(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
@@ -693,6 +694,16 @@ async def bulk_write_no_discrepancies(
     mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip. The candidate set is capped at
     :data:`_MAX_BULK_TAG_WRITE` per submit (D-03) so a large first-time-visible applied backlog cannot
     blow up the loop. Each qualifying file is written via the EXISTING :func:`execute_tag_write`.
+
+    phaze-gwe1: the pending workspace's rows are NOT re-queried/re-rendered by anything else after
+    this commits (no self-poll, and the chrome ``/pipeline/stats`` poll is counts-only) -- every row
+    this handler resolves to a TERMINAL outcome (a fresh NO_OP marker, or a write that actually
+    COMPLETED) is stale on screen: still "pending" with a live APPROVE that would re-write an
+    already-written file and shadow the bulk write's own before/after snapshot in the undo chain. The
+    response therefore also OOB-removes exactly those rows (keyed by ``tagwrite-row-{id}``, the SAME
+    id the workspace renders) and refreshes the subcount. A DISCREPANCY or FAILED outcome is
+    deliberately left in place (both are non-terminal by design -- DISCREPANCY re-offers itself for a
+    retry, FAILED never wrote anything -- so the row staying pending is correct, not stale).
     """
     # phaze-u28m: serialize the whole bulk operation. A second concurrent/duplicate submit that
     # cannot take the lock does NOTHING (no re-select, no double disk write, no duplicate audit rows)
@@ -715,6 +726,10 @@ async def bulk_write_no_discrepancies(
     failed = 0
     discrepancy = 0
     verify_failed = 0
+    # phaze-gwe1: files whose tag-write reached a TERMINAL state this pass (COMPLETED / NO_OP) --
+    # the response removes their stale pending rows. DISCREPANCY/VERIFY_FAILED/FAILED are
+    # non-terminal by design and stay in the queue.
+    resolved_ids: list[uuid.UUID] = []
     try:
         terminal_subq = _terminal_tagwrite_subq()
         stmt = (
@@ -759,6 +774,7 @@ async def bulk_write_no_discrepancies(
                     )
                     # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
                     await session.commit()
+                    resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
                     continue
                 if not _qualifies_for_bulk_write(comparison):
                     # A >=1-change file that would blank an existing tag: never bulk-written (stays
@@ -776,6 +792,7 @@ async def bulk_write_no_discrepancies(
                 # clean) are tallied separately and surfaced, never reported as clean successes.
                 if log_entry.status == TagWriteStatus.COMPLETED:
                     written += 1
+                    resolved_ids.append(file_id)  # phaze-gwe1: terminal clean write -- remove the stale pending row
                 elif log_entry.status == TagWriteStatus.DISCREPANCY:
                     discrepancy += 1
                 elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
@@ -795,10 +812,26 @@ async def bulk_write_no_discrepancies(
 
     stats = await _get_tag_stats(session)
     toast_message = _bulk_write_toast(written, discrepancy, verify_failed, failed)
+    # phaze-gwe1: re-query the SAME builder the workspace itself renders from (deferred import --
+    # services.review imports helpers FROM this module, so importing it back at module scope would
+    # cycle; by call time this module is already fully loaded) so the refreshed subcount always
+    # matches the row count the operator actually sees after this OOB update lands.
+    from phaze.services.review import get_tagwrite_review_rows  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
+
+    remaining = len(await get_tagwrite_review_rows(session))
+    subcount = f"{remaining} awaiting approval · mutagen will write these tags"
     return templates.TemplateResponse(
         request=request,
         name="tags/partials/bulk_write_response.html",
-        context={"request": request, "stats": stats, "written": written, "toast_message": toast_message},
+        context={
+            "request": request,
+            "stats": stats,
+            "written": written,
+            "toast_message": toast_message,
+            "resolved_ids": resolved_ids,
+            "subcount": subcount,
+            "row_id_prefix": _V7_TAGWRITE_ROW_PREFIX,
+        },
     )
 
 

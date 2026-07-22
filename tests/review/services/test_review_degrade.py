@@ -189,6 +189,34 @@ async def test_get_tagwrite_review_rows_admits_applied_excludes_completed(sessio
     assert completed_id not in offered_ids
 
 
+@pytest.mark.asyncio
+async def test_get_tagwrite_review_rows_has_prior_write_flag(session: AsyncSession) -> None:
+    """phaze-o5rf: ``has_prior_write`` is False for a fresh row (no log at all -- undo_tag_write would
+    404 on it) and True for a row that already carries a non-terminal (DISCREPANCY) TagWriteLog,
+    where undo_tag_write can actually revert something. Both rows stay IN the queue (only
+    COMPLETED/NO_OP are terminal/excluded), so the flag is the only signal distinguishing them.
+    """
+    fresh_id = await _seed_applied_tagwrite_file(session)
+
+    discrepancy_id = await _seed_applied_tagwrite_file(session)
+    session.add(
+        TagWriteLog(
+            id=uuid.uuid4(),
+            file_id=discrepancy_id,
+            before_tags={"title": None},
+            after_tags={"title": "Some Title"},
+            source="review",
+            status=TagWriteStatus.DISCREPANCY.value,
+        )
+    )
+    await session.commit()
+
+    rows_by_id = {row["file_id"]: row for row in await get_tagwrite_review_rows(session)}
+
+    assert rows_by_id[fresh_id]["has_prior_write"] is False
+    assert rows_by_id[discrepancy_id]["has_prior_write"] is True
+
+
 # ---------------------------------------------------------------------------
 # WR-01 (85-REVIEW): the SQL cap must bound QUALIFYING rows, not raw candidates.
 #
