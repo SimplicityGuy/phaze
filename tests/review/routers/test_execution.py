@@ -156,12 +156,16 @@ async def test_audit_log_empty_state(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_approved(client: AsyncClient) -> None:
-    """POST /execution/start returns HTML with SSE progress container.
+    """POST /execution/start with no approved proposals returns the empty-state card.
 
     Phase 28: dispatch now writes to ``app.state.redis`` and enqueues per-agent
     via ``app.state.task_router.enqueue_for_agent``. With no approved proposals
     seeded, ``groups`` is empty -- the controller renders the progress card
     with the empty-state copy, no Redis seed, no enqueues.
+
+    phaze-5zyv: the empty-state card must NOT open an SSE stream -- no hash is
+    seeded, so a stream would poll a nonexistent key forever ("Waiting for
+    execution to start...") and never terminate.
     """
     mock_task_router = AsyncMock()
     mock_redis = AsyncMock()
@@ -170,8 +174,8 @@ async def test_execute_approved(client: AsyncClient) -> None:
 
     response = await client.post("/execution/start")
     assert response.status_code == 200
-    assert "sse-connect" in response.text
-    assert "execution/progress/" in response.text
+    assert "No approved proposals to execute." in response.text
+    assert "sse-connect" not in response.text
     # Empty fixture DB -> no enqueues.
     mock_task_router.enqueue_for_agent.assert_not_awaited()
 
@@ -269,7 +273,10 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
         response = await client.post("/execution/start")
 
     assert response.status_code == 200
-    assert "sse-connect" in response.text
+    # phaze-5zyv: no approved proposals -> empty-state card, and (crucially) NO SSE stream that
+    # would poll a never-seeded hash forever.
+    assert "No approved proposals to execute." in response.text
+    assert "sse-connect" not in response.text
     # No approved proposals in this empty fixture -> no enqueues.
     mock_task_router.enqueue_for_agent.assert_not_awaited()
 
@@ -505,18 +512,22 @@ async def test_agents_table_sort_reorders_by_completed_descending(client: AsyncC
             "agent:a2:total": "20",
         },
     )
-    mock_redis.hset = AsyncMock()
     client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
-    response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=completed&order=desc")
+    # phaze-pyv3: the sort persist now runs through an EXISTS-guarded Lua script (never a bare HSET
+    # that could resurrect a reaped key TTL-less). Patch the script accessor so we can assert the
+    # persist call carries the resolved sort + this batch key.
+    persist_mock = AsyncMock()
+    with patch("phaze.routers.execution._get_persist_sort_script", return_value=persist_mock):
+        response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=completed&order=desc")
     assert response.status_code == 200
     body = response.text
     assert body.index("Agent Two") < body.index("Agent One"), "Agent Two (completed=15) sorts before Agent One (completed=3)"
     assert 'aria-sort="descending"' in body
 
     # Persisted so the NEXT SSE tick (which re-resolves from this same hash) keeps honouring the
-    # click instead of reverting to the default order within ~1s.
-    mock_redis.hset.assert_awaited_once_with(f"exec:{batch_id}", mapping={"agents_sort": "completed", "agents_order": "desc"})
+    # click instead of reverting to the default order within ~1s -- atomically, only if the key lives.
+    persist_mock.assert_awaited_once_with(keys=[f"exec:{batch_id}"], args=["completed", "desc"], client=mock_redis)
 
 
 @pytest.mark.asyncio
@@ -544,14 +555,16 @@ async def test_agents_table_sort_unwhitelisted_key_degrades_to_default_not_422(c
             "agent:a2:total": "20",
         },
     )
-    mock_redis.hset = AsyncMock()
     client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
-    response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=__class__.__mro__")
+    persist_mock = AsyncMock()
+    with patch("phaze.routers.execution._get_persist_sort_script", return_value=persist_mock):
+        response = await client.get(f"/execution/agents-table?batch_id={batch_id}&sort=__class__.__mro__")
     assert response.status_code == 200
     body = response.text
     assert body.index("Agent One") < body.index("Agent Two"), "unwhitelisted sort degrades to the default (name asc)"
-    mock_redis.hset.assert_awaited_once_with(f"exec:{batch_id}", mapping={"agents_sort": "name", "agents_order": "asc"})
+    # The RESOLVED (degraded-to-default) value is what is persisted, never the raw wire value.
+    persist_mock.assert_awaited_once_with(keys=[f"exec:{batch_id}"], args=["name", "asc"], client=mock_redis)
 
 
 @pytest.mark.asyncio
@@ -559,13 +572,16 @@ async def test_agents_table_sort_unknown_batch_renders_empty_state(client: Async
     """A batch with no (or already-reaped) Redis hash renders the same empty state, not a 404/500."""
     mock_redis = MagicMock()
     mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.hset = AsyncMock()
     client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
-    response = await client.get("/execution/agents-table?batch_id=does-not-exist&sort=total")
+    persist_mock = AsyncMock()
+    with patch("phaze.routers.execution._get_persist_sort_script", return_value=persist_mock):
+        response = await client.get("/execution/agents-table?batch_id=does-not-exist&sort=total")
     assert response.status_code == 200
     assert "No active sub-jobs." in response.text
-    mock_redis.hset.assert_not_awaited()
+    # phaze-pyv3: an already-reaped batch (empty hgetall) must NOT be written at all -- no
+    # resurrection of a TTL-less key.
+    persist_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -608,3 +624,62 @@ async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClie
     body = response.text
     assert body.index("Agent Two") < body.index("Agent One"), "total=20 sorts before total=10, descending"
     assert 'aria-sort="descending"' in body
+
+
+# ---------------------------------------------------------------------------
+# phaze-0sv3: audit SHA256-Verified column renders for real ("move") rows.
+#
+# ``operation`` is only ever written as "move" (tasks/execution.py). The prior
+# template gated the tick/cross on ``operation in {"verify", "copy"}``, so every
+# production row fell to the grey "Not applicable" dash and the verification
+# result the DB carries was never shown. These tests drive the real operation
+# value + terminal status and assert the check / cross now render.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_verified_check_shown_for_completed_move(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed 'move' row with sha256_verified=True renders the green check (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.COMPLETED,
+        sha256_verified=True,
+        source_path="/music/verified.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="SHA256 verified"' in response.text
+    assert 'aria-label="Not applicable"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_cross_shown_for_completed_move_unverified(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed 'move' row with sha256_verified=False renders the red cross (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.COMPLETED,
+        sha256_verified=False,
+        source_path="/music/unverified.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="SHA256 not verified"' in response.text
+    assert 'aria-label="Not applicable"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncClient, session: AsyncSession) -> None:
+    """A non-terminal 'move' row keeps the "—" placeholder -- verification has not run yet (phaze-0sv3)."""
+    await create_test_execution_log(
+        session,
+        operation="move",
+        status=ExecutionStatus.IN_PROGRESS,
+        sha256_verified=False,
+        source_path="/music/inflight.mp3",
+    )
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert 'aria-label="Not applicable"' in response.text
+    assert 'aria-label="SHA256 verified"' not in response.text

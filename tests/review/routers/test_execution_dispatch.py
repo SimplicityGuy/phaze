@@ -342,9 +342,139 @@ async def test_revoked_agent_renders_banner(
     assert payload.agent_id == "agent-ok"
 
 
+@pytest.mark.asyncio
+async def test_empty_dispatch_card_has_no_sse_connect(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """phaze-5zyv: every approved proposal on a revoked agent -> empty-state card with NO SSE stream."""
+    ac, mock_router, _redis = smoke
+    await _seed_agent(session, agent_id="agent-revoked", revoked=True)
+    await _seed_approved_proposal(session, agent_id="agent-revoked", path_suffix="rev-1")
+
+    response = await ac.post("/execution/start")
+    assert response.status_code == 200, response.text
+    # The card renders the empty state...
+    assert "No approved proposals to execute." in response.text
+    # ...and does NOT open an SSE stream that would poll a never-seeded hash forever.
+    assert "sse-connect" not in response.text
+    assert "hx-ext" not in response.text
+    # Nothing was enqueued.
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
-# Collision short-circuits dispatch
+# phaze-fa2p: single-dispatch guard -- a second POST while a batch is active is refused
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_second_dispatch_rejected_while_active(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """A repeat POST while the first batch is still running is refused -- no duplicate enqueues (phaze-fa2p)."""
+    ac, mock_router, redis_client = smoke
+    await _seed_agent(session, agent_id="agent-a")
+    for i in range(3):
+        await _seed_approved_proposal(session, agent_id="agent-a", path_suffix=f"a-{i}")
+
+    # First dispatch claims exec:active and enqueues the sub-job.
+    first = await ac.post("/execution/start")
+    assert first.status_code == 200, first.text
+    assert mock_router.enqueue_for_agent.await_count == 1
+    assert await redis_client.get("exec:active") is not None
+
+    # The proposals are still APPROVED (no worker has run), so a second POST would re-select and
+    # double-dispatch them -- but the sentinel is held, so it must be refused instead.
+    second = await ac.post("/execution/start")
+    assert second.status_code == 200, second.text
+    assert "Execution already in progress" in second.text
+    # No additional enqueue happened: still exactly one.
+    assert mock_router.enqueue_for_agent.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# phaze-1h6j: an agent whose chunk failed to enqueue reaches a terminal pill
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_undispatched_agent_reaches_terminal_pill(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """A chunk that fails to enqueue rolls into the agent's per-agent failed counter -> ERRORS row (phaze-1h6j)."""
+    ac, mock_router, redis_client = smoke
+    await _seed_agent(session, agent_id="agent-ok", name="Agent OK")
+    await _seed_agent(session, agent_id="agent-bad", name="Agent Bad")
+    for i in range(5):
+        await _seed_approved_proposal(session, agent_id="agent-ok", path_suffix=f"ok-{i}")
+    for i in range(7):
+        await _seed_approved_proposal(session, agent_id="agent-bad", path_suffix=f"bad-{i}")
+
+    async def _enqueue(*, agent_id: str, **_kw: object) -> None:
+        if agent_id == "agent-bad":
+            raise RuntimeError("agent-bad broker down")
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+
+    response = await ac.post("/execution/start")
+    assert response.status_code == 200, response.text
+    batch_id = None
+    for call in mock_router.enqueue_for_agent.await_args_list:
+        batch_id = call.kwargs["payload"].batch_id
+        break
+    assert batch_id is not None
+    key = f"exec:{batch_id}"
+
+    data = await redis_client.hgetall(key)
+    # phaze-1h6j: the failed agent's PER-AGENT failed counter now equals its total, so
+    # completed(0) + failed(7) == total(7) -> the row is terminal, not stuck RUNNING.
+    assert int(data["agent:agent-bad:failed"]) == 7
+    assert int(data["agent:agent-bad:total"]) == 7
+    # The agent that landed is untouched (no spurious per-agent failure).
+    assert int(data["agent:agent-ok:failed"]) == 0
+
+    # Render the per-agent table from the reconciled hash (the SSE tick path) and confirm the pill.
+    table = await ac.get("/execution/agents-table", params={"batch_id": str(batch_id)})
+    assert table.status_code == 200, table.text
+    assert "ERRORS" in table.text, table.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-pyv3: the sort-persist guard never resurrects a reaped exec hash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_sort_guard_does_not_resurrect_reaped_key(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+) -> None:
+    """The EXISTS-guarded sort persist writes only a live key -- a reaped key stays gone (phaze-pyv3)."""
+    _ac, _mock_router, redis_client = smoke
+    # Bind the cached script to this real client.
+    execution._persist_sort_script = None
+    script = execution._get_persist_sort_script(redis_client)
+    try:
+        # A reaped / never-seeded key: the guard returns 0 and creates nothing (no TTL-less
+        # 2-field resurrection that would leak forever + wedge attached SSE streams).
+        result = await script(keys=["exec:reaped-pyv3"], args=["completed", "desc"], client=redis_client)
+        assert int(result) == 0
+        assert await redis_client.exists("exec:reaped-pyv3") == 0
+
+        # A live key: the sort fields are written and the existing TTL is preserved (HSET does not
+        # clear it, and the guard never re-arms a fresh one).
+        await redis_client.hset("exec:live-pyv3", mapping={"total": "1"})
+        await redis_client.expire("exec:live-pyv3", 120)
+        result = await script(keys=["exec:live-pyv3"], args=["completed", "desc"], client=redis_client)
+        assert int(result) == 1
+        assert await redis_client.hget("exec:live-pyv3", "agents_sort") == "completed"
+        assert await redis_client.hget("exec:live-pyv3", "agents_order") == "desc"
+        ttl = await redis_client.ttl("exec:live-pyv3")
+        assert 0 < ttl <= 120, f"expected the batch TTL to survive the sort persist, got {ttl}"
+    finally:
+        execution._persist_sort_script = None
 
 
 @pytest.mark.asyncio

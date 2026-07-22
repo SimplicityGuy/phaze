@@ -43,7 +43,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog
-from phaze.routers.agent_exec_batches import _get_promote_status_script
+from phaze.routers.agent_exec_batches import ACTIVE_DISPATCH_KEY, _get_promote_status_script
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -60,6 +60,8 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from redis.asyncio import Redis
+    from redis.commands.core import AsyncScript
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.routers.column_sort import SortState
@@ -70,6 +72,13 @@ logger = structlog.get_logger(__name__)
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["execution"])
+
+# phaze-5zyv: how many consecutive empty (no exec:{batch_id} hash) SSE poll ticks to tolerate
+# before the ``execution_progress`` generator gives up and emits a terminal close event. Bounds the
+# otherwise-unbounded "Waiting for execution to start..." loop for empty dispatches, reaped/expired
+# batches, and unknown batch ids. One tick ~= 1s, so this is roughly the grace window for a hash to
+# appear before the stream self-terminates.
+_MAX_EMPTY_POLLS = 5
 
 # phaze-a6hm.5: ONE contract, declared at import time next to the handler it serves
 # (column_sort.py contract rule 6). ``target`` is "#audit-content" -- the SAME host div the filter
@@ -125,6 +134,34 @@ EXEC_AGENTS_SORT = SortContract(
 # "Status" is deliberately NOT a sortable column: it is a derived pill (PENDING/RUNNING/COMPLETE/
 # ERRORS computed from completed+failed+total in the template), not a raw stored value -- the same
 # reason the pipeline.py contracts never offer their derived stage-pill columns for sorting either.
+
+
+# phaze-pyv3: persist the operator's sort choice onto the batch hash ONLY if the key still exists,
+# atomically. ``execution_agents_table_sort`` reads the hash (hgetall) and then writes the sort
+# fields; the batch's 24h TTL can fire in the gap between those two round trips, and a plain HSET
+# would then RECREATE ``exec:{batch_id}`` with just ``agents_sort``/``agents_order`` and, per Redis
+# semantics, NO expiry -- leaking the key forever (the TTL is the only reaper) and feeding any
+# attached SSE stream a status-less 2-field hash it renders as a phantom "running 0/0" batch that
+# never terminates. The EXISTS check + HSET run in one Redis round trip so the TTL cannot interleave:
+# a reaped key is left reaped (returns 0), never resurrected. Returns 1 if persisted, 0 if the key
+# was already gone.
+_PERSIST_SORT_IF_EXISTS_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], 'agents_sort', ARGV[1], 'agents_order', ARGV[2])
+return 1
+"""
+
+# Registered lazily on first use (no Redis handle at import time), cached so subsequent sort clicks
+# reuse the EVALSHA fast-path. Mirrors ``agent_exec_batches._get_promote_status_script``.
+_persist_sort_script: AsyncScript | None = None
+
+
+def _get_persist_sort_script(redis_client: Redis) -> AsyncScript:
+    """Return the cached EXISTS-guarded sort-persist script, registering it on first call."""
+    global _persist_sort_script
+    if _persist_sort_script is None:
+        _persist_sort_script = redis_client.register_script(_PERSIST_SORT_IF_EXISTS_LUA)
+    return _persist_sort_script
 
 
 def _sort_agents_view(agents_view: list[dict[str, object]], sort_state: SortState) -> list[dict[str, object]]:
@@ -237,6 +274,24 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         init_fields[f"agent:{agent_id}:failed"] = "0"
 
     redis_client = request.app.state.redis
+
+    # phaze-fa2p: single-dispatch guard. Approved proposals stay APPROVED throughout dispatch --
+    # they are only flipped to 'executed' asynchronously by the SAQ worker much later -- so a
+    # second concurrent or repeated POST re-selects the SAME still-APPROVED rows and enqueues a
+    # duplicate move job for every one of them (each dispatch mints its own batch_id, so SAQ never
+    # dedups). Atomically claim the ``exec:active`` sentinel with SET NX before seeding/enqueuing;
+    # a competing dispatch loses the claim and is refused until the active batch reaches a terminal
+    # status (the promote script releases the sentinel) or the 24h safety TTL elapses. Only guard
+    # when there is actually something to dispatch -- an empty dispatch enqueues nothing.
+    if groups:
+        claimed = await redis_client.set(ACTIVE_DISPATCH_KEY, str(batch_id), nx=True, ex=86400)
+        if not claimed:
+            return templates.TemplateResponse(
+                request=request,
+                name="execution/partials/dispatch_in_progress.html",
+                context={"request": request},
+            )
+
     if groups:
         # Only seed when there is at least one (agent, chunk) to dispatch. An
         # empty hash with status="running" and TTL would mislead the SSE reader.
@@ -249,7 +304,11 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # (PATTERNS S5) so a single bad enqueue does not kill the whole dispatch.
     task_router = request.app.state.task_router
     enqueued_ok = 0
-    undispatched_proposals = 0
+    # phaze-1h6j: track undispatched proposals PER AGENT (not just a batch-wide scalar) so the
+    # reconcile below can roll them into each affected agent's per-agent failed counter -- otherwise
+    # that agent's row never reaches completed+failed == total and stays stuck on a RUNNING pill in
+    # the final render even though the batch is terminal.
+    undispatched_by_agent: dict[str, int] = {}
     for agent_id, items in groups.items():
         for chunk_index, chunk in enumerate(chunk_proposals(items)):
             try:
@@ -271,7 +330,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     chunk_index,
                     batch_id,
                 )
-                undispatched_proposals += len(chunk)
+                undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
+    undispatched_proposals = sum(undispatched_by_agent.values())
 
     # 6b. phaze-kxsb: reconcile subjobs_expected with what ACTUALLY landed. The hash was seeded
     # with the PLANNED subjobs_expected before the loop; a chunk that failed to enqueue will never
@@ -286,16 +346,29 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         key = f"exec:{batch_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.hset(key, "subjobs_expected", str(enqueued_ok))
+            # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
+            # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
+            # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
+            # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
+            # the last hincrby for callers that read it positionally.
+            for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
+                pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
             pipe.hincrby(key, "failed", undispatched_proposals)
             if enqueued_ok == 0:
                 pipe.hset(key, "status", "complete_with_errors")
+                # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job
+                # will ever POST to release the sentinel via the promote script, so release the
+                # single-dispatch claim now. We just claimed it above, so it still names this batch.
+                pipe.delete(ACTIVE_DISPATCH_KEY)
             await pipe.execute()
         subjobs_expected = enqueued_ok
         if enqueued_ok == 0:
             render_status = "complete_with_errors"
         else:
             promote_status = _get_promote_status_script(redis_client)
-            await promote_status(keys=[key], client=redis_client)
+            # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
+            # terminal, the promotion also releases the single-dispatch claim atomically.
+            await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
 
     # 7. D-11 dispatch INFO log.
     logger.info(
@@ -397,14 +470,32 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
     On terminal status (``complete`` or ``complete_with_errors``) the generator
     yields the final ``progress`` + ``agents_table`` events for that state,
     then emits the matching close event and returns.
+
+    phaze-5zyv: the ``not data`` (empty-hash) branch is bounded by
+    ``_MAX_EMPTY_POLLS``. A batch that never seeds a hash (empty dispatch), one
+    whose 24h TTL has elapsed, or a mistyped/stale ``batch_id`` would otherwise
+    loop "Waiting for execution to start..." forever, holding the connection and
+    polling Redis every second until the client disconnects. After the cap the
+    generator emits a terminal ``complete`` close event and returns so the stream
+    always terminates on its own.
     """
     redis_client = request.app.state.redis
 
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
         first_connect = True
+        empty_polls = 0
         while True:
             data: dict[str, str] = await redis_client.hgetall(f"exec:{batch_id}")
             if not data:
+                empty_polls += 1
+                if empty_polls >= _MAX_EMPTY_POLLS:
+                    # No hash ever appeared (empty dispatch, reaped/expired batch, or an unknown
+                    # batch_id). Close the stream with a terminal event rather than polling forever.
+                    yield {
+                        "event": "complete",
+                        "data": 'This execution is no longer available. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
+                    }
+                    return
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
                 await asyncio.sleep(1)
                 continue
@@ -510,7 +601,13 @@ async def execution_agents_table_sort(
 
     agents_view: list[dict[str, object]] = []
     if data:
-        await redis_client.hset(key, mapping={"agents_sort": sort_state.key, "agents_order": sort_state.order})
+        # phaze-pyv3: persist the sort atomically behind an EXISTS guard. The hgetall above and this
+        # write are separate round trips; if the batch's 24h TTL fired between them a plain HSET
+        # would resurrect exec:{batch_id} as a TTL-less 2-field key (leaked forever, and rendered as
+        # a phantom "running 0/0" batch by any attached SSE stream). The Lua EXISTS+HSET is one
+        # round trip, so a reaped key stays reaped instead of being recreated without an expiry.
+        persist_sort = _get_persist_sort_script(redis_client)
+        await persist_sort(keys=[key], args=[sort_state.key, sort_state.order], client=redis_client)
         try:
             dispatch_summary: list[dict[str, object]] = json.loads(data.get("dispatch_summary", "[]"))
         except json.JSONDecodeError:

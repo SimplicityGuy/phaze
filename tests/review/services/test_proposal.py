@@ -812,6 +812,52 @@ class TestStoreProposals:
             assert ctx_used["venue"] == "Empire Polo Club"
             assert ctx_used["input_context"] == input_ctx[0]
 
+    @pytest.mark.asyncio
+    async def test_sanitizes_nul_bytes_before_persist(self):
+        """NUL bytes anywhere in the persisted row are stripped so the JSONB write cannot abort (phaze-qj9e).
+
+        A UTF-16LE companion decodes to text riddled with U+0000; the LLM's reasoning/proposed_filename
+        can also carry \\u0000 escapes. PostgreSQL jsonb/text rejects NUL outright, aborting
+        store_proposals for the WHOLE batch and poisoning every retry. All string sinks are sanitized.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import BatchProposalResponse, FileProposalResponse, store_proposals
+
+        session = AsyncMock()
+        file_id = str(uuid.uuid4())
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = MagicMock()
+        session.execute.return_value = mock_result
+
+        batch = BatchProposalResponse(
+            proposals=[
+                FileProposalResponse(
+                    file_index=0,
+                    proposed_filename="Artist\x00 - Track.mp3",
+                    proposed_path="perf\x00ormances/A",
+                    confidence=0.9,
+                    artist="DJ\x00 Test",
+                    reasoning="because\x00 reasons",
+                )
+            ]
+        )
+        # Companion-derived context riddled with NUL (the UTF-16LE .nfo shape).
+        files_context = [{"companions": [{"content": "A\x00r\x00t\x00i\x00s\x00t"}]}]
+
+        with patch("phaze.services.proposal.pg_insert") as mock_pg_insert:
+            await store_proposals(session, [file_id], batch, files_context)
+            row = mock_pg_insert.return_value.values.call_args.kwargs
+
+        assert "\x00" not in row["proposed_filename"]
+        assert "\x00" not in row["proposed_path"]
+        assert "\x00" not in row["reason"]
+        # context_used is deep-sanitized: no NUL survives in nested LLM/companion strings.
+        import json
+
+        assert "\x00" not in json.dumps(row["context_used"])
+
 
 # ---------------------------------------------------------------------------
 # load_companion_contents tests (Plan 02)
@@ -892,3 +938,40 @@ class TestLoadCompanionContents:
             result = await load_companion_contents(session, media_id, 3000)
 
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_strips_nul_bytes_from_companion_content(self):
+        """A UTF-16-decoded .nfo full of U+0000 is sanitized at the read boundary (phaze-qj9e)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "set\x00info.nfo"
+        companion_record.current_path = "/data/music/setinfo.nfo"
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result]
+
+        # read_text(errors="replace") leaves raw 0x00 intact -- U+0000 is valid UTF-8.
+        with patch("phaze.services.proposal.Path") as MockPath:
+            mock_path_instance = MagicMock()
+            mock_path_instance.read_text.return_value = "A\x00r\x00t\x00i\x00s\x00t\x00:\x00 \x00D\x00J"
+            MockPath.return_value = mock_path_instance
+
+            result = await load_companion_contents(session, media_id, 3000)
+
+        assert len(result) == 1
+        assert "\x00" not in result[0]["content"]
+        assert "\x00" not in result[0]["filename"]
+        assert "Artist" in result[0]["content"]

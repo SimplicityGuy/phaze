@@ -154,6 +154,48 @@ async def test_stale_undo_replay_is_a_noop(db_session: AsyncSession) -> None:
     assert await _marker_file_ids(db_session) == {f_c.id}
 
 
+# --------------------------------------------------------------------------------------------------
+# phaze-btix (ABA): a stale undo payload must not delete a NEWER marker written on the SAME file.
+#
+# ``test_stale_undo_replay_is_a_noop`` above targets a file that becomes a bare KEEPER (no marker at
+# all) by replay time -- so its DELETE trivially matches nothing regardless of whether the CAS scoping
+# is correct. It does not exercise the actual reported defect: the same non-canonical file can carry a
+# DIFFERENT marker across two resolutions (different canonical_id each time), and file_id alone cannot
+# tell those two markers apart. This test reproduces that exact sequence.
+# --------------------------------------------------------------------------------------------------
+async def test_stale_undo_replay_against_a_later_different_resolution_is_a_noop(db_session: AsyncSession) -> None:
+    """A stale undo replay must not revert a LATER resolution's marker on the same file (phaze-btix)."""
+    f_a = await _file(db_session)
+    f_b = await _file(db_session)
+    f_c = await _file(db_session)
+
+    # (1) resolve with canonical=A -> markers on B and C, both canonical_file_id=A. Capture the stale
+    #     payload P now, before it is ever undone.
+    _count, stale_payload = await resolve_group(db_session, HASH_A, f_a.id)
+    assert {e["id"] for e in stale_payload} == {str(f_b.id), str(f_c.id)}
+    assert all(e["canonical_id"] == str(f_a.id) for e in stale_payload)
+
+    # (2) undo P -> both markers deleted.
+    undone = await undo_resolve(db_session, stale_payload)
+    assert undone == 2
+    assert await _marker_file_ids(db_session) == set()
+
+    # (3) re-resolve with a DIFFERENT canonical=B -> markers on A and C, this time canonical_file_id=B.
+    #     C's marker is now a genuinely DIFFERENT row (new marker id, new canonical_file_id) from the
+    #     one P was minted against in step (1).
+    await resolve_group(db_session, HASH_A, f_b.id)
+    assert await _marker_file_ids(db_session) == {f_a.id, f_c.id}
+
+    # (4) STALE replay of the ORIGINAL payload P (targets B and C, canonical=A). B holds no marker
+    #     (a harmless no-op for that entry), but C DOES hold a marker -- just a NEWER one written by
+    #     the re-resolution in step (3), with canonical=B, not A. The CAS must not match it.
+    restored = await undo_resolve(db_session, stale_payload)
+    assert restored == 0, "stale replay deleted a marker written by a later, different resolution"
+
+    # The re-resolution is intact: A and C still marked (canonical=B), nothing clobbered.
+    assert await _marker_file_ids(db_session) == {f_a.id, f_c.id}
+
+
 # ---------------------------------------------------------------------------
 # Regression: a malformed undo payload must never delete the wrong marker (code-review WR-01/WR-02).
 # The DELETE + gate derive from the payload id-set alone (the PR-A blocker fix), so a corrupted
@@ -273,9 +315,9 @@ async def test_undo_accepts_uuid_typed_id(db_session: AsyncSession) -> None:
     await db_session.flush()
 
     _count, payload = await resolve_group(db_session, HASH_A, keeper.id)
-    # The browser sends strings; internal callers may pass UUID objects. Both must work. Phase 90 (D-09):
-    # the payload is id-only (no previous_state key).
-    uuid_typed = [{"id": uuid.UUID(entry["id"])} for entry in payload]
+    # The browser sends strings; internal callers may pass UUID objects. Both must work. phaze-btix:
+    # the payload carries both id and canonical_id, both of which must accept UUID-typed values.
+    uuid_typed = [{"id": uuid.UUID(entry["id"]), "canonical_id": uuid.UUID(entry["canonical_id"])} for entry in payload]
 
     restored = await undo_resolve(db_session, uuid_typed)
 

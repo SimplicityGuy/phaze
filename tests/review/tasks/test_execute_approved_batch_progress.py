@@ -30,6 +30,7 @@ from phaze.config import AgentSettings
 from phaze.enums.execution import ExecutionStatus
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
 from phaze.services.agent_client import AgentApiServerError
+import phaze.tasks.execution as execmod
 from phaze.tasks.execution import execute_approved_batch
 
 
@@ -586,6 +587,254 @@ async def test_crash_retry_hash_mismatch_at_proposed_is_still_a_genuine_failure(
     assert state_patch.proposal_state == "failed"
     progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
     assert progress_post.failed_at_step == "verify"
+
+
+# ---------------------------------------------------------------------------
+# phaze-qx8z — cross-fs replay: a crash between the committed copy and the
+# pending ``original.unlink()`` leaves BOTH `original` and a distinct-inode
+# `proposed`. The replay must recognize the already-copied destination and
+# complete the move forward (delete `original`, report executed), NOT misfire
+# the phaze-yu2e clobber guard and flip the succeeded move to FAILED while
+# leaving the file duplicated. A genuinely foreign file is still refused.
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-qx8z (no supplied hash).
+
+    Simulates the OOM-kill window: a prior cross-fs attempt committed the copy
+    (a byte-identical file sits at `proposed`) then died before
+    ``original.unlink()``, so replay begins with BOTH files present on different
+    filesystems. The recovery must delete `original` and report executed.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    original = tmp_path / "orig" / "concert.mkv"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    content = b"concert-bytes" * 4096
+    original.write_bytes(content)
+
+    proposed = tmp_path / "new" / "concert.mkv"
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    proposed.write_bytes(content)  # the prior attempt's committed, identical copy
+
+    # Force the cross-filesystem branch: st_dev compare would say same-fs under one
+    # tmp tree, but the crash residue only occurs across a mount boundary.
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    state_patch = api.patch_proposal_state.await_args.args[1]
+    assert state_patch.proposal_state == "executed"
+    assert state_patch.file_state == "moved"
+    assert state_patch.current_path == str(proposed)
+    progress_post = _payload_from_call(api.post_exec_batch_progress.await_args)
+    assert progress_post.terminal_step == "deleted"
+    # The move is completed forward: original deleted, identical copy preserved.
+    assert not original.exists()
+    assert proposed.read_bytes() == content
+
+
+async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-qx8z with a supplied sha256_hash: recovery verifies `proposed` against it."""
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    original = tmp_path / "orig" / "set.mp3"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    content = b"audio" * 8192
+    original.write_bytes(content)
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    proposed = tmp_path / "new" / "set.mp3"
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    proposed.write_bytes(content)
+
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert result["error_count"] == 0
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "executed"
+    assert not original.exists()
+
+
+async def test_cross_fs_foreign_file_at_destination_still_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-qx8z guard: a NON-identical file at `proposed` (both present, cross-fs) is a genuine collision.
+
+    The recovery must not blindly delete `original` when `proposed` holds an
+    UNRELATED file -- that would destroy the source in favor of a foreign
+    destination, the very thing phaze-yu2e prevents. It must still raise
+    FileExistsError and leave BOTH files intact.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    job = _make_job_mock()
+
+    original = tmp_path / "orig" / "set.mp3"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(b"THE-REAL-SOURCE")
+
+    proposed = tmp_path / "new" / "set.mp3"
+    proposed.parent.mkdir(parents=True, exist_ok=True)
+    proposed.write_bytes(b"AN-UNRELATED-FILE")  # foreign, NOT a copy of original
+
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
+
+    proposals = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+        ),
+    ]
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals)
+    result = await execute_approved_batch({"api_client": api, "job": job}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api.patch_execution_log.await_args.args[1].error_message.startswith("copy:")
+    # Neither file destroyed.
+    assert original.read_bytes() == b"THE-REAL-SOURCE"
+    assert proposed.read_bytes() == b"AN-UNRELATED-FILE"
+
+
+# ---------------------------------------------------------------------------
+# phaze-q2lg — a live ``original.unlink()`` failure AFTER a committed cross-fs
+# copy must leave a coherent, recoverable state: the copy at `proposed` is
+# complete (not a partial), the failure is reported distinctly at
+# failed_at_step="delete" (moved-but-source-not-removed), and a subsequent retry
+# completes the move WITHOUT re-copying the whole (multi-GB) file.
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_fs_unlink_failure_leaves_complete_copy_and_retry_does_not_recopy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for phaze-q2lg.
+
+    Attempt 1: cross-fs copy commits, then ``original.unlink()`` raises (e.g. a
+    read-only source mount). The proposal is FAILED at step 'delete', but the
+    file at `proposed` is a COMPLETE copy (atomic temp+replace, phaze-k23z) and
+    the source is untouched -- no partial, no lost data.
+
+    Attempt 2 (retry, same paths): the executor recognizes the already-committed
+    identical copy (phaze-qx8z recovery) and completes the move by deleting the
+    original, WITHOUT re-streaming the whole file.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
+
+    original = tmp_path / "orig" / "concert.mkv"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    content = b"concert-video-bytes" * 8192
+    original.write_bytes(content)
+    proposed = tmp_path / "new" / "concert.mkv"
+
+    proposal_id = uuid.uuid4()
+
+    def _make_proposals() -> list[ExecuteBatchProposalItem]:
+        return [
+            ExecuteBatchProposalItem(
+                proposal_id=proposal_id,
+                file_id=uuid.uuid4(),
+                original_path=str(original),
+                proposed_path="new",
+                proposed_filename="concert.mkv",
+            ),
+        ]
+
+    # --- Attempt 1: force the post-copy unlink to fail (read-only source mount).
+    from pathlib import Path as _Path
+
+    real_unlink = _Path.unlink
+
+    def _failing_unlink(self: _Path, *, missing_ok: bool = False) -> None:
+        if self == original:
+            raise OSError(30, "Read-only file system")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(_Path, "unlink", _failing_unlink)
+
+    api1 = _make_api_client_mock()
+    payload1 = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=_make_proposals())
+    result1 = await execute_approved_batch({"api_client": api1, "job": _make_job_mock()}, **payload1.model_dump(mode="json"))
+
+    assert result1["status"] == "completed_with_errors"
+    assert result1["error_count"] == 1
+    # Reported distinctly as a delete-step failure (moved-but-source-not-removed),
+    # NOT a copy failure.
+    assert api1.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api1.patch_execution_log.await_args.args[1].error_message.startswith("delete:")
+    progress1 = _payload_from_call(api1.post_exec_batch_progress.await_args)
+    assert progress1.failed_at_step == "delete"
+    # The copy at `proposed` is COMPLETE (byte-identical), and the source survives.
+    assert proposed.read_bytes() == content
+    assert original.read_bytes() == content
+
+    # --- Attempt 2: unlink works again; the retry must NOT re-copy the file.
+    monkeypatch.setattr(_Path, "unlink", real_unlink)
+    recopy_calls = {"n": 0}
+    real_atomic = execmod._atomic_cross_fs_copy
+
+    def _spy_atomic(src: _Path, dst: _Path) -> None:
+        recopy_calls["n"] += 1
+        real_atomic(src, dst)
+
+    monkeypatch.setattr(execmod, "_atomic_cross_fs_copy", _spy_atomic)
+
+    api2 = _make_api_client_mock()
+    payload2 = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=_make_proposals())
+    result2 = await execute_approved_batch({"api_client": api2, "job": _make_job_mock()}, **payload2.model_dump(mode="json"))
+
+    assert result2["status"] == "completed"
+    assert result2["error_count"] == 0
+    assert recopy_calls["n"] == 0  # no whole-file re-copy on retry
+    assert api2.patch_proposal_state.await_args.args[1].proposal_state == "executed"
+    assert api2.patch_proposal_state.await_args.args[1].current_path == str(proposed)
+    # Move completed forward: original gone, complete copy preserved.
+    assert not original.exists()
+    assert proposed.read_bytes() == content
 
 
 # ---------------------------------------------------------------------------

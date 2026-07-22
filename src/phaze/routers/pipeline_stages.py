@@ -107,7 +107,16 @@ async def pause(
 ) -> dict[str, Any]:
     """Pause ``stage`` (drain): set ``paused=true`` and park the queued backlog."""
     _validate_stage(stage)
-    row = await _load_control_row(session, stage)
+    # lock=True (SELECT ... FOR UPDATE) is REQUIRED here, matching set_priority (WR-02) --
+    # without it a Pause that reads an already-committed paused=true sets no NET CHANGE, so
+    # SQLAlchemy's flush-time comparison elides the control-row UPDATE entirely (documented
+    # behavior: "if there's no net change, no SQL operation will occur"). That elided Pause
+    # never takes the control-row lock, so its unguarded `_PAUSE_SQL` backlog UPDATE can
+    # serialize AFTER a concurrent Resume commits, re-parking the entire backlog at SENTINEL
+    # while the control row durably reads paused=false (phaze-cxjx). Taking the lock here
+    # forces every control action on the SAME stage through the same serialization point
+    # regardless of whether the flag write is a net change.
+    row = await _load_control_row(session, stage, lock=True)
     row.paused = True
     await pause_stage(session, stage)
     await session.commit()
@@ -121,7 +130,9 @@ async def resume(
 ) -> dict[str, Any]:
     """Resume ``stage``: set ``paused=false`` and un-park ONLY the pause-parked backlog rows."""
     _validate_stage(stage)
-    row = await _load_control_row(session, stage)
+    # See the matching comment in pause() above -- the same elision hazard applies to Resume,
+    # so it must also take the control-row lock (phaze-cxjx).
+    row = await _load_control_row(session, stage, lock=True)
     row.paused = False
     await resume_stage(session, stage)
     await session.commit()

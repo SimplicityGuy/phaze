@@ -87,6 +87,17 @@ async def _guarded_status_update(
 # the route must instead return _diff_row.html with the matching prefix, facet, and lifecycle state.
 _V7_ROW_FACETS: dict[str, str] = {"rename-row": "filename", "record-row": "filename", "move-row": "path"}
 
+# phaze-3tj4: map a proposal's real status to the v7 diff-row lifecycle string so a mutation route
+# renders the row's actual affordances instead of hardcoding "pending". The reject route names its
+# state "skipped" (see reject_proposal above), so REJECTED maps there.
+_ROW_STATE_FOR_STATUS: dict[ProposalStatus, str] = {
+    ProposalStatus.PENDING: "pending",
+    ProposalStatus.APPROVED: "approved",
+    ProposalStatus.REJECTED: "skipped",
+    ProposalStatus.EXECUTED: "executed",
+    ProposalStatus.FAILED: "failed",
+}
+
 
 def _v7_row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str] | None:
     """Return (row_id_prefix, facet) when the request came from a v7 diff-row workspace, else None."""
@@ -563,17 +574,27 @@ async def edit_proposal(
     """
     is_path = facet == "path"
     value = _validate_proposed_value(proposed, is_path=is_path)
-    if is_path:
-        proposal = await update_proposal_fields(session, proposal_id, proposed_path=value)
-    else:
-        proposal = await update_proposal_fields(session, proposal_id, proposed_filename=value)
+    # phaze-3tj4: edits are only legal on PENDING rows. Without this guard an edit that lands after
+    # a concurrent approval rewrote the proposed_path an APPROVED row feeds into execution_dispatch,
+    # redirecting a reviewed move to an unreviewed destination (and edits to terminal EXECUTED/FAILED
+    # rows corrupted the historical record). update_proposal_fields now evaluates the from-state
+    # inside the UPDATE and raises ProposalTransitionError, which we translate to 409.
+    try:
+        if is_path:
+            proposal = await update_proposal_fields(session, proposal_id, proposed_path=value, allowed_from=_APPROVE_REJECT_FROM)
+        else:
+            proposal = await update_proposal_fields(session, proposal_id, proposed_filename=value, allowed_from=_APPROVE_REJECT_FROM)
+    except ProposalTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
     # phaze-3a2j: a v7 diff-row workspace expects the shared _diff_row.html back (the row stays
     # PENDING with the edited "after" value), not the legacy <tr> proposal_row.html.
+    # phaze-3tj4: derive row_state from the real status rather than hardcoding "pending" so a row is
+    # never re-rendered with pending affordances it no longer has.
     v7 = _v7_row_target(request, proposal_id)
     if v7 is not None:
-        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="pending")
+        return _diff_row_response(request, proposal, v7[0], v7[1], row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending"))
     return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the validated proposed value renders escaped (no raw/`| safe`), so this is not a direct tainted response.
         request=request,
         name="proposals/partials/proposal_row.html",

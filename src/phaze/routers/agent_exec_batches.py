@@ -51,6 +51,12 @@ router = APIRouter(prefix="/api/internal/agent/exec-batches", tags=["agent-inter
 _REQ_PREFIX = "exec_progress_req:"
 _TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
 
+# phaze-fa2p: the single-dispatch sentinel. ``routers/execution.start_execution`` claims this key
+# with ``SET NX`` before seeding/enqueuing a batch so a concurrent or repeated POST cannot
+# double-dispatch the same still-APPROVED proposals. It is released atomically with the terminal
+# status promotion below (and by a 24h safety TTL if a batch's sub-jobs never report terminal).
+ACTIVE_DISPATCH_KEY = "exec:active"
+
 
 # Lua: atomically read the sub-batch counters and promote `status` in a SINGLE
 # round-trip (issue #61). The prior three-HGET-then-conditional-HSET sequence
@@ -63,14 +69,26 @@ _TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
 # interleave with any other connection. Mirrors the D-04 / D-07 read-then-write
 # semantics exactly (only the atomicity is added). Returns 1 if status was
 # promoted, 0 otherwise; the caller does not use the result.
+#
+# phaze-fa2p: when the batch reaches a terminal status this is also the single atomic point that
+# releases the ``exec:active`` single-dispatch sentinel -- but ONLY when it still names THIS batch
+# (``GET == ARGV[1]``), so a newer dispatch that already re-claimed the sentinel is never cleared.
+# ``KEYS[2]``/``ARGV[1]`` are optional: a caller that passes only ``keys=[key]`` (numkeys=1) leaves
+# ``KEYS[2]`` nil and the release block is skipped, keeping the script backward compatible.
 _PROMOTE_STATUS_LUA = """
 local key = KEYS[1]
+if redis.call('EXISTS', key) == 0 then return 0 end
 local sc = tonumber(redis.call('HGET', key, 'subjobs_completed') or '0')
 local se = tonumber(redis.call('HGET', key, 'subjobs_expected') or '0')
 if sc ~= se then return 0 end
 local failed = tonumber(redis.call('HGET', key, 'failed') or '0')
 local new_status = (failed == 0) and 'complete' or 'complete_with_errors'
 redis.call('HSET', key, 'status', new_status)
+local active_key = KEYS[2]
+local batch_id = ARGV[1]
+if active_key and active_key ~= '' and batch_id and redis.call('GET', active_key) == batch_id then
+  redis.call('DEL', active_key)
+end
 return 1
 """
 
@@ -87,6 +105,34 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
     if _promote_status_script is None:
         _promote_status_script = redis_client.register_script(_PROMOTE_STATUS_LUA)
     return _promote_status_script
+
+
+# phaze-pyv3: apply the D-07 HINCRBY counter set ONLY if the exec:{batch_id} hash still exists,
+# atomically. Stages 2/3 confirm the key exists earlier in the handler, but the batch's 24h TTL can
+# fire between those HEXISTS checks and these HINCRBYs; a bare HINCRBY would then RESURRECT the key
+# with arbitrary counter fields and, per Redis semantics, NO expiry -- leaking it forever (the TTL
+# is the only reaper) and feeding any attached SSE stream a status-less phantom hash. The EXISTS
+# check + HINCRBYs run in one round trip so a key reaped mid-request stays reaped (returns 0).
+# ARGV is a flat [field, by, field, by, ...] list; the caller appends ('subjobs_completed', 1) when
+# the sub-batch is terminal. Returns 1 if applied, 0 if the key was already gone.
+_APPLY_INCREMENTS_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+local i = 1
+while i < #ARGV do
+  redis.call('HINCRBY', KEYS[1], ARGV[i], tonumber(ARGV[i + 1]))
+  i = i + 2
+end
+return 1
+"""
+_apply_increments_script: "AsyncScript | None" = None
+
+
+def _get_apply_increments_script(redis_client: redis_async.Redis) -> "AsyncScript":
+    """Return the cached EXISTS-guarded HINCRBY script, registering it on first call."""
+    global _apply_increments_script
+    if _apply_increments_script is None:
+        _apply_increments_script = redis_client.register_script(_APPLY_INCREMENTS_LUA)
+    return _apply_increments_script
 
 
 async def _get_redis(request: Request) -> redis_async.Redis:
@@ -203,19 +249,21 @@ async def post_exec_batch_progress(
     if not won:
         return Response(status_code=status.HTTP_200_OK)
 
-    # ---- Stage 5: HINCRBY the D-07 counter set. Pipelined so all
-    # increments + the optional sub_batch_terminal increment hit Redis in
-    # one round-trip (transaction=False -- HINCRBY on disjoint fields is
-    # commutative; no MULTI/EXEC needed). The `pipe.hincrby` chained calls
-    # return the pipeline itself in async mode; await is a noop-friendly
-    # wrapper that the redis-py stubs require.
+    # ---- Stage 5: HINCRBY the D-07 counter set. phaze-pyv3: applied via an EXISTS-guarded Lua
+    # script (``_APPLY_INCREMENTS_LUA``) rather than a bare pipeline. HINCRBY on a missing key
+    # auto-creates it, so if the batch's 24h TTL fired between the stage 2/3 HEXISTS checks and here,
+    # a plain pipeline would resurrect the reaped exec:{batch_id} hash TTL-less (a permanent leak +
+    # a status-less phantom that wedges attached SSE streams). The script's leading EXISTS check
+    # makes the whole apply a no-op when the key is already gone, atomically. ARGV is flat
+    # [field, by, ...] with the optional sub_batch_terminal ('subjobs_completed', 1) appended.
     increments = _compute_increments(body)
-    async with redis_client.pipeline(transaction=False) as pipe:
-        for field, by in increments.items():
-            await pipe.hincrby(key, field, by)
-        if body.sub_batch_terminal:
-            await pipe.hincrby(key, "subjobs_completed", 1)
-        await pipe.execute()
+    apply_args: list[str] = []
+    for field, by in increments.items():
+        apply_args.extend((field, str(by)))
+    if body.sub_batch_terminal:
+        apply_args.extend(("subjobs_completed", "1"))
+    apply_increments = _get_apply_increments_script(redis_client)
+    await apply_increments(keys=[key], args=apply_args, client=redis_client)
 
     # ---- Stage 6: terminal-status detection + promotion (D-07 final clause).
     # ONLY fires when the agent marks this as its last proposal in the
@@ -226,6 +274,8 @@ async def post_exec_batch_progress(
     # batch to "complete" (issue #61).
     if body.sub_batch_terminal:
         promote_status = _get_promote_status_script(redis_client)
-        await promote_status(keys=[key], client=redis_client)
+        # phaze-fa2p: pass the sentinel key + this batch_id so a terminal promotion also releases
+        # the single-dispatch claim atomically (see ACTIVE_DISPATCH_KEY / _PROMOTE_STATUS_LUA).
+        await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
 
     return Response(status_code=status.HTTP_200_OK)

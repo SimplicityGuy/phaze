@@ -8,15 +8,18 @@ import uuid
 import pytest
 
 from phaze.models.file import FileRecord
-from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus, RenameProposal
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.services.proposal_queries import (
     Pagination,
     ProposalStats,
+    ProposalTransitionError,
+    approve_pending_above_confidence,
     bulk_update_status,
     get_proposal_stats,
     get_proposal_with_file,
     get_proposals_page,
+    update_proposal_fields,
     update_proposal_status,
 )
 
@@ -272,6 +275,44 @@ async def test_update_proposal_status_not_found(session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# update_proposal_status allowed_from guard (phaze-upnj)
+#
+# The guard is now folded INTO the UPDATE's WHERE clause (atomic conditional
+# write), not a Python check on a prior unlocked SELECT. These assert the
+# observable contract that closes the TOCTOU: a row outside the allowed set is
+# refused and left untouched, rather than silently overwritten.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_guard_refuses_terminal_row(session: AsyncSession) -> None:
+    """An Undo (-> PENDING) against a terminal EXECUTED row is refused and does NOT overwrite it."""
+    proposal = await _create_proposal(session, status=ProposalStatus.EXECUTED)
+    with pytest.raises(ProposalTransitionError):
+        await update_proposal_status(session, proposal.id, ProposalStatus.PENDING, allowed_from=UNDO_FROM)
+    # The terminal record survived — the write was conditional, not a blind ORM mutate.
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_guard_allows_legal_from_state(session: AsyncSession) -> None:
+    """Undo from an allowed from-state (APPROVED) succeeds under the guard."""
+    proposal = await _create_proposal(session, status=ProposalStatus.APPROVED)
+    result = await update_proposal_status(session, proposal.id, ProposalStatus.PENDING, allowed_from=UNDO_FROM)
+    assert result is not None
+    assert result.status == ProposalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_status_guard_not_found_returns_none(session: AsyncSession) -> None:
+    """A guarded update on a missing id is 404 (None), not a spurious transition error."""
+    result = await update_proposal_status(session, uuid.uuid4(), ProposalStatus.PENDING, allowed_from=UNDO_FROM)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
 # bulk_update_status
 # ---------------------------------------------------------------------------
 
@@ -311,6 +352,45 @@ async def test_bulk_update_status_empty_list(session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# approve_pending_above_confidence allowed_from guard (phaze-bg4w)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_status_allowed_from_skips_rejected(session: AsyncSession) -> None:
+    """The guard approve_pending_above_confidence now passes: a stale id whose row was REJECTED
+    between the SELECT and the UPDATE is NOT flipped to APPROVED (the phaze-bg4w TOCTOU shape).
+    """
+    proposal = await _create_proposal(session, original_filename="bg4w.mp3", confidence=0.95)
+    # Simulate the concurrent reject that landed after the id was snapshotted.
+    await bulk_update_status(session, [proposal.id], ProposalStatus.REJECTED, allowed_from=APPROVE_REJECT_FROM)
+    # Re-run the approve with the stale id list + the from-state guard the caller now uses.
+    applied = await bulk_update_status(session, [proposal.id], ProposalStatus.APPROVED, allowed_from=APPROVE_REJECT_FROM)
+    assert applied == 0
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_leaves_non_pending_untouched(session: AsyncSession) -> None:
+    """Only PENDING high-confidence rows are approved; a REJECTED high-confidence row stays rejected."""
+    pending = await _create_proposal(session, original_filename="hc_pending.mp3", confidence=0.95)
+    rejected = await _create_proposal(session, original_filename="hc_rejected.mp3", confidence=0.95, status=ProposalStatus.REJECTED)
+
+    count = await approve_pending_above_confidence(session, threshold=0.9)
+    assert count == 1
+
+    approved_row = await session.get(RenameProposal, pending.id)
+    assert approved_row is not None
+    assert approved_row.status == ProposalStatus.APPROVED
+
+    rejected_row = await session.get(RenameProposal, rejected.id)
+    assert rejected_row is not None
+    assert rejected_row.status == ProposalStatus.REJECTED
+
+
+# ---------------------------------------------------------------------------
 # get_proposal_with_file
 # ---------------------------------------------------------------------------
 
@@ -327,4 +407,38 @@ async def test_get_proposal_with_file(session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_get_proposal_with_file_not_found(session: AsyncSession) -> None:
     result = await get_proposal_with_file(session, uuid.uuid4())
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# update_proposal_fields allowed_from guard (phaze-3tj4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_refuses_non_pending_row(session: AsyncSession) -> None:
+    """An edit against an APPROVED row is refused and does NOT rewrite the reviewed proposed_path."""
+    proposal = await _create_proposal(session, status=ProposalStatus.APPROVED)
+    with pytest.raises(ProposalTransitionError):
+        await update_proposal_fields(session, proposal.id, proposed_path="Some/Other/Dir", allowed_from=APPROVE_REJECT_FROM)
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.APPROVED
+    # The approved row's persisted execution input is untouched.
+    assert refetched.proposed_path != "Some/Other/Dir"
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_allows_pending_row(session: AsyncSession) -> None:
+    """Editing a PENDING proposal persists the new value and keeps the row PENDING."""
+    proposal = await _create_proposal(session, status=ProposalStatus.PENDING)
+    result = await update_proposal_fields(session, proposal.id, proposed_filename="Edited.mp3", allowed_from=APPROVE_REJECT_FROM)
+    assert result is not None
+    assert result.status == ProposalStatus.PENDING
+    assert result.proposed_filename == "Edited.mp3"
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_not_found_returns_none(session: AsyncSession) -> None:
+    result = await update_proposal_fields(session, uuid.uuid4(), proposed_filename="X.mp3", allowed_from=APPROVE_REJECT_FROM)
     assert result is None

@@ -751,3 +751,33 @@ def test_compute_increments_is_pure_function_unit() -> None:
         "copied": 1,
         "verified": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# phaze-pyv3: the increment + promote scripts never resurrect a reaped exec hash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_apply_increments_and_promote_do_not_resurrect_reaped_key(
+    redis_client: redis_async.Redis,
+) -> None:
+    """Both Redis scripts are EXISTS-guarded: a batch reaped mid-request stays gone (phaze-pyv3)."""
+    agent_exec_batches._apply_increments_script = None
+    agent_exec_batches._promote_status_script = None
+    apply_increments = agent_exec_batches._get_apply_increments_script(redis_client)
+    promote = agent_exec_batches._get_promote_status_script(redis_client)
+    try:
+        gone = "exec:reaped-batch-pyv3"
+        # The HINCRBY apply must NOT auto-create the reaped key.
+        result = await apply_increments(keys=[gone], args=["completed", "1", "subjobs_completed", "1"], client=redis_client)
+        assert int(result) == 0
+        assert await redis_client.exists(gone) == 0
+
+        # The promote must NOT recreate a status-bearing phantom on a reaped key either.
+        result = await promote(keys=[gone, agent_exec_batches.ACTIVE_DISPATCH_KEY], args=["some-batch-id"], client=redis_client)
+        assert int(result) == 0
+        assert await redis_client.exists(gone) == 0
+    finally:
+        agent_exec_batches._apply_increments_script = None
+        agent_exec_batches._promote_status_script = None

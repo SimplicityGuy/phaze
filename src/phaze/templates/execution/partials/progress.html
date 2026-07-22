@@ -25,9 +25,12 @@
      - sort (phaze.routers.column_sort.SortState, phaze-a6hm.8): resolved EXEC_AGENTS_SORT state for
        the per-agent table, shared into agents_table.html by this include's inherited context.
 #}
+{# phaze-5zyv: open the SSE stream ONLY when there are agents to report on. An empty dispatch (every
+   approved proposal on a revoked agent) seeds no exec:{batch_id} hash, so a stream opened here would
+   poll a nonexistent key forever ("Waiting for execution to start...") and never terminate. Gating
+   the sse-connect on `agents` keeps the empty-state card static and connectionless. #}
 <div class="bg-gray-50 dark:bg-phaze-panel rounded-lg p-6 border border-gray-200 dark:border-phaze-border"
-     hx-ext="sse"
-     sse-connect="/execution/progress/{{ batch_id }}"
+     {% if agents %}hx-ext="sse" sse-connect="/execution/progress/{{ batch_id }}"{% endif %}
      aria-live="polite">
 
     {% if skipped_revoked and skipped_revoked > 0 %}
@@ -85,7 +88,10 @@
     </div>
     {% endif %}
 
-    {# Dual SSE close listeners — terminal status closes the stream. #}
+    {# Dual SSE close listeners — terminal status closes the stream. Only meaningful when a stream is
+       connected (phaze-5zyv: the empty-state card has no sse-connect, so these would never fire). #}
+    {% if agents %}
     <span sse-swap="complete" sse-close="complete"></span>
     <span sse-swap="complete_with_errors" sse-close="complete_with_errors"></span>
+    {% endif %}
 </div>

@@ -26,11 +26,11 @@ doesn't raise `NotNullViolationError`. `ON CONFLICT DO UPDATE` preserves the
 existing row's id (`excluded.id` is not in the SET clause).
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 import uuid
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -366,6 +366,18 @@ async def report_analysis_failed(
     in the same row so the migration-033 CHECK (``analysis_completed_at`` XOR ``failed_at``) can never
     see a mixed row (D-06). All writes commit in ONE transaction, ordered marker -> ledger ->
     staged-object-delete (RESEARCH Discretion #1).
+
+    WR-01-equivalent CAS guard (phaze-ts1d): ``deepen_analysis`` (routers/pipeline.py) deliberately
+    re-enqueues ``process_file`` for an ALREADY-COMPLETED file at an unbounded budget (fine_cap=0 /
+    coarse_cap=0), so this endpoint IS reachable for a row that already reads DONE
+    (``analysis_completed_at IS NOT NULL``). Analyze failures are terminal and non-auto-retryable
+    (``FAILURE_IS_TERMINAL`` / ``ELIGIBLE_AFTER_FAILURE``, enums/stage.py), so an unguarded stamp here
+    would silently and permanently regress a completed file to ``ANALYSIS_FAILED`` -- the same class
+    of defect ``report_metadata_failed`` guards against (agent_metadata.py WR-01). The conflict
+    predicate below (``where=AnalysisResult.analysis_completed_at.is_(None)``) restricts the DO UPDATE
+    to a not-yet-complete row (fresh / in-flight / already-failed); a completed row is left untouched
+    (a benign no-op, not an error). The ledger clear, staged-object delete, and awaiting-row reap stay
+    UNCONDITIONAL either way -- the run did terminate.
     """
     # FAIL-01 / D-07: compose + defensively truncate the persisted detail (the column is unbounded Text;
     # `error` is already max_length=2000 at the wire). Mirrors report_metadata_failed's `reason: error`.
@@ -383,11 +395,31 @@ async def report_analysis_failed(
     stmt = pg_insert(AnalysisResult).values(
         [{"file_id": file_id, "id": uuid.uuid4(), "failed_at": now, "error_message": error_message, "analysis_completed_at": None}]
     )
+    # phaze-ts1d: guard the failure stamp so it NEVER downgrades a row that already reads DONE.
+    # `deepen_analysis` re-enqueues `process_file` for an already-COMPLETED file (unbounded budget), so
+    # a timeout on that re-run would otherwise null `analysis_completed_at` and stamp `failed_at` onto
+    # the good row -- losing `propose` eligibility permanently (analyze failures are terminal /
+    # non-auto-retryable). The `WHERE analysis_completed_at IS NULL` conflict predicate means the
+    # UPDATE fires ONLY on a not-yet-complete row (fresh insert conflict, in-flight, or already-failed);
+    # a completed row is left untouched (a benign no-op, mirroring report_metadata_failed's WR-01).
     stmt = stmt.on_conflict_do_update(
         index_elements=["file_id"],
         set_={"failed_at": now, "error_message": error_message, "analysis_completed_at": None},
+        where=AnalysisResult.analysis_completed_at.is_(None),
     )
-    await session.execute(stmt)
+    # An INSERT .. ON CONFLICT DO UPDATE returns a CursorResult at runtime (exposing rowcount); the
+    # async stubs type it as the base Result, so cast to read the affected-row count (mirrors
+    # agent_push.py / services/scan_deletion.py).
+    result = cast("CursorResult[Any]", await session.execute(stmt))
+    if result.rowcount == 0:
+        # CAS skip: the row was already COMPLETED. Log so an operator can see a failed deepen
+        # over a done file rather than it silently vanishing (fix hint's optional visibility ask).
+        logger.info(
+            "analysis_failed_skipped_already_completed",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            reason=body.reason,
+        )
     # Phase 90 (D-09): the ANALYSIS_FAILED files.state dual-write was removed. The durable
     # `analysis.failed_at` marker upserted above is now the sole derived failure authority
     # (failed_clause(Stage.ANALYZE), stage_status.py); readers cut over in PR-A.

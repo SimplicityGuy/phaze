@@ -170,6 +170,47 @@ async def test_in_place_rename_to_same_file_is_not_a_clobber(tmp_path: Path, mon
     assert orig.read_bytes() == b"KEEP-ME"
 
 
+async def test_cross_fs_copy_failure_leaves_no_partial_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cross-fs copy that aborts mid-stream leaves NO file at `proposed` and no temp (phaze-k23z).
+
+    Pre-fix, ``_streamed_copy`` wrote straight into the final destination, so an
+    ENOSPC/EIO partway through left a truncated fragment at the exact proposed
+    path -- misleading 'already moved' checks and wasting disk. The atomic
+    temp-then-replace copy must leave the destination absent and the source
+    intact.
+    """
+    import shutil as _shutil
+
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig = tmp_path / "orig" / "concert.mkv"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"v" * (4 * 1024 * 1024))
+
+    monkeypatch.setattr(execmod, "_same_filesystem", lambda _s, _d: False)
+
+    def _boom(_fsrc: object, _fdst: object, length: int = 0) -> None:
+        # Simulate ENOSPC on a multi-GB video partway through the copy.
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(_shutil, "copyfileobj", _boom)
+
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "out", "concert.mkv")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed_with_errors"
+    assert result["error_count"] == 1
+    # No partial file at the real destination, and no leftover temp sibling.
+    dest = tmp_path / "out" / "concert.mkv"
+    assert not dest.exists()
+    assert not (tmp_path / "out" / ("concert.mkv" + execmod._COPY_TMP_SUFFIX)).exists()
+    # The source is untouched -- no data loss.
+    assert orig.read_bytes() == b"v" * (4 * 1024 * 1024)
+    # Reported as a failure at the 'copy' step.
+    assert api.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api.patch_execution_log.await_args.args[1].error_message.startswith("copy:")
+
+
 def test_is_same_file_true_for_same_path(tmp_path: Path) -> None:
     from phaze.tasks.execution import _is_same_file
 

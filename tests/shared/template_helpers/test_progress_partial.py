@@ -267,7 +267,13 @@ def test_no_revoked_banner_when_zero_skipped() -> None:
 
 def test_progress_has_dual_sse_close_listeners() -> None:
     """Both 'complete' and 'complete_with_errors' close the SSE per UI-SPEC C1 step 5."""
-    html = _render_progress(total=10, subjobs_expected=2, agents=[])
+    # phaze-5zyv: the close listeners are gated on a connected stream (agents present), so render
+    # with an agent -- the empty-state card has no stream and therefore no close listeners.
+    html = _render_progress(
+        total=10,
+        subjobs_expected=2,
+        agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
+    )
     assert 'sse-close="complete"' in html
     assert 'sse-close="complete_with_errors"' in html
 
@@ -293,10 +299,22 @@ def test_progress_has_dispatch_summary_swap_slot() -> None:
 
 
 def test_progress_sse_connect_points_at_batch_id() -> None:
-    """The outer container connects to /execution/progress/{batch_id}."""
-    html = _render_progress(batch_id="cafef00d-cafe-f00d-cafe-f00dcafef00d")
+    """The outer container connects to /execution/progress/{batch_id} when there are agents to stream."""
+    # phaze-5zyv: the sse-connect is now gated on a non-empty agents list, so exercise the
+    # connect path with an agent present.
+    html = _render_progress(
+        batch_id="cafef00d-cafe-f00d-cafe-f00dcafef00d",
+        agents=[{"agent_id": "agent-a", "name": "Alpha", "completed": 0, "failed": 0, "total": 10}],
+    )
     assert "sse-connect=" in html
     assert "/execution/progress/cafef00d-cafe-f00d-cafe-f00dcafef00d" in html
+
+
+def test_progress_empty_state_has_no_sse_connect() -> None:
+    """phaze-5zyv: the empty-state card (no agents) opens NO SSE stream -- it would never terminate."""
+    html = _render_progress(skipped_revoked=0, agents=[])
+    assert "sse-connect" not in html
+    assert "hx-ext" not in html
 
 
 def test_progress_empty_state_when_no_agents() -> None:
