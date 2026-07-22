@@ -103,6 +103,16 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
     row's prior state (typically ``status='awaiting'``, D-01) while the outer transaction (and its
     ``pg_advisory_xact_lock``, when called from the drain) stays alive. The raise itself still
     propagates to the caller (``KueueBackend.dispatch`` / the drain's per-candidate ``except``).
+
+    phaze-bbwx: everything from ``presign_upload_parts`` through the SAVEPOINT block runs under a
+    try/except that best-effort aborts the fresh multipart upload before re-raising. Without this,
+    a ``presign_upload_parts`` failure (raised before the upsert even runs) or an upsert/enqueue
+    failure inside the SAVEPOINT (which deliberately rolls back the upsert, per phaze-uciu.3 above)
+    both discard the only durable record of ``upload_id`` -- the multipart is never persisted, so no
+    later cleanup path (``redrive_upload``'s abort, ``report_upload_failed``'s terminal abort) can
+    ever find it to abort it. ``ensure_bucket_lifecycle_ttl``'s ``AbortIncompleteMultipartUpload``
+    rule (``s3_staging.py``, phaze-sqpv) is the eventual backstop if this best-effort abort call
+    itself fails (e.g. a network blip), but it should not be the ONLY thing that reaps it.
     """
     cfg = cast("ControlSettings", get_settings())
 
@@ -111,57 +121,75 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
     agent = await select_active_agent(session, kind="fileserver")
 
     upload_id = await s3_staging.create_multipart_upload(file.id, bucket)
-    part_count = max(1, math.ceil(file.file_size / cfg.s3_multipart_part_size_bytes))
-    part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
+    try:
+        part_count = max(1, math.ceil(file.file_size / cfg.s3_multipart_part_size_bytes))
+        part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
 
-    async with session.begin_nested():
-        # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
-        # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
-        stmt = pg_insert(CloudJob).values(
-            # Stamp the PK explicitly: the single-row kwargs form of pg_insert DOES apply CloudJob.id's
-            # Python-side default=uuid.uuid4 today (verified against real Postgres), but the list/multi-
-            # values form does NOT -- mirror the agent_analysis.py AnalysisResult precedent so a future
-            # conversion to that form cannot regress into a NOT NULL violation (CR-01, defensive).
-            id=uuid.uuid4(),
-            file_id=file.id,
-            s3_key=s3_staging.staged_object_key(file.id),
-            status=CloudJobStatus.UPLOADING.value,
-            upload_id=upload_id,
-            # D-01/D-06 (MKUE-02): record WHICH bucket staged this file's object, authoritatively, so
-            # presign/cleanup READ this column and never re-derive via pick_bucket (config-set drift-safe).
-            staging_bucket=bucket.id,
-        )
-        stmt = stmt.on_conflict_do_update(
-            # id is intentionally OUT of set_: the PK is immutable, so an existing row keeps its id on a
-            # re-stage (only the key/status/upload_id/staging_bucket refresh).
-            index_elements=["file_id"],
-            set_={
-                "s3_key": stmt.excluded.s3_key,
-                "status": stmt.excluded.status,
-                "upload_id": stmt.excluded.upload_id,
-                "staging_bucket": stmt.excluded.staging_bucket,
-            },
-        )
-        await session.execute(stmt)
+        async with session.begin_nested():
+            # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
+            # in place instead of erroring on the duplicate (mirrors the scheduling_ledger upsert idiom).
+            stmt = pg_insert(CloudJob).values(
+                # Stamp the PK explicitly: the single-row kwargs form of pg_insert DOES apply CloudJob.id's
+                # Python-side default=uuid.uuid4 today (verified against real Postgres), but the list/multi-
+                # values form does NOT -- mirror the agent_analysis.py AnalysisResult precedent so a future
+                # conversion to that form cannot regress into a NOT NULL violation (CR-01, defensive).
+                id=uuid.uuid4(),
+                file_id=file.id,
+                s3_key=s3_staging.staged_object_key(file.id),
+                status=CloudJobStatus.UPLOADING.value,
+                upload_id=upload_id,
+                # D-01/D-06 (MKUE-02): record WHICH bucket staged this file's object, authoritatively, so
+                # presign/cleanup READ this column and never re-derive via pick_bucket (config-set drift-safe).
+                staging_bucket=bucket.id,
+            )
+            stmt = stmt.on_conflict_do_update(
+                # id is intentionally OUT of set_: the PK is immutable, so an existing row keeps its id on a
+                # re-stage (only the key/status/upload_id/staging_bucket refresh).
+                index_elements=["file_id"],
+                set_={
+                    "s3_key": stmt.excluded.s3_key,
+                    "status": stmt.excluded.status,
+                    "upload_id": stmt.excluded.upload_id,
+                    "staging_bucket": stmt.excluded.staging_bucket,
+                },
+            )
+            await session.execute(stmt)
 
-        payload = UploadFileS3Payload(
-            file_id=file.id,
-            original_path=file.original_path,
-            part_urls=part_urls,
-            part_size_bytes=cfg.s3_multipart_part_size_bytes,
-            agent_id=agent.id,
-        )
-        queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
-        await queue.connect()
-        await queue.enqueue(
-            "s3_upload",
-            key=f"s3_upload:{file.id}",
-            # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
-            # not deterministically cancelled by a fixed single-part cap. Each part carries its own
-            # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
-            timeout=upload_file_saq_timeout_sec(part_count),
-            **payload.model_dump(mode="json"),
-        )
+            payload = UploadFileS3Payload(
+                file_id=file.id,
+                original_path=file.original_path,
+                part_urls=part_urls,
+                part_size_bytes=cfg.s3_multipart_part_size_bytes,
+                agent_id=agent.id,
+            )
+            queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
+            await queue.connect()
+            await queue.enqueue(
+                "s3_upload",
+                key=f"s3_upload:{file.id}",
+                # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
+                # not deterministically cancelled by a fixed single-part cap. Each part carries its own
+                # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
+                timeout=upload_file_saq_timeout_sec(part_count),
+                **payload.model_dump(mode="json"),
+            )
+    except Exception:
+        # Best-effort compensation (phaze-bbwx): upload_id is about to become unrecoverable (never
+        # persisted, or the SAVEPOINT is rolling back the row that would have persisted it), so this
+        # is the only chance to abort it. Idempotent + swallows already-gone codes on its own
+        # (s3_staging.abort_multipart_upload); any OTHER S3StagingError here is logged, not raised,
+        # so a failed compensation never masks the original failure -- the lifecycle backstop
+        # (phaze-sqpv) is the last resort if this abort itself cannot reach S3.
+        try:
+            await s3_staging.abort_multipart_upload(file.id, upload_id, bucket)
+        except s3_staging.S3StagingError:
+            logger.warning(
+                "stage_file_to_s3: best-effort abort of orphaned multipart upload failed",
+                file_id=str(file.id),
+                upload_id=upload_id,
+                exc_info=True,
+            )
+        raise
 
     logger.info(
         "stage_file_to_s3: cloud_job staged + s3_upload enqueued",
