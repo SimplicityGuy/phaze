@@ -296,24 +296,46 @@ async def update_proposal_fields(
     *,
     proposed_filename: str | None = None,
     proposed_path: str | None = None,
+    allowed_from: Iterable[ProposalStatus] | None = None,
 ) -> RenameProposal | None:
     """Persist an operator edit to a proposal's ``proposed_filename`` / ``proposed_path`` (D-05).
 
-    Copies :func:`update_proposal_status` exactly but mutates the provided Text field(s) instead of
-    ``.status``: the row stays PENDING (edit is pre-approve -- no status change) and the LLM
-    is NOT re-run. Keeps the re-select-with-``selectinload(file)`` tail so the returned row can
-    render its diff. Returns ``None`` if the proposal does not exist.
+    Mirrors :func:`update_proposal_status` -- an atomic conditional UPDATE -- but mutates the
+    provided Text field(s) instead of ``.status``. The row keeps its status (edit is pre-approve --
+    no status change) and the LLM is NOT re-run. Keeps the re-select-with-``selectinload(file)``
+    tail so the returned row can render its diff. Returns ``None`` if the proposal does not exist.
+
+    phaze-3tj4: ``allowed_from`` gates the edit to the given from-states, evaluated INSIDE the
+    UPDATE's WHERE clause. The docstring's long-claimed "the row stays PENDING (edit is pre-approve)"
+    invariant used to be prose-only: the write was unconditional, so an edit that landed after a
+    concurrent approval silently rewrote the ``proposed_path`` an APPROVED row feeds straight into
+    ``execution_dispatch`` -- redirecting a reviewed move to an unreviewed destination -- and edits
+    to terminal EXECUTED/FAILED rows corrupted the historical record. With ``allowed_from`` the
+    edit refuses (``ProposalTransitionError`` -> 409) rather than mutating a non-editable row.
     """
-    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
-    result = await session.execute(stmt)
-    proposal = result.scalar_one_or_none()
-    if proposal is None:
-        return None
+    values: dict[str, Any] = {}
     if proposed_filename is not None:
-        proposal.proposed_filename = proposed_filename
+        values["proposed_filename"] = proposed_filename
     if proposed_path is not None:
-        proposal.proposed_path = proposed_path
+        values["proposed_path"] = proposed_path
+
+    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    stmt = stmt.values(**values)
+    cursor_result: Any = await session.execute(stmt)
     await session.commit()
+
+    if int(cursor_result.rowcount) == 0:
+        # No row matched: 404 (proposal gone) vs 409 (status outside allowed_from).
+        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+        proposal = current.scalar_one_or_none()
+        if proposal is None:
+            return None
+        if allowed_from is not None:
+            raise ProposalTransitionError(proposal.status, proposal.status)
+        return proposal
+
     # Re-fetch with selectinload to ensure the file relationship is available for the row render
     # (session.refresh does not honor selectinload on lazy='raise' relationships).
     stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)

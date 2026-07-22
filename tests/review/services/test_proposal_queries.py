@@ -408,3 +408,37 @@ async def test_get_proposal_with_file(session: AsyncSession) -> None:
 async def test_get_proposal_with_file_not_found(session: AsyncSession) -> None:
     result = await get_proposal_with_file(session, uuid.uuid4())
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# update_proposal_fields allowed_from guard (phaze-3tj4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_refuses_non_pending_row(session: AsyncSession) -> None:
+    """An edit against an APPROVED row is refused and does NOT rewrite the reviewed proposed_path."""
+    proposal = await _create_proposal(session, status=ProposalStatus.APPROVED)
+    with pytest.raises(ProposalTransitionError):
+        await update_proposal_fields(session, proposal.id, proposed_path="Some/Other/Dir", allowed_from=APPROVE_REJECT_FROM)
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.APPROVED
+    # The approved row's persisted execution input is untouched.
+    assert refetched.proposed_path != "Some/Other/Dir"
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_allows_pending_row(session: AsyncSession) -> None:
+    """Editing a PENDING proposal persists the new value and keeps the row PENDING."""
+    proposal = await _create_proposal(session, status=ProposalStatus.PENDING)
+    result = await update_proposal_fields(session, proposal.id, proposed_filename="Edited.mp3", allowed_from=APPROVE_REJECT_FROM)
+    assert result is not None
+    assert result.status == ProposalStatus.PENDING
+    assert result.proposed_filename == "Edited.mp3"
+
+
+@pytest.mark.asyncio
+async def test_update_proposal_fields_not_found_returns_none(session: AsyncSession) -> None:
+    result = await update_proposal_fields(session, uuid.uuid4(), proposed_filename="X.mp3", allowed_from=APPROVE_REJECT_FROM)
+    assert result is None
