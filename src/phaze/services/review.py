@@ -26,13 +26,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.models.file import FileRecord
 from phaze.models.tag_write_log import TagWriteLog
-from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
 from phaze.routers.tags import (
     _build_comparison,
@@ -421,13 +421,10 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                     }
                 )
 
-            # Gated: approved + applied() file but NO timestamped track (mirrors cue._get_cue_stats missing set).
-            has_timestamp_subq = (
-                select(TracklistVersion.tracklist_id)
-                .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
-                .where(TracklistTrack.timestamp.is_not(None))
-                .distinct()
-            )
+            # Gated: approved + applied() file but NO timestamped track on the LATEST version
+            # (mirrors cue._get_cue_stats missing set -- phaze-dboy: scoped to latest_version_id,
+            # the same version generation reads, not "any version ever").
+            has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
             gated_stmt = (
                 select(Tracklist, FileRecord)
                 .join(FileRecord, Tracklist.file_id == FileRecord.id)
@@ -435,7 +432,7 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
                     Tracklist.status == "approved",
                     Tracklist.file_id.is_not(None),
                     applied_clause(),
-                    Tracklist.id.not_in(has_timestamp_subq),
+                    or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
                 )
                 .order_by(Tracklist.artist, Tracklist.event)
                 .limit(_MAX_REVIEW_ROWS)  # WR-04: the gated half's own per-set cap (total ceiling = 2 * _MAX_REVIEW_ROWS)
