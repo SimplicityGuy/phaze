@@ -25,7 +25,7 @@ from phaze.config import get_settings
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
-from phaze.services.enqueue_router import NoActiveAgentError
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task
 from phaze.tasks.s3_upload import S3_UPLOAD_SAQ_RETRIES, UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
 from tests._queue_fakes import DedupFakeTaskRouter, FakeTaskRouter, seed_active_agent
 
@@ -270,6 +270,138 @@ async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
 
     assert await _cloud_job(session, file_id) is None  # nothing committed on the clean hold
     assert task_router.queues == {}  # nothing enqueued
+
+
+async def test_stage_file_to_s3_aborts_orphaned_multipart_when_presign_fails(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-bbwx: presign_upload_parts raising after create_multipart_upload best-effort aborts it.
+
+    Before the fix, this exact failure ordering (create succeeds, presign raises before the
+    cloud_job upsert runs) discarded the only record of upload_id -- the multipart was orphaned
+    forever. Spies on the real (moto-backed) ``create_multipart_upload``/``abort_multipart_upload``
+    calls so the assertion proves the SAME upload_id that was created is the one actually aborted
+    against the real S3 SDK (not just that "some abort" ran) -- moto's ``ListMultipartUploads``
+    returns static example fixture data unrelated to bucket state, so it cannot be used to verify.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    real_create = s3_staging.create_multipart_upload
+    created_ids: list[str] = []
+
+    async def _spy_create(*args: object, **kwargs: object) -> str:
+        upload_id = await real_create(*args, **kwargs)  # type: ignore[arg-type]
+        created_ids.append(upload_id)
+        return upload_id
+
+    real_abort = s3_staging.abort_multipart_upload
+    aborted: list[tuple[object, ...]] = []
+
+    async def _spy_abort(*args: object, **kwargs: object) -> None:
+        aborted.append(args)
+        await real_abort(*args, **kwargs)  # type: ignore[arg-type]
+
+    async def _boom_presign(*_args: object, **_kwargs: object) -> list[str]:
+        raise s3_staging.S3StagingError("presign failed")
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _spy_abort)
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _boom_presign)
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="presign failed"):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert await _cloud_job(session, file_id) is None  # nothing persisted
+    assert len(created_ids) == 1
+    assert aborted == [(file_id, created_ids[0], bucket)]  # the exact orphaned upload was aborted
+
+    # The upload_id is now genuinely gone from S3: a raw re-abort surfaces NoSuchUpload, which
+    # abort_multipart_upload swallows as an idempotent no-op (no raise -> proves it was aborted).
+    await s3_staging.abort_multipart_upload(file_id, created_ids[0], bucket)
+
+
+async def test_stage_file_to_s3_aborts_orphaned_multipart_when_enqueue_fails(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-bbwx: an enqueue failure inside the SAVEPOINT (the queue.connect()/enqueue() hiccup
+    phaze-uciu.3's SAVEPOINT rolls back the upsert for) ALSO best-effort aborts the fresh multipart.
+
+    Before the fix, the SAVEPOINT rollback restored the row to its pre-stage state (no upload_id
+    persisted anywhere), orphaning the multipart exactly like the presign-failure path.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    real_create = s3_staging.create_multipart_upload
+    created_ids: list[str] = []
+
+    async def _spy_create(*args: object, **kwargs: object) -> str:
+        upload_id = await real_create(*args, **kwargs)  # type: ignore[arg-type]
+        created_ids.append(upload_id)
+        return upload_id
+
+    real_abort = s3_staging.abort_multipart_upload
+    aborted: list[tuple[object, ...]] = []
+
+    async def _spy_abort(*args: object, **kwargs: object) -> None:
+        aborted.append(args)
+        await real_abort(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _spy_abort)
+
+    task_router = FakeTaskRouter()
+    queue = task_router.queue_for(fileserver.id, lane_for_task("s3_upload"))
+
+    async def _boom_enqueue(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("SAQ pool hiccup")
+
+    queue.enqueue = _boom_enqueue  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert await _cloud_job(session, file_id) is None  # SAVEPOINT rolled back the upsert
+    assert len(created_ids) == 1
+    assert aborted == [(file_id, created_ids[0], bucket)]  # the exact orphaned upload was aborted
+
+
+async def test_stage_file_to_s3_logs_but_does_not_raise_when_abort_itself_fails(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed best-effort abort (e.g. network blip) never masks the ORIGINAL failure.
+
+    The lifecycle backstop (phaze-sqpv) is the last resort when the compensating abort itself
+    cannot reach S3; the caller must still see the original error, not an abort-related one.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+
+    async def _boom_presign(*_args: object, **_kwargs: object) -> list[str]:
+        raise s3_staging.S3StagingError("presign failed")
+
+    async def _boom_abort(*_args: object, **_kwargs: object) -> None:
+        raise s3_staging.S3StagingError("abort also failed")
+
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _boom_presign)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="presign failed"):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
 
 async def test_redrive_upload_aborts_old_multipart_and_restages(
