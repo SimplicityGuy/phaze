@@ -71,6 +71,13 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["execution"])
 
+# phaze-5zyv: how many consecutive empty (no exec:{batch_id} hash) SSE poll ticks to tolerate
+# before the ``execution_progress`` generator gives up and emits a terminal close event. Bounds the
+# otherwise-unbounded "Waiting for execution to start..." loop for empty dispatches, reaped/expired
+# batches, and unknown batch ids. One tick ~= 1s, so this is roughly the grace window for a hash to
+# appear before the stream self-terminates.
+_MAX_EMPTY_POLLS = 5
+
 # phaze-a6hm.5: ONE contract, declared at import time next to the handler it serves
 # (column_sort.py contract rule 6). ``target`` is "#audit-content" -- the SAME host div the filter
 # tabs and pager already swap into (execution/audit_log.html), so a sort click introduces no new
@@ -421,14 +428,32 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
     On terminal status (``complete`` or ``complete_with_errors``) the generator
     yields the final ``progress`` + ``agents_table`` events for that state,
     then emits the matching close event and returns.
+
+    phaze-5zyv: the ``not data`` (empty-hash) branch is bounded by
+    ``_MAX_EMPTY_POLLS``. A batch that never seeds a hash (empty dispatch), one
+    whose 24h TTL has elapsed, or a mistyped/stale ``batch_id`` would otherwise
+    loop "Waiting for execution to start..." forever, holding the connection and
+    polling Redis every second until the client disconnects. After the cap the
+    generator emits a terminal ``complete`` close event and returns so the stream
+    always terminates on its own.
     """
     redis_client = request.app.state.redis
 
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
         first_connect = True
+        empty_polls = 0
         while True:
             data: dict[str, str] = await redis_client.hgetall(f"exec:{batch_id}")
             if not data:
+                empty_polls += 1
+                if empty_polls >= _MAX_EMPTY_POLLS:
+                    # No hash ever appeared (empty dispatch, reaped/expired batch, or an unknown
+                    # batch_id). Close the stream with a terminal event rather than polling forever.
+                    yield {
+                        "event": "complete",
+                        "data": 'This execution is no longer available. <a href="/audit/" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
+                    }
+                    return
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
                 await asyncio.sleep(1)
                 continue

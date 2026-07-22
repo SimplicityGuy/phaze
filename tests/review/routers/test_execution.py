@@ -156,12 +156,16 @@ async def test_audit_log_empty_state(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_execute_approved(client: AsyncClient) -> None:
-    """POST /execution/start returns HTML with SSE progress container.
+    """POST /execution/start with no approved proposals returns the empty-state card.
 
     Phase 28: dispatch now writes to ``app.state.redis`` and enqueues per-agent
     via ``app.state.task_router.enqueue_for_agent``. With no approved proposals
     seeded, ``groups`` is empty -- the controller renders the progress card
     with the empty-state copy, no Redis seed, no enqueues.
+
+    phaze-5zyv: the empty-state card must NOT open an SSE stream -- no hash is
+    seeded, so a stream would poll a nonexistent key forever ("Waiting for
+    execution to start...") and never terminate.
     """
     mock_task_router = AsyncMock()
     mock_redis = AsyncMock()
@@ -170,8 +174,8 @@ async def test_execute_approved(client: AsyncClient) -> None:
 
     response = await client.post("/execution/start")
     assert response.status_code == 200
-    assert "sse-connect" in response.text
-    assert "execution/progress/" in response.text
+    assert "No approved proposals to execute." in response.text
+    assert "sse-connect" not in response.text
     # Empty fixture DB -> no enqueues.
     mock_task_router.enqueue_for_agent.assert_not_awaited()
 
@@ -269,7 +273,10 @@ async def test_no_collision_proceeds_normally(client: AsyncClient) -> None:
         response = await client.post("/execution/start")
 
     assert response.status_code == 200
-    assert "sse-connect" in response.text
+    # phaze-5zyv: no approved proposals -> empty-state card, and (crucially) NO SSE stream that
+    # would poll a never-seeded hash forever.
+    assert "No approved proposals to execute." in response.text
+    assert "sse-connect" not in response.text
     # No approved proposals in this empty fixture -> no enqueues.
     mock_task_router.enqueue_for_agent.assert_not_awaited()
 

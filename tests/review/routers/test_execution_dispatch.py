@@ -342,6 +342,27 @@ async def test_revoked_agent_renders_banner(
     assert payload.agent_id == "agent-ok"
 
 
+@pytest.mark.asyncio
+async def test_empty_dispatch_card_has_no_sse_connect(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """phaze-5zyv: every approved proposal on a revoked agent -> empty-state card with NO SSE stream."""
+    ac, mock_router, _redis = smoke
+    await _seed_agent(session, agent_id="agent-revoked", revoked=True)
+    await _seed_approved_proposal(session, agent_id="agent-revoked", path_suffix="rev-1")
+
+    response = await ac.post("/execution/start")
+    assert response.status_code == 200, response.text
+    # The card renders the empty state...
+    assert "No approved proposals to execute." in response.text
+    # ...and does NOT open an SSE stream that would poll a never-seeded hash forever.
+    assert "sse-connect" not in response.text
+    assert "hx-ext" not in response.text
+    # Nothing was enqueued.
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # phaze-fa2p: single-dispatch guard -- a second POST while a batch is active is refused
 # ---------------------------------------------------------------------------

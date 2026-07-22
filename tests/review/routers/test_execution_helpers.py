@@ -196,6 +196,29 @@ async def test_sse_emits_waiting_when_hash_absent(smoke_sse_app: tuple[FastAPI, 
     assert calls >= 2  # waiting branch fired at least once, then terminal hash closed the stream
 
 
+async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI, MagicMock]) -> None:
+    """phaze-5zyv: a hash that never appears -> stream emits a terminal 'complete' and returns, not an infinite wait."""
+    app, redis = smoke_sse_app
+    # hgetall always returns {} -- an empty dispatch, reaped batch, or unknown batch_id.
+    redis.hgetall = AsyncMock(return_value={})
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", "/execution/progress/never-seeded") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    # The generator closed on its own: a terminal 'complete' event was emitted and the stream ended.
+    assert b"event: complete" in body
+    assert b"no longer available" in body
+    # It did not poll forever: the empty-hash cap is small, so hgetall was called a bounded number
+    # of times (the cap), not unboundedly.
+    from phaze.routers.execution import _MAX_EMPTY_POLLS
+
+    assert redis.hgetall.await_count == _MAX_EMPTY_POLLS
+
+
 async def test_sse_falls_back_when_dispatch_summary_is_malformed_json(
     smoke_sse_app: tuple[FastAPI, MagicMock],
 ) -> None:
