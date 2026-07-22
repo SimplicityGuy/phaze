@@ -299,7 +299,6 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
             )
         raise
 
-
     logger.info(
         "stage_file_to_s3: cloud_job staged + s3_upload enqueue parked (fires post-commit, phaze-grzo)",
         file_id=str(file.id),
