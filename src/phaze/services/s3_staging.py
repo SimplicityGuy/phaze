@@ -46,6 +46,10 @@ _DELETE_ABSENT_CODES = frozenset({"NoSuchKey", "NoSuchUpload", "404"})
 # completed, or expired by the bucket lifecycle rule) -- swallowed so the terminal-cleanup and
 # control-side completion paths are idempotent (a missing upload is the desired end state).
 _ABORT_ABSENT_CODES = frozenset({"NoSuchUpload", "404"})
+# Error code get_bucket_lifecycle_configuration surfaces when the bucket has no lifecycle
+# configuration at all -- treated as an empty rule list so the read-modify-write in
+# ensure_bucket_lifecycle_ttl works on a bucket that never had one configured.
+_NO_LIFECYCLE_CODES = frozenset({"NoSuchLifecycleConfiguration", "404"})
 
 
 class S3StagingError(RuntimeError):
@@ -265,22 +269,39 @@ async def ensure_bucket_lifecycle_ttl(bucket: BucketConfig) -> None:
     multipart upload the inline abort missed (a Kueue eviction mid-upload, or a re-stage that
     orphans a prior ``UploadId`` for the same key) via ``AbortIncompleteMultipartUpload``.
     ``Expiration`` alone does NOT abort incomplete multipart uploads -- that is a distinct S3
-    lifecycle action, which is why both are configured on the same rule. Scoped to the
-    ``phaze-staging/`` prefix so it never touches unrelated objects in an operator-shared bucket.
+    lifecycle action, which is why both are configured on the same rule.
+
+    ``PutBucketLifecycleConfiguration`` is a full-replace API -- it does NOT merge with an
+    existing configuration. To stay safe on an operator-shared bucket, this reads the bucket's
+    current rules first, upserts (by ``_LIFECYCLE_RULE_ID``) only the phaze-owned rule, and puts
+    the merged list back -- every foreign rule an operator configured (their own expirations,
+    transitions, noncurrent-version cleanup, abort rules, ...) survives untouched. The phaze
+    rule itself is scoped to the ``phaze-staging/`` prefix so it never touches unrelated objects.
+
+    WR-02: wraps the raw ``ClientError`` from either the GET or the PUT in ``S3StagingError`` so
+    this verb matches the module's fail-loud error surface (see :func:`create_multipart_upload`).
     """
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
-    async with _client(bucket) as client:
-        await client.put_bucket_lifecycle_configuration(
-            Bucket=bucket.bucket,
-            LifecycleConfiguration={
-                "Rules": [
-                    {
-                        "ID": _LIFECYCLE_RULE_ID,
-                        "Filter": {"Prefix": f"{_STAGING_PREFIX}/"},
-                        "Status": "Enabled",
-                        "Expiration": {"Days": cfg.s3_lifecycle_ttl_days},  # kept-global tuning knob (D-15)
-                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": cfg.s3_lifecycle_ttl_days},
-                    }
-                ]
-            },
-        )
+    phaze_rule = {
+        "ID": _LIFECYCLE_RULE_ID,
+        "Filter": {"Prefix": f"{_STAGING_PREFIX}/"},
+        "Status": "Enabled",
+        "Expiration": {"Days": cfg.s3_lifecycle_ttl_days},  # kept-global tuning knob (D-15)
+        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": cfg.s3_lifecycle_ttl_days},
+    }
+    try:
+        async with _client(bucket) as client:
+            try:
+                existing = await client.get_bucket_lifecycle_configuration(Bucket=bucket.bucket)
+                foreign_rules = [rule for rule in existing.get("Rules", []) if rule.get("ID") != _LIFECYCLE_RULE_ID]
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code not in _NO_LIFECYCLE_CODES:
+                    raise
+                foreign_rules = []
+            await client.put_bucket_lifecycle_configuration(
+                Bucket=bucket.bucket,
+                LifecycleConfiguration={"Rules": [phaze_rule, *foreign_rules]},
+            )
+    except ClientError as exc:
+        raise S3StagingError(f"failed to configure bucket lifecycle TTL on {bucket.bucket}") from exc
