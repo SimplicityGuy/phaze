@@ -54,36 +54,42 @@ async def match_tracklist_to_discogs(ctx: dict[str, Any], *, tracklist_id: str) 
                 )
             )
 
-        # Create client and match with bounded concurrency
+        # Create client and match with bounded concurrency. The client is owned by this
+        # try/finally so close() always runs -- including on a DB error in the store loop
+        # below or (belt-and-suspenders, now that search_releases degrades internally) any
+        # exception that still escapes matching -- instead of only on the success path,
+        # which previously leaked the httpx.AsyncClient and its connection pool on failure.
         client = DiscogsographyClient(base_url=settings.discogsography_url)
-        semaphore = asyncio.Semaphore(settings.discogs_match_concurrency)
+        try:
+            semaphore = asyncio.Semaphore(settings.discogs_match_concurrency)
 
-        async def _match_one(track: TracklistTrack) -> list[dict[str, Any]]:
-            async with semaphore:
-                return await match_track_to_discogs(client, track)
+            async def _match_one(track: TracklistTrack) -> list[dict[str, Any]]:
+                async with semaphore:
+                    return await match_track_to_discogs(client, track)
 
-        # Match all eligible tracks concurrently
-        match_results = await asyncio.gather(*[_match_one(t) for t in eligible])
+            # Match all eligible tracks concurrently
+            match_results = await asyncio.gather(*[_match_one(t) for t in eligible])
 
-        # Store candidates
-        candidates_created = 0
-        for track, candidates in zip(eligible, match_results, strict=True):
-            for candidate in candidates:
-                link = DiscogsLink(
-                    track_id=track.id,
-                    discogs_release_id=candidate["discogs_release_id"],
-                    discogs_artist=candidate.get("discogs_artist"),
-                    discogs_title=candidate.get("discogs_title"),
-                    discogs_label=candidate.get("discogs_label"),
-                    discogs_year=candidate.get("discogs_year"),
-                    confidence=candidate["confidence"],
-                    status="candidate",
-                )
-                session.add(link)
-                candidates_created += 1
+            # Store candidates
+            candidates_created = 0
+            for track, candidates in zip(eligible, match_results, strict=True):
+                for candidate in candidates:
+                    link = DiscogsLink(
+                        track_id=track.id,
+                        discogs_release_id=candidate["discogs_release_id"],
+                        discogs_artist=candidate.get("discogs_artist"),
+                        discogs_title=candidate.get("discogs_title"),
+                        discogs_label=candidate.get("discogs_label"),
+                        discogs_year=candidate.get("discogs_year"),
+                        confidence=candidate["confidence"],
+                        status="candidate",
+                    )
+                    session.add(link)
+                    candidates_created += 1
 
-        await session.commit()
-        await client.close()
+            await session.commit()
+        finally:
+            await client.close()
 
         logger.info(
             "discogs match completed",

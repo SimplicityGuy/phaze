@@ -31,20 +31,35 @@ class DiscogsographyClient:
         """Search Discogs releases via discogsography /api/search endpoint.
 
         Returns list of result dicts from the 'results' key.
-        Gracefully handles ConnectError and TimeoutException by returning empty list.
+        Gracefully degrades to an empty list on ANY failure to reach or parse the upstream
+        response -- transport failures (ConnectError, TimeoutException, ...), non-2xx status
+        codes (HTTPStatusError from raise_for_status()), and malformed JSON bodies
+        (json.JSONDecodeError from resp.json()) -- so a transient discogsography hiccup
+        degrades one track's candidates instead of crashing the whole match task.
         """
         try:
             resp = await self._client.get("/api/search", params={"q": query, "types": "release", "limit": limit})
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
-            results: list[dict[str, Any]] = data.get("results", [])
-            return results
-        except httpx.ConnectError:
-            logger.warning("Discogsography connection failed for query: %s", query)
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Discogsography returned an error response for query: %s (status=%s)",
+                query,
+                exc.response.status_code,
+            )
             return []
-        except httpx.TimeoutException:
-            logger.warning("Discogsography request timed out for query: %s", query)
+        except httpx.HTTPError as exc:
+            # Covers ConnectError, TimeoutException, and every other transport-level failure
+            # (HTTPStatusError is handled above, more specifically, for the status-code detail).
+            logger.warning("Discogsography request failed for query: %s (%s)", query, type(exc).__name__)
             return []
+        except ValueError:
+            # resp.json() raises json.JSONDecodeError (a ValueError subclass) on a non-JSON body.
+            logger.warning("Discogsography returned a non-JSON response for query: %s", query)
+            return []
+
+        results: list[dict[str, Any]] = data.get("results", [])
+        return results
 
     async def close(self) -> None:
         """Close the httpx client."""
