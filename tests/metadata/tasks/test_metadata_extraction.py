@@ -229,6 +229,39 @@ async def test_success_path_does_not_ack(mock_extract: MagicMock) -> None:
     api.report_metadata_failed.assert_not_awaited()
 
 
+# ---------------------------------------------------------------------------
+# phaze-j8bj: the synchronous mutagen tag parse must run OFF the agent worker's
+# event loop (via asyncio.to_thread) so a slow/hung media-mount read cannot freeze
+# the loop the Phase-46 liveness heartbeat runs on.
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.metadata_extraction.extract_tags")
+async def test_extract_tags_runs_off_loop(mock_extract: MagicMock) -> None:
+    """extract_tags is dispatched through asyncio.to_thread, not called on the loop."""
+    import asyncio
+
+    api = AsyncMock()
+    api.put_metadata = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+    mock_extract.return_value = ExtractedTags(artist="A")
+
+    real_to_thread = asyncio.to_thread
+    offloaded: list[Any] = []
+
+    async def _spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        offloaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    with patch("phaze.tasks.metadata_extraction.asyncio.to_thread", side_effect=_spy):
+        result = await extract_file_metadata(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "extracted"
+    # The exact extract_tags callable (the patched mock) must have been offloaded.
+    assert mock_extract in offloaded
+    mock_extract.assert_called_once_with("/music/track.mp3")
+
+
 # NOTE (Phase 35 D-06): metadata extraction is operator-triggered ONLY. The former legacy
 # ingestion auto-enqueue path was removed entirely in Phase 89 (LEGACY-01) along with
 # ``services/ingestion.py``; the surviving agent-upsert inverse regression guard (an INSERT
