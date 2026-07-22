@@ -88,6 +88,7 @@ _EXPECTED_PARTIAL_INDEXES = frozenset(
         "ix_metadata_failed",
         "uq_proposals_file_id_pending",
         "uq_scan_batches_agent_id_live",
+        "ix_discogs_links_one_accepted_per_track",
     }
 )
 
@@ -194,7 +195,9 @@ def test_baseline_is_the_only_migration() -> None:
 
     040 (phaze-36rc) lands tag_write_log timestamptz; 041 (phaze-5vmt) lands the
     UNIQUE(tracklist_id, version_number) constraint; 042 (phaze-2jl1 / phaze-y0j0) lands the
-    scheduling_ledger.redrive_attempt column. Any other resurrected 0xx chain file is a regression.
+    scheduling_ledger.redrive_attempt column; 043 (phaze-gl1k) lands the partial
+    UNIQUE(track_id) WHERE status='accepted' on discogs_links. Any other resurrected 0xx chain
+    file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -202,6 +205,7 @@ def test_baseline_is_the_only_migration() -> None:
         "040_tag_write_log_timestamptz.py",
         "041_tracklist_version_unique.py",
         "042_scheduling_ledger_redrive_attempt.py",
+        "043_discogs_link_one_accepted_per_track.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -210,10 +214,10 @@ def test_baseline_is_the_only_migration() -> None:
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (042: + scheduling_ledger.redrive_attempt)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (043: + discogs_links one-accepted-per-track)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "042"
+    assert version == "043"
 
 
 @pytest.mark.asyncio
@@ -237,6 +241,39 @@ async def test_tracklist_version_unique_constraint_enforced(migrated_engine: Asy
             await conn.execute(
                 text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
                 {"id": uuid.uuid4(), "tid": tracklist_id},
+            )
+
+
+@pytest.mark.asyncio
+async def test_discogs_link_one_accepted_per_track_enforced(migrated_engine: AsyncEngine) -> None:
+    """043 adds a partial UNIQUE(track_id) WHERE status='accepted': a second accepted link for the
+    same track is rejected at the DB level (phaze-gl1k, D-07 defense-in-depth)."""
+    tracklist_id, version_id, track_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with migrated_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
+                "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', NOW(), NOW())"
+            ),
+            {"id": tracklist_id, "ext": f"d07-{tracklist_id}", "url": "https://example.com/tl"},
+        )
+        await conn.execute(
+            text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 1, NOW())"),
+            {"id": version_id, "tid": tracklist_id},
+        )
+        await conn.execute(
+            text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+            {"id": track_id, "vid": version_id},
+        )
+        await conn.execute(
+            text("INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-1', 90.0, 'accepted')"),
+            {"id": uuid.uuid4(), "tid": track_id},
+        )
+    with pytest.raises(IntegrityError):
+        async with migrated_engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-2', 80.0, 'accepted')"),
+                {"id": uuid.uuid4(), "tid": track_id},
             )
 
 
@@ -412,7 +449,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "042"
+        assert version == "043"
     finally:
         if engine is not None:
             await engine.dispose()

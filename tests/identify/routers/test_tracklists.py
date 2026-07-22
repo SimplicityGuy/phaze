@@ -1810,6 +1810,64 @@ async def test_bulk_link_discogs(session: AsyncSession, client: AsyncClient) -> 
 
 
 @pytest.mark.asyncio
+async def test_bulk_link_discogs_dismisses_preexisting_accepted_link(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/bulk-link never leaves two accepted DiscogsLinks for one track (D-07).
+
+    Regression for phaze-gl1k: a track that already has an accepted link (e.g. from a prior
+    individual accept, preserved by match_tracklist_to_discogs re-matching) must be folded into
+    the same accept/dismiss pass as freshly loaded candidates, not left untouched alongside a new
+    accepted row.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = tracks[0]
+    # A pre-existing accepted link (not status=='candidate', so the old candidate-only query
+    # would never see it).
+    preexisting_accepted = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-old",
+        discogs_artist="Old",
+        discogs_title="Accepted",
+        confidence=50.0,
+        status="accepted",
+    )
+    # A freshly re-matched candidate with higher confidence.
+    new_candidate = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-new",
+        discogs_artist="New",
+        discogs_title="Candidate",
+        confidence=95.0,
+        status="candidate",
+    )
+    session.add_all([preexisting_accepted, new_candidate])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/bulk-link")
+    assert response.status_code == 200
+
+    await session.refresh(preexisting_accepted)
+    await session.refresh(new_candidate)
+
+    statuses = {preexisting_accepted.status, new_candidate.status}
+    accepted_count = sum(1 for s in (preexisting_accepted.status, new_candidate.status) if s == "accepted")
+    assert accepted_count == 1, f"expected exactly one accepted link, got statuses={statuses}"
+    # The higher-confidence link wins.
+    assert new_candidate.status == "accepted"
+    assert preexisting_accepted.status == "dismissed"
+
+
+@pytest.mark.asyncio
 async def test_bulk_link_discogs_no_candidates(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/bulk-link with no candidates returns gracefully."""
     tl = _make_tracklist()
