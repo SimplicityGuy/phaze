@@ -183,13 +183,20 @@ async def _analyze_file_count(session: AsyncSession) -> int:
     A lightweight ``COUNT(*)`` read. On ANY error it returns a non-zero sentinel so a
     transient DB issue can NEVER falsely trip the first-run empty state (better to show
     the normal dashboard than to wrongly claim the archive is empty).
+
+    The read runs inside a SAVEPOINT (``session.begin_nested()``), mirroring the CR-01 idiom
+    :func:`phaze.services.pipeline._agent_stage_buckets` / :func:`~phaze.services.pipeline.get_agent_recent_scans`
+    already document: ``_render_stage``'s analyze branch calls this AFTER ``build_dashboard_context``
+    has loaded ``Agent`` / ``ScanBatch`` ORM rows into the SAME request session's identity map. A
+    plain ``session.rollback()`` here would expire those already-loaded rows and 500 the subsequent
+    Jinja render on the next lazy load (WR-05) -- exactly the DB hiccup this degrade path exists to
+    survive. On error the nested scope is rolled back ALONE, recovering the aborted transaction
+    without poisoning downstream reads on this same session.
     """
     try:
-        result = await session.execute(select(func.count(FileRecord.id)))
+        async with session.begin_nested():
+            result = await session.execute(select(func.count(FileRecord.id)))
     except Exception:
-        # Roll back the aborted transaction so downstream reads on this same session
-        # aren't poisoned (WR-05, matches the codebase-wide degrade-safe pattern).
-        await session.rollback()
         return 1
     return int(result.scalar() or 0)
 
