@@ -442,6 +442,41 @@ async def test_undispatched_agent_reaches_terminal_pill(
     assert "ERRORS" in table.text, table.text
 
 
+# ---------------------------------------------------------------------------
+# phaze-pyv3: the sort-persist guard never resurrects a reaped exec hash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_persist_sort_guard_does_not_resurrect_reaped_key(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+) -> None:
+    """The EXISTS-guarded sort persist writes only a live key -- a reaped key stays gone (phaze-pyv3)."""
+    _ac, _mock_router, redis_client = smoke
+    # Bind the cached script to this real client.
+    execution._persist_sort_script = None
+    script = execution._get_persist_sort_script(redis_client)
+    try:
+        # A reaped / never-seeded key: the guard returns 0 and creates nothing (no TTL-less
+        # 2-field resurrection that would leak forever + wedge attached SSE streams).
+        result = await script(keys=["exec:reaped-pyv3"], args=["completed", "desc"], client=redis_client)
+        assert int(result) == 0
+        assert await redis_client.exists("exec:reaped-pyv3") == 0
+
+        # A live key: the sort fields are written and the existing TTL is preserved (HSET does not
+        # clear it, and the guard never re-arms a fresh one).
+        await redis_client.hset("exec:live-pyv3", mapping={"total": "1"})
+        await redis_client.expire("exec:live-pyv3", 120)
+        result = await script(keys=["exec:live-pyv3"], args=["completed", "desc"], client=redis_client)
+        assert int(result) == 1
+        assert await redis_client.hget("exec:live-pyv3", "agents_sort") == "completed"
+        assert await redis_client.hget("exec:live-pyv3", "agents_order") == "desc"
+        ttl = await redis_client.ttl("exec:live-pyv3")
+        assert 0 < ttl <= 120, f"expected the batch TTL to survive the sort persist, got {ttl}"
+    finally:
+        execution._persist_sort_script = None
+
+
 @pytest.mark.asyncio
 async def test_collision_short_circuits_dispatch(
     smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],

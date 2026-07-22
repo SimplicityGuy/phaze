@@ -60,6 +60,8 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from redis.asyncio import Redis
+    from redis.commands.core import AsyncScript
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.routers.column_sort import SortState
@@ -132,6 +134,34 @@ EXEC_AGENTS_SORT = SortContract(
 # "Status" is deliberately NOT a sortable column: it is a derived pill (PENDING/RUNNING/COMPLETE/
 # ERRORS computed from completed+failed+total in the template), not a raw stored value -- the same
 # reason the pipeline.py contracts never offer their derived stage-pill columns for sorting either.
+
+
+# phaze-pyv3: persist the operator's sort choice onto the batch hash ONLY if the key still exists,
+# atomically. ``execution_agents_table_sort`` reads the hash (hgetall) and then writes the sort
+# fields; the batch's 24h TTL can fire in the gap between those two round trips, and a plain HSET
+# would then RECREATE ``exec:{batch_id}`` with just ``agents_sort``/``agents_order`` and, per Redis
+# semantics, NO expiry -- leaking the key forever (the TTL is the only reaper) and feeding any
+# attached SSE stream a status-less 2-field hash it renders as a phantom "running 0/0" batch that
+# never terminates. The EXISTS check + HSET run in one Redis round trip so the TTL cannot interleave:
+# a reaped key is left reaped (returns 0), never resurrected. Returns 1 if persisted, 0 if the key
+# was already gone.
+_PERSIST_SORT_IF_EXISTS_LUA = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], 'agents_sort', ARGV[1], 'agents_order', ARGV[2])
+return 1
+"""
+
+# Registered lazily on first use (no Redis handle at import time), cached so subsequent sort clicks
+# reuse the EVALSHA fast-path. Mirrors ``agent_exec_batches._get_promote_status_script``.
+_persist_sort_script: AsyncScript | None = None
+
+
+def _get_persist_sort_script(redis_client: Redis) -> AsyncScript:
+    """Return the cached EXISTS-guarded sort-persist script, registering it on first call."""
+    global _persist_sort_script
+    if _persist_sort_script is None:
+        _persist_sort_script = redis_client.register_script(_PERSIST_SORT_IF_EXISTS_LUA)
+    return _persist_sort_script
 
 
 def _sort_agents_view(agents_view: list[dict[str, object]], sort_state: SortState) -> list[dict[str, object]]:
@@ -571,7 +601,13 @@ async def execution_agents_table_sort(
 
     agents_view: list[dict[str, object]] = []
     if data:
-        await redis_client.hset(key, mapping={"agents_sort": sort_state.key, "agents_order": sort_state.order})
+        # phaze-pyv3: persist the sort atomically behind an EXISTS guard. The hgetall above and this
+        # write are separate round trips; if the batch's 24h TTL fired between them a plain HSET
+        # would resurrect exec:{batch_id} as a TTL-less 2-field key (leaked forever, and rendered as
+        # a phantom "running 0/0" batch by any attached SSE stream). The Lua EXISTS+HSET is one
+        # round trip, so a reaped key stays reaped instead of being recreated without an expiry.
+        persist_sort = _get_persist_sort_script(redis_client)
+        await persist_sort(keys=[key], args=[sort_state.key, sort_state.order], client=redis_client)
         try:
             dispatch_summary: list[dict[str, object]] = json.loads(data.get("dispatch_summary", "[]"))
         except json.JSONDecodeError:
