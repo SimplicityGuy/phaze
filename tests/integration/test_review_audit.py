@@ -161,8 +161,9 @@ async def test_dedupe_resolve_one_resolution_and_undo_round_trips(client: AsyncC
     resolved_stmt = select(func.count()).select_from(DedupResolution).where(DedupResolution.file_id == other.id)
     assert (await session.execute(resolved_stmt)).scalar_one() == 1, "exactly one resolution marker per resolve"
 
-    # Undo round-trips the file_states blob the resolve response carries (id-only DELETE of the marker).
-    file_states = json.dumps([{"id": str(other.id)}])
+    # Undo round-trips the file_states blob the resolve response carries. phaze-btix: the CAS DELETE
+    # now requires both the file id and the canonical_id the marker was written with, not id alone.
+    file_states = json.dumps([{"id": str(other.id), "canonical_id": str(canonical.id)}])
     undo = await client.post(f"/duplicates/{shared}/undo", data={"file_states": file_states})
     assert undo.status_code == 200
 
