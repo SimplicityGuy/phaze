@@ -162,6 +162,44 @@ async def test_resolve_group(session: AsyncSession, client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_resolve_group_with_canonical_id_outside_group_resolves_nothing(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-xasy: POST /resolve with a canonical_id that belongs to a DIFFERENT file must be a no-op.
+
+    Regression for the reported failure scenario: a replayed form (e.g. a stale browser tab after the
+    original keeper was deleted and re-scanned under a new UUID) can carry a canonical_id that still
+    passes the FK because it names SOME live file -- just not a member of this group. Before the fix,
+    every member of the group (including whichever file would have been the intended keeper) got a
+    DedupResolution marker pointing at that unrelated file, silently orphaning the group with zero
+    surviving canonical.
+    """
+    from sqlalchemy import select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    outsider = _make_file("/dir/unrelated.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, outsider])
+    await session.flush()
+
+    response = await client.post(
+        f"/duplicates/{HASH_A}/resolve",
+        data={"canonical_id": str(outsider.id)},
+    )
+
+    assert response.status_code == 200
+
+    # No member of group A -- keeper or otherwise -- got a marker.
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == set()
+
+    # The group is still visible, unresolved, in the listing (it did not silently vanish).
+    listing = await client.get("/duplicates/", headers={"HX-Request": "true"})
+    assert listing.status_code == 200
+    assert HASH_A[:12] in listing.text
+
+
+@pytest.mark.asyncio
 async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/{hash}/undo restores files to previous state."""
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
@@ -176,8 +214,9 @@ async def test_undo_resolve(session: AsyncSession, client: AsyncClient) -> None:
     )
     assert resolve_response.status_code == 200
 
-    # Construct file_states for undo
-    file_states = [{"id": str(f2.id)}]
+    # Construct file_states for undo. phaze-btix: the CAS DELETE now requires the payload's
+    # canonical_id to match the marker's own canonical_file_id, not just the file id.
+    file_states = [{"id": str(f2.id), "canonical_id": str(f1.id)}]
 
     # Undo
     undo_response = await client.post(
@@ -274,11 +313,13 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
     session.add_all([f1, f2])
     await session.flush()
 
-    # Bulk resolve first
+    # Bulk resolve first. With no metadata/bitrate differences, score_group's tie-break falls to the
+    # (stable-sorted) shortest path, so f1 -- inserted first, same path length as f2 -- is the keeper.
     await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
 
-    # Build undo states
-    file_states = [{"id": str(f2.id)}]
+    # Build undo states. phaze-btix: the CAS DELETE now requires the payload's canonical_id to match
+    # the marker's own canonical_file_id, not just the file id.
+    file_states = [{"id": str(f2.id), "canonical_id": str(f1.id)}]
 
     response = await client.post(
         "/duplicates/undo-all",
@@ -387,7 +428,9 @@ async def test_undo_endpoint_commits_marker_delete_and_restore(session: AsyncSes
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
     assert resolve.status_code == 200
 
-    payload = json.dumps([{"id": str(dup.id)}])
+    # phaze-btix: the CAS delete now requires the payload's canonical_id to match the marker's own
+    # canonical_file_id, not just the file id.
+    payload = json.dumps([{"id": str(dup.id), "canonical_id": str(keeper.id)}])
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
     assert undo.status_code == 200
 
@@ -549,12 +592,18 @@ async def test_bulk_undo_toast_targets_a_dom_id_that_exists_in_the_dedupe_shell(
 
 
 @pytest.mark.asyncio
-async def test_undo_roundtrip_id_only_payload_still_deletes_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
-    """THE BLOCKER GUARD: an id-only payload (PR-B shape, no previous_state) STILL deletes the marker.
+async def test_undo_roundtrip_server_payload_still_deletes_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
+    """The REAL server-rendered payload (id + canonical_id) still round-trips and deletes the marker.
 
-    Take the real server-rendered payload, STRIP ``previous_state`` from every entry (emulating the shape
-    PR-B produces once the capture is removed), POST to /undo, and assert the marker is deleted. Under the
-    OLD ``if not restore_by_id: return 0`` gate this no-op'd silently; the decoupled gate must delete it.
+    Historically (Phase 90 PR-B / D-09) this test pinned an id-ONLY payload shape as sufficient to
+    delete the marker -- ``[{"id": ...}]`` with no other field. phaze-btix found that shape is exactly
+    the defect: file_id alone cannot distinguish the marker THIS resolution wrote from a marker a
+    LATER, different resolution of the same file wrote, so a stale id-only replay could silently
+    revert a newer resolution despite the docstring's claimed CAS no-op. ``resolve_group`` now also
+    echoes ``canonical_id`` in the payload and ``undo_resolve`` requires BOTH to match the live marker
+    (see ``test_undo_roundtrip_id_only_payload_no_longer_deletes_marker`` for the id-only case). This
+    test pins the happy path: the UNMODIFIED server payload (which already carries both fields) still
+    round-trips end to end.
     """
     from sqlalchemy import func, select
 
@@ -568,17 +617,50 @@ async def test_undo_roundtrip_id_only_payload_still_deletes_marker(session: Asyn
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
     assert resolve.status_code == 200
 
-    # Strip previous_state from every entry -> the PR-B id-only shape [{"id": ...}].
-    server_payload = json.loads(_extract_server_file_states(resolve.text))
-    id_only = [{"id": entry["id"]} for entry in server_payload]
-    assert all("previous_state" not in e for e in id_only)
+    server_payload = _extract_server_file_states(resolve.text)
+    assert '"canonical_id"' in server_payload, "resolve response no longer echoes canonical_id (phaze-btix CAS anchor)"
 
-    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": json.dumps(id_only)})
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": server_payload})
     assert undo.status_code == 200
 
     # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees the committed marker DELETE.
     remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
-    assert remaining == 0, "id-only (PR-B shape) undo did NOT delete the marker -- the blocker regressed"
+    assert remaining == 0, "round-trip undo (real server payload) did NOT delete the marker"
+
+
+@pytest.mark.asyncio
+async def test_undo_roundtrip_id_only_payload_no_longer_deletes_marker(session: AsyncSession, client: AsyncClient, verify: AsyncSession) -> None:
+    """phaze-btix: an id-only payload (missing canonical_id) is now an UNUSABLE element, not a valid undo.
+
+    Take the real server-rendered payload and STRIP ``canonical_id`` from every entry (emulating a
+    replay of the shape the pre-fix code accepted). The CAS gate in ``undo_resolve`` now requires both
+    the file id AND the canonical_id it was resolved with to match the live marker; an entry missing
+    either half is skipped like any other malformed element (contract rule 2), so the DELETE matches
+    nothing and the marker survives. This is the deliberate behavior change that closes the ABA hole:
+    file_id alone was never a safe CAS anchor.
+    """
+    from sqlalchemy import func, select
+
+    from phaze.models.dedup_resolution import DedupResolution
+
+    keeper = _make_file("/m/keeper.mp3", "mp3", HASH_A)
+    dup = _make_file("/m/dup.mp3", "mp3", HASH_A)
+    session.add_all([keeper, dup])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(keeper.id)})
+    assert resolve.status_code == 200
+
+    server_payload = json.loads(_extract_server_file_states(resolve.text))
+    id_only = [{"id": entry["id"]} for entry in server_payload]
+    assert all("canonical_id" not in e for e in id_only)
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": json.dumps(id_only)})
+    assert undo.status_code == 200  # element-level malformed shape -> graceful no-op, never a 500/4xx
+
+    # 92-04 (CLEAN-02): shared ``verify`` fixture (per-test connection) sees the marker was NOT deleted.
+    remaining = (await verify.execute(select(func.count(DedupResolution.id)).where(DedupResolution.file_id == dup.id))).scalar_one()
+    assert remaining == 1, "id-only undo deleted the marker -- the phaze-btix CAS gate regressed"
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +829,9 @@ async def test_undo_mixed_payload_undoes_the_valid_entries(session: AsyncSession
     resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
     assert resolve.status_code == 200
 
-    payload = json.dumps([1, "junk", None, {"nope": 1}, {"id": "not-a-uuid"}, {"id": str(f2.id)}])
+    # phaze-btix: the one real, USABLE entry must carry both id and canonical_id -- junk entries
+    # around it (including an id-only entry, now itself unusable) must not suppress it.
+    payload = json.dumps([1, "junk", None, {"nope": 1}, {"id": "not-a-uuid"}, {"id": str(f2.id)}, {"id": str(f2.id), "canonical_id": str(f1.id)}])
     undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": payload})
 
     assert undo.status_code == 200

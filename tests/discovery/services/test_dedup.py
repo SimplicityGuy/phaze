@@ -589,8 +589,10 @@ async def test_resolve_group(session: AsyncSession) -> None:
 
     assert count == 2
     assert len(file_states) == 2
-    # Phase 90 (D-09): the returned payload is id-only (no previous_state).
-    assert all(set(entry.keys()) == {"id"} for entry in file_states)
+    # phaze-btix: the payload also echoes the canonical_id THIS call wrote, so undo_resolve can
+    # CAS-scope its DELETE to (file_id, canonical_file_id) instead of file_id alone.
+    assert all(set(entry.keys()) == {"id", "canonical_id"} for entry in file_states)
+    assert all(entry["canonical_id"] == str(f1.id) for entry in file_states)
     # The DedupResolution marker (the sole derived authority) was written for the two non-canonical files;
     # the canonical file has none.
     marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
@@ -598,18 +600,80 @@ async def test_resolve_group(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_undo_resolve(session: AsyncSession) -> None:
-    """undo_resolve DELETEs the markers keyed on the payload id-set -- the sole undo authority (D-05/D-06)."""
-    f1 = _make_file("/dir/a.mp3", "mp3", HASH_A)
-    f2 = _make_file("/dir/b.mp3", "mp3", HASH_A)
-    session.add_all([f1, f2])
-    await session.flush()
-    # Undo is a marker DELETE...RETURNING CAS: the ids must carry a marker to be undone.
-    session.add_all([DedupResolution(file_id=f1.id), DedupResolution(file_id=f2.id)])
+async def test_resolve_group_rejects_canonical_id_outside_the_group(session: AsyncSession) -> None:
+    """phaze-xasy: a canonical_id that names a real file OUTSIDE the group must not resolve anything.
+
+    Before the fix, ``FileRecord.id != canonical_id`` excluded no group member for a canonical_id that
+    belongs to some OTHER file entirely (still a valid FK target), so every member of the group --
+    including the intended keeper -- got a DedupResolution marker pointing at an unrelated file, and
+    the group vanished with zero surviving canonical. A stale/mismatched canonical_id must instead be
+    a no-op: 0 resolved, no markers written for anyone.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup1.mp3", "mp3", HASH_A)
+    f3 = _make_file("/dir/dup2.mp3", "mp3", HASH_A)
+    outsider = _make_file("/dir/unrelated.mp3", "mp3", HASH_B)
+    session.add_all([f1, f2, f3, outsider])
     await session.flush()
 
-    # Phase 90 (D-09): the payload is id-only; no previous_state is captured or restored.
-    file_states = [{"id": str(f1.id)}, {"id": str(f2.id)}]
+    count, file_states = await resolve_group(session, HASH_A, outsider.id)
+
+    assert count == 0
+    assert file_states == []
+    # No member of the group -- keeper or otherwise -- got a marker.
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_resolve_group_rejects_canonical_id_already_resolved_in_the_group(session: AsyncSession) -> None:
+    """phaze-xasy: a canonical_id that is a group member but ALREADY carries a marker is not a valid keeper.
+
+    A file that has already been marked non-canonical by a prior resolution is not an eligible
+    canonical pick for a later replay -- ``~dedup_resolved_clause()`` in the membership check excludes
+    it just like the main selection does, so this is also a no-op rather than resolving against an
+    already-resolved file.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    # f2 is already resolved (marked non-canonical, keeping f1).
+    first_count, _ = await resolve_group(session, HASH_A, f1.id)
+    assert first_count == 1
+
+    # A stale replay now tries to resolve the group keeping the ALREADY-RESOLVED f2 as canonical.
+    count, file_states = await resolve_group(session, HASH_A, f2.id)
+
+    assert count == 0
+    assert file_states == []
+    # f1 (the real keeper) still has no marker of its own.
+    marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
+    assert marker_ids == {f2.id}
+
+
+@pytest.mark.asyncio
+async def test_undo_resolve(session: AsyncSession) -> None:
+    """undo_resolve DELETEs the markers keyed on the payload's (file_id, canonical_id) CAS pairs (phaze-btix)."""
+    keeper = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f1 = _make_file("/dir/a.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/b.mp3", "mp3", HASH_A)
+    session.add_all([keeper, f1, f2])
+    await session.flush()
+    # Undo is a marker DELETE...RETURNING CAS: the (file_id, canonical_id) pair must match a live marker.
+    # canonical_file_id has an FK to files.id, so it must name a real, persisted FileRecord.
+    session.add_all(
+        [
+            DedupResolution(file_id=f1.id, canonical_file_id=keeper.id),
+            DedupResolution(file_id=f2.id, canonical_file_id=keeper.id),
+        ]
+    )
+    await session.flush()
+
+    # phaze-btix: the payload carries both the file id and the canonical_id the marker was written
+    # with -- file_id alone is no longer a sufficient CAS anchor.
+    file_states = [{"id": str(f1.id), "canonical_id": str(keeper.id)}, {"id": str(f2.id), "canonical_id": str(keeper.id)}]
 
     count = await undo_resolve(session, file_states)
 
@@ -706,6 +770,9 @@ async def test_undo_resolve_mixed_payload_deletes_the_valid_marker(session: Asyn
     await resolve_group(session, "d" * 64, f1.id)
     await session.flush()
 
-    undone = await undo_resolve(session, [1, "junk", None, {"id": "not-a-uuid"}, {"id": str(f2.id)}])
+    undone = await undo_resolve(
+        session,
+        [1, "junk", None, {"id": "not-a-uuid"}, {"id": str(f2.id), "canonical_id": str(f1.id)}],
+    )
 
     assert undone == 1

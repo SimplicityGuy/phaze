@@ -4,7 +4,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 import uuid as uuid_mod
 
-from sqlalchemy import Subquery, delete, func, select
+from sqlalchemy import Subquery, delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -325,7 +325,26 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     Returns (count_resolved, [{id}]) for undo tracking. Phase 90 (D-09): the DUPLICATE_RESOLVED
     files.state dual-write was removed -- the DedupResolution marker (dedup_resolved_clause) is the sole
     derived authority, so the returned payload no longer carries a previous_state.
+
+    phaze-xasy: ``canonical_id`` is caller-supplied (a browser Form field) and is NOT trusted to
+    actually be a member of ``group_hash`` -- the only DB backstop on ``canonical_file_id`` is a
+    plain FK to ``files.id``, which is satisfied by ANY live file, group member or not. Without this
+    membership check, a stale/mismatched ``canonical_id`` (e.g. a replayed form after the original
+    keeper was deleted and re-scanned under a new UUID) makes ``FileRecord.id != canonical_id`` below
+    exclude NO group member, so every copy -- including the intended keeper -- gets a
+    ``DedupResolution`` marker pointing at an unrelated file, and the group silently vanishes with
+    zero surviving canonical. Verify ``canonical_id`` names a currently-unresolved member of THIS
+    group first; a mismatch is a no-op (0 resolved), not a resolve against the wrong file.
     """
+    canonical_membership_stmt = select(FileRecord.id).where(
+        FileRecord.sha256_hash == group_hash,
+        FileRecord.id == canonical_id,
+        ~dedup_resolved_clause(),
+    )
+    canonical_membership = await session.execute(canonical_membership_stmt)
+    if canonical_membership.scalar_one_or_none() is None:
+        return 0, []
+
     # Find all files in this group except the canonical one
     stmt = select(FileRecord).where(
         FileRecord.sha256_hash == group_hash,
@@ -337,7 +356,10 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
 
     # Phase 90 (D-09): the per-file DUPLICATE_RESOLVED files.state write (and its previous_state capture)
     # was removed as a matched set; the DedupResolution marker below is the sole resolution authority.
-    file_states: list[dict[str, Any]] = [{"id": str(f.id)} for f in files]
+    # phaze-btix: the payload also echoes THIS call's ``canonical_id`` per entry, so ``undo_resolve``
+    # can scope its DELETE to the (file_id, canonical_file_id) pair a marker was actually written
+    # with -- see undo_resolve's docstring for why file_id alone is not a safe CAS anchor.
+    file_states: list[dict[str, Any]] = [{"id": str(f.id), "canonical_id": str(canonical_id)} for f in files]
 
     # D-01/D-02/D-03/D-07: the go-forward dedup_resolution writer that has not existed since 032's
     # one-shot backfill. One bulk pg_insert for every non-canonical file in the group, ON CONFLICT
@@ -355,67 +377,88 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
 
 
 async def undo_resolve(session: AsyncSession, file_states: list[Any]) -> int:
-    """Undo a group resolution: DELETE the dedup markers, keyed on the payload id-set.
+    """Undo a group resolution: DELETE the dedup markers, keyed on the payload's (file_id, canonical_id) pairs.
 
-    Accepts the browser-held ``[{id}]`` payload. The element type is ``Any``, not ``dict``, ON
-    PURPOSE (phaze-wkqk): this consumes an UNTRUSTED array whose elements the router deliberately
-    does not validate, and a ``dict`` annotation would be a lie that hides the isinstance guard
-    below from the type checker. The marker DELETE and its early-return gate derive from
-    ``entry["id"]`` ALONE. Phase 90: PR-A decoupled this gate from ``previous_state``; PR-B (D-09) then
-    removed the ``previous_state`` capture / DUPLICATE_RESOLVED dual-write / state-restore as a matched set,
-    so an id-only ``[{id}]`` payload is now the ONLY shape and it still deletes the marker.
+    Accepts the browser-held ``[{id, canonical_id}]`` payload. The element type is ``Any``, not
+    ``dict``, ON PURPOSE (phaze-wkqk): this consumes an UNTRUSTED array whose elements the router
+    deliberately does not validate, and a ``dict`` annotation would be a lie that hides the
+    isinstance guard below from the type checker.
 
-    The dedup marker is the CAS anchor (D-05/D-06): one ``DELETE ... RETURNING file_id`` removes the markers
-    for the payload's ids; a stale-tab replay against a file re-resolved since finds no marker, returns zero
-    rows, and no-ops. The marker DELETE is the SOLE undo authority now -- there is no files.state to restore.
-    Returns the count actually undone (callers do not use it for control flow).
+    phaze-btix: the marker DELETE is scoped by file_id ALONE, an earlier version of this docstring
+    called that a "CAS anchor" and claimed "a stale-tab replay against a file re-resolved since finds
+    no marker, returns zero rows, and no-ops" -- which was false. ``dedup_resolutions`` is one row
+    per ``file_id`` (unique), and ``resolve_group`` never surfaced the marker's own random ``id`` to
+    the browser, so a replayed undo COULD NOT tell its own marker apart from a different, later
+    marker written for the same file (resolve -> undo -> re-resolve with a different canonical ->
+    stale undo replay silently reverts the newer resolution). ``resolve_group`` now echoes the
+    ``canonical_id`` it actually wrote alongside each file id, and the DELETE below requires BOTH to
+    match the marker currently on file (``(file_id, canonical_file_id) IN (payload pairs)``). A
+    marker written by a DIFFERENT resolution (undo + re-resolve since this payload was minted) has a
+    different ``canonical_file_id``, so the pair no longer matches, the DELETE finds no row, and the
+    stale replay genuinely no-ops -- making the documented CAS behavior real. Returns the count
+    actually undone (callers do not use it for control flow).
 
-    Threat mitigation (T-84-03-01/02 / T-90A-04): the DELETE is scoped ``WHERE file_id IN (payload ids)``,
-    so it can only remove markers for ids the operator's own payload names.
+    Threat mitigation (T-84-03-01/02 / T-90A-04): the DELETE is scoped to pairs the operator's own
+    payload names, so it can only remove markers this call's own resolution actually wrote.
 
     NO HTTP 500 ON ANY PAYLOAD SHAPE (phaze-wkqk). This is the ELEMENT half of the untrusted-input
-    contract (``routers/request_guards.py`` rule 2): an entry that is not a dict, or whose ``id`` is
-    absent / not a UUID, is SKIPPED and the rest of the payload still undoes. It is not escalated --
-    one stale id must not void an otherwise valid bulk undo, and the returned count is the authority
-    on what actually happened. The ENVELOPE half (``file_states`` unparseable, or valid JSON that is
-    not an array) is rejected with 422 by the router before it reaches here. The claim in this
-    paragraph is backed by tests (rule 6), not merely asserted -- see
-    ``tests/discovery/services/test_dedup.py`` and ``tests/review/routers/test_duplicates.py``.
+    contract (``routers/request_guards.py`` rule 2): an entry that is not a dict, or whose ``id`` or
+    ``canonical_id`` is absent / not a UUID, is SKIPPED and the rest of the payload still undoes. It
+    is not escalated -- one stale/legacy entry must not void an otherwise valid bulk undo, and the
+    returned count is the authority on what actually happened. The ENVELOPE half (``file_states``
+    unparseable, or valid JSON that is not an array) is rejected with 422 by the router before it
+    reaches here. The claim in this paragraph is backed by tests (rule 6), not merely asserted --
+    see ``tests/discovery/services/test_dedup.py`` and ``tests/review/routers/test_duplicates.py``.
 
     Note this docstring previously claimed the no-500 guarantee while covering only the id VALUE; a
     non-dict entry reached ``entry.get`` and raised ``AttributeError`` -> 500. That gap is the case
     study rule 6 was written from.
     """
-    # (1) DERIVED AUTHORITY: build the DELETE id-set from ``entry["id"]`` ALONE (accept UUID-or-str, drop
-    #     non-UUIDs, dedupe). A malformed id must not escape as an unhandled ValueError/KeyError (HTTP 500).
-    ids: set[uuid_mod.UUID] = set()
+    # (1) DERIVED AUTHORITY: build the DELETE (file_id, canonical_id) pair-set from each entry's
+    #     ``id`` and ``canonical_id`` (accept UUID-or-str, drop non-UUIDs). A malformed or legacy
+    #     (canonical_id-less) entry must not escape as an unhandled error, AND must not be treated as
+    #     "match any canonical" -- that would resurrect the file_id-only CAS bypass this fixes.
+    pairs: set[tuple[uuid_mod.UUID, uuid_mod.UUID]] = set()
     for entry in file_states:
         if not isinstance(entry, dict):
             # phaze-wkqk: valid JSON of the wrong SHAPE -- ``[1, 2]``, ``["a"]``, a list of nulls.
             # Parsing succeeded, so the router's envelope guard passed it through; without this the
             # ``entry.get`` below raises AttributeError and escapes as a 500.
             continue
-        raw_id = entry.get("id")
-        if isinstance(raw_id, uuid_mod.UUID):
-            ids.add(raw_id)
-        elif isinstance(raw_id, str):
-            try:
-                ids.add(uuid_mod.UUID(raw_id))
-            except ValueError:
-                continue
+        file_id = _coerce_uuid(entry.get("id"))
+        canonical_id = _coerce_uuid(entry.get("canonical_id"))
+        if file_id is not None and canonical_id is not None:
+            pairs.add((file_id, canonical_id))
 
-    # (2) The gate is id-set based -- an id-only payload passes and deletes the marker.
-    if not ids:
+    # (2) The gate is pair-based -- an entry missing either half (malformed, or a legacy id-only
+    #     payload from before phaze-btix) is skipped rather than matched loosely.
+    if not pairs:
         return 0
 
-    # (3) CAS anchor: DELETE the markers scoped to the payload id-set, RETURNING the file_ids that actually
-    #     held one (scan_deletion.py:119 async ORM-DELETE hygiene). This is the sole derived undo authority.
+    # (3) CAS: DELETE only markers whose CURRENT (file_id, canonical_file_id) matches a pair this
+    #     payload's own resolution wrote, RETURNING the file_ids that actually held one
+    #     (scan_deletion.py:119 async ORM-DELETE hygiene). This is the sole derived undo authority.
     result = await session.execute(
         delete(DedupResolution)
-        .where(DedupResolution.file_id.in_(list(ids)))
+        .where(tuple_(DedupResolution.file_id, DedupResolution.canonical_file_id).in_(list(pairs)))
         .returning(DedupResolution.file_id)
         .execution_options(synchronize_session=False)
     )
     returned: set[uuid_mod.UUID] = set(result.scalars().all())
     await session.flush()
     return len(returned)
+
+
+def _coerce_uuid(raw: Any) -> uuid_mod.UUID | None:
+    """Best-effort UUID coercion for an untrusted payload field -- ``None`` on anything unusable.
+
+    Shared by :func:`undo_resolve` for both the ``id`` and ``canonical_id`` halves of each entry.
+    """
+    if isinstance(raw, uuid_mod.UUID):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return uuid_mod.UUID(raw)
+        except ValueError:
+            return None
+    return None
