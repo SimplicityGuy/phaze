@@ -1185,6 +1185,36 @@ async def test_link_tracklist_stale_file_id_returns_clean_error_not_500(session:
 
 
 @pytest.mark.asyncio
+async def test_link_search_result_stale_file_id_skips_scrape_and_returns_clean_error(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-x4vi: a dead file_id is rejected BEFORE the expensive scrape, so no scraped work is
+    discarded and the commit never FK-violates into a 500.
+
+    Previously the handler scraped (up to 30s), stored the tracklist in the same uncommitted
+    transaction, then set the unvalidated file_id and committed -- a dead file_id raised
+    ForeignKeyViolation AND rolled back the scrape, so every retry re-hit the rate-limited site.
+    """
+    dead_file_id = uuid.uuid4()  # well-formed UUID with no FileRecord row
+    url = "https://www.1001tracklists.com/tracklist/better1/x.html"
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = AsyncMock()
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(dead_file_id), "external_id": "better1", "url": url},
+        )
+
+    assert response.status_code == 404, response.text
+    # The scrape is skipped entirely -- no wasted network round trip, nothing to discard.
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+    # No tracklist row was created for the rejected request.
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "better1"))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()

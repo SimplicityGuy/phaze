@@ -631,6 +631,16 @@ async def link_search_result(
     if not _is_allowed_tracklist_url(url):
         return HTMLResponse(content="Invalid tracklist url", status_code=400)
 
+    # phaze-x4vi: validate the client-supplied file_id BEFORE the expensive (up-to-30s) network
+    # scrape. file_id is an FK to files.id; a stale/forged id -- e.g. the FileRecord deleted by a
+    # concurrent scan while this panel stayed open -- would otherwise sail through to the final
+    # commit and detonate as a ForeignKeyViolation -> 500, ALSO rolling back the just-scraped
+    # tracklist stored in the SAME transaction, so every retry re-hits the rate-limited site.
+    # Resolving the file up front (the render-vs-POST race in request_guards.py rule 4) returns a
+    # clean error and skips the wasted scrape entirely, so no scraped work is ever discarded.
+    if await session.get(FileRecord, file_id) is None:
+        return HTMLResponse(content="File not found", status_code=404)
+
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
     selected = result.scalar_one_or_none()
 
