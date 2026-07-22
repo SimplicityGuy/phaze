@@ -2107,6 +2107,12 @@ def _backfill_candidates_stmt(threshold_sec: int) -> Select[Any]:
     failure has NO ledger row and is excluded, preventing the v4.0.6 / v5.0 whole-backlog
     over-enqueue class. ORM / bound params only -- the key is concatenated via ``cast`` + a bound
     literal, never f-string SQL (T-49-02 / T-55-BF-04).
+
+    phaze-l1km: this predicate cannot distinguish an ORPHANED ledger row (a timed-out process_file
+    whose SAQ job is gone) from the LIVE-in-flight marker of a still-running deepen job. That live/dead
+    split is a READ of the SAQ-owned ``saq_jobs`` broker (absent in some envs), so it is applied by the
+    caller (:func:`phaze.routers.pipeline.trigger_backfill_cloud`) via the degrade-safe
+    :func:`get_live_job_keys`, NOT baked into this always-on candidate query.
     """
     return (
         select(FileRecord, FileMetadata.duration)

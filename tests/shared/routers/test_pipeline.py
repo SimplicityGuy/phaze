@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -1110,6 +1110,51 @@ async def test_backfill_kueue_clears_marker_and_deletes_ledger_row(
     assert await _is_awaiting_cloud(session, long_failed.id)
     assert await _analysis_failed_at(session, long_failed.id) is None
     assert await _process_file_ledger_rows(session, long_failed.id) == []
+
+
+async def _reset_saq_jobs_minimal(session: AsyncSession) -> None:
+    """Give this test a deterministic minimal ``saq_jobs`` schema (key, status).
+
+    A sibling suite may have created ``saq_jobs`` with the full SAQ schema (NOT NULL ``job``/``queue``)
+    on the shared connection, so a bare ``CREATE TABLE IF NOT EXISTS`` would no-op and a minimal INSERT
+    would violate NOT NULL. DROP + CREATE inside the per-test (rolled-back) transaction pins the schema
+    this test controls; the drop is undone at teardown.
+    """
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    await session.execute(text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"))
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-l1km: a candidate with a LIVE process_file (deepen) job is skipped -- no double-dispatch.
+
+    deepen_analysis re-enqueues process_file on a still-failed long file WITHOUT clearing failed_at, so
+    the file satisfies every backfill candidate conjunct (failed marker + long + ledger row EXISTS) while
+    its local job is still grinding. Backfilling it would delete the LIVE job's ledger row and hold the
+    file for the cloud drain -- dispatching the same file to local + cloud at once and orphaning the local
+    job from queue-loss recovery. The endpoint skips any candidate whose process_file key is live: the
+    file stays failed, its ledger row survives, and it is NOT held in AWAITING_CLOUD.
+    """
+    (live_deepen,) = await _persist_failed_with_duration(session, [_LONG])  # long + failed + ledger row
+    await seed_active_agent(session, "nox", kind="fileserver")  # no compute -> would otherwise hold in AWAITING_CLOUD
+    # Model the live deepen: a queued/active saq_jobs row for this file's process_file key.
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(
+        text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"),
+        {"key": f"process_file:{live_deepen.id}"},
+    )
+    await session.commit()
+    wire_fakes(client)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+    await _drain_background()
+
+    # The live-deepen file is untouched: failure marker retained, ledger row (the live in-flight marker)
+    # NOT deleted, and it is NOT held in AWAITING_CLOUD -- so no local+cloud double-dispatch.
+    assert await _analysis_failed_at(session, live_deepen.id) is not None
+    assert len(await _process_file_ledger_rows(session, live_deepen.id)) == 1
+    assert not await _is_awaiting_cloud(session, live_deepen.id)
 
 
 @pytest.mark.asyncio
