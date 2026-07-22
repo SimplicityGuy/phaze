@@ -728,6 +728,64 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_get_cue_stats_offloads_generated_scan_to_thread(session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-rkvb: the per-file '.cue exists' filesystem probe backing the 'generated' stat must
+    run OFF the event loop via ``asyncio.to_thread``, not inline in the async handler -- an
+    unbounded, synchronous ``exists()``/``iterdir()`` scan over the whole eligible set on an
+    NFS/SMB media mount previously froze the API event loop for the scan's duration on every
+    ``/cue/`` render. Correctness of the resulting count is covered by
+    ``test_cue_list_shows_generated_count_after_generation``; this test guards the offload
+    mechanism itself so a future edit cannot silently move the scan back onto the loop.
+    """
+    from phaze.routers import cue as cue_router
+
+    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch.object(cue_router.asyncio, "to_thread", wraps=cue_router.asyncio.to_thread) as mock_to_thread:
+        stats = await cue_router._get_cue_stats(session)
+
+    mock_to_thread.assert_called_once()
+    assert mock_to_thread.call_args.args[0] is cue_router._count_generated_sync
+    assert stats["eligible"] == 1
+    assert stats["generated"] == 0  # no .cue written yet
+
+
+def test_count_generated_sync_counts_only_files_with_a_cue_on_disk(tmp_path: Path) -> None:
+    """Unit test for the bundled sync scan (phaze-rkvb): mixed generated/ungenerated pairs."""
+    from phaze.routers.cue import _count_generated_sync
+
+    with_cue = tmp_path / "with_cue.mp3"
+    with_cue.write_text("audio")
+    (tmp_path / "with_cue.cue").write_text("cue content")
+
+    without_cue = tmp_path / "without_cue.mp3"
+    without_cue.write_text("audio")
+
+    def _record(path: Path) -> FileRecord:
+        return FileRecord(
+            agent_id="test-fileserver",
+            id=uuid.uuid4(),
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=str(path),
+            original_filename=path.name,
+            current_path=str(path),
+            file_type="mp3",
+            file_size=1,
+        )
+
+    pairs = [
+        (None, _record(with_cue)),
+        (None, _record(without_cue)),
+    ]
+
+    assert _count_generated_sync(pairs) == 1
+
+
+@pytest.mark.asyncio
 async def test_eligibility_scoped_to_latest_version_not_any_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """phaze-dboy: a tracklist whose ONLY timestamped track lives on an OLDER version (a
     re-scrape/re-fingerprint created a newer ``latest_version_id`` with no timestamps) must be

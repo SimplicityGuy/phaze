@@ -1,5 +1,6 @@
 """CUE sheet management UI router -- generation, batch generation, and CUE management page."""
 
+import asyncio
 from pathlib import Path
 import re
 from typing import Any
@@ -101,17 +102,30 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
     return list(result.tuples().all())
 
 
+def _count_generated_sync(pairs: list[tuple[Tracklist, FileRecord]]) -> int:
+    """Synchronous filesystem probe for the 'generated' stat (phaze-rkvb).
+
+    Bundles the per-file :func:`_get_cue_version` probe (``Path.exists`` plus, when a base ``.cue``
+    exists, a full ``iterdir`` of the audio file's parent directory) for the WHOLE eligible set into
+    ONE function, run via :func:`asyncio.to_thread` from :func:`_get_cue_stats`. The eligible set
+    carries no ``LIMIT`` and the media files live on the documented NFS/SMB file-server mount, so
+    looping this synchronously on the event loop -- as it did before this fix -- blocked every SSE
+    stream, poll, and concurrent request for the scan's duration, with no timeout if the mount
+    stalls (an unbounded, unrecoverable freeze of the single API worker).
+    """
+    return sum(1 for _tl, fr in pairs if _get_cue_version(fr.current_path) > 0)
+
+
 async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
     """Compute CUE generation statistics."""
     # Eligible: approved + EXECUTED file + has timestamps
     eligible_pairs = await _get_eligible_tracklist_query(session)
     eligible = len(eligible_pairs)
 
-    # Generated: count of eligible whose file has a .cue on disk
-    generated = 0
-    for _tl, fr in eligible_pairs:
-        if _get_cue_version(fr.current_path) > 0:
-            generated += 1
+    # Generated: count of eligible whose file has a .cue on disk. Offloaded to a worker thread
+    # (phaze-rkvb) -- see _count_generated_sync for why the whole scan is bundled into one
+    # to_thread call instead of blocking the event loop per file.
+    generated = await asyncio.to_thread(_count_generated_sync, eligible_pairs)
 
     # Missing timestamps: approved + EXECUTED file but NO tracks with timestamps on the LATEST
     # version (phaze-dboy -- mirrors _eligible_tracklist_stmt's scope so this is the true inverse
