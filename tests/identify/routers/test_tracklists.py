@@ -1611,6 +1611,138 @@ async def test_save_track_timestamp_at_column_width_boundary_saves(session: Asyn
     assert track.timestamp == exactly_20
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["artist", "title", "timestamp"])
+async def test_save_track_field_empty_persists_null_not_empty_string(session: AsyncSession, client: AsyncClient, field: str) -> None:
+    """phaze-jsl9: clearing an inline edit must persist NULL, not "" -- CUE eligibility keys on
+    ``timestamp.is_not(None)``, so a "" value would silently stay "eligible" forever.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/{field}", data={field: ""})
+    assert response.status_code == 200
+    assert "-" in response.text  # display coalesces the absent value
+
+    await session.refresh(track)
+    assert getattr(track, field) is None
+
+
+@pytest.mark.asyncio
+async def test_save_track_field_whitespace_only_persists_null(session: AsyncSession, client: AsyncClient) -> None:
+    """A whitespace-only edit is treated the same as an empty one -- stripped to NULL."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/artist", data={"artist": "   "})
+    assert response.status_code == 200
+
+    await session.refresh(track)
+    assert track.artist is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("garbage", ["abc", "12:xx", "1:2:3:4", "~5:00", "[1:02:03]", "05:24*"])
+async def test_save_track_timestamp_unparseable_rejected_value_preserved(session: AsyncSession, client: AsyncClient, garbage: str) -> None:
+    """phaze-jsl9: garbage that passes the length guard must still 422, not silently commit a
+    non-NULL value that parse_timestamp_string can never parse.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": garbage})
+
+    assert response.status_code == 422
+    assert garbage in response.text
+    assert 'name="timestamp"' in response.text
+    assert "hx-put" in response.text
+
+    await session.refresh(track)
+    assert track.timestamp == "00:00"  # untouched -- the rejected edit never reached the DB
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", ["01:02:03", "12:34", "90.5", "0"])
+async def test_save_track_timestamp_valid_formats_accepted(session: AsyncSession, client: AsyncClient, valid: str) -> None:
+    """Every format parse_timestamp_string documents (HH:MM:SS / MM:SS / float-seconds) still saves."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": valid})
+
+    assert response.status_code == 200
+    await session.refresh(track)
+    assert track.timestamp == valid
+
+
 # --- Discogs matching endpoints ---
 
 

@@ -8,7 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -51,15 +51,20 @@ def _eligible_tracklist_stmt() -> Select[Any]:
     Deliberately carries NO ``ORDER BY`` -- callers compose :data:`_ELIGIBLE_DISPLAY_ORDER` (+ the
     mandatory ``Tracklist.id`` tiebreaker) themselves, so it is applied exactly once per statement
     instead of risking a double-appended sort key.
+
+    phaze-dboy: the timestamp-existence check is scoped to ``Tracklist.latest_version_id`` --
+    NOT "any version ever" -- because that is the ONLY version actual generation ever reads
+    (``_build_cue_tracks(session, tracklist.latest_version_id)`` in both ``generate_cue`` and
+    ``generate_batch``). A re-scrape/re-fingerprint can create a newer ``latest_version_id``
+    whose tracks carry no timestamps while an OLDER version still has them; scoping this
+    predicate to "any version" previously listed that tracklist as eligible with a Generate
+    button that could never succeed (always "No tracks have timestamps"), permanently
+    inflating ``eligible`` past ``generated`` with no way to converge.
     """
-    # Subquery: tracklist IDs that have at least one track with a timestamp
-    has_timestamp_subq = (
-        select(TracklistVersion.tracklist_id)
-        .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
-        .where(TracklistTrack.timestamp.is_not(None))
-        .distinct()
-        .correlate(Tracklist)
-    )
+    # Subquery: TracklistVersion ids that have at least one track with a timestamp. Matched
+    # against ``Tracklist.latest_version_id`` below (NOT ``Tracklist.id`` via ``TracklistVersion.
+    # tracklist_id``) so this evaluates the SAME version generation reads -- see phaze-dboy above.
+    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
 
     return (
         select(Tracklist, FileRecord)
@@ -68,7 +73,7 @@ def _eligible_tracklist_stmt() -> Select[Any]:
             Tracklist.status == "approved",
             Tracklist.file_id.is_not(None),
             applied_clause(),
-            Tracklist.id.in_(has_timestamp_subq),
+            Tracklist.latest_version_id.in_(has_timestamp_subq),
         )
     )
 
@@ -108,13 +113,10 @@ async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
         if _get_cue_version(fr.current_path) > 0:
             generated += 1
 
-    # Missing timestamps: approved + EXECUTED file but NO tracks with timestamps
-    has_timestamp_subq = (
-        select(TracklistVersion.tracklist_id)
-        .join(TracklistTrack, TracklistTrack.version_id == TracklistVersion.id)
-        .where(TracklistTrack.timestamp.is_not(None))
-        .distinct()
-    )
+    # Missing timestamps: approved + EXECUTED file but NO tracks with timestamps on the LATEST
+    # version (phaze-dboy -- mirrors _eligible_tracklist_stmt's scope so this is the true inverse
+    # of "eligible", not a broader "any version" set that undercounts).
+    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
 
     missing_stmt = (
         select(func.count(Tracklist.id))
@@ -123,7 +125,10 @@ async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
             Tracklist.status == "approved",
             Tracklist.file_id.is_not(None),
             applied_clause(),
-            Tracklist.id.not_in(has_timestamp_subq),
+            # A tracklist with no version at all (latest_version_id IS NULL) has no timestamps
+            # either -- NULL.not_in(...) is SQL NULL (neither true nor false), so it must be
+            # OR'd in explicitly or it silently drops out of the "missing" count.
+            or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
         )
     )
     missing_result = await session.execute(missing_stmt)

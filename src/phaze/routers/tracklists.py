@@ -21,6 +21,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
+from phaze.services.cue_generator import parse_timestamp_string
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import is_applied
@@ -773,7 +774,38 @@ async def save_track_field(
             status_code=422,
         )
 
-    setattr(track, field, new_value)
+    # phaze-jsl9: normalize a cleared/whitespace-only edit to NULL rather than persisting "" --
+    # every CUE eligibility predicate (routers/cue.py) keys on ``timestamp.is_not(None)``, so a ""
+    # value silently kept a cleared track "eligible" while parse_timestamp_string('') raised. This
+    # also keeps the write side consistent with the display side, which already coalesces a falsy
+    # value to "-" (below).
+    stripped_value = new_value.strip()
+
+    # For timestamp specifically, validate against the accepted HH:MM:SS / MM:SS / float-seconds
+    # grammar (the same grammar parse_timestamp_string implements) BEFORE it ever reaches the
+    # column -- this router is the only path that can write a non-NULL, non-parseable value into
+    # TracklistTrack.timestamp (the agent wire path only enforces length). Reject at the boundary
+    # like the over-length branch above: 422, same edit input, value preserved, inline reason.
+    if field == "timestamp" and stripped_value:
+        try:
+            parsed_timestamp = parse_timestamp_string(stripped_value)
+        except ValueError:
+            parsed_timestamp = None
+        if parsed_timestamp is None:
+            return templates.TemplateResponse(
+                request=request,
+                name="tracklists/partials/inline_edit_field.html",
+                context={
+                    "request": request,
+                    "track": track,
+                    "field": field,
+                    "value": new_value,
+                    "error": f"timestamp must be HH:MM:SS, MM:SS, or seconds (e.g. '90.5') -- could not parse {stripped_value!r}.",
+                },
+                status_code=422,
+            )
+
+    setattr(track, field, stripped_value or None)
     await session.commit()
     await session.refresh(track)
 

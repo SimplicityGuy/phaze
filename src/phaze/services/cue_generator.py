@@ -68,21 +68,44 @@ def parse_timestamp_string(ts: str | None) -> float | None:
         - "MM:SS" -> minutes*60 + seconds
         - "123.45" -> raw seconds as float
 
+    Total function (phaze-97u7): ``ts`` is unvalidated free-form text -- scraped verbatim from
+    1001Tracklists markup (an empty cue-time cell yields "", not None) and, before phaze-jsl9,
+    writable verbatim via the inline editor. Any of "", whitespace, a decorated/bracketed time
+    ("~5:00", "[1:02:03]"), or a non-numeric segment must return None per this docstring's
+    contract, NOT raise -- callers (routers/cue.py ``_build_cue_tracks``, both single and batch
+    generate) run this per track OUTSIDE their own try/except and rely on the documented None
+    contract to route to the friendly "No tracks have timestamps" toast instead of a 500.
+
     Args:
         ts: Timestamp string or None.
 
     Returns:
-        Total seconds as float, or None if input is None.
+        Total seconds as float, or None if input is None or unparseable.
     """
     if ts is None:
         return None
 
     parts = ts.split(":")
-    if len(parts) == 3:
-        return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
-    if len(parts) == 2:
-        return float(int(parts[0]) * 60 + int(parts[1]))
-    return float(ts)
+    try:
+        if len(parts) == 3:
+            return float(int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]))
+        if len(parts) == 2:
+            return float(int(parts[0]) * 60 + int(parts[1]))
+        return float(ts)
+    except ValueError:
+        return None
+
+
+def _cue_quote(value: str) -> str:
+    """Sanitize a value for interpolation inside a CUE double-quoted field (phaze-oo35).
+
+    CUE's quoted-string syntax has no escape mechanism, so an embedded ``"`` terminates the field
+    early and leaves trailing garbage on the line (e.g. a track titled ``ID "Unreleased" Mix``
+    would emit ``TITLE "ID "Unreleased" Mix"``, which most consumers either truncate or reject as
+    malformed). Strip the literal quote the same way the filename was already handled (Pitfall 4)
+    -- shared by every quoted CUE directive: FILE, TITLE, PERFORMER, and the REM fields.
+    """
+    return value.replace('"', "")
 
 
 def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTrackData]) -> str:
@@ -97,7 +120,7 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
         Complete CUE sheet content string with trailing newline.
     """
     # Strip double quotes from filename (Pitfall 4)
-    safe_filename = audio_filename.replace('"', "")
+    safe_filename = _cue_quote(audio_filename)
 
     cue_type = _FILE_TYPE_MAP.get(file_type.lower(), "WAVE")
 
@@ -115,19 +138,20 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
     for i, track in enumerate(valid_tracks, start=1):
         lines.append(f"  TRACK {i:02d} AUDIO")
 
-        # REM comments from Discogs metadata (D-08, D-09)
+        # REM comments from Discogs metadata (D-08, D-09) -- phaze-oo35: every value interpolated
+        # inside CUE's double quotes must be sanitized the same way, not just the filename.
         if track.genre:
-            lines.append(f'    REM GENRE "{track.genre}"')
+            lines.append(f'    REM GENRE "{_cue_quote(track.genre)}"')
         if track.label:
-            lines.append(f'    REM LABEL "{track.label}"')
+            lines.append(f'    REM LABEL "{_cue_quote(track.label)}"')
         if track.year:
             lines.append(f'    REM YEAR "{track.year}"')
 
         # Track metadata
         if track.title:
-            lines.append(f'    TITLE "{track.title}"')
+            lines.append(f'    TITLE "{_cue_quote(track.title)}"')
         if track.artist:
-            lines.append(f'    PERFORMER "{track.artist}"')
+            lines.append(f'    PERFORMER "{_cue_quote(track.artist)}"')
 
         # INDEX command with converted timestamp (timestamp_seconds guaranteed non-None by filter above)
         if track.timestamp_seconds is None:  # pragma: no cover — defensive guard; valid_tracks filters None above

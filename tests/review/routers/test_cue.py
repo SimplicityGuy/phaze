@@ -8,6 +8,7 @@ from unittest.mock import patch
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -229,6 +230,30 @@ async def test_generate_cue_no_timestamps(client: AsyncClient, session: AsyncSes
     tracklist, file_record = await _create_approved_tracklist_with_file(session, with_timestamps=False)
 
     audio_path = tmp_path / f"{file_record.original_filename}"
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "timestamps" in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_generate_cue_unparseable_timestamp_returns_friendly_toast_not_500(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-97u7: a track whose timestamp is non-NULL but unparseable (e.g. scraped "") must
+    route to the "No tracks have timestamps" toast, not an unhandled 500 from ValueError.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, track_count=1)
+
+    # Force the single track's timestamp to an unparseable value the eligibility subquery still
+    # admits (non-NULL), mirroring an empty scraped cue-time cell.
+    track_result = await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == tracklist.latest_version_id))
+    track = track_result.scalars().one()
+    track.timestamp = ""
+    await session.commit()
+
+    audio_path = tmp_path / file_record.original_filename
     audio_path.write_text("fake audio")
     file_record.current_path = str(audio_path)
     await session.commit()
@@ -572,6 +597,30 @@ async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: 
 
 
 @pytest.mark.asyncio
+async def test_generate_batch_unparseable_timestamp_does_not_abort_whole_batch(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-97u7: _build_cue_tracks runs BEFORE generate_batch's per-row try/except (cue.py:404
+    vs :409) -- an unhandled ValueError there would 500 the WHOLE batch, not just the bad row.
+    """
+    _tl_good, file_good = await _create_approved_tracklist_with_file(session, artist="Good")
+    tl_bad, file_bad = await _create_approved_tracklist_with_file(session, artist="Bad", track_count=1)
+
+    bad_track_result = await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == tl_bad.latest_version_id))
+    bad_track = bad_track_result.scalars().one()
+    bad_track.timestamp = ""
+    await session.commit()
+
+    for fr in [file_good, file_bad]:
+        audio_path = tmp_path / fr.original_filename
+        audio_path.write_text("fake audio")
+        fr.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post("/cue/generate-batch")
+    assert response.status_code == 200
+    assert "Generated 1 CUE files" in response.text  # the good row still generated
+
+
+@pytest.mark.asyncio
 async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -> None:
     """GET /cue/?page=2 returns second page of results."""
     # Create enough tracklists to paginate (default page_size=25)
@@ -676,6 +725,59 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 
     unbounded = await _get_eligible_tracklist_query(session)
     assert len(unbounded) == 4, "no limit -> the full eligible set (count/pagination callers)"
+
+
+@pytest.mark.asyncio
+async def test_eligibility_scoped_to_latest_version_not_any_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-dboy: a tracklist whose ONLY timestamped track lives on an OLDER version (a
+    re-scrape/re-fingerprint created a newer ``latest_version_id`` with no timestamps) must be
+    excluded from ``eligible`` and counted in ``missing_timestamps`` -- generation only ever
+    reads ``latest_version_id``, so counting "any version" produced an always-failing
+    "eligible" row that permanently inflated eligible past generated.
+    """
+    from phaze.routers.cue import _get_cue_stats, _get_eligible_tracklist_query
+
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, artist="Stale Version", track_count=1)
+
+    # v1 (the current latest) already has a timestamped track from the fixture -- capture it,
+    # then create v2 (untimestamped) and repoint latest_version_id at it, simulating a re-scrape
+    # that lost timing data.
+    v2_id = uuid.uuid4()
+    session.add(TracklistVersion(id=v2_id, tracklist_id=tracklist.id, version_number=2))
+    await session.flush()
+    session.add(
+        TracklistTrack(
+            id=uuid.uuid4(),
+            version_id=v2_id,
+            position=1,
+            artist="Track Artist 1",
+            title="Track Title 1",
+            timestamp=None,
+        )
+    )
+    tracklist.latest_version_id = v2_id
+    await session.commit()
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    eligible_pairs = await _get_eligible_tracklist_query(session)
+    assert tracklist.id not in {tl.id for tl, _fr in eligible_pairs}, "stale-version timestamps must not count as eligible"
+
+    stats = await _get_cue_stats(session)
+    assert stats["eligible"] == 0
+    assert stats["missing_timestamps"] == 1
+
+    # Generation must fail cleanly (not silently "succeed" against the stale v1 data) and batch
+    # generation must skip it rather than counting it.
+    response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert response.status_code == 200
+    assert "timestamps" in response.text.lower()
+
+    batch_response = await client.post("/cue/generate-batch")
+    assert "Generated 0 CUE files" in batch_response.text
 
 
 @pytest.mark.asyncio
