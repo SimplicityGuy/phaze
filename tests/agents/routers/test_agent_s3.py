@@ -222,9 +222,11 @@ async def _seed_cloud_job(
 
 async def _seed_ledger(session: AsyncSession, file_id: uuid.UUID, *, attempt: int | None = None) -> None:
     payload: dict[str, Any] = {"file_id": str(file_id)}
-    if attempt is not None:
-        payload["s3_upload_attempt"] = attempt
     await upsert_ledger_entry(session, key=f"s3_upload:{file_id}", function="s3_upload", kwargs=payload)
+    # phaze-y0j0: the s3_upload_attempt counter lives in the dedicated `redrive_attempt` column, NOT
+    # the payload JSONB (which the before_enqueue hook rewrites wholesale). Stamp it there.
+    if attempt is not None:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == f"s3_upload:{file_id}").values(redrive_attempt=attempt))
     await session.commit()
 
 
@@ -637,10 +639,10 @@ async def test_failed_under_cap_redrives_and_increments_counter(
     job = await _cloud_job(session, file_id)
     assert job is not None
     assert job.status == CloudJobStatus.UPLOADING.value
-    # attempt counter incremented in the ledger payload.
+    # attempt counter incremented in the dedicated `redrive_attempt` column (phaze-y0j0).
     row = await _ledger_row(session, f"s3_upload:{file_id}")
     assert row is not None
-    assert row.payload.get("s3_upload_attempt") == 1
+    assert row.redrive_attempt == 1
 
 
 async def test_failed_under_cap_redrive_no_fileserver_holds_uploading(
@@ -680,8 +682,9 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     """After a re-drive the ledger retains the FRESH part_urls redrive committed, plus attempt++ (WR-02).
 
     redrive_upload -> stage_file_to_s3 commits a fresh payload (new presigned part_urls) to the same
-    ledger row. The attempt-stamp UPDATE must be built on top of that FRESH payload, not the stale
-    snapshot read at the top of the handler -- else recovery replay re-enqueues expired URLs.
+    ledger row. Since phaze-y0j0 the attempt counter lives in the dedicated `redrive_attempt` column
+    and the handler no longer writes `payload` at all, so it structurally cannot clobber the hook's
+    fresh part_urls -- this test locks in that the fresh URLs survive alongside the incremented counter.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env)
@@ -718,7 +721,7 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     assert row is not None
     # The fresh part_urls survive (NOT clobbered by the stale snapshot) and the counter incremented.
     assert row.payload.get("part_urls") == fresh_urls
-    assert row.payload.get("s3_upload_attempt") == 1
+    assert row.redrive_attempt == 1
 
 
 async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(

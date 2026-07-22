@@ -69,6 +69,7 @@ from phaze.services.pipeline import (
     get_fingerprint_pending_files,
     get_global_reconciliation,
     get_inadmissible_count,
+    get_live_job_keys,
     get_localqueue_unreachable,
     get_match_busy_count,
     get_match_pending_tracklists,
@@ -1330,6 +1331,34 @@ async def trigger_backfill_cloud(
         )
 
     candidates = await get_backfill_candidates(session, threshold)
+
+    # phaze-l1km: the candidate query keys on "a process_file:<id> ledger row EXISTS", which is TRUE
+    # both for an orphaned row (a timed-out job -- the set this backfill re-drives) AND for the LIVE
+    # in-flight marker of a still-running deepen. deepen_analysis re-enqueues process_file WITHOUT
+    # clearing failed_at (unlike retry_analysis_failed), so a long ANALYSIS_FAILED file with a deepen
+    # grinding for hours satisfies every candidate conjunct. Deleting its ledger row + holding it for
+    # the cloud drain would DOUBLE-DISPATCH the same file to local + cloud and orphan the live local
+    # job from queue-loss recovery. Skip any candidate whose deterministic process_file key is LIVE
+    # (queued/active) in saq_jobs -- the same liveness signal recovery's ledger-minus-live-keys set
+    # uses. get_live_job_keys is degrade-safe (empty set on a missing/unreadable saq_jobs table), so an
+    # env without the broker table backfills exactly as before (every candidate treated as an orphan).
+    live_keys = await get_live_job_keys(session)
+    if live_keys:
+        skipped = [file for file, _ in candidates if process_file_job_key(file.id) in live_keys]
+        if skipped:
+            candidates = [(file, dur) for file, dur in candidates if process_file_job_key(file.id) not in live_keys]
+            logger.info(
+                "backfill_cloud: skipped files with a LIVE process_file job (phaze-l1km double-dispatch guard)",
+                skipped=[str(file.id) for file in skipped],
+            )
+    # The response count reflects the files actually acted on (live-deepen files were excluded above).
+    count = len(candidates)
+    if count == 0:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/backfill_response.html",
+            context={"request": request, "count": 0},
+        )
 
     # 83-06 (OPTION A, CONSCIOUSLY REVERSES D-09): make every cloud-routed backfill candidate a CLEAN
     # drainable held file, for BOTH the compute AND the kueue target (the all-local case already

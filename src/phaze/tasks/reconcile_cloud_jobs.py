@@ -429,6 +429,16 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         await _record_success(session, cloud_job, name, tally, kube)
         return
     if _job_counter(job, "failed") >= 1 or _job_has_true_condition(job, "Failed"):
+        # phaze-73sv: mirror the vanished-Job guard (line 412). A Job can read Failed AFTER its success
+        # callback landed -- activeDeadlineSeconds firing just after the callback PUT completed, an
+        # OOM/preempt in the post-callback teardown window -- because the /analysis callback records the
+        # result + deletes the staged object (D-05) but never advances cloud_job.status. Re-driving such a row
+        # (_handle_no_callback_terminal) re-submits a pod that 404s its now-deleted staged object
+        # (EXIT_DOWNLOAD) and re-fails, burning the whole cap. If the analysis already completed,
+        # finalize it as the success it is instead of re-driving an already-analyzed file.
+        if await _analysis_completed(session, cloud_job.file_id):
+            await _record_success(session, cloud_job, name, tally, kube)
+            return
         await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 
@@ -443,6 +453,14 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     # Evicted/deactivated -> no-callback terminal (re-drive under cap).
     evicted = _workload_condition(workload, _TYPE_EVICTED)
     if evicted is not None and evicted.get("status") == "True":
+        # phaze-73sv: same guard as the Job-Failed branch above. A Kueue eviction under quota pressure
+        # can land AFTER the pod's success callback PUT completed (the /analysis callback stamps the
+        # result + deletes the staged object but never advances cloud_job.status). Re-driving then re-submits a
+        # pod that 404s the deleted staged object and re-fails, burning the cap. Finalize a
+        # callback-completed row as the success it is rather than re-driving an already-analyzed file.
+        if await _analysis_completed(session, cloud_job.file_id):
+            await _record_success(session, cloud_job, name, tally, kube)
+            return
         await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
         return
 

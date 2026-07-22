@@ -36,7 +36,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from phaze.config import ControlSettings
 from phaze.database import get_session
@@ -235,9 +235,11 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
 
 async def _seed_push_ledger(session: AsyncSession, file_id: uuid.UUID, *, push_attempt: int | None = None) -> None:
     payload: dict[str, Any] = {"file_id": str(file_id)}
-    if push_attempt is not None:
-        payload["push_attempt"] = push_attempt
     await upsert_ledger_entry(session, key=f"push_file:{file_id}", function="push_file", kwargs=payload)
+    # phaze-2jl1: the push_attempt counter lives in the dedicated `redrive_attempt` column, NOT the
+    # payload JSONB (which the before_enqueue hook rewrites wholesale). Stamp it there.
+    if push_attempt is not None:
+        await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == f"push_file:{file_id}").values(redrive_attempt=push_attempt))
     await session.commit()
 
 
@@ -688,10 +690,11 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
 
     # The file keeps its PUSHING slot (Open-Q1).
 
-    # push_attempt incremented in the ledger payload (Pitfall 4 -- counter rides the JSONB).
+    # push_attempt incremented in the dedicated `redrive_attempt` column (phaze-2jl1 -- counter lives
+    # OUTSIDE the hook-rewritten payload so a crash cannot reset the bounded budget).
     row = await _ledger_row(session, f"push_file:{file_id}")
     assert row is not None, "the ledger row must be retained on a re-drive"
-    assert row.payload.get("push_attempt") == 1
+    assert row.redrive_attempt == 1
 
     # push_file re-enqueued on the FILESERVER queue with the deterministic key + the RE-STAMPED destination.
     fileserver_queue = task_router.queues[f"{fileserver_id}-io"]
@@ -1026,7 +1029,7 @@ async def test_mismatch_wrong_reporter_rejected_403(
     assert cloud_job.status == CloudJobStatus.SUBMITTED.value
     row = await _ledger_row(session, f"push_file:{file_id}")
     assert row is not None
-    assert row.payload.get("push_attempt") == 0, "the ledger counter must be untouched on a rejected reporter"
+    assert row.redrive_attempt == 0, "the ledger counter must be untouched on a rejected reporter"
     assert task_router.queues == {}, "nothing enqueued for a wrong reporter"
 
 
@@ -1058,7 +1061,7 @@ async def test_mismatch_under_cap_holds_when_backend_unattributed(
     assert r.json()["cleared"] is False
     row = await _ledger_row(session, f"push_file:{file_id}")
     assert row is not None
-    assert row.payload.get("push_attempt") == 0, "no re-drive -> the counter is not incremented"
+    assert row.redrive_attempt == 0, "no re-drive -> the counter is not incremented"
     assert task_router.queues == {}, "no destination-less push may be enqueued"
 
 
@@ -1126,7 +1129,7 @@ async def test_mismatch_cap_trips_exactly_at_boundary(
     assert r_under.json()["cleared"] is False, "push_attempt=2 -> next 3 is still under the cap: re-drive, not spill"
     under_ledger = await _ledger_row(session, f"push_file:{under_id}")
     assert under_ledger is not None
-    assert under_ledger.payload.get("push_attempt") == 3, "under-cap re-drive increments the counter to 3"
+    assert under_ledger.redrive_attempt == 3, "under-cap re-drive increments the counter to 3"
 
     # At the cap boundary (push_attempt=3 -> next 4 > 3): spill to AWAITING_CLOUD, ledger cleared.
     over_id = await _seed_file(session, agent_id)

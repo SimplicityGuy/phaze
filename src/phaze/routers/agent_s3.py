@@ -13,7 +13,8 @@ Mirrors ``agent_push.py`` (report_pushed / report_push_mismatch):
   UPLOADED) is an idempotent 200 that does NOT re-complete the object (T-53-15).
 
 - ``/failed`` -- the agent reports an upload failure. The ``s3_upload_attempt`` counter rides the
-  ``s3_upload:<file_id>`` scheduling-ledger payload JSONB (Pitfall 4). Under
+  dedicated ``scheduling_ledger.redrive_attempt`` column keyed by ``s3_upload:<file_id>`` (phaze-y0j0:
+  OUTSIDE the hook-rewritten ``payload`` JSONB so the bounded budget survives a crash mid-re-drive). Under
   ``push_max_attempts`` control re-drives the upload (``cloud_staging.redrive_upload``: abort the
   prior multipart + re-stage) keeping ``cloud_job`` UPLOADING and stamps the incremented attempt
   back (T-53-16). At/over the cap control spills ``cloud_job`` back to ``awaiting`` + clears the ledger
@@ -217,8 +218,9 @@ async def report_upload_failed(
 ) -> UploadFailedResponse:
     """Record an upload failure: bounded re-drive, or terminal cleanup at the cap (KSTAGE-04).
 
-    The ``s3_upload_attempt`` counter lives in the ``s3_upload:<file_id>`` ledger payload JSONB
-    (migration-free, Pitfall 4). Read it (default 0) and increment:
+    The ``s3_upload_attempt`` counter lives in the dedicated ``scheduling_ledger.redrive_attempt``
+    column keyed by ``s3_upload:<file_id>`` (phaze-y0j0: OUTSIDE the hook-rewritten ``payload`` JSONB so
+    the bounded budget survives a crash in the re-drive->stamp window). Read it (default 0) and increment:
 
     - ``attempt + 1 > push_max_attempts`` -> ``cloud_job`` FAILED + abort the multipart + delete the
       staged object + clear the ledger, in one transaction: the terminal cleanup that prevents an
@@ -248,8 +250,8 @@ async def report_upload_failed(
 
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key))).scalar_one_or_none()
     current_attempt = 0
-    if row is not None and isinstance(row.payload, dict):
-        current_attempt = int(row.payload.get("s3_upload_attempt", 0) or 0)
+    if row is not None and row.redrive_attempt is not None:
+        current_attempt = int(row.redrive_attempt)
     next_attempt = current_attempt + 1
 
     # Over the cap: CAS-guarded terminal spill (D-09/D-10/D-03) + cleanup + ledger clear, one transaction.
@@ -333,18 +335,15 @@ async def report_upload_failed(
         logger.warning("report_upload_failed held: no fileserver agent online", file_id=str(file_id), agent_id=agent.id, attempt=next_attempt)
         return UploadFailedResponse(file_id=file_id, cleared=False)
 
-    # Stamp the incremented attempt back on the ledger payload. redrive_upload -> stage_file_to_s3
-    # commits a FRESH payload (new presigned part_urls) to THIS same ledger row via its enqueue hook,
-    # so the `row` snapshot read at the top of the handler is now stale. Re-fetch the row (READ
-    # COMMITTED + populate_existing busts the identity map so we see redrive's committed payload) and
-    # build `merged` on top of the FRESH payload -- otherwise the attempt stamp would clobber the
-    # fresh part_urls with the expired ones, making recovery replay re-enqueue dead URLs (WR-02).
-    refreshed = (
-        await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == ledger_key).execution_options(populate_existing=True))
-    ).scalar_one_or_none()
-    base_payload: dict[str, Any] = dict(refreshed.payload) if (refreshed is not None and isinstance(refreshed.payload, dict)) else {}
-    merged: dict[str, Any] = {**base_payload, "s3_upload_attempt": next_attempt}
-    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(payload=merged))
+    # Stamp the incremented attempt into the DEDICATED `redrive_attempt` column. redrive_upload ->
+    # stage_file_to_s3 commits a FRESH payload (new presigned part_urls) to THIS same ledger row via
+    # its enqueue hook, from its own session, BEFORE control returns here. Because the counter now
+    # lives in `redrive_attempt` (a column the hook's ON CONFLICT DO UPDATE never touches) and NOT in
+    # `payload`, this stamp: (1) cannot clobber the hook's fresh part_urls -- the old WR-02 re-fetch
+    # dance is unnecessary; and (2) if a crash lands between the hook's commit and this commit, the
+    # column keeps its prior value (un-incremented at `current_attempt`) instead of being reset to 0,
+    # so the bounded upload budget survives the crash window (phaze-y0j0).
+    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == ledger_key).values(redrive_attempt=next_attempt))
     await session.commit()
     # phaze-grzo: redrive_upload PARKS its fresh s3_upload enqueue on the session; fire it ONLY now
     # that the re-driven cloud_job (still UPLOADING) and the attempt stamp are durably committed, so the
