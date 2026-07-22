@@ -133,6 +133,23 @@ apt-get update && apt-get install -y tailscale rsync
 tailscale up --advertise-tags=tag:cloud-agent     # tag must match the ACL tagOwners (Step 2)
 ```
 
+**Create the scratch dir on the host, owned by uid 1000.** `push_file` rsyncs each cloud-routed
+file onto the **A1 host filesystem** at `${PHAZE_CLOUD_SCRATCH_DIR}/<file_id>.<ext>` (Step 5), and
+the worker container **bind-mounts that same host path** (phaze-cri2 — it is NOT a docker-managed
+named volume; a named volume put the container's `/scratch` on a docker-private dir disconnected
+from the host `/scratch` sshd wrote into). The container runs as uid 1000 (`phaze`) and must be
+able to **read AND delete** each pushed file (`process_file` verifies the sha256, analyzes, then
+reaps it; the startup janitor `_sweep_scratch` also deletes stragglers). Provision the dir up front
+with matching ownership so neither the rsync receive nor the container's read/delete is denied:
+
+```bash
+# On the A1 host — must match ${PHAZE_CLOUD_SCRATCH_DIR} (Step 5) and backends.toml scratch_dir (Step 6).
+sudo mkdir -p /scratch
+sudo chown 1000:1000 /scratch          # uid/gid 1000 = the container 'phaze' user (read + delete pushed files)
+sudo chmod 700 /scratch                # only the phaze uid needs it; the pushed media is transient
+```
+
+
 ## Step 2 — Apply the Tailscale grants ACL (homelab)
 
 Apply this **default-deny** tailnet policy (Tailscale's current `grants` form). Once any policy
@@ -248,9 +265,11 @@ docker compose -f docker-compose.cloud-agent.yml up -d
 ```
 
 The compose file is worker-only: a single `worker` service (no media-bound sidecars),
-`network_mode: host`, the `-arm64` image, a **named** `cloud_scratch` volume, the models mount
-`rw` (auto-download), and the CA cert mount `ro`. It declares no `postgres`/`redis` service and
-no `DATABASE_URL` (DIST-04).
+`network_mode: host`, the `-arm64` image, a **host bind** of `${PHAZE_CLOUD_SCRATCH_DIR}` to the
+identical container path for scratch (phaze-cri2 — the pushed files land on the host filesystem, so
+the container must bind that same host dir to read + reap them; provision it uid-1000-owned per
+Step 1), the models mount `rw` (auto-download), and the CA cert mount `ro`. It declares no
+`postgres`/`redis` service and no `DATABASE_URL` (DIST-04).
 
 Populate the A1's `.env` with the compute-agent variables. The cloud-burst knobs are documented
 in [configuration.md → Cloud-burst settings](configuration.md#cloud-burst-settings); secrets use
@@ -282,8 +301,8 @@ PHAZE_IMAGE_TAG=2026.7.1                                      # pulls 2026.7.1-a
 
 **Scratch-dir match.** `PHAZE_CLOUD_SCRATCH_DIR` (A1) **must equal** this backend's `scratch_dir`
 field in `backends.toml` (Step 6, lux control plane — the flat control-side `compute_scratch_dir` /
-`PHAZE_COMPUTE_SCRATCH_DIR` was removed in Phase 67/73 with no shim) and the named-volume mount
-path — a drift surfaces as a sha256/transfer failure, never silent corruption.
+`PHAZE_COMPUTE_SCRATCH_DIR` was removed in Phase 67/73 with no shim) and the host-bind mount
+path (Step 1) — a drift surfaces as a sha256/transfer failure, never silent corruption.
 
 ## Step 6 — Declare the compute backend and restart the control plane (lux)
 
