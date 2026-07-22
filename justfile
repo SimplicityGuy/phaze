@@ -33,16 +33,26 @@ install: tailwind
 [doc('Start all services in Docker')]
 [group('dev')]
 up: tailwind
+    # phaze-he8m: pre-create the ./certs bind-mount source owned by the invoking
+    # operator (uid 1000). Without it, rootful dockerd auto-creates the missing
+    # source dir as root:root and the uid-1000 cert bootstrap dies with
+    # PermissionError writing /certs/phaze-ca.crt before uvicorn ever binds.
+    mkdir -p certs
     docker compose up -d
 
 [doc('Start file-server agent stack (standalone docker-compose.agent.yml)')]
 [group('dev')]
 up-agent:
+    # phaze-he8m: pre-create ./models and ./certs so the uid-1000 worker can
+    # auto-download models and read the CA (avoids a root-owned daemon-created dir).
+    mkdir -p models certs
     docker compose -f docker-compose.agent.yml up -d
 
 [doc('Start the OCI A1 cloud compute-agent stack (standalone docker-compose.cloud-agent.yml)')]
 [group('dev')]
 cloud-agent-up:
+    # phaze-he8m: pre-create ./models and ./certs owned by the operator (uid 1000).
+    mkdir -p models certs
     docker compose -f docker-compose.cloud-agent.yml up -d
 
 [doc('Stop the OCI A1 cloud compute-agent stack')]
@@ -53,6 +63,10 @@ cloud-agent-down:
 [doc('Start both stacks on one host (developer convenience)')]
 [group('dev')]
 up-all:
+    # phaze-he8m: pre-create ./certs (api cert bootstrap) and ./models (agent
+    # model auto-download) owned by the operator (uid 1000) before the daemon
+    # auto-creates them root:root.
+    mkdir -p certs models
     docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d
 
 [doc('Stop all services')]

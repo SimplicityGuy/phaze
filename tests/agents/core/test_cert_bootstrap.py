@@ -27,14 +27,13 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+import pytest
 
 from phaze.cert_bootstrap import _parse_san_entries, ensure_certs_present
 
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 _DEFAULT_SANS = "localhost,127.0.0.1,api"
@@ -435,3 +434,47 @@ def test_leaf_reissued_when_key_cert_mismatch_ca_preserved(tmp_path: Path) -> No
     assert leaf.public_key().public_bytes(encoding=serialization.Encoding.DER, format=spki) == leaf_key.public_key().public_bytes(
         encoding=serialization.Encoding.DER, format=spki
     )
+
+
+def test_permission_error_reraised_with_actionable_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-he8m: a raw EACCES writing into a root-owned certs dir is re-raised with the host fix.
+
+    On a rootful Linux docker engine a MISSING bind-mount source dir is auto-created
+    by the daemon as root:root, so the uid-1000 cert bootstrap cannot write
+    phaze-ca.crt and dies with a bare PermissionError before uvicorn binds. The
+    bootstrap now translates that into an operator-actionable message naming the
+    uid-1000 ownership cause and the `chown` fix, instead of an opaque crash-loop.
+    """
+    import phaze.cert_bootstrap as cb
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    # Simulate the daemon-created root-owned dir: the write itself is denied.
+    monkeypatch.setattr(cb, "_write_ca", _boom)
+
+    with pytest.raises(PermissionError) as excinfo:
+        ensure_certs_present(tmp_path, cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    message = str(excinfo.value)
+    assert "uid 1000" in message, message
+    assert "chown" in message, message
+    assert str(tmp_path) in message, message
+    # The original EACCES is chained for debuggability.
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+
+
+def test_permission_error_on_mkdir_reraised_with_actionable_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-he8m: an EACCES creating the certs dir itself is also translated (parent root-owned)."""
+    from pathlib import Path as _Path
+
+    def _boom_mkdir(self: _Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(_Path, "mkdir", _boom_mkdir)
+
+    with pytest.raises(PermissionError) as excinfo:
+        ensure_certs_present(tmp_path / "certs", cn="localhost", sans_csv=_DEFAULT_SANS)
+
+    assert "chown" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, PermissionError)

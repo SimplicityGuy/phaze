@@ -196,8 +196,8 @@ The env vars that gate this bootstrap on the agent side are `PHAZE_AGENT_CA_FILE
 - `just` installed on both hosts (or run `docker compose` directly)
 - Both hosts on the same private LAN; no firewall blocking ports 6379 (Redis cache), 5432 (Postgres SAQ broker — agents reach it directly as of Phase 36), or 8000 (API) between them
 - Postgres + Redis are NOT directly exposed to the public internet (LAN-only; the agent→Postgres:5432 edge is private-LAN scoped)
-- On the app-server host: `./certs/` (auto-populated on first start), `.env`
-- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (auto-downloads on first agent start), `.env`
+- On the app-server host: `./certs/` (materialized by `git clone` via a committed `.gitkeep`, then cert-populated on first start; must be owned by uid 1000 — phaze-he8m), `.env`
+- On each file-server host: `./certs/` (CA only, scp'd from app-server), `./models/` (materialized by `git clone`, weights auto-download on first agent start; both owned by uid 1000 — phaze-he8m), `.env`
 
 ## Step 1 — Bring up the application server
 
@@ -211,10 +211,22 @@ cp .env.example .env
 # Edit .env: set REDIS_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10)
 # Edit .env: set PHAZE_QUEUE_URL (raw libpq postgresql:// DSN) — the SAQ Postgres broker.
 #            Defaults to the in-compose `postgres` service; treat as a secret (PHAZE_QUEUE_URL_FILE).
+mkdir -p certs   # phaze-he8m: own ./certs as the operator (uid 1000) BEFORE `up`
 just up
 ```
 
-`just up` runs `docker compose up -d`. On first start, the `api` container's entrypoint generates the internal CA + leaf cert into `./certs/`. Watch the logs:
+`just up` runs `docker compose up -d` (it also runs `mkdir -p certs` for you). The `api` container
+bind-mounts `./certs:/certs:rw` and runs as the non-root `phaze` user (uid 1000). **The `./certs`
+dir must exist and be owned by uid 1000 before `up`** (phaze-he8m): on a rootful Linux docker engine
+a *missing* bind-mount source is auto-created by the daemon as `root:root`, and the uid-1000 cert
+bootstrap then dies with `PermissionError` writing `/certs/phaze-ca.crt` before uvicorn binds — an
+opaque crash-loop. A fresh `git clone` already materializes `./certs/` (it ships a committed
+`.gitkeep`) owned by the cloning operator, and `just up` re-creates it defensively; the explicit
+`mkdir -p certs` above is belt-and-suspenders. If you hit the crash anyway, the entrypoint now prints
+the exact fix: `sudo chown -R 1000:1000 certs`.
+
+On first start, the `api` container's entrypoint generates the internal CA + leaf cert into
+`./certs/`. Watch the logs:
 
 ```bash
 docker compose logs -f api
@@ -316,7 +328,15 @@ On the **file-server host**, get the compose file and the `.env` template. All f
 git clone https://github.com/simplicityguy/phaze.git
 cd phaze
 cp .env.example.agent .env
+mkdir -p models certs   # phaze-he8m: own ./models (weights auto-download) and ./certs as uid 1000
 ```
+
+The `mkdir -p models certs` (also run for you by `just up-agent`) is required for the same
+reason as Step 1 (phaze-he8m): the uid-1000 worker auto-downloads essentia weights into
+`./models:/models:rw` and reads the CA from `./certs`, so both bind-mount sources must exist
+owned by uid 1000 before `up` — otherwise rootful dockerd creates them `root:root` and the
+download fails with `EACCES`. A `git clone` already materializes both via committed `.gitkeep`
+files.
 
 Edit `.env` to set the required variables. The agent stack uses `${VAR:?msg}` interpolation on `SCAN_PATH`, so docker compose fails fast at parse time if it is unset:
 
