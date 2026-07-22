@@ -326,17 +326,19 @@ async def test_stage_file_to_s3_aborts_orphaned_multipart_when_presign_fails(
     await s3_staging.abort_multipart_upload(file_id, created_ids[0], bucket)
 
 
-async def test_stage_file_to_s3_aborts_orphaned_multipart_when_enqueue_fails(
+async def test_stage_file_to_s3_enqueue_failure_leaves_committed_row_for_redrive(
     s3_env: str,
     session: AsyncSession,
     bucket,  # type: ignore[no-untyped-def]
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phaze-bbwx: an enqueue failure inside the SAVEPOINT (the queue.connect()/enqueue() hiccup
-    phaze-uciu.3's SAVEPOINT rolls back the upsert for) ALSO best-effort aborts the fresh multipart.
+    """phaze-bbwx x phaze-grzo (integration): a flush-time enqueue failure is NOT an orphaned multipart.
 
-    Before the fix, the SAVEPOINT rollback restored the row to its pre-stage state (no upload_id
-    persisted anywhere), orphaning the multipart exactly like the presign-failure path.
+    Under the parked-enqueue design the enqueue fires only AFTER the cloud_job UPLOADING row (with
+    its upload_id) is committed, so an enqueue failure leaves a durable record every cleanup path
+    (redrive_upload's abort, the stranded-staging reaper) can find. The best-effort abort
+    compensation must therefore NOT fire here -- aborting would leave the committed row pointing at
+    a dead upload_id -- and the wrapper must not raise (the flush is best-effort per item).
     """
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
     file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
@@ -368,12 +370,14 @@ async def test_stage_file_to_s3_aborts_orphaned_multipart_when_enqueue_fails(
 
     queue.enqueue = _boom_enqueue  # type: ignore[method-assign]
 
-    with pytest.raises(RuntimeError):
-        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+    # No raise: the wrapper commits, then the best-effort flush swallows the enqueue failure.
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
 
-    assert await _cloud_job(session, file_id) is None  # SAVEPOINT rolled back the upsert
+    job = await _cloud_job(session, file_id)
+    assert job is not None  # the UPLOADING row committed despite the enqueue failure
     assert len(created_ids) == 1
-    assert aborted == [(file_id, created_ids[0], bucket)]  # the exact orphaned upload was aborted
+    assert job.upload_id == created_ids[0]  # durable upload_id record -- redrive/reaper can find it
+    assert aborted == []  # multipart NOT aborted: recovery owns this row now
 
 
 async def test_stage_file_to_s3_logs_but_does_not_raise_when_abort_itself_fails(
@@ -471,7 +475,8 @@ async def test_stage_file_to_s3_deduped_enqueue_is_surfaced_not_silently_ignored
 
     Pre-fix the ``queue.enqueue`` return was ignored, so a re-drive whose fresh payload was silently dropped
     (deduped against the still-active failed job) was reported as a successful re-drive. The dedup is now
-    surfaced: no fresh job lands (only one enqueue is captured across two stages) and a warning fires.
+    surfaced at the flush (the only place the enqueue result is observable under the parked design,
+    phaze-grzo): no fresh job lands (only one enqueue is captured across two stages) and a warning fires.
     """
     from structlog.testing import capture_logs
 
@@ -483,7 +488,9 @@ async def test_stage_file_to_s3_deduped_enqueue_is_surfaced_not_silently_ignored
     task_router = DedupFakeTaskRouter()
     await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # lands (key now live)
     with capture_logs() as logs:
-        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)  # deduped -> None
+        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)  # parks the enqueue
+        await session.commit()
+        await cloud_staging.flush_pending_s3_enqueues(session)  # deduped -> None, surfaced here
 
     queue = task_router.queues[f"{fileserver_id}-io"]
     assert len(queue.captured) == 1  # the second enqueue did NOT land a fresh job
