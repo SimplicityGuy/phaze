@@ -637,6 +637,44 @@ async def test_redrive_confirms_prior_job_gone_before_resubmit(session: AsyncSes
     assert queue_b.captured == []  # NO re-submit enqueued on this tick
 
 
+# --- phaze-nq3c: the re-drive deferral path commits to release the per-row advisory lock -------------
+
+
+@pytest.mark.asyncio
+async def test_redrive_deferral_commits_to_release_the_per_row_advisory_lock(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-nq3c: the 'prior Job still terminating' deferral path MUST commit (release pg_advisory_xact_lock(5_000_504)).
+
+    KueueBackend.reconcile takes the drain's transaction-scoped advisory lock at the TOP of each per-row unit
+    and relies (SCHED-02 / Pitfall 2) on ``_reconcile_one`` committing per row to auto-release it at row
+    granularity. The under-cap re-drive deferral (delete the prior Job, confirm it is still terminating) was
+    the ONLY exit in the file that returned WITHOUT a commit -- leaking the lock past the row boundary and
+    stalling a concurrent stage_cloud_window drain tick. Every other no-op path commits solely to release the
+    lock; this path must too, even though it makes no DB mutation. Proven via the commit marker: a ``commit``
+    event MUST appear for the deferral row (pre-fix the list held only ``delete_job``).
+    """
+    _patch_cap(monkeypatch, cap=3)
+    _fid, name = await _seed(session, attempts=0)
+    events: list[str] = []
+    dj = DeleteJobSpy(events)
+    # First get_job read: a failed terminal (no-callback terminal -> under-cap re-drive). Confirm-gone read:
+    # the Job is STILL terminating (returns a dying Job) -> the deferral path fires.
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), fake_job(failed=1, name=name)),
+        get_workload=GetWorkloadSpy(EVICTED),
+        delete_job=dj,
+    )
+    _patch_commit_marker(monkeypatch, events)
+
+    await reconcile_cloud_jobs(_make_ctx())
+
+    assert "commit" in events  # the deferral committed -> the per-row advisory lock was released
+    assert events == ["delete_job", "commit"]  # delete the prior Job, then commit-to-release (no re-submit)
+    cj = await _read_cloud_job(session, _fid)
+    assert cj.attempts == 0  # deferral burns no attempt
+    assert cj.status == CloudJobStatus.SUBMITTED.value  # row left untouched for a later tick
+
+
 # --- phaze-32wz: a pending re-submit is not a fresh no-callback terminal ----------------------------
 
 

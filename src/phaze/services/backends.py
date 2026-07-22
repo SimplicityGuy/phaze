@@ -56,7 +56,7 @@ from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
-from phaze.services.pipeline import MUSIC_VIDEO_TYPES
+from phaze.services.pipeline import MUSIC_VIDEO_TYPES, get_live_job_keys
 from phaze.services.route_control import get_route_control
 from phaze.services.scheduling_ledger import clear_ledger_entry
 from phaze.services.stage_status import inflight_clause
@@ -145,7 +145,15 @@ async def hold_awaiting_cloud(
         stmt = stmt.on_conflict_do_update(
             # uq_cloud_job_file_id -> a plain INSERT is unsafe on the spill re-stamp case; upsert on file_id.
             index_elements=["file_id"],
-            set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts},
+            # phaze-ekgk: bump updated_at on the DO UPDATE branch. CloudJob.updated_at is a client-side
+            # ``onupdate=func.now()`` (TimestampMixin) that SQLAlchemy does NOT inject into an ON CONFLICT SET
+            # (and there is no DB trigger), so re-holding a pre-existing row would leave updated_at frozen at
+            # the PREVIOUS burst's write. That column is surfaced as ``lane_entered_at`` (pipeline.get_cloud_
+            # staging_candidates), and ``select_backend`` reads it for the D-01/D-03 local-spill staleness gate
+            # (``waited = now - lane_entered_at >= cloud_spill_to_local_after_seconds``). A stale clock makes
+            # ``waited`` immediately True, so a re-held file bypasses the wait window and spills to local while
+            # cloud lanes are merely momentarily full. Stamp it so a fresh hold restarts the lane-entry clock.
+            set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts, "updated_at": func.now()},
         )
         await session.execute(stmt)
         return True
@@ -600,15 +608,22 @@ class KueueBackend(_BaseBackend):
         forever, reconcile scopes away from it, orphan recovery excludes it (it IS in-flight), and the
         slot leaks. Enough leaks and the lane wedges at "N/N in flight" with zero real workloads.
 
-        **The callback path stays PRIMARY -- this only catches LOST callbacks.** Two mechanisms enforce
-        that, and both are load-bearing:
+        **The callback path stays PRIMARY -- this only catches LOST callbacks.** Three mechanisms enforce
+        that, and all are load-bearing:
 
+        0. **The broker-liveness gate (phaze-31q3).** BEFORE the age bound, skip any row whose
+           ``s3_upload:<file_id>`` job is still ``queued``/``active`` in ``saq_jobs`` (the same
+           :func:`get_live_job_keys` probe recovery uses). The age bound alone CANNOT tell a lost callback
+           from live work: ``updated_at`` bumps only at dispatch/re-stage, not mid-transfer, and NOT while a
+           job waits in the io-lane backlog -- so a multi-GB upload that legitimately transfers past the bound,
+           or a still-queued job whose SAQ clock has not even started, genuinely reads UPLOADING with an old
+           timestamp and would be reaped mid-flight. A live broker key means the ``s3_upload`` job (and its
+           ``/uploaded`` /``/failed`` callback) still owns the row regardless of age; never reap it.
         1. **The age bound.** A row is a candidate only when ``now - updated_at`` exceeds its per-status
            bound (:meth:`_staging_stale_bound_sec`). ``updated_at`` moves on EVERY live-path write (the
-           initial stage stamp, and ``redrive_upload``'s re-stage), so an actively-progressing burst keeps
-           resetting the clock. The UPLOADING bound is deliberately sized above the largest real
-           ``upload_file_saq_timeout_sec`` net because a multi-GB multipart upload legitimately transfers
-           for hours while bumping NO timestamp.
+           initial stage stamp, and ``redrive_upload``'s re-stage -- phaze-2hv9), so an actively-progressing
+           burst keeps resetting the clock. It is a coarse backstop for the case where even the broker row is
+           gone (a lost/swept job), the liveness gate above being the precise live-vs-lost discriminator.
         2. **The CAS.** The spill goes through the single awaiting writer
            (:func:`hold_awaiting_cloud`) in SPILL mode with ``expect_status`` pinned to the status this
            reaper actually OBSERVED. A callback that lands between our read and our update advances the
@@ -650,15 +665,35 @@ class KueueBackend(_BaseBackend):
         # is made against that fresh read, never a stale snapshot.
         cloud_job_ids = [row.id for row in rows]
 
+        # phaze-31q3: snapshot the live-broker key set ONCE per sweep (degrade-safe: an empty set on any
+        # read failure falls the reaper back to age-only, never raising). A row whose ``s3_upload:<file_id>``
+        # key is queued/active is live work the callback path still owns -- reaping it would abort a live
+        # multipart mid-transfer AND leave the surviving job to shadow the re-drive enqueue.
+        live_keys = await get_live_job_keys(session)
+
         for cloud_job_id in cloud_job_ids:
             try:
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
-                cloud_job = await session.get(CloudJob, cloud_job_id)
+                # phaze-7lpb: ``populate_existing=True`` forces a real SELECT under the lock. The snapshot
+                # ``select`` above populated the identity map, and the sessionmaker is ``expire_on_commit=False``
+                # (database.py), so a plain ``session.get`` for the first row -- and every row after a per-row
+                # ``commit`` -- would return the UNEXPIRED cached object WITHOUT emitting SQL, evaluating the
+                # age/CAS decision against sweep-start-stale state. A ``report_upload_failed`` -> redrive that
+                # re-stages the row back into the SAME status (fresh upload_id + fresh updated_at, phaze-2hv9)
+                # would then be judged on the OLD timestamp and reaped live. Re-read fresh at lock acquisition.
+                cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
                 if cloud_job is None or cloud_job.status not in {status.value for status in STAGING}:
                     # A callback terminalized/advanced it since the snapshot -- nothing to reap.
                     await session.rollback()
                     continue
                 observed_status = cloud_job.status
+                # phaze-31q3: broker-liveness gate BEFORE the age bound. A live ``s3_upload`` job means the
+                # callback path still owns this row -- never reap it, no matter how old ``updated_at`` looks
+                # (a legitimately hours-long transfer, or a job still waiting in the io-lane backlog, bumps no
+                # timestamp). Skip via rollback (releasing the xact lock), exactly like the young-row skip.
+                if f"s3_upload:{cloud_job.file_id}" in live_keys:
+                    await session.rollback()
+                    continue
                 # ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in
                 # production; assume-UTC before subtracting (a bare naive-minus-aware raises TypeError
                 # and would abort the whole sweep -- mirrors reenqueue.py's CR-02 coercion).
@@ -689,12 +724,14 @@ class KueueBackend(_BaseBackend):
                     # cleanup (a live burst may still own the object), no ledger clear.
                     await session.rollback()
                     continue
-                # CAS hit -> gate the cleanup behind it, exactly like the over-cap spill.
-                bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
-                if bucket is not None:
-                    if upload_id:
-                        await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-                    await s3_staging.delete_staged_object(file_id, bucket)
+                # phaze-jwz0: CAS hit -> clear the ledger + COMMIT the spill FIRST, which releases the drain's
+                # global ``pg_advisory_xact_lock`` and the idle-in-transaction connection BEFORE any S3 network
+                # I/O. The prior structure held that single global lock + an open txn across
+                # ``abort_multipart_upload`` / ``delete_staged_object`` -- aioboto3 calls subject to botocore's
+                # full connect-timeout x retry cycle (minutes against a hung/unreachable bucket) -- so ONE bad
+                # endpoint wedged every ``stage_cloud_window`` drain tick and every reconcile row behind it, and
+                # ran DESTRUCTIVE cleanup before the commit (a commit failure then left the DB claiming an upload
+                # whose S3 substrate was already gone).
                 await clear_ledger_entry(session, f"s3_upload:{file_id}")
                 await session.commit()
                 tally["staging_reaped"] += 1
@@ -708,6 +745,26 @@ class KueueBackend(_BaseBackend):
                     bound_sec=bound_sec,
                     attempts=attempts,
                 )
+                # phaze-jwz0: S3 cleanup runs AFTER the commit, OUTSIDE the txn/lock. Both ops are idempotent
+                # (they swallow NoSuchUpload / absent-object) and the row is already 'awaiting' -> a re-drive
+                # re-stages a FRESH multipart, so the old object is irrelevant: a crash or a hung bucket here at
+                # worst leaks the OLD object until the next reap/spill re-runs the same idempotent cleanup.
+                # Failures are isolated locally so a slow bucket can neither hold the released lock nor turn a
+                # durable spill into a per-row rollback that undoes it.
+                bucket = s3_staging.resolve_bucket_config(cfg, staging_bucket)
+                if bucket is not None:
+                    try:
+                        if upload_id:
+                            await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
+                        await s3_staging.delete_staged_object(file_id, bucket)
+                    except Exception:
+                        logger.warning(
+                            "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "
+                            "(row already spilled to awaiting; old object may leak until the re-drive re-stages)",
+                            cloud_job_id=str(cloud_job_id),
+                            file_id=str(file_id),
+                            exc_info=True,
+                        )
             except Exception:
                 await session.rollback()
                 logger.warning("KueueBackend.reconcile: stranded staging reap failed; continuing", cloud_job_id=str(cloud_job_id), exc_info=True)
@@ -767,7 +824,11 @@ class KueueBackend(_BaseBackend):
                 # ``stage_cloud_window`` snapshot. ``_reconcile_one`` commits per row -> the xact lock
                 # auto-releases at that commit, preserving the delete-after-record ordering.
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
-                cloud_job = await session.get(CloudJob, cloud_job_id)
+                # phaze-7lpb: ``populate_existing=True`` forces a real SELECT under the lock (the snapshot
+                # ``select`` above populated the identity map and the sessionmaker is ``expire_on_commit=False``,
+                # so a plain ``get`` would hand back the sweep-start-stale cached row for the first row and every
+                # post-commit row -- and the None-check for a vanished row could never fire on a cached object).
+                cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
                 if cloud_job is None:
                     continue
                 tally["reconciled"] += 1

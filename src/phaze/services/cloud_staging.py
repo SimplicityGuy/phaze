@@ -26,7 +26,7 @@ import math
 from typing import TYPE_CHECKING, cast
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -35,7 +35,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.schemas.agent_s3 import UploadFileS3Payload
 from phaze.services import s3_staging
 from phaze.services.enqueue_router import lane_for_task, select_active_agent
-from phaze.tasks.s3_upload import upload_file_saq_timeout_sec
+from phaze.tasks.s3_upload import S3_UPLOAD_SAQ_RETRIES, upload_file_saq_timeout_sec
 
 
 if TYPE_CHECKING:
@@ -140,6 +140,14 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
                 "status": stmt.excluded.status,
                 "upload_id": stmt.excluded.upload_id,
                 "staging_bucket": stmt.excluded.staging_bucket,
+                # phaze-2hv9: bump the lane-entry / staleness clock on EVERY re-stage. CloudJob.updated_at is a
+                # client-side ``onupdate=func.now()`` (TimestampMixin), which SQLAlchemy does NOT inject into an
+                # ON CONFLICT DO UPDATE SET clause, and there is no DB trigger -- so without this the conflict
+                # (re-stage / re-drive) path would leave updated_at frozen at the FIRST dispatch. KueueBackend's
+                # ``_reap_stranded_staging`` ages a row off ``now - updated_at``: a frozen clock lets a live
+                # re-driven upload inherit the whole prior attempt's elapsed time and be reaped mid-transfer.
+                # Stamp it explicitly here so any re-stage resets that clock (mirrors agent_bootstrap.py's idiom).
+                "updated_at": func.now(),
             },
         )
         await session.execute(stmt)
@@ -153,22 +161,42 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         )
         queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
         await queue.connect()
-        await queue.enqueue(
+        job = await queue.enqueue(
             "s3_upload",
             key=f"s3_upload:{file.id}",
             # phaze-g37f: scale the SAQ job-net timeout with the part count so a multi-GB upload is
             # not deterministically cancelled by a fixed single-part cap. Each part carries its own
             # asyncio guard on the agent, so the net sits strictly above the SUM of those budgets.
             timeout=upload_file_saq_timeout_sec(part_count),
+            # phaze-oj7x: pin retries EXPLICITLY to 0 (S3_UPLOAD_SAQ_RETRIES). Control (re-drive + reaper)
+            # is the sole re-drive vehicle; an unset retries would be clobbered to worker_max_retries by the
+            # before_enqueue hook, re-arming SAQ to replay the ORIGINAL payload against a multipart this very
+            # re-drive already aborted (guaranteed NoSuchUpload). See S3_UPLOAD_SAQ_RETRIES for the full note.
+            retries=S3_UPLOAD_SAQ_RETRIES,
             **payload.model_dump(mode="json"),
         )
 
-    logger.info(
-        "stage_file_to_s3: cloud_job staged + s3_upload enqueued",
-        file_id=str(file.id),
-        agent_id=agent.id,
-        part_count=part_count,
-    )
+    if job is None:
+        # phaze-oj7x: SAQ deduped the deterministic key against a still-incomplete ``s3_upload:<file_id>``
+        # job (its ON CONFLICT only overwrites an aborted/complete/failed row). This is the re-drive-during-
+        # active-job window: the enqueue did NOT land a fresh job. It is now benign rather than a silent
+        # poison -- the prior job carries retries=0, so it settles terminal (releasing the key) and the
+        # control re-drive / stranded-staging reaper re-enqueues cleanly on the next pass. Surface it loudly
+        # instead of claiming a re-drive that never ran.
+        logger.warning(
+            "stage_file_to_s3: s3_upload enqueue deduped against a still-incomplete job (fresh job NOT landed; "
+            "prior job settles terminal via retries=0, re-drive lands on next pass)",
+            file_id=str(file.id),
+            agent_id=agent.id,
+            part_count=part_count,
+        )
+    else:
+        logger.info(
+            "stage_file_to_s3: cloud_job staged + s3_upload enqueued",
+            file_id=str(file.id),
+            agent_id=agent.id,
+            part_count=part_count,
+        )
 
 
 def _redrive_bucket(cfg: ControlSettings, existing: CloudJob | None, file: FileRecord) -> BucketConfig | None:

@@ -1324,6 +1324,41 @@ async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_bud
 
 
 @pytest.mark.asyncio
+async def test_hold_awaiting_cloud_hold_mode_bumps_updated_at_on_conflict(session: AsyncSession) -> None:
+    """phaze-ekgk: the hold-mode ON CONFLICT re-stamp resets ``updated_at``, not just status/attempts.
+
+    ``cloud_job.updated_at`` is surfaced as ``lane_entered_at`` and drives ``select_backend``'s D-01/D-03
+    local-spill staleness gate (``waited = now - lane_entered_at >= cloud_spill_to_local_after_seconds``).
+    ``onupdate=func.now()`` is client-side and NOT injected into an ON CONFLICT DO UPDATE SET, so pre-fix a
+    re-held row carried a frozen (days-old) clock, making ``waited`` immediately True and defeating the wait
+    window. The fix stamps ``updated_at=func.now()`` in the set_. Here a stale pre-existing row is re-held;
+    the clock must pull forward to ~now.
+    """
+    from sqlalchemy import select, text as sa_text
+
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value, attempts=2))
+    await session.commit()
+    # Force the pre-existing row's lane-entry clock a week into the past.
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(days => 7) WHERE file_id = :fid"),
+        {"fid": file.id},
+    )
+    await session.commit()
+    stale = (
+        (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one().updated_at
+    )
+
+    await backends.hold_awaiting_cloud(session, file)  # hold-mode re-stamp (ON CONFLICT branch)
+
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value  # re-held
+    assert row.updated_at > stale  # the lane-entry staleness clock was reset off the week-old value
+
+
+@pytest.mark.asyncio
 async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSession) -> None:
     """D-02: the hold branch (``expect_status is None``) always writes, so it returns ``True``."""
     file = _make_file()
@@ -1718,3 +1753,162 @@ async def test_reap_skips_a_row_that_left_staging_between_snapshot_and_reread(se
     # The skip branch rolls back (releasing the xact lock), which also undoes this cell's simulated
     # mid-sweep advance -- the load-bearing assertion is that the reaper NEVER spilled the row.
     assert (await _cloud_job_for(session, file_id)).status != CloudJobStatus.AWAITING.value
+
+
+# === phaze-7lpb: the per-row re-read is FRESH under the lock (populate_existing), not the cached snapshot ==
+
+
+@pytest.mark.asyncio
+async def test_reap_re_reads_fresh_under_the_lock_and_honors_a_mid_sweep_restamp(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-7lpb: the per-row ``session.get`` re-reads FRESH under the lock (populate_existing), not the cached snapshot.
+
+    The snapshot ``select`` populates the identity map and the sessionmaker is ``expire_on_commit=False``, so a
+    plain ``get`` would return the sweep-start-stale cached row. Here a re-drive lands between snapshot and
+    re-read, re-stamping the row back into the SAME status with a FRESH (young) ``updated_at`` (phaze-2hv9).
+    The fresh read must surface that young timestamp so the age check fails and the LIVE re-driven upload is
+    left alone. Pre-fix (cached read) the stale old timestamp passed the age check and the row was reaped.
+    """
+    from sqlalchemy import text as sa_text
+
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    real_get = session.get
+
+    async def _restage_then_get(entity: Any, ident: Any, **kwargs: Any) -> Any:
+        # Simulate a concurrent redrive re-stamping updated_at to now WITHOUT changing status (UPLOADING).
+        # A RAW text UPDATE (not an ORM ``update()`` with synchronize_session='fetch') so it does NOT expire
+        # the reaper's snapshot-cached row: only ``populate_existing=True`` on the get can surface the fresh
+        # timestamp. If the reaper used a plain ``get``, it would keep reading the stale (aged) cached row.
+        await session.execute(sa_text("UPDATE cloud_job SET updated_at = now() WHERE file_id = :fid"), {"fid": file_id})
+        return await real_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", _restage_then_get)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    # populate_existing surfaced the fresh (young) updated_at -> the age check fails -> NOT reaped.
+    assert tally["staging_reaped"] == 0
+    monkeypatch.undo()
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADING.value
+
+
+# === phaze-31q3: the reaper consults broker liveness before firing ===================================
+
+
+async def _seed_live_saq_job(session: AsyncSession, *, key: str, status: str = "active") -> None:
+    """Insert a saq_jobs row so :func:`get_live_job_keys` sees ``key`` as queued/active.
+
+    SAQ owns ``saq_jobs`` at runtime (Base.metadata does not), so create-if-absent first -- mirrors the
+    aborting_reaper tests. The reaper's liveness probe only reads ``key`` + ``status``.
+    """
+    from sqlalchemy import text as sa_text
+
+    await session.execute(
+        sa_text(
+            """
+            CREATE TABLE IF NOT EXISTS saq_jobs (
+                key TEXT PRIMARY KEY,
+                lock_key SERIAL NOT NULL,
+                job BYTEA NOT NULL,
+                queue TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority SMALLINT NOT NULL DEFAULT 0,
+                group_key TEXT,
+                scheduled BIGINT NOT NULL DEFAULT 0,
+                expire_at BIGINT
+            )
+            """
+        )
+    )
+    await session.execute(
+        sa_text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:key, :job, :queue, :status, 0)"),
+        {"key": key, "job": b"{}", "queue": "phaze-agent-nox-io", "status": status},
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_a_row_whose_s3_upload_job_is_live_in_the_broker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-31q3: an aged UPLOADING row with a LIVE ``s3_upload`` broker key is NEVER reaped.
+
+    The age bound alone cannot tell a lost callback from live work: ``updated_at`` bumps only at
+    dispatch/re-stage, so a multi-GB upload that legitimately transfers past the bound (or a job still
+    queued in the io-lane backlog) reads UPLOADING with an old timestamp. If the broker still holds the
+    ``s3_upload:<file_id>`` key queued/active, the callback path owns the row -- reaping it would abort a
+    live multipart mid-transfer. The reaper must consult :func:`get_live_job_keys` and skip.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="active")
+
+    assert await backend.in_flight_count(session) == 1
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # live broker key -> NOT reaped despite age
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADING.value
+    assert await backend.in_flight_count(session) == 1  # slot still (legitimately) held by the live job
+
+
+@pytest.mark.asyncio
+async def test_reap_still_fires_when_the_broker_key_is_terminal_not_live(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-31q3: a FAILED/terminal ``s3_upload`` broker row does NOT protect the aged row (only live keys do).
+
+    ``get_live_job_keys`` returns only ``queued``/``active`` keys. A row whose job settled ``failed`` (the
+    retries=0 terminal state) is genuinely lost, so the reaper's safety net must still fire.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="failed")  # terminal, NOT live
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # terminal key is not live -> the lost row is reaped
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
+# === phaze-jwz0: the reaper commits the spill BEFORE the S3 cleanup (outside the txn/lock) ============
+
+
+@pytest.mark.asyncio
+async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_undoes_it(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-jwz0: the CAS spill + ledger clear COMMIT before the S3 cleanup, which runs outside the txn/lock.
+
+    Pre-fix, ``abort_multipart_upload`` / ``delete_staged_object`` ran INSIDE the still-open transaction under
+    the global drain lock (wedging every drain tick behind a hung bucket) and BEFORE the commit -- so an S3
+    raise hit the per-row ``except`` and rolled the spill back. Post-fix the spill is durable first; a failing
+    (or hung) bucket only leaks the old object (idempotently re-cleaned on a later pass), never un-spills.
+    """
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock(side_effect=RuntimeError("bucket unreachable"))
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-xyz",
+    )
+
+    tally = await backend.reconcile(session)  # must NOT raise despite the failing abort
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # the spill is counted -- it committed BEFORE the S3 failure
+    assert abort.await_count == 1  # cleanup was attempted (post-commit)
+    assert delete.await_count == 0  # abort raised first, so delete was skipped (both idempotent, retried later)
+    # The load-bearing assertion: the failing bucket did NOT roll the durable spill back.
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+    assert await backend.in_flight_count(session) == 0  # the cap slot is genuinely released

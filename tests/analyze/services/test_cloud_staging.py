@@ -26,8 +26,8 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.services import cloud_staging, s3_staging
 from phaze.services.enqueue_router import NoActiveAgentError
-from phaze.tasks.s3_upload import UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
-from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from phaze.tasks.s3_upload import S3_UPLOAD_SAQ_RETRIES, UPLOAD_FILE_SAQ_TIMEOUT_SEC, upload_file_saq_timeout_sec
+from tests._queue_fakes import DedupFakeTaskRouter, FakeTaskRouter, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -216,6 +216,43 @@ async def test_stage_file_to_s3_is_idempotent_on_file_id(
     assert len(rows) == 1  # unique FK on file_id -- the re-stage updated, not duplicated
 
 
+async def test_stage_file_to_s3_restage_bumps_updated_at(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-2hv9: a re-stage (ON CONFLICT) resets ``cloud_job.updated_at``, not just status/upload_id.
+
+    ``updated_at`` is the stranded-staging reaper's age clock. Its client-side ``onupdate=func.now()`` is NOT
+    injected into an ON CONFLICT DO UPDATE SET, so pre-fix the conflict path left it frozen at the first
+    dispatch -- a re-driven upload inherited the entire prior attempt's elapsed time and was reaped live. The
+    fix stamps ``updated_at=func.now()`` in the set_. Here the first stamp is forced far into the past; a
+    re-stage must pull it back to ~now.
+    """
+    from sqlalchemy import text as sa_text
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    # Force the first stage's clock 10h into the past -- older than any staleness bound.
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(secs => 36000) WHERE file_id = :fid"),
+        {"fid": file_id},
+    )
+    await session.commit()
+    stale = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+
+    # A re-stage must bump the clock forward off that stale value.
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    bumped = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+    assert bumped > stale  # the ON CONFLICT path reset the reaper's age clock
+
+
 async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     s3_env: str,
     session: AsyncSession,
@@ -262,6 +299,59 @@ async def test_redrive_upload_aborts_old_multipart_and_restages(
     assert len(task_router.queues[f"{fileserver_id}-io"].captured) == 2
     rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_stage_file_to_s3_enqueue_pins_retries_to_zero(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: the s3_upload enqueue stamps an EXPLICIT retries=0 so SAQ never independently replays.
+
+    The control plane (``/failed`` re-drive + the stranded-staging reaper) is the sole re-drive vehicle. An
+    unset ``retries`` would be clobbered to ``worker_max_retries`` (=4) by ``apply_project_job_defaults``,
+    re-arming SAQ to replay the ORIGINAL payload against a multipart the re-drive already aborted (a
+    guaranteed ``NoSuchUpload`` per part). Pinning it to 0 lets the failing job settle terminal, releasing the
+    deterministic key so the next control/reaper enqueue can actually land.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    policy = task_router.queues[f"{fileserver_id}-io"].captured_policy[0]
+    assert policy["retries"] == 0
+    assert policy["retries"] == S3_UPLOAD_SAQ_RETRIES
+
+
+async def test_stage_file_to_s3_deduped_enqueue_is_surfaced_not_silently_ignored(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-oj7x: when SAQ dedups the deterministic key (a still-incomplete job), the no-op is LOGGED loudly.
+
+    Pre-fix the ``queue.enqueue`` return was ignored, so a re-drive whose fresh payload was silently dropped
+    (deduped against the still-active failed job) was reported as a successful re-drive. The dedup is now
+    surfaced: no fresh job lands (only one enqueue is captured across two stages) and a warning fires.
+    """
+    from structlog.testing import capture_logs
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)
+
+    # DedupFakeTaskRouter models SAQ's ON CONFLICT dedup: the second enqueue of a still-live key returns None.
+    task_router = DedupFakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)  # lands (key now live)
+    with capture_logs() as logs:
+        await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)  # deduped -> None
+
+    queue = task_router.queues[f"{fileserver_id}-io"]
+    assert len(queue.captured) == 1  # the second enqueue did NOT land a fresh job
+    assert any("deduped against a still-incomplete job" in log.get("event", "") for log in logs)
 
 
 async def test_redrive_upload_does_not_commit(
