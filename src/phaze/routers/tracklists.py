@@ -21,6 +21,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.cue import _get_cue_version
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
+from phaze.services.cue_generator import parse_timestamp_string
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import is_applied
@@ -495,6 +496,14 @@ async def link_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
+        # phaze-29bv: file_id is a client-supplied FK to files.id. A well-formed but stale/forged id
+        # -- e.g. the FileRecord hard-deleted by a concurrent scan while this search panel stayed open
+        # -- passes wire validation and would detonate as an unhandled ForeignKeyViolation at commit,
+        # poisoning the request transaction with a 500 and leaving the tracklist silently unlinked.
+        # This is the render-vs-POST race request_guards.py rule 4 governs: resolve the FileRecord
+        # first and branch cleanly rather than writing an unvalidated FK.
+        if await session.get(FileRecord, file_id) is None:
+            return HTMLResponse(content="File not found", status_code=404)
         tracklist.file_id = file_id
         tracklist.match_confidence = confidence
         tracklist.auto_linked = False
@@ -622,6 +631,16 @@ async def link_search_result(
     """
     if not _is_allowed_tracklist_url(url):
         return HTMLResponse(content="Invalid tracklist url", status_code=400)
+
+    # phaze-x4vi: validate the client-supplied file_id BEFORE the expensive (up-to-30s) network
+    # scrape. file_id is an FK to files.id; a stale/forged id -- e.g. the FileRecord deleted by a
+    # concurrent scan while this panel stayed open -- would otherwise sail through to the final
+    # commit and detonate as a ForeignKeyViolation -> 500, ALSO rolling back the just-scraped
+    # tracklist stored in the SAME transaction, so every retry re-hits the rate-limited site.
+    # Resolving the file up front (the render-vs-POST race in request_guards.py rule 4) returns a
+    # clean error and skips the wasted scrape entirely, so no scraped work is ever discarded.
+    if await session.get(FileRecord, file_id) is None:
+        return HTMLResponse(content="File not found", status_code=404)
 
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
     selected = result.scalar_one_or_none()
@@ -755,7 +774,38 @@ async def save_track_field(
             status_code=422,
         )
 
-    setattr(track, field, new_value)
+    # phaze-jsl9: normalize a cleared/whitespace-only edit to NULL rather than persisting "" --
+    # every CUE eligibility predicate (routers/cue.py) keys on ``timestamp.is_not(None)``, so a ""
+    # value silently kept a cleared track "eligible" while parse_timestamp_string('') raised. This
+    # also keeps the write side consistent with the display side, which already coalesces a falsy
+    # value to "-" (below).
+    stripped_value = new_value.strip()
+
+    # For timestamp specifically, validate against the accepted HH:MM:SS / MM:SS / float-seconds
+    # grammar (the same grammar parse_timestamp_string implements) BEFORE it ever reaches the
+    # column -- this router is the only path that can write a non-NULL, non-parseable value into
+    # TracklistTrack.timestamp (the agent wire path only enforces length). Reject at the boundary
+    # like the over-length branch above: 422, same edit input, value preserved, inline reason.
+    if field == "timestamp" and stripped_value:
+        try:
+            parsed_timestamp = parse_timestamp_string(stripped_value)
+        except ValueError:
+            parsed_timestamp = None
+        if parsed_timestamp is None:
+            return templates.TemplateResponse(
+                request=request,
+                name="tracklists/partials/inline_edit_field.html",
+                context={
+                    "request": request,
+                    "track": track,
+                    "field": field,
+                    "value": new_value,
+                    "error": f"timestamp must be HH:MM:SS, MM:SS, or seconds (e.g. '90.5') -- could not parse {stripped_value!r}.",
+                },
+                status_code=422,
+            )
+
+    setattr(track, field, stripped_value or None)
     await session.commit()
     await session.refresh(track)
 
@@ -949,10 +999,11 @@ async def accept_discogs_link(
     if not link:
         return HTMLResponse(content="Link not found", status_code=404)
 
-    # Accept this link
-    link.status = "accepted"
-
-    # Dismiss all other links for the same track
+    # Dismiss all other links for the same track FIRST -- status-blind, so a pre-existing
+    # accepted link for this track (e.g. from a prior accept) is dismissed too, not just
+    # candidates. This must happen (and flush) before we set this link to "accepted" below,
+    # or the two writes could transiently coexist as two accepted rows for the same track
+    # and trip the one-accepted-per-track partial unique index (D-07).
     siblings_stmt = select(DiscogsLink).where(
         DiscogsLink.track_id == link.track_id,
         DiscogsLink.id != link.id,
@@ -960,6 +1011,10 @@ async def accept_discogs_link(
     siblings_result = await session.execute(siblings_stmt)
     for sibling in siblings_result.scalars().all():
         sibling.status = "dismissed"
+    await session.flush()
+
+    # Accept this link
+    link.status = "accepted"
 
     await session.commit()
 
@@ -1032,10 +1087,15 @@ async def bulk_link_discogs(
     track_ids = [t.id for t in tracks]
 
     if track_ids:
-        # Load all candidate links for these tracks
+        # Load all non-dismissed links for these tracks -- status-blind, mirroring
+        # accept_discogs_link's sibling dismissal -- so a track that already carries an
+        # accepted link (e.g. from a prior individual accept, still present because
+        # match_tracklist_to_discogs only deletes candidate-status rows) is folded into
+        # this same accept/dismiss pass instead of being left as a second accepted row
+        # once a fresh candidate is promoted (D-07).
         candidates_stmt = select(DiscogsLink).where(
             DiscogsLink.track_id.in_(track_ids),
-            DiscogsLink.status == "candidate",
+            DiscogsLink.status != "dismissed",
         )
         candidates_result = await session.execute(candidates_stmt)
         all_candidates = list(candidates_result.scalars().all())
@@ -1045,14 +1105,23 @@ async def bulk_link_discogs(
         for c in all_candidates:
             by_track[c.track_id].append(c)
 
+        tops: list[DiscogsLink] = []
         for _tid, track_candidates in by_track.items():
-            # Sort by confidence descending, accept the top one
+            # Sort by confidence descending; the top link wins (it may already be the
+            # accepted one, in which case this is a no-op for that track).
             track_candidates.sort(key=lambda x: x.confidence, reverse=True)
             top = track_candidates[0]
-            top.status = "accepted"
-            # Dismiss the rest
+            tops.append(top)
+            # Dismiss the rest now, BEFORE accepting any top link below. Doing the accept
+            # first (or interleaved) could transiently leave two accepted rows for the same
+            # track and trip the one-accepted-per-track partial unique index (D-07).
             for other in track_candidates[1:]:
                 other.status = "dismissed"
+
+        await session.flush()
+
+        for top in tops:
+            top.status = "accepted"
 
         await session.commit()
 

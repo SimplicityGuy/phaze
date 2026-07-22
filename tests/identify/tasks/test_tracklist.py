@@ -142,6 +142,88 @@ async def test_search_tracklist_auto_links(
 
 
 @patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_passes_parsed_scraped_date_to_scorer(
+    mock_auto_link: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+) -> None:
+    """phaze-rkxy: the scraped date is parsed and passed to compute_match_confidence.
+
+    Hardcoding tracklist_date=None made the Pitfall-3 date-mismatch cap dead in the ONLY
+    auto-link path, so a wrong-date tracklist could auto-link on artist+event alone. The scorer
+    must now receive the real scraped date so the cap can fire.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result()
+    scraped = _make_scraped_tracklist()
+    scraped.date = "2019-04-13"  # a DIFFERENT year than the file -- the mismatch the cap guards
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    with patch("phaze.tasks.tracklist.compute_match_confidence", return_value=42) as mock_conf:
+        await search_tracklist(ctx, file_id=str(file_record.id))
+
+    mock_conf.assert_called_once()
+    assert mock_conf.call_args.kwargs["tracklist_date"] == date(2019, 4, 13)
+
+
+@patch("phaze.tasks.tracklist._store_scraped_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=100)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=True)
+async def test_search_tracklist_skips_auto_link_when_date_not_confirmed(
+    mock_auto_link: MagicMock,
+    mock_conf: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-rkxy: even at confidence 100, a wrong-date tracklist must NOT auto-link.
+
+    The file is from 2024; the scraped tracklist is from 2019. should_auto_link(100) is True, but
+    the same-window date is not confirmed, so the store is called WITHOUT a file_id -- the tracklist
+    is saved for manual review rather than silently auto-linked to the wrong-date file.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result()
+    scraped = _make_scraped_tracklist()
+    scraped.date = "2019-04-13"  # different year -> outside the 3-day same-window
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["auto_linked"] is False
+    assert mock_store.await_count == 1
+    assert mock_store.await_args.kwargs["file_id"] is None
+    assert mock_store.await_args.kwargs["auto_linked"] is False
+
+
+@patch("phaze.tasks.tracklist.TracklistScraper")
 @patch("phaze.tasks.tracklist.parse_live_set_filename", return_value=None)
 async def test_search_tracklist_no_query(
     mock_parse: MagicMock,
@@ -422,6 +504,143 @@ async def test_store_scraped_tracklist_does_not_null_metadata_on_partial_scrape(
 
     assert existing.artist == "Keep Me"
     assert existing.event == "Keep Event"
+
+
+async def test_store_scraped_tracklist_does_not_steal_link_from_another_file() -> None:
+    """phaze-4a5w: an auto-link must NOT overwrite a tracklist already owned by a DIFFERENT file.
+
+    Duplicate copies of the same set resolve to the same external_id. A later file's search that
+    scores >= 90 previously flipped the existing tracklist's file_id, clobbering a manual link and
+    stamping auto_linked=True over it. The existing linkage (and its provenance) must survive.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    owner_file_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = owner_file_id  # already MANUALLY linked to file A
+    existing.match_confidence = 77
+    existing.auto_linked = False
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    # Order: advisory lock, external_id lookup, max-version lookup.
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="shared-set")
+
+    other_file_id = uuid.uuid4()  # file B, a duplicate copy of the same set
+    await _store_scraped_tracklist(session, scraped, file_id=other_file_id, confidence=99, auto_linked=True)
+
+    # The existing link is untouched: still file A, still the manual confidence, still auto_linked=False.
+    assert existing.file_id == owner_file_id
+    assert existing.match_confidence == 77
+    assert existing.auto_linked is False
+
+
+async def test_store_scraped_tracklist_links_when_unowned() -> None:
+    """phaze-4a5w: an auto-link still applies when the tracklist is unowned (file_id None)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = None  # unowned -- fair game
+    existing.match_confidence = None
+    existing.auto_linked = False
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="unowned-set")
+    file_id = uuid.uuid4()
+    await _store_scraped_tracklist(session, scraped, file_id=file_id, confidence=95, auto_linked=True)
+
+    assert existing.file_id == file_id
+    assert existing.match_confidence == 95
+    assert existing.auto_linked is True
+
+
+async def test_store_scraped_tracklist_relinks_same_file() -> None:
+    """phaze-4a5w: re-linking the SAME file (file_id equal) refreshes confidence, not blocked."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    file_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = file_id
+    existing.match_confidence = 90
+    existing.auto_linked = True
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="same-file-set")
+    await _store_scraped_tracklist(session, scraped, file_id=file_id, confidence=98, auto_linked=True)
+
+    assert existing.file_id == file_id
+    assert existing.match_confidence == 98
+
+
+@patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_filters_query_to_scrapeable_source(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
+    """The stale/unresolved SELECT restricts to source == '1001tracklists' (phaze-p1vy).
+
+    Fingerprint-sourced tracklists (source='fingerprint', source_url='') are structurally
+    un-rescrapeable; without this filter they re-enter the stale arm forever once aged past 90
+    days, each attempt burning a guaranteed-failing scrape plus the 60-300s jitter sleep.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    await refresh_tracklists(ctx)
+
+    stmt = session.execute.call_args_list[0].args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "tracklists.source" in compiled
+
+
+@patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_skips_rows_with_no_source_url(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
+    """A selected row with a falsy source_url is skipped (defense-in-depth for phaze-p1vy).
+
+    This exercises the in-loop guard directly; the query-level filter above is the primary fix.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_tl_no_url = MagicMock(id=uuid.uuid4(), source_url="", source="fingerprint")
+    mock_tl_ok = MagicMock(id=uuid.uuid4(), source_url="https://example.com/tl", source="1001tracklists")
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_tl_no_url, mock_tl_ok]
+    session.execute.return_value = mock_result
+
+    mock_scrape.return_value = {"tracklist_id": "x", "tracks_found": 5, "version": 1}
+
+    result = await refresh_tracklists(ctx)
+
+    assert result == {"refreshed": 1, "errors": 0}
+    mock_scrape.assert_awaited_once_with(ctx, tracklist_id=str(mock_tl_ok.id))
+    assert mock_sleep.await_count == 1
 
 
 @patch("phaze.tasks.tracklist.scrape_and_store_tracklist")

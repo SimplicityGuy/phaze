@@ -56,6 +56,13 @@ def compute_match_confidence(
 
     CRITICAL (Pitfall 3): If artist+event similarity > 80 but date differs
     by more than 3 days, cap at 89 to prevent false auto-links.
+
+    NOTE: this cap only fires when BOTH sides supply a date. The auto-link path guards the
+    remaining holes (a missing scraped or file date) at the decision site in
+    ``tasks/tracklist.search_tracklist`` -- an auto-link requires a confirmed same-window date, so
+    artist+event alone can never auto-link a wrong-date tracklist (phaze-rkxy). This function's
+    score is left intact for the manual "find better match" panel, which displays it for operator
+    review rather than gating on it.
     """
     weighted_score = 0.0
     weights_used = 0.0

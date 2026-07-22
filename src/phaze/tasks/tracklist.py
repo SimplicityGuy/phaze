@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import random
 from typing import Any
 import uuid
@@ -31,6 +31,26 @@ class EmptyScrapeError(RuntimeError):
     def __init__(self, external_id: str) -> None:
         super().__init__(f"Refusing to overwrite tracklist {external_id!r} with an empty re-scrape")
         self.external_id = external_id
+
+
+def _parse_scraped_date(raw: str | None) -> date | None:
+    """Parse a scraped date string into a ``date``, trying the known 1001Tracklists formats.
+
+    Returns ``None`` when there is no date or none of the formats match. Shared by the auto-link
+    scorer (``search_tracklist``) and the store path so the SAME date signal feeds both the
+    Pitfall-3 date-mismatch cap and the persisted ``Tracklist.date`` (phaze-rkxy).
+    """
+    if not raw:
+        return None
+    try:
+        for fmt in ("%Y-%m-%d", "%d %b %Y", "%B %d, %Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(raw, fmt).date()
+            except ValueError:
+                continue
+    except Exception:
+        logger.debug("Could not parse date: %s", raw)
+    return None
 
 
 async def _latest_version_has_tracks(session: Any, tracklist: Any) -> bool:
@@ -65,19 +85,8 @@ async def _store_scraped_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.external_id == scraped.external_id))
     tracklist = result.scalar_one_or_none()
 
-    # Parse date string to date object
-    tracklist_date = None
-    if scraped.date:
-        try:
-            # Try common date formats
-            for fmt in ("%Y-%m-%d", "%d %b %Y", "%B %d, %Y", "%m/%d/%Y"):
-                try:
-                    tracklist_date = datetime.strptime(scraped.date, fmt).date()
-                    break
-                except ValueError:
-                    continue
-        except Exception:
-            logger.debug("Could not parse date: %s", scraped.date)
+    # Parse date string to date object (shared helper -- see search_tracklist scorer, phaze-rkxy)
+    tracklist_date = _parse_scraped_date(scraped.date)
 
     if tracklist is None:
         tracklist = Tracklist(
@@ -117,11 +126,27 @@ async def _store_scraped_tracklist(
         latest = version_result.scalar_one_or_none()
         next_version = (latest.version_number + 1) if latest else 1
 
-    # Set file linkage
+    # Set file linkage -- but NEVER steal a tracklist already owned by a DIFFERENT file (phaze-4a5w).
+    # This archive holds duplicate copies of the same live set (dedup is a core feature), so two
+    # files can resolve to the same external_id. Assigning file_id unconditionally here let a later
+    # file's auto-link silently flip an existing tracklist's file_id -- including one a human had
+    # MANUALLY accepted (auto_linked=False) -- stamping auto_linked=True over the manual provenance
+    # and vanishing the tracklist from the original file's every view with no audit trail. Only take
+    # the link when the row is unowned (file_id None) or already points at this same file; otherwise
+    # log and leave the existing link intact for manual review.
     if file_id is not None:
-        tracklist.file_id = file_id
-        tracklist.match_confidence = confidence
-        tracklist.auto_linked = auto_linked
+        if tracklist.file_id is None or tracklist.file_id == file_id:
+            tracklist.file_id = file_id
+            tracklist.match_confidence = confidence
+            tracklist.auto_linked = auto_linked
+        else:
+            logger.warning(
+                "Refusing to steal tracklist already linked to another file",
+                external_id=scraped.external_id,
+                tracklist_id=str(tracklist.id),
+                existing_file_id=str(tracklist.file_id),
+                candidate_file_id=str(file_id),
+            )
 
     # Create new version
     version = TracklistVersion(
@@ -195,16 +220,27 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
 
             for search_result in results:
                 scraped = await scraper.scrape_tracklist(search_result.url)
+                # phaze-rkxy: pass the scraped date so the Pitfall-3 date-mismatch cap actually
+                # fires in the auto-link path. Hardcoding None here made the cap dead and let a
+                # wrong-date tracklist auto-link on artist+event alone.
+                scraped_date = _parse_scraped_date(scraped.date)
                 confidence = compute_match_confidence(
                     tracklist_artist=scraped.artist,
                     tracklist_event=scraped.event,
-                    tracklist_date=None,  # Date parsing happens in store
+                    tracklist_date=scraped_date,
                     file_artist=file_artist,
                     file_event=file_event,
                     file_date=file_date,
                 )
 
-                auto_link = should_auto_link(confidence)
+                # phaze-rkxy: an auto-link MUST be corroborated by a confirmed same-window date.
+                # compute_match_confidence's Pitfall-3 cap only fires when BOTH dates are present, so
+                # guard the remaining holes here -- a missing scraped date, a missing file date (the
+                # metadata-fallback path, where file_event is also None), or a >3-day gap. Without
+                # this, a perfect artist+event match (score 100) auto-links a wrong-date tracklist
+                # with zero date corroboration, exactly the false auto-link the cap was meant to block.
+                date_confirmed = scraped_date is not None and file_date is not None and abs((scraped_date - file_date).days) <= 3
+                auto_link = should_auto_link(confidence) and date_confirmed
                 if auto_link:
                     any_auto_linked = True
 
@@ -275,6 +311,13 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
 
     Per D-10: find tracklists where file_id IS NULL (unresolved) or updated_at < 90 days ago (stale).
     Per TL-04: add randomized jitter between scrapes (60-300 seconds).
+
+    phaze-p1vy: restricted to ``source == "1001tracklists"``. Fingerprint-sourced tracklists
+    (``source="fingerprint"``, ``source_url=""`` -- routers/agent_tracklists.py creates them with
+    no known source URL) are structurally un-rescrapeable: ``TracklistScraper.scrape_tracklist("")``
+    always raises before storing anything, so ``updated_at`` never advances and, without this
+    filter, every such row re-enters the stale arm on every monthly run forever -- each futile
+    attempt still paying the scraper's rate-limit delay plus this loop's 60-300s jitter sleep.
     """
     # phaze-xpzp: bind a NAIVE threshold. ``tracklists.updated_at`` (TimestampMixin) is a
     # ``TIMESTAMP WITHOUT TIME ZONE`` column; asyncpg's naive-timestamp codec raises DataError
@@ -291,13 +334,25 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     # let SAQ mark the job successful while the cron silently never ran.
     try:
         async with ctx["async_session"]() as session:
-            result = await session.execute(select(Tracklist).where((Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold)))
+            result = await session.execute(
+                select(Tracklist).where(
+                    Tracklist.source == "1001tracklists",
+                    (Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold),
+                )
+            )
             tracklists = list(result.scalars().all())
     except Exception:
         logger.exception("Error querying stale/unresolved tracklists")
         return {"refreshed": 0, "errors": 1}
 
     for tl in tracklists:
+        # Defensive secondary guard (belt-and-suspenders with the source filter above): skip any
+        # row that slipped through without a scrapeable source_url instead of burning a guaranteed-
+        # failing scrape attempt plus the jitter sleep below.
+        if not tl.source_url:
+            logger.warning("Skipping tracklist with no source_url", tracklist_id=str(tl.id), source=tl.source)
+            continue
+
         try:
             await scrape_and_store_tracklist(ctx, tracklist_id=str(tl.id))
             refreshed += 1

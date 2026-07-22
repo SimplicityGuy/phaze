@@ -1159,6 +1159,62 @@ async def test_link_tracklist_rejects_confidence_outside_the_domain(session: Asy
 
 
 @pytest.mark.asyncio
+async def test_link_tracklist_stale_file_id_returns_clean_error_not_500(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-29bv: a well-formed but non-existent file_id (stale panel / deleted FileRecord) is a
+    clean 4xx, not an unhandled 500 from a ForeignKeyViolation at commit.
+
+    The FK write on Tracklist.file_id was previously unvalidated, so a dead-but-well-formed UUID
+    reached session.commit() and raised asyncpg ForeignKeyViolationError, poisoning the request
+    transaction. The handler must resolve the FileRecord first and branch cleanly.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    dead_file_id = uuid.uuid4()  # well-formed UUID with no FileRecord row
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(dead_file_id), "confidence": 85},
+    )
+    assert response.status_code == 404, response.text
+
+    # The link never landed: no poisoned commit, tracklist left unlinked.
+    await session.refresh(tl)
+    assert tl.file_id is None
+    assert tl.match_confidence is None
+
+
+@pytest.mark.asyncio
+async def test_link_search_result_stale_file_id_skips_scrape_and_returns_clean_error(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-x4vi: a dead file_id is rejected BEFORE the expensive scrape, so no scraped work is
+    discarded and the commit never FK-violates into a 500.
+
+    Previously the handler scraped (up to 30s), stored the tracklist in the same uncommitted
+    transaction, then set the unvalidated file_id and committed -- a dead file_id raised
+    ForeignKeyViolation AND rolled back the scrape, so every retry re-hit the rate-limited site.
+    """
+    dead_file_id = uuid.uuid4()  # well-formed UUID with no FileRecord row
+    url = "https://www.1001tracklists.com/tracklist/better1/x.html"
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.scrape_tracklist = AsyncMock()
+        mock_scraper.close = AsyncMock()
+
+        response = await client.post(
+            "/tracklists/link-result",
+            data={"file_id": str(dead_file_id), "external_id": "better1", "url": url},
+        )
+
+    assert response.status_code == 404, response.text
+    # The scrape is skipped entirely -- no wasted network round trip, nothing to discard.
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+    # No tracklist row was created for the rejected request.
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == "better1"))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()
@@ -1555,6 +1611,138 @@ async def test_save_track_timestamp_at_column_width_boundary_saves(session: Asyn
     assert track.timestamp == exactly_20
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["artist", "title", "timestamp"])
+async def test_save_track_field_empty_persists_null_not_empty_string(session: AsyncSession, client: AsyncClient, field: str) -> None:
+    """phaze-jsl9: clearing an inline edit must persist NULL, not "" -- CUE eligibility keys on
+    ``timestamp.is_not(None)``, so a "" value would silently stay "eligible" forever.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/{field}", data={field: ""})
+    assert response.status_code == 200
+    assert "-" in response.text  # display coalesces the absent value
+
+    await session.refresh(track)
+    assert getattr(track, field) is None
+
+
+@pytest.mark.asyncio
+async def test_save_track_field_whitespace_only_persists_null(session: AsyncSession, client: AsyncClient) -> None:
+    """A whitespace-only edit is treated the same as an empty one -- stripped to NULL."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/artist", data={"artist": "   "})
+    assert response.status_code == 200
+
+    await session.refresh(track)
+    assert track.artist is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("garbage", ["abc", "12:xx", "1:2:3:4", "~5:00", "[1:02:03]", "05:24*"])
+async def test_save_track_timestamp_unparseable_rejected_value_preserved(session: AsyncSession, client: AsyncClient, garbage: str) -> None:
+    """phaze-jsl9: garbage that passes the length guard must still 422, not silently commit a
+    non-NULL value that parse_timestamp_string can never parse.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": garbage})
+
+    assert response.status_code == 422
+    assert garbage in response.text
+    assert 'name="timestamp"' in response.text
+    assert "hx-put" in response.text
+
+    await session.refresh(track)
+    assert track.timestamp == "00:00"  # untouched -- the rejected edit never reached the DB
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", ["01:02:03", "12:34", "90.5", "0"])
+async def test_save_track_timestamp_valid_formats_accepted(session: AsyncSession, client: AsyncClient, valid: str) -> None:
+    """Every format parse_timestamp_string documents (HH:MM:SS / MM:SS / float-seconds) still saves."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Artist",
+        title="Title",
+        timestamp="00:00",
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.put(f"/tracklists/tracks/{track.id}/edit/timestamp", data={"timestamp": valid})
+
+    assert response.status_code == 200
+    await session.refresh(track)
+    assert track.timestamp == valid
+
+
 # --- Discogs matching endpoints ---
 
 
@@ -1807,6 +1995,64 @@ async def test_bulk_link_discogs(session: AsyncSession, client: AsyncClient) -> 
     assert link1a.status == "accepted"
     assert link1b.status == "dismissed"
     assert link2a.status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_bulk_link_discogs_dismisses_preexisting_accepted_link(session: AsyncSession, client: AsyncClient) -> None:
+    """POST /tracklists/{id}/bulk-link never leaves two accepted DiscogsLinks for one track (D-07).
+
+    Regression for phaze-gl1k: a track that already has an accepted link (e.g. from a prior
+    individual accept, preserved by match_tracklist_to_discogs re-matching) must be folded into
+    the same accept/dismiss pass as freshly loaded candidates, not left untouched alongside a new
+    accepted row.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = tracks[0]
+    # A pre-existing accepted link (not status=='candidate', so the old candidate-only query
+    # would never see it).
+    preexisting_accepted = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-old",
+        discogs_artist="Old",
+        discogs_title="Accepted",
+        confidence=50.0,
+        status="accepted",
+    )
+    # A freshly re-matched candidate with higher confidence.
+    new_candidate = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track.id,
+        discogs_release_id="r-new",
+        discogs_artist="New",
+        discogs_title="Candidate",
+        confidence=95.0,
+        status="candidate",
+    )
+    session.add_all([preexisting_accepted, new_candidate])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/bulk-link")
+    assert response.status_code == 200
+
+    await session.refresh(preexisting_accepted)
+    await session.refresh(new_candidate)
+
+    statuses = {preexisting_accepted.status, new_candidate.status}
+    accepted_count = sum(1 for s in (preexisting_accepted.status, new_candidate.status) if s == "accepted")
+    assert accepted_count == 1, f"expected exactly one accepted link, got statuses={statuses}"
+    # The higher-confidence link wins.
+    assert new_candidate.status == "accepted"
+    assert preexisting_accepted.status == "dismissed"
 
 
 @pytest.mark.asyncio

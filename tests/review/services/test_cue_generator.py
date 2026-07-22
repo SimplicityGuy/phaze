@@ -85,6 +85,35 @@ class TestParseTimestampString:
         # 2:15:30 = 2*3600 + 15*60 + 30 = 8130
         assert parse_timestamp_string("2:15:30") == 8130.0
 
+    def test_empty_string_returns_none(self):
+        # phaze-97u7: an empty scraped cue-time cell yields "" (not None) -- float("") must not raise.
+        assert parse_timestamp_string("") is None
+
+    def test_whitespace_returns_none(self):
+        assert parse_timestamp_string("   ") is None
+
+    def test_non_numeric_returns_none(self):
+        assert parse_timestamp_string("abc") is None
+
+    def test_decorated_time_returns_none(self):
+        assert parse_timestamp_string("~5:00") is None
+
+    def test_bracketed_time_returns_none(self):
+        assert parse_timestamp_string("[1:02:03]") is None
+
+    def test_trailing_garbage_returns_none(self):
+        assert parse_timestamp_string("05:24*") is None
+
+    def test_too_many_segments_returns_none(self):
+        assert parse_timestamp_string("1:2:3:4") is None
+
+    def test_fractional_seconds_segment_returns_none(self):
+        # int(part) rejects a fractional MM/SS segment -- documented as None, not a crash.
+        assert parse_timestamp_string("1:23:45.5") is None
+
+    def test_garbage_minutes_segment_returns_none(self):
+        assert parse_timestamp_string("12:xx") is None
+
 
 class TestGenerateCueContent:
     """Test CUE content string generation."""
@@ -171,6 +200,31 @@ class TestGenerateCueContent:
     def test_double_quotes_stripped_from_filename(self):
         content = generate_cue_content('file"with"quotes.mp3', "mp3", [])
         assert 'FILE "filewithquotes.mp3" MP3' in content
+
+    def test_double_quotes_stripped_from_title(self):
+        # phaze-oo35: an embedded quote in TITLE must not terminate the field early.
+        tracks = [CueTrackData(position=1, title='ID "Unreleased" Mix', artist=None, timestamp_seconds=0.0)]
+        content = generate_cue_content("test.mp3", "mp3", tracks)
+        assert 'TITLE "ID Unreleased Mix"' in content
+        assert '"ID "Unreleased" Mix"' not in content
+
+    def test_double_quotes_stripped_from_performer(self):
+        tracks = [CueTrackData(position=1, title="Track", artist='DJ "Loud" Name', timestamp_seconds=0.0)]
+        content = generate_cue_content("test.mp3", "mp3", tracks)
+        assert 'PERFORMER "DJ Loud Name"' in content
+        assert '"DJ "Loud" Name"' not in content
+
+    def test_double_quotes_stripped_from_rem_label(self):
+        tracks = [CueTrackData(position=1, title="Track", artist=None, timestamp_seconds=0.0, label='Some "Imprint" Records')]
+        content = generate_cue_content("test.mp3", "mp3", tracks)
+        assert 'REM LABEL "Some Imprint Records"' in content
+        assert '"Some "Imprint" Records"' not in content
+
+    def test_double_quotes_stripped_from_rem_genre(self):
+        tracks = [CueTrackData(position=1, title="Track", artist=None, timestamp_seconds=0.0, genre='"Deep" House')]
+        content = generate_cue_content("test.mp3", "mp3", tracks)
+        assert 'REM GENRE "Deep House"' in content
+        assert '""Deep" House"' not in content
 
     def test_trailing_newline(self):
         content = generate_cue_content("test.mp3", "mp3", [])

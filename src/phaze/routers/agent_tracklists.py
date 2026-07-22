@@ -26,6 +26,7 @@ import redis.asyncio as redis_async
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
@@ -38,6 +39,8 @@ from phaze.schemas.agent_tracklists import (
 )
 from phaze.services.scheduling_ledger import clear_ledger_entry
 
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/internal/agent/tracklists", tags=["agent-internal"])
 
@@ -116,10 +119,18 @@ async def create_tracklist(
     # delivery -- including this client's own retries -- on the 409 concurrent-writer path (which
     # agent_client never retries), permanently and silently discarding a matched tracklist. Release
     # on failure so the next retry can re-acquire (phaze-dwwj).
+    #
+    # phaze-42jr: catch BaseException, not Exception. A cancellation (CancelledError is a
+    # BaseException in 3.14, e.g. on server shutdown) previously skipped the release entirely and
+    # stranded the lock for the full 1h TTL. Tolerate the delete itself failing (another transient
+    # Redis blip) so cleanup can never mask the original error.
     try:
         return await _run_owner_path(session, redis_client, resp_key, body, agent)
-    except Exception:
-        await redis_client.delete(req_key)
+    except BaseException:
+        try:
+            await redis_client.delete(req_key)
+        except Exception:
+            logger.warning("Failed to release owner lock after owner-path error", req_key=req_key, exc_info=True)
         raise
 
 
@@ -196,7 +207,19 @@ async def _run_owner_path(
         version=new_version_number,
         track_count=len(body.tracks),
     )
-    await redis_client.set(resp_key, response.model_dump_json(), ex=_TTL_SECONDS)
+    # phaze-42jr: the cache write runs AFTER the durable commit, so a transient Redis failure here
+    # must NOT surface as an error. Re-raising would trip the caller's release-and-raise path -> 500,
+    # and agent_client's tenacity retry would re-run this whole owner path with the SAME request_id:
+    # version_number = max+1 sidesteps the UNIQUE(tracklist_id, version_number) constraint, appending
+    # a SECOND identical TracklistVersion and repointing latest_version_id at the duplicate. The
+    # tracklist/version/tracks and the ledger clear are already committed, so treat a post-commit
+    # cache miss as success: log and return the already-durable response. The lock stays held for its
+    # TTL (a genuine replay simply 409s rather than duplicating) -- releasing it here would instead
+    # invite the duplicate-version re-run we are preventing.
+    try:
+        await redis_client.set(resp_key, response.model_dump_json(), ex=_TTL_SECONDS)
+    except Exception:
+        logger.warning("Post-commit idempotency cache write failed; returning durable response", resp_key=resp_key, exc_info=True)
     # Touch ``agent`` so ARG001 doesn't fire; the binding's real role is auth-gating
     # (Depends() invocation enforces 401/403 before we reach this body).
     _ = agent.id
