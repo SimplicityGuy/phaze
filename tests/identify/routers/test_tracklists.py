@@ -1496,6 +1496,47 @@ async def test_search_better_match_releases_connection_before_scrape(session: As
 
 
 @pytest.mark.asyncio
+async def test_search_better_match_unlinked_tracklist_omits_link_affordance(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-g2yk): a tracklist with no linked file (e.g. right after Unlink) has
+    ``file_id=None``. The Jinja default renderer stringifies ``None`` to the literal text "None",
+    so a naive hidden ``<input value="{{ file_id }}">`` would POST ``file_id=None`` to
+    ``/tracklists/link-result``, whose ``file_id: uuid.UUID = Form(...)`` cannot parse that string
+    and 422s -- a silent no-op since HTMX swallows non-2xx swaps. The Link form/button must be
+    omitted (not merely blank-valued) whenever ``file_id`` is falsy, replaced with a clear
+    disabled-state affordance.
+    """
+    tl = _make_tracklist(file_id=None, external_id="unlinked-tl")
+    tl.artist = "Real Artist"
+    tl.event = "Coachella"
+    session.add(tl)
+    await session.flush()
+
+    search_result = TracklistSearchResult(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        url="https://www.1001tracklists.com/tracklist/better1/x.html",
+        artist="Real Artist",
+        date="2024-04-14",
+    )
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.search = AsyncMock(return_value=[search_result])
+        mock_scraper.close = AsyncMock()
+
+        response = await client.get(f"/tracklists/{tl.id}/search")
+
+    assert response.status_code == 200
+    # Never emit a UUID-typed hidden field carrying the literal string "None".
+    assert 'value="None"' not in response.text
+    # No Link form/button is rendered for a result reached from an unlinked tracklist search.
+    assert "/tracklists/link-result" not in response.text
+    assert "Link Tracklist" not in response.text
+    # A clear, non-actionable affordance replaces it.
+    assert "No file linked" in response.text
+
+
+@pytest.mark.asyncio
 async def test_link_search_result_links_selected_not_original(session: AsyncSession, client: AsyncClient) -> None:
     """Regression (phaze-ldal): linking a search RESULT must persist and link THAT result's own
     content -- not silently re-link the original tracklist (searched from) and stamp the
