@@ -388,6 +388,98 @@ async def test_tracklist_owner_failure_releases_lock_then_retry_succeeds(
     assert r.json()["track_count"] == 1
 
 
+@pytest.mark.integration
+async def test_tracklist_post_commit_cache_failure_returns_durable_response_not_500(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-42jr: a Redis blip on the POST-COMMIT idempotency cache write must NOT 500.
+
+    The tracklist/version/tracks and the ledger clear are already durably committed when the
+    resp_key SET runs. Re-raising there returned a 500, tripping agent_client's tenacity retry to
+    re-run the whole owner path with the same request_id -- appending a DUPLICATE TracklistVersion
+    (version_number = max+1 sidesteps the UNIQUE constraint). The handler must treat a post-commit
+    cache miss as success: return the durable 200, leaving exactly one version.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    request_id = uuid.uuid4()
+    ext = f"fp-cachefail-{file_id.hex[:8]}"
+    payload = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": ext,
+        "request_id": str(request_id),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1", "timestamp": "00:00:00"}],
+    }
+
+    # Fail ONLY the resp_key cache write (post-commit); the req_key SET NX must still succeed.
+    real_set = redis_client.set
+
+    async def _set(name: object, *args: object, **kwargs: object) -> object:
+        if str(name).startswith(agent_tracklists._RESP_PREFIX):
+            raise RuntimeError("post-commit redis blip")
+        return await real_set(name, *args, **kwargs)
+
+    monkeypatch.setattr(redis_client, "set", _set)
+
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["track_count"] == 1
+    assert r.json()["version"] == 1
+
+    # Exactly ONE version committed -- no duplicate from a retry the 500 would have triggered.
+    session.expire_all()
+    tracklists = (await session.execute(select(Tracklist).where(Tracklist.external_id == ext))).scalars().all()
+    assert len(tracklists) == 1
+    versions = (await session.execute(select(TracklistVersion).where(TracklistVersion.tracklist_id == tracklists[0].id))).scalars().all()
+    assert len(versions) == 1
+
+
+@pytest.mark.integration
+async def test_tracklist_owner_path_cancellation_releases_lock(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-42jr: a CancelledError in the owner path must STILL release the req_key lock.
+
+    CancelledError is a BaseException, so the old ``except Exception`` skipped the release and
+    stranded the lock for the full 1h TTL -- every subsequent delivery then lost the SET NX and
+    409ed. The release must be BaseException-proof.
+    """
+    import asyncio
+
+    from phaze.schemas.agent_tracklists import TracklistCreatePayload
+
+    agent, _ = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    request_id = uuid.uuid4()
+    req_key = f"{agent_tracklists._REQ_PREFIX}{request_id}"
+    body = TracklistCreatePayload(
+        file_id=file_id,
+        source="fingerprint",
+        external_id=f"fp-cancel-{file_id.hex[:8]}",
+        request_id=request_id,
+        tracks=[{"position": 1, "artist": "A", "title": "T1", "timestamp": "00:00:00"}],  # type: ignore[list-item]
+    )
+
+    async def _cancel(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(agent_tracklists, "_run_owner_path", _cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent_tracklists.create_tracklist(body=body, agent=agent, session=session, redis_client=redis_client)
+
+    assert await redis_client.get(req_key) is None, "cancellation must release the owner lock, not strand it for 1h"
+
+
 # ---------------------------------------------------------------------------
 # Phase 45 (L-02): scan_live_set scheduling-ledger clear -- match path + terminal-ack endpoint
 # ---------------------------------------------------------------------------
