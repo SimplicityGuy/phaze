@@ -9,6 +9,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -45,8 +46,13 @@ async def extract_file_metadata(ctx: dict[str, Any], **kwargs: Any) -> dict[str,
     api: PhazeAgentClient = ctx["api_client"]
 
     try:
-        # Sync mutagen call -- I/O bound header read on the local file
-        tags = extract_tags(payload.original_path)
+        # phaze-j8bj: mutagen's full tag parse (multi-MB APIC art / moov-atom seek+read
+        # against the media mount) is blocking I/O. Offload to a worker thread so a slow
+        # or hard-hung read cannot freeze the agent worker's event loop -- the loop also
+        # runs the Phase-46 liveness heartbeat (heartbeat.py's design premise is 'the
+        # event loop is free'), so an on-loop block risks a false DEAD classification and
+        # duplicate-work re-enqueue. Mirrors scan.py's asyncio.to_thread discipline.
+        tags = await asyncio.to_thread(extract_tags, payload.original_path)
         logger.debug("metadata tags read", file_id=str(payload.file_id), artist=tags.artist, title=tags.title, duration=tags.duration)
 
         # Map to Phase 25 MetadataWriteRequest schema; PUT idempotent upsert (CR-01 field-level LWW)
