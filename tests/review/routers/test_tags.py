@@ -882,3 +882,125 @@ async def test_undo_with_only_failed_write_reports_nothing_to_undo(client: Async
     response = await client.post(f"/tags/{file_record.id}/undo")
     assert response.status_code == 404
     assert "no prior tag write" in response.text.lower()
+
+
+async def _count_write_logs(session: AsyncSession, file_id: uuid.UUID, *, source: str) -> int:
+    """Count TagWriteLog rows for ``file_id`` with the given ``source``."""
+    from sqlalchemy import func, select
+
+    stmt = select(func.count(TagWriteLog.id)).where(TagWriteLog.file_id == file_id, TagWriteLog.source == source)
+    return int((await session.execute(stmt)).scalar() or 0)
+
+
+@pytest.mark.asyncio
+async def test_second_undo_is_idempotent_no_op(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-04bz: a second UNDO must NOT re-apply the written tags.
+
+    Seed a real COMPLETED write, then run UNDO twice. The first reverts; the second sees the
+    newest log is already a COMPLETED reversal and no-ops -- it must NOT call write_tags again
+    and must NOT append another undo log.
+    """
+    file_record, _ = await _create_executed_file(session)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        first = await client.post(f"/tags/{file_record.id}/undo")
+    assert first.status_code == 200
+    assert await _count_write_logs(session, file_record.id, source="undo") == 1
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags") as second_write,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        second = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert second.status_code == 200
+    assert "already reverted" in second.text.lower()
+    second_write.assert_not_called()
+    # No second reversal was appended to the audit trail.
+    assert await _count_write_logs(session, file_record.id, source="undo") == 1
+
+
+@pytest.mark.asyncio
+async def test_second_undo_v7_surfaces_already_reverted_toast(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-04bz: the v7 workspace second-undo no-op redraws a pending row with an honest toast."""
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=base,
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="undo",
+        before_tags={"artist": "Written Artist"},
+        written_at=base + timedelta(seconds=30),
+    )
+
+    with patch("phaze.services.tag_writer.write_tags") as mock_write:
+        response = await client.post(
+            f"/tags/{file_record.id}/undo",
+            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "already reverted" in body.lower()
+    assert f'id="tagwrite-row-{file_record.id}"' in body
+    assert "APPROVE" in body  # pending row
+    mock_write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_undo_retries_after_failed_reversal(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-04bz/26t7: a FAILED reversal does NOT count as already-reverted -- undo may retry."""
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=base,
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.FAILED,
+        source="undo",
+        before_tags={"artist": "Original Artist"},
+        written_at=base + timedelta(seconds=30),
+        error_message="read-only",
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags") as mock_write,
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    assert "already reverted" not in response.text.lower()
+    # The retry re-applies the real write's before_tags.
+    mock_write.assert_called_once()
+    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}

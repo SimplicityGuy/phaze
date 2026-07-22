@@ -683,6 +683,38 @@ async def bulk_write_no_discrepancies(
     )
 
 
+async def _undo_legacy_row_response(
+    request: Request,
+    session: AsyncSession,
+    file_record: FileRecord,
+    *,
+    status: str,
+    toast_message: str,
+) -> HTMLResponse:
+    """Render the legacy ``tag_row.html`` for an undo outcome (shared by the no-op and write paths)."""
+    tracklist = await _get_tracklist_for_file(session, file_record.id)
+    discogs_link = await _get_accepted_discogs_link(session, file_record.id)
+    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
+    comparison = _build_comparison(file_record.file_metadata, proposed)
+    changes = _count_changes(comparison)
+
+    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; toast/comparison values are escaped on render.
+        request=request,
+        name="tags/partials/tag_row.html",
+        context={
+            "request": request,
+            "file": {
+                "id": file_record.id,
+                "filename": file_record.original_filename,
+                "file_type": file_record.file_type,
+                "changes": changes,
+                "status": status,
+            },
+            "toast_message": toast_message,
+        },
+    )
+
+
 @router.post("/{file_id}/undo", response_class=HTMLResponse)
 async def undo_tag_write(
     request: Request,
@@ -716,8 +748,21 @@ async def undo_tag_write(
             return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
         return HTMLResponse(content="No prior tag write to undo", status_code=404)
 
+    # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
+    # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
+    # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
+    newest = await _get_latest_write_log(session, file_id)
+    if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
+        already_message = f"Tags for {file_record.original_filename} were already reverted."
+        if is_v7:
+            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+            return _tagwrite_diff_row_response(request, row_context, already_message)
+        return await _undo_legacy_row_response(request, session, file_record, status="pending", toast_message=already_message)
+
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()
+
+    toast_message = f"Reverted tags for {file_record.original_filename}."
 
     if is_v7:
         # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
@@ -725,27 +770,6 @@ async def undo_tag_write(
         # to retry) rather than claiming a revert that did not happen.
         row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
         row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
-        return _tagwrite_diff_row_response(request, row_context, f"Reverted tags for {file_record.original_filename}.")
+        return _tagwrite_diff_row_response(request, row_context, toast_message)
 
-    # Rebuild the row for the outerHTML swap.
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    discogs_link = await _get_accepted_discogs_link(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-    comparison = _build_comparison(file_record.file_metadata, proposed)
-    changes = _count_changes(comparison)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tags/partials/tag_row.html",
-        context={
-            "request": request,
-            "file": {
-                "id": file_record.id,
-                "filename": file_record.original_filename,
-                "file_type": file_record.file_type,
-                "changes": changes,
-                "status": log_entry.status,
-            },
-            "toast_message": f"Reverted tags for {file_record.original_filename}.",
-        },
-    )
+    return await _undo_legacy_row_response(request, session, file_record, status=log_entry.status, toast_message=toast_message)
