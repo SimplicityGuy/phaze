@@ -142,6 +142,88 @@ async def test_search_tracklist_auto_links(
 
 
 @patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_passes_parsed_scraped_date_to_scorer(
+    mock_auto_link: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+) -> None:
+    """phaze-rkxy: the scraped date is parsed and passed to compute_match_confidence.
+
+    Hardcoding tracklist_date=None made the Pitfall-3 date-mismatch cap dead in the ONLY
+    auto-link path, so a wrong-date tracklist could auto-link on artist+event alone. The scorer
+    must now receive the real scraped date so the cap can fire.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result()
+    scraped = _make_scraped_tracklist()
+    scraped.date = "2019-04-13"  # a DIFFERENT year than the file -- the mismatch the cap guards
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    with patch("phaze.tasks.tracklist.compute_match_confidence", return_value=42) as mock_conf:
+        await search_tracklist(ctx, file_id=str(file_record.id))
+
+    mock_conf.assert_called_once()
+    assert mock_conf.call_args.kwargs["tracklist_date"] == date(2019, 4, 13)
+
+
+@patch("phaze.tasks.tracklist._store_scraped_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=100)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=True)
+async def test_search_tracklist_skips_auto_link_when_date_not_confirmed(
+    mock_auto_link: MagicMock,
+    mock_conf: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-rkxy: even at confidence 100, a wrong-date tracklist must NOT auto-link.
+
+    The file is from 2024; the scraped tracklist is from 2019. should_auto_link(100) is True, but
+    the same-window date is not confirmed, so the store is called WITHOUT a file_id -- the tracklist
+    is saved for manual review rather than silently auto-linked to the wrong-date file.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result()
+    scraped = _make_scraped_tracklist()
+    scraped.date = "2019-04-13"  # different year -> outside the 3-day same-window
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["auto_linked"] is False
+    assert mock_store.await_count == 1
+    assert mock_store.await_args.kwargs["file_id"] is None
+    assert mock_store.await_args.kwargs["auto_linked"] is False
+
+
+@patch("phaze.tasks.tracklist.TracklistScraper")
 @patch("phaze.tasks.tracklist.parse_live_set_filename", return_value=None)
 async def test_search_tracklist_no_query(
     mock_parse: MagicMock,
