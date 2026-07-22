@@ -1159,6 +1159,32 @@ async def test_link_tracklist_rejects_confidence_outside_the_domain(session: Asy
 
 
 @pytest.mark.asyncio
+async def test_link_tracklist_stale_file_id_returns_clean_error_not_500(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-29bv: a well-formed but non-existent file_id (stale panel / deleted FileRecord) is a
+    clean 4xx, not an unhandled 500 from a ForeignKeyViolation at commit.
+
+    The FK write on Tracklist.file_id was previously unvalidated, so a dead-but-well-formed UUID
+    reached session.commit() and raised asyncpg ForeignKeyViolationError, poisoning the request
+    transaction. The handler must resolve the FileRecord first and branch cleanly.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    dead_file_id = uuid.uuid4()  # well-formed UUID with no FileRecord row
+    response = await client.post(
+        f"/tracklists/{tl.id}/link",
+        data={"file_id": str(dead_file_id), "confidence": 85},
+    )
+    assert response.status_code == 404, response.text
+
+    # The link never landed: no poisoned commit, tracklist left unlinked.
+    await session.refresh(tl)
+    assert tl.file_id is None
+    assert tl.match_confidence is None
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape enqueues scrape job."""
     tl = _make_tracklist()

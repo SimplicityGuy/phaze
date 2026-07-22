@@ -495,6 +495,14 @@ async def link_tracklist(
     result = await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))
     tracklist = result.scalar_one_or_none()
     if tracklist:
+        # phaze-29bv: file_id is a client-supplied FK to files.id. A well-formed but stale/forged id
+        # -- e.g. the FileRecord hard-deleted by a concurrent scan while this search panel stayed open
+        # -- passes wire validation and would detonate as an unhandled ForeignKeyViolation at commit,
+        # poisoning the request transaction with a 500 and leaving the tracklist silently unlinked.
+        # This is the render-vs-POST race request_guards.py rule 4 governs: resolve the FileRecord
+        # first and branch cleanly rather than writing an unvalidated FK.
+        if await session.get(FileRecord, file_id) is None:
+            return HTMLResponse(content="File not found", status_code=404)
         tracklist.file_id = file_id
         tracklist.match_confidence = confidence
         tracklist.auto_linked = False
