@@ -796,6 +796,18 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_S3_MULTIPART_PART_SIZE_BYTES", "s3_multipart_part_size_bytes"),
         description="Multipart upload part size (bytes) the agent streams over presigned part URLs (Phase 53, D-01). Default 67108864 (64 MiB); bounded to the S3 [5 MiB, 5 GiB) part-size range.",
     )
+    s3_client_timeout_sec: int = Field(
+        default=30,
+        gt=0,
+        lt=600,
+        validation_alias=AliasChoices("PHAZE_S3_CLIENT_TIMEOUT_SEC", "s3_client_timeout_sec"),
+        description=(
+            "phaze-1v37: explicit connect + read timeout (seconds) bounding every control-side S3 SDK call "
+            "(complete/abort/delete multipart). Without it botocore's minute-scale defaults + retries let a "
+            "wedged/blackholed S3 endpoint pin the calling connection for minutes; a bounded timeout caps how "
+            "long any staging-callback S3 round-trip can hold resources. Default 30; bounded gt=0, lt=600."
+        ),
+    )
 
     # Phase 67 (REG-04, D-12): the flat kube cluster connection + Job-manifest surface (api-url /
     # namespace / local-queue / job-image / cpu-request / memory-request / workload-api-version /
