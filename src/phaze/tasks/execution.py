@@ -192,6 +192,33 @@ def _is_same_file(a: Path, b: Path) -> bool:
         return False
 
 
+def _destination_is_committed_copy(original: Path, proposed: Path, expected_hash: str | None) -> bool:
+    """True when `proposed` already holds a byte-identical copy of `original`.
+
+    The cross-filesystem move is copy-then-delete: once ``_atomic_cross_fs_copy``
+    returns, a COMPLETE, fsynced copy sits at `proposed` while `original` is still
+    present, and only ``original.unlink()`` remains. A prior attempt can be
+    interrupted in exactly that window -- by a live ``unlink()`` OSError
+    (phaze-q2lg) or a hard worker kill between the fsync and the unlink
+    (phaze-qx8z) -- leaving BOTH files on disk with `proposed` a distinct inode
+    from `original` (different filesystem => different st_dev/st_ino, so
+    :func:`_is_same_file` is always False across the mount boundary).
+
+    A retry/replay must distinguish that recoverable state (finish the move by
+    deleting `original`) from a genuine collision -- an UNRELATED file that
+    legitimately occupies the destination, which phaze-yu2e must still refuse to
+    clobber. Content identity is the discriminator: prefer the caller-supplied
+    ``expected_hash`` (the hash of the original content) when present -- the
+    original was already verified against it -- otherwise hash `original`
+    directly. Only a proven byte-for-byte match authorizes deleting `original`,
+    so a foreign file at the destination is never destroyed.
+    """
+    proposed_hash = _sha256_of_file(proposed)
+    if expected_hash is not None:
+        return proposed_hash == expected_hash
+    return proposed_hash == _sha256_of_file(original)
+
+
 def _streamed_copy(src: Path, dst: Path) -> None:
     """Copy `src` -> `dst` in bounded chunks, flushing + fsyncing before return.
 
@@ -362,17 +389,35 @@ async def _execute_one(
             # whole-file read would MemoryError / OOM-kill the worker.
             current_step = "copy"
             proposed.parent.mkdir(parents=True, exist_ok=True)
-            # phaze-yu2e: refuse to clobber a pre-existing destination. Both branches
-            # below silently destroy whatever sits at `proposed` -- os.replace atomically
-            # replaces it and the streamed copy's open("wb") truncates it. The
+            same_fs = _same_filesystem(original, proposed.parent)
+            # phaze-yu2e: refuse to clobber a pre-existing destination. Both move
+            # branches below silently destroy whatever sits at `proposed` -- os.replace
+            # atomically replaces it and the streamed copy truncates it. The
             # dispatch-time collision gate cannot catch every case (NULL-path in-place
             # renames, a destination already occupied by an earlier executed proposal, or
-            # an untracked on-disk file), so fail the copy step loudly here rather than
+            # an untracked on-disk file), so fail the copy step loudly rather than
             # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
             if proposed.exists() and not _is_same_file(original, proposed):
-                msg = f"destination already exists, refusing to overwrite: {proposed}"
-                raise FileExistsError(msg)
-            if _same_filesystem(original, proposed.parent):
+                # phaze-qx8z: a distinct-inode `proposed` alongside a still-present
+                # `original` is ALSO the exact residue of this move's own prior
+                # cross-fs attempt interrupted between the committed copy and the
+                # pending ``original.unlink()`` (a hard worker kill; or a live
+                # unlink() OSError, phaze-q2lg). Across a mount boundary
+                # ``_is_same_file`` can never confirm that residue (st_dev differs),
+                # so before treating it as a collision, check content identity: if
+                # `proposed` is a byte-identical copy of `original`, this is a
+                # resumable move -- skip the (already-done) copy and complete forward
+                # by deleting `original`, instead of misfiring FileExistsError and
+                # flipping an already-succeeded move to FAILED while leaving the file
+                # duplicated. A genuinely foreign file (hash mismatch) is still
+                # refused, preserving the phaze-yu2e no-clobber guarantee.
+                if not same_fs and _destination_is_committed_copy(original, proposed, item.sha256_hash):
+                    current_step = "delete"
+                    original.unlink()
+                else:
+                    msg = f"destination already exists, refusing to overwrite: {proposed}"
+                    raise FileExistsError(msg)
+            elif same_fs:
                 # Atomic rename also removes the original in one syscall -- the move
                 # IS the delete, so there is no separate delete step to fail.
                 original.replace(proposed)
