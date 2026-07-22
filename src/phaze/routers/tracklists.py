@@ -13,6 +13,7 @@ from saq import Status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.exc import StaleDataError
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
@@ -95,6 +96,26 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
 
 AUDIO_EXTENSIONS = {"mp3", "m4a", "ogg", "flac", "wav", "opus", "aac"}
+
+
+async def _render_discogs_candidates(request: Request, session: AsyncSession, track_id: uuid.UUID, *, status_code: int = 200) -> HTMLResponse:
+    """Re-query and render the non-dismissed Discogs candidate panel for a track.
+
+    Shared by the accept/dismiss success paths and the phaze-xdu1 concurrent-change recovery path:
+    when match_tracklist_to_discogs's short candidate-swap transaction commits between a router
+    SELECT and its UPDATE, the ORM write matches 0 rows and raises StaleDataError. Rather than let
+    that escape as a 500, the caller rolls back and re-renders the CURRENT candidate set (a friendly
+    'candidates changed, refresh') so the operator simply sees the freshly matched candidates.
+    """
+    stmt = select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
+    result = await session.execute(stmt)
+    candidates = list(result.scalars().all())
+    return templates.TemplateResponse(
+        request=request,
+        name="tracklists/partials/discogs_candidates.html",
+        context={"request": request, "track_id": str(track_id), "candidates": candidates},
+        status_code=status_code,
+    )
 
 
 async def _get_tracklist_stats(session: AsyncSession) -> dict[str, int]:
@@ -1044,37 +1065,36 @@ async def accept_discogs_link(
     if not link:
         return HTMLResponse(content="Link not found", status_code=404)
 
-    # Dismiss all other links for the same track FIRST -- status-blind, so a pre-existing
-    # accepted link for this track (e.g. from a prior accept) is dismissed too, not just
-    # candidates. This must happen (and flush) before we set this link to "accepted" below,
-    # or the two writes could transiently coexist as two accepted rows for the same track
-    # and trip the one-accepted-per-track partial unique index (D-07).
-    siblings_stmt = select(DiscogsLink).where(
-        DiscogsLink.track_id == link.track_id,
-        DiscogsLink.id != link.id,
-    )
-    siblings_result = await session.execute(siblings_stmt)
-    for sibling in siblings_result.scalars().all():
-        sibling.status = "dismissed"
-    await session.flush()
+    track_id = link.track_id
+    try:
+        # Dismiss all other links for the same track FIRST -- status-blind, so a pre-existing
+        # accepted link for this track (e.g. from a prior accept) is dismissed too, not just
+        # candidates. This must happen (and flush) before we set this link to "accepted" below,
+        # or the two writes could transiently coexist as two accepted rows for the same track
+        # and trip the one-accepted-per-track partial unique index (D-07).
+        siblings_stmt = select(DiscogsLink).where(
+            DiscogsLink.track_id == link.track_id,
+            DiscogsLink.id != link.id,
+        )
+        siblings_result = await session.execute(siblings_stmt)
+        for sibling in siblings_result.scalars().all():
+            sibling.status = "dismissed"
+        await session.flush()
 
-    # Accept this link
-    link.status = "accepted"
+        # Accept this link
+        link.status = "accepted"
 
-    await session.commit()
+        await session.commit()
+    except StaleDataError:
+        # phaze-xdu1: match_tracklist_to_discogs's short candidate-swap transaction committed between
+        # our SELECT and this flush -- deleting a row we were about to update, so the ORM UPDATE matched
+        # 0 rows. Roll back and re-render the CURRENT (freshly matched) candidates instead of 500ing and
+        # silently losing the operator's click; the panel refreshes to the new candidate set.
+        await session.rollback()
+        return await _render_discogs_candidates(request, session, track_id, status_code=409)
 
     # Re-query remaining candidates (only the accepted one should remain visible)
-    remaining_stmt = (
-        select(DiscogsLink).where(DiscogsLink.track_id == link.track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
-    )
-    remaining_result = await session.execute(remaining_stmt)
-    candidates = list(remaining_result.scalars().all())
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tracklists/partials/discogs_candidates.html",
-        context={"request": request, "track_id": str(link.track_id), "candidates": candidates},
-    )
+    return await _render_discogs_candidates(request, session, track_id)
 
 
 @router.delete("/discogs-links/{link_id}", response_class=HTMLResponse)
@@ -1090,21 +1110,18 @@ async def dismiss_discogs_link(
         return HTMLResponse(content="Link not found", status_code=404)
 
     track_id = link.track_id
-    link.status = "dismissed"
-    await session.commit()
+    try:
+        link.status = "dismissed"
+        await session.commit()
+    except StaleDataError:
+        # phaze-xdu1: the concurrent match task deleted this candidate between our SELECT and flush.
+        # Roll back and re-render the current candidates rather than 500ing -- the row the operator
+        # dismissed is already gone, so the effect they wanted (it's not a candidate) already holds.
+        await session.rollback()
+        return await _render_discogs_candidates(request, session, track_id, status_code=409)
 
     # Re-query remaining candidates
-    remaining_stmt = (
-        select(DiscogsLink).where(DiscogsLink.track_id == track_id, DiscogsLink.status != "dismissed").order_by(DiscogsLink.confidence.desc())
-    )
-    remaining_result = await session.execute(remaining_stmt)
-    candidates = list(remaining_result.scalars().all())
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tracklists/partials/discogs_candidates.html",
-        context={"request": request, "track_id": str(track_id), "candidates": candidates},
-    )
+    return await _render_discogs_candidates(request, session, track_id)
 
 
 @router.post("/{tracklist_id}/bulk-link", response_class=HTMLResponse)
@@ -1163,12 +1180,19 @@ async def bulk_link_discogs(
             for other in track_candidates[1:]:
                 other.status = "dismissed"
 
-        await session.flush()
+        try:
+            await session.flush()
 
-        for top in tops:
-            top.status = "accepted"
+            for top in tops:
+                top.status = "accepted"
 
-        await session.commit()
+            await session.commit()
+        except StaleDataError:
+            # phaze-xdu1: match_tracklist_to_discogs's short candidate-swap transaction committed
+            # between the candidate SELECT above and this flush, deleting rows we were about to update.
+            # Roll back and fall through to re-render the current track state instead of 500ing -- the
+            # operator can re-run bulk-link against the freshly matched candidates.
+            await session.rollback()
 
     # Reload tracks for display
     version_result = await session.execute(

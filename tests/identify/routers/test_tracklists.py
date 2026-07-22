@@ -2052,6 +2052,77 @@ async def test_accept_discogs_link_not_found(session: AsyncSession, client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_accept_discogs_link_handles_concurrent_candidate_delete(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-xdu1: a candidate deleted by match_tracklist_to_discogs mid-accept yields a friendly 409, not a 500.
+
+    When the match task's short candidate-swap transaction commits between the accept handler's SELECT
+    and its write, the ORM UPDATE matches 0 rows and raises StaleDataError. The handler must roll back
+    and re-render the current candidates rather than let StaleDataError escape as an unhandled 500 that
+    silently loses the operator's click. We simulate the stale write by making commit raise StaleDataError.
+    """
+    from sqlalchemy.orm.exc import StaleDataError
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-race",
+        discogs_artist="Race Artist",
+        discogs_title="Race Title",
+        confidence=90.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    with patch.object(AsyncSession, "commit", new=AsyncMock(side_effect=StaleDataError("expected to update 1 row(s); 0 were matched"))):
+        response = await client.post(f"/tracklists/discogs-links/{link.id}/accept")
+
+    # Friendly 'candidates changed, refresh' re-render -- NOT an unhandled 500.
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_dismiss_discogs_link_handles_concurrent_candidate_delete(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-xdu1: a candidate deleted by the match task mid-dismiss yields a friendly 409, not a 500."""
+    from sqlalchemy.orm.exc import StaleDataError
+
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=1)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+
+    link = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=tracks[0].id,
+        discogs_release_id="r-race2",
+        discogs_artist="Race Artist",
+        discogs_title="Race Title",
+        confidence=60.0,
+        status="candidate",
+    )
+    session.add(link)
+    await session.flush()
+
+    with patch.object(AsyncSession, "commit", new=AsyncMock(side_effect=StaleDataError("expected to update 1 row(s); 0 were matched"))):
+        response = await client.delete(f"/tracklists/discogs-links/{link.id}")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_dismiss_discogs_link(session: AsyncSession, client: AsyncClient) -> None:
     """DELETE /tracklists/discogs-links/{id} sets status to dismissed."""
     tl = _make_tracklist()
