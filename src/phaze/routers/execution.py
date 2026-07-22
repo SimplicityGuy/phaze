@@ -274,7 +274,11 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # (PATTERNS S5) so a single bad enqueue does not kill the whole dispatch.
     task_router = request.app.state.task_router
     enqueued_ok = 0
-    undispatched_proposals = 0
+    # phaze-1h6j: track undispatched proposals PER AGENT (not just a batch-wide scalar) so the
+    # reconcile below can roll them into each affected agent's per-agent failed counter -- otherwise
+    # that agent's row never reaches completed+failed == total and stays stuck on a RUNNING pill in
+    # the final render even though the batch is terminal.
+    undispatched_by_agent: dict[str, int] = {}
     for agent_id, items in groups.items():
         for chunk_index, chunk in enumerate(chunk_proposals(items)):
             try:
@@ -296,7 +300,8 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     chunk_index,
                     batch_id,
                 )
-                undispatched_proposals += len(chunk)
+                undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
+    undispatched_proposals = sum(undispatched_by_agent.values())
 
     # 6b. phaze-kxsb: reconcile subjobs_expected with what ACTUALLY landed. The hash was seeded
     # with the PLANNED subjobs_expected before the loop; a chunk that failed to enqueue will never
@@ -311,6 +316,13 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         key = f"exec:{batch_id}"
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.hset(key, "subjobs_expected", str(enqueued_ok))
+            # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
+            # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
+            # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
+            # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
+            # the last hincrby for callers that read it positionally.
+            for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
+                pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
             pipe.hincrby(key, "failed", undispatched_proposals)
             if enqueued_ok == 0:
                 pipe.hset(key, "status", "complete_with_errors")

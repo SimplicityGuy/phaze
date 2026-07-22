@@ -395,8 +395,51 @@ async def test_second_dispatch_rejected_while_active(
 
 
 # ---------------------------------------------------------------------------
-# Collision short-circuits dispatch
+# phaze-1h6j: an agent whose chunk failed to enqueue reaches a terminal pill
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_undispatched_agent_reaches_terminal_pill(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """A chunk that fails to enqueue rolls into the agent's per-agent failed counter -> ERRORS row (phaze-1h6j)."""
+    ac, mock_router, redis_client = smoke
+    await _seed_agent(session, agent_id="agent-ok", name="Agent OK")
+    await _seed_agent(session, agent_id="agent-bad", name="Agent Bad")
+    for i in range(5):
+        await _seed_approved_proposal(session, agent_id="agent-ok", path_suffix=f"ok-{i}")
+    for i in range(7):
+        await _seed_approved_proposal(session, agent_id="agent-bad", path_suffix=f"bad-{i}")
+
+    async def _enqueue(*, agent_id: str, **_kw: object) -> None:
+        if agent_id == "agent-bad":
+            raise RuntimeError("agent-bad broker down")
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+
+    response = await ac.post("/execution/start")
+    assert response.status_code == 200, response.text
+    batch_id = None
+    for call in mock_router.enqueue_for_agent.await_args_list:
+        batch_id = call.kwargs["payload"].batch_id
+        break
+    assert batch_id is not None
+    key = f"exec:{batch_id}"
+
+    data = await redis_client.hgetall(key)
+    # phaze-1h6j: the failed agent's PER-AGENT failed counter now equals its total, so
+    # completed(0) + failed(7) == total(7) -> the row is terminal, not stuck RUNNING.
+    assert int(data["agent:agent-bad:failed"]) == 7
+    assert int(data["agent:agent-bad:total"]) == 7
+    # The agent that landed is untouched (no spurious per-agent failure).
+    assert int(data["agent:agent-ok:failed"]) == 0
+
+    # Render the per-agent table from the reconciled hash (the SSE tick path) and confirm the pill.
+    table = await ac.get("/execution/agents-table", params={"batch_id": str(batch_id)})
+    assert table.status_code == 200, table.text
+    assert "ERRORS" in table.text, table.text
 
 
 @pytest.mark.asyncio

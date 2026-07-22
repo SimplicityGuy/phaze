@@ -473,6 +473,12 @@ async def test_start_execution_partial_enqueue_failure_corrects_expected(
     # The promote check re-ran to close the race where the landed sub-job already reported terminal.
     promote.assert_awaited_once()
     assert pipe.hincrby.call_args.args[2] == 1  # one undispatched proposal counted as failed
+    # phaze-1h6j: the failing agent's PER-AGENT failed counter is also incremented so its row can
+    # reach a terminal pill (batch-level failed alone left it stuck RUNNING). agent-b lost its chunk.
+    hincrbys = [c.args for c in pipe.hincrby.call_args_list]
+    assert any(len(a) >= 3 and a[1] == "agent:agent-b:failed" and a[2] == 1 for a in hincrbys)
+    # agent-a landed, so it must NOT get a spurious per-agent failed increment.
+    assert not any(len(a) >= 3 and a[1] == "agent:agent-a:failed" for a in hincrbys)
 
 
 async def test_start_execution_skips_redis_seed_when_no_groups(
