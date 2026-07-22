@@ -275,6 +275,13 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
 
     Per D-10: find tracklists where file_id IS NULL (unresolved) or updated_at < 90 days ago (stale).
     Per TL-04: add randomized jitter between scrapes (60-300 seconds).
+
+    phaze-p1vy: restricted to ``source == "1001tracklists"``. Fingerprint-sourced tracklists
+    (``source="fingerprint"``, ``source_url=""`` -- routers/agent_tracklists.py creates them with
+    no known source URL) are structurally un-rescrapeable: ``TracklistScraper.scrape_tracklist("")``
+    always raises before storing anything, so ``updated_at`` never advances and, without this
+    filter, every such row re-enters the stale arm on every monthly run forever -- each futile
+    attempt still paying the scraper's rate-limit delay plus this loop's 60-300s jitter sleep.
     """
     # phaze-xpzp: bind a NAIVE threshold. ``tracklists.updated_at`` (TimestampMixin) is a
     # ``TIMESTAMP WITHOUT TIME ZONE`` column; asyncpg's naive-timestamp codec raises DataError
@@ -291,13 +298,25 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     # let SAQ mark the job successful while the cron silently never ran.
     try:
         async with ctx["async_session"]() as session:
-            result = await session.execute(select(Tracklist).where((Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold)))
+            result = await session.execute(
+                select(Tracklist).where(
+                    Tracklist.source == "1001tracklists",
+                    (Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold),
+                )
+            )
             tracklists = list(result.scalars().all())
     except Exception:
         logger.exception("Error querying stale/unresolved tracklists")
         return {"refreshed": 0, "errors": 1}
 
     for tl in tracklists:
+        # Defensive secondary guard (belt-and-suspenders with the source filter above): skip any
+        # row that slipped through without a scrapeable source_url instead of burning a guaranteed-
+        # failing scrape attempt plus the jitter sleep below.
+        if not tl.source_url:
+            logger.warning("Skipping tracklist with no source_url", tracklist_id=str(tl.id), source=tl.source)
+            continue
+
         try:
             await scrape_and_store_tracklist(ctx, tracklist_id=str(tl.id))
             refreshed += 1

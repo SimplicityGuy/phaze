@@ -426,6 +426,54 @@ async def test_store_scraped_tracklist_does_not_null_metadata_on_partial_scrape(
 
 @patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
 @patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_filters_query_to_scrapeable_source(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
+    """The stale/unresolved SELECT restricts to source == '1001tracklists' (phaze-p1vy).
+
+    Fingerprint-sourced tracklists (source='fingerprint', source_url='') are structurally
+    un-rescrapeable; without this filter they re-enter the stale arm forever once aged past 90
+    days, each attempt burning a guaranteed-failing scrape plus the 60-300s jitter sleep.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    await refresh_tracklists(ctx)
+
+    stmt = session.execute.call_args_list[0].args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "tracklists.source" in compiled
+
+
+@patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
+async def test_refresh_tracklists_skips_rows_with_no_source_url(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
+    """A selected row with a falsy source_url is skipped (defense-in-depth for phaze-p1vy).
+
+    This exercises the in-loop guard directly; the query-level filter above is the primary fix.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+
+    mock_tl_no_url = MagicMock(id=uuid.uuid4(), source_url="", source="fingerprint")
+    mock_tl_ok = MagicMock(id=uuid.uuid4(), source_url="https://example.com/tl", source="1001tracklists")
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_tl_no_url, mock_tl_ok]
+    session.execute.return_value = mock_result
+
+    mock_scrape.return_value = {"tracklist_id": "x", "tracks_found": 5, "version": 1}
+
+    result = await refresh_tracklists(ctx)
+
+    assert result == {"refreshed": 1, "errors": 0}
+    mock_scrape.assert_awaited_once_with(ctx, tracklist_id=str(mock_tl_ok.id))
+    assert mock_sleep.await_count == 1
+
+
+@patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
+@patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
 async def test_refresh_tracklists_counts_per_item_failures(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
     """A scrape failure on one tracklist increments errors but does not abort the sweep."""
     ctx = _make_ctx()
