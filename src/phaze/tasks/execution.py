@@ -54,6 +54,22 @@ success-reporting path used by a first-time success -- already idempotent via th
 ``execution_log_id``/``progress_request_id`` -- which also self-heals ``current_path`` (the
 success PATCH sets it from ``str(proposed)``).
 
+Cross-filesystem crash-state model (phaze-k23z / phaze-q2lg / phaze-qx8z): a cross-fs move is a
+non-atomic copy-then-delete, so it has TWO durable committed states the executor must treat
+coherently:
+1. Copy committed, ``original`` still present (only ``original.unlink()`` pending). Produced by a
+   live ``unlink()`` OSError (read-only source mount / busy inode -- phaze-q2lg) or a hard worker
+   kill in the fsync->unlink window (phaze-qx8z). BOTH files exist; ``proposed`` is a distinct
+   inode from ``original`` (different filesystem), so ``_is_same_file`` cannot match it. This is
+   NOT a collision: ``_destination_is_committed_copy`` confirms byte identity (against the supplied
+   hash, else by hashing ``original``) and the move completes FORWARD -- delete ``original``, report
+   executed -- rather than re-copying the multi-GB file or misfiring the phaze-yu2e clobber guard.
+2. Fully moved, ``original`` gone + ``proposed`` present -- the phaze-ebpt already-moved case above.
+The copy itself is atomic at the destination (``_atomic_cross_fs_copy`` streams to a temp sibling
+then ``Path.replace``s it -- phaze-k23z), so a copy that ABORTS mid-stream leaves neither a partial
+file at ``proposed`` nor state (1); ``original`` is never unlinked until a full copy lands, so no
+path here loses data. A genuinely foreign file at ``proposed`` (hash mismatch) is still refused.
+
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
 end) are adapted to the existing schema as: one POST+PATCH per proposal (matching the
