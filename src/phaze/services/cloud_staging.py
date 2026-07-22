@@ -26,7 +26,7 @@ import math
 from typing import TYPE_CHECKING, cast
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -140,6 +140,14 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
                 "status": stmt.excluded.status,
                 "upload_id": stmt.excluded.upload_id,
                 "staging_bucket": stmt.excluded.staging_bucket,
+                # phaze-2hv9: bump the lane-entry / staleness clock on EVERY re-stage. CloudJob.updated_at is a
+                # client-side ``onupdate=func.now()`` (TimestampMixin), which SQLAlchemy does NOT inject into an
+                # ON CONFLICT DO UPDATE SET clause, and there is no DB trigger -- so without this the conflict
+                # (re-stage / re-drive) path would leave updated_at frozen at the FIRST dispatch. KueueBackend's
+                # ``_reap_stranded_staging`` ages a row off ``now - updated_at``: a frozen clock lets a live
+                # re-driven upload inherit the whole prior attempt's elapsed time and be reaped mid-transfer.
+                # Stamp it explicitly here so any re-stage resets that clock (mirrors agent_bootstrap.py's idiom).
+                "updated_at": func.now(),
             },
         )
         await session.execute(stmt)

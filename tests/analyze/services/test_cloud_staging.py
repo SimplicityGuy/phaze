@@ -216,6 +216,43 @@ async def test_stage_file_to_s3_is_idempotent_on_file_id(
     assert len(rows) == 1  # unique FK on file_id -- the re-stage updated, not duplicated
 
 
+async def test_stage_file_to_s3_restage_bumps_updated_at(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+) -> None:
+    """phaze-2hv9: a re-stage (ON CONFLICT) resets ``cloud_job.updated_at``, not just status/upload_id.
+
+    ``updated_at`` is the stranded-staging reaper's age clock. Its client-side ``onupdate=func.now()`` is NOT
+    injected into an ON CONFLICT DO UPDATE SET, so pre-fix the conflict path left it frozen at the first
+    dispatch -- a re-driven upload inherited the entire prior attempt's elapsed time and was reaped live. The
+    fix stamps ``updated_at=func.now()`` in the set_. Here the first stamp is forced far into the past; a
+    re-stage must pull it back to ~now.
+    """
+    from sqlalchemy import text as sa_text
+
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    # Force the first stage's clock 10h into the past -- older than any staleness bound.
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(secs => 36000) WHERE file_id = :fid"),
+        {"fid": file_id},
+    )
+    await session.commit()
+    stale = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+
+    # A re-stage must bump the clock forward off that stale value.
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    bumped = (await _cloud_job(session, file_id)).updated_at  # type: ignore[union-attr]
+    assert bumped > stale  # the ON CONFLICT path reset the reaper's age clock
+
+
 async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     s3_env: str,
     session: AsyncSession,
