@@ -145,7 +145,15 @@ async def hold_awaiting_cloud(
         stmt = stmt.on_conflict_do_update(
             # uq_cloud_job_file_id -> a plain INSERT is unsafe on the spill re-stamp case; upsert on file_id.
             index_elements=["file_id"],
-            set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts},
+            # phaze-ekgk: bump updated_at on the DO UPDATE branch. CloudJob.updated_at is a client-side
+            # ``onupdate=func.now()`` (TimestampMixin) that SQLAlchemy does NOT inject into an ON CONFLICT SET
+            # (and there is no DB trigger), so re-holding a pre-existing row would leave updated_at frozen at
+            # the PREVIOUS burst's write. That column is surfaced as ``lane_entered_at`` (pipeline.get_cloud_
+            # staging_candidates), and ``select_backend`` reads it for the D-01/D-03 local-spill staleness gate
+            # (``waited = now - lane_entered_at >= cloud_spill_to_local_after_seconds``). A stale clock makes
+            # ``waited`` immediately True, so a re-held file bypasses the wait window and spills to local while
+            # cloud lanes are merely momentarily full. Stamp it so a fresh hold restarts the lane-entry clock.
+            set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts, "updated_at": func.now()},
         )
         await session.execute(stmt)
         return True

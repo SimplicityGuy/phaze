@@ -1324,6 +1324,41 @@ async def test_hold_awaiting_cloud_respamps_failed_spill_row_retaining_spent_bud
 
 
 @pytest.mark.asyncio
+async def test_hold_awaiting_cloud_hold_mode_bumps_updated_at_on_conflict(session: AsyncSession) -> None:
+    """phaze-ekgk: the hold-mode ON CONFLICT re-stamp resets ``updated_at``, not just status/attempts.
+
+    ``cloud_job.updated_at`` is surfaced as ``lane_entered_at`` and drives ``select_backend``'s D-01/D-03
+    local-spill staleness gate (``waited = now - lane_entered_at >= cloud_spill_to_local_after_seconds``).
+    ``onupdate=func.now()`` is client-side and NOT injected into an ON CONFLICT DO UPDATE SET, so pre-fix a
+    re-held row carried a frozen (days-old) clock, making ``waited`` immediately True and defeating the wait
+    window. The fix stamps ``updated_at=func.now()`` in the set_. Here a stale pre-existing row is re-held;
+    the clock must pull forward to ~now.
+    """
+    from sqlalchemy import select, text as sa_text
+
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.FAILED.value, attempts=2))
+    await session.commit()
+    # Force the pre-existing row's lane-entry clock a week into the past.
+    await session.execute(
+        sa_text("UPDATE cloud_job SET updated_at = now() - make_interval(days => 7) WHERE file_id = :fid"),
+        {"fid": file.id},
+    )
+    await session.commit()
+    stale = (
+        (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one().updated_at
+    )
+
+    await backends.hold_awaiting_cloud(session, file)  # hold-mode re-stamp (ON CONFLICT branch)
+
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one()
+    assert row.status == CloudJobStatus.AWAITING.value  # re-held
+    assert row.updated_at > stale  # the lane-entry staleness clock was reset off the week-old value
+
+
+@pytest.mark.asyncio
 async def test_hold_awaiting_cloud_hold_branch_returns_true(session: AsyncSession) -> None:
     """D-02: the hold branch (``expect_status is None``) always writes, so it returns ``True``."""
     file = _make_file()
