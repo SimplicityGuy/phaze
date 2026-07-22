@@ -51,6 +51,12 @@ router = APIRouter(prefix="/api/internal/agent/exec-batches", tags=["agent-inter
 _REQ_PREFIX = "exec_progress_req:"
 _TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
 
+# phaze-fa2p: the single-dispatch sentinel. ``routers/execution.start_execution`` claims this key
+# with ``SET NX`` before seeding/enqueuing a batch so a concurrent or repeated POST cannot
+# double-dispatch the same still-APPROVED proposals. It is released atomically with the terminal
+# status promotion below (and by a 24h safety TTL if a batch's sub-jobs never report terminal).
+ACTIVE_DISPATCH_KEY = "exec:active"
+
 
 # Lua: atomically read the sub-batch counters and promote `status` in a SINGLE
 # round-trip (issue #61). The prior three-HGET-then-conditional-HSET sequence
@@ -63,6 +69,12 @@ _TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
 # interleave with any other connection. Mirrors the D-04 / D-07 read-then-write
 # semantics exactly (only the atomicity is added). Returns 1 if status was
 # promoted, 0 otherwise; the caller does not use the result.
+#
+# phaze-fa2p: when the batch reaches a terminal status this is also the single atomic point that
+# releases the ``exec:active`` single-dispatch sentinel -- but ONLY when it still names THIS batch
+# (``GET == ARGV[1]``), so a newer dispatch that already re-claimed the sentinel is never cleared.
+# ``KEYS[2]``/``ARGV[1]`` are optional: a caller that passes only ``keys=[key]`` (numkeys=1) leaves
+# ``KEYS[2]`` nil and the release block is skipped, keeping the script backward compatible.
 _PROMOTE_STATUS_LUA = """
 local key = KEYS[1]
 local sc = tonumber(redis.call('HGET', key, 'subjobs_completed') or '0')
@@ -71,6 +83,11 @@ if sc ~= se then return 0 end
 local failed = tonumber(redis.call('HGET', key, 'failed') or '0')
 local new_status = (failed == 0) and 'complete' or 'complete_with_errors'
 redis.call('HSET', key, 'status', new_status)
+local active_key = KEYS[2]
+local batch_id = ARGV[1]
+if active_key and active_key ~= '' and batch_id and redis.call('GET', active_key) == batch_id then
+  redis.call('DEL', active_key)
+end
 return 1
 """
 
@@ -226,6 +243,8 @@ async def post_exec_batch_progress(
     # batch to "complete" (issue #61).
     if body.sub_batch_terminal:
         promote_status = _get_promote_status_script(redis_client)
-        await promote_status(keys=[key], client=redis_client)
+        # phaze-fa2p: pass the sentinel key + this batch_id so a terminal promotion also releases
+        # the single-dispatch claim atomically (see ACTIVE_DISPATCH_KEY / _PROMOTE_STATUS_LUA).
+        await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
 
     return Response(status_code=status.HTTP_200_OK)

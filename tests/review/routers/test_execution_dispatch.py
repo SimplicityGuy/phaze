@@ -343,6 +343,37 @@ async def test_revoked_agent_renders_banner(
 
 
 # ---------------------------------------------------------------------------
+# phaze-fa2p: single-dispatch guard -- a second POST while a batch is active is refused
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_second_dispatch_rejected_while_active(
+    smoke: tuple[AsyncClient, AsyncMock, redis_async.Redis],
+    session: AsyncSession,
+) -> None:
+    """A repeat POST while the first batch is still running is refused -- no duplicate enqueues (phaze-fa2p)."""
+    ac, mock_router, redis_client = smoke
+    await _seed_agent(session, agent_id="agent-a")
+    for i in range(3):
+        await _seed_approved_proposal(session, agent_id="agent-a", path_suffix=f"a-{i}")
+
+    # First dispatch claims exec:active and enqueues the sub-job.
+    first = await ac.post("/execution/start")
+    assert first.status_code == 200, first.text
+    assert mock_router.enqueue_for_agent.await_count == 1
+    assert await redis_client.get("exec:active") is not None
+
+    # The proposals are still APPROVED (no worker has run), so a second POST would re-select and
+    # double-dispatch them -- but the sentinel is held, so it must be refused instead.
+    second = await ac.post("/execution/start")
+    assert second.status_code == 200, second.text
+    assert "Execution already in progress" in second.text
+    # No additional enqueue happened: still exactly one.
+    assert mock_router.enqueue_for_agent.await_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Collision short-circuits dispatch
 # ---------------------------------------------------------------------------
 

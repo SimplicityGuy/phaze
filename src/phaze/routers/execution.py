@@ -43,7 +43,7 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog
-from phaze.routers.agent_exec_batches import _get_promote_status_script
+from phaze.routers.agent_exec_batches import ACTIVE_DISPATCH_KEY, _get_promote_status_script
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -237,6 +237,24 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         init_fields[f"agent:{agent_id}:failed"] = "0"
 
     redis_client = request.app.state.redis
+
+    # phaze-fa2p: single-dispatch guard. Approved proposals stay APPROVED throughout dispatch --
+    # they are only flipped to 'executed' asynchronously by the SAQ worker much later -- so a
+    # second concurrent or repeated POST re-selects the SAME still-APPROVED rows and enqueues a
+    # duplicate move job for every one of them (each dispatch mints its own batch_id, so SAQ never
+    # dedups). Atomically claim the ``exec:active`` sentinel with SET NX before seeding/enqueuing;
+    # a competing dispatch loses the claim and is refused until the active batch reaches a terminal
+    # status (the promote script releases the sentinel) or the 24h safety TTL elapses. Only guard
+    # when there is actually something to dispatch -- an empty dispatch enqueues nothing.
+    if groups:
+        claimed = await redis_client.set(ACTIVE_DISPATCH_KEY, str(batch_id), nx=True, ex=86400)
+        if not claimed:
+            return templates.TemplateResponse(
+                request=request,
+                name="execution/partials/dispatch_in_progress.html",
+                context={"request": request},
+            )
+
     if groups:
         # Only seed when there is at least one (agent, chunk) to dispatch. An
         # empty hash with status="running" and TTL would mislead the SSE reader.
@@ -289,13 +307,19 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
             pipe.hincrby(key, "failed", undispatched_proposals)
             if enqueued_ok == 0:
                 pipe.hset(key, "status", "complete_with_errors")
+                # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job
+                # will ever POST to release the sentinel via the promote script, so release the
+                # single-dispatch claim now. We just claimed it above, so it still names this batch.
+                pipe.delete(ACTIVE_DISPATCH_KEY)
             await pipe.execute()
         subjobs_expected = enqueued_ok
         if enqueued_ok == 0:
             render_status = "complete_with_errors"
         else:
             promote_status = _get_promote_status_script(redis_client)
-            await promote_status(keys=[key], client=redis_client)
+            # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
+            # terminal, the promotion also releases the single-dispatch claim atomically.
+            await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
 
     # 7. D-11 dispatch INFO log.
     logger.info(

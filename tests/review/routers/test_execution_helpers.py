@@ -338,8 +338,13 @@ def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
     pipe.hset = MagicMock()
     pipe.hincrby = MagicMock()
     pipe.expire = MagicMock()
+    pipe.delete = MagicMock()
     pipe.execute = AsyncMock(return_value=None)
     redis_client.pipeline = MagicMock(return_value=pipe)
+    # phaze-fa2p: the single-dispatch guard claims ``exec:active`` via SET NX before seeding. Default
+    # to "claim won" so the enqueue-failure/reconcile tests exercise a live dispatch; the double-
+    # dispatch rejection is covered by its own test that overrides ``.set`` to return None.
+    redis_client.set = AsyncMock(return_value=True)
     app.state.redis = redis_client
     app.state.queue = MagicMock()
 
@@ -470,6 +475,33 @@ async def test_start_execution_skips_redis_seed_when_no_groups(
     assert resp.status_code == 200
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
+    # phaze-fa2p: an empty dispatch enqueues nothing, so it never claims the single-dispatch sentinel.
+    redis_client.set.assert_not_awaited()
+
+
+async def test_start_execution_rejected_when_dispatch_already_active(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A losing SET NX on ``exec:active`` -> the dispatch is refused, nothing is seeded or enqueued (phaze-fa2p)."""
+    app, mock_router, redis_client = dispatch_app
+    # Simulate a concurrent/active dispatch already holding the sentinel: SET NX returns None.
+    redis_client.set = AsyncMock(return_value=None)
+    groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" in resp.text
+    # The guard fires BEFORE any seed or enqueue -- no double-dispatch.
+    redis_client.set.assert_awaited_once()
+    redis_client.pipeline.assert_not_called()
+    mock_router.enqueue_for_agent.assert_not_awaited()
 
 
 async def test_start_execution_returns_collision_block_when_destinations_collide(
