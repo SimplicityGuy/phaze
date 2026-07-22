@@ -328,6 +328,29 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
 
 
 @pytest.mark.asyncio
+async def test_tag_bulk_reports_failures_truthfully(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-5j82: a file whose write FAILS is never reported as 'tagged (no discrepancies)'.
+
+    The seeded file's ``current_path`` points at a nonexistent file, so the unpatched mutagen write
+    raises and ``execute_tag_write`` records a FAILED log (nothing written). Pre-fix the loop
+    incremented ``written`` unconditionally and the toast claimed a clean success; post-fix only a
+    COMPLETED outcome counts as written, and the failure is surfaced.
+    """
+    await seed_executed_file_with_metadata(original_filename="zzz - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "0 files tagged" in body, "a failed write is not counted as tagged"
+    assert "1 failed" in body, "the failure is surfaced to the operator"
+    assert "no discrepancies" not in body, "a failed write must never be reported as a clean success"
+
+
+@pytest.mark.asyncio
 async def test_review_audit_one_row(
     client: AsyncClient,
     session: AsyncSession,

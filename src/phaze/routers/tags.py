@@ -585,6 +585,29 @@ async def write_file_tags(
     )
 
 
+def _bulk_write_toast(written: int, discrepancy: int, verify_failed: int, failed: int) -> str:
+    """Build a truthful bulk-write toast (phaze-5j82).
+
+    Only ``written`` (COMPLETED) files are reported as tagged. DISCREPANCY, VERIFY_FAILED, and
+    FAILED outcomes are surfaced separately so the operator is never told "N files tagged" when
+    zero tags actually landed.
+    """
+    if not (written or discrepancy or verify_failed or failed):
+        return "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
+
+    lead = f"{written} file{'s' if written != 1 else ''} tagged"
+    extras: list[str] = []
+    if discrepancy:
+        extras.append(f"{discrepancy} with discrepancies")
+    if verify_failed:
+        extras.append(f"{verify_failed} written but unverified")
+    if failed:
+        extras.append(f"{failed} failed")
+    if extras:
+        return f"{lead}; {', '.join(extras)}. Review the audit log for the non-clean writes."
+    return f"{lead} (no discrepancies)."
+
+
 @router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
 async def bulk_write_no_discrepancies(
     request: Request,
@@ -612,6 +635,9 @@ async def bulk_write_no_discrepancies(
     file_records = list((await session.execute(stmt)).scalars().all())
 
     written = 0
+    failed = 0
+    discrepancy = 0
+    verify_failed = 0
     for fr in file_records:
         # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM instance, so a
         # later ``fr.id`` access would trigger a lazy reload (async IO) from a sync context.
@@ -648,23 +674,33 @@ async def bulk_write_no_discrepancies(
                 # per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so defensive.
                 continue
             tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-            await execute_tag_write(session, fr, tags, source="proposal")
+            log_entry = await execute_tag_write(session, fr, tags, source="proposal")
             # phaze-k7g6: commit the audit row atomically with the disk mutation it describes.
             await session.commit()
-            written += 1
+
+            # phaze-5j82: count outcomes truthfully. execute_tag_write NEVER raises on a write
+            # failure -- it returns a FAILED log entry -- so incrementing a single ``written`` tally
+            # unconditionally reported FAILED (nothing written) and DISCREPANCY/VERIFY_FAILED (written
+            # but not confirmed clean) as clean successes. Only a real COMPLETED write is a success;
+            # the rest are tallied separately and surfaced in the toast.
+            if log_entry.status == TagWriteStatus.COMPLETED:
+                written += 1
+            elif log_entry.status == TagWriteStatus.DISCREPANCY:
+                discrepancy += 1
+            elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
+                verify_failed += 1
+            else:
+                failed += 1
         except Exception:
             # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits stand)
             # and keep going -- a raised ValueError/DB error is a failed file, not a batch abort.
             await session.rollback()
+            failed += 1
             logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
             continue
 
     stats = await _get_tag_stats(session)
-    toast_message = (
-        f"{written} files tagged (no discrepancies)."
-        if written
-        else "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
-    )
+    toast_message = _bulk_write_toast(written, discrepancy, verify_failed, failed)
     return templates.TemplateResponse(
         request=request,
         name="tags/partials/bulk_write_response.html",
