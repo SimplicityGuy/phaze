@@ -745,6 +745,168 @@ async def test_scrape_and_store_tracklist_not_found() -> None:
     assert result["tracks_found"] == 0
 
 
+@patch("phaze.tasks.tracklist._store_scraped_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=10)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_scrapes_all_then_stores_sorted_without_holding_locks(
+    _mock_auto_link: MagicMock,
+    _mock_conf: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-1bcc: every result is scraped BEFORE the store transaction opens, and stores run in
+    external_id-sorted order.
+
+    Pre-1bcc the task stored each result inside one long transaction, holding _store_scraped_tracklist's
+    per-external_id advisory xact-lock across the scrape of every LATER result -- cross-job blocking plus
+    an ABBA deadlock between two overlapping searches that locked shared ids in opposite order. The fix
+    scrapes all results with NO connection held, then stores them in ONE short transaction sorted by
+    external_id so overlapping jobs acquire shared locks in a consistent order.
+    """
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    events: list[str] = []
+
+    # Results arrive in a deliberately UNSORTED order; the store phase must sort them.
+    unsorted_ids = ["ccc", "aaa", "bbb"]
+    search_results = [_make_search_result(external_id=eid) for eid in unsorted_ids]
+    scraped_by_url = {r.url: _make_scraped_tracklist(external_id=eid) for eid, r in zip(unsorted_ids, search_results, strict=True)}
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+
+    session_count = 0
+
+    def _factory() -> MagicMock:
+        nonlocal session_count
+        session_count += 1
+        idx = session_count
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.execute.return_value = mock_file_result
+        cm = MagicMock()
+
+        async def _aenter(*_a: Any) -> AsyncMock:
+            events.append(f"open{idx}")
+            return session
+
+        async def _aexit(*_a: Any) -> bool:
+            events.append(f"close{idx}")
+            return False
+
+        cm.__aenter__ = _aenter
+        cm.__aexit__ = _aexit
+        return cm
+
+    async def _scrape_recording(url: str) -> Any:
+        events.append(f"scrape:{scraped_by_url[url].external_id}")
+        return scraped_by_url[url]
+
+    async def _store_recording(_session: Any, scraped: Any, **_kwargs: Any) -> Any:
+        events.append(f"store:{scraped.external_id}")
+        return scraped
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = search_results
+    mock_scraper.scrape_tracklist.side_effect = _scrape_recording
+    mock_scraper_cls.return_value = mock_scraper
+    mock_store.side_effect = _store_recording
+
+    ctx = {"async_session": _factory}
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["results_found"] == 3
+    # Two sessions: one short read session (file+query), one short store session -- never one held
+    # across the scrape loop.
+    assert session_count == 2
+    stores = [e for e in events if e.startswith("store:")]
+    scrapes = [e for e in events if e.startswith("scrape:")]
+    # Every scrape happens before the store session even opens (no lock/txn held across a scrape).
+    assert events.index("open2") > events.index(scrapes[-1])
+    assert all(events.index("close1") < events.index(s) for s in scrapes)
+    # Stores run in external_id-sorted order (consistent lock ordering -> no ABBA deadlock).
+    assert stores == ["store:aaa", "store:bbb", "store:ccc"]
+
+
+@patch("phaze.tasks.tracklist.TracklistScraper")
+async def test_scrape_and_store_tracklist_releases_connection_before_scrape(mock_scraper_cls: MagicMock) -> None:
+    """phaze-igwi: no DB session is held across scrape_tracklist()'s rate-limit sleep + HTTP.
+
+    Pre-igwi the session opened for the source_url read stayed open through scrape_tracklist()
+    (~2-35s of network I/O), pinning a PgBouncer SESSION-mode connection idle-in-transaction; the
+    refresh/rescrape fan-out drains the capped pool. The read session must CLOSE before the scrape and
+    a FRESH session open only for the store. We record the session lifecycle interleaved with the
+    scrape and assert the read session closes before the scrape and the write session opens after it.
+    """
+    tracklist_id = uuid.uuid4()
+
+    mock_tracklist = MagicMock()
+    mock_tracklist.id = tracklist_id
+    mock_tracklist.source_url = "https://www.1001tracklists.com/tracklist/abc/test.html"
+
+    mock_existing_result = MagicMock()
+    mock_existing_result.scalar_one_or_none.return_value = mock_tracklist
+    mock_version = MagicMock()
+    mock_version.version_number = 2
+    mock_version_result = MagicMock()
+    mock_version_result.scalar_one_or_none.return_value = mock_version
+    mock_tl_result = MagicMock()
+    mock_tl_result.scalar_one_or_none.return_value = mock_tracklist
+
+    events: list[str] = []
+    session_count = 0
+
+    def _factory() -> MagicMock:
+        nonlocal session_count
+        session_count += 1
+        idx = session_count
+        session = AsyncMock()
+        session.add = MagicMock()
+        if idx == 1:
+            session.execute.side_effect = [mock_tl_result]
+        else:
+            # store: advisory lock, existing lookup, version lookup; then the task's version read-back.
+            session.execute.side_effect = [MagicMock(), mock_existing_result, mock_version_result, mock_version_result]
+
+        cm = MagicMock()
+
+        async def _aenter(*_a: Any) -> AsyncMock:
+            events.append(f"open{idx}")
+            return session
+
+        async def _aexit(*_a: Any) -> bool:
+            events.append(f"close{idx}")
+            return False
+
+        cm.__aenter__ = _aenter
+        cm.__aexit__ = _aexit
+        return cm
+
+    scraped = _make_scraped_tracklist()
+
+    async def _scrape_recording(_url: str) -> Any:
+        events.append("scrape")
+        return scraped
+
+    mock_scraper = AsyncMock()
+    mock_scraper.scrape_tracklist.side_effect = _scrape_recording
+    mock_scraper_cls.return_value = mock_scraper
+
+    ctx = {"async_session": _factory}
+    result = await scrape_and_store_tracklist(ctx, tracklist_id=str(tracklist_id))
+
+    assert result["tracklist_id"] == str(tracklist_id)
+    # Two distinct sessions (read, then write) -- not one held across the scrape.
+    assert session_count == 2
+    # The read session closes BEFORE the scrape; the write session opens only AFTER it.
+    assert events.index("close1") < events.index("scrape")
+    assert events.index("open2") > events.index("scrape")
+
+
 def test_controller_settings_contains_tracklist_functions() -> None:
     """SAQ controller settings functions includes search_tracklist + scrape_and_store_tracklist (Phase 26 D-03)."""
     from phaze.tasks.controller import settings as controller_settings

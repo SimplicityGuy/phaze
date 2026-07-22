@@ -195,6 +195,81 @@ async def test_match_tracklist_closes_client_on_exception(
     mock_client_instance.close.assert_called_once()
 
 
+@patch("phaze.tasks.discogs.DiscogsographyClient")
+@patch("phaze.tasks.discogs.match_track_to_discogs")
+@patch("phaze.tasks.discogs.settings")
+async def test_match_tracklist_holds_no_session_across_network_gather(
+    mock_settings: MagicMock,
+    mock_match_fn: MagicMock,
+    mock_client_cls: MagicMock,
+) -> None:
+    """phaze-xdu1: no DB session is held across the discogsography network gather.
+
+    Pre-xdu1 one transaction DELETEd every candidate link then stayed open across the asyncio.gather of
+    network matches (seconds-to-minutes), row-locking the deleted candidates for the whole run so a
+    concurrent accept/dismiss blocked on the lock and then 500'd with StaleDataError. The read session
+    must CLOSE before the gather and the DELETE+INSERT happen in a FRESH short write session AFTER it.
+    We record the session lifecycle interleaved with the match calls and assert the ordering.
+    """
+    from phaze.tasks.discogs import match_tracklist_to_discogs
+
+    mock_settings.discogsography_url = "http://test:8000"
+    mock_settings.discogs_match_concurrency = 5
+
+    tracklist = _make_tracklist()
+    tracks = [_make_track("deadmau5", "Strobe"), _make_track("Skrillex", "Bangarang")]
+
+    mock_tracklist_result = MagicMock()
+    mock_tracklist_result.scalar_one_or_none.return_value = tracklist
+    mock_tracks_result = MagicMock()
+    mock_tracks_result.scalars.return_value.all.return_value = tracks
+
+    events: list[str] = []
+    session_count = 0
+
+    def _factory() -> MagicMock:
+        nonlocal session_count
+        session_count += 1
+        idx = session_count
+        session = AsyncMock()
+        session.add = MagicMock()  # AsyncSession.add is sync
+        if idx == 1:
+            session.execute = AsyncMock(side_effect=[mock_tracklist_result, mock_tracks_result])
+        else:
+            session.execute = AsyncMock(return_value=None)
+        cm = MagicMock()
+
+        async def _aenter(*_a: Any) -> AsyncMock:
+            events.append(f"open{idx}")
+            return session
+
+        async def _aexit(*_a: Any) -> bool:
+            events.append(f"close{idx}")
+            return False
+
+        cm.__aenter__ = _aenter
+        cm.__aexit__ = _aexit
+        return cm
+
+    async def _match_recording(_client: Any, track: Any) -> list[dict[str, Any]]:
+        events.append("match")
+        return []
+
+    mock_match_fn.side_effect = _match_recording
+    mock_client_cls.return_value = AsyncMock()
+
+    ctx = {"async_session": _factory}
+    result = await match_tracklist_to_discogs(ctx, tracklist_id=str(tracklist.id))
+
+    assert result["tracks_matched"] == 2
+    # Two sessions: a short read session, then a short write session -- never one held across the gather.
+    assert session_count == 2
+    matches = [i for i, e in enumerate(events) if e == "match"]
+    # All network matches happen AFTER the read session closes and BEFORE the write session opens.
+    assert all(events.index("close1") < i for i in matches)
+    assert all(i < events.index("open2") for i in matches)
+
+
 async def test_match_tracklist_missing_returns_not_found() -> None:
     """A tracklist_id with no matching row short-circuits to status=not_found.
 

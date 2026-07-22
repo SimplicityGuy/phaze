@@ -192,6 +192,92 @@ async def test_generate_proposals_calls_rate_limit(
     mock_rate_limit.assert_called_once_with(ctx["redis"], 30)  # settings.llm_max_rpm default
 
 
+@patch("phaze.tasks.proposal.store_proposals", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.check_rate_limit", new_callable=AsyncMock)
+@patch("phaze.tasks.proposal.load_companion_contents", new_callable=AsyncMock)
+async def test_generate_proposals_holds_no_session_across_rate_limit_and_llm(
+    mock_companions: AsyncMock,
+    mock_rate_limit: AsyncMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-6fvu: no DB session is held across the rate-limit backoff or the LLM round-trip.
+
+    Pre-6fvu a single session opened for the reads stayed open through check_rate_limit's
+    asyncio.sleep loop and generate_batch's 30-120s LLM call, pinning a PgBouncer SESSION-mode
+    connection idle-in-transaction; worker_max_jobs of these during a corpus drain drained the pool.
+    The read session must CLOSE before those awaits and a FRESH session open only for the write. We
+    record the session-lifecycle events interleaved with the rate-limit/LLM/store calls and assert the
+    read session is exited before either network await, and the write session is opened after them.
+    """
+    from phaze.tasks.proposal import generate_proposals
+
+    file_id = uuid.uuid4()
+    file_record = _make_file_record(file_id=file_id)
+
+    events: list[str] = []
+
+    def _make_recording_session() -> AsyncMock:
+        s = AsyncMock()
+        mock_result_file = MagicMock()
+        mock_result_file.scalar_one_or_none.return_value = file_record
+        mock_result_none = MagicMock()
+        mock_result_none.scalar_one_or_none.return_value = None
+        s.execute.side_effect = [mock_result_file, mock_result_none, mock_result_none]
+        return s
+
+    session_count = 0
+
+    def _factory() -> AsyncMock:
+        nonlocal session_count
+        session_count += 1
+        idx = session_count
+        cm = AsyncMock()
+
+        async def _aenter(*_a: Any) -> AsyncMock:
+            events.append(f"open{idx}")
+            return _make_recording_session()
+
+        async def _aexit(*_a: Any) -> bool:
+            events.append(f"close{idx}")
+            return False
+
+        cm.__aenter__ = _aenter
+        cm.__aexit__ = _aexit
+        return cm
+
+    async def _rate_limit_recording(*_a: Any, **_k: Any) -> None:
+        events.append("rate_limit")
+
+    async def _generate_recording(*_a: Any, **_k: Any) -> Any:
+        events.append("llm")
+        return SAMPLE_BATCH_RESPONSE
+
+    async def _store_recording(*_a: Any, **_k: Any) -> int:
+        events.append("store")
+        return 1
+
+    mock_companions.return_value = []
+    mock_rate_limit.side_effect = _rate_limit_recording
+    mock_store.side_effect = _store_recording
+
+    ctx = _make_ctx()
+    ctx["async_session"] = _factory
+    ctx["proposal_service"].generate_batch.side_effect = _generate_recording
+
+    result = await generate_proposals(ctx, file_ids=[str(file_id)], batch_index=0)
+
+    assert result["status"] == "ok"
+    # Two distinct sessions were opened (read, then write) -- not one held across the whole task.
+    assert session_count == 2
+    # The read session closes BEFORE the rate-limit backoff and the LLM call.
+    assert events.index("close1") < events.index("rate_limit")
+    assert events.index("close1") < events.index("llm")
+    # The write session opens only AFTER both network awaits complete.
+    assert events.index("open2") > events.index("rate_limit")
+    assert events.index("open2") > events.index("llm")
+    assert events.index("store") > events.index("open2")
+
+
 def test_controller_settings_contains_generate_proposals() -> None:
     """SAQ controller settings functions includes generate_proposals (Phase 26 D-03)."""
     from phaze.tasks.controller import settings as controller_settings
