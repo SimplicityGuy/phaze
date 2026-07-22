@@ -35,10 +35,21 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
     Returns:
         Dict with batch index, count of proposals stored, and status.
     """
+    # phaze-6fvu: DO NOT hold a DB connection across the rate-limit backoff and the LLM call.
+    # check_rate_limit loops `asyncio.sleep(2.0)` while the shared window is over llm_max_rpm, and
+    # generate_batch is a full LLM round-trip (routinely 30-120s). A pipeline drain enqueues one job
+    # per batch across the whole corpus and the controller worker runs worker_max_jobs concurrently,
+    # so holding the session open here pins that many PgBouncer SESSION-mode connections
+    # idle-in-transaction for the hours the drain lasts (and holds back the vacuum xmin horizon),
+    # reproducing the documented pool-exhaustion incident. Nothing DB-side is needed between the reads
+    # and the writes, and build_file_context returns plain dicts (no live ORM refs), so split the work
+    # into two short sessions with the network I/O in between.
+
+    # 1. Build context for each file, then RELEASE the connection (the `async with` closes the
+    #    session -- and its read transaction -- before any network I/O).
+    files_context: list[dict[str, Any]] = []
+    valid_file_ids: list[str] = []
     async with ctx["async_session"]() as session:
-        # 1. Build context for each file
-        files_context: list[dict[str, Any]] = []
-        valid_file_ids: list[str] = []
         for fid in file_ids:
             uid = uuid.UUID(fid)
             result = await session.execute(select(FileRecord).where(FileRecord.id == uid))
@@ -59,20 +70,23 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
             files_context.append(ctx_dict)
             valid_file_ids.append(fid)
 
-        if not files_context:
-            return {"batch": batch_index, "count": 0, "status": "empty"}
+    if not files_context:
+        return {"batch": batch_index, "count": 0, "status": "empty"}
 
-        # 2. Rate limit via Redis counter on the DEDICATED cache-redis handle. Phase 36: the
-        # broker is Postgres now, so `ctx["queue"]` (a PostgresQueue) has no `.redis`. The
-        # control worker stashes a decoupled cache client at `ctx["redis"]` (controller.startup).
-        await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
+    # 2. Rate limit via Redis counter on the DEDICATED cache-redis handle. Phase 36: the
+    # broker is Postgres now, so `ctx["queue"]` (a PostgresQueue) has no `.redis`. The
+    # control worker stashes a decoupled cache client at `ctx["redis"]` (controller.startup).
+    # NO DB connection is held across this backoff loop (phaze-6fvu).
+    await check_rate_limit(ctx["redis"], settings.llm_max_rpm)
 
-        # 3. Call LLM
-        proposal_service: ProposalService = ctx["proposal_service"]
-        batch_response = await proposal_service.generate_batch(files_context)
+    # 3. Call LLM -- also with NO DB connection held (phaze-6fvu).
+    proposal_service: ProposalService = ctx["proposal_service"]
+    batch_response = await proposal_service.generate_batch(files_context)
 
-        # 4. Store proposals
+    # 4. Open a FRESH short session only for the writes + commit (phaze-6fvu). store_proposals upserts
+    #    by file_id (pg_insert), so it needs no live ORM objects from the read phase.
+    async with ctx["async_session"]() as session:
         stored = await store_proposals(session, valid_file_ids, batch_response, files_context)
         await session.commit()
 
-        return {"batch": batch_index, "count": stored, "status": "ok"}
+    return {"batch": batch_index, "count": stored, "status": "ok"}
