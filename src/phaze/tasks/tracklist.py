@@ -126,11 +126,27 @@ async def _store_scraped_tracklist(
         latest = version_result.scalar_one_or_none()
         next_version = (latest.version_number + 1) if latest else 1
 
-    # Set file linkage
+    # Set file linkage -- but NEVER steal a tracklist already owned by a DIFFERENT file (phaze-4a5w).
+    # This archive holds duplicate copies of the same live set (dedup is a core feature), so two
+    # files can resolve to the same external_id. Assigning file_id unconditionally here let a later
+    # file's auto-link silently flip an existing tracklist's file_id -- including one a human had
+    # MANUALLY accepted (auto_linked=False) -- stamping auto_linked=True over the manual provenance
+    # and vanishing the tracklist from the original file's every view with no audit trail. Only take
+    # the link when the row is unowned (file_id None) or already points at this same file; otherwise
+    # log and leave the existing link intact for manual review.
     if file_id is not None:
-        tracklist.file_id = file_id
-        tracklist.match_confidence = confidence
-        tracklist.auto_linked = auto_linked
+        if tracklist.file_id is None or tracklist.file_id == file_id:
+            tracklist.file_id = file_id
+            tracklist.match_confidence = confidence
+            tracklist.auto_linked = auto_linked
+        else:
+            logger.warning(
+                "Refusing to steal tracklist already linked to another file",
+                external_id=scraped.external_id,
+                tracklist_id=str(tracklist.id),
+                existing_file_id=str(tracklist.file_id),
+                candidate_file_id=str(file_id),
+            )
 
     # Create new version
     version = TracklistVersion(

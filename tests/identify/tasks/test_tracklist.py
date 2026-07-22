@@ -506,6 +506,95 @@ async def test_store_scraped_tracklist_does_not_null_metadata_on_partial_scrape(
     assert existing.event == "Keep Event"
 
 
+async def test_store_scraped_tracklist_does_not_steal_link_from_another_file() -> None:
+    """phaze-4a5w: an auto-link must NOT overwrite a tracklist already owned by a DIFFERENT file.
+
+    Duplicate copies of the same set resolve to the same external_id. A later file's search that
+    scores >= 90 previously flipped the existing tracklist's file_id, clobbering a manual link and
+    stamping auto_linked=True over it. The existing linkage (and its provenance) must survive.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    owner_file_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = owner_file_id  # already MANUALLY linked to file A
+    existing.match_confidence = 77
+    existing.auto_linked = False
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    # Order: advisory lock, external_id lookup, max-version lookup.
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="shared-set")
+
+    other_file_id = uuid.uuid4()  # file B, a duplicate copy of the same set
+    await _store_scraped_tracklist(session, scraped, file_id=other_file_id, confidence=99, auto_linked=True)
+
+    # The existing link is untouched: still file A, still the manual confidence, still auto_linked=False.
+    assert existing.file_id == owner_file_id
+    assert existing.match_confidence == 77
+    assert existing.auto_linked is False
+
+
+async def test_store_scraped_tracklist_links_when_unowned() -> None:
+    """phaze-4a5w: an auto-link still applies when the tracklist is unowned (file_id None)."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = None  # unowned -- fair game
+    existing.match_confidence = None
+    existing.auto_linked = False
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="unowned-set")
+    file_id = uuid.uuid4()
+    await _store_scraped_tracklist(session, scraped, file_id=file_id, confidence=95, auto_linked=True)
+
+    assert existing.file_id == file_id
+    assert existing.match_confidence == 95
+    assert existing.auto_linked is True
+
+
+async def test_store_scraped_tracklist_relinks_same_file() -> None:
+    """phaze-4a5w: re-linking the SAME file (file_id equal) refreshes confidence, not blocked."""
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    file_id = uuid.uuid4()
+    existing = MagicMock()
+    existing.id = uuid.uuid4()
+    existing.latest_version_id = None
+    existing.file_id = file_id
+    existing.match_confidence = 90
+    existing.auto_linked = True
+
+    existing_result = MagicMock()
+    existing_result.scalar_one_or_none.return_value = existing
+    version_result = MagicMock()
+    version_result.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [MagicMock(), existing_result, version_result]
+
+    scraped = _make_scraped_tracklist(external_id="same-file-set")
+    await _store_scraped_tracklist(session, scraped, file_id=file_id, confidence=98, auto_linked=True)
+
+    assert existing.file_id == file_id
+    assert existing.match_confidence == 98
+
+
 @patch("phaze.tasks.tracklist.scrape_and_store_tracklist")
 @patch("phaze.tasks.tracklist.asyncio.sleep", new_callable=AsyncMock)
 async def test_refresh_tracklists_counts_per_item_failures(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
