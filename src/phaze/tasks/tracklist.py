@@ -271,39 +271,48 @@ async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) 
     Retries with exponential backoff are handled by SAQ queue configuration.
     """
     logger.info("tracklist scrape started", tracklist_id=tracklist_id)
+    tl_uuid = uuid.UUID(tracklist_id)
+
+    # phaze-igwi: scrape_tracklist() sleeps 2-5s on the rate limiter then POSTs with a 30s timeout.
+    # Holding the session's implicit transaction (a pinned PgBouncer SESSION-mode pooled connection)
+    # idle-in-transaction across that ~2-35s of network I/O drains the capped pool -- refresh_tracklists
+    # / rescrape fan these out across the corpus. So read the source_url in a short session, RELEASE
+    # the connection before the scrape, then re-open a short session to store + commit.
     async with ctx["async_session"]() as session:
-        result = await session.execute(select(Tracklist).where(Tracklist.id == uuid.UUID(tracklist_id)))
+        result = await session.execute(select(Tracklist).where(Tracklist.id == tl_uuid))
         tracklist = result.scalar_one_or_none()
         if tracklist is None:
             logger.info("tracklist scrape completed", tracklist_id=tracklist_id, status="not_found", tracks_found=0)
             return {"tracklist_id": tracklist_id, "tracks_found": 0, "version": 0, "status": "not_found"}
+        source_url = tracklist.source_url
 
-        scraper = TracklistScraper()
-        try:
-            scraped = await scraper.scrape_tracklist(tracklist.source_url)
-            await _store_scraped_tracklist(session, scraped)
-            await session.commit()
+    # Scrape with NO DB connection held (phaze-igwi).
+    scraper = TracklistScraper()
+    try:
+        scraped = await scraper.scrape_tracklist(source_url)
+    finally:
+        await scraper.close()
 
-            # Get the version number we just created
-            version_result = await session.execute(
-                select(TracklistVersion)
-                .where(TracklistVersion.tracklist_id == tracklist.id)
-                .order_by(TracklistVersion.version_number.desc())
-                .limit(1)
-            )
-            latest = version_result.scalar_one_or_none()
-            version_number = latest.version_number if latest else 0
-            tracks_found = len(scraped.tracks)
+    # Re-open a short session only for the write + the version read-back (phaze-igwi).
+    async with ctx["async_session"]() as session:
+        await _store_scraped_tracklist(session, scraped)
+        await session.commit()
 
-            logger.info(
-                "tracklist scrape completed",
-                tracklist_id=tracklist_id,
-                tracks_found=tracks_found,
-                version=version_number,
-            )
-            return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
-        finally:
-            await scraper.close()
+        # Get the version number we just created
+        version_result = await session.execute(
+            select(TracklistVersion).where(TracklistVersion.tracklist_id == tl_uuid).order_by(TracklistVersion.version_number.desc()).limit(1)
+        )
+        latest = version_result.scalar_one_or_none()
+        version_number = latest.version_number if latest else 0
+        tracks_found = len(scraped.tracks)
+
+    logger.info(
+        "tracklist scrape completed",
+        tracklist_id=tracklist_id,
+        tracks_found=tracks_found,
+        version=version_number,
+    )
+    return {"tracklist_id": tracklist_id, "tracks_found": tracks_found, "version": version_number}
 
 
 async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
