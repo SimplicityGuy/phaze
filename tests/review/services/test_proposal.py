@@ -868,14 +868,17 @@ class TestLoadCompanionContents:
     """Tests for load_companion_contents function."""
 
     @pytest.mark.asyncio
-    async def test_loads_and_cleans_companion_files(self):
-        from unittest.mock import AsyncMock, MagicMock, patch
+    async def test_loads_and_cleans_companion_files(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
         import uuid
 
         from phaze.services.proposal import load_companion_contents
 
         session = AsyncMock()
         media_id = uuid.uuid4()
+
+        companion_path = tmp_path / "info.nfo"
+        companion_path.write_text("Artist: DJ Test\nVenue: Club", encoding="utf-8")
 
         # Mock FileCompanion query result
         companion = MagicMock()
@@ -887,19 +890,14 @@ class TestLoadCompanionContents:
         # Mock FileRecord query for companion
         companion_record = MagicMock()
         companion_record.original_filename = "info.nfo"
-        companion_record.current_path = "/data/music/info.nfo"
+        companion_record.current_path = str(companion_path)
 
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
         session.execute.side_effect = [mock_companions_result, mock_file_result]
 
-        with patch("phaze.services.proposal.Path") as MockPath:
-            mock_path_instance = MagicMock()
-            mock_path_instance.read_text.return_value = "Artist: DJ Test\nVenue: Club"
-            MockPath.return_value = mock_path_instance
-
-            result = await load_companion_contents(session, media_id, 3000)
+        result = await load_companion_contents(session, media_id, 3000)
 
         assert len(result) == 1
         assert result[0]["filename"] == "info.nfo"
@@ -907,7 +905,7 @@ class TestLoadCompanionContents:
 
     @pytest.mark.asyncio
     async def test_skips_unreadable_files(self):
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
         import uuid
 
         from phaze.services.proposal import load_companion_contents
@@ -930,19 +928,14 @@ class TestLoadCompanionContents:
 
         session.execute.side_effect = [mock_companions_result, mock_file_result]
 
-        with patch("phaze.services.proposal.Path") as MockPath:
-            mock_path_instance = MagicMock()
-            mock_path_instance.read_text.side_effect = OSError("File not found")
-            MockPath.return_value = mock_path_instance
-
-            result = await load_companion_contents(session, media_id, 3000)
+        result = await load_companion_contents(session, media_id, 3000)
 
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_strips_nul_bytes_from_companion_content(self):
+    async def test_strips_nul_bytes_from_companion_content(self, tmp_path):
         """A UTF-16-decoded .nfo full of U+0000 is sanitized at the read boundary (phaze-qj9e)."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
         import uuid
 
         from phaze.services.proposal import load_companion_contents
@@ -955,23 +948,94 @@ class TestLoadCompanionContents:
         mock_companions_result = MagicMock()
         mock_companions_result.scalars.return_value.all.return_value = [companion]
 
+        # errors="replace" leaves raw 0x00 intact on decode -- U+0000 is valid UTF-8.
+        companion_path = tmp_path / "setinfo.nfo"
+        companion_path.write_text("A\x00r\x00t\x00i\x00s\x00t\x00:\x00 \x00D\x00J", encoding="utf-8")
+
         companion_record = MagicMock()
         companion_record.original_filename = "set\x00info.nfo"
-        companion_record.current_path = "/data/music/setinfo.nfo"
+        companion_record.current_path = str(companion_path)
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
         session.execute.side_effect = [mock_companions_result, mock_file_result]
 
-        # read_text(errors="replace") leaves raw 0x00 intact -- U+0000 is valid UTF-8.
-        with patch("phaze.services.proposal.Path") as MockPath:
-            mock_path_instance = MagicMock()
-            mock_path_instance.read_text.return_value = "A\x00r\x00t\x00i\x00s\x00t\x00:\x00 \x00D\x00J"
-            MockPath.return_value = mock_path_instance
-
-            result = await load_companion_contents(session, media_id, 3000)
+        result = await load_companion_contents(session, media_id, 3000)
 
         assert len(result) == 1
         assert "\x00" not in result[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_bounds_read_without_slurping_a_huge_companion_file(self, tmp_path):
+        """phaze-cycw: the read is bounded at the source -- a companion far larger than
+        max_chars must not be fully buffered into memory, and the result still respects
+        clean_companion_content's max_chars truncation.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        import uuid
+
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        # Far larger than max_chars=100 -- a full read_text() would buffer all of this.
+        huge_path = tmp_path / "huge.nfo"
+        huge_path.write_text("x" * 1_000_000, encoding="utf-8")
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "huge.nfo"
+        companion_record.current_path = str(huge_path)
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result]
+
+        result = await load_companion_contents(session, media_id, 100)
+
+        assert len(result) == 1
+        # clean_companion_content truncates to max_chars and appends the truncation marker.
+        assert result[0]["content"].endswith("[...truncated]")
+        assert len(result[0]["content"]) < 200
+
+    @pytest.mark.asyncio
+    async def test_read_companion_bounded_sync_offloaded_via_to_thread(self, tmp_path):
+        """phaze-cycw: the bounded read must run off the event loop via asyncio.to_thread."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services import proposal as proposal_module
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        companion_path = tmp_path / "info.nfo"
+        companion_path.write_text("Artist: DJ Test", encoding="utf-8")
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "info.nfo"
+        companion_record.current_path = str(companion_path)
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result]
+
+        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
+            result = await load_companion_contents(session, media_id, 3000)
+
+        mock_to_thread.assert_called_once()
+        assert mock_to_thread.call_args.args[0] is proposal_module._read_companion_bounded_sync
+        assert len(result) == 1
         assert "\x00" not in result[0]["filename"]
         assert "Artist" in result[0]["content"]

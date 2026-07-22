@@ -372,6 +372,72 @@ async def test_generate_batch(client: AsyncClient, session: AsyncSession, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_generate_batch_offloads_write_to_thread(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-8lpg: each per-file write_cue_file call must run off the event loop via asyncio.to_thread."""
+    from phaze.routers import cue as cue_router
+
+    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch.object(cue_router.asyncio, "to_thread", wraps=cue_router.asyncio.to_thread) as mock_to_thread:
+        response = await client.post("/cue/generate-batch")
+
+    assert response.status_code == 200
+    assert "Generated 1 CUE files" in response.text
+    write_calls = [c for c in mock_to_thread.call_args_list if c.args and c.args[0] is cue_router.write_cue_file]
+    assert len(write_calls) == 1, "write_cue_file must be offloaded via asyncio.to_thread exactly once per generated file"
+
+
+@pytest.mark.asyncio
+async def test_generate_batch_materializes_eligible_set_exactly_once(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-8lpg: the eligible set is queried once (the generation loop), not re-materialized for the response."""
+    from phaze.routers import cue as cue_router
+
+    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch.object(cue_router, "_get_eligible_tracklist_query", wraps=cue_router._get_eligible_tracklist_query) as mock_query:
+        response = await client.post("/cue/generate-batch")
+
+    assert response.status_code == 200
+    assert mock_query.call_count == 1, "the eligible set must be materialized exactly once, not twice"
+
+
+@pytest.mark.asyncio
+async def test_generate_batch_renders_a_bounded_page_not_the_whole_corpus(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-8lpg: the post-batch response renders ONE bounded page (paged_stmt), not the full eligible set."""
+    from phaze.routers import cue as cue_router
+    from phaze.services.pagination import MIN_PAGE_SIZE
+
+    # paged_stmt/split_sentinel clamp page_size to >= MIN_PAGE_SIZE internally, so the corpus must
+    # exceed MIN_PAGE_SIZE for a bound to be observable at all.
+    total = MIN_PAGE_SIZE + 1
+    for i in range(total):
+        _tracklist, fr = await _create_approved_tracklist_with_file(session, artist=f"Artist {i}", event=f"Event {i}")
+        audio_path = tmp_path / fr.original_filename
+        audio_path.write_text("fake audio")
+        fr.current_path = str(audio_path)
+    await session.commit()
+
+    with patch.object(cue_router, "DEFAULT_PAGE_SIZE", MIN_PAGE_SIZE):
+        response = await client.post("/cue/generate-batch")
+
+    assert response.status_code == 200
+    # All of them were still generated on disk...
+    assert f"Generated {total} CUE files" in response.text
+    # ...but only the bounded page (MIN_PAGE_SIZE rows) is rendered in the response fragment (each
+    # row's top-level `id="cue-row-<id>"` marker is a stable per-row count -- cue_row.html also
+    # emits the same id twice more as hx-target attributes on action buttons).
+    assert response.text.count('id="cue-row-') == MIN_PAGE_SIZE
+
+
+@pytest.mark.asyncio
 async def test_generate_cue_regenerate_increments_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/{id}/generate twice creates versioned CUE files."""
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
@@ -725,6 +791,64 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 
     unbounded = await _get_eligible_tracklist_query(session)
     assert len(unbounded) == 4, "no limit -> the full eligible set (count/pagination callers)"
+
+
+@pytest.mark.asyncio
+async def test_get_cue_stats_offloads_generated_scan_to_thread(session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-rkvb: the per-file '.cue exists' filesystem probe backing the 'generated' stat must
+    run OFF the event loop via ``asyncio.to_thread``, not inline in the async handler -- an
+    unbounded, synchronous ``exists()``/``iterdir()`` scan over the whole eligible set on an
+    NFS/SMB media mount previously froze the API event loop for the scan's duration on every
+    ``/cue/`` render. Correctness of the resulting count is covered by
+    ``test_cue_list_shows_generated_count_after_generation``; this test guards the offload
+    mechanism itself so a future edit cannot silently move the scan back onto the loop.
+    """
+    from phaze.routers import cue as cue_router
+
+    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    with patch.object(cue_router.asyncio, "to_thread", wraps=cue_router.asyncio.to_thread) as mock_to_thread:
+        stats = await cue_router._get_cue_stats(session)
+
+    mock_to_thread.assert_called_once()
+    assert mock_to_thread.call_args.args[0] is cue_router._count_generated_sync
+    assert stats["eligible"] == 1
+    assert stats["generated"] == 0  # no .cue written yet
+
+
+def test_count_generated_sync_counts_only_files_with_a_cue_on_disk(tmp_path: Path) -> None:
+    """Unit test for the bundled sync scan (phaze-rkvb): mixed generated/ungenerated pairs."""
+    from phaze.routers.cue import _count_generated_sync
+
+    with_cue = tmp_path / "with_cue.mp3"
+    with_cue.write_text("audio")
+    (tmp_path / "with_cue.cue").write_text("cue content")
+
+    without_cue = tmp_path / "without_cue.mp3"
+    without_cue.write_text("audio")
+
+    def _record(path: Path) -> FileRecord:
+        return FileRecord(
+            agent_id="test-fileserver",
+            id=uuid.uuid4(),
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=str(path),
+            original_filename=path.name,
+            current_path=str(path),
+            file_type="mp3",
+            file_size=1,
+        )
+
+    pairs = [
+        (None, _record(with_cue)),
+        (None, _record(without_cue)),
+    ]
+
+    assert _count_generated_sync(pairs) == 1
 
 
 @pytest.mark.asyncio

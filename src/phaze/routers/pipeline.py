@@ -1443,6 +1443,11 @@ async def retry_analysis_failed(
       sole required mutation (see the inline note below).
     - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
       the WHOLE failed set is safe (dedup-safe; no silent cap).
+    - phaze-zecg: the enqueue loop itself runs as a BACKGROUND task (``asyncio.create_task`` + the
+      ``_background_tasks`` discipline), not inline in the request -- the state-clearing commit
+      above already moved every file off the red bucket, so a client/proxy timeout cancelling this
+      HTTP request can no longer leave the tail of a large failed set with its marker cleared but
+      no job ever enqueued.
     """
     files = await get_analysis_failed_files(session)
     if not files:
@@ -1480,10 +1485,22 @@ async def retry_analysis_failed(
     )
     await session.commit()
 
-    for f in files:
-        # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a
-        # deepen. The single funnel guarantees the full payload + deterministic dedup key.
-        await enqueue_process_file(routed.queue, f, agent_id, settings.models_path)
+    # phaze-zecg: BACKGROUND the enqueue loop -- do not await it inline in the request. The failed
+    # set is unbounded (repo incident history documents ~44.5K-job failure sets) and the markers
+    # for the WHOLE set were just committed above; an inline loop that a client/proxy timeout
+    # cancels mid-way leaves the tail of the set with its failure marker cleared but NO job ever
+    # enqueued -- a silent state-loss window between the commit and the last enqueue. Backgrounding
+    # via the same `_background_tasks` discipline every other bulk trigger in this router uses
+    # (e.g. `_route_discovered_by_duration`, `trigger_metadata_extraction`) removes that window: the
+    # response returns immediately and the enqueue loop keeps running to completion regardless of
+    # what the client/proxy does with the connection.
+    #
+    # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a deepen.
+    # The single funnel (_enqueue_analysis_jobs -> enqueue_process_file) guarantees the full payload
+    # + deterministic dedup key.
+    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     logger.info("retry_analysis_failed re-queued files", count=len(files))
     return templates.TemplateResponse(
@@ -1520,6 +1537,8 @@ async def retry_metadata_failed(
       failure. With no state mutation there is nothing to commit before the enqueue.
     - The deterministic key dedups any file with a live in-flight job to a no-op, so re-enqueuing
       the WHOLE failed set is safe (dedup-safe; no silent cap).
+    - phaze-zecg: ``_enqueue_extraction_jobs`` runs as a BACKGROUND task here too (matching every
+      other caller of it), so a large failed set can no longer time out the HTTP request/proxy.
     """
     files = await get_metadata_failed_files(session)
     if not files:
@@ -1545,7 +1564,16 @@ async def retry_metadata_failed(
     # D-11: no state flip, so no pre-enqueue commit. Build the COMPLETE payload via the shared
     # producer (a file_id-only enqueue dead-letters every job) and rely on the central
     # extract_file_metadata:<file_id> key for in-flight dedup.
-    await _enqueue_extraction_jobs(routed.queue, files, agent_id)
+    #
+    # phaze-zecg: BACKGROUND the enqueue loop instead of awaiting it inline -- `_enqueue_extraction_
+    # jobs` is docstring-labeled "Background coroutine" and every OTHER caller (`trigger_metadata_
+    # extraction`, `trigger_extraction_ui`) already wraps it in `asyncio.create_task` + the
+    # `_background_tasks` discipline specifically "to avoid HTTP timeout on large file counts" -- this
+    # bulk retry was the one caller that awaited it inline, so a large failed set could time out the
+    # HTTP request/proxy mid-loop.
+    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     logger.info("retry_metadata_failed re-queued files", count=len(files))
     return templates.TemplateResponse(

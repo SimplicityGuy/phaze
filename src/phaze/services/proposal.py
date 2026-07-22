@@ -33,6 +33,11 @@ logger = structlog.get_logger(__name__)
 # Module constant: max chars for companion file content sent to LLM
 MAX_COMPANION_CHARS = 3000
 
+# phaze-cycw: margin multiplier over max_chars for the bounded companion read below -- headroom
+# for clean_companion_content's ASCII-art-line stripping (which runs BEFORE truncation) to still
+# leave >= max_chars of real content after stripping, without ever reading the whole file.
+_COMPANION_READ_CHAR_MARGIN = 4
+
 # Path to the prompts directory (sibling of services/)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
@@ -420,6 +425,25 @@ async def store_proposals(
 # ---------------------------------------------------------------------------
 
 
+def _read_companion_bounded_sync(path: str, max_chars: int) -> str:
+    """Synchronous BOUNDED read of one companion file (phaze-cycw).
+
+    Reads at most ``max_chars * _COMPANION_READ_CHAR_MARGIN`` DECODED characters -- not the whole
+    file -- via a text-mode file object, so ``TextIOWrapper.read(n)`` only pulls as many bytes off
+    disk as needed to decode ``n`` characters instead of ``Path.read_text()``'s unconditional
+    whole-file slurp. The margin (not a bare ``max_chars`` cap) leaves ``clean_companion_content``
+    (which strips ASCII-art lines BEFORE truncating) enough headroom to still land >= ``max_chars``
+    of real content after stripping. Only ~3000 chars are ever kept, so peak memory for even a
+    multi-hundred-MB mis-categorized companion (a big log, an oversized .nfo, or an image matched by
+    a COMPANION extension) is now a small, fixed multiple of ``max_chars`` -- not the file size.
+
+    Must be run via ``asyncio.to_thread`` by the caller: the open()+read() here is still
+    synchronous, blocking disk I/O.
+    """
+    with Path(path).open(encoding="utf-8", errors="replace") as f:
+        return f.read(max_chars * _COMPANION_READ_CHAR_MARGIN)
+
+
 async def load_companion_contents(
     session: AsyncSession,
     media_file_id: uuid.UUID,
@@ -448,7 +472,11 @@ async def load_companion_contents(
         if rec is None:
             continue
         try:
-            raw = Path(rec.current_path).read_text(encoding="utf-8", errors="replace")
+            # phaze-cycw: bounded read (not a full-file slurp) run off the event loop -- a
+            # multi-hundred-MB companion (log/.nfo/.m3u, or a binary file mis-matched by a
+            # COMPANION extension) previously buffered the ENTIRE file, then splitlines()-copied
+            # it again, all synchronously on the event loop, to keep only ~3000 chars.
+            raw = await asyncio.to_thread(_read_companion_bounded_sync, rec.current_path, max_chars)
             # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
             # context_used JSONB column. errors="replace" leaves a raw 0x00 intact (U+0000 is valid
             # UTF-8), and a UTF-16LE .nfo/.txt companion decodes to text riddled with U+0000. PostgreSQL
