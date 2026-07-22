@@ -1343,6 +1343,53 @@ async def test_search_better_match_scores_against_file_not_tracklist(session: As
 
 
 @pytest.mark.asyncio
+async def test_search_better_match_releases_connection_before_scrape(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-ctrl: the pooled DB connection is released BEFORE scraper.search()'s rate-limit sleep + HTTP.
+
+    Pre-ctrl the handler held the injected session (an open implicit read transaction, pinning one
+    PgBouncer SESSION-mode upstream connection) across scraper.search() -- ~2-35s of pure network I/O.
+    A handful of concurrent searches (or a slow/unreachable upstream) drained the capped pool and 500'd
+    /health + normal page loads. The handler must commit the read (releasing the connection) BEFORE the
+    scrape, so we spy that a session commit is recorded strictly BEFORE search() runs.
+    """
+    file = _make_file(original_path="/music/Real Artist - Live @ Coachella 2024.04.14.mp3")
+    session.add(file)
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, match_confidence=40)
+    tl.artist = "Real Artist"
+    tl.event = "Coachella"
+    session.add(tl)
+    await session.flush()
+
+    order: list[str] = []
+    real_commit = AsyncSession.commit
+
+    async def _spy_commit(self: AsyncSession) -> None:
+        await real_commit(self)
+        order.append("commit")
+
+    async def _search_recording(_query: str) -> list[TracklistSearchResult]:
+        order.append("search")
+        return []
+
+    with (
+        patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls,
+        patch.object(AsyncSession, "commit", _spy_commit),
+    ):
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.search = _search_recording
+        mock_scraper.close = AsyncMock()
+
+        response = await client.get(f"/tracklists/{tl.id}/search")
+
+    assert response.status_code == 200
+    # A commit (releasing the read txn / pooled connection) precedes the network scrape.
+    assert "search" in order
+    assert order.index("commit") < order.index("search")
+
+
+@pytest.mark.asyncio
 async def test_link_search_result_links_selected_not_original(session: AsyncSession, client: AsyncClient) -> None:
     """Regression (phaze-ldal): linking a search RESULT must persist and link THAT result's own
     content -- not silently re-link the original tracklist (searched from) and stamp the

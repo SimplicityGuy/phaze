@@ -565,6 +565,18 @@ async def search_better_match(
     search_results: list[dict[str, Any]] = []
     query = ""
 
+    # phaze-ctrl: this is the only in-request live-scrape path (rescrape/manual_search enqueue to
+    # SAQ). scraper.search() first sleeps 2-5s on the rate limiter, then POSTs with a 30s timeout, so
+    # the handler would otherwise pin a PgBouncer SESSION-mode pooled connection idle-in-transaction
+    # for ~2-35s of pure network I/O -- a handful of concurrent clicks (or a slow/unreachable upstream)
+    # drains the capped pool and 500s /health + normal page loads. So do ALL the DB reads up front,
+    # capture the primitives the scrape + render need into locals, then RELEASE the connection
+    # (session.commit ends the implicit read transaction and returns the connection to the pool)
+    # BEFORE any network I/O. No DB write happens after the scrape.
+    file_id: uuid.UUID | None = tracklist.file_id if tracklist else None
+    file_artist: str | None = None
+    file_event: str | None = None
+    file_date: Any = None
     if tracklist:
         parts = []
         if tracklist.artist:
@@ -577,37 +589,41 @@ async def search_better_match(
             # Score candidates against the FILE this tracklist is (or would be) linked to, not
             # against the tracklist's own artist/event/date (phaze-ldal) -- that comparison
             # degenerates into a same-artist self-match that reads near-100 for ANY result.
-            file_artist, file_event, file_date = await _file_match_context(session, tracklist.file_id)
+            file_artist, file_event, file_date = await _file_match_context(session, file_id)
 
-            scraper = TracklistScraper()
-            try:
-                raw_results = await scraper.search(query)
-                for r in raw_results:
-                    conf = compute_match_confidence(
-                        tracklist_artist=r.artist,
-                        tracklist_event=None,
-                        tracklist_date=None,
-                        file_artist=file_artist,
-                        file_event=file_event,
-                        file_date=file_date,
-                    )
-                    search_results.append(
-                        {
-                            "external_id": r.external_id,
-                            "title": r.title,
-                            "url": r.url,
-                            "artist": r.artist,
-                            "confidence": conf,
-                        }
-                    )
-                search_results.sort(key=lambda x: x["confidence"], reverse=True)
-            finally:
-                await scraper.close()
+    # Release the pooled connection before the rate-limit sleep + HTTP scrape (phaze-ctrl).
+    await session.commit()
+
+    if query:
+        scraper = TracklistScraper()
+        try:
+            raw_results = await scraper.search(query)
+            for r in raw_results:
+                conf = compute_match_confidence(
+                    tracklist_artist=r.artist,
+                    tracklist_event=None,
+                    tracklist_date=None,
+                    file_artist=file_artist,
+                    file_event=file_event,
+                    file_date=file_date,
+                )
+                search_results.append(
+                    {
+                        "external_id": r.external_id,
+                        "title": r.title,
+                        "url": r.url,
+                        "artist": r.artist,
+                        "confidence": conf,
+                    }
+                )
+            search_results.sort(key=lambda x: x["confidence"], reverse=True)
+        finally:
+            await scraper.close()
 
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/search_results.html",
-        context={"request": request, "results": search_results, "query": query, "file_id": tracklist.file_id if tracklist else None},
+        context={"request": request, "results": search_results, "query": query, "file_id": file_id},
     )
 
 
