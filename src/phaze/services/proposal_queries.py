@@ -199,22 +199,42 @@ async def update_proposal_status(
     :class:`ProposalTransitionError` (routers translate it to 409) instead of
     silently overwriting a terminal EXECUTED/FAILED row. ``None`` preserves the
     legacy unconditional write for internal callers that already pre-filter.
+
+    phaze-upnj: the guard is evaluated INSIDE the UPDATE's WHERE clause, in one
+    statement (mirroring :func:`bulk_update_status`), NOT as a Python check on a
+    prior unlocked SELECT. The former select-check-then-blind-write shape was a
+    TOCTOU: under READ COMMITTED an operator Undo and a concurrent agent
+    EXECUTED report both read APPROVED, both passed the Python guard, and the
+    last committer silently reverted the terminal record. Folding ``allowed_from``
+    into the UPDATE predicate makes the write itself conditional, so a row that
+    left the allowed set between any read and this write matches zero rows and
+    the transition is refused rather than clobbered.
     """
-    stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
-    result = await session.execute(stmt)
-    proposal = result.scalar_one_or_none()
-    if proposal is None:
-        return None
-    if allowed_from is not None and ProposalStatus(proposal.status) not in set(allowed_from):
-        raise ProposalTransitionError(proposal.status, new_status.value)
-    proposal.status = new_status.value
+    stmt = update(RenameProposal).where(RenameProposal.id == proposal_id)
+    if allowed_from is not None:
+        stmt = stmt.where(RenameProposal.status.in_([s.value for s in allowed_from]))
+    stmt = stmt.values(status=new_status.value)
     try:
+        cursor_result: Any = await session.execute(stmt)
         await session.commit()
     except IntegrityError as exc:
         # Reverting to PENDING can collide with the one-pending-per-file partial unique
         # index (uq_proposals_file_id_pending) if the file already has a pending proposal.
         await session.rollback()
         raise ProposalPendingConflictError(str(proposal_id)) from exc
+
+    if int(cursor_result.rowcount) == 0:
+        # The conditional UPDATE matched nothing: either the proposal does not exist,
+        # or (when allowed_from is set) its current status is outside the allowed set.
+        # Re-read to distinguish 404 (None) from an illegal transition (409).
+        current = await session.execute(select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id))
+        proposal = current.scalar_one_or_none()
+        if proposal is None:
+            return None
+        if allowed_from is not None:
+            raise ProposalTransitionError(proposal.status, new_status.value)
+        return proposal
+
     # Re-fetch with selectinload to ensure file relationship is available
     # (session.refresh does not honor selectinload on lazy='raise' relationships)
     stmt2 = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id == proposal_id)
