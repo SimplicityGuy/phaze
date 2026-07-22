@@ -11,6 +11,12 @@
 #     and an authenticated healthcheck with --no-auth-warning.
 services:
   api:
+    # phaze-ewpa: auto-restart the control plane after a host reboot / daemon
+    # restart / power blip, matching docker-compose.agent.yml and
+    # docker-compose.cloud-agent.yml (which set this on every service). Without
+    # it the whole app server (DB/cache/API/controller) stays down until a manual
+    # `docker compose up -d` while the agent stacks auto-restart and hammer it.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
@@ -46,6 +52,7 @@ services:
   # No volume mounts: the controller is fileless and never touches SCAN_PATH,
   # MODELS_PATH, or OUTPUT_PATH (DIST-01).
   worker:
+    restart: unless-stopped  # phaze-ewpa: control-role worker auto-restarts with the stack
     build:
       context: .
       dockerfile: Dockerfile
@@ -68,6 +75,7 @@ services:
         condition: service_healthy
 
   postgres:
+    restart: unless-stopped  # phaze-ewpa: DB must come back after a reboot/blip (pgdata persists)
     image: postgres:18-alpine
     # phaze-rnh7 (D-05 / AUTH-03, mirrored from redis below): Postgres holds ALL of
     # the project's crown-jewel data (file metadata, proposals, tracklists, agent
@@ -100,6 +108,7 @@ services:
       retries: 5
 
   redis:
+    restart: unless-stopped  # phaze-ewpa: cache must come back with the stack after a reboot/blip
     image: redis:8-alpine
     # Phase 29 D-05 / AUTH-03: --requirepass with REDIS_PASSWORD interpolation
     # (`${VAR:?msg}` fails fast at compose-parse time if unset). The agent-side
