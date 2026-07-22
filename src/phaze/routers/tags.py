@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import structlog
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
@@ -24,6 +25,8 @@ from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
 
+
+logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -610,33 +613,51 @@ async def bulk_write_no_discrepancies(
 
     written = 0
     for fr in file_records:
-        tracklist = await _get_tracklist_for_file(session, fr.id)
-        discogs_link = await _get_accepted_discogs_link(session, fr.id)
-        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-        comparison = _build_comparison(fr.file_metadata, proposed)
-        if _count_changes(comparison) < 1:
-            # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP marker
-            # so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same window on
-            # every submit and permanently starves the qualifying files behind it. This is the write
-            # path (it already commits below); the read-only render builder never writes.
-            session.add(
-                TagWriteLog(
-                    file_id=fr.id,
-                    before_tags={},
-                    after_tags={},
-                    source="bulk_noop",
-                    status=TagWriteStatus.NO_OP.value,
+        # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM instance, so a
+        # later ``fr.id`` access would trigger a lazy reload (async IO) from a sync context.
+        file_id = fr.id
+        # phaze-k7g6: isolate each file. execute_tag_write mutates the audio file on disk IMMEDIATELY
+        # but only stages its TagWriteLog audit row (the before_tags UNDO snapshot); a single deferred
+        # end-of-loop commit meant any mid-loop abort (a ValueError from a concurrently un-applied
+        # file, a transient DB read error, task cancellation on a multi-minute 2000-file loop) rolled
+        # back every staged row while the disk mutations stood -- losing the audit trail for real
+        # writes. Commit per file so each audit row lands atomically with the disk mutation it
+        # describes, and wrap each iteration so one bad file SKIPS rather than aborting the batch.
+        try:
+            tracklist = await _get_tracklist_for_file(session, file_id)
+            discogs_link = await _get_accepted_discogs_link(session, file_id)
+            proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+            comparison = _build_comparison(fr.file_metadata, proposed)
+            if _count_changes(comparison) < 1:
+                # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP
+                # marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this same
+                # window on every submit and permanently starves the qualifying files behind it.
+                session.add(
+                    TagWriteLog(
+                        file_id=file_id,
+                        before_tags={},
+                        after_tags={},
+                        source="bulk_noop",
+                        status=TagWriteStatus.NO_OP.value,
+                    )
                 )
-            )
+                await session.commit()  # phaze-k7g6: land the marker immediately.
+                continue
+            if not _qualifies_for_bulk_write(comparison):
+                # A >=1-change file that would blank an existing tag: never bulk-written (stays
+                # per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so defensive.
+                continue
+            tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+            await execute_tag_write(session, fr, tags, source="proposal")
+            # phaze-k7g6: commit the audit row atomically with the disk mutation it describes.
+            await session.commit()
+            written += 1
+        except Exception:
+            # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits stand)
+            # and keep going -- a raised ValueError/DB error is a failed file, not a batch abort.
+            await session.rollback()
+            logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
             continue
-        if not _qualifies_for_bulk_write(comparison):
-            # A >=1-change file that would blank an existing tag: never bulk-written (stays per-file
-            # Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so this is a defensive path.
-            continue
-        tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-        await execute_tag_write(session, fr, tags, source="proposal")
-        written += 1
-    await session.commit()
 
     stats = await _get_tag_stats(session)
     toast_message = (
