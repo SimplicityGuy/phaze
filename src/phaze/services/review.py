@@ -387,11 +387,31 @@ async def get_cue_review_cards(session: AsyncSession) -> list[dict[str, Any]]:
             for tracklist, file_record in await _get_eligible_tracklist_query(session, limit=_MAX_REVIEW_ROWS):
                 if len(cards) >= _MAX_REVIEW_ROWS:  # D-03: cap the eligible half at the same bound.
                     break
-                cue_text: str | None = None
-                if tracklist.latest_version_id:
-                    cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
-                    audio_name = Path(file_record.current_path).name
-                    cue_text = generate_cue_content(audio_name, file_record.file_type, cue_tracks)
+                # phaze-hcsb: isolate THIS tracklist's build -- the outer except below is for
+                # genuine DB errors (session.begin_nested() failures) and was never meant to be a
+                # catch-all for one malformed row. Without this, a single bad card raising here
+                # (e.g. a future _build_cue_tracks/generate_cue_content defect) would abort the
+                # loop and blank EVERY other eligible + gated card in the whole workspace, with
+                # only a log-level warning -- the operator reads that as "no cue work to review".
+                try:
+                    cue_text: str | None = None
+                    if tracklist.latest_version_id:
+                        cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
+                        audio_name = Path(file_record.current_path).name
+                        cue_text = generate_cue_content(audio_name, file_record.file_type, cue_tracks)
+                except Exception:
+                    logger.warning("cue_review_card_build_failed", tracklist_id=str(tracklist.id), exc_info=True)
+                    # Degrade this ONE card to the gated shape (no approve control, no stale/partial
+                    # preview) instead of dropping the whole render.
+                    cards.append(
+                        {
+                            "tracklist_id": tracklist.id,
+                            "set_name": Path(file_record.current_path).stem,
+                            "eligible": False,
+                            "cue_text": None,
+                        }
+                    )
+                    continue
                 cards.append(
                     {
                         "tracklist_id": tracklist.id,
