@@ -156,6 +156,14 @@ def _sha256_of_file(path: Path) -> str:
 # SIGKILLs the worker (uncatchable) and the batch crash-loops on SAQ replay.
 _COPY_CHUNK_BYTES = 16 * 1024 * 1024
 
+# Suffix for the sibling temp file used by the cross-filesystem copy. The bytes
+# stream into ``<dest><suffix>`` and are ``os.replace``d onto the real
+# destination only after a full, fsynced copy -- so the destination appears
+# atomically and a mid-copy abort never orphans a partial file at the final path
+# (phaze-k23z). Kept on the SAME directory (hence a name suffix, not /tmp) so the
+# replace stays within one filesystem and is atomic.
+_COPY_TMP_SUFFIX = ".phaze-tmp"
+
 
 def _same_filesystem(src: Path, dst_dir: Path) -> bool:
     """True when `src` and `dst_dir` live on the same filesystem (matching st_dev).
@@ -199,6 +207,35 @@ def _streamed_copy(src: Path, dst: Path) -> None:
         fdst.flush()
         os.fsync(fdst.fileno())
     shutil.copystat(src, dst)
+
+
+def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
+    """Copy `src` -> `dst` across filesystems so `dst` appears atomically.
+
+    Streams `src` into a sibling temp file (``<dst><_COPY_TMP_SUFFIX>``), fsyncs
+    it durably, then ``os.replace``s the temp onto `dst` -- an atomic rename
+    within the destination filesystem. Because bytes never land at the final
+    path incrementally, a mid-copy abort (ENOSPC on a multi-GB concert video, an
+    I/O error on the destination mount, or a flush/fsync failure) can never leave
+    a truncated/corrupt fragment at `dst`. On ANY failure the temp file is
+    removed (``missing_ok=True``) so nothing is orphaned either (phaze-k23z).
+
+    Contrast the pre-fix behavior, which wrote straight into `dst` via
+    ``dst.open("wb")`` and, on a raise partway through, left a partial file at the
+    real destination that misled 'already moved' checks and consumed disk.
+
+    The caller unlinks `src` only after this returns, so a crash between a
+    successful copy and that unlink leaves BOTH a complete `dst` and `src` -- a
+    recoverable state the executor's replay logic completes forward
+    (phaze-q2lg / phaze-qx8z), never data loss.
+    """
+    tmp = dst.with_name(dst.name + _COPY_TMP_SUFFIX)
+    try:
+        _streamed_copy(src, tmp)
+        tmp.replace(dst)  # atomic within the destination filesystem
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
@@ -340,7 +377,10 @@ async def _execute_one(
                 # IS the delete, so there is no separate delete step to fail.
                 original.replace(proposed)
             else:
-                _streamed_copy(original, proposed)
+                # phaze-k23z: copy through a temp sibling + os.replace so the
+                # destination materializes atomically. A copy that aborts
+                # mid-stream (ENOSPC/EIO) leaves no partial file at `proposed`.
+                _atomic_cross_fs_copy(original, proposed)
                 # 5. Delete the original (a cross-filesystem copy leaves it in place).
                 current_step = "delete"
                 original.unlink()
