@@ -1753,3 +1753,43 @@ async def test_reap_skips_a_row_that_left_staging_between_snapshot_and_reread(se
     # The skip branch rolls back (releasing the xact lock), which also undoes this cell's simulated
     # mid-sweep advance -- the load-bearing assertion is that the reaper NEVER spilled the row.
     assert (await _cloud_job_for(session, file_id)).status != CloudJobStatus.AWAITING.value
+
+
+# === phaze-7lpb: the per-row re-read is FRESH under the lock (populate_existing), not the cached snapshot ==
+
+
+@pytest.mark.asyncio
+async def test_reap_re_reads_fresh_under_the_lock_and_honors_a_mid_sweep_restamp(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-7lpb: the per-row ``session.get`` re-reads FRESH under the lock (populate_existing), not the cached snapshot.
+
+    The snapshot ``select`` populates the identity map and the sessionmaker is ``expire_on_commit=False``, so a
+    plain ``get`` would return the sweep-start-stale cached row. Here a re-drive lands between snapshot and
+    re-read, re-stamping the row back into the SAME status with a FRESH (young) ``updated_at`` (phaze-2hv9).
+    The fresh read must surface that young timestamp so the age check fails and the LIVE re-driven upload is
+    left alone. Pre-fix (cached read) the stale old timestamp passed the age check and the row was reaped.
+    """
+    from sqlalchemy import text as sa_text
+
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADING, age_sec=90_000)
+
+    real_get = session.get
+
+    async def _restage_then_get(entity: Any, ident: Any, **kwargs: Any) -> Any:
+        # Simulate a concurrent redrive re-stamping updated_at to now WITHOUT changing status (UPLOADING).
+        # A RAW text UPDATE (not an ORM ``update()`` with synchronize_session='fetch') so it does NOT expire
+        # the reaper's snapshot-cached row: only ``populate_existing=True`` on the get can surface the fresh
+        # timestamp. If the reaper used a plain ``get``, it would keep reading the stale (aged) cached row.
+        await session.execute(sa_text("UPDATE cloud_job SET updated_at = now() WHERE file_id = :fid"), {"fid": file_id})
+        return await real_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", _restage_then_get)
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    # populate_existing surfaced the fresh (young) updated_at -> the age check fails -> NOT reaped.
+    assert tally["staging_reaped"] == 0
+    monkeypatch.undo()
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADING.value

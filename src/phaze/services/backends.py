@@ -661,7 +661,14 @@ class KueueBackend(_BaseBackend):
         for cloud_job_id in cloud_job_ids:
             try:
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
-                cloud_job = await session.get(CloudJob, cloud_job_id)
+                # phaze-7lpb: ``populate_existing=True`` forces a real SELECT under the lock. The snapshot
+                # ``select`` above populated the identity map, and the sessionmaker is ``expire_on_commit=False``
+                # (database.py), so a plain ``session.get`` for the first row -- and every row after a per-row
+                # ``commit`` -- would return the UNEXPIRED cached object WITHOUT emitting SQL, evaluating the
+                # age/CAS decision against sweep-start-stale state. A ``report_upload_failed`` -> redrive that
+                # re-stages the row back into the SAME status (fresh upload_id + fresh updated_at, phaze-2hv9)
+                # would then be judged on the OLD timestamp and reaped live. Re-read fresh at lock acquisition.
+                cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
                 if cloud_job is None or cloud_job.status not in {status.value for status in STAGING}:
                     # A callback terminalized/advanced it since the snapshot -- nothing to reap.
                     await session.rollback()
@@ -775,7 +782,11 @@ class KueueBackend(_BaseBackend):
                 # ``stage_cloud_window`` snapshot. ``_reconcile_one`` commits per row -> the xact lock
                 # auto-releases at that commit, preserving the delete-after-record ordering.
                 await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STAGE_CLOUD_WINDOW_ADVISORY_LOCK_KEY})
-                cloud_job = await session.get(CloudJob, cloud_job_id)
+                # phaze-7lpb: ``populate_existing=True`` forces a real SELECT under the lock (the snapshot
+                # ``select`` above populated the identity map and the sessionmaker is ``expire_on_commit=False``,
+                # so a plain ``get`` would hand back the sweep-start-stale cached row for the first row and every
+                # post-commit row -- and the None-check for a vanished row could never fire on a cached object).
+                cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
                 if cloud_job is None:
                     continue
                 tally["reconciled"] += 1
