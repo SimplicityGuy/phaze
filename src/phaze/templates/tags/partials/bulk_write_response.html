@@ -1,9 +1,15 @@
 {# Phase 60 (60-01, D-03): no-discrepancies bulk tag-write response.
 
    Reuses the EXISTING inline toast markup (see tags/partials/tag_row.html) -- an OOB toast
-   carrying the written count. The live pending/completed tag counts refresh via the single
-   /pipeline/stats poll (R-2, counts-only), NOT from this response, so there is no row/table
-   re-render here. `toast_message` is autoescaped (never `| safe`). #}
+   carrying the written count. The counts-only /pipeline/stats poll (R-2) refreshes the CHROME
+   rail counters, but never this workspace's body -- so the response ALSO OOB-removes every row
+   that resolved to a TERMINAL outcome (a fresh NO_OP marker or a COMPLETED write; phaze-gwe1) and
+   refreshes the subcount, so a written file's row and its live APPROVE affordance actually
+   disappear instead of staying on screen as a stale, still-clickable pending row that would
+   otherwise re-write the file and shadow the bulk write's own before/after snapshot in the undo
+   chain. A DISCREPANCY/FAILED outcome is deliberately left untouched (both stay in the queue by
+   design -- see bulk_write_no_discrepancies' docstring). `toast_message` is autoescaped (never
+   `| safe`); `resolved_ids` are UUIDs interpolated into an id attribute (never raw HTML). #}
 <div hx-swap-oob="beforeend:#toast-container">
     <div class="bg-gray-800 text-white text-sm px-4 py-2 rounded shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg"
          role="status"
@@ -12,3 +18,7 @@
         {{ toast_message }}
     </div>
 </div>
+{% for resolved_id in resolved_ids %}
+<div id="{{ row_id_prefix }}-{{ resolved_id }}" hx-swap-oob="delete"></div>
+{% endfor %}
+<p id="stage-workspace-subcount" hx-swap-oob="true" class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ subcount }}</p>

@@ -279,6 +279,70 @@ async def test_tag_bulk_makes_forward_progress_past_zero_change_wall(
 
 
 @pytest.mark.asyncio
+async def test_tag_bulk_write_oob_removes_terminal_rows_and_refreshes_subcount(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-gwe1: a bulk write that resolves rows to a TERMINAL outcome (COMPLETED write, or a fresh
+    NO_OP marker) must OOB-remove those rows and refresh the subcount -- otherwise they linger on
+    screen as still-pending rows with a live (and now redundant/undo-chain-corrupting) APPROVE.
+
+    A file whose write genuinely COMPLETES (mutagen write + verify both mocked to succeed) is
+    terminal and must be OOB-deleted by its ``tagwrite-row-{id}`` id; the subcount refresh must also
+    be present so the header doesn't keep advertising the pre-bulk count.
+    """
+    completed, _ = await seed_executed_file_with_metadata(original_filename="New Artist - New Title.mp3", artist=None, title=None, album="Keep Album")
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={}),
+    ):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert f'id="tagwrite-row-{completed.id}" hx-swap-oob="delete"' in body, "a COMPLETED write's row must be OOB-removed"
+    assert 'id="stage-workspace-subcount" hx-swap-oob="true"' in body, "the subcount must be OOB-refreshed"
+    assert "0 awaiting approval" in body, "the just-written file is gone from the queue -- subcount reflects it"
+
+
+@pytest.mark.asyncio
+async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
+    client: AsyncClient,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-gwe1: DISCREPANCY and FAILED are non-terminal BY DESIGN (a DISCREPANCY row re-offers
+    itself for retry; a FAILED write never actually wrote anything) -- their rows must NOT be
+    OOB-removed, unlike a COMPLETED write.
+    """
+    discrepancy_file, _ = await seed_executed_file_with_metadata(
+        original_filename="Disc Artist - Disc Title.mp3", artist=None, title=None, album="Keep Album"
+    )
+
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags"),
+        patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"sent": "Disc Artist", "got": "Disc  Artist"}}),
+    ):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    assert f'id="tagwrite-row-{discrepancy_file.id}" hx-swap-oob="delete"' not in resp.text, "a DISCREPANCY row stays in the queue by design"
+
+    # FAILED path: mutagen write itself raises, so nothing was actually written.
+    failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
+    with (
+        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
+        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("read-only file")),
+    ):
+        resp2 = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp2.status_code == 200
+    assert f'id="tagwrite-row-{failed_file.id}" hx-swap-oob="delete"' not in resp2.text, "a FAILED write never wrote anything -- row stays"
+
+
+@pytest.mark.asyncio
 async def test_review_audit_one_row(
     client: AsyncClient,
     session: AsyncSession,
