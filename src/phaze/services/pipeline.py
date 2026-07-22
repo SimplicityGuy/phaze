@@ -195,22 +195,29 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
     — ``scanned`` is never None here so the value is always a plain int). The per-agent file counts
     come from one grouped ``SELECT agent_id, COUNT(id) GROUP BY agent_id`` joined in Python.
 
-    An empty map means "no annotations"; the template hides any agent whose deduped is 0. Wrapped in
-    the standard log → guarded rollback → ``{}`` degrade so it never raises into the dashboard poll.
+    An empty map means "no annotations"; the template hides any agent whose deduped is 0.
+
+    Both reads run inside ONE SAVEPOINT (``session.begin_nested()``) so a failure rolls back the
+    NESTED scope ALONE (CR-01): ``build_recent_scans`` (``routers.pipeline_scans``) loads ``ScanBatch``
+    ORM rows on this SAME session BEFORE calling here, and ``build_dashboard_context`` similarly loads
+    ``agents`` before it -- a plain ``session.rollback()`` would expire those already-loaded rows and
+    500 the render on the next lazy load. On any exception this logs a warning and degrades to ``{}``,
+    never raising into the dashboard poll.
     """
     try:
-        ranked = (
-            select(
-                ScanBatch.agent_id.label("agent_id"),
-                ScanBatch.total_files.label("total_files"),
-                func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+        async with session.begin_nested():
+            ranked = (
+                select(
+                    ScanBatch.agent_id.label("agent_id"),
+                    ScanBatch.total_files.label("total_files"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                )
+                .where(ScanBatch.status == ScanStatus.COMPLETED.value)
+                .subquery()
             )
-            .where(ScanBatch.status == ScanStatus.COMPLETED.value)
-            .subquery()
-        )
-        latest_rows = (await session.execute(select(ranked.c.agent_id, ranked.c.total_files).where(ranked.c.rn == 1))).all()
+            latest_rows = (await session.execute(select(ranked.c.agent_id, ranked.c.total_files).where(ranked.c.rn == 1))).all()
 
-        count_rows = (await session.execute(select(FileRecord.agent_id, func.count(FileRecord.id)).group_by(FileRecord.agent_id))).all()
+            count_rows = (await session.execute(select(FileRecord.agent_id, func.count(FileRecord.id)).group_by(FileRecord.agent_id))).all()
         counts_by_agent = {agent_id: int(count) for agent_id, count in count_rows}
 
         out: dict[str, dict[str, int]] = {}
@@ -221,10 +228,6 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
         return out
     except Exception:
         logger.warning("agent_reconciliations_degraded", exc_info=True)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("agent_reconciliations_rollback_failed", exc_info=True)
         return {}
 
 

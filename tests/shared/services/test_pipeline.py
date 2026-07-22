@@ -1619,35 +1619,64 @@ async def test_get_agent_reconciliations_rescan_counts_latest_only(session: Asyn
 
 @pytest.mark.asyncio
 async def test_get_agent_reconciliations_degrades_to_empty_on_db_error() -> None:
-    """A forced read error degrades to an empty map (no annotations), never raising."""
+    """A forced read error degrades to an empty map (no annotations), never raising.
+
+    The reads run inside a SAVEPOINT (``begin_nested``); the exception propagates out of the
+    nested scope and is caught by the degrade ``except`` (CR-01 -- the caller's shared session is
+    never touched with a full ``session.rollback()``).
+    """
 
     class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
         async def execute(self, *_args: object, **_kwargs: object) -> object:
             raise RuntimeError("scan_batches table unavailable")
-
-        async def rollback(self) -> None:
-            return None
 
     assert await get_agent_reconciliations(_ExplodingSession()) == {}  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
-async def test_get_agent_reconciliations_degrades_when_rollback_also_fails() -> None:
-    """Even if the guarded rollback itself raises, the per-agent map still degrades to ``{}``.
-
-    Exercises the nested ``except`` that logs ``agent_reconciliations_rollback_failed`` — the
-    last-ditch branch where the rollback fails too. The function must swallow everything and return
-    the empty map (no annotations) rather than propagating into the 5s dashboard poll.
-    """
+async def test_get_agent_reconciliations_degrades_when_begin_nested_itself_raises() -> None:
+    """Even if the session is so broken ``begin_nested()`` itself raises, the per-agent map still
+    degrades to ``{}`` rather than propagating into the 5s dashboard poll."""
 
     class _DoublyExplodingSession:
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise RuntimeError("scan_batches table unavailable")
-
-        async def rollback(self) -> None:
+        def begin_nested(self) -> object:
             raise RuntimeError("connection already closed")
 
     assert await get_agent_reconciliations(_DoublyExplodingSession()) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_reconciliations_degrade_preserves_caller_loaded_rows(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-01: the degrade must NOT expire ORM rows the caller already loaded on this same session.
+
+    ``build_recent_scans`` (``routers.pipeline_scans``) loads ScanBatch ORM rows on this SAME
+    session BEFORE calling ``get_agent_reconciliations``. A plain ``session.rollback()`` in the
+    degrade branch would expire those already-loaded rows, 500-ing the render on the next lazy load
+    (MissingGreenlet from a sync context).
+
+    Distinguishing signal (fixture never commits, so ``inspect().expired`` cannot tell a SAVEPOINT
+    rollback apart from a plain one -- a plain rollback expunges the pending flush to *transient*,
+    not *expired*): flush a ScanBatch row, force ONLY the reconciliation reads to fail, then assert
+    ``session.get`` still finds the scan batch afterwards -- proving the outer transaction survived.
+    """
+    from unittest.mock import AsyncMock
+
+    session.add(Agent(id="cr01-recon-agent", name="Cr01ReconBox", scan_roots=[], kind="fileserver"))
+    await session.flush()
+    batch = ScanBatch(id=uuid.uuid4(), agent_id="cr01-recon-agent", scan_path="/data/music", status=ScanStatus.COMPLETED.value, total_files=5)
+    session.add(batch)
+    await session.flush()
+
+    real_execute = session.execute
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=RuntimeError("boom")))
+    recon = await get_agent_reconciliations(session)
+    monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
+
+    assert recon == {}
+    assert await session.get(ScanBatch, batch.id) is not None
 
 
 # ---------------------------------------------------------------------------
