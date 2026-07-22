@@ -6,6 +6,7 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+from bs4 import BeautifulSoup, Tag
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import func, select
@@ -967,6 +968,55 @@ async def test_fingerprint_tracks_use_fingerprint_template(session: AsyncSession
     assert "FP Artist" in response.text
     assert "hx-get" in response.text  # inline edit wiring
     assert "hx-delete" in response.text  # delete button
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_trigger_lives_on_span_not_td(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-rv0x): the Artist/Title/Timestamp <td> cells used to carry the edit hx-get
+    themselves, with hx-target="this" hx-swap="innerHTML". Because that swap only replaces the td's
+    CHILDREN, the td (and its click listener) survived the swap into edit mode, so any click landing
+    inside the freshly-opened <input> (e.g. repositioning the caret) bubbled up to the still-listening
+    td and re-fired the GET, discarding the operator's typed edit and re-seeding the input from the
+    stored DB value. The fix moves the trigger onto an inner <span> (mirroring
+    inline_display_field.html) so the trigger element itself is removed from the DOM once edit mode
+    opens -- nothing is left inside the td to re-fire while the input has focus.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="FP Artist",
+        title="FP Title",
+        timestamp="00:01:00",
+        confidence=88.0,
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/{tl.id}/tracks")
+    assert response.status_code == 200
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    cells = [td for td in soup.find_all("td") if isinstance(td, Tag) and td.find(attrs={"hx-get": True})]
+    assert len(cells) == 3, "expected exactly the Artist/Title/Timestamp cells to carry an edit trigger"
+    for td in cells:
+        assert not td.has_attr("hx-get"), (
+            "the <td> itself must not carry hx-get -- it survives the innerHTML swap into edit mode "
+            "and re-fires on any click bubbling up from inside the open editor"
+        )
+        span = td.find("span", attrs={"hx-get": True})
+        assert span is not None, "the edit trigger must live on an inner <span>, mirroring inline_display_field.html"
+        assert span["hx-target"] == "closest td"
+        assert span["hx-swap"] == "innerHTML"
 
 
 @pytest.mark.asyncio
