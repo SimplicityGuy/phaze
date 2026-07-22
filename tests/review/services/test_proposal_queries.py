@@ -352,6 +352,45 @@ async def test_bulk_update_status_empty_list(session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# approve_pending_above_confidence allowed_from guard (phaze-bg4w)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_update_status_allowed_from_skips_rejected(session: AsyncSession) -> None:
+    """The guard approve_pending_above_confidence now passes: a stale id whose row was REJECTED
+    between the SELECT and the UPDATE is NOT flipped to APPROVED (the phaze-bg4w TOCTOU shape).
+    """
+    proposal = await _create_proposal(session, original_filename="bg4w.mp3", confidence=0.95)
+    # Simulate the concurrent reject that landed after the id was snapshotted.
+    await bulk_update_status(session, [proposal.id], ProposalStatus.REJECTED, allowed_from=APPROVE_REJECT_FROM)
+    # Re-run the approve with the stale id list + the from-state guard the caller now uses.
+    applied = await bulk_update_status(session, [proposal.id], ProposalStatus.APPROVED, allowed_from=APPROVE_REJECT_FROM)
+    assert applied == 0
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_leaves_non_pending_untouched(session: AsyncSession) -> None:
+    """Only PENDING high-confidence rows are approved; a REJECTED high-confidence row stays rejected."""
+    pending = await _create_proposal(session, original_filename="hc_pending.mp3", confidence=0.95)
+    rejected = await _create_proposal(session, original_filename="hc_rejected.mp3", confidence=0.95, status=ProposalStatus.REJECTED)
+
+    count = await approve_pending_above_confidence(session, threshold=0.9)
+    assert count == 1
+
+    approved_row = await session.get(RenameProposal, pending.id)
+    assert approved_row is not None
+    assert approved_row.status == ProposalStatus.APPROVED
+
+    rejected_row = await session.get(RenameProposal, rejected.id)
+    assert rejected_row is not None
+    assert rejected_row.status == ProposalStatus.REJECTED
+
+
+# ---------------------------------------------------------------------------
 # get_proposal_with_file
 # ---------------------------------------------------------------------------
 

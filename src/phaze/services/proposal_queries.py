@@ -273,6 +273,12 @@ async def approve_pending_above_confidence(session: AsyncSession, threshold: flo
     behavior for an irreplaceable archive; do NOT COALESCE), leaving them for per-file review.
     Reuses :func:`bulk_update_status` so the ``proposals.status`` write is identical to the existing
     bulk path. Returns the number of proposals approved.
+
+    phaze-bg4w: the ``allowed_from=[PENDING]`` guard is passed through to ``bulk_update_status`` so
+    the from-state predicate lands INSIDE the UPDATE's WHERE clause. Without it the UPDATE carried
+    only ``WHERE id IN (:ids)`` -- the ids snapshotted by the SELECT above -- so a proposal a
+    concurrent tab REJECTED between this function's SELECT and UPDATE was silently flipped back to
+    APPROVED (the same TOCTOU the single-row and existing bulk paths already close).
     """
     stmt = select(RenameProposal.id).where(
         RenameProposal.status == ProposalStatus.PENDING,
@@ -281,7 +287,7 @@ async def approve_pending_above_confidence(session: AsyncSession, threshold: flo
     ids = list((await session.execute(stmt)).scalars().all())
     if not ids:
         return 0
-    return await bulk_update_status(session, ids, ProposalStatus.APPROVED)
+    return await bulk_update_status(session, ids, ProposalStatus.APPROVED, allowed_from=frozenset({ProposalStatus.PENDING}))
 
 
 async def update_proposal_fields(
