@@ -177,12 +177,14 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         # Best-effort compensation (phaze-bbwx): upload_id is about to become unrecoverable (never
         # persisted, or the SAVEPOINT is rolling back the row that would have persisted it), so this
         # is the only chance to abort it. Idempotent + swallows already-gone codes on its own
-        # (s3_staging.abort_multipart_upload); any OTHER S3StagingError here is logged, not raised,
-        # so a failed compensation never masks the original failure -- the lifecycle backstop
+        # (s3_staging.abort_multipart_upload); ANY exception the abort itself raises -- a wrapped
+        # S3StagingError, or a raw network/DNS error the client context manager can surface before
+        # the SDK call even reaches botocore's ClientError wrapping -- is logged, never raised, so a
+        # failed compensation can never mask the ORIGINAL failure. The lifecycle backstop
         # (phaze-sqpv) is the last resort if this abort itself cannot reach S3.
         try:
             await s3_staging.abort_multipart_upload(file.id, upload_id, bucket)
-        except s3_staging.S3StagingError:
+        except Exception:
             logger.warning(
                 "stage_file_to_s3: best-effort abort of orphaned multipart upload failed",
                 file_id=str(file.id),
