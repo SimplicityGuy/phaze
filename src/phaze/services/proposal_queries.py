@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 
 
 if TYPE_CHECKING:
@@ -146,12 +147,16 @@ async def get_proposals_page(
         base = base.where(RenameProposal.status == status)
         count_base = count_base.where(RenameProposal.status == status)
 
-    # Search filter
+    # Search filter. `like_wildcard` escapes LIKE metacharacters (`%`, `_`, `\`) in the operator's
+    # raw text before wrapping it in `%...%`, so `_`-dense filenames (e.g. `set_live_2024.mp3`)
+    # match literally instead of treating each `_` as a single-char wildcard, and a literal `\` in
+    # `original_filename` round-trips instead of being silently consumed as an escape character
+    # (phaze-0dd2).
     if search and search.strip():
-        search_term = f"%{search.strip()}%"
+        search_term = like_wildcard(search.strip())
         search_filter = or_(
-            RenameProposal.proposed_filename.ilike(search_term),
-            RenameProposal.file_id.in_(select(FileRecord.id).where(FileRecord.original_filename.ilike(search_term))),
+            RenameProposal.proposed_filename.ilike(search_term, escape=LIKE_ESCAPE_CHAR),
+            RenameProposal.file_id.in_(select(FileRecord.id).where(FileRecord.original_filename.ilike(search_term, escape=LIKE_ESCAPE_CHAR))),
         )
         base = base.where(search_filter)
         count_base = count_base.where(search_filter)

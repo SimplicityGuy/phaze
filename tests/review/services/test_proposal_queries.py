@@ -197,6 +197,43 @@ async def test_get_proposals_page_search(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_proposals_page_search_underscore_is_literal(session: AsyncSession) -> None:
+    """phaze-0dd2: `_` must match only itself, not "any single character" -- otherwise a search for
+    `set_live_2024` also matches the unrelated `set-live-2024` / `setXlive 2024`."""
+    await _create_proposal(session, original_filename="set_live_2024.mp3", proposed_filename="Set_Live_2024.mp3")
+    await _create_proposal(session, original_filename="set-live-2024.mp3", proposed_filename="Set-Live-2024.mp3")
+    await _create_proposal(session, original_filename="setXlive2024.mp3", proposed_filename="SetXLive2024.mp3")
+
+    proposals, pagination = await get_proposals_page(session, status="all", search="set_live_2024")
+    assert pagination.total == 1
+    assert len(proposals) == 1
+    assert proposals[0].file.original_filename == "set_live_2024.mp3"
+
+
+@pytest.mark.asyncio
+async def test_get_proposals_page_search_percent_is_literal(session: AsyncSession) -> None:
+    """phaze-0dd2: `%` must match only itself, not "zero or more characters"."""
+    await _create_proposal(session, original_filename="50pct.mp3", proposed_filename="50% Off Mix.mp3")
+    await _create_proposal(session, original_filename="off.mp3", proposed_filename="Off Mix.mp3")
+
+    proposals, pagination = await get_proposals_page(session, status="all", search="50% Off")
+    assert pagination.total == 1
+    assert proposals[0].proposed_filename == "50% Off Mix.mp3"
+
+
+@pytest.mark.asyncio
+async def test_get_proposals_page_search_backslash_round_trips(session: AsyncSession) -> None:
+    """phaze-0dd2: a literal backslash in the search text must not be silently consumed as the LIKE
+    escape character -- searching for `AC\\DC` must find the row whose filename literally is that."""
+    await _create_proposal(session, original_filename="ac_dc.mp3", proposed_filename="AC\\DC - Thunder.mp3")
+    await _create_proposal(session, original_filename="acdc.mp3", proposed_filename="ACDC - Thunder.mp3")
+
+    proposals, pagination = await get_proposals_page(session, status="all", search="AC\\DC")
+    assert pagination.total == 1
+    assert proposals[0].proposed_filename == "AC\\DC - Thunder.mp3"
+
+
+@pytest.mark.asyncio
 async def test_get_proposals_page_sort_by_original_filename(session: AsyncSession) -> None:
     await _create_proposal(session, original_filename="zzz.mp3", proposed_filename="Z.mp3")
     await _create_proposal(session, original_filename="aaa.mp3", proposed_filename="A.mp3")
