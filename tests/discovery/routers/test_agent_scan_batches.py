@@ -437,6 +437,123 @@ async def test_same_state_no_op_does_not_stamp_last_progress_at(session: AsyncSe
     assert b.last_progress_at is None, "same-state no-op PATCH must NOT stamp the heartbeat"
 
 
+# ---------------------------------------------------------------------------
+# phaze-v392: terminal-state guard for status-less PATCHes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", [ScanStatus.COMPLETED, ScanStatus.FAILED])
+async def test_status_less_progress_patch_on_terminal_batch_409s(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    terminal_status: ScanStatus,
+) -> None:
+    """A status-less progress PATCH (`ScanBatchPatch(processed_files=...)`, no `status`) against an
+    already-terminal batch must be rejected with 409, not silently applied.
+
+    Mirrors the real trigger: `tasks/scan.py:302`/`:309` issue exactly this shape
+    (`ScanBatchPatch(processed_files=total)`) on every chunk, with no `status` field at all -- a SAQ
+    at-least-once retry re-running an already-completed `scan_directory` task re-issues these against
+    the now-terminal row. Pre-fix, every guard (steps 3-5) was conditioned on `body.status is not
+    None`, so this shape fell straight through to the unconditional setattr + commit.
+    """
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, terminal_status)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"processed_files": 999})
+    assert r.status_code == 409, r.text
+    assert "terminal" in r.text.lower()
+
+    # DB unchanged: the terminal row's processed_files must NOT have been overwritten.
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.processed_files == 0
+    assert b.status == terminal_status.value
+
+
+@pytest.mark.asyncio
+async def test_status_less_total_files_patch_on_terminal_batch_409s(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """The pre-count PATCH shape (`ScanBatchPatch(total_files=...)`, `tasks/scan.py:262`) is also
+    guarded against a terminal row -- a second status-less field, same bypass class."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.COMPLETED)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"total_files": 42})
+    assert r.status_code == 409, r.text
+
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.total_files == 0
+
+
+@pytest.mark.asyncio
+async def test_status_less_progress_patch_on_terminal_batch_does_not_bump_heartbeat_or_updated_at(
+    session: AsyncSession, seed_test_agent: tuple[Agent, str]
+) -> None:
+    """A rejected status-less PATCH against a terminal batch is a genuine no-write: neither
+    `last_progress_at` nor `updated_at` moves (the 409 must be raised BEFORE step 6/6b)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.COMPLETED)
+    await session.commit()
+    session.expire_all()
+    before = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    before_updated_at, before_last_progress_at = before.updated_at, before.last_progress_at
+
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"processed_files": 5})
+    assert r.status_code == 409
+
+    await session.commit()
+    session.expire_all()
+    after = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert after.updated_at == before_updated_at
+    assert after.last_progress_at == before_last_progress_at
+
+
+@pytest.mark.asyncio
+async def test_empty_patch_on_terminal_batch_is_idempotent_echo(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """A PATCH with NO fields set at all against a terminal batch is a genuine no-op: 200 echo."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.COMPLETED)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_same_terminal_status_reaffirmed_with_no_other_fields_still_echoes(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Re-PATCHing the SAME terminal status with no other field is still the idempotent 200 echo
+    (the terminal guard must not regress this pre-existing same-state no-op behavior)."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.COMPLETED)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(f"/api/internal/agent/scan-batches/{batch_id}", json={"status": "completed"})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_same_terminal_status_with_extra_mutating_field_still_409s(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
+    """Re-affirming the SAME terminal status while ALSO carrying a mutating field (e.g. a duplicate
+    terminal PATCH after a lost ack) is refused -- the row-state guard, not the presence of `status`,
+    decides whether a mutation is permitted."""
+    agent, raw_token = seed_test_agent
+    batch_id = await _seed_batch(session, agent.id, ScanStatus.COMPLETED)
+    async with _make_client(session, raw_token) as ac:
+        r = await ac.patch(
+            f"/api/internal/agent/scan-batches/{batch_id}",
+            json={"status": "completed", "processed_files": 999},
+        )
+    assert r.status_code == 409, r.text
+    await session.commit()
+    session.expire_all()
+    b = (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalar_one()
+    assert b.processed_files == 0
+
+
 def test_router_registered_in_main_app() -> None:
     """Task 3: phaze.main.create_app() must include the agent_scan_batches router.
 

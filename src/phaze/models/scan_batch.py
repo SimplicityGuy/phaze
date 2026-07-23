@@ -59,4 +59,14 @@ class ScanBatch(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("status = 'live'"),
         ),
+        # phaze-1a71: at most one RUNNING batch per (agent_id, scan_path) -- the durable,
+        # race-safe guard against a double `trigger_scan` submit dispatching two concurrent
+        # unbounded full SHA-256 archive walks of the same tree (migration 044).
+        Index(
+            "uq_scan_batches_agent_id_scan_path_running",
+            "agent_id",
+            "scan_path",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
     )

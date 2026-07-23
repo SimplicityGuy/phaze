@@ -10,6 +10,15 @@ stamped at scan time. `current_path` is the post-execution path; only
 meaningful AFTER execute_approved_batch flips state, sent back via
 patch_proposal_state (NOT carried in any task payload).
 
+phaze-wsuf exception: `ScanLiveSetPayload.original_path` is populated from the file's
+CURRENT on-disk location (`FileRecord.current_path`), not the scan-time original. The
+scan-tab eligibility query offers a file for fingerprint scanning with no exclusion for an
+already-executed (moved) file, so `original_path` can point at a path a prior execution
+already deleted; `current_path` equals `original_path` until a move and is always the file's
+live location. The field keeps its name (every other task's `original_path` still means the
+scan-time path) -- only the VALUE producing it at the `POST /tracklists/scan` call site
+differs, so the agent-side handler (`tasks/scan.py::scan_live_set`) needs no change.
+
 All schemas declare `extra="forbid"` per Phase 25 D-16 -- agent-supplied
 job payloads are validated as strictly as HTTP request bodies.
 
@@ -151,7 +160,14 @@ class FingerprintFilePayload(BaseModel):
 
 
 class ScanLiveSetPayload(BaseModel):
-    """SAQ job: fingerprint-query a live-set file and resolve a proposed tracklist."""
+    """SAQ job: fingerprint-query a live-set file and resolve a proposed tracklist.
+
+    phaze-wsuf: `original_path` here is populated with the file's CURRENT on-disk location
+    (`FileRecord.current_path`) by the `POST /tracklists/scan` handler, NOT the scan-time path
+    -- see the module docstring's D-24 exception note. `combined_query` (tasks/scan.py) runs
+    the fingerprint engines against exactly this path, so an executed (moved) file must be
+    queried at its live location or the query targets a deleted path.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
