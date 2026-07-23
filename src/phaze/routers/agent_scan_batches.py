@@ -108,9 +108,7 @@ async def patch_scan_batch(
     # re-affirming the row's own terminal value with no other mutating field) still gets the
     # idempotent 200 echo -- everything else against a terminal row is refused with 409.
     if cur in _TERMINAL_SCAN_STATUSES:
-        is_pure_echo = not set_fields or (
-            set(set_fields.keys()) == {"status"} and body.status is not None and ScanStatus(body.status) == cur
-        )
+        is_pure_echo = not set_fields or (set(set_fields.keys()) == {"status"} and body.status is not None and ScanStatus(body.status) == cur)
         if is_pure_echo:
             return _row_to_response(batch)
         if body.status is not None:

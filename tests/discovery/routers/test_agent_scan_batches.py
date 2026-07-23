@@ -525,9 +525,7 @@ async def test_empty_patch_on_terminal_batch_is_idempotent_echo(session: AsyncSe
 
 
 @pytest.mark.asyncio
-async def test_same_terminal_status_reaffirmed_with_no_other_fields_still_echoes(
-    session: AsyncSession, seed_test_agent: tuple[Agent, str]
-) -> None:
+async def test_same_terminal_status_reaffirmed_with_no_other_fields_still_echoes(session: AsyncSession, seed_test_agent: tuple[Agent, str]) -> None:
     """Re-PATCHing the SAME terminal status with no other field is still the idempotent 200 echo
     (the terminal guard must not regress this pre-existing same-state no-op behavior)."""
     agent, raw_token = seed_test_agent
