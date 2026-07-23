@@ -163,9 +163,11 @@ class _FakeProc:
         self.stdout = _stream(stdout_lines)
         self.stderr = _stream(stderr_lines)
         self._returncode = returncode
+        self.returncode: int | None = None  # None while "running", like asyncio's Process
         self.kill_called = False
 
     async def wait(self) -> int:
+        self.returncode = self._returncode
         return self._returncode
 
     def kill(self) -> None:
@@ -203,6 +205,62 @@ async def test_protocol_garbage_and_blank_lines_are_skipped_not_fatal(monkeypatc
     assert bumps == [(1, 2)]
     garbage = [entry for entry in captured if entry["event"] == "analysis_child_protocol_garbage"]
     assert len(garbage) == 2  # the non-JSON line and the unknown-type line; blanks are silent
+
+
+async def test_scalar_json_lines_are_protocol_garbage_not_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Valid-JSON-but-non-dict lines ('null', '42', '[1]', '"x"') are logged and skipped
+    like any other garbage — they must not raise past the pump and orphan the child
+    (phaze-702y: ``.get`` on a scalar raised AttributeError/TypeError)."""
+    proc = _FakeProc(
+        stdout_lines=[
+            b"null\n",
+            b"42\n",
+            b"[1]\n",
+            b'"stray string"\n',
+            b'{"type": "result", "result": {"ok": true}}\n',
+        ],
+        stderr_lines=[],
+        returncode=0,
+    )
+    _fake_spawn(monkeypatch, proc)
+
+    with capture_logs() as captured:
+        result = await run_analysis_subprocess("/f", "/m")
+
+    assert result == {"ok": True}
+    garbage = [entry for entry in captured if entry["event"] == "analysis_child_protocol_garbage"]
+    assert len(garbage) == 4
+    assert not proc.kill_called  # the run completed normally; nothing to reap
+
+
+async def test_unexpected_pump_exception_still_kills_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-timeout exception escaping the stdout pump (here a malformed progress count)
+    must still go through the kill/reap path before propagating — no exception may leave
+    the essentia child running (phaze-702y)."""
+    proc = _FakeProc(
+        stdout_lines=[b'{"type": "progress", "analyzed": "not-a-number", "total": 3}\n'],
+        stderr_lines=[],
+        returncode=0,
+    )
+    _fake_spawn(monkeypatch, proc)
+
+    with pytest.raises(ValueError, match="not-a-number"):
+        await run_analysis_subprocess("/f", "/m")
+
+    assert proc.kill_called
+
+
+async def test_over_limit_stdout_line_still_kills_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single stdout line past the StreamReader limit makes readline raise ValueError
+    OUTSIDE the pump's json guard; that escape must also kill the child (phaze-702y's
+    second escape site — the fake reader's 64 KiB default stands in for _STREAM_LIMIT)."""
+    proc = _FakeProc(stdout_lines=[b"x" * (1 << 17)], stderr_lines=[], returncode=0)  # no newline, over the limit
+    _fake_spawn(monkeypatch, proc)
+
+    with pytest.raises(ValueError):
+        await run_analysis_subprocess("/f", "/m")
+
+    assert proc.kill_called
 
 
 async def test_nonzero_exit_without_result_raises_with_stderr_tail(monkeypatch: pytest.MonkeyPatch) -> None:

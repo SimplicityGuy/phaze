@@ -16,8 +16,9 @@ Responsibilities:
 - Frame every child stderr line into structlog (``analysis_child_output``) — this is
   where essentia's C++ banners land after the child's fd 1 → fd 2 re-route, closing
   the banner-capture TODO deferred from Phase 100.
-- Kill the child on timeout or cancellation (``proc.kill()`` + ``await proc.wait()``)
-  so no orphan analysis process survives its parent's interest.
+- Kill the child on timeout, cancellation, or ANY other exceptional exit
+  (``proc.kill()`` + ``await proc.wait()``) so no orphan analysis process survives
+  its parent's interest.
 
 Error contract (chosen to slot into the lanes' existing terminal handling):
 - inner timeout      → ``TimeoutError``  (what the pebble pool raised on SIGKILL —
@@ -173,6 +174,12 @@ async def run_analysis_subprocess(
                 # result/error line still decides the outcome.
                 log.warning("analysis_child_protocol_garbage", line=line[:_STDERR_LINE_MAX])
                 continue
+            if not isinstance(message, dict):
+                # Valid JSON but not a protocol object ("null", "42", "[1]"): same
+                # garbage discipline as non-JSON lines. Calling .get on these raised
+                # and orphaned the child (phaze-702y).
+                log.warning("analysis_child_protocol_garbage", line=line[:_STDERR_LINE_MAX])
+                continue
             kind = message.get("type")
             if kind == "progress":
                 _safe_progress(int(message.get("analyzed", 0)), int(message.get("total", 0)))
@@ -198,20 +205,28 @@ async def run_analysis_subprocess(
         await asyncio.gather(_pump_stdout(), _pump_stderr())
         return await proc.wait()
 
+    async def _kill_and_reap() -> None:
+        if proc.returncode is None:
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+
     try:
         returncode = await asyncio.wait_for(_drive(), timeout=timeout) if timeout is not None else await _drive()
     except TimeoutError:
-        proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        await _kill_and_reap()
         msg = f"analysis child timed out after {timeout}s"
         raise TimeoutError(msg) from None
     except asyncio.CancelledError:
         # The caller lost interest (SAQ job cancellation / pod teardown): reap the
         # child so no orphan essentia process keeps burning CPU, then propagate.
-        proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        await _kill_and_reap()
+        raise
+    except BaseException:
+        # phaze-702y: ANY other escape from the pump/drive — e.g. a readline ValueError
+        # when a single protocol line exceeds _STREAM_LIMIT — must honor the same
+        # no-orphan contract as timeout/cancellation before it propagates.
+        await _kill_and_reap()
         raise
 
     if returncode == 0 and result is not None:
