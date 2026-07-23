@@ -218,9 +218,7 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
                 select(
                     ScanBatch.agent_id.label("agent_id"),
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number()
-                    .over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc()))
-                    .label("rn"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc())).label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
