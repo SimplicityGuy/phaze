@@ -22,7 +22,18 @@
      * Always includes _workspace_poll_seeds.html so the OOB store seeds have landing targets.
 #}
 {% macro workspace(title, subcount='', actions='', x_data='', cloud_cards=false) %}
-<section{% if x_data %} x-data="{{ x_data }}"{% endif %} class="flex flex-col">
+{# phaze-8pmj: x-data used to be emitted ONLY when a caller passed x_data (12 of 13 ws.workspace
+   callers don't), so most stage sections rendered with no Alpine root at all. Alpine only
+   initializes x-data-ROOTED subtrees (the same rule the rail's Phase-93 CONSOLE-02 fix and
+   _file_table.html's CR-01 fix both lock down), so on any direct navigation/reload/bookmark of
+   /s/<stage> -- shell.py serves the FULL shell then, with no ancestor x-data between <body> and
+   this <section> -- every store-bound directive the header/actions slot renders (the sub-count's
+   x-text, the R-4 busy-gate :disabled bindings, the "· running…" x-show pills) is inert forever.
+   A rail-driven swap survives because Alpine's mutation observer initializes newly-inserted
+   nodes regardless of ancestry; a full-document render does not. Always emit a root -- a bare
+   x-data="{}" when the caller passes none -- so the scaffold can never ship a store-bound
+   subtree with nothing to bind it. #}
+<section x-data="{{ x_data or '{}' }}" class="flex flex-col">
     {# Workspace header bar. A <div> (not the semantic <header> element) is used deliberately:
        the Phase-57 bare-fragment guard asserts the substring "<head" is absent from a stage
        fragment, and "<header" would trip it -- the layout role is unchanged. #}

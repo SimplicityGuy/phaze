@@ -45,6 +45,29 @@
             const palette = document.getElementById('cmdk-dialog');
             return !!palette && palette.getClientRects().length > 0;
         },
+        // phaze-xmce: the force-skip confirm dialog (_force_skip_dialog.html, one per enrich stage,
+        // rendered inside #record-body) ALSO registers its own @keydown.escape.window listener that
+        // closes only itself. Neither listener uses .stop -- and .stop (stopPropagation) would not
+        // help anyway, since both listeners are bound to the SAME target (window), so only
+        // stopImmediatePropagation prevents a sibling window listener from firing, and Alpine's
+        // modifiers don't expose that. So a single Esc fired BOTH handlers: the modal's own hide()
+        // AND this host's `if (open) hide()`, tearing down the entire slide-in when the operator only
+        // meant to dismiss the confirm. Same fix shape as paletteIsOpen() above: check the DOM for any
+        // OPEN nested dialog rather than relying on which window listener happens to run first
+        // (include/insertion order is not a contract, and the force-skip dialog is inserted well after
+        // this host's own listener registers, via the record body's async HTMX fetch).
+        nestedModalOpen() {
+            const body = document.getElementById('record-body');
+            if (!body) return false;
+            // Unquoted CSS attribute values (dialog / true are both valid identifiers) -- this whole
+            // expression sits inside the x-data attribute below, which is itself delimited by double
+            // quote characters, so a quoted selector value would prematurely close it.
+            const dialogs = body.querySelectorAll('[role=dialog][aria-modal=true]');
+            for (const dialog of dialogs) {
+                if (dialog.getClientRects().length > 0) return true;
+            }
+            return false;
+        },
         hide() {
             this.open = false;
             const target = this.opener || document.getElementById('stage-workspace');
@@ -58,7 +81,7 @@
         }
      }"
      @record:open.window="show($event.detail && $event.detail.el)"
-     @keydown.escape.window="if (open && !paletteIsOpen()) hide()">
+     @keydown.escape.window="if (open && !paletteIsOpen() && !nestedModalOpen()) hide()">
 
     <div x-show="open"
          style="display:none"

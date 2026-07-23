@@ -6,6 +6,7 @@ import re
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+from bs4 import BeautifulSoup, Tag
 from httpx import AsyncClient
 import pytest
 from sqlalchemy import func, select
@@ -939,7 +940,7 @@ async def test_bulk_reject_low_confidence(session: AsyncSession, client: AsyncCl
     session.add(dl)
     await session.flush()
 
-    response = await client.post(f"/tracklists/{tl.id}/reject-low?threshold=50")
+    response = await client.post(f"/tracklists/{tl.id}/reject-low", data={"threshold": 50})
     assert response.status_code == 200
     assert "Good" in response.text
     assert "Bad" not in response.text
@@ -949,6 +950,69 @@ async def test_bulk_reject_low_confidence(session: AsyncSession, client: AsyncCl
     assert remaining_links.scalar_one() == 0, "referencing DiscogsLink rows are cleared before the bulk track delete"
     remaining_tracks = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == version.id))
     assert remaining_tracks.scalar_one() == 1, "only the high-confidence track survives"
+
+
+@pytest.mark.asyncio
+async def test_bulk_reject_low_confidence_honors_operator_threshold(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-mfl0): HTMX serializes hx-vals into the request BODY for a POST, not the
+    URL query string. The handler used to declare ``threshold: int = Query(50)``, which reads only
+    the query string, so any operator-chosen threshold sent via hx-vals was silently discarded and
+    the endpoint always deleted using the hardcoded default of 50 -- regardless of what the operator
+    typed into the "Reject tracks below" field. This pins the fix (``Form``) by choosing a threshold
+    of 30 that must survive the 30-49 band a threshold-50 run would incorrectly delete.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    # Confidence 40 sits BELOW the default-50 cutoff but ABOVE the operator-chosen 30 cutoff: it must
+    # survive a threshold=30 request. If the request body value were ignored (bug behavior falls back
+    # to the Query default of 50), this track would be wrongly deleted.
+    middle_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="Middle",
+        title="Middle Track",
+        confidence=40.0,
+    )
+    low_conf = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=2,
+        artist="Bad",
+        title="Bad Track",
+        confidence=20.0,
+    )
+    session.add_all([middle_conf, low_conf])
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject-low", data={"threshold": 30})
+    assert response.status_code == 200
+    assert "Middle" in response.text, "operator's threshold of 30 must spare confidence 40"
+    assert "Bad" not in response.text
+
+    remaining_tracks = await session.execute(select(TracklistTrack.artist).where(TracklistTrack.version_id == version.id))
+    assert sorted(r for (r,) in remaining_tracks.all()) == ["Middle"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_reject_low_confidence_rejects_out_of_range_threshold(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-mfl0): the threshold is now server-validated (0-100), not just client-side."""
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject-low", data={"threshold": 101})
+    assert response.status_code == 422
+
+    response = await client.post(f"/tracklists/{tl.id}/reject-low", data={"threshold": -1})
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -980,6 +1044,55 @@ async def test_fingerprint_tracks_use_fingerprint_template(session: AsyncSession
     assert "FP Artist" in response.text
     assert "hx-get" in response.text  # inline edit wiring
     assert "hx-delete" in response.text  # delete button
+
+
+@pytest.mark.asyncio
+async def test_inline_edit_trigger_lives_on_span_not_td(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-rv0x): the Artist/Title/Timestamp <td> cells used to carry the edit hx-get
+    themselves, with hx-target="this" hx-swap="innerHTML". Because that swap only replaces the td's
+    CHILDREN, the td (and its click listener) survived the swap into edit mode, so any click landing
+    inside the freshly-opened <input> (e.g. repositioning the caret) bubbled up to the still-listening
+    td and re-fired the GET, discarding the operator's typed edit and re-seeding the input from the
+    stored DB value. The fix moves the trigger onto an inner <span> (mirroring
+    inline_display_field.html) so the trigger element itself is removed from the DOM once edit mode
+    opens -- nothing is left inside the td to re-fire while the input has focus.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version = TracklistVersion(id=uuid.uuid4(), tracklist_id=tl.id, version_number=1)
+    session.add(version)
+    await session.flush()
+    tl.latest_version_id = version.id
+
+    track = TracklistTrack(
+        id=uuid.uuid4(),
+        version_id=version.id,
+        position=1,
+        artist="FP Artist",
+        title="FP Title",
+        timestamp="00:01:00",
+        confidence=88.0,
+    )
+    session.add(track)
+    await session.flush()
+
+    response = await client.get(f"/tracklists/{tl.id}/tracks")
+    assert response.status_code == 200
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    cells = [td for td in soup.find_all("td") if isinstance(td, Tag) and td.find(attrs={"hx-get": True})]
+    assert len(cells) == 3, "expected exactly the Artist/Title/Timestamp cells to carry an edit trigger"
+    for td in cells:
+        assert not td.has_attr("hx-get"), (
+            "the <td> itself must not carry hx-get -- it survives the innerHTML swap into edit mode "
+            "and re-fires on any click bubbling up from inside the open editor"
+        )
+        span = td.find("span", attrs={"hx-get": True})
+        assert span is not None, "the edit trigger must live on an inner <span>, mirroring inline_display_field.html"
+        assert span["hx-target"] == "closest td"
+        assert span["hx-swap"] == "innerHTML"
 
 
 @pytest.mark.asyncio
@@ -1790,7 +1903,7 @@ async def test_reject_tracklist_not_found(session: AsyncSession, client: AsyncCl
 async def test_reject_low_confidence_not_found(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/reject-low returns 404 for non-existent tracklist."""
     fake_id = uuid.uuid4()
-    response = await client.post(f"/tracklists/{fake_id}/reject-low?threshold=50")
+    response = await client.post(f"/tracklists/{fake_id}/reject-low", data={"threshold": 50})
     assert response.status_code == 404
 
 

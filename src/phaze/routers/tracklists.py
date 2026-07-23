@@ -993,7 +993,7 @@ async def reject_tracklist(
 async def reject_low_confidence(
     request: Request,
     tracklist_id: uuid.UUID,
-    threshold: int = Query(50),
+    threshold: int = Form(50, ge=0, le=100),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """Bulk reject tracks below a confidence threshold."""
