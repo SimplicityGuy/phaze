@@ -83,6 +83,56 @@ async def test_heartbeat_missing_field_422(seed_test_agent: tuple[Agent, str], s
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_over_limit_queue_depth_422_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-s4r0: an out-of-domain queue_depth must 422 at the wire boundary, never reach the DB.
+
+    Before the Field(le=QUEUE_DEPTH_MAX) bound, a value like this survived Pydantic (an unbounded
+    Python int), then blew up _LANE_MERGE_SQL's `::bigint` cast with NumericValueOutOfRange -- an
+    unhandled 500. The fix rejects it before a transaction is even opened.
+    """
+    _agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post(
+            "/api/internal/agent/heartbeat",
+            json={"agent_version": "4.0.0", "worker_pid": 1234, "queue_depth": 9999999999999999999, "lane": "analyze"},
+        )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_negative_queue_depth_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """queue_depth is a count -- a negative value is nonsense and must 422, not silently persist."""
+    _agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post(
+            "/api/internal/agent/heartbeat",
+            json={"agent_version": "4.0.0", "worker_pid": 1234, "queue_depth": -1},
+        )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_out_of_range_worker_pid_422(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """worker_pid is a positive pid -- zero/negative or past int32 must 422 (defense-in-depth bound)."""
+    _agent, raw_token = seed_test_agent
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        response = await ac.post(
+            "/api/internal/agent/heartbeat",
+            json={"agent_version": "4.0.0", "worker_pid": 0, "queue_depth": 5},
+        )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_revoke_blocks_next_call(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     """AUTH-04 reaffirmed on production route: revoke between calls -> next call returns 403."""
     agent, raw_token = seed_test_agent

@@ -43,29 +43,29 @@ _LANE_MERGE_SQL = text(
     """
     UPDATE agents
     SET last_seen_at = now(),
-        last_status = merged.js || jsonb_build_object(
+        last_status = (
+            COALESCE(agents.last_status, '{}'::jsonb)
+            || CAST(:base AS jsonb)
+            || jsonb_build_object(
+                   'lanes',
+                   COALESCE(agents.last_status -> 'lanes', '{}'::jsonb)
+                   || jsonb_build_object(CAST(:lane AS text), CAST(:lane_status AS jsonb))
+               )
+        ) || jsonb_build_object(
             'queue_depth',
             COALESCE(
                 (SELECT SUM((v ->> 'queue_depth')::bigint)
-                 FROM jsonb_each(merged.js -> 'lanes') AS e(k, v)),
+                 FROM jsonb_each(
+                     COALESCE(agents.last_status -> 'lanes', '{}'::jsonb)
+                     || jsonb_build_object(CAST(:lane AS text), CAST(:lane_status AS jsonb))
+                 ) AS e(k, v)),
                 0
             )
         )
-    FROM (
-        SELECT COALESCE(a.last_status, '{}'::jsonb)
-               || CAST(:base AS jsonb)
-               || jsonb_build_object(
-                      'lanes',
-                      COALESCE(a.last_status -> 'lanes', '{}'::jsonb)
-                      || jsonb_build_object(CAST(:lane AS text), CAST(:lane_status AS jsonb))
-                  ) AS js
-        FROM agents a
-        WHERE a.id = :agent_id
-    ) AS merged
     WHERE agents.id = :agent_id
     """,
 )
-"""Merge one lane's beat and recompute the summed depth, atomically.
+"""Merge one lane's beat and recompute the summed depth, atomically (phaze-gtd3).
 
 Deliberately ONE statement rather than a read-modify-write in Python. Four lanes beat
 concurrently (~4 writes/30s per agent); a Python-side merge would lose updates whenever
@@ -74,6 +74,27 @@ two beats interleave, silently dropping a lane from the breakdown until its next
 Uses explicit `||` object merging rather than `jsonb_set(..., ARRAY['lanes', lane], v, true)`:
 `create_missing` only creates the FINAL key, never intermediate ones, so on the first beat
 (when `lanes` does not yet exist) jsonb_set is a silent no-op and every depth reads 0.
+
+WHY THIS IS A SINGLE-TABLE UPDATE WITH NO ``FROM`` (phaze-gtd3)
+-----------------------------------------------------------------
+An earlier version of this statement read the merge source from a ``FROM (SELECT ... FROM
+agents a WHERE a.id = :agent_id) AS merged`` self-join, on the theory that one statement is
+atomic. It is not, under READ COMMITTED: when a concurrent beat B's UPDATE blocks on beat
+A's row lock and A commits first, Postgres re-runs B's plan via EvalPlanQual -- but EPQ only
+re-fetches the TARGET relation's row (``agents`` via the ``WHERE agents.id = ...`` match).
+Any OTHER relation named in the query -- including a ``FROM``-clause self-join back onto
+``agents`` -- keeps the ORIGINAL (pre-A-commit) snapshot B's query planner captured. So B's
+merge source (``merged.js``) was built from the stale last_status, and B's write clobbered
+the lane A had just committed, even though the two ran as "one atomic statement".
+
+The fix is to never introduce a second relation: every reference above is the direct column
+``agents.last_status`` of the UPDATE's own target row, with no ``FROM`` item at all. EPQ DOES
+re-evaluate direct target-table column references against the freshly re-fetched row version
+(this is the same reason a plain ``UPDATE t SET n = n + 1 WHERE id = :id`` is safe under
+concurrent writers) -- there is no other snapshot for it to fall back to. Two concurrent lane
+beats therefore each see the other's committed write once serialized by the row lock, and
+neither lane is lost. See ``tests/integration/test_agent_heartbeat_lane_merge_concurrency.py``
+for a real-Postgres regression reproducing the pre-fix clobber and proving the fix closes it.
 """
 
 
