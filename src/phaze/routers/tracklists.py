@@ -405,6 +405,17 @@ async def trigger_scan(
         if job is not None:
             job_ids.append(job.key)
 
+    # phaze-jdt4: zero enqueued jobs must render the TERMINAL state (done=True), not the polling
+    # state. job_ids ends up empty whenever every submitted id was skipped -- a malformed UUID
+    # (above), a FileRecord deleted/deduped between the scan-tab render and this submit, or every
+    # `queue.enqueue` returning None -- and with done=False the progress partial's polling div
+    # (`hx-get=".../scan/status?job_ids=&agent_id=..."`, `hx-trigger="every 3s"`) hits
+    # `scan_status`'s `job_ids: str = Query(..., min_length=1)`, which 422s forever: HTMX never
+    # swaps on a 4xx, so the panel is stuck on "Scanning... (0 of 0 files)" indefinitely. The
+    # completion formula `completed >= total` (scan_status) is trivially True for total=0, so the
+    # terminal state is rendered directly here instead, mirroring the no_active_agent branch above.
+    done = len(job_ids) == 0
+
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/scan_progress.html",
@@ -414,7 +425,7 @@ async def trigger_scan(
             "agent_id": routed.agent_id,
             "total": len(job_ids),
             "completed": 0,
-            "done": False,
+            "done": done,
             "tracklists_created": 0,
             "no_active_agent": False,
         },

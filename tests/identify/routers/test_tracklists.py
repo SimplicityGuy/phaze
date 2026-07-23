@@ -718,6 +718,26 @@ async def test_trigger_scan_uses_current_path_for_an_executed_moved_file(session
 
 
 @pytest.mark.asyncio
+async def test_trigger_scan_zero_enqueued_jobs_renders_terminal_state(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-jdt4: zero enqueued jobs must render done=True (terminal), never the polling state.
+
+    Every submitted file_id resolving to a skip (here: no matching FileRecord) leaves
+    job_ids empty. Pre-fix this rendered `done=False`, arming a poll
+    (`/tracklists/scan/status?job_ids=&agent_id=...`) that 422s forever against
+    `scan_status`'s `job_ids: str = Query(..., min_length=1)` -- a permanent
+    "Scanning... (0 of 0 files)" spinner. The fix renders the terminal state directly.
+    """
+    await seed_active_agent(session, "nox")
+    install_fake_queues(client)
+
+    missing_id = str(uuid.uuid4())
+    response = await client.post("/tracklists/scan", data={"file_ids": [missing_id]})
+    assert response.status_code == 200
+    assert "Scanning..." not in response.text
+    assert "No matching tracks found" in response.text or "Scan complete" in response.text
+
+
+@pytest.mark.asyncio
 async def test_proposed_filter(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/?filter=proposed returns only proposed tracklists."""
     file = _make_file()
