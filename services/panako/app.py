@@ -139,47 +139,88 @@ def _run_query(file_path: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+# A Panako query record has FIXED arity 13 (see _parse_matches); the trailing 7 fields
+# (match id .. seconds-with-match) are engine-generated numerics/percentages that can
+# never contain ';', so they can always be taken from the RIGHT end of the split.
+_RECORD_FIELDS = 13
+_TRAILING_FIELDS = 7
+
+
+def _is_float(fragment: str) -> bool:
+    try:
+        float(fragment)
+    except ValueError:
+        return False
+    return True
+
+
+def _match_path(middle: list[str]) -> str | None:
+    """Recover the match-path field from the variable-arity middle of a record.
+
+    ``middle`` holds the raw ';'-split fragments of "query path ; query start ;
+    query stop ; match path". Either path may itself contain ';', so locate the first
+    adjacent pair of purely-numeric fragments (query start/stop) with at least one
+    fragment on each side, and re-join everything after that pair -- restoring any ';'
+    the split consumed inside the match path. Returns None when no such pair exists
+    (structurally unparseable row).
+    """
+    for i in range(1, len(middle) - 2):
+        if _is_float(middle[i]) and _is_float(middle[i + 1]):
+            return ";".join(middle[i + 2 :]).strip()
+    return None
+
+
 def _parse_matches(stdout: str) -> list[QueryMatch]:
     """Parse Panako query output into structured results.
 
-    Panako query output is semicolon-separated with fields:
-      index; total; query path; query start; query end; match path; match ID;
-      match start; match end; score; time factor; freq factor; match percentage
+    Panako query output is semicolon-separated with FIXED arity 13:
+      0 index; 1 total; 2 query path; 3 query start; 4 query stop; 5 match path;
+      6 match id; 7 match start; 8 match stop; 9 score; 10 time factor;
+      11 freq factor; 12 seconds-with-match percentage
 
-    We use the match path as track_id and match percentage (field 12, 0-based)
-    as confidence normalized to 0-100.
+    We use the match path as track_id and the seconds-with-match percentage as
+    confidence normalized to 0-100.
+
+    The two path fields embed raw file paths verbatim with NO quoting/escaping, and a
+    messy personal archive legitimately contains ';' in filenames ("Sven; Vath -
+    Cocoon.mp3" -- the exact corpus this tool exists to clean up). A blind positional
+    ``line.split(';')`` shifts every field after an embedded ';', fabricating a phantom
+    match (track_id = a path fragment, confidence read from the wrong column) or
+    silently dropping a real one (phaze-9pmn). Parse from the record's fixed-arity ends
+    instead: leading index/total from the LEFT, the 7 never-semicolon numeric fields
+    from the RIGHT, and recover the match path from the variable middle.
     """
     matches: list[QueryMatch] = []
     for line in stdout.strip().splitlines():
         # Skip header lines or empty lines
         if not line.strip() or ";" not in line:
             continue
-        parts = [p.strip() for p in line.split(";")]
-        if len(parts) < 13:
+        parts = line.split(";")
+        if len(parts) < _RECORD_FIELDS:
             continue
         try:
             # Field 0 is index -- skip if it's a header (non-numeric)
             int(parts[0])
         except ValueError:
             continue
-        try:
-            track_id = parts[5]  # match path
-            # Panako emits a SENTINEL ROW for "no match found" rather than emitting
-            # nothing: match path and match id are the literal string "null" and the
-            # score/start/stop are -1. Without this guard that row is parsed as a real
-            # hit, and the service returns a phantom match {track_id: "null",
-            # confidence: 0.0} -- feeding a bogus duplicate into the dedup pipeline.
-            if track_id.lower() == "null" or parts[6].lower() == "null":
-                continue
-            match_score = float(parts[9])  # match score
-            if match_score < 0:
-                continue
-            match_percentage = float(parts[12])  # match percentage
-            confidence = min(100.0, max(0.0, match_percentage))
-            matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2)))
-        except (ValueError, IndexError):
+        tail = [p.strip() for p in parts[-_TRAILING_FIELDS:]]
+        track_id = _match_path(parts[2:-_TRAILING_FIELDS])
+        if track_id is None or not _is_float(tail[3]) or not _is_float(tail[6]):
             logger.warning("Failed to parse match line: %s", line)
             continue
+        # Panako emits a SENTINEL ROW for "no match found" rather than emitting
+        # nothing: match path and match id are the literal string "null" and the
+        # score/start/stop are -1. Without this guard that row is parsed as a real
+        # hit, and the service returns a phantom match {track_id: "null",
+        # confidence: 0.0} -- feeding a bogus duplicate into the dedup pipeline.
+        if track_id.lower() == "null" or tail[0].lower() == "null":
+            continue
+        match_score = float(tail[3])  # match score
+        if match_score < 0:
+            continue
+        match_percentage = float(tail[6])  # seconds-with-match percentage
+        confidence = min(100.0, max(0.0, match_percentage))
+        matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2)))
     return matches
 
 

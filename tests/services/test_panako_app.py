@@ -125,6 +125,55 @@ class TestMatchParsing:
         assert "unrecognized output" in (panako_app._probe_jar() or "")
 
 
+class TestSemicolonPathParsing:
+    """File paths containing ';' must not shift fields (phaze-9pmn).
+
+    Panako embeds the raw query/match paths verbatim in its ';'-separated record with no
+    quoting or escaping. The old blind positional ``split(';')`` turned a matched file
+    like "Sven; Vath - Cocoon.mp3" into a phantom match with a truncated track_id and a
+    confidence read from the wrong column -- or silently dropped the row entirely.
+    """
+
+    def test_match_path_with_semicolon_survives_intact(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/query.wav ; 1.376 ; 24.432 ; /data/music/Sven; Vath - Cocoon.mp3 ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        matches = panako_app._parse_matches(row)
+        assert len(matches) == 1
+        assert matches[0].track_id == "/data/music/Sven; Vath - Cocoon.mp3"
+        assert matches[0].confidence == 0.75
+
+    def test_query_path_with_semicolon_does_not_shift_match_fields(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/Artist; Live at Coachella.mp3 ; 1.376 ; 24.432 ; /audio/ref.wav ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        matches = panako_app._parse_matches(row)
+        assert len(matches) == 1
+        assert matches[0].track_id == "/audio/ref.wav"
+        assert matches[0].confidence == 0.75
+
+    def test_semicolons_in_both_paths(self, panako_app: ModuleType) -> None:
+        row = (
+            "1 ; 1 ; /audio/Artist; Live at Coachella.mp3 ; 1.376 ; 24.432 ; "
+            "/data/music/Sven; Vath - Cocoon.mp3 ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        )
+        matches = panako_app._parse_matches(row)
+        assert [m.track_id for m in matches] == ["/data/music/Sven; Vath - Cocoon.mp3"]
+
+    def test_multiple_semicolons_in_match_path(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/q.wav ; 0.0 ; 10.0 ; /m/a; b; c.mp3 ; 42 ; 0.0 ; 10.0 ; 36 ; 1.000 % ; 1.000 %; 0.50"
+        matches = panako_app._parse_matches(row)
+        assert [m.track_id for m in matches] == ["/m/a; b; c.mp3"]
+
+    def test_semicolon_path_with_negative_score_still_skipped(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/q.wav ; 0.0 ; 10.0 ; /m/a; b.mp3 ; 42 ; 0.0 ; 10.0 ; -1 ; 1.000 % ; 1.000 %; 0.00"
+        assert panako_app._parse_matches(row) == []
+
+    def test_structurally_unrecoverable_row_is_logged_and_skipped(self, panako_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        # No adjacent numeric pair bracketing the paths -> the record structure is gone;
+        # warn and skip rather than fabricate a match from arbitrary fragments.
+        row = "1 ; 1 ; /audio/q.wav ; notafloat ; alsonot ; /m/a.mp3 ; 42 ; 0.0 ; 10.0 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        with caplog.at_level("WARNING"):
+            assert panako_app._parse_matches(row) == []
+        assert "Failed to parse match line" in caplog.text
+
+
 class TestSubprocessWrappers:
     """The wrappers must invoke the CLI with the lmdb module flag and the right verb."""
 
