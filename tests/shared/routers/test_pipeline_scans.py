@@ -679,16 +679,24 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
 
 
 @pytest.mark.asyncio
-async def test_get_scan_progress_unknown_id_returns_404(
+async def test_get_scan_progress_unknown_id_renders_terminal_gone_fragment(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """GET /pipeline/scans/{unknown_id} returns 404 (pipeline_scans.py:120)."""
+    """GET /pipeline/scans/{unknown_id} renders a terminal `gone` fragment, not a 404.
+
+    phaze-xsje regression: htmx 2.x's default responseHandling does not swap non-2xx
+    bodies, so a 404 here would leave a previously-swapped-in RUNNING card's outerHTML
+    poller (hx-get + hx-trigger="every 2s") armed in the DOM forever. Returning 200 with
+    a terminal fragment (no hx-get/hx-trigger) lets the outerHTML swap replace it and
+    halt the poll, mirroring deepen_progress's `gone` handling.
+    """
     ac, _ = smoke
     unknown_id = uuid.uuid4()
     response = await ac.get(f"/pipeline/scans/{unknown_id}")
-    assert response.status_code == 404
-    # Detail surfaces in the error envelope so operators can correlate logs to UI.
-    assert "scan batch not found" in response.text.lower()
+    assert response.status_code == 200
+    assert "hx-trigger" not in response.text
+    assert "hx-get" not in response.text
+    assert "no longer available" in response.text.lower()
 
 
 async def test_post_scans_prefix_mismatch_via_direct_handler_invocation(
