@@ -110,6 +110,35 @@ async def test_extraction_failure_propagates(mock_extract: MagicMock) -> None:
     api.put_metadata.assert_not_awaited()
 
 
+async def test_unreadable_file_fails_the_stage_not_an_empty_success() -> None:
+    """phaze-todn: an I/O failure inside the REAL extract_tags must fail the stage.
+
+    Previously extract_tags swallowed FileNotFoundError/OSError into an all-None
+    ExtractedTags, so the task PUT an empty metadata row and returned
+    status='extracted' -- the terminal report_metadata_failed + SAQ retry machinery
+    built for exactly this case never fired. Uses the real extract_tags (no mock) on
+    a nonexistent path to pin the end-to-end behavior: no put_metadata, terminal ack
+    with the failure detail, then re-raise so SAQ records the failed attempt.
+    """
+    api = AsyncMock()
+    api.put_metadata = AsyncMock()
+    api.report_metadata_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = _job_stub(retryable=False)
+    file_id = uuid.uuid4()
+
+    kwargs = _make_payload_kwargs(file_id=file_id)
+    kwargs["original_path"] = "/nonexistent/mount/track.mp3"
+
+    with pytest.raises(FileNotFoundError):
+        await extract_file_metadata(ctx, **kwargs)
+
+    api.put_metadata.assert_not_awaited()
+    api.report_metadata_failed.assert_awaited_once()
+    failure = api.report_metadata_failed.await_args.args[1]
+    assert failure.reason == "error"
+
+
 @patch("phaze.tasks.metadata_extraction.extract_tags")
 async def test_rejects_extra_kwargs(mock_extract: MagicMock) -> None:
     """ExtractMetadataPayload.extra='forbid' rejects unknown fields."""
