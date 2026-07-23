@@ -77,7 +77,23 @@ class Debouncer:
             ready    -- paths whose ``last_change_at`` is >= ``settle_period``
                         seconds in the past (caller MUST post them).
             evicted  -- paths whose ``first_seen_at`` is > ``max_pending`` seconds
-                        in the past (D-02 stuck-file cap; NEVER posted).
+                        in the past AND that have not settled (D-02 stuck-file
+                        cap; NEVER posted).
+
+        Settledness is checked BEFORE the stuck-file cap (phaze-w27e). A path
+        whose ``last_change_at`` is already >= ``settle_period`` in the past is
+        always ``ready``, even if its ``first_seen_at`` is also older than
+        ``max_pending`` -- it is quiet, not stuck. The cap's documented intent
+        (module docstring, class docstring) is to contain a path whose mtime
+        keeps changing (e.g. a rename loop) and therefore NEVER satisfies the
+        settle check; checking eviction first misfired on entries that had
+        simply settled but were not yet swept (e.g. a sweep loop stalled for
+        over an hour behind serial multi-GB hashing elsewhere in the pipeline
+        -- see ``_sweep_loop`` in ``agent_watcher/__main__.py``), silently
+        dropping ready files at the cap instead of posting them. Reordering the
+        checks preserves the cap's actual containment case: an entry that is
+        still changing can never satisfy the settle check, so it still hits
+        the eviction branch once ``max_pending`` elapses.
 
         Both buckets are removed from the pending dict before return. The
         list-snapshot iteration pattern is the canonical safe-mutation idiom
@@ -88,11 +104,11 @@ class Debouncer:
         ready: list[str] = []
         evicted: list[str] = []
         for path, entry in list(self._pending.items()):
-            if now - entry.first_seen_at > max_pending:
-                evicted.append(path)
-                del self._pending[path]
-            elif now - entry.last_change_at >= settle_period:
+            if now - entry.last_change_at >= settle_period:
                 ready.append(path)
+                del self._pending[path]
+            elif now - entry.first_seen_at > max_pending:
+                evicted.append(path)
                 del self._pending[path]
         return ready, evicted
 
