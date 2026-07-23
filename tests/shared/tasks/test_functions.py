@@ -418,7 +418,12 @@ async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -
 
     assert result == {"file_id": str(file_id), "status": "analysis_failed"}
     api.report_analysis_failed.assert_awaited_once()
-    assert api.report_analysis_failed.await_args.args[1].reason == "crashed"
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "crashed"
+    # phaze-zibn: the child's terminal error line rides along as detail so the durable
+    # failure marker names the actual cause (e.g. AnalysisDecodeError vs a segfault).
+    assert failure.error is not None
+    assert "essentia died" in failure.error
     api.put_analysis.assert_not_awaited()
 
 

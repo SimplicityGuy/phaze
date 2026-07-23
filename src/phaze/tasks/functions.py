@@ -273,10 +273,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             # the job COMPLETE (no blind re-run of a >timeout file; T-43-08). RESEARCH §Q5.
             await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except AnalysisSubprocessError:
+        except AnalysisSubprocessError as exc:
             # essentia OOM/segfault/raise crashed the child (nonzero exit). Also deterministic ->
-            # TERMINAL the same way (the ProcessExpired mapping, preserved).
-            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
+            # TERMINAL the same way (the ProcessExpired mapping, preserved). The child's terminal
+            # error line rides along as detail so the durable failure marker names the actual
+            # cause -- e.g. phaze-zibn's AnalysisDecodeError (every window failed to decode)
+            # is distinguishable from an essentia segfault without re-running anything.
+            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 
         features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
