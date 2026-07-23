@@ -17,8 +17,14 @@ from phaze.models.base import Base
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url from application settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Override sqlalchemy.url from application settings. Alembic's Config is backed by a
+# ConfigParser, which applies %-interpolation on every value it stores -- and a percent-encoded
+# credential (e.g. a password containing '@' becomes '%40' in the URL) is a completely normal,
+# valid SQLAlchemy URL that is NOT valid ConfigParser input. Escape '%' as '%%' before handing
+# the raw URL to set_main_option, per Alembic's own documented workaround, so a real-world
+# credential doesn't crash `set_main_option` with ValueError('invalid interpolation syntax')
+# before any migration runs (phaze-7oya).
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

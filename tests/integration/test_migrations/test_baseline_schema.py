@@ -574,10 +574,7 @@ async def test_migration_041_dedupes_preexisting_duplicate_versions() -> None:
             ).all()
             dupes = (
                 await conn.execute(
-                    text(
-                        "SELECT version_number FROM tracklist_versions WHERE tracklist_id = :tid "
-                        "GROUP BY version_number HAVING COUNT(*) > 1"
-                    ),
+                    text("SELECT version_number FROM tracklist_versions WHERE tracklist_id = :tid GROUP BY version_number HAVING COUNT(*) > 1"),
                     {"tid": tracklist_id},
                 )
             ).all()
