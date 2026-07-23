@@ -5,39 +5,64 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from phaze.services.tracklist_scraper import DisallowedScrapeHostError, ScrapedTracklist, TracklistScraper, TracklistSearchResult
+from phaze.services.tracklist_scraper import (
+    DisallowedScrapeHostError,
+    ScrapedTracklist,
+    SearchParseFailureError,
+    TracklistScraper,
+    TracklistSearchResult,
+)
 
 
 # --- Fixtures ---
+#
+# phaze-mk6y: SAMPLE_SEARCH_HTML mirrors the CURRENT live markup (verified against a real fetched
+# search-results page 2026-07-18), not the stale `.bItmT` / `.bItmArtist` / `.bItmDate` shape the
+# scraper used to assume. Rows are `.bItm` (plus other classes like `action oItm`); the result
+# link is reachable via `a[href*='/tracklist/']`, its text is the full
+# "Artist @ Event, Venue, City, Country" string, and its href carries the external id plus a
+# trailing YYYY-MM-DD date. No live request is made anywhere in this module -- every case is a
+# saved/synthetic HTML fixture.
 
 SAMPLE_SEARCH_HTML = """
 <html><body>
-<div class="bItm">
-  <div class="bItmT">
-    <a href="/tracklist/abc123/skrillex-at-coachella-2025.html">
-      Skrillex @ Coachella 2025
+<div class="bItm action oItm">
+  <div class="bTitle">
+    <a href="/tracklist/abc123/skrillex-coachella-empire-polo-club-indio-united-states-2025-04-12">
+      Skrillex @ Coachella, Empire Polo Club, Indio, United States
     </a>
   </div>
-  <div class="bItmM">
-    <span class="bItmArtist">Skrillex</span>
-    <span class="bItmDate">2025-04-12</span>
+  <div class="bCont">
+    <span class="artM">Skrillex</span>
   </div>
 </div>
-<div class="bItm">
-  <div class="bItmT">
-    <a href="/tracklist/def456/deadmau5-at-edc-2025.html">
-      deadmau5 @ EDC Las Vegas 2025
+<div class="bItm action oItm">
+  <div class="bTitle">
+    <a href="/tracklist/def456/deadmau5-edc-las-vegas-nv-united-states-2025-06-20">
+      deadmau5 @ EDC, Las Vegas Motor Speedway, Las Vegas, United States
     </a>
   </div>
-  <div class="bItmM">
-    <span class="bItmArtist">deadmau5</span>
-    <span class="bItmDate">2025-06-20</span>
+  <div class="bCont">
+    <span class="artM">deadmau5</span>
   </div>
 </div>
 </body></html>
 """
 
 SAMPLE_EMPTY_SEARCH_HTML = "<html><body></body></html>"
+
+# A page whose row selector (.bItm) still matches but whose result-link selector matches
+# nothing -- the shape phaze-mk6y actually hit live: 30 real rows, 0 parsed links, no signal.
+SAMPLE_STALE_SEARCH_HTML = """
+<html><body>
+<div class="bItm action oItm">
+  <div class="bItmT"><span>Skrillex @ Coachella 2025</span></div>
+</div>
+<div class="bItm action oItm">
+  <div class="bItmT"><span>deadmau5 @ EDC 2025</span></div>
+</div>
+</body></html>
+"""
 
 SAMPLE_TRACKLIST_HTML = """
 <html>
@@ -100,10 +125,14 @@ class TestTracklistScraperSearch:
         assert len(results) == 2
         assert isinstance(results[0], TracklistSearchResult)
         assert results[0].external_id == "abc123"
-        assert results[0].title == "Skrillex @ Coachella 2025"
+        assert results[0].title == "Skrillex @ Coachella, Empire Polo Club, Indio, United States"
         assert "/tracklist/abc123/" in results[0].url
         assert results[0].artist == "Skrillex"
         assert results[0].date == "2025-04-12"
+
+        assert results[1].external_id == "def456"
+        assert results[1].artist == "deadmau5"
+        assert results[1].date == "2025-06-20"
 
     @pytest.mark.asyncio
     async def test_search_empty_results(self):
@@ -137,6 +166,70 @@ class TestTracklistScraperSearch:
             mock_sleep.assert_called_once()
             delay = mock_sleep.call_args[0][0]
             assert scraper.MIN_DELAY <= delay <= scraper.MAX_DELAY
+
+
+class TestTracklistScraperSearchParseFailure:
+    """phaze-mk6y: a stale-selector defect must be LOUD, not collapsed into the same [] as a
+    genuine no-match search."""
+
+    @pytest.mark.asyncio
+    async def test_search_raises_when_all_candidate_rows_are_unparseable(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_STALE_SEARCH_HTML))
+
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(SearchParseFailureError) as exc_info:
+            await scraper.search("Skrillex Coachella")
+        assert exc_info.value.candidate_count == 2
+
+    def test_parse_search_results_raises_when_every_row_lacks_a_link(self):
+        """A single `.bItm` present but no `a[href*='/tracklist/']` inside it -- the selector
+        itself is stale, this must not be silently treated as zero results."""
+        html = '<html><body><div class="bItm"><div class="bItmT"><span>No link here</span></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        with pytest.raises(SearchParseFailureError) as exc_info:
+            scraper._parse_search_results(html)
+        assert exc_info.value.candidate_count == 1
+
+    def test_parse_search_results_mixed_rows_returns_only_the_parseable_ones(self):
+        """Some rows parsing and some not is a normal partial page, NOT a stale-selector signal --
+        only raise when EVERY candidate row fails to yield a link."""
+        html = (
+            "<html><body>"
+            '<div class="bItm action oItm"><div class="bTitle">'
+            '<a href="/tracklist/abc123/skrillex-coachella-2025-04-12">Skrillex @ Coachella, Indio, United States</a>'
+            "</div></div>"
+            '<div class="bItm action oItm"><div class="bItmT"><span>No link here</span></div></div>'
+            "</body></html>"
+        )
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        results = scraper._parse_search_results(html)
+        assert len(results) == 1
+        assert results[0].external_id == "abc123"
+
+    def test_parse_search_results_skips_item_without_result_link(self):
+        """Historical name kept for continuity with phaze-k5zz coverage below: with the new
+        selector, an item lacking a `/tracklist/`-containing anchor is exactly the stale-selector
+        case, so a lone such item raises rather than being silently skipped (phaze-mk6y)."""
+        html = '<html><body><div class="bItm"><div class="bItmM"></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        with pytest.raises(SearchParseFailureError):
+            scraper._parse_search_results(html)
+
+
+class TestTracklistScraperHrefDateExtraction:
+    """phaze-mk6y: the date lives in the href slug, not a separate `.bItmDate` element."""
+
+    def test_extract_date_from_href_parses_trailing_date(self):
+        href = "/tracklist/25fhn7c9/sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25"
+        assert TracklistScraper._extract_date_from_href(href) == "2024-10-25"
+
+    def test_extract_date_from_href_returns_none_without_a_trailing_date(self):
+        assert TracklistScraper._extract_date_from_href("/tracklist/abc123/no-date-here") is None
+
+    def test_extract_date_from_href_zero_pads_single_digit_month_and_day(self):
+        href = "/tracklist/xyz/some-event-2024-3-5"
+        assert TracklistScraper._extract_date_from_href(href) == "2024-03-05"
 
 
 class TestTracklistScraperScrape:
@@ -244,7 +337,7 @@ class TestTracklistScraperSearchEdgeCases:
 
     @pytest.mark.asyncio
     async def test_search_parse_failure_returns_empty(self):
-        """A parser exception on a 200 body is swallowed and yields []."""
+        """An unexpected (non-stale-selector) parser exception on a 200 body is still swallowed to []."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
 
@@ -252,24 +345,22 @@ class TestTracklistScraperSearchEdgeCases:
         with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")):
             assert await scraper.search("skrillex") == []
 
-    def test_parse_search_results_skips_item_without_title_link(self):
-        """A .bItm with no .bItmT a link is skipped, not raised on."""
-        html = '<html><body><div class="bItm"><div class="bItmM"></div></div></body></html>'
-        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
-        assert scraper._parse_search_results(html) == []
+    @pytest.mark.asyncio
+    async def test_search_parse_failure_error_is_not_swallowed(self):
+        """SearchParseFailureError specifically must propagate out of search(), not collapse to []."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
 
-    def test_parse_search_results_skips_item_with_unmatched_href(self):
-        """A title link whose href is not a /tracklist/<id>/ path is skipped."""
-        html = '<html><body><div class="bItm"><div class="bItmT"><a href="/festival/edc.html">EDC</a></div></div></body></html>'
-        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
-        assert scraper._parse_search_results(html) == []
+        scraper = TracklistScraper(client=client)
+        with patch.object(scraper, "_parse_search_results", side_effect=SearchParseFailureError(5)), pytest.raises(SearchParseFailureError):
+            await scraper.search("skrillex")
 
 
 class TestTracklistScraperSsrfGuard:
     """SSRF regression coverage for phaze-k5zz.
 
     A compromised/malicious upstream search response can embed an absolute href pointing at an
-    internal address, and _EXTERNAL_ID_PATTERN's substring match on "/tracklist/([^/]+)/" is
+    internal address, and _EXTERNAL_ID_PATTERN's substring match on "/tracklist/([^/?#]+)" is
     satisfied by paths like "http://169.254.169.254/tracklist/x/". Both _parse_search_results and
     scrape_tracklist must reject anything off the 1001Tracklists host allow-list.
     """

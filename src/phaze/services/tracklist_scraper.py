@@ -30,6 +30,26 @@ class DisallowedScrapeHostError(ValueError):
         self.url = url
 
 
+class SearchParseFailureError(RuntimeError):
+    """Raised when search result rows are present but NONE of them could be parsed.
+
+    ``search()``'s docstring used to say it "returns empty list on 403, parse failure, or no
+    results" -- three completely different outcomes collapsing into the same ``[]`` with no
+    distinguishing signal. A page that genuinely has no matches and a page whose markup has
+    drifted out from under our selectors (a site redesign) looked identical to every caller and
+    to the logs (phaze-mk6y, same failure class as phaze-ds1z). This exception is raised only
+    when the item selector matched at least one candidate row AND the result-link selector
+    matched none of them -- i.e. the selectors themselves are stale, not merely that this
+    particular query has zero hits.
+    """
+
+    def __init__(self, candidate_count: int) -> None:
+        super().__init__(
+            f"Search returned {candidate_count} candidate result row(s) but could not parse a link from any of them -- selectors are likely stale"
+        )
+        self.candidate_count = candidate_count
+
+
 @dataclass
 class TracklistSearchResult:
     """A single result from a 1001Tracklists search."""
@@ -83,11 +103,24 @@ class TracklistScraper:
     # are legitimate hosts the scraper can encounter in a source_url.
     _ALLOWED_HOSTS: ClassVar[frozenset[str]] = frozenset({"1001tracklists.com", "www.1001tracklists.com"})
 
-    # CSS selectors as class constants for easy updating
+    # CSS selectors as class constants for easy updating.
+    #
+    # phaze-mk6y: re-derived against a real fetched search-results page 2026-07-18. The row
+    # selector (.bItm) was still valid, but every field selector INSIDE the row was stale
+    # (.bItmT a / .bItmArtist / .bItmDate all matched 0 nodes against 30 real result rows), which
+    # search() silently swallowed to []. The current markup exposes the result link via
+    # `a[href*='/tracklist/']`; its text is the full "Artist @ Event, Venue, City, Country"
+    # string and its href carries the external id plus a trailing date.
     _SEARCH_ITEM_SELECTOR = ".bItm"
-    _SEARCH_TITLE_SELECTOR = ".bItmT a"
-    _SEARCH_ARTIST_SELECTOR = ".bItmArtist"
-    _SEARCH_DATE_SELECTOR = ".bItmDate"
+    _SEARCH_RESULT_LINK_SELECTOR = "a[href*='/tracklist/']"
+    _SEARCH_LINK_TEXT_ARTIST_SEPARATOR = " @ "
+
+    # phaze-mk6y SCOPE NOTE: only the SEARCH page selectors above were verified against live
+    # markup. The DETAIL-page selectors below were NOT exercised live -- the bead explicitly
+    # calls them "likely stale too" since the site clearly redesigned, but re-deriving them
+    # requires a real fetched detail page, which is out of scope here (no live requests are made
+    # by this scraper's tests or CI). Treat these as UNVERIFIED, not confirmed-working, until a
+    # real detail page is captured and checked against them.
     _TRACK_ITEM_SELECTOR = ".tlpItem"
     _TRACK_ARTIST_SELECTOR = ".tp a"
     _TRACK_NAME_SELECTOR = ".tN"
@@ -104,7 +137,11 @@ class TracklistScraper:
         "Referer": "https://www.1001tracklists.com/",
     }
 
-    _EXTERNAL_ID_PATTERN = re.compile(r"/tracklist/([^/]+)/")
+    _EXTERNAL_ID_PATTERN = re.compile(r"/tracklist/([^/?#]+)")
+    # phaze-mk6y: the href-embedded date trails the slug, e.g.
+    # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
+    # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
+    _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:[/?#]|$)")
 
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         """Initialize scraper with optional httpx client."""
@@ -134,7 +171,10 @@ class TracklistScraper:
     async def search(self, query: str) -> list[TracklistSearchResult]:
         """Search 1001Tracklists for tracklists matching query.
 
-        Returns empty list on 403, parse failure, or no results.
+        Returns empty list on 403, HTTP error, or genuinely no results. Raises
+        SearchParseFailureError (NOT swallowed to []) when the results page contains candidate
+        rows that none of them could be parsed from -- that is a stale-selector defect, and must
+        be distinguishable from a normal empty result (phaze-mk6y).
         """
         await self._rate_limit()
 
@@ -153,30 +193,42 @@ class TracklistScraper:
 
         try:
             return self._parse_search_results(response.text)
+        except SearchParseFailureError:
+            # Already logged at ERROR inside _parse_search_results with the candidate count.
+            # Propagate rather than collapsing to [] -- that collapse is exactly phaze-mk6y.
+            raise
         except Exception:
             logger.warning("Failed to parse search results for: %s", query, exc_info=True)
             return []
 
     def _parse_search_results(self, html: str) -> list[TracklistSearchResult]:
-        """Parse search result HTML into TracklistSearchResult objects."""
-        soup = BeautifulSoup(html, "lxml")
-        results: list[TracklistSearchResult] = []
+        """Parse search result HTML into TracklistSearchResult objects.
 
-        for item in soup.select(self._SEARCH_ITEM_SELECTOR):
-            link = item.select_one(self._SEARCH_TITLE_SELECTOR)
+        Raises:
+            SearchParseFailureError: the item selector matched one or more candidate rows but the
+                result-link selector matched none of them -- the selectors are stale, this is not
+                "no results" (phaze-mk6y).
+        """
+        soup = BeautifulSoup(html, "lxml")
+        items = soup.select(self._SEARCH_ITEM_SELECTOR)
+        results: list[TracklistSearchResult] = []
+        unparseable_rows = 0
+
+        for item in items:
+            link = item.select_one(self._SEARCH_RESULT_LINK_SELECTOR)
             if link is None:
+                unparseable_rows += 1
                 continue
 
-            href = link.get("href", "")
+            href_str = str(link.get("href", ""))
             title = link.get_text(strip=True)
 
             # Extract external_id from URL path
-            match = self._EXTERNAL_ID_PATTERN.search(str(href))
+            match = self._EXTERNAL_ID_PATTERN.search(href_str)
             if match is None:
                 continue
             external_id = match.group(1)
 
-            href_str = str(href)
             if href_str.startswith("/"):
                 url = f"{self.BASE_URL}{href_str}"
             else:
@@ -190,21 +242,40 @@ class TracklistScraper:
                     continue
                 url = href_str
 
-            # Extract optional artist and date
-            artist_el = item.select_one(self._SEARCH_ARTIST_SELECTOR)
-            date_el = item.select_one(self._SEARCH_DATE_SELECTOR)
+            # phaze-mk6y: the current markup carries no separate artist/date elements -- the
+            # link text is the full "Artist @ Event, Venue, City, Country" string and the date is
+            # embedded at the end of the href slug.
+            artist_part, separator, _rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
+            artist = artist_part.strip() if separator else None
+            date = self._extract_date_from_href(href_str)
 
             results.append(
                 TracklistSearchResult(
                     external_id=external_id,
                     title=title,
                     url=url,
-                    artist=artist_el.get_text(strip=True) if artist_el else None,
-                    date=date_el.get_text(strip=True) if date_el else None,
+                    artist=artist,
+                    date=date,
                 )
             )
 
+        if items and unparseable_rows == len(items):
+            logger.error(
+                "Search result parsing found %d candidate row(s) but the result-link selector matched none of them -- selectors are likely stale",
+                len(items),
+            )
+            raise SearchParseFailureError(len(items))
+
         return results
+
+    @classmethod
+    def _extract_date_from_href(cls, href: str) -> str | None:
+        """Extract a trailing YYYY-MM-DD date from a tracklist href's slug, if present."""
+        match = cls._HREF_DATE_PATTERN.search(href)
+        if match is None:
+            return None
+        year, month, day = match.groups()
+        return f"{year}-{int(month):02d}-{int(day):02d}"
 
     async def scrape_tracklist(self, url: str) -> ScrapedTracklist:
         """Scrape a tracklist detail page and extract track data.
