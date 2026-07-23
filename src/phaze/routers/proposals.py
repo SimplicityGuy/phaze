@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
@@ -87,6 +88,15 @@ async def _guarded_status_update(
 # the route must instead return _diff_row.html with the matching prefix, facet, and lifecycle state.
 _V7_ROW_FACETS: dict[str, str] = {"rename-row": "filename", "record-row": "filename", "move-row": "path"}
 
+# phaze-71hi: bulk_approve_high_confidence has no proposal_id in its URL, so it can't reuse
+# _v7_row_target's "{prefix}-{proposal_id}" match. Instead its two callers (rename_workspace.html /
+# move_workspace.html) each hx-target their own small status div by a FIXED id -- map that id
+# straight to the (row_id_prefix, facet) pair _diff_row_context needs for the OOB row fragments.
+_BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
+    "rename-trigger-response": ("rename-row", "filename"),
+    "move-trigger-response": ("move-row", "path"),
+}
+
 # phaze-3tj4: map a proposal's real status to the v7 diff-row lifecycle string so a mutation route
 # renders the row's actual affordances instead of hardcoding "pending". The reject route names its
 # state "skipped" (see reject_proposal above), so REJECTED maps there.
@@ -108,8 +118,14 @@ def _v7_row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str] 
     return None
 
 
-def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> HTMLResponse:
-    """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
+def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, oob: bool = False) -> dict[str, object]:
+    """Build the render context _diff_row.html expects for one proposal (phaze-3a2j).
+
+    Shared by the single-row mutation responses (:func:`_diff_row_response`) and the v7
+    bulk-approve-high-confidence response (phaze-71hi), which needs a LIST of these -- rendered
+    with ``oob=True`` -- to hx-swap-oob every row a bulk apply just transitioned, since the
+    rename/move workspaces have no row poll (R-2) to pick the change up on their own.
+    """
     file_record = proposal.file
     if facet == "path":
         before = file_record.current_path
@@ -120,25 +136,28 @@ def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix
         after = proposal.proposed_filename
         edit_facet = "filename"
     pid = proposal.id
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/_diff_row.html",
-        context={
-            "request": request,
-            "row_id_prefix": row_id_prefix,
-            "pid": pid,
-            "file": file_record.original_filename,
-            "original_path": file_record.current_path,
-            "before": before,
-            "after": after,
-            "approve_url": f"/proposals/{pid}/approve",
-            "skip_url": f"/proposals/{pid}/reject",
-            "undo_url": f"/proposals/{pid}/undo",
-            "edit_url": f"/proposals/{pid}/edit",
-            "edit_facet": edit_facet,
-            "row_state": row_state,
-        },
-    )
+    return {
+        "row_id_prefix": row_id_prefix,
+        "pid": pid,
+        "file": file_record.original_filename,
+        "original_path": file_record.current_path,
+        "before": before,
+        "after": after,
+        "approve_url": f"/proposals/{pid}/approve",
+        "skip_url": f"/proposals/{pid}/reject",
+        "undo_url": f"/proposals/{pid}/undo",
+        "edit_url": f"/proposals/{pid}/edit",
+        "edit_facet": edit_facet,
+        "row_state": row_state,
+        "oob": oob,
+    }
+
+
+def _diff_row_response(request: Request, proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str) -> HTMLResponse:
+    """Render the shared _diff_row.html for a v7 workspace row swap (phaze-3a2j)."""
+    context = _diff_row_context(proposal, row_id_prefix, facet, row_state)
+    context["request"] = request
+    return templates.TemplateResponse(request=request, name="pipeline/partials/_diff_row.html", context=context)
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -536,10 +555,53 @@ async def bulk_approve_high_confidence(
     correctness core). Mirrors ``tracklists.reject_low_confidence``. NULL-confidence rows are
     excluded by the SQL predicate (Pitfall 2). The threshold is fixed server-side (REVIEW-06 defers
     configurability). Same route serves the Rename/Path AND Move queues (both ``RenameProposal``).
+
+    phaze-71hi: rename_workspace.html / move_workspace.html hx-target this at their small
+    ``#rename-trigger-response`` / ``#move-trigger-response`` status div, NOT a container that
+    re-renders the row list, and the workspaces deliberately run no row poll (R-2) that could pick
+    the change up on its own. The legacy ``approve_response.html`` fork below (proposal=None, an
+    OOB ``#stats-bar`` that does not exist in the v7 shell) therefore left every just-approved row
+    rendered PENDING with live APPROVE/EDIT/SKIP controls, so a later click 409'd silently
+    (``APPROVE_REJECT_FROM = frozenset({PENDING})``). When the request comes from one of those two
+    v7 targets, snapshot the PENDING rows the predicate is ABOUT to approve before the guarded
+    update runs, then answer with the toast plus one ``hx-swap-oob`` ``_diff_row.html`` fragment
+    (``row_state="approved"``) per row this request actually transitioned -- rows a concurrent
+    request already claimed are simply not re-fetched as APPROVED and are left alone.
     """
-    count = await approve_pending_above_confidence(session, threshold=0.9)
-    stats = await get_proposal_stats(session)
+    threshold = 0.9
+    v7_target = _BULK_HIGH_CONFIDENCE_TARGETS.get(request.headers.get("HX-Target", ""))
+    candidate_ids: list[uuid.UUID] = []
+    if v7_target is not None:
+        candidate_stmt = select(RenameProposal.id).where(
+            RenameProposal.status == ProposalStatus.PENDING,
+            RenameProposal.confidence >= threshold,
+        )
+        candidate_ids = list((await session.execute(candidate_stmt)).scalars().all())
+
+    count = await approve_pending_above_confidence(session, threshold=threshold)
     toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
+
+    if v7_target is not None:
+        row_id_prefix, facet = v7_target
+        approved_rows: list[dict[str, object]] = []
+        if candidate_ids:
+            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id.in_(candidate_ids))
+            proposals = (await session.execute(rows_stmt)).scalars().all()
+            approved_rows = [
+                _diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals if p.status == ProposalStatus.APPROVED
+            ]
+        return templates.TemplateResponse(
+            request=request,
+            name="proposals/partials/_bulk_approve_high_confidence_response.html",
+            context={
+                "request": request,
+                "toast_message": toast_message,
+                "is_bulk": True,
+                "approved_rows": approved_rows,
+            },
+        )
+
+    stats = await get_proposal_stats(session)
     return templates.TemplateResponse(
         request=request,
         name="proposals/partials/approve_response.html",
