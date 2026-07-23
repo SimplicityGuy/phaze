@@ -17,7 +17,7 @@ from urllib.parse import parse_qs
 import pytest
 from starlette.datastructures import QueryParams
 
-from phaze.routers.view_state import DEFAULT_PAGE_SIZE, PAGE_SIZE_CHOICES, ListViewState
+from phaze.routers.view_state import DEFAULT_PAGE_SIZE, MAX_PAGE, PAGE_SIZE_CHOICES, ListViewState
 
 
 class _FakeRequest:
@@ -61,6 +61,7 @@ def test_every_parameter_round_trips() -> None:
         "page=-4",
         "page=0",
         "page=1e9999",
+        "page=99999999999999999999",
         "page_size=banana",
         "page_size=100000",
         "page_size=0",
@@ -79,9 +80,29 @@ def test_unparseable_values_degrade_instead_of_raising(query: str) -> None:
     would undo the pagination bead.
     """
     state = ListViewState.from_request(_FakeRequest(query))
-    assert state.page >= 1
+    assert 1 <= state.page <= MAX_PAGE
     assert state.page_size in PAGE_SIZE_CHOICES
     assert state.order in {"asc", "desc"}
+
+
+def test_page_is_capped_above_at_max_page() -> None:
+    """phaze-h9oz: ``page`` was only lower-bounded -- a huge value must now clamp to MAX_PAGE.
+
+    A hand-edited ``?page=99999999999999999999`` (the failure scenario's exact example) has an
+    OFFSET so large asyncpg fails to encode it as a Postgres ``bigint`` bind parameter, and the
+    caller's error handling degrades the whole workspace to a false-empty view with zeroed stats.
+    Capping here means that offset can never be computed in the first place.
+    """
+    state = ListViewState.from_request(_FakeRequest("page=99999999999999999999"))
+    assert state.page == MAX_PAGE
+
+
+def test_max_page_keeps_every_possible_offset_far_below_bigint_overflow() -> None:
+    """The clamp is effective for every page size the app will ever honour, not just the default."""
+    bigint_max = 2**63 - 1
+    for page_size in PAGE_SIZE_CHOICES:
+        offset = (MAX_PAGE - 1) * page_size
+        assert offset < bigint_max
 
 
 def test_query_emits_every_parameter_even_when_overriding_one() -> None:

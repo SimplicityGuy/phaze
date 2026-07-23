@@ -74,8 +74,22 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
-__all__ = ["DEFAULT_PAGE_SIZE", "PAGE_SIZE_CHOICES", "ListViewState"]
+__all__ = ["DEFAULT_PAGE_SIZE", "MAX_PAGE", "PAGE_SIZE_CHOICES", "ListViewState"]
 
+
+MAX_PAGE: Final[int] = 1_000_000
+"""The largest ``page`` value ``from_request`` will honour (phaze-h9oz).
+
+``page`` was the one field ``from_request`` only floored, never capped: every sibling field is
+clamped into a closed set (``page_size`` against :data:`PAGE_SIZE_CHOICES`, ``order`` against
+``{"asc", "desc"}``), but Python ints are unbounded, so a hand-edited or truncated URL could carry
+a ``page`` whose ``(page - 1) * page_size`` OFFSET exceeds Postgres's ``bigint`` range. asyncpg
+then fails to encode the bind parameter, and the caller's error-handling degrades to an empty page
+with zeroed stats -- indistinguishable from a genuinely empty corpus. A page beyond the largest
+page size (:data:`PAGE_SIZE_CHOICES`'s max is 100) times this bound is already far past anything a
+real result set produces, so the cap is generous while keeping every possible OFFSET many orders
+of magnitude below the ``int8`` overflow point.
+"""
 
 PAGE_SIZE_CHOICES: Final[tuple[int, ...]] = (25, 50, 100)
 """The ONLY page sizes any list view will honour.
@@ -146,7 +160,7 @@ class ListViewState:
         raw_page = params.get("page")
         if raw_page is not None:
             try:
-                page = max(1, int(raw_page))
+                page = min(max(1, int(raw_page)), MAX_PAGE)
             except ValueError:
                 page = base.page
 
