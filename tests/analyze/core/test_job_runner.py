@@ -379,6 +379,74 @@ async def test_exit_code_matrix(job_env, monkeypatch, scenario, expected_code): 
     assert exc.value.code != 0
 
 
+_PRESIGNED_URL_WITH_SIGNATURE = (
+    "http://bucket.test/phaze-staging/deadbeef"
+    "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+    "&X-Amz-Credential=AKIAFAKECREDENTIAL%2F20260722%2Fus-east-1%2Fs3%2Faws4_request"
+    "&X-Amz-Date=20260722T000000Z"
+    "&X-Amz-Expires=900"
+    "&X-Amz-Signature=SUPER-SECRET-SIGNATURE-abc123"
+)
+
+
+@respx.mock
+async def test_download_to_redacts_presigned_signature_on_http_error(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """phaze-qgv1: a non-2xx from the bucket must not let httpx's ``HTTPStatusError`` -- whose
+    message embeds the full presigned URL, ``X-Amz-Signature`` included -- escape ``_download_to``
+    unwrapped. It must raise ``PresignedDownloadError`` with the query string stripped, and the
+    original exception must not be chained (``from None``) or the signature would resurface via
+    the traceback's "direct cause" section."""
+    import phaze.job_runner as jr
+
+    respx.get(_PRESIGNED_URL_WITH_SIGNATURE).mock(return_value=httpx.Response(403, text="Forbidden"))
+    dest = tmp_path / "downloaded.audio"
+
+    with pytest.raises(jr.PresignedDownloadError) as exc_info:
+        await jr._download_to(_PRESIGNED_URL_WITH_SIGNATURE, dest)
+
+    message = str(exc_info.value)
+    assert "SUPER-SECRET-SIGNATURE-abc123" not in message
+    assert "X-Amz-Signature" not in message
+    assert "X-Amz-Credential" not in message
+    assert "403" in message
+    assert exc_info.value.__cause__ is None  # `from None`: no chained HTTPStatusError to leak later
+    assert not dest.exists()
+
+
+@respx.mock
+async def test_download_failure_never_logs_presigned_signature(job_env, caplog: pytest.LogCaptureFixture):  # type: ignore[no-untyped-def]
+    """End-to-end (phaze-qgv1): a failing presigned download must exit 10 WITHOUT the
+    self-authenticating query string ever reaching the ``job_runner_download_failed``
+    ``log.exception`` line -- the specific site named in the bead. (httpx's own request-tracing
+    logger is a separate, pre-existing DEBUG-only verbosity knob -- capped to WARNING by default
+    in ``configure_logging``, unaffected by and out of scope for this redaction -- so this
+    assertion is scoped to the ``phaze.job_runner`` logger, not the whole capture stream.)"""
+    import phaze.job_runner as jr
+
+    file_id = job_env["file_id"]
+    base = job_env["base_url"]
+    presign_url = f"{base}/api/internal/agent/files/{file_id}/presign-download"
+
+    respx.post(presign_url).mock(
+        return_value=httpx.Response(200, json={"download_url": _PRESIGNED_URL_WITH_SIGNATURE, "expected_sha256": _GOOD_SHA}),
+    )
+    respx.get(_PRESIGNED_URL_WITH_SIGNATURE).mock(return_value=httpx.Response(403, text="Forbidden"))
+
+    with caplog.at_level("DEBUG"), pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_DOWNLOAD == 10
+    job_runner_records = [r for r in caplog.records if r.name == "phaze.job_runner"]
+    assert job_runner_records  # sanity: the failure line was actually captured
+    for record in job_runner_records:
+        assert "SUPER-SECRET-SIGNATURE-abc123" not in record.getMessage()
+        assert "X-Amz-Signature" not in record.getMessage()
+        assert "X-Amz-Credential" not in record.getMessage()
+        if record.exc_text:
+            assert "SUPER-SECRET-SIGNATURE-abc123" not in record.exc_text
+            assert "X-Amz-Signature" not in record.exc_text
+
+
 @pytest.mark.parametrize(
     ("scenario", "env_value"),
     [
