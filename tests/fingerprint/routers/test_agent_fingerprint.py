@@ -7,13 +7,14 @@ and does not depend on Plans 03/05/06 landing in any particular order.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
@@ -163,6 +164,67 @@ async def test_fingerprint_replay_overwrites(seed_test_agent: tuple[Agent, str],
     assert row.status == "failed"
     assert row.error_message == "engine crashed"
     assert agent.id is not None  # keep "agent" alive for the linter
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_replay_bumps_updated_at_not_created_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-c8nz: a conflicting re-upsert bumps updated_at; created_at stays pinned.
+
+    Regression for the outage-timestamp scenario: `on_conflict_do_update`'s `set_` clause used
+    to omit `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate` hook never fires for a
+    Core upsert -- so a re-fingerprinted row kept reporting the FIRST-write timestamp forever, no
+    matter how many times (or how much later) it was re-fingerprinted. This test backdates BOTH
+    columns to a fixed point in the past (simulating a row written during an outage window), then
+    re-PUTs the same (file_id, engine) and asserts: (1) updated_at moves forward past the
+    backdated value -- proving the conflict path actually stamps the server clock, not merely
+    that it fails to touch the column -- and (2) created_at is untouched, because it means "first
+    time we ever recorded a result for this (file, engine)".
+
+    A test that only exercises the INSERT path (like test_fingerprint_put_happy_path) does NOT
+    cover this defect -- the bug lives exclusively on the ON CONFLICT DO UPDATE branch.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r1 = await ac.put(f"/api/internal/agent/fingerprints/{file_id}/audfprint", json={"status": "completed"})
+    assert r1.status_code == 200, r1.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook entirely) to a
+    # fixed point well in the past -- simulating the outage-window scenario from the bead: a row
+    # whose original write timestamp long predates the moment it is re-fingerprinted.
+    # fingerprint_results.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns -- use a
+    # naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(
+        update(FingerprintResult)
+        .where(FingerprintResult.file_id == file_id, FingerprintResult.engine == "audfprint")
+        .values(created_at=outage_time, updated_at=outage_time)
+    )
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r2 = await ac.put(
+            f"/api/internal/agent/fingerprints/{file_id}/audfprint",
+            json={"status": "failed", "error_message": "retry after outage"},
+        )
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    result = await session.execute(select(FingerprintResult).where(FingerprintResult.file_id == file_id, FingerprintResult.engine == "audfprint"))
+    row = result.scalar_one()
+
+    assert row.status == "failed"
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio
