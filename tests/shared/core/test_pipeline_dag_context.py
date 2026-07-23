@@ -306,18 +306,72 @@ async def test_dag_done_comes_from_db_truth(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_completed_counter_degrade_fallback(session: AsyncSession) -> None:
-    """When a node's DB done is 0 AND its mapped completed counter > 0, the counter renders.
+    """When a node's DB done is 0 AND its mapped completed counter > 0, the counter renders
+    -- capped at the node's ``total`` (WR-03).
 
     This exercises the maintained ``completed`` counter as a DOCUMENTED degrade-fallback
-    (D-02): there are NO metadata rows in the DB (metadata.done == 0), but the maintained
-    ``completed`` counter for ``extract_file_metadata`` is 3, so metadataDone falls back to 3.
+    (D-02): the corpus has ONE music/video file with no metadata row yet (metadata.done == 0,
+    metadata.total == 1), and the maintained ``completed`` counter for ``extract_file_metadata``
+    is 3, so metadataDone falls back to the counter capped at total: ``min(3, 1) == 1``.
+    """
+    file_rec = FileRecord(
+        agent_id="test-fileserver",
+        id=uuid.uuid4(),
+        sha256_hash="a" * 64,
+        original_path="/music/a.mp3",
+        original_filename="a.mp3",
+        current_path="/music/a.mp3",
+        file_type="mp3",
+        file_size=1000,
+    )
+    session.add(file_rec)
+    await session.flush()
+
+    fake = _FallbackRedis({"phaze:pipeline:completed:extract_file_metadata": 3})
+    app_state = SimpleNamespace(redis=fake)
+    from phaze.routers.pipeline import _build_dag_context
+
+    ctx = await _build_dag_context(app_state, session, _idle_activity())
+    assert ctx["dag"]["metadataDone"] == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_counter_fallback_caps_to_zero_when_total_is_zero(session: AsyncSession) -> None:
+    """phaze-y0wz regression: an emptied corpus must not render a phantom uncapped ``done``.
+
+    The durable Redis ``completed`` counter is a plain INCR that is never decremented or reset
+    (services/pipeline_counters.py), so it survives a full corpus delete (``delete_scan``
+    cascades away FileRecord/metadata/analysis but never touches Redis). With NO files in the
+    DB at all, metadata.done == 0 AND metadata.total == 0 -- previously the WR-03 cap was gated
+    on ``stage_total > 0`` and went dead here, rendering the stale counter (3) uncapped against
+    a total of 0. The cap must hold unconditionally and degrade metadataDone to 0.
     """
     fake = _FallbackRedis({"phaze:pipeline:completed:extract_file_metadata": 3})
     app_state = SimpleNamespace(redis=fake)
     from phaze.routers.pipeline import _build_dag_context
 
     ctx = await _build_dag_context(app_state, session, _idle_activity())
-    assert ctx["dag"]["metadataDone"] == 3
+    assert ctx["dag"]["metadataDone"] == 0
+    assert ctx["dag"]["metadataTotal"] == 0
+
+
+def test_reconciled_done_caps_unconditionally_at_stage_total_zero() -> None:
+    """phaze-y0wz unit-level regression on ``_reconciled_done`` directly.
+
+    ``scan_search``'s ``total`` is documented as ALWAYS ``None`` -> 0 (get_stage_progress), so
+    prior to this fix its fallback was PERMANENTLY uncapped (the ``stage_total > 0`` gate never
+    held) and double-counted two summed counters. The cap must now degrade the fallback to
+    ``stage_done`` (0, from the guard above) whenever ``stage_total == 0`` -- never the raw
+    (here doubly-summed) counter value.
+    """
+    from phaze.routers.pipeline import _reconciled_done
+
+    counters = {"scan_live_set": {"completed": 40}, "search_tracklist": {"completed": 60}}
+    assert _reconciled_done("scan_search", stage_done=0, stage_total=0, counters=counters) == 0
+    # Sanity: with a known nonzero denominator the cap still applies as before.
+    assert _reconciled_done("scan_search", stage_done=0, stage_total=50, counters=counters) == 50
+    # DB-truth still wins outright whenever stage_done > 0, unaffected by this fix.
+    assert _reconciled_done("scan_search", stage_done=7, stage_total=0, counters=counters) == 7
 
 
 @pytest.mark.asyncio

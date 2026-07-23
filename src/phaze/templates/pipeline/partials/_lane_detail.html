@@ -48,7 +48,12 @@
             {% if lane.available %}
             <span class="font-mono text-sm font-medium {{ lane_color }}">{{ lane.in_flight }}/{{ lane.cap }}</span>
             {% else %}
-            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">0</span>
+            {# phaze-pc2q (mirrors _lane_card.html's phaze-xd8k fix): an unavailable lane MUST still
+               render its true in_flight -- a literal "0" here read as "nothing is running" and hid
+               real in-flight work behind "offline" (the lane can be unreachable for NEW dispatch
+               while still draining work it already accepted). Greyed styling carries the "offline"
+               signal instead of fabricating a zero. #}
+            <span class="font-mono text-sm font-medium text-gray-400 dark:text-gray-500">{{ lane.in_flight }}/{{ lane.cap }}</span>
             {% endif %}
         </div>
 

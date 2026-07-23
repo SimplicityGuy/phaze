@@ -351,7 +351,16 @@ async def get_fingerprint_progress(session: AsyncSession) -> dict[str, int]:
     All three keys share ONE denominator (D-10/D-17): files whose ``file_type`` is in
     :data:`~phaze.services.pipeline.MUSIC_VIDEO_TYPES` AND that are NOT dedup-resolved
     (``~dedup_resolved_clause()``). Because every key rides that denominator, ``completed`` and
-    ``failed`` are strict subsets of ``total`` and the progress bar can never exceed 100%:
+    ``failed`` are strict subsets of ``total`` and the progress bar can never exceed 100% --
+    but ONLY within a single snapshot (phaze-4fxw). The engine sets no isolation level, so
+    Postgres READ COMMITTED gives each *statement* its own snapshot even inside one transaction;
+    running ``total``/``completed``/``failed`` as three separate ``SELECT count(...)`` statements
+    let a concurrent dedup ``resolve_group``/``undo_resolve`` commit BETWEEN them and change the
+    shared denominator mid-read (e.g. a bulk undo deleting resolved-markers between the ``total``
+    and ``completed`` reads could make ``completed`` count MORE files than ``total`` did moments
+    earlier). All three counts are now ONE statement -- one ``SELECT`` with three conditional
+    (``FILTER``) aggregates over the same ``FROM``/``WHERE`` -- so they share a single snapshot
+    and the subset invariant holds unconditionally, not just when the corpus is quiescent:
 
     - ``total``: count of music/video files not dedup-resolved. Derived from ``file_type`` + the dedup
       marker only -- NO ``FileRecord.state`` read (READ-04 / D-10).
@@ -386,8 +395,14 @@ async def get_fingerprint_progress(session: AsyncSession) -> dict[str, int]:
     # tuple, so completed ⊆ total and failed ⊆ total.
     denom = (FileRecord.file_type.in_(MUSIC_VIDEO_TYPES), ~dedup_resolved_clause())
 
-    total = (await session.execute(select(func.count(FileRecord.id)).where(*denom))).scalar_one()
-    completed = (await session.execute(select(func.count(FileRecord.id)).where(*denom, done_clause(Stage.FINGERPRINT)))).scalar_one()
-    failed = (await session.execute(select(func.count(FileRecord.id)).where(*denom, failed_clause(Stage.FINGERPRINT)))).scalar_one()
+    # phaze-4fxw: ONE statement, one snapshot -- filtered (conditional) aggregates over the SAME
+    # denominator instead of three independent `count(...)` statements, each of which got its own
+    # READ COMMITTED snapshot under the old code even though all three ran in one transaction.
+    stmt = select(
+        func.count(FileRecord.id).label("total"),
+        func.count(FileRecord.id).filter(done_clause(Stage.FINGERPRINT)).label("completed"),
+        func.count(FileRecord.id).filter(failed_clause(Stage.FINGERPRINT)).label("failed"),
+    ).where(*denom)
+    row = (await session.execute(stmt)).one()
 
-    return {"total": total, "completed": completed, "failed": failed}
+    return {"total": row.total, "completed": row.completed, "failed": row.failed}

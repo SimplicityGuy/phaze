@@ -1,12 +1,27 @@
-{# Phase 27 Component 3 (UI-SPEC lines 253-329): three-state poll partial.
+{# Phase 27 Component 3 (UI-SPEC lines 253-329): poll partial (running / completed / failed / gone).
 
    Pitfall 6 (terminal-state halt): the in-progress branch carries hx-trigger="every 2s"
-   AND hx-swap="outerHTML" AND hx-get="/pipeline/scans/{batch_id}". The COMPLETED
-   and FAILED branches OMIT all three -- because the swap is outerHTML, replacing
+   AND hx-swap="outerHTML" AND hx-get="/pipeline/scans/{batch_id}". The COMPLETED, FAILED
+   and GONE branches OMIT all three -- because the swap is outerHTML, replacing
    the in-progress fragment with a terminal one removes the polling trigger and
    HTMX stops automatically.
+
+   phaze-xsje: `gone` (the ScanBatch row vanished between polls, e.g. an operator delete
+   racing the reaper) is a terminal branch rendered with a 200 status -- never a 4xx. HTMX
+   2.x's default responseHandling does not swap non-2xx responses, so a 404 here would leave
+   the previous RUNNING card (and its armed hx-trigger) in the DOM, 404-polling forever.
+   Mirrors deepen_progress.html's gone handling.
 #}
-{% if batch.status == 'running' %}
+{% if gone %}
+<div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
+     aria-live="polite">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Scan no longer available</h3>
+        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400" aria-label="Status: gone">GONE</span>
+    </div>
+    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">This scan was removed. Check Recent Scans for its outcome.</p>
+</div>
+{% elif batch.status == 'running' %}
 <div class="bg-white dark:bg-phaze-bg border border-gray-200 dark:border-phaze-border rounded-lg p-4"
      aria-live="polite"
      hx-get="/pipeline/scans/{{ batch.id }}"

@@ -255,16 +255,27 @@ async def scan_progress(
 
     The template branches on `batch.status`; terminal-state markup OMITS
     `hx-trigger`/`hx-get` so HTMX halts polling automatically (Pitfall 6).
+
+    phaze-xsje: a vanished row (deleted between polls, e.g. an operator delete racing the
+    stall reaper) renders the template's terminal `gone` branch with a 200 status rather than
+    raising 404. HTMX 2.x's default responseHandling does not swap non-2xx bodies into the DOM,
+    so a 404 here would leave the previous RUNNING card's outerHTML poller armed and 404-polling
+    forever; a 200 `gone` fragment replaces it and halts the poll (mirrors deepen_progress).
     """
     batch = await session.get(ScanBatch, batch_id)
     if batch is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/scan_progress_card.html",
+            context={"request": request, "gone": True},
+        )
     agent = await session.get(Agent, batch.agent_id)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/scan_progress_card.html",
         context={
             "request": request,
+            "gone": False,
             "batch": batch,
             "agent_name": agent.name if agent is not None else batch.agent_id,
             "elapsed_seconds": elapsed_seconds(batch),
