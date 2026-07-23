@@ -170,10 +170,10 @@ phaze/
 ├── services/                   # Fingerprint microservices
 │   ├── audfprint/              #   Landmark-based fingerprinting
 │   └── panako/                 #   Tempo-robust fingerprinting
-├── tests/                      # Test suite (90%+ coverage), reorganized into 9 CI-parallel
-│   │                           # buckets (Phase 63-02); see tests/BUCKETS.md for the mapping
+├── tests/                      # Test suite (95%+ coverage), reorganized into 10 CI-parallel
+│   │                           # buckets (Phase 63-02, +`services` in phaze-uciu.1); see tests/BUCKETS.md for the mapping
 │   ├── conftest.py             #   Fixtures + test DB setup
-│   ├── buckets.json            #   Source of truth for the 9 bucket names + file->bucket map
+│   ├── buckets.json            #   Source of truth for the 10 bucket names + file->bucket map
 │   ├── discovery/               #   File-discovery, agent_watcher, and core routing tests
 │   ├── metadata/                #   Tag-extraction (mutagen) tests
 │   ├── fingerprint/              #   Multi-engine fingerprint tests
@@ -181,6 +181,7 @@ phaze/
 │   ├── identify/                 #   Proposal/LLM-naming tests
 │   ├── review/                   #   Execution + review-workflow tests
 │   ├── agents/                   #   Distributed-agent (file-server/compute) tests
+│   ├── services/                  #   Regression tests for the top-level services/ FastAPI sidecars (audfprint, panako)
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)

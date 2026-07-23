@@ -1,18 +1,29 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
-# Host port for the ephemeral integration-test Postgres (5433 avoids the dev DB on 5432)
+# Host port for the SHARED test-harness Postgres (5433 avoids the dev DB on 5432). This
+# container is deliberately reused across every concurrent worktree/session (via `test-db`,
+# `test-db-for`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
+# protect it. `integration-test` does NOT use this container; it has its own dedicated pair below.
 test_db_port := env_var_or_default("PHAZE_TEST_DB_PORT", "5433")
-# Fixed container name for the ephemeral integration-test Postgres
+# Fixed container name for the SHARED test-harness Postgres
 test_db_container := "phaze-test-db"
-# Host port for the ephemeral integration-test Redis (6380 avoids a dev Redis on 6379)
+# Host port for the SHARED test-harness Redis (6380 avoids a dev Redis on 6379)
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
-# Fixed container name for the ephemeral integration-test Redis
+# Fixed container name for the SHARED test-harness Redis
 test_redis_container := "phaze-test-redis"
 # Logical database count on the test Redis. Redis defaults to 16; we raise it so the per-worktree
 # index space (DB 0 is the allocation registry, seats get 1..N-1) comfortably exceeds any realistic
 # concurrent-seat count. `just test-db-for <name>` allocates out of this space.
 test_redis_databases := env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64")
+# Dedicated, disposable Postgres + Redis for `just integration-test` ONLY (phaze-pik6). A SEPARATE
+# container pair (own names + ports) so integration-test's auto-teardown EXIT trap can never
+# `docker rm -f` the SHARED phaze-test-db/phaze-test-redis harness other concurrent worktrees rely
+# on -- the same isolation principle as perf_db_container below, applied to the one-shot test path.
+integration_db_container := "phaze-integration-test-db"
+integration_db_port := env_var_or_default("PHAZE_INTEGRATION_TEST_DB_PORT", "5434")
+integration_redis_container := "phaze-integration-test-redis"
+integration_redis_port := env_var_or_default("PHAZE_INTEGRATION_TEST_REDIS_PORT", "6381")
 # Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
 # (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
 # (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
@@ -106,9 +117,13 @@ tailwind:
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
-        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss \
-            "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}"; \
-        chmod +x ./bin/tailwindcss; \
+        rm -f ./bin/tailwindcss.tmp; \
+        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
+        && chmod +x ./bin/tailwindcss.tmp \
+        && ./bin/tailwindcss.tmp --help >/dev/null \
+        && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
+        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp; exit 1; }; \
     fi
     ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
@@ -175,39 +190,78 @@ test-db:
     port="{{test_db_port}}"
     redis_container="{{test_redis_container}}"
     redis_port="{{test_redis_port}}"
+    # Race-safe bootstrap (phaze-20vd): this recipe is invoked concurrently from multiple
+    # worktrees, so the create path must never `docker rm -f` a container we merely
+    # observed as absent -- a sibling invocation may have created (or be about to create)
+    # it in the window between our inspect and our own action, and `rm -f`ing it would wipe
+    # that sibling's freshly-provisioned databases out from under it. Instead: try `docker
+    # start` (a no-op success if a stopped container of this name already exists), then
+    # fall back to `docker run`. If a racing sibling's `docker run` wins in that same
+    # window, ours fails with docker's "name already in use" -- that is the expected LOSER
+    # path here, not a fatal error: fall through (via run_or_yield below) and let the
+    # readiness wait further down confirm the winner's container came up.
+    run_or_yield() {
+        local name="$1" verb="$2"
+        shift 2
+        local run_err
+        run_err="$(mktemp)"
+        if docker run -d --name "$name" "$@" >/dev/null 2>"$run_err"; then
+            rm -f "$run_err"
+            return 0
+        fi
+        if grep -q "is already in use" "$run_err"; then
+            echo "🔁 ${name} was ${verb} by a concurrent invocation; continuing"
+            rm -f "$run_err"
+            return 0
+        fi
+        cat "$run_err" >&2
+        rm -f "$run_err"
+        return 1
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
-        docker rm -f "$container" >/dev/null 2>&1 || true
         echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze \
-            -e POSTGRES_PASSWORD=phaze \
-            -e POSTGRES_DB=phaze_test \
-            -p "${port}:5432" \
-            postgres:18-alpine >/dev/null
+        if ! docker start "$container" >/dev/null 2>&1; then
+            run_or_yield "$container" "created" \
+                -e POSTGRES_USER=phaze \
+                -e POSTGRES_PASSWORD=phaze \
+                -e POSTGRES_DB=phaze_test \
+                -p "${port}:5432" \
+                postgres:18-alpine
+        fi
     fi
     redis_databases="{{test_redis_databases}}"
-    start_redis=1
-    if [ "$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
+    redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    if [ "$redis_running" != "true" ]; then
+        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
+        docker start "$redis_container" >/dev/null 2>&1 || true
+        redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    fi
+    if [ "$redis_running" = "true" ]; then
         # A container started before this setting existed (or with a smaller value) only has 16
         # logical databases. Recreate it rather than silently handing out indices it cannot address.
+        # This check applies whether the container was already running or was just reused via
+        # `docker start` above -- either way it now genuinely exists, so removing it here is a
+        # deliberate resize, never a speculative rm racing a sibling's in-flight create.
         current_databases="$(docker exec "$redis_container" redis-cli CONFIG GET databases 2>/dev/null | tail -n1 || echo 0)"
         if [ "${current_databases:-0}" -ge "$redis_databases" ]; then
-            echo "🟥 ${redis_container} already running on port ${redis_port} (${current_databases} logical DBs)"
-            start_redis=0
+            echo "🟥 ${redis_container} running on port ${redis_port} (${current_databases} logical DBs)"
         else
             echo "♻️  ${redis_container} has only ${current_databases:-0} logical DBs (need ${redis_databases}); recreating."
             echo "    This CLEARS the test Redis, including per-worktree DB allocations. Re-run"
             echo "    'just test-db-for <name>' in each active worktree afterwards."
+            docker rm -f "$redis_container" >/dev/null 2>&1 || true
+            run_or_yield "$redis_container" "recreated" \
+                -p "${redis_port}:6379" \
+                redis:7-alpine redis-server --databases "$redis_databases"
         fi
-    fi
-    if [ "$start_redis" = "1" ]; then
-        docker rm -f "$redis_container" >/dev/null 2>&1 || true
-        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
-        docker run -d --name "$redis_container" \
+    else
+        # Neither running nor startable (no container of this name existed) -- create fresh,
+        # tolerating a racing sibling's concurrent create as described above.
+        run_or_yield "$redis_container" "created" \
             -p "${redis_port}:6379" \
-            redis:7-alpine redis-server --databases "$redis_databases" >/dev/null
+            redis:7-alpine redis-server --databases "$redis_databases"
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
@@ -308,7 +362,7 @@ test-db-for name:
     echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
     echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
 
-[doc('Stop and remove the ephemeral integration-test Postgres + Redis')]
+[doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
 [group('test')]
 test-db-down:
     #!/usr/bin/env bash
@@ -317,16 +371,79 @@ test-db-down:
     docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
 
-[doc('Run the full suite against self-contained ephemeral Postgres + Redis (auto teardown)')]
+[doc('Stop and remove the DEDICATED integration-test Postgres + Redis (never the shared phaze-test-db/phaze-test-redis harness)')]
+[group('test')]
+integration-test-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker rm -f "{{integration_db_container}}" >/dev/null 2>&1 || true
+    docker rm -f "{{integration_redis_container}}" >/dev/null 2>&1 || true
+    echo "🧹 Removed {{integration_db_container}} + {{integration_redis_container}}"
+
+[doc('Run the full suite against DEDICATED, disposable Postgres + Redis (auto teardown; phaze-pik6 -- never touches the SHARED phaze-test-db/phaze-test-redis harness other worktrees rely on)')]
 [group('test')]
 integration-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    just test-db
-    trap 'just test-db-down' EXIT
-    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
-    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
-    export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+    container="{{integration_db_container}}"
+    port="{{integration_db_port}}"
+    redis_container="{{integration_redis_container}}"
+    redis_port="{{integration_redis_port}}"
+    # This pair of containers is DEDICATED to this one-shot invocation (own names, own ports --
+    # never phaze-test-db/phaze-test-redis), so the unconditional rm-then-run below and the
+    # EXIT-trap teardown are safe: nothing else can be relying on THESE specific containers the
+    # way concurrent worktrees rely on the shared harness (phaze-pik6). Two concurrent
+    # `integration-test` invocations on the same host would still race each other here -- that is
+    # a self-contained, documented one-shot recipe, not the shared multi-seat path (that's
+    # `test-db-for` + `check`), so it is out of scope for this fix.
+    trap 'docker rm -f "{{integration_db_container}}" "{{integration_redis_container}}" >/dev/null 2>&1 || true' EXIT
+    echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker run -d --name "$container" \
+        -e POSTGRES_USER=phaze \
+        -e POSTGRES_PASSWORD=phaze \
+        -e POSTGRES_DB=phaze_test \
+        -p "${port}:5432" \
+        postgres:18-alpine >/dev/null
+    echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port}..."
+    docker rm -f "$redis_container" >/dev/null 2>&1 || true
+    docker run -d --name "$redis_container" \
+        -p "${redis_port}:6379" \
+        redis:7-alpine >/dev/null
+    echo "⏳ Waiting for Postgres to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
+            db_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${db_ready:-0}" != "1" ]; then
+        echo "❌ ${container} did not become ready within 30s" >&2
+        docker logs "$container" >&2 || true
+        exit 1
+    fi
+    echo "⏳ Waiting for Redis to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
+            redis_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${redis_ready:-0}" != "1" ]; then
+        echo "❌ ${redis_container} did not become ready within 30s" >&2
+        docker logs "$redis_container" >&2 || true
+        exit 1
+    fi
+    docker exec "$container" psql -U phaze -d phaze_test -tc \
+        "SELECT 1 FROM pg_database WHERE datname = 'phaze_migrations_test'" \
+        | grep -q 1 \
+        || docker exec "$container" psql -U phaze -d phaze_test \
+            -c "CREATE DATABASE phaze_migrations_test OWNER phaze;" >/dev/null
+    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_test"
+    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_migrations_test"
+    export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"
     uv run pytest tests/ -q
 
 [doc('Run ruff linter')]
@@ -360,15 +477,19 @@ check: lint typecheck
     #!/usr/bin/env bash
     set -euo pipefail
     # A fresh worktree has no Postgres/Redis of its own -- `test` (bare `uv run
-    # pytest`) then dies at fixture setup dialing the CI-matching localhost:5432
-    # default (tests/conftest.py:45). `just integration-test` already solves this
-    # for a one-shot run, but its `test-db-down` EXIT trap would tear down a
-    # services container other concurrent worktrees/sessions are relying on if
-    # `check` reused it. So: provision (idempotently, via the existing `test-db`
-    # recipe) and export the matching env here, but never tear down -- leave that
-    # to an explicit `just test-db-down`. If the caller already exported
-    # TEST_DATABASE_URL (CI, another `just` recipe, a shared multi-worktree rig
-    # with per-worktree database names), respect it verbatim and skip provisioning.
+    # pytest`) then dies at fixture setup dialing tests/db_guard.py's resolve_test_dsn()
+    # default (localhost:5433, the local ephemeral harness -- NOT the same as CI, which
+    # always exports its own TEST_DATABASE_URL against its 5432 service container and
+    # never relies on this default) with nothing listening there yet. `check` provisions
+    # the SHARED test harness
+    # (idempotently, via the existing `test-db` recipe) and exports the matching env
+    # here, but never tears it down -- unlike `integration-test`, which runs against
+    # its own DEDICATED containers with an auto-teardown EXIT trap (phaze-pik6),
+    # `check` must leave phaze-test-db/phaze-test-redis running for other concurrent
+    # worktrees/sessions relying on them; explicit teardown is `just test-db-down`. If
+    # the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a
+    # shared multi-worktree rig with per-worktree database names), respect it
+    # verbatim and skip provisioning.
     if [ -z "${TEST_DATABASE_URL:-}" ]; then
         just test-db
         export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
@@ -376,16 +497,6 @@ check: lint typecheck
         export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
     fi
     just test
-
-[doc('Trigger a file scan (requires running services)')]
-[group('scan')]
-scan:
-    curl -s -X POST http://localhost:8000/api/v1/scan | python -m json.tool
-
-[doc('Check scan status by batch ID')]
-[group('scan')]
-scan-status BATCH_ID:
-    curl -s http://localhost:8000/api/v1/scan/{{BATCH_ID}} | python -m json.tool
 
 [doc('Run pip-audit for dependency vulnerability scanning')]
 [group('security')]
@@ -425,7 +536,7 @@ worker-restart:
 [doc('Check SAQ worker health')]
 [group('worker')]
 worker-health:
-    docker compose exec worker uv run saq phaze.tasks.worker.settings --check
+    docker compose exec worker uv run saq phaze.tasks.controller.settings --check
 
 [doc('Build Docker images')]
 [group('docker')]
@@ -457,8 +568,17 @@ image-push:
         ["audfprint"]="services/audfprint/Dockerfile.audfprint"
         ["panako"]="services/panako/Dockerfile.panako"
     )
+    # Matches docker-publish.yml's image_suffix matrix (Phase 29 D-15): the api image
+    # publishes BARE (ghcr.io/<owner>/<repo>:<tag>, no sub-path -- docker-compose.agent.yml's
+    # watcher/worker services pull exactly that reference), while the fingerprint sidecars get
+    # a /<service> sub-path.
+    declare -A IMAGE_SUFFIX=(
+        ["api"]=""
+        ["audfprint"]="/audfprint"
+        ["panako"]="/panako"
+    )
     for SERVICE in "${!IMAGES[@]}"; do
-        IMAGE="${REGISTRY}/${OWNER}/${REPO}/${SERVICE}:${TAG}"
+        IMAGE="${REGISTRY}/${OWNER}/${REPO}${IMAGE_SUFFIX[$SERVICE]}:${TAG}"
         echo "🐳 Building and pushing ${IMAGE}..."
         docker build -f "${IMAGES[$SERVICE]}" -t "${IMAGE}" .
         docker push "${IMAGE}"
@@ -611,11 +731,6 @@ db-downgrade:
 db-history:
     uv run alembic history
 
-[doc('Run the state↔derived shadow-compare gate against the target DB (MIG-02). Exit nonzero on hard divergence.')]
-[group('db')]
-shadow-compare *ARGS:
-    uv run python -m phaze.cli.shadow_compare {{ ARGS }}
-
 [doc('Start a DEDICATED ephemeral Postgres for the PERF-02 bench (own port, never wiped by test-db recreates)')]
 [group('db')]
 perf-db-up:
@@ -672,15 +787,17 @@ fingerprint:
 fingerprint-progress:
     curl -s http://localhost:8000/api/v1/fingerprint/progress | python -m json.tool
 
-[doc('Check audfprint container health')]
+[doc('Check audfprint container health (execs into the audfprint sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
 audfprint-health:
-    docker compose exec worker curl -sf http://audfprint:8001/health | python -m json.tool
+    docker compose -f docker-compose.agent.yml exec audfprint \
+        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8001/health')), indent=2))"
 
-[doc('Check panako container health')]
+[doc('Check panako container health (execs into the panako sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
 panako-health:
-    docker compose exec worker curl -sf http://panako:8002/health | python -m json.tool
+    docker compose -f docker-compose.agent.yml exec panako \
+        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8002/health')), indent=2))"
 
 [doc('Update pre-commit hooks (with frozen SHAs)')]
 [group('maintenance')]

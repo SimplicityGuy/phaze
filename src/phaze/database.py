@@ -69,7 +69,14 @@ def _run_upgrade_head_sync() -> None:
     # run, so we don't need to set it here -- but setting it makes the cfg
     # honest for any caller that reads it back. The env-side override remains
     # authoritative.
-    cfg.set_main_option("sqlalchemy.url", str(settings.database_url))
+    #
+    # Config is ConfigParser-backed, which applies %-interpolation on every value it stores.
+    # A percent-encoded credential (e.g. password '@' -> '%40') is a valid SQLAlchemy URL but
+    # invalid ConfigParser input, so escape '%' as '%%' here too -- this call runs BEFORE
+    # env.py is ever imported (command.upgrade below triggers it), so an unescaped '%' here
+    # crashes with ValueError('invalid interpolation syntax') before env.py's own escaping
+    # is ever reached (phaze-7oya).
+    cfg.set_main_option("sqlalchemy.url", str(settings.database_url).replace("%", "%%"))
     command.upgrade(cfg, "head")
 
 

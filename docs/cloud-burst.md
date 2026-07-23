@@ -85,7 +85,7 @@ Key invariants:
 The OCI A1 instance, its VCN/subnet/security-list, and the boot volume are authored as
 **OpenTofu IaC in the homelab repo** (workspace boundary — phaze emits the spec, homelab applies
 it). The full ready-to-paste change request is in
-[`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md);
+[`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v5.0-phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md);
 the reference spec is reproduced here.
 
 > **⚠️ Capacity gotcha (load-bearing).** As of **June 2026** the OCI Always-Free Ampere A1 limit
@@ -452,5 +452,5 @@ for the full per-knob reference (defaults, `_FILE` support).
   entry): the cluster-admin runbook, RBAC, and submit → reconcile lifecycle.
 - [deployment.md](deployment.md) — the two-host base deployment the cloud agent extends.
 - [arm64-agent-image.md](arm64-agent-image.md) — how the `-arm64` image is built and tagged.
-- [`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md)
+- [`51-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v5.0-phases/51-deployment-config-docs/51-HOMELAB-CHANGE-PROMPT.md)
   — the ready-to-apply homelab infrastructure change request (OpenTofu + ACL + broker role).

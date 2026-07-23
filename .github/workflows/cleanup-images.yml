@@ -21,6 +21,7 @@ jobs:
           - phaze
           - phaze/audfprint
           - phaze/panako
+          - phaze/job
       fail-fast: false
 
     permissions:
@@ -35,6 +36,17 @@ jobs:
           delete-untagged: true
           keep-n-tagged: 2
           older-than: 30 days
+          # D-16 pins production deployments to a specific CalVer release tag
+          # (PHAZE_IMAGE_TAG=<version>, e.g. 2026.5.0 or 2026.5). keep-n-tagged
+          # + older-than only look at recency, so once more than 2 releases age
+          # past 30 days, a pinned tag is exactly the kind of image they'd
+          # delete out from under a re-provisioned deployment. exclude-tags
+          # takes priority over every other rule (including keep-n-tagged and
+          # older-than), so semver-shaped release tags — and their -arm64
+          # variants — are never garbage-collected here, regardless of age or
+          # how many releases have since shipped.
+          exclude-tags: ^\d+\.\d+(\.\d+)?(-arm64)?$
+          use-regex: true
           token: ${{ secrets.GITHUB_TOKEN }}
           package: ${{ matrix.package }}
           owner: ${{ github.repository_owner }}
