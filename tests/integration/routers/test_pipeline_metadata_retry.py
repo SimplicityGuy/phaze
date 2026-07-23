@@ -32,7 +32,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
-from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
+from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ async def test_retry_reenqueues_all_failed_metadata(client: AsyncClient, session
     ExtractMetadataPayload; the ack reports N and is metadata-worded (not "for analysis").
     """
     failed_ids = await _seed_failed(session, 3)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/pipeline/metadata-failed/retry")
@@ -109,8 +109,8 @@ async def test_retry_reenqueues_all_failed_metadata(client: AsyncClient, session
     assert "for analysis" not in response.text.lower()
 
     await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
-    queue = task_router.queues["nox-meta"]
-    assert queue.name == "phaze-agent-nox-meta"
+    queue = task_router.queues["test-fileserver-meta"]
+    assert queue.name == "phaze-agent-test-fileserver-meta"
     assert queue.name != "default"
     assert len(queue.captured) == 3
     captured_ids = set()
@@ -131,7 +131,7 @@ async def test_retry_leaves_failure_rows_in_place(client: AsyncClient, session: 
     zero-metadata file read DONE forever. Only ``put_metadata``'s clear-on-success wipes the marker.
     """
     failed_ids = await _seed_failed(session, 2)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     response = await client.post("/pipeline/metadata-failed/retry")
@@ -165,7 +165,7 @@ async def test_retry_no_active_agent_enqueues_nothing_and_mutates_nothing(client
 @pytest.mark.asyncio
 async def test_retry_zero_failed_is_noop(client: AsyncClient, session: AsyncSession) -> None:
     """No failed-metadata files -> 200, zero enqueues, "no failed files to retry" ack."""
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/metadata-failed/retry")

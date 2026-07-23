@@ -23,7 +23,7 @@ from sqlalchemy import select
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.routers.pipeline import _background_tasks, _route_discovered_by_duration
-from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+from tests._queue_fakes import FakeTaskRouter, make_agent_live, seed_active_agent
 
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ async def test_long_file_routes_to_awaiting_cloud_not_compute(session: AsyncSess
     file and resolves NO compute queue -- the bounded staging cron is the single entry point.
     """
     await seed_active_agent(session, "cloud", kind="compute")
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     long_file = _make_long_file()
     session.add(long_file)
     await session.commit()
@@ -133,7 +133,7 @@ async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> N
     branch, is enqueued onto the fileserver queue like any short file, and its state stays
     DISCOVERED. No row ever reaches AWAITING_CLOUD, so the cloud pipeline stays completely dormant.
     """
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     long_file = _make_long_file()
     session.add(long_file)
     await session.commit()
@@ -149,16 +149,16 @@ async def test_cloud_disabled_routes_long_file_local(session: AsyncSession) -> N
     # The long file routed local -- it stays DISCOVERED, never AWAITING_CLOUD.
     await session.refresh(long_file)
     # It was enqueued onto the fileserver queue (the local path), not held.
-    assert router.queue_for_calls == ["nox"]
+    assert router.queue_for_calls == ["test-fileserver"]
     # quick-260707-dh1: process_file routes to the analyze lane queue.
-    assert [t for t, _ in router.queues["nox-analyze"].captured] == ["process_file"]
+    assert [t for t, _ in router.queues["test-fileserver-analyze"].captured] == ["process_file"]
 
 
 @pytest.mark.asyncio
 async def test_cloud_enabled_holds_long_file(session: AsyncSession) -> None:
     """ON (cloud_enabled=True): a long file is HELD in AWAITING_CLOUD (Phase 49/50 regression)."""
     await seed_active_agent(session, "cloud", kind="compute")
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     long_file = _make_long_file()
     session.add(long_file)
     await session.commit()
@@ -187,7 +187,7 @@ async def test_kueue_registry_resolves_to_cloud_on(session: AsyncSession) -> Non
     from phaze.config_backends import KubeConfig, KueueBackend
 
     await seed_active_agent(session, "cloud", kind="compute")
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     long_file = _make_long_file()
     session.add(long_file)
     await session.commit()

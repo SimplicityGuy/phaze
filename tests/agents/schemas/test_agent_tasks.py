@@ -287,7 +287,10 @@ def test_scan_live_set_payload_minimal_valid() -> None:
 
 def test_scan_live_set_payload_field_set() -> None:
     fields = ScanLiveSetPayload.model_fields
-    assert set(fields.keys()) == {"file_id", "original_path", "agent_id"}
+    # phaze-y07u: scan_run_id is the per-enqueue nonce scoping the idempotency request_id to one
+    # run; optional (default None) so pre-upgrade in-flight jobs still validate.
+    assert set(fields.keys()) == {"file_id", "original_path", "agent_id", "scan_run_id"}
+    assert fields["scan_run_id"].default is None
 
 
 # -----------------------

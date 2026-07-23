@@ -22,7 +22,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.route_control import RouteControl
 from phaze.services.route_control import get_route_control
-from tests._queue_fakes import seed_active_agent, wire_fakes
+from tests._queue_fakes import make_agent_live, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -189,7 +189,7 @@ async def test_route_forced_local_no_hold(client: AsyncClient, session: AsyncSes
     session.add(FileMetadata(file_id=uid, duration=_LONG))
     await session.commit()
 
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")

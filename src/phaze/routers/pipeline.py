@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
-import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
+import uuid  # runtime import: FastAPI path-param annotations + the phaze-y07u scan_run_id nonce
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -388,16 +388,18 @@ async def _route_discovered_by_duration(
     """Route each DISCOVERED file to a queue by its duration (Phase 49 seam, reshaped in Phase 50).
 
     The single per-file routing decision shared by the "Run Analysis" trigger (this module)
-    and the Plan-03 backfill producer, so the two paths cannot drift. Only the FILESERVER
-    agent is resolved here (in its OWN ``try/except NoActiveAgentError``, exactly ONCE before
-    the loop); its queue is obtained via ``app_state.task_router.queue_for`` (the Phase-30
-    invariant -- never the consumer-less default queue).
+    and the Plan-03 backfill producer, so the two paths cannot drift. phaze-c9w9: local routing
+    is per-OWNER -- the short/null candidates are grouped by ``FileRecord.agent_id`` via
+    :func:`enqueue_router.resolve_queues_for_owned_files` (never one most-recently-seen pick for
+    the whole set, which misrouted every other agent's files); each group's queue comes from
+    ``app_state.task_router.queue_for`` (the Phase-30 invariant -- never the consumer-less
+    default queue).
 
     Per file, on the captured ``(file, duration)`` tuples:
 
-    - ``duration is None`` or ``< threshold_sec`` AND a fileserver agent is online -> enqueue
-      ``process_file`` onto the fileserver queue (``local``), unchanged.
-    - ``duration is None`` or ``< threshold_sec`` AND NO fileserver agent online -> count as
+    - ``duration is None`` or ``< threshold_sec`` AND the file's OWNING fileserver agent is
+      online -> enqueue ``process_file`` onto that owner's queue (``local``).
+    - ``duration is None`` or ``< threshold_sec`` AND the owning agent is offline -> count as
       ``skipped`` (cannot route locally) -- NO enqueue, NO state change, the run continues.
     - ``duration >= threshold_sec`` -> ALWAYS set the row's state to ``AWAITING_CLOUD``
       (``awaiting``), regardless of whether a compute agent is online (Phase 50 CLOUDPIPE-01).
@@ -415,21 +417,13 @@ async def _route_discovered_by_duration(
     Pitfall 3).
 
     Returns ``{"local": N, "cloud": 0, "awaiting": K, "skipped": S, "no_active_agent": 0|1}``;
-    ``cloud`` is always 0 (no direct compute enqueue remains). ``no_active_agent`` is 1 when NO
-    fileserver agent is online (nothing can route locally): the caller then surfaces the
-    no-active-agent response, whose template still reports any HELD long files (WR-01) via the
-    ``awaiting`` count -- a held long file is real, durable work the staging cron will drain.
+    ``cloud`` is always 0 (no direct compute enqueue remains). ``no_active_agent`` is 1 when
+    local candidates exist but NO owning fileserver agent is online (nothing can route locally):
+    the caller then surfaces the no-active-agent response, whose template still reports any HELD
+    long files (WR-01) via the ``awaiting`` count -- a held long file is real, durable work the
+    staging cron will drain.
     """
-    try:
-        fileserver_agent: Agent | None = await enqueue_router.select_active_agent(session, kind="fileserver")
-    except enqueue_router.NoActiveAgentError:
-        fileserver_agent = None
-
-    fileserver_q = (
-        app_state.task_router.queue_for(fileserver_agent.id, enqueue_router.lane_for_task("process_file")) if fileserver_agent is not None else None
-    )
-
-    local_files: list[FileRecord] = []
+    local_candidates: list[FileRecord] = []
     skipped = 0
     held = 0
 
@@ -447,27 +441,50 @@ async def _route_discovered_by_duration(
             # NEVER commits; the existing post-loop commit below is the hold's own commit boundary.
             await hold_awaiting_cloud(session, file)
             held += 1
-        elif fileserver_agent is not None:
-            local_files.append(file)
         else:
-            skipped += 1
+            local_candidates.append(file)
 
     # Commit the AWAITING_CLOUD held-state UPDATEs BEFORE backgrounding the enqueues
     # (get_session does not auto-commit -- RESEARCH Pitfall 3).
     if held:
         await session.commit()
 
-    if local_files and fileserver_q is not None and fileserver_agent is not None:
-        local_task = asyncio.create_task(_enqueue_analysis_jobs(fileserver_q, local_files, fileserver_agent.id, models_path))
+    # phaze-c9w9: group the local candidates by their OWNING agent and route each group to that
+    # agent's queue. A candidate whose owner is offline is SKIPPED (never rerouted to a different
+    # agent's mount); NoActiveAgentError here means no candidate's owner is live -- kept as the
+    # no_active_agent=1 signal.
+    routed_groups: list[tuple[enqueue_router.RoutedQueue, list[FileRecord]]] = []
+    no_active_agent = False
+    if local_candidates:
+        try:
+            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("process_file", app_state, session, local_candidates)
+        except enqueue_router.NoActiveAgentError:
+            skipped = len(local_candidates)
+            no_active_agent = True
+        else:
+            skipped = len(skipped_files)
+    else:
+        # No local candidates (an all-long / empty run): preserve the pre-c9w9 signal shape --
+        # no_active_agent=1 iff NO fileserver is online at all, so the WR-01 held-count
+        # no-active-agent fragment still renders on a cold-boot "Run Analysis" of long files.
+        try:
+            await enqueue_router.select_active_agent(session, kind="fileserver")
+        except enqueue_router.NoActiveAgentError:
+            no_active_agent = True
+
+    local = 0
+    for routed, group in routed_groups:
+        local += len(group)
+        local_task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, group, cast("str", routed.agent_id), models_path))
         _background_tasks.add(local_task)
         local_task.add_done_callback(_background_tasks.discard)
 
     return {
-        "local": len(local_files),
+        "local": local,
         "cloud": 0,
         "awaiting": held,
         "skipped": skipped,
-        "no_active_agent": int(fileserver_agent is None),
+        "no_active_agent": int(no_active_agent),
     }
 
 
@@ -1471,7 +1488,10 @@ async def retry_analysis_failed(
         )
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+        # phaze-c9w9: group the failed set by each file's OWNING agent -- never one
+        # most-recently-seen pick for the whole set. Files whose owner is offline are skipped
+        # (marker left in place, retryable later), never rerouted onto another agent's mount.
+        routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("process_file", request.app.state, session, files)
     except enqueue_router.NoActiveAgentError:
         # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30).
         return templates.TemplateResponse(
@@ -1480,9 +1500,9 @@ async def retry_analysis_failed(
             context={"request": request, "count": 0, "no_active_agent": True},
         )
 
-    # process_file is an AGENT_TASK -- resolve always returns a non-None agent_id;
-    # cast narrows str | None -> str for ProcessFilePayload.agent_id.
-    agent_id = cast("str", routed.agent_id)
+    if skipped_files:
+        logger.warning("retry_analysis_failed: owning agent offline -- files left failed", skipped=len(skipped_files))
+    routed_files = [f for _, group in routed_groups for f in group]
 
     # RESEARCH Pitfall 3: flip out of the terminal bucket and COMMIT before any enqueue so the
     # red count drops on the next 5s poll regardless of the enqueue outcome.
@@ -1492,9 +1512,11 @@ async def retry_analysis_failed(
     # removed -- `analysis.failed_at` is now the sole failure authority (`failed_clause(Stage.ANALYZE)`,
     # readers cut over in PR-A). Clearing it moves the row off the failed disjunct so it derives
     # `not_started` -- exactly what a fresh re-analysis should see (the XOR CHECK guarantees
-    # `analysis_completed_at IS NULL` on a failed row).
+    # `analysis_completed_at IS NULL` on a failed row). phaze-c9w9: cleared ONLY for the files that
+    # actually route -- clearing a skipped (owner-offline) file's marker would drop it off the red
+    # bucket with no job ever enqueued.
     await session.execute(
-        update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in files])).values(failed_at=None, error_message=None),
+        update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in routed_files])).values(failed_at=None, error_message=None),
     )
     await session.commit()
 
@@ -1511,15 +1533,16 @@ async def retry_analysis_failed(
     # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a deepen.
     # The single funnel (_enqueue_analysis_jobs -> enqueue_process_file) guarantees the full payload
     # + deterministic dedup key.
-    task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, files, agent_id, settings.models_path))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    for routed, group in routed_groups:
+        task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, group, cast("str", routed.agent_id), settings.models_path))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    logger.info("retry_analysis_failed re-queued files", count=len(files))
+    logger.info("retry_analysis_failed re-queued files", count=len(routed_files))
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/retry_failed_response.html",
-        context={"request": request, "count": len(files), "no_active_agent": False},
+        context={"request": request, "count": len(routed_files), "no_active_agent": False},
     )
 
 
@@ -1562,7 +1585,9 @@ async def retry_metadata_failed(
         )
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+        # phaze-c9w9: group the failed set by each file's OWNING agent -- never one
+        # most-recently-seen pick for the whole set (owner-offline files are skipped, not rerouted).
+        routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("extract_file_metadata", request.app.state, session, files)
     except enqueue_router.NoActiveAgentError:
         # Do NOT enqueue, do NOT mutate state, do NOT fall through to the default queue (Phase-30).
         return templates.TemplateResponse(
@@ -1571,8 +1596,9 @@ async def retry_metadata_failed(
             context={"request": request, "count": 0, "no_active_agent": True},
         )
 
-    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
-    agent_id = cast("str", routed.agent_id)
+    if skipped_files:
+        logger.warning("retry_metadata_failed: owning agent offline -- files left failed", skipped=len(skipped_files))
+    routed_count = sum(len(group) for _, group in routed_groups)
 
     # D-11: no state flip, so no pre-enqueue commit. Build the COMPLETE payload via the shared
     # producer (a file_id-only enqueue dead-letters every job) and rely on the central
@@ -1584,15 +1610,16 @@ async def retry_metadata_failed(
     # `_background_tasks` discipline specifically "to avoid HTTP timeout on large file counts" -- this
     # bulk retry was the one caller that awaited it inline, so a large failed set could time out the
     # HTTP request/proxy mid-loop.
-    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    for routed, group in routed_groups:
+        task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, group, cast("str", routed.agent_id)))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    logger.info("retry_metadata_failed re-queued files", count=len(files))
+    logger.info("retry_metadata_failed re-queued files", count=routed_count)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/metadata_retry_response.html",
-        context={"request": request, "count": len(files), "no_active_agent": False},
+        context={"request": request, "count": routed_count, "no_active_agent": False},
     )
 
 
@@ -1649,7 +1676,9 @@ async def retry_analysis_failed_file(
         )
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+        # phaze-c9w9: route to the FILE's owning agent (agent_id=file.agent_id), never the
+        # most-recently-seen fileserver -- an owner-offline file surfaces no_active_agent.
+        routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session, agent_id=file.agent_id)
     except enqueue_router.NoActiveAgentError:
         # Do NOT flip state, do NOT enqueue, do NOT fall through to the default queue (Phase-30, T-87-25).
         return templates.TemplateResponse(
@@ -1717,7 +1746,9 @@ async def retry_metadata_failed_file(
         )
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+        # phaze-c9w9: route to the FILE's owning agent (agent_id=file.agent_id), never the
+        # most-recently-seen fileserver -- an owner-offline file surfaces no_active_agent.
+        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session, agent_id=file.agent_id)
     except enqueue_router.NoActiveAgentError:
         # Do NOT enqueue, do NOT mutate state, do NOT fall through to the default queue (Phase-30, T-87-25).
         return templates.TemplateResponse(
@@ -2155,7 +2186,8 @@ async def deepen_analysis(
 
     if file is not None:
         try:
-            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session)
+            # phaze-c9w9: route to the FILE's owning agent, never the most-recently-seen fileserver.
+            routed = await enqueue_router.resolve_queue_for_task("process_file", request.app.state, session, agent_id=file.agent_id)
         except enqueue_router.NoActiveAgentError:
             # Do NOT fall through to the default queue (Phase-30 guard) -- surface gracefully.
             no_active_agent = True
@@ -2335,18 +2367,22 @@ async def trigger_metadata_extraction(
         return {"enqueued": 0, "message": "No music/video files found"}
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+        # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick
+        # for the whole set (owner-offline files are skipped, not rerouted).
+        routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("extract_file_metadata", request.app.state, session, files)
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    # extract_file_metadata is an AGENT_TASK -- resolve always returns a non-None agent_id.
-    agent_id = cast("str", routed.agent_id)
+    for routed, group in routed_groups:
+        task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, group, cast("str", routed.agent_id)))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-    return {"enqueued": len(files), "message": f"Enqueued {len(files)} files for metadata extraction"}
+    enqueued = sum(len(group) for _, group in routed_groups)
+    message = f"Enqueued {enqueued} files for metadata extraction"
+    if skipped_files:
+        message += f" ({len(skipped_files)} skipped: owning agent offline)"
+    return {"enqueued": enqueued, "message": message}
 
 
 @router.post("/pipeline/extract-metadata", response_class=HTMLResponse)
@@ -2356,19 +2392,25 @@ async def trigger_extraction_ui(
 ) -> HTMLResponse:
     """HTMX endpoint: trigger metadata extraction and return response fragment."""
     files = await get_metadata_pending_files(session)
-    count = len(files)
+    count = 0
     no_active_agent = False
 
-    if count > 0:
+    if files:
         try:
-            routed = await enqueue_router.resolve_queue_for_task("extract_file_metadata", request.app.state, session)
+            # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick.
+            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files(
+                "extract_file_metadata", request.app.state, session, files
+            )
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            agent_id = cast("str", routed.agent_id)
-            task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, files, agent_id))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            if skipped_files:
+                logger.warning("trigger_extraction_ui: owning agent offline -- files skipped", skipped=len(skipped_files))
+            for routed, group in routed_groups:
+                count += len(group)
+                task = asyncio.create_task(_enqueue_extraction_jobs(routed.queue, group, cast("str", routed.agent_id)))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
@@ -2419,17 +2461,22 @@ async def trigger_fingerprint(
         return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
 
     try:
-        routed = await enqueue_router.resolve_queue_for_task("fingerprint_file", request.app.state, session)
+        # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick
+        # for the whole set (owner-offline files are skipped, not rerouted).
+        routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("fingerprint_file", request.app.state, session, all_files)
     except enqueue_router.NoActiveAgentError:
         return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
 
-    # fingerprint_file is an AGENT_TASK -- resolve always returns a non-None agent_id.
-    agent_id = cast("str", routed.agent_id)
-    task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, all_files, agent_id))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    for routed, group in routed_groups:
+        task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, group, cast("str", routed.agent_id)))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    return {"enqueued": len(all_files), "message": f"Enqueued {len(all_files)} files for fingerprinting"}
+    enqueued = sum(len(group) for _, group in routed_groups)
+    message = f"Enqueued {enqueued} files for fingerprinting"
+    if skipped_files:
+        message += f" ({len(skipped_files)} skipped: owning agent offline)"
+    return {"enqueued": enqueued, "message": message}
 
 
 @router.get("/api/v1/fingerprint/progress")
@@ -2453,19 +2500,23 @@ async def trigger_fingerprint_ui(
     ``METADATA_EXTRACTED``; the broadened, deduped pending set is the intended consistency fix.
     """
     files = await get_fingerprint_pending_files(session)
-    count = len(files)
+    count = 0
     no_active_agent = False
 
-    if count > 0:
+    if files:
         try:
-            routed = await enqueue_router.resolve_queue_for_task("fingerprint_file", request.app.state, session)
+            # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick.
+            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("fingerprint_file", request.app.state, session, files)
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            agent_id = cast("str", routed.agent_id)
-            task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, files, agent_id))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            if skipped_files:
+                logger.warning("trigger_fingerprint_ui: owning agent offline -- files skipped", skipped=len(skipped_files))
+            for routed, group in routed_groups:
+                count += len(group)
+                task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, group, cast("str", routed.agent_id)))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,
@@ -2544,6 +2595,11 @@ async def _enqueue_scan_jobs(queue: Any, files: list[FileRecord], agent_id: str)
             file_id=f.id,
             original_path=f.original_path,
             agent_id=agent_id,
+            # phaze-y07u: fresh per-enqueue nonce scoping the worker's idempotency request_id to
+            # THIS run -- SAQ retries replay these exact kwargs (same nonce -> retries collapse),
+            # while a later deliberate re-scan gets a new nonce and is never answered with a
+            # previous run's cached create-tracklist response.
+            scan_run_id=uuid.uuid4(),
         )
         await queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
 
@@ -2566,20 +2622,23 @@ async def trigger_scan_live_sets_ui(
     # Shared pending-set helper (D-03 anti-drift): the SAME untracked-files set the Phase-39 search
     # trigger and Phase-42 recovery read.
     files = await get_untracked_files(session)
-    count = len(files)
+    count = 0
     no_active_agent = False
 
-    if count > 0:
+    if files:
         try:
-            routed = await enqueue_router.resolve_queue_for_task("scan_live_set", request.app.state, session)
+            # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick.
+            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("scan_live_set", request.app.state, session, files)
         except enqueue_router.NoActiveAgentError:
             no_active_agent = True
         else:
-            # scan_live_set is an AGENT_TASK -- resolve always returns a non-None agent_id.
-            agent_id = cast("str", routed.agent_id)
-            task = asyncio.create_task(_enqueue_scan_jobs(routed.queue, files, agent_id))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            if skipped_files:
+                logger.warning("trigger_scan_live_sets_ui: owning agent offline -- files skipped", skipped=len(skipped_files))
+            for routed, group in routed_groups:
+                count += len(group)
+                task = asyncio.create_task(_enqueue_scan_jobs(routed.queue, group, cast("str", routed.agent_id)))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
 
     return templates.TemplateResponse(
         request=request,

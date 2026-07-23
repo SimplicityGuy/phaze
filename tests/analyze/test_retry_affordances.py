@@ -36,7 +36,7 @@ from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status, eligible
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import ProcessFilePayload
-from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
+from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -131,15 +131,15 @@ async def test_per_file_retry_reenqueues_one_file_through_guarded_funnel(
     file = await _seed_failed_file(session)
     # A second failed file that MUST be untouched (proves scoping to one file_id).
     other = await _seed_failed_file(session)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{file.id}/analysis-failed/retry")
     assert response.status_code == 200
     assert "re-queued 1 failed file(s) for analysis" in response.text.lower()
 
-    queue = task_router.queues["nox-analyze"]
-    assert queue.name == "phaze-agent-nox-analyze"
+    queue = task_router.queues["test-fileserver-analyze"]
+    assert queue.name == "phaze-agent-test-fileserver-analyze"
     assert queue.name != "default"
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
@@ -166,7 +166,7 @@ async def test_per_file_retry_no_active_agent_mutates_nothing(client: AsyncClien
     """Phase-30 guard / T-87-25: no agent -> amber ack, zero enqueues, no state/marker mutation."""
     file = await _seed_failed_file(session)
     fid = file.id  # capture before expiry (an expired ORM attr would lazy-reload outside greenlet)
-    capture = wire_fakes(client)  # no seed_active_agent -> NoActiveAgentError path
+    capture = wire_fakes(client)  # owner never brought live -> NoActiveAgentError path
 
     response = await client.post(f"/pipeline/files/{fid}/analysis-failed/retry")
     assert response.status_code == 200
@@ -189,7 +189,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
     healthy = _make_file()
     session.add(healthy)
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     # A file that exists but is not failed.
@@ -212,7 +212,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
 async def test_bulk_retry_reenqueues_all_failed_through_guarded_funnel(client: AsyncClient, session: AsyncSession) -> None:
     """The bulk endpoint re-drives EVERY failed analyze file on the per-agent queue (never default)."""
     files = [await _seed_failed_file(session) for _ in range(3)]
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/pipeline/analysis-failed/retry")
@@ -220,7 +220,7 @@ async def test_bulk_retry_reenqueues_all_failed_through_guarded_funnel(client: A
     assert "re-queued 3 failed file(s) for analysis" in response.text.lower()
 
     await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert queue.name != "default"
     assert {p["file_id"] for _t, p in queue.captured} == {str(f.id) for f in files}
 

@@ -22,12 +22,17 @@ def _make_ctx(api_client: AsyncMock | None = None, orchestrator: AsyncMock | Non
     return {"api_client": api_client, "fingerprint_orchestrator": orchestrator}
 
 
-def _make_payload_kwargs(file_id: uuid.UUID | None = None) -> dict[str, Any]:
-    return {
+def _make_payload_kwargs(file_id: uuid.UUID | None = None, scan_run_id: uuid.UUID | None = None) -> dict[str, Any]:
+    kwargs = {
         "file_id": str(file_id or uuid.uuid4()),
         "original_path": "/music/liveset.mp3",
         "agent_id": "test-agent",
     }
+    # phaze-y07u: omitted (not None-valued) when absent, mirroring a pre-upgrade in-flight job's
+    # serialized kwargs -- the payload's default supplies None.
+    if scan_run_id is not None:
+        kwargs["scan_run_id"] = str(scan_run_id)
+    return kwargs
 
 
 async def test_scan_no_matches_returns_no_matches() -> None:
@@ -93,7 +98,12 @@ async def test_scan_with_matches_posts_tracklist() -> None:
 
 
 async def test_scan_request_id_is_stable_across_calls() -> None:
-    """Re-running scan_live_set for the same file_id produces the same request_id."""
+    """Replaying scan_live_set with IDENTICAL kwargs produces the same request_id.
+
+    This is the SAQ-retry shape (a retry reruns the job with the same serialized kwargs --
+    phaze-y07u: including the same ``scan_run_id`` when present; here both runs carry none,
+    the pre-upgrade legacy shape), so the controller's idempotency cache collapses the replay.
+    """
     from phaze.tasks.scan import scan_live_set
 
     matches = [CombinedMatch(track_id="t1", confidence=80.0)]
@@ -116,6 +126,67 @@ async def test_scan_request_id_is_stable_across_calls() -> None:
     req_id_1 = api1.create_tracklist.await_args.args[0].request_id
     req_id_2 = api2.create_tracklist.await_args.args[0].request_id
     assert req_id_1 == req_id_2  # stable -- SAQ retries will hit cached response server-side
+
+
+def _scan_ctx_with_matches() -> dict[str, Any]:
+    """A ctx whose orchestrator returns one match and whose api records create_tracklist calls."""
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(return_value=MagicMock(tracklist_id=uuid.uuid4(), version=1, track_count=1))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=[CombinedMatch(track_id="t1", confidence=80.0)])
+    return _make_ctx(api_client=api, orchestrator=orchestrator)
+
+
+async def test_scan_request_id_differs_across_distinct_runs() -> None:
+    """THE phaze-y07u regression: two DISTINCT scan runs of the same file get DIFFERENT request_ids.
+
+    Pre-fix the request_id was uuid5 over the file_id alone -- deterministic per FILE forever --
+    so a deliberate re-scan within the controller's 1h idempotency window (e.g. after ingesting
+    more reference tracks) replayed the CACHED create-tracklist response and the fresh match set
+    was silently discarded. Each enqueue now stamps a fresh ``scan_run_id`` nonce, so distinct
+    runs must produce distinct request_ids.
+    """
+    from phaze.tasks.scan import scan_live_set
+
+    file_id = uuid.uuid4()
+    ctx1, ctx2 = _scan_ctx_with_matches(), _scan_ctx_with_matches()
+    await scan_live_set(ctx1, **_make_payload_kwargs(file_id=file_id, scan_run_id=uuid.uuid4()))
+    await scan_live_set(ctx2, **_make_payload_kwargs(file_id=file_id, scan_run_id=uuid.uuid4()))
+
+    req_id_1 = ctx1["api_client"].create_tracklist.await_args.args[0].request_id
+    req_id_2 = ctx2["api_client"].create_tracklist.await_args.args[0].request_id
+    assert req_id_1 != req_id_2  # a re-scan is a NEW operation -- never the cached response
+
+
+async def test_scan_request_id_stable_across_retries_of_one_run() -> None:
+    """phaze-y07u: retries of ONE run (same serialized kwargs, same scan_run_id) still collapse."""
+    from phaze.tasks.scan import scan_live_set
+
+    file_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    ctx1, ctx2 = _scan_ctx_with_matches(), _scan_ctx_with_matches()
+    await scan_live_set(ctx1, **_make_payload_kwargs(file_id=file_id, scan_run_id=run_id))
+    await scan_live_set(ctx2, **_make_payload_kwargs(file_id=file_id, scan_run_id=run_id))
+
+    req_id_1 = ctx1["api_client"].create_tracklist.await_args.args[0].request_id
+    req_id_2 = ctx2["api_client"].create_tracklist.await_args.args[0].request_id
+    assert req_id_1 == req_id_2  # retry replay -> controller idempotency cache catches it
+
+
+async def test_scan_request_id_without_run_id_keeps_legacy_key() -> None:
+    """phaze-y07u: a pre-upgrade job (no scan_run_id) keeps the legacy per-file request_id.
+
+    An in-flight job enqueued before the upgrade retries with its original kwargs; its retries
+    must still dedupe against the POST the original attempt already made under the legacy key.
+    """
+    from phaze.tasks.scan import scan_live_set
+
+    file_id = uuid.uuid4()
+    ctx = _scan_ctx_with_matches()
+    await scan_live_set(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    body = ctx["api_client"].create_tracklist.await_args.args[0]
+    assert body.request_id == uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{file_id}")
 
 
 async def test_orchestrator_error_propagates() -> None:
