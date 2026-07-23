@@ -1518,7 +1518,7 @@ def test_is_scan_stalled_false_for_non_running() -> None:
 #
 # response_shape.py rule 3 owns this defect class: a renderable error is a 200 whose body
 # carries the error. Rule 4's boundary test -- "is there a swap target waiting to display
-# this answer?" -- is YES for all five branches, so none of them is a
+# this answer?" -- is YES for all six branches, so none of them is a
 # request_guards rule 1 (422) malformed envelope. A genuinely unintelligible envelope
 # (missing form field) remains FastAPI's own 422; see
 # ``test_post_scans_missing_form_field_is_still_a_422_envelope_rejection``.
@@ -1552,7 +1552,7 @@ def _assert_swappable_alert(response: object, expected_fragment: str) -> None:
 async def test_post_scans_dotdot_traversal_is_a_swappable_alert(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """Branch 1/5 -- ``..`` traversal.
+    """Branch 1/6 -- ``..`` traversal.
 
     Argued explicitly because it is the branch most tempting to call a protocol-level
     rejection: it is a *security* refusal, and security refusals feel like they want a 4xx.
@@ -1579,7 +1579,7 @@ async def test_post_scans_dotdot_traversal_is_a_swappable_alert(
 async def test_post_scans_unknown_agent_is_a_swappable_alert(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """Branch 2/5 -- unknown/revoked agent. Well-formed id, no such row: bad news, not gibberish."""
+    """Branch 2/6 -- unknown/revoked agent. Well-formed id, no such row: bad news, not gibberish."""
     ac, mock_router = smoke
 
     response = await ac.post(
@@ -1594,7 +1594,7 @@ async def test_post_scans_unknown_agent_is_a_swappable_alert(
 async def test_post_scans_unconfigured_scan_root_is_a_swappable_alert(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """Branch 3/5 -- scan_root not in agent.scan_roots. A directly actionable operator mistake."""
+    """Branch 3/6 -- scan_root not in agent.scan_roots. A directly actionable operator mistake."""
     ac, mock_router = smoke
 
     response = await ac.post(
@@ -1610,7 +1610,7 @@ async def test_post_scans_path_outside_root_is_a_swappable_alert(
     smoke: tuple[AsyncClient, AsyncMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Branch 4/5 -- resolved path outside the scan root (the defensive prefix check).
+    """Branch 4/6 -- resolved path outside the scan root (the defensive prefix check).
 
     Reached the same way the existing coverage-gap test reaches it: monkeypatch
     ``unicodedata.normalize`` so the NFC pass rewrites the joined path out from under the
@@ -1641,7 +1641,7 @@ async def test_post_scans_path_outside_root_is_a_swappable_alert(
 async def test_post_scans_enqueue_failure_is_a_swappable_alert(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """Branch 5/5 -- enqueue failure.
+    """Branch 5/6 -- enqueue failure.
 
     The only branch where a 5xx is even arguable, since the failure IS server-side. It is
     still a 200: the operator triggered a scan, phaze understood the request completely,
@@ -1658,6 +1658,44 @@ async def test_post_scans_enqueue_failure_is_a_swappable_alert(
         data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
     )
     _assert_swappable_alert(response, "could not enqueue the scan")
+
+
+@pytest.mark.asyncio
+async def test_post_scans_duplicate_running_batch_is_a_swappable_alert(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """Branch 6/6 -- a RUNNING batch already exists for this agent+path (phaze-1a71).
+
+    A double submit for the same resolved path (a slow first request re-clicked, or a
+    re-submit an hour into a scan that looks stalled) must not dispatch a second concurrent
+    full SHA-256 archive walk of the same tree: the second insert fails the durable
+    `uq_scan_batches_agent_id_scan_path_running` partial unique index (migration 044), and the
+    handler renders the same swappable alert shape as every other rejection -- NOT a second
+    RUNNING batch, NOT a second enqueue.
+    """
+    ac, mock_router = smoke
+    pre_count = await _count_batches(session)
+
+    first = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert first.status_code == 200, first.text
+    assert "RUNNING" in first.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+
+    second = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    _assert_swappable_alert(second, "already running")
+
+    # Exactly one enqueue happened (the first submit); the second is refused before enqueue.
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    # Exactly one new ScanBatch row -- the durable index refused the second insert.
+    post_count = await _count_batches(session)
+    assert post_count == pre_count + 1
 
 
 @pytest.mark.asyncio
