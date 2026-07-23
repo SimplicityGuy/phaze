@@ -326,9 +326,7 @@ async def test_search_date_to_still_excludes_files_created_the_next_day(session:
 
     results, _pagination = await search(session, "fest", date_from=today - timedelta(days=1), date_to=today)
     file_results = [r for r in results if r.result_type == "file"]
-    assert not any("nextdayfest" in r.title.lower() for r in file_results), (
-        "a file created after midnight the day AFTER date_to must remain excluded"
-    )
+    assert not any("nextdayfest" in r.title.lower() for r in file_results), "a file created after midnight the day AFTER date_to must remain excluded"
 
 
 # ---------------------------------------------------------------------------

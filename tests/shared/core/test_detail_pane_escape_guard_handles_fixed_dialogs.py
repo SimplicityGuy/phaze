@@ -69,7 +69,7 @@ def test_detail_pane_escape_guard_still_defers_to_open_dialogs() -> None:
     """Sanity: the guard still stands down (does not call hide()) when a dialog is present --
     this bead fixes the visibility TEST, not the deferral logic itself."""
     guard = _escape_guard(_render_detail_pane())
-    assert 'querySelectorAll(\'[role=&quot;dialog&quot;]\')' in guard or 'querySelectorAll("[role=\\"dialog\\"]")' in guard, (
+    assert "querySelectorAll('[role=&quot;dialog&quot;]')" in guard or 'querySelectorAll("[role=\\"dialog\\"]")' in guard, (
         f"the detail pane's Escape guard ({guard!r}) no longer inspects role=dialog elements for a live nested dialog"
     )
     assert guard != "if (open) hide()", "the detail pane's Escape guard must not unconditionally close the pane"
