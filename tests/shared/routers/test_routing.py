@@ -213,19 +213,19 @@ async def test_force_local_toggle_roundtrip(client: AsyncClient, session: AsyncS
     ``route_control`` 'global' row and returns the ``_force_local_pill.html`` partial reflecting the
     JUST-COMMITTED state (authoritative, never optimistic -- T-71-10) plus the OOB confirmation toast.
     """
-    # Engage -> row true; pill FORCED LOCAL (aria-checked=false) + engage toast.
+    # Engage -> row true; pill FORCED LOCAL (aria-checked=true) + engage toast.
     engaged = await client.post("/pipeline/routing/force-local", data={"engage": "true"})
     assert engaged.status_code == 200
     assert "FORCED" in engaged.text
-    assert 'aria-checked="false"' in engaged.text
+    assert 'aria-checked="true"' in engaged.text
     assert "forced to LOCAL" in engaged.text  # OOB engage toast copy
     assert await get_route_control(session) is True
 
-    # Revert -> row false; pill CLOUD ROUTING (aria-checked=true) + revert toast.
+    # Revert -> row false; pill CLOUD ROUTING (aria-checked=false) + revert toast.
     reverted = await client.post("/pipeline/routing/force-local", data={"engage": "false"})
     assert reverted.status_code == 200
     assert "CLOUD" in reverted.text
-    assert 'aria-checked="true"' in reverted.text
+    assert 'aria-checked="false"' in reverted.text
     assert "Cloud routing restored" in reverted.text  # OOB revert toast copy
     assert await get_route_control(session) is False
 
@@ -242,11 +242,11 @@ async def test_force_local_pill_seeded_on_shell_page(client: AsyncClient) -> Non
     page = await client.get("/s/discover")
     assert page.status_code == 200
     assert 'id="force-local-pill"' in page.text
-    assert 'aria-checked="false"' in page.text
+    assert 'aria-checked="true"' in page.text
     assert "FORCED" in page.text
 
     # Revert, then reload: the pill must now show the normal CLOUD ROUTING state.
     await client.post("/pipeline/routing/force-local", data={"engage": "false"})
     page2 = await client.get("/s/discover")
-    assert 'aria-checked="true"' in page2.text
+    assert 'aria-checked="false"' in page2.text
     assert "CLOUD" in page2.text
