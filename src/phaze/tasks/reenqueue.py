@@ -579,13 +579,22 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                 for row in push_rows:
                     await _replay_row(fileserver_queue, row, stages[row.function])
 
-        # Remaining agent rows need any online agent (cold boot may have none -> skip, never raise).
+        # Remaining agent rows need any online FILESERVER agent (cold boot may have none -> skip, never raise).
         if other_agent_rows:
             try:
-                agent = await select_active_agent(session)
+                # phaze-mits (mirrors phaze-5r8f / enqueue_router.resolve_queue_for_task): these rows are
+                # ALL fileserver-local (process_file / extract_file_metadata / fingerprint_file /
+                # scan_live_set / s3_upload) -- the media-mount owner is the ONLY valid consumer. An
+                # UNSCOPED pick (kind=None orders by last_seen_at across ALL kinds) races the heartbeat
+                # and could land a fileserver-local task on a media-less compute agent, where
+                # process_file's path read FileNotFounds into terminal ANALYSIS_FAILED and the
+                # fingerprint/meta lanes have NO consumer (the parked non-terminal row then wedges the
+                # global saq_jobs.key forever). Scope to kind="fileserver" -- matching the push_file
+                # branch just above (D-10) and CLOUDROUTE-02.
+                agent = await select_active_agent(session, kind="fileserver")
             except NoActiveAgentError:
                 logger.warning(
-                    "recover_orphaned_work: no active agent -- agent-routed ledger rows skipped (cold boot)",
+                    "recover_orphaned_work: no fileserver agent -- agent-routed ledger rows skipped (cold boot)",
                     agent_rows=len(other_agent_rows),
                 )
             else:
