@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
@@ -292,6 +292,43 @@ async def test_search_date_filter(session: AsyncSession) -> None:
     tracklist_results = [r for r in results if r.result_type == "tracklist"]
     assert len(tracklist_results) >= 1
     assert all("recent" in r.title.lower() for r in tracklist_results)
+
+
+@pytest.mark.asyncio
+async def test_search_date_to_is_inclusive_of_the_full_end_day_for_files(session: AsyncSession) -> None:
+    """phaze-ql6c: date_to must include files created ANY time on that day, not just at midnight.
+
+    FileRecord.created_at is a DateTime, while date_to is a plain date -- comparing
+    created_at <= date_to promotes date_to to midnight, so a file created later that same day
+    was silently excluded even though the operator asked for results "up to and including" it.
+    """
+    today = date.today()
+    afternoon = datetime.combine(today, datetime.min.time()).replace(hour=14, minute=32)
+    late_file = await create_test_file(session, original_filename="latefest.mp3", artist="DJ Late Fest")
+    late_file.created_at = afternoon
+    await session.commit()
+
+    results, _pagination = await search(session, "fest", date_from=today - timedelta(days=1), date_to=today)
+    file_results = [r for r in results if r.result_type == "file"]
+    assert any("latefest" in r.title.lower() for r in file_results), (
+        "a file created in the afternoon of date_to's day must be included, not excluded by a midnight cutoff"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_date_to_still_excludes_files_created_the_next_day(session: AsyncSession) -> None:
+    """The date_to fix must remain an exclusive next-day bound, not silently open-ended."""
+    today = date.today()
+    tomorrow_early = datetime.combine(today + timedelta(days=1), datetime.min.time()).replace(hour=0, minute=5)
+    next_day_file = await create_test_file(session, original_filename="nextdayfest.mp3", artist="DJ Next Day Fest")
+    next_day_file.created_at = tomorrow_early
+    await session.commit()
+
+    results, _pagination = await search(session, "fest", date_from=today - timedelta(days=1), date_to=today)
+    file_results = [r for r in results if r.result_type == "file"]
+    assert not any("nextdayfest" in r.title.lower() for r in file_results), (
+        "a file created after midnight the day AFTER date_to must remain excluded"
+    )
 
 
 # ---------------------------------------------------------------------------

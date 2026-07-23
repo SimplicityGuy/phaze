@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import String, func, literal_column, select, union_all
@@ -91,7 +92,11 @@ async def search(
     if date_from:
         file_q = file_q.where(FileRecord.created_at >= date_from)
     if date_to:
-        file_q = file_q.where(FileRecord.created_at <= date_to)
+        # phaze-ql6c: FileRecord.created_at is a DateTime, while date_to is a plain date -- comparing
+        # created_at <= date_to promotes date_to to midnight, silently excluding every file created
+        # later that same day. Use the exclusive next-day bound so date_to is fully inclusive, matching
+        # the tracklist branch below (Tracklist.date is a true Date column, so <= is already inclusive).
+        file_q = file_q.where(FileRecord.created_at < date_to + timedelta(days=1))
     if bpm_min is not None:
         file_q = file_q.where(AnalysisResult.bpm >= bpm_min)
     if bpm_max is not None:
