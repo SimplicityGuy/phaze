@@ -105,6 +105,12 @@ async def upsert_ledger_entry(
             "timeout": stmt.excluded.timeout,
             "retries": stmt.excluded.retries,
             "enqueued_at": func.now(),
+            # phaze-7634: SchedulingLedger also carries TimestampMixin's updated_at (distinct from
+            # the business-facing enqueued_at stamped above). SQLAlchemy's ORM onupdate=func.now()
+            # never fires on this Core ON CONFLICT DO UPDATE path, so without this a re-enqueue
+            # would leave updated_at frozen at the row's first write (phaze-c8nz defect class).
+            # created_at stays pinned.
+            "updated_at": func.now(),
         },
     )
     await session.execute(stmt)

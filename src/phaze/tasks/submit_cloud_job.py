@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
-from sqlalchemy import CursorResult, select
+from sqlalchemy import CursorResult, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
@@ -132,6 +132,11 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
                 "status": stmt.excluded.status,
                 "kueue_workload": stmt.excluded.kueue_workload,
                 "cloud_phase": stmt.excluded.cloud_phase,
+                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+                # CONFLICT DO UPDATE path -- stamp it explicitly so a re-submit bumps updated_at
+                # instead of freezing it at first write (phaze-c8nz). created_at stays pinned. The
+                # CAS `where=` predicate below is unchanged by this addition.
+                "updated_at": func.now(),
             },
             # phaze-kzto: guard the conflict update on the CURRENT status. Every other status writer in
             # this pipeline uses a CAS to stop late/duplicate writers; this upsert did not. A delayed

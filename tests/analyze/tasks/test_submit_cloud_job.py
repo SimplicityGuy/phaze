@@ -24,13 +24,14 @@ engine), exactly like ``recover_orphaned_work`` / ``stage_cloud_window``.
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime, timedelta
 import pathlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -221,6 +222,53 @@ async def test_resubmit_is_idempotent_single_row(
     assert rows[0].kueue_workload == f"phaze-analyze-{fid}"
     # Both submits hit the seam (the 409->refresh inside the seam makes the duplicate POST safe).
     assert spy.calls == [fid, fid]
+
+
+@pytest.mark.asyncio
+async def test_resubmit_bumps_updated_at_not_created_at(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-7634: a re-submit (conflicting upsert) bumps CloudJob.updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz on the CAS-guarded submit upsert (phaze-kzto,
+    ``where=status IN ('uploaded','submitted')``): the `set_` clause used to omit `updated_at`.
+    The CAS predicate itself is untouched by the fix, only which columns the guarded UPDATE
+    writes. Backdate both columns, re-submit, and assert updated_at moves forward while
+    created_at is untouched.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+    await _seed_cloud_job(session, fid)
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    ctx = _make_ctx(async_engine)
+
+    await submit_cloud_job(ctx, fid)
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. cloud_job.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_resubmit = datetime.now(UTC).replace(tzinfo=None)
+
+    await submit_cloud_job(ctx, fid)
+
+    session.expire_all()
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_resubmit - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio

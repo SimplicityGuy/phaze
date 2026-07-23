@@ -16,11 +16,12 @@ function tested without a DB.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import (
@@ -85,6 +86,42 @@ async def test_upsert_inserts_then_updates_idempotently(session) -> None:  # typ
     assert len(rows) == 1, "upsert must keep exactly one row per key"
     assert rows[0].payload == {"file_id": str(fid), "v": 2}
     assert rows[0].enqueued_at >= first_enqueued_at
+
+
+@pytest.mark.asyncio
+async def test_upsert_bumps_updated_at_not_created_at(session) -> None:  # type: ignore[no-untyped-def]
+    """phaze-7634: a re-enqueue (conflicting upsert) bumps SchedulingLedger.updated_at; created_at pinned.
+
+    SchedulingLedger also carries TimestampMixin's updated_at (distinct from the business-facing
+    enqueued_at already covered by ``test_upsert_inserts_then_updates_idempotently``). Same defect
+    class as phaze-c8nz: `on_conflict_do_update`'s `set_` clause used to omit `updated_at`, and
+    `TimestampMixin.updated_at`'s ORM `onupdate` hook never fires for a Core upsert. Backdate both
+    columns, re-upsert, and assert updated_at moves forward while created_at is untouched.
+    """
+    fid = uuid.uuid4()
+    key = f"process_file:{fid}"
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid), "v": 1})
+    await session.commit()
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. scheduling_ledger.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE
+    # columns -- use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == key).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid), "v": 2})
+    await session.commit()
+
+    session.expire_all()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio

@@ -558,6 +558,50 @@ async def test_compute_dispatch_writes_cloud_job_in_txn(session: AsyncSession, m
 
 
 @pytest.mark.asyncio
+async def test_compute_redispatch_bumps_updated_at_not_created_at(session: AsyncSession) -> None:
+    """phaze-7634: a re-dispatch (conflicting upsert) bumps CloudJob.updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz: this compute-dispatch upsert's `set_` clause used to omit
+    `updated_at` (unlike the sibling hold-mode upsert in ``ComputeAgentBackend.select_backend``,
+    which was already fixed). Backdate both columns after a first dispatch, re-dispatch, and
+    assert updated_at moves forward while created_at is untouched.
+    """
+    from sqlalchemy import select, update
+
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    await seed_active_agent(session, agent_id="cloud-1", kind="compute")
+    backend = _compute(id="compute-a1")
+    file = _make_file()
+    file_id = file.id
+    session.add(file)
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    await backend.dispatch(file, session, router)
+    await session.commit()
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. cloud_job.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_redispatch = datetime.now(UTC).replace(tzinfo=None)
+
+    await backend.dispatch(file, session, router)
+    await session.commit()
+
+    session.expire_all()
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one()
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_redispatch - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
+
+
+@pytest.mark.asyncio
 async def test_compute_dispatch_stamps_destination_on_push_payload(session: AsyncSession) -> None:
     """D-02: dispatch stamps dest_host/dest_scratch_dir/dest_ssh_user off self.config onto the push_file payload.
 

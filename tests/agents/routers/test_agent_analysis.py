@@ -10,13 +10,14 @@ creates a row, 422 on extra fields (D-16 / AUTH-01 spoof block), and the auth
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
@@ -162,6 +163,45 @@ async def test_analysis_put_replay_idempotent(seed_test_agent: tuple[Agent, str]
     assert len(rows) == 1
     assert rows[0].bpm == 120.0
     assert rows[0].musical_key == "G major"
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_replay_bumps_updated_at_not_created_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-7634: a conflicting re-PUT bumps AnalysisResult.updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz: `on_conflict_do_update`'s `set_` clause used to omit
+    `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate` hook never fires for a Core
+    upsert -- so a re-analyzed row kept reporting the FIRST-write timestamp forever. Backdate
+    both columns, re-PUT, and assert updated_at moves forward while created_at is untouched.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r1 = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 120.0})
+    assert r1.status_code == 200, r1.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. analysis.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    async with _make_client(session, raw_token) as ac:
+        r2 = await ac.put(f"/api/internal/agent/analysis/{file_id}", json={"bpm": 125.0})
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.bpm == 125.0
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio
@@ -766,6 +806,51 @@ async def test_progress_post_start_then_bump_single_row_advancing(
     assert len(rows) == 1, "progress POSTs must upsert ONE row per file_id, never append"
     assert rows[0].fine_windows_analyzed == 17, "counter must advance to the latest bump"
     assert rows[0].fine_windows_total == 40
+
+
+@pytest.mark.asyncio
+async def test_progress_post_bump_bumps_updated_at_not_created_at(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-7634: a progress-counter bump (conflicting re-upsert) bumps updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz on the counter-only progress upsert (a SIBLING statement
+    to put_analysis's, per the module docstring): `on_conflict_do_update`'s `set_` clause used
+    to omit `updated_at`. Backdate both columns after START, then bump, and assert updated_at
+    moves forward while created_at is untouched.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, raw_token) as ac:
+        r_start = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 0, "fine_windows_total": 40},
+        )
+    assert r_start.status_code == 200, r_start.text
+
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_bump = datetime.now(UTC).replace(tzinfo=None)
+
+    async with _make_client(session, raw_token) as ac:
+        r_bump = await ac.post(
+            f"/api/internal/agent/analysis/{file_id}/progress",
+            json={"fine_windows_analyzed": 17, "fine_windows_total": 40},
+        )
+    assert r_bump.status_code == 200, r_bump.text
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalar_one()
+    assert row.fine_windows_analyzed == 17
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_bump - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio
