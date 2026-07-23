@@ -4,7 +4,8 @@ Covers the five service helpers:
 
 - ``upsert_ledger_entry``     -- idempotent ON CONFLICT DO UPDATE (the WRITE hook primitive)
 - ``insert_ledger_if_absent`` -- ON CONFLICT DO NOTHING (the Plan-04 backfill primitive)
-- ``clear_ledger_entry``      -- DELETE by key (no-op if absent)
+- ``clear_ledger_entry``      -- DELETE by key, GUARDED against a same-key re-enqueue race
+  (phaze-3yln) -- no-op if absent OR currently owned by a live re-enqueue
 - ``get_ledger_rows``         -- read all rows for recovery
 - ``routing_for_function``    -- agent/controller classifier (raises on unknown)
 
@@ -15,10 +16,11 @@ function tested without a DB.
 
 from __future__ import annotations
 
+from typing import Any
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.scheduling_ledger import (
@@ -154,6 +156,169 @@ async def test_clear_entry_deletes_and_is_noop_when_absent(session) -> None:  # 
     # A second clear of an already-absent key is a clean no-op (no raise).
     await clear_ledger_entry(session, key)
     await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# clear_ledger_entry ownership guard (phaze-3yln): a same-key re-enqueue race must win
+# ---------------------------------------------------------------------------
+
+
+async def _seed_saq_jobs_table(session) -> None:  # type: ignore[no-untyped-def]
+    """Ensure ``saq_jobs`` exists with SAQ's canonical postgres schema (mirrors
+    ``test_ledger_backfill.py``'s ``_seed_saq_jobs`` -- MUST be the full schema, not a minimal
+    stand-in: another integration test elsewhere in this suite's run may already have created the
+    REAL ``saq_jobs`` via SAQ's own ``init_db()`` before this test runs, and a narrower
+    ``CREATE TABLE IF NOT EXISTS`` would silently no-op against it, leaving ``job``/``queue`` NOT
+    NULL and rejecting a 2-column INSERT).
+
+    Safe either way: if ``saq_jobs`` does not yet exist, this ``CREATE TABLE`` runs inside this
+    suite's per-test outer transaction (D-07) and is fully undone at teardown; if it already exists
+    (a real, durably-committed SAQ-managed table from an earlier test), this is a no-op and every
+    row THIS test inserts still rolls back with the rest of the per-test transaction.
+    """
+    await session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS saq_jobs (
+                key TEXT PRIMARY KEY,
+                lock_key SERIAL NOT NULL,
+                job BYTEA NOT NULL,
+                queue TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority SMALLINT NOT NULL DEFAULT 0,
+                group_key TEXT,
+                scheduled BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
+                expire_at BIGINT
+            )
+            """
+        )
+    )
+
+
+async def _seed_saq_job_row(session, *, key: str, status: str) -> None:  # type: ignore[no-untyped-def]
+    """Insert one minimal-but-schema-valid ``saq_jobs`` row for ``key`` at ``status``."""
+    await session.execute(
+        text("INSERT INTO saq_jobs (key, job, queue, status) VALUES (:key, :job, :queue, :status)"),
+        {"key": key, "job": b"{}", "queue": "phaze-3yln-test-queue", "status": status},
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_survives_a_racing_re_enqueue_with_a_live_saq_job(session) -> None:  # type: ignore[no-untyped-def]
+    """The core phaze-3yln regression: reproduces [old job goes terminal] -> [same-key re-enqueue
+    upserts a FRESH ledger row + a LIVE saq_jobs row] -> [old job's finally-block clear runs].
+
+    Before the fix this was an unconditional ``DELETE ... WHERE key = :key``, so the old job's clear
+    deleted the NEW job's just-upserted ledger row -- leaving a live queued job with no ledger row,
+    invisible to ``recover_orphaned_work`` after a genuine queue loss. The guard must make the clear
+    a no-op whenever a live (queued/active) saq_jobs row for the SAME key exists.
+    """
+    key = "process_file:racer"
+    await _seed_saq_jobs_table(session)
+
+    # The re-enqueue's WRITE hook already ran: a fresh ledger row for K is upserted...
+    await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": "racer", "generation": "new"})
+    # ...and its saq_jobs row is already live (queued) -- the re-enqueue's INSERT ON CONFLICT DO
+    # UPDATE landed before the old job's clear below.
+    await _seed_saq_job_row(session, key=key, status="queued")
+    await session.commit()
+
+    # The OLD job's after_process finally-block clear races in NOW, still holding only the stale key.
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none()
+    assert row is not None, "a live re-enqueue's ledger row must survive the old job's racing clear"
+    assert row.payload["generation"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_survives_when_saq_job_is_active(session) -> None:  # type: ignore[no-untyped-def]
+    """``active`` (not just ``queued``) is also a LIVE status recovery would treat as owning the key."""
+    key = "fingerprint_file:racer-active"
+    await _seed_saq_jobs_table(session)
+    await upsert_ledger_entry(session, key=key, function="fingerprint_file", kwargs={"file_id": "racer-active"})
+    await _seed_saq_job_row(session, key=key, status="active")
+    await session.commit()
+
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    assert (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_clears_when_saq_job_is_terminal(session) -> None:  # type: ignore[no-untyped-def]
+    """The normal (no race) case: the finishing job's OWN saq_jobs row is already terminal
+    (``complete``), so no live row exists for the key and the clear proceeds exactly as before."""
+    key = "extract_file_metadata:normal"
+    await _seed_saq_jobs_table(session)
+    await upsert_ledger_entry(session, key=key, function="extract_file_metadata", kwargs={"file_id": "normal"})
+    await _seed_saq_job_row(session, key=key, status="complete")
+    await session.commit()
+
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    assert (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_clears_when_saq_jobs_table_present_but_key_absent(session) -> None:  # type: ignore[no-untyped-def]
+    """A ``saq_jobs`` table exists (unlike the degrade-path test above) but has NO row for this
+    key at all -- also not live, so the guarded clear still proceeds."""
+    key = "s3_upload:no-broker-row"
+    await _seed_saq_jobs_table(session)
+    await upsert_ledger_entry(session, key=key, function="s3_upload", kwargs={"file_id": "no-broker-row"})
+    await session.commit()
+
+    await clear_ledger_entry(session, key)
+    await session.commit()
+
+    assert (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one_or_none() is None
+
+
+class _RaisingLivenessProbeSession:
+    """AsyncSession stand-in whose guarded-clear SAVEPOINT read always raises -- models a missing
+    ``saq_jobs`` table (a pre-migration env) DETERMINISTICALLY, independent of the ambient test
+    database's history. Once ANY real integration test in this suite's run has created the REAL
+    ``saq_jobs`` table (a durably-committed, non-ORM table that outlives any single test's rolled-
+    back transaction -- see ``test_ledger_backfill.py``), the ``session``-fixture-based absent-table
+    case above stops exercising this branch. Mirrors ``test_ledger_backfill.py``'s ``_RaisingSession``.
+    """
+
+    def __init__(self) -> None:
+        self.fallback_deletes: list[Any] = []
+
+    def begin_nested(self) -> Any:
+        class _Nested:
+            async def __aenter__(self_inner) -> Any:
+                return self_inner
+
+            async def __aexit__(self_inner, *_exc: object) -> bool:
+                return False
+
+        return _Nested()
+
+    async def execute(self, statement: Any, *_a: Any, **_kw: Any) -> Any:
+        from sqlalchemy.sql.elements import TextClause
+
+        if isinstance(statement, TextClause):
+            raise RuntimeError('relation "saq_jobs" does not exist')
+        self.fallback_deletes.append(statement)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_clear_entry_falls_back_to_unconditional_delete_when_liveness_probe_raises() -> None:
+    """Deterministic degrade-path coverage (phaze-3yln): the guarded SAVEPOINT read raises, so the
+    nested scope rolls back alone and the pre-fix unconditional delete-by-key fires as a fallback --
+    never leaving a row permanently un-clearable just because the liveness probe itself failed."""
+    session = _RaisingLivenessProbeSession()
+
+    await clear_ledger_entry(session, "process_file:degrade-path")  # type: ignore[arg-type]
+
+    assert len(session.fallback_deletes) == 1
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,10 @@ split (``agent_push.py``):
 
 These models are ORM-free and S3-SDK-free (no database, ORM-engine, or object-store
 client imports) so they stay import-safe across the Postgres-free *and* SDK-free
-agent boundary (tests/test_task_split.py). Every model declares ``extra="forbid"``.
+agent boundary (tests/test_task_split.py). Every REQUEST model declares
+``extra="forbid"``; RESPONSE models stay loose (``extra="ignore"``) per the
+Phase 25 convention (``schemas/agent_identity.py``) — see ``UploadedResponse``
+/ ``UploadFailedResponse`` below.
 
 AUTH-01 discipline: ``file_id`` rides the URL path on the callbacks, never the
 request body. ``UploadFileS3Payload`` is the exception that carries ``file_id``
@@ -95,9 +98,18 @@ class UploadedRequest(BaseModel):
 
 
 class UploadedResponse(BaseModel):
-    """Echo confirming control completed the multipart upload (file moved forward)."""
+    """Echo confirming control completed the multipart upload (file moved forward).
 
-    model_config = ConfigDict(extra="forbid")
+    RESPONSE-only model the agent TRUSTS from the control plane -- not an
+    attacker-facing request body -- so it stays loose (Phase 25 convention,
+    ``schemas/agent_identity.py``: only REQUEST schemas are strict). Mirrors the
+    forward-compat rationale on ``PresignDownloadResponse``
+    (``schemas/agent_analysis.py``): an additive field here must not hard-fail
+    ``model_validate`` on an older agent after the server already committed the
+    multipart-complete state transition.
+    """
+
+    model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
 
     file_id: uuid.UUID
     status: Literal["uploaded"] = "uploaded"
@@ -120,9 +132,12 @@ class UploadFailedResponse(BaseModel):
 
     ``cleared`` is True when the staging row/upload was torn down (terminal); False
     when control will re-drive the upload.
+
+    RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
+    (Phase 25 convention) for the same forward-compat reason as ``UploadedResponse``.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
 
     file_id: uuid.UUID
     status: Literal["failed"] = "failed"

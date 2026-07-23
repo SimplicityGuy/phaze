@@ -181,6 +181,14 @@ async def increment_completed(ctx: dict[str, Any]) -> None:
        The clear only reaches Postgres when ``ledger_sessionmaker`` is present (controller
        worker); on the agent worker (no handle) it is a logged no-op -- agent-stage clears are
        Plan 02's job (the control-side callback handlers).
+
+       phaze-3yln: this call is NOT an unconditional delete-by-key. ``clear_ledger_entry`` itself
+       carries an ownership guard -- it no-ops when a same-key re-enqueue has already landed a
+       LIVE (queued/active) ``saq_jobs`` row for this key between THIS job going terminal and this
+       clear running (SAQ re-queues a terminal key via ``ON CONFLICT (key) DO UPDATE``, so that
+       interleaving is reachable). See ``phaze.services.scheduling_ledger``'s module docstring
+       INVARIANT paragraph and ``clear_ledger_entry``'s own docstring for the exact guard shape;
+       this hook does not need to know about it, it just calls the (now-safe) primitive.
     """
     job = ctx.get("job")
     if job is None or job.function not in _KEY_BUILDERS:

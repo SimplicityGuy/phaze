@@ -3,7 +3,9 @@
 These ORM-free models back the agent-side upload task payload and the two
 internal-API upload callbacks (`/uploaded` and `/failed`). file_id flows on the
 URL path for callbacks (AUTH-01); the upload payload carries file_id because the
-deterministic-key builder reads it. Every model is `extra="forbid"`.
+deterministic-key builder reads it. Every REQUEST model is `extra="forbid"`;
+RESPONSE models are `extra="ignore"` (phaze-3ggc, Phase 25 convention) so an
+additive control-plane field never hard-fails an older agent's `model_validate`.
 """
 
 from __future__ import annotations
@@ -111,6 +113,15 @@ def test_uploaded_response_echoes_file_id_and_status() -> None:
         UploadedResponse.model_validate({"file_id": str(fid), "status": "nope"})
 
 
+def test_uploaded_response_tolerates_unknown_field() -> None:
+    """phaze-3ggc: a control-plane-first rolling deploy adding an additive field to the
+    /uploaded echo must not raise on an older agent's model_validate."""
+    fid = uuid.uuid4()
+    r = UploadedResponse.model_validate({"file_id": str(fid), "status": "uploaded", "storage_class": "STANDARD"})
+    assert r.file_id == fid
+    assert r.status == "uploaded"
+
+
 def test_upload_failed_request_detail_optional_and_bounded() -> None:
     """UploadFailedRequest carries only an optional bounded diagnostic detail."""
     assert UploadFailedRequest().detail is None
@@ -128,3 +139,11 @@ def test_upload_failed_response_echoes_file_id_status_cleared() -> None:
     assert r.cleared is True
     with pytest.raises(pydantic.ValidationError):
         UploadFailedResponse.model_validate({"file_id": str(fid)})
+
+
+def test_upload_failed_response_tolerates_unknown_field() -> None:
+    """phaze-3ggc: same forward-compat guarantee for the /failed echo."""
+    fid = uuid.uuid4()
+    r = UploadFailedResponse.model_validate({"file_id": str(fid), "status": "failed", "cleared": False, "retry_after": 5})
+    assert r.file_id == fid
+    assert r.cleared is False
