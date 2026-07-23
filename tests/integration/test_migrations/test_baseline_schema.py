@@ -494,3 +494,105 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         if engine is not None:
             await engine.dispose()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_041_dedupes_preexisting_duplicate_versions() -> None:
+    """041's upgrade must renumber pre-existing (tracklist_id, version_number) duplicates BEFORE
+    creating the UNIQUE constraint, else upgrade aborts with UniqueViolation on any database the
+    pre-fix concurrent-scrape race (phaze-5vmt) actually hit (phaze-am5p).
+
+    Seeds two duplicate groups on 040 (pre-constraint), directly against the table -- the shape
+    the ORM-serialized race would have left behind -- then upgrades to 041 and asserts:
+    * the upgrade completes without raising (the regression this bead fixes);
+    * no duplicate (tracklist_id, version_number) pair remains;
+    * every original row (and its dependent tracklist_tracks row) survives, renumbered rather
+      than deleted -- fk_tracklist_tracks_version_id_tracklist_versions has no ON DELETE CASCADE;
+    * the winner of a group is the row referenced by tracklists.latest_version_id when present,
+      else the lowest id -- both fallback paths are exercised.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "040")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        tracklist_id = uuid.uuid4()
+        winner_id, loser_id = uuid.uuid4(), uuid.uuid4()
+        # No row in this second group matches latest_version_id, so the winner must fall back to
+        # the lowest id between the two.
+        fallback_a, fallback_b = uuid.uuid4(), uuid.uuid4()
+        fallback_winner_id = min(fallback_a, fallback_b)
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, latest_version_id, created_at, updated_at) "
+                    "VALUES (:id, :ext, :url, false, '1001tracklists', 'approved', :latest, NOW(), NOW())"
+                ),
+                {"id": tracklist_id, "ext": f"dedupe-{tracklist_id}", "url": "https://example.com/tl", "latest": winner_id},
+            )
+            # Group 1 (version_number=2): winner_id is referenced by latest_version_id.
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 2, NOW())"),
+                {"id": winner_id, "tid": tracklist_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 2, NOW())"),
+                {"id": loser_id, "tid": tracklist_id},
+            )
+            # A track row hanging off the loser -- must survive the dedupe untouched.
+            await conn.execute(
+                text("INSERT INTO tracklist_tracks (id, version_id, position) VALUES (:id, :vid, 1)"),
+                {"id": uuid.uuid4(), "vid": loser_id},
+            )
+            # Group 2 (version_number=5): neither row is latest_version_id -- fallback to min(id).
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 5, NOW())"),
+                {"id": fallback_a, "tid": tracklist_id},
+            )
+            await conn.execute(
+                text("INSERT INTO tracklist_versions (id, tracklist_id, version_number, scraped_at) VALUES (:id, :tid, 5, NOW())"),
+                {"id": fallback_b, "tid": tracklist_id},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression: this must not raise UniqueViolation.
+        await asyncio.to_thread(upgrade_to, cfg, "041")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text("SELECT id, version_number FROM tracklist_versions WHERE tracklist_id = :tid"),
+                    {"tid": tracklist_id},
+                )
+            ).all()
+            dupes = (
+                await conn.execute(
+                    text(
+                        "SELECT version_number FROM tracklist_versions WHERE tracklist_id = :tid "
+                        "GROUP BY version_number HAVING COUNT(*) > 1"
+                    ),
+                    {"tid": tracklist_id},
+                )
+            ).all()
+            loser_track_count = (
+                await conn.execute(text("SELECT COUNT(*) FROM tracklist_tracks WHERE version_id = :vid"), {"vid": loser_id})
+            ).scalar_one()
+
+        by_id = {row.id: row.version_number for row in rows}
+        assert dupes == [], "upgrade to 041 must leave no duplicate (tracklist_id, version_number) rows"
+        assert len(rows) == 4, "dedupe must renumber, not delete -- all four original version rows survive"
+        assert by_id[winner_id] == 2, "the row referenced by tracklists.latest_version_id keeps its version_number"
+        assert by_id[fallback_winner_id] == 5, "with no latest_version_id match in the group, the lowest id keeps its version_number"
+        assert by_id[loser_id] != 2, "the loser is renumbered off the colliding version_number"
+        assert loser_track_count == 1, "the loser's tracklist_tracks row must survive untouched (no ON DELETE CASCADE)"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
