@@ -40,6 +40,7 @@ from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload, ScanLiveSetPayload
 from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistTrackPayload
 from phaze.services.agent_client import AgentApiServerError
+from phaze.services.fingerprint import FingerprintQueryUnavailableError
 from phaze.services.hashing import compute_sha256
 
 
@@ -119,8 +120,21 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     api: PhazeAgentClient = ctx["api_client"]
     orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
 
-    matches = await orchestrator.combined_query(payload.original_path)
+    try:
+        matches = await orchestrator.combined_query(payload.original_path)
+    except FingerprintQueryUnavailableError:
+        # phaze-z7yw: a TOTAL engine outage (every sidecar down or 5xx-ing) is NOT a no-match.
+        # Re-raise for SAQ retry/backoff WITHOUT acking report_scan_terminal, so the
+        # scan_live_set:<file_id> ledger row survives and recovery re-enqueues the file once
+        # the outage ends. Acking here would convert the outage into a permanent,
+        # success-looking 'no_matches' verdict -- the query-path twin of the phaze-ds1z
+        # ingest-drain bug.
+        logger.warning("scan_live_set: all fingerprint engines unavailable; leaving ledger row for retry", file_id=str(payload.file_id))
+        raise
     if not matches:
+        # A genuine no-match: combined_query raises on a total engine outage (phaze-z7yw), so
+        # an empty result here means at least one HEALTHY engine answered and found nothing.
+        #
         # No-match COMPLETE: this scan run has NO tracklist callback, so it must ack the
         # control side directly to clear scan_live_set:<file_id> -- otherwise a legitimate
         # no-match scan would re-enqueue on EVERY recovery (Phase 45 Blocker 2 / T-45-16).
