@@ -404,7 +404,14 @@ async def generate_cue(
         )
 
     if hx_target.startswith("tracklist-"):
-        # Request came from tracklist card -- return updated card
+        # Request came from tracklist card -- return updated card.
+        # phaze-fig9: tracklist_card.html renders its track-count chip from the derived
+        # `tracklist._track_count` attribute (Undefined -> 0 on a bare ORM object), so attach the
+        # count we already computed above instead of letting the swapped-in card falsely read "0
+        # tracks". Also attach `_cue_version` for the same reason `_attach_track_count` exists --
+        # consistency with every other tracklist_card.html-rendering route.
+        tracklist._track_count = track_count  # type: ignore[attr-defined]
+        tracklist._cue_version = cue_version  # type: ignore[attr-defined]
         return templates.TemplateResponse(
             request=request,
             name="tracklists/partials/tracklist_card.html",

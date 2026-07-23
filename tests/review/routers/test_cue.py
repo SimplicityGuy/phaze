@@ -712,6 +712,30 @@ async def test_generate_cue_success_on_cue_card_target_returns_preview_card(clie
 
 
 @pytest.mark.asyncio
+async def test_generate_cue_success_on_tracklist_target_shows_real_track_count(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-fig9: a successful generate/regenerate on a tracklist card must keep the real track
+    count, not fall back to "0 tracks".
+
+    tracklist_card.html derives the chip from the non-mapped ``tracklist._track_count`` attribute,
+    which a bare ORM object re-rendered by ``generate_cue``'s ``tracklist-`` branch never carried.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session, track_count=5)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"tracklist-{tracklist.id}"},
+    )
+    assert response.status_code == 200
+    assert "5 tracks" in response.text, "the swapped-in card must show the real track count, not fall back to 0"
+    assert "0 tracks" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch skips tracklists without timestamps."""
     _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")
