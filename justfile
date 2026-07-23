@@ -106,9 +106,13 @@ tailwind:
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
-        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss \
-            "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}"; \
-        chmod +x ./bin/tailwindcss; \
+        rm -f ./bin/tailwindcss.tmp; \
+        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
+            "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
+        && chmod +x ./bin/tailwindcss.tmp \
+        && ./bin/tailwindcss.tmp --help >/dev/null \
+        && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
+        || { echo "❌ Tailwind download or verification failed; removing partial binary" >&2; rm -f ./bin/tailwindcss.tmp; exit 1; }; \
     fi
     ./bin/tailwindcss -i assets/src/app.css -o src/phaze/static/css/app.css --minify
 
