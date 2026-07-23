@@ -543,7 +543,7 @@ worker-restart:
 [doc('Check SAQ worker health')]
 [group('worker')]
 worker-health:
-    docker compose exec worker uv run saq phaze.tasks.worker.settings --check
+    docker compose exec worker uv run saq phaze.tasks.controller.settings --check
 
 [doc('Build Docker images')]
 [group('docker')]
