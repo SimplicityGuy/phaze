@@ -15,8 +15,12 @@ logger = logging.getLogger("audfprint-service")
 
 app = FastAPI(title="audfprint Service", version="0.1.0")
 
-# Serialize write operations to prevent concurrent pickle corruption (Research Pitfall 3)
-_ingest_lock = asyncio.Lock()
+# Serialize ALL access to the pickle DB, reads included. Ingest rewrites fprint.pklz in
+# place (upstream audfprint's save_pkl is a plain pickle.dump -- no temp+rename), so a
+# match that opens the file mid-rewrite reads a torn gzip-pickle and dies. The former
+# _ingest_lock only excluded writer-vs-writer (Research Pitfall 3); reader-vs-writer must
+# be excluded too (phaze-orq3).
+_db_lock = asyncio.Lock()
 
 AUDFPRINT_SCRIPT = "/app/audfprint/audfprint.py"
 FPRINT_DB = "/data/fprint/fprint.pklz"
@@ -201,7 +205,7 @@ async def health() -> HealthResponse:
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the audfprint fingerprint database."""
-    async with _ingest_lock:
+    async with _db_lock:
         result = await asyncio.to_thread(_run_ingest, request.file_path)
     if result.returncode != 0:
         logger.error("audfprint ingest failed for %s: %s", request.file_path, result.stderr)
@@ -214,7 +218,8 @@ async def query(request: IngestRequest) -> QueryResponse:
     """Query the audfprint database for matches."""
     if not Path(FPRINT_DB).exists():
         return QueryResponse(matches=[])
-    result = await asyncio.to_thread(_run_query, request.file_path)
+    async with _db_lock:
+        result = await asyncio.to_thread(_run_query, request.file_path)
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr)
     matches, parse_failures = _parse_matches(result.stdout)

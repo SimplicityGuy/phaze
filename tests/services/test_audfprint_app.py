@@ -19,6 +19,7 @@ returned ``[]`` for every real query.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 import subprocess
@@ -202,6 +203,77 @@ class TestQueryEndpointEscalation:
         status, body = await _post_query(audfprint_app)
         assert status == 200
         assert len(body["matches"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# /query vs /ingest serialization (phaze-orq3)
+#
+# The bug: the module lock (then named _ingest_lock) only excluded writer-vs-writer.
+# /query spawned `audfprint match` with NO synchronization, so a match could open
+# fprint.pklz mid-rewrite (upstream save_pkl is a plain in-place pickle.dump) and die
+# on a torn gzip-pickle. Reads must serialize against writes on the same lock.
+# ---------------------------------------------------------------------------
+
+
+class TestQuerySerializesAgainstIngest:
+    """``POST /query`` must hold the shared DB lock, not bypass it."""
+
+    async def test_query_blocks_while_db_lock_is_held(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(
+            audfprint_app,
+            "_run_query",
+            lambda _p: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        )
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            # Simulate an in-flight ingest: hold the DB lock, then fire a query at it.
+            async with audfprint_app._db_lock:
+                query_task = asyncio.create_task(client.post("/query", json={"file_path": "/data/query/song.wav"}))
+                await asyncio.sleep(0.05)
+                assert not query_task.done(), "/query ran while an ingest held the DB lock (torn-read race, phaze-orq3)"
+            resp = await query_task
+
+        assert resp.status_code == 200
+        assert resp.json() == {"matches": []}
+
+    async def test_ingest_blocks_while_db_lock_is_held(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The pre-existing writer-vs-writer guarantee must survive the lock's rename/rescope.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(
+            audfprint_app,
+            "_run_ingest",
+            lambda _p: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        )
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            async with audfprint_app._db_lock:
+                ingest_task = asyncio.create_task(client.post("/ingest", json={"file_path": "/data/real/song.mp3"}))
+                await asyncio.sleep(0.05)
+                assert not ingest_task.done()
+            resp = await ingest_task
+
+        assert resp.status_code == 200
+
+    async def test_query_on_missing_db_short_circuits_without_lock(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # No DB -> nothing to tear; the empty-result fast path must not deadlock on a held lock.
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client, audfprint_app._db_lock:
+            resp = await asyncio.wait_for(client.post("/query", json={"file_path": "/data/query/song.wav"}), timeout=1.0)
+
+        assert resp.status_code == 200
+        assert resp.json() == {"matches": []}
 
 
 # ---------------------------------------------------------------------------
