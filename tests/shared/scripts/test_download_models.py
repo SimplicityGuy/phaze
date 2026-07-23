@@ -37,6 +37,7 @@ from phaze.scripts.download_models import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -303,6 +304,82 @@ def test_ensure_present_local_redownloads_wrong_size_file(
     assert dest.stat().st_size == len(full_payload)
     assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may remain"
     assert get_route.call_count == 1, "a wrong-size file must be re-fetched exactly once"
+
+
+@respx.mock
+def test_ensure_present_local_repair_wrong_size_raises_and_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: a repair download whose size violates the manifest must FAIL, not be blessed.
+
+    The server responds with a self-consistent body (its own Content-Length matches
+    the bytes streamed, so ``_download_one`` promotes it) whose size disagrees with
+    the pinned manifest — the upstream-re-publish / proxy-error-page scenario. The
+    repair path must re-validate against ``expected_size``, delete the mismatched
+    file, and raise a per-file RuntimeError naming both sizes.
+    """
+    url = "https://example.test/republished.pb"
+    dest = tmp_path / "republished.pb"
+    dest.write_bytes(b"stale")  # wrong size -> triggers the repair path
+    _patch_sleep(monkeypatch)
+    wrong_payload = b"republished-weights-with-a-new-size" * 4
+    expected_size = len(wrong_payload) + 12345  # manifest disagrees with what the server now serves
+
+    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=wrong_payload))
+
+    with pytest.raises(RuntimeError, match=r"republished\.pb") as excinfo:
+        _ensure_present_local(url, dest, expected_size)
+
+    assert str(len(wrong_payload)) in str(excinfo.value), "the on-disk size must be named"
+    assert str(expected_size) in str(excinfo.value), "the manifest size must be named"
+    assert get_route.call_count == 1, "a manifest violation is not retryable; the route is hit once"
+    assert not dest.exists(), "the manifest-violating file must be deleted, never left for essentia to load"
+
+
+@respx.mock
+def test_ensure_present_local_repair_missing_file_wrong_size_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: the missing-file repair path enforces the same manifest re-validation."""
+    url = "https://example.test/fresh-wrong.pb"
+    dest = tmp_path / "fresh-wrong.pb"
+    _patch_sleep(monkeypatch)
+    wrong_payload = b"error page pretending to be a weight file"
+
+    respx.get(url).mock(return_value=httpx.Response(200, content=wrong_payload))
+
+    with pytest.raises(RuntimeError, match=r"fresh-wrong\.pb"):
+        _ensure_present_local(url, dest, len(wrong_payload) + 1)
+
+    assert not dest.exists(), "a manifest-violating fresh download must not be left in place"
+
+
+@respx.mock
+def test_ensure_present_local_repair_chunked_wrong_size_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: a chunked response (no Content-Length) is still caught by the manifest check.
+
+    ``_download_one`` validates nothing on a Content-Length-absent response, so the
+    post-repair manifest comparison is the ONLY integrity gate on this path.
+    """
+    url = "https://example.test/chunked.pb"
+    dest = tmp_path / "chunked.pb"
+    _patch_sleep(monkeypatch)
+
+    def _chunks() -> Iterator[bytes]:
+        yield b"partial-chunked-body"
+
+    # Iterator content -> Transfer-Encoding: chunked, no Content-Length header.
+    respx.get(url).mock(return_value=httpx.Response(200, content=_chunks()))
+
+    with pytest.raises(RuntimeError, match=r"chunked\.pb"):
+        _ensure_present_local(url, dest, 999_999)
+
+    assert not dest.exists()
 
 
 # --------------------------------------------------------------------------- #

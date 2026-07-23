@@ -15,7 +15,9 @@ retrying, integrity-checked ``_download_one`` GET path.
 The manifest sizes equal the server ``Content-Length`` captured at model-pin time
 (the validated production deployment). The repair GET still validates the streamed
 byte count against the server ``Content-Length`` before promoting the file into
-place, so a repaired file is integrity-checked against the remote as before. There
+place, and the promoted file is then re-validated against the manifest size itself
+(phaze-10ij): a repair whose on-disk size still violates the manifest is deleted
+and raised as a per-file ``RuntimeError`` rather than blessed as a success. There
 are no published checksums for the essentia weights, so the byte size is the
 authoritative signal -- same-size bit-flips are out of scope.
 
@@ -329,6 +331,16 @@ def _ensure_present_local(url: str, dest: Path, expected_size: int) -> bool:
       boot re-detects and re-repairs).
     - file missing -> download via ``_download_one``.
 
+    The repaired file is re-validated against the SAME manifest size before being
+    accepted (phaze-10ij): ``_download_one`` only checks the stream against the
+    server's own ``Content-Length`` (nothing at all on a chunked response), which
+    detects truncation but not an upstream re-publish or a proxy/error-page body
+    whose size disagrees with the pinned manifest. A repaired file whose on-disk
+    size still violates the manifest is deleted (so essentia can never load it)
+    and a per-file ``RuntimeError`` is raised, which ``ensure_models_present``
+    converts to a non-zero container exit (T-29-05-02) instead of blessing the
+    known-bad file as a successful repair.
+
     The missing/mismatch repair path emits INFO ``downloading model`` (with the
     reason) and INFO ``model download complete`` (with the on-disk byte size) so an
     operator can see exactly which weights transferred (PR3 observability).
@@ -349,7 +361,15 @@ def _ensure_present_local(url: str, dest: Path, expected_size: int) -> bool:
         reason = "missing"
     logger.info("downloading model", file=dest.name, reason=reason, expected_bytes=expected_size)
     _download_one(url, dest)
-    logger.info("model download complete", file=dest.name, bytes=dest.stat().st_size)
+    repaired_size = dest.stat().st_size
+    if repaired_size != expected_size:
+        # No retry: the server consistently serves a size that violates the pinned
+        # manifest, so re-fetching cannot converge. Remove the bad file so the next
+        # boot re-detects it as missing rather than loading corrupt weights.
+        dest.unlink(missing_ok=True)
+        msg = f"repaired {dest.name} is {repaired_size} bytes but manifest expects {expected_size} bytes; deleted the mismatched file"
+        raise RuntimeError(msg)
+    logger.info("model download complete", file=dest.name, bytes=repaired_size)
     return True
 
 
