@@ -28,11 +28,18 @@ essentia.upf.edu's TLS flaked, starving the ``scan_directory`` SAQ job. The
 always-remote-HEAD-validate rationale is removed: the healthy path no longer
 depends on a flaky remote and never blocks.
 
-Atomicity (T-29-05-03): each download writes to ``<dest>.part`` and is promoted
-to ``<dest>`` via ``os.replace`` (atomic on POSIX) only after the byte stream
-completes and any ``Content-Length`` is satisfied; a crash mid-download leaves
-only the ``.part`` file which is NOT counted by ``models_dir.glob("*.pb")`` in
-the bootstrap caller.
+Atomicity (T-29-05-03 / phaze-mb8d): each download writes to a per-process
+unique ``<dest>.part.<pid>`` scratch file and is promoted to ``<dest>`` via
+``os.replace`` (atomic on POSIX) only after the byte stream completes and any
+``Content-Length`` is satisfied; a crash mid-download leaves only the
+``.part.<pid>`` file which is NOT counted by ``models_dir.glob("*.pb")`` in the
+bootstrap caller (and is swept by ``ensure_models_present`` under its exclusive
+lock). The pid suffix means a stray concurrent invocation from another process
+can never truncate this process's in-flight stream or steal its scratch file —
+each writer promotes only bytes it streamed itself. Cross-process serialization
+of the whole download belongs to the caller (``ensure_models_present`` takes an
+exclusive ``flock`` in the models dir); the unique temp name is the
+defense-in-depth layer beneath it.
 
 Resilience (260608-i21 / 260608-u8g): the repair GET is driven through the shared
 ``_with_retries`` helper, which retries transient transport errors and 5xx server
@@ -266,8 +273,11 @@ def _download_one(url: str, dest: Path) -> None:
     Always fetches: the validate-or-download decision lives in
     ``_ensure_present_local`` (local size compare), so callers route through it
     rather than calling this directly. A crash mid-stream leaves only
-    ``<dest>.part`` which the bootstrap's ``*.pb`` glob does NOT match -- the next
-    start will retry.
+    ``<dest>.part.<pid>`` which the bootstrap's ``*.pb`` glob does NOT match --
+    the next start will retry. The pid-suffixed scratch name (phaze-mb8d) means
+    a concurrent invocation from another process opens a DIFFERENT temp file, so
+    it can never truncate this process's in-flight stream (the shared-``.part``
+    tear that could promote an exact-size zero-holed weight).
 
     Resilience (260608-i21 / 260608-u8g): the byte stream is driven through the
     shared ``_with_retries`` helper, so transient transport errors (see
@@ -282,7 +292,7 @@ def _download_one(url: str, dest: Path) -> None:
     and attempt count is raised, chained from the last underlying error.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp = dest.with_suffix(f"{dest.suffix}.part.{os.getpid()}")
 
     def _attempt() -> None:
         try:
