@@ -168,4 +168,69 @@ async def test_pipeline_files_live_htmx_swap_still_returns_the_fragment(client: 
     assert resp.status_code == 200
     body = resp.text
     assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
-    assert 'id="files-table-view"' in body
+    # phaze-mrhq: the fragment itself must NOT carry id="files-table-view" -- that id belongs to the
+    # HOST (files_workspace.html / pipeline/files.html) it is swapped innerHTML into. Before the fix
+    # this fragment's own root div carried the same id, so every swap nested a duplicate
+    # #files-table-view inside the host it was replacing (see test_files_fragment_carries_no_duplicate_id).
+    assert 'id="files-table-view"' not in body, "the swap-target fragment must not re-carry the host's id (would nest a duplicate)"
+
+
+@pytest.mark.asyncio
+async def test_files_fragment_carries_no_duplicate_id(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """Regression (phaze-mrhq): the live filter/sort/pager fragment must not self-nest #files-table-view.
+
+    files_table_view.html used to be BOTH the host div AND the swap-target fragment: it carried
+    ``id="files-table-view"`` itself, and GET /pipeline/files (a live htmx swap) returned this same
+    template. Every filter/sort/Prev/Next click therefore swapped a fresh id-bearing div innerHTML
+    into the existing one, leaving ``#files-table-view > #files-table-view`` in the DOM after the
+    first interaction. The fix splits host (files_workspace.html for /s/files, an inline wrapper in
+    pipeline/files.html for the bookmark path) from fragment (this template, now id-less) -- assert
+    directly against the two surfaces that must still carry exactly one id each.
+    """
+    await make_file()
+
+    full_page = await client.get("/pipeline/files")
+    assert full_page.text.count('id="files-table-view"') == 1, "the full (bookmark) page must host exactly one #files-table-view"
+
+    workspace = await client.get("/s/files")
+    assert workspace.text.count('id="files-table-view"') == 1, "the /s/files workspace must host exactly one #files-table-view"
+
+    live_fragment = await client.get("/pipeline/files", headers={"HX-Request": "true"})
+    assert 'id="files-table-view"' not in live_fragment.text, "the live filter/sort/pager fragment must carry no id of its own"
+
+
+@pytest.mark.asyncio
+async def test_over_paged_empty_view_still_shows_previous_control(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-3db8): an over-paged empty render must still carry the Previous control.
+
+    The pagination ``<nav>`` used to sit inside the rows-present branch, so a page N > 1 that
+    returns zero rows (``get_files_page``/``clamp_page``'s documented "a page PAST the end is not
+    clamped -- it simply yields an empty page" contract) rendered only the empty-state copy with no
+    way back to page 1 short of a manual reload. One file with page_size=MIN_PAGE_SIZE (10) makes
+    page 2 genuinely past the end while still being reachable via the normal Prev/Next flow.
+    """
+    session.add(_make_file("onlyfile"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?page=2&page_size=10")
+    assert resp.status_code == 200
+    body = resp.text
+
+    # The empty-state copy renders (no rows on this over-paged request)...
+    assert "No files yet" in body
+    # ...but the pager nav -- specifically an ENABLED Previous control back to page 1 -- must too.
+    assert 'aria-label="Files pagination"' in body
+    # HTML-attribute-escaped (Jinja autoescape turns `&` into `&amp;` inside the hx-get value).
+    assert 'hx-get="/pipeline/files?page=1&amp;page_size=10' in body
+    assert ">Previous</button>" in body, "Previous must be an enabled <button>, not the disabled <span>"
+
+
+@pytest.mark.asyncio
+async def test_pager_absent_on_unfiltered_empty_first_page(client: AsyncClient, session: AsyncSession) -> None:
+    """No pager renders on a genuinely empty, unpaged corpus (page 1, no next page) -- unchanged behavior."""
+    resp = await client.get("/pipeline/files")
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "No files yet" in body
+    assert 'aria-label="Files pagination"' not in body

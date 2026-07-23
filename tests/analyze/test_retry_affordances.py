@@ -305,6 +305,31 @@ def test_render_per_row_retry_only_on_failed_enrich_cell() -> None:
     assert "metadata-failed/retry" not in healthy
 
 
+def test_render_per_row_retry_button_stops_keyboard_bubbling() -> None:
+    """Regression (phaze-hyjk): keyboard activation of the per-row Retry must not also open the record slide-in.
+
+    The row's ``<tr>`` binds ``hx-trigger="click, keyup[key=='Enter']"`` (htmx) AND
+    ``@keydown.enter`` (Alpine ``record:open``). ``@click.stop`` alone only covers the pointer path --
+    keyboard-activating the ``<button>`` fires a keydown (bubbles to the row's ``@keydown.enter``) and
+    a keyup (bubbles to the row's htmx ``keyup[key=='Enter']`` trigger) in addition to the button's own
+    click, so a single Enter press used to fire the retry POST AND the record GET. The button must
+    carry ``@keydown.stop``/``@keyup.stop`` alongside the existing ``@click.stop``.
+    """
+    failed = _render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed")
+
+    # Isolate the PER-ROW retry <button ...> tag itself (the bulk "Retry all failed" button also
+    # matches a naive "analysis-failed/retry" search since it renders first -- anchor on the per-row
+    # button's distinctive aria-label instead, then walk back to its own <button> tag).
+    start = failed.index('aria-label="Retry Analyze for this file"')
+    tag_start = failed.rindex("<button", 0, start)
+    tag_end = failed.index(">", start)
+    button_tag = failed[tag_start : tag_end + 1]
+
+    assert "@click.stop" in button_tag
+    assert "@keydown.stop" in button_tag, "keyboard Enter's keydown phase must be stopped from reaching the row"
+    assert "@keyup.stop" in button_tag, "keyboard Enter's keyup phase must be stopped from reaching the row's htmx trigger"
+
+
 def test_render_no_manual_fingerprint_retry_control() -> None:
     """Fingerprint failures self-retry via the pending set — NO manual fingerprint retry control (RESEARCH)."""
     failed = _render_files_table(bucket="failed", active_stage="fingerprint", active_bucket="failed")
