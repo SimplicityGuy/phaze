@@ -1968,6 +1968,28 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
 
 
 @pytest.mark.asyncio
+async def test_scan_live_sets_stamps_a_fresh_scan_run_id_per_enqueue(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-y07u: the bulk scan trigger stamps a fresh scan_run_id nonce on every enqueue.
+
+    The nonce scopes the worker's idempotency request_id to one RUN, so a deliberate re-scan
+    within the controller's 1h idempotency window is never answered with the cached response.
+    """
+    files = [_make_file() for _ in range(2)]
+    session.add_all(files)
+    await session.commit()
+    await make_agent_live(session)
+    capture = wire_fakes(client)
+
+    assert (await client.post("/pipeline/scan-live-sets")).status_code == 200
+    await _drain_background()
+
+    run_ids = [kwargs["scan_run_id"] for _q, _t, kwargs in capture]
+    assert len(run_ids) == 2
+    assert None not in run_ids
+    assert len(set(run_ids)) == 2  # unique per enqueue
+
+
+@pytest.mark.asyncio
 async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
     """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
     matched = _make_file()

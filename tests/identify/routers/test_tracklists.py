@@ -637,6 +637,9 @@ async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
     assert payload["file_id"] == str(file.id)
     assert payload["original_path"] == file.original_path
     assert payload["agent_id"] == "test-fileserver"
+    # phaze-y07u: the trigger stamps a fresh per-enqueue scan_run_id nonce so a deliberate
+    # re-scan is never answered with a previous run's cached create-tracklist response.
+    assert payload["scan_run_id"] is not None
     # The enqueued payload must validate against the strict ScanLiveSetPayload so the
     # worker no longer dead-letters it (the v4.0.8 payload-incident class).
     assert ScanLiveSetPayload.model_validate(payload)
@@ -644,6 +647,30 @@ async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
     # The progress partial's poll URL carries agent_id so the status poll targets
     # the same per-agent queue.
     assert "agent_id=test-fileserver" in response.text
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_rescan_gets_a_fresh_scan_run_id(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-y07u: two scan triggers for the SAME file carry DIFFERENT scan_run_id nonces.
+
+    The nonce is what scopes the worker's idempotency request_id to one run -- identical nonces
+    would replay the controller's 1h-cached response and silently discard the fresh matches.
+    """
+    await make_agent_live(session)
+    _controller, task_router = install_fake_queues(client)
+
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    assert (await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})).status_code == 200
+    assert (await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})).status_code == 200
+
+    captured = task_router.queues["test-fileserver-meta"].captured
+    assert len(captured) == 2
+    run_ids = [payload["scan_run_id"] for _task, payload in captured]
+    assert None not in run_ids
+    assert run_ids[0] != run_ids[1]  # a re-scan is a NEW run, never the cached one
 
 
 @pytest.mark.asyncio

@@ -408,7 +408,12 @@ async def trigger_scan(
             # location (equal to original_path until a move). Scanning original_path targets a
             # deleted path for an executed file -- either a hard failure or a false-negative clean
             # "no_matches" COMPLETE, permanently unscannable.
-            payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id)
+            #
+            # phaze-y07u: scan_run_id is a fresh per-enqueue nonce scoping the worker's idempotency
+            # request_id to THIS run -- SAQ retries reuse these exact kwargs (same nonce, retries
+            # still collapse) while a later deliberate re-scan gets a new nonce and is never
+            # answered with this run's cached create-tracklist response.
+            payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id, scan_run_id=uuid.uuid4())
             job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
             if job is not None:
                 job_ids.append(job.key)

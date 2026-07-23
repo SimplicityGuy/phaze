@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
-import uuid  # noqa: TC003 -- runtime import: FastAPI resolves the `file_id: uuid.UUID` path-param annotation via get_type_hints
+import uuid  # runtime import: FastAPI path-param annotations + the phaze-y07u scan_run_id nonce
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -2595,6 +2595,11 @@ async def _enqueue_scan_jobs(queue: Any, files: list[FileRecord], agent_id: str)
             file_id=f.id,
             original_path=f.original_path,
             agent_id=agent_id,
+            # phaze-y07u: fresh per-enqueue nonce scoping the worker's idempotency request_id to
+            # THIS run -- SAQ retries replay these exact kwargs (same nonce -> retries collapse),
+            # while a later deliberate re-scan gets a new nonce and is never answered with a
+            # previous run's cached create-tracklist response.
+            scan_run_id=uuid.uuid4(),
         )
         await queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
 

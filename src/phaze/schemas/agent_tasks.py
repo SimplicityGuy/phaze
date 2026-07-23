@@ -167,6 +167,17 @@ class ScanLiveSetPayload(BaseModel):
     -- see the module docstring's D-24 exception note. `combined_query` (tasks/scan.py) runs
     the fingerprint engines against exactly this path, so an executed (moved) file must be
     queried at its live location or the query targets a deleted path.
+
+    phaze-y07u: `scan_run_id` is a per-ENQUEUE nonce (uuid4 stamped by the trigger) that scopes
+    the worker's idempotency `request_id` to one scan RUN. Every deterministic candidate was
+    ruled out: the SAQ job key/id derives from `scan_live_set:<file_id>` (identical across
+    distinct enqueues) and the rest of the payload is pure file state -- so without a nonce the
+    request_id is deterministic per FILE forever, and a deliberate re-scan inside the server's
+    1h idempotency window replays the CACHED create-tracklist response, silently discarding the
+    fresh matches. SAQ retries and recovery replays reuse the SAME serialized kwargs (same
+    nonce), so retries of one run still collapse; only distinct runs differ. Optional with
+    default None so in-flight pre-upgrade jobs (and their retries) still validate under
+    `extra="forbid"` and keep the legacy per-file key.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -174,6 +185,7 @@ class ScanLiveSetPayload(BaseModel):
     file_id: uuid.UUID
     original_path: str
     agent_id: str
+    scan_run_id: uuid.UUID | None = None
 
 
 class ScanDirectoryPayload(BaseModel):
