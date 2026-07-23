@@ -413,25 +413,31 @@ async def test_replaying_the_same_bulk_submission_is_an_honest_no_op(
 
 
 @pytest.mark.asyncio
-async def test_legacy_bulk_caller_still_gets_the_legacy_body(
+async def test_bulk_action_ignores_hx_target_and_always_returns_the_propose_body(
     client: AsyncClient,
     seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
 ) -> None:
-    """Without the propose HX-Target, the endpoint answers with the legacy container's contents.
+    """phaze-y4s6: the legacy ``#proposal-list-container`` fork is gone; every caller gets the propose body.
 
-    The two surfaces share one endpoint, one from-state guard and one count; only the response shape
-    forks. This pins the fork so a later edit cannot start serving the propose body to the legacy
-    container -- which would be the phaze-7j50 defect arriving from the opposite direction.
+    ``bulk_action`` used to fork the response shape on ``HX-Target`` -- the legacy
+    ``#proposal-list-container`` surface (``proposal_table.html``/``pagination.html``/
+    ``bulk_actions.html``/``proposal_list.html``/``bulk_response.html``) got one shape, the v7
+    propose workspace another. That legacy surface had no live caller left post-v7-cutover and was
+    deleted outright, so the endpoint now serves the v7 propose body UNCONDITIONALLY -- even for a
+    request that still carries the old legacy ``HX-Target`` (e.g. a stale client) or none at all.
     """
-    proposal = await seed_pending_proposal(0.9, original_filename="legacy.mp3", proposed_filename="Legacy.mp3")
+    await seed_pending_proposal(0.9, original_filename="stays.mp3", proposed_filename="Stays.mp3")
+    acted = await seed_pending_proposal(0.9, original_filename="legacy.mp3", proposed_filename="Legacy.mp3")
 
     body = (
         await client.patch(
             "/proposals/bulk",
-            data={"action": "approve", "proposal_ids": [str(proposal.id)]},
+            data={"action": "approve", "proposal_ids": [str(acted.id)]},
             headers={"HX-Request": "true", "HX-Target": "proposal-list-container"},
         )
     ).text
 
-    assert 'id="stats-bar"' in body, "the legacy response keeps its OOB stats fragment"
-    assert "Proposed name" not in body, "the propose table must never render into the legacy container"
+    assert "Stays.mp3" in body, "the surviving pending row must still be re-rendered"
+    assert "Proposed name" in body, "the propose table header must be present (this is the propose container's shape)"
+    assert 'id="proposals-table"' not in body, "the LEGACY table no longer exists to render"
+    assert 'id="stats-bar"' not in body, "the legacy OOB stats fragment no longer exists to render"

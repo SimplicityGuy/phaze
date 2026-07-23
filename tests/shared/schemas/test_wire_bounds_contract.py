@@ -132,24 +132,18 @@ _TEXT = "lands in a Text column -- unbounded, no cap needed (rule 2)"
 _NOT_STORED = "never reaches a column; consumed as a control value in-route"
 
 PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
-    ("/proposals/", "status"): _WHITELIST,
-    ("/proposals/", "q"): _TEXT,
-    ("/proposals/", "sort"): _WHITELIST,
-    ("/proposals/", "order"): _WHITELIST,
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
     ("/proposals/{proposal_id}/edit", "facet"): _WHITELIST,
     ("/proposals/bulk", "action"): _WHITELIST,
-    # phaze-gc5d added these four so a bulk approve/reject re-renders the SAME view it was issued
-    # from instead of resetting to page 1 of the default filter. They are the identical params the
-    # ``/proposals/`` entries above govern, and they reach the database through the identical path:
-    # ``bulk_action`` hands them to ``_proposal_list_context``, the helper it SHARES with
-    # ``list_proposals``. phaze-a6hm.10 moved WHERE that whitelist lives without changing the
-    # classification: ``_proposal_list_context`` now resolves ``sort``/``order`` through
-    # ``proposal_sort.LEGACY_PROPOSAL_SORT`` (the shared column_sort contract) instead of the
-    # private ``valid_sort_columns`` set ``get_proposals_page`` used to hold, which that bead
-    # deleted. The guarantee is strictly stronger -- resolution is a lookup in a mapping to
-    # already-constructed column objects, so an unwhitelisted value has no column to reach at all
-    # (column_sort rule 2) -- so these stay _WHITELIST. Same param, same helper, same whitelist.
+    # phaze-y4s6: ``GET /proposals/`` (status/q/sort/order) and the matching four params on
+    # ``PATCH /proposals/bulk`` were removed along with the legacy ``#proposal-list-container``
+    # surface (``proposal_list.html``/``proposal_table.html``/``pagination.html``/
+    # ``bulk_actions.html``/``bulk_response.html``) they fed -- ``_proposal_list_context``, their
+    # shared helper, went with them. ``GET /proposals/`` is now a bare SHELL-05 redirect with no
+    # query params at all, and ``bulk_action`` serves only the v7 propose workspace's bulk bar,
+    # whose view state rides in the query string (``ListViewState.from_request``, no
+    # ``_param_cases()`` entry needed -- see the note below) rather than these now-deleted Form
+    # fields.
     #
     # The v7 ``/s/propose`` workspace sorts the same table but has NO entry here, deliberately: it
     # reads its display state off ``request.query_params`` via ``ListViewState.from_request`` rather
@@ -157,10 +151,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # for it would be rejected as stale by ``test_registries_have_no_stale_entries``. Its bound comes
     # from the same ``PROPOSE_SORT`` whitelist, asserted directly in
     # tests/shared/core/test_propose_workspace_sorting.py.
-    ("/proposals/bulk", "status"): _WHITELIST,
-    ("/proposals/bulk", "q"): _TEXT,
-    ("/proposals/bulk", "sort"): _WHITELIST,
-    ("/proposals/bulk", "order"): _WHITELIST,
     ("/execution/progress/{batch_id}", "batch_id"): _NOT_STORED,
     ("/audit/", "status"): _WHITELIST,
     ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,

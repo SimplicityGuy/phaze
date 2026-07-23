@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
 import uuid
 
 import pytest
@@ -79,60 +77,7 @@ async def create_test_proposal(
     return proposal
 
 
-@pytest.mark.asyncio
-async def test_proposals_list_returns_html(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/ returns 200 with text/html content type.
-
-    Phase 57 (SHELL-05): a plain GET /proposals/ now 302-redirects into the shell; the
-    in-page HX request returns a proposals fragment.
-
-    phaze-7j50: that fragment is the #proposal-list-container INNER content (table + bulk bar +
-    pager), no longer the whole proposal_content.html -- every caller of this GET swaps it into the
-    container with innerHTML, so returning the chrome nested it. The chrome assertion that used to
-    live here encoded the buggy contract; see
-    test_list_fragment_is_container_inner_content_only for the replacement.
-    """
-    await create_test_proposal(session)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert 'id="proposals-table"' in response.text
-
-
-@pytest.mark.asyncio
-async def test_proposals_list_empty_state(client: AsyncClient) -> None:
-    """GET /proposals/ with no proposals returns 200 with empty state message."""
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "No proposals yet" in response.text
-
-
-@pytest.mark.asyncio
-async def test_proposals_list_shows_proposals(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/ with seeded proposals returns rows containing proposed_filename text."""
-    await create_test_proposal(session, proposed_filename="DJ Shadow - Live @ Coachella 2025.mp3")
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "DJ Shadow - Live @ Coachella 2025.mp3" in response.text
-
-
 _PROPOSAL_ROW_TEMPLATE = Path(phaze.__file__).parent / "templates" / "proposals" / "partials" / "proposal_row.html"
-
-
-@pytest.mark.asyncio
-async def test_executed_badge_derives_from_proposal_status(client: AsyncClient, session: AsyncSession) -> None:
-    """D-04: the 'Executed' badge renders from ``proposal.status == 'executed'``, not ``file.state``.
-
-    ``create_test_proposal`` leaves ``file.state`` at ``PROPOSAL_GENERATED`` (NOT ``'executed'``), so a
-    rendered 'Executed' badge can ONLY come from the proposal's own status -- the whole point of the
-    cutover. With the pre-fix template (``proposal.file.state == 'executed'``) this badge would never
-    render for this fixture; this test flips RED if the reader regresses to ``file.state``.
-    """
-    await create_test_proposal(session, proposed_filename="Applied Set.mp3", status=ProposalStatus.EXECUTED)
-    response = await client.get("/proposals/?status=all", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Applied Set.mp3" in response.text
-    assert "Executed</span>" in response.text
 
 
 def test_proposal_row_badge_reads_status_not_file_state() -> None:
@@ -144,97 +89,6 @@ def test_proposal_row_badge_reads_status_not_file_state() -> None:
     src = _PROPOSAL_ROW_TEMPLATE.read_text(encoding="utf-8")
     assert 'proposal.status == "executed"' in src
     assert "proposal.file.state" not in src
-
-
-@pytest.mark.asyncio
-async def test_proposals_htmx_returns_fragment(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/ with HX-Request header returns fragment without full HTML page."""
-    await create_test_proposal(session)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "<html" not in response.text.lower()
-    assert "<table" in response.text.lower() or "<tbody" in response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_proposals_pagination(client: AsyncClient, session: AsyncSession) -> None:
-    """Seed 60 proposals, GET /proposals/?page=2&page_size=25 returns correct range text."""
-    for i in range(60):
-        await create_test_proposal(
-            session,
-            original_filename=f"file_{i:03d}.mp3",
-            proposed_filename=f"Artist - Track {i:03d}.mp3",
-        )
-    response = await client.get("/proposals/?status=all&page=2&page_size=25", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Showing 26-50" in response.text
-
-
-@pytest.mark.asyncio
-async def test_filter_by_status(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/?status=approved returns only approved proposals."""
-    await create_test_proposal(session, proposed_filename="Pending One.mp3", status=ProposalStatus.PENDING, original_filename="p1.mp3")
-    await create_test_proposal(session, proposed_filename="Approved One.mp3", status=ProposalStatus.APPROVED, original_filename="a1.mp3")
-    await create_test_proposal(session, proposed_filename="Rejected One.mp3", status=ProposalStatus.REJECTED, original_filename="r1.mp3")
-
-    response = await client.get("/proposals/?status=approved", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Approved One.mp3" in response.text
-    assert "Pending One.mp3" not in response.text
-    assert "Rejected One.mp3" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_search_proposals(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/?q=searchterm returns matching proposals."""
-    await create_test_proposal(
-        session,
-        original_filename="coachella_set.mp3",
-        proposed_filename="DJ Shadow - Live @ Coachella.mp3",
-    )
-    await create_test_proposal(
-        session,
-        original_filename="random_track.mp3",
-        proposed_filename="Random Artist - Song.mp3",
-    )
-    response = await client.get("/proposals/?status=all&q=coachella", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Coachella" in response.text
-
-
-@pytest.mark.asyncio
-async def test_pagination_and_sort_urls_urlencode_search_query(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-ro47: `&`/`=`/`#` in the search text must not corrupt pager/sort hx-get URLs.
-
-    Un-encoded, ``q=Drum & Bass`` splices a bogus `` Bass`` parameter after the real ``q``
-    (Starlette resolves duplicate params from the FIRST occurrence, so injected params can win
-    over the template's own ``sort``/``order``/``page_size``), and a bare ``#`` truncates the rest
-    of the URL client-side. This parses every ``hx-get="/proposals/?..."`` URL emitted by
-    pagination.html and proposal_table.html and asserts the search text round-trips intact and
-    sort/order/page_size all survive.
-    """
-    query = "Drum & Bass #1 100% mix=on"
-    await create_test_proposal(session, proposed_filename=f"{query} track.mp3", original_filename="rt.mp3")
-    response = await client.get(
-        "/proposals/",
-        params={"status": "all", "q": query, "sort": "confidence", "order": "desc"},
-        headers={"HX-Request": "true"},
-    )
-    assert response.status_code == 200
-
-    urls = re.findall(r'hx-get="([^"]+)"', response.text)
-    proposal_urls = [u for u in urls if u.startswith("/proposals/?")]
-    assert proposal_urls, "expected at least one pagination/sort hx-get URL to be rendered"
-
-    for url in proposal_urls:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        assert params.get("q") == [query], f"search query corrupted in {url!r}: got {params.get('q')!r}"
-        assert "sort" in params, f"sort param lost (likely truncated by an un-encoded '#') in {url!r}"
-        assert "order" in params, f"order param lost (likely truncated by an un-encoded '#') in {url!r}"
-        # Un-encoded, the raw '#' would have been parsed as the URL FRAGMENT delimiter by
-        # urlparse itself -- proving the client (browser/htmx) would truncate there too.
-        assert parsed.fragment == ""
 
 
 @pytest.mark.asyncio
@@ -315,139 +169,6 @@ async def test_bulk_approve(client: AsyncClient, session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bulk_response_rerenders_list_container(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-gc5d: the bulk PATCH body must be the re-rendered list, not an OOB-only empty payload.
-
-    The forms swap this response into #proposal-list-container with innerHTML. Before the fix the
-    handler returned approve_response.html with proposal=None, whose non-OOB body is gated on
-    `{% if proposal %}` -- so htmx applied the OOB stats/toast and then blanked the container,
-    destroying the table AND the selection toolbar until a full page reload.
-    """
-    keep = await create_test_proposal(session, original_filename="gc5d_keep.mp3", proposed_filename="GC5D Keep.mp3")
-    acted = await create_test_proposal(session, original_filename="gc5d_acted.mp3", proposed_filename="GC5D Acted.mp3")
-
-    response = await client.patch(
-        "/proposals/bulk",
-        data={"action": "approve", "proposal_ids": [str(acted.id)], "status": "pending"},
-    )
-    assert response.status_code == 200
-
-    # The primary (non-OOB) body carries the table and the bulk-actions toolbar back.
-    assert 'id="proposals-table"' in response.text
-    assert f'id="proposal-{keep.id}"' in response.text
-    assert 'hx-patch="/proposals/bulk"' in response.text
-    # ...and the OOB stats/toast still fire.
-    assert 'id="stats-bar"' in response.text
-    assert "1 proposals approved." in response.text
-
-
-@pytest.mark.asyncio
-async def test_bulk_response_preserves_page_and_filter(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-gc5d: a bulk action issued from page 2 with a search filter comes back on page 2 with it.
-
-    Re-rendering the container is only correct if it re-renders the SAME view; otherwise the wipe is
-    merely traded for a silent reset to page 1 of the default filter.
-    """
-    created = [
-        await create_test_proposal(session, original_filename=f"gc5dpage_{i:02d}.mp3", proposed_filename=f"GC5D Page {i:02d}.mp3") for i in range(12)
-    ]
-    # Filenames are zero-padded and created in ascending order, so page 2 of a 10-per-page
-    # original_filename-ascending listing holds the last two.
-    page_two = created[10:]
-
-    response = await client.patch(
-        "/proposals/bulk",
-        data={
-            "action": "approve",
-            "proposal_ids": [str(page_two[0].id)],
-            "status": "pending",
-            "q": "gc5dpage",
-            "page": "2",
-            "page_size": "10",
-            "sort": "original_filename",
-            "order": "asc",
-        },
-    )
-    assert response.status_code == 200
-
-    # The re-rendered bulk toolbar echoes the state back, so the NEXT bulk action stays put too.
-    assert 'name="page" value="2"' in response.text
-    assert 'name="q" value="gc5dpage"' in response.text
-    assert 'name="sort" value="original_filename"' in response.text
-    assert 'name="status" value="pending"' in response.text
-    # Still showing page 2 of the filtered pending set (11 pending remain -> 1 row on page 2).
-    assert f'id="proposal-{page_two[1].id}"' in response.text
-    assert f'id="proposal-{page_two[0].id}"' not in response.text
-
-
-@pytest.mark.asyncio
-async def test_list_fragment_is_container_inner_content_only(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-7j50 (symptom 1): the pagination/sort/search GET must not nest chrome in the container.
-
-    Every pagination button, page-size button, sort header and the search box issue
-    ``hx-get="/proposals/?..."`` with ``hx-target="#proposal-list-container"`` and
-    ``hx-swap="innerHTML"``. The handler used to answer with the whole proposal_content.html --
-    filter tabs, search box, the container div itself and the pager -- so ONE page change or column
-    sort swapped a duplicate #proposal-list-container, a duplicate filter-tab bar, a duplicate
-    search box and a duplicate pager INSIDE the live container. Subsequent swaps then resolved to
-    the outer element while the stale inner copy stayed on screen.
-
-    The response is asserted to be safely innerHTML-swappable: zero occurrences of the container id
-    (not merely "at most one"), and none of the chrome that lives outside it.
-    """
-    for i in range(12):
-        await create_test_proposal(session, original_filename=f"7j50_{i:02d}.mp3", proposed_filename=f"7J50 {i:02d}.mp3")
-
-    response = await client.get("/proposals/?status=pending&page=1&page_size=10", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-
-    # (a) swapping this in cannot produce a duplicate id.
-    assert response.text.count('id="proposal-list-container"') == 0
-    # ...nor a duplicate filter-tab bar or search box.
-    assert 'aria-label="Status filter tabs"' not in response.text
-    assert 'placeholder="Search by filename..."' not in response.text
-    # It IS the container's content: table + selection toolbar + exactly one pager.
-    assert 'id="proposals-table"' in response.text
-    assert 'hx-patch="/proposals/bulk"' in response.text
-    assert response.text.count("Per page:") == 1
-    assert "Showing 1-10 of 12 proposals" in response.text
-
-
-@pytest.mark.asyncio
-async def test_bulk_response_refreshes_pager(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-7j50 (symptom 2): after a bulk action the pager reports POST-action totals.
-
-    The pager used to render outside #proposal-list-container, so the bulk response -- which
-    re-renders the container -- could not update it and the operator was left reading
-    "Showing 1-N of <pre-action total> proposals" plus page buttons for rows that had just left the
-    filtered set. Moving the pager inside the container makes the bulk re-render carry it.
-    """
-    created = [
-        await create_test_proposal(session, original_filename=f"7j50pager_{i:02d}.mp3", proposed_filename=f"7J50 Pager {i:02d}.mp3") for i in range(6)
-    ]
-
-    before = await client.get("/proposals/?status=pending&q=7j50pager&page=1&page_size=10", headers={"HX-Request": "true"})
-    assert "Showing 1-6 of 6 proposals" in before.text
-
-    response = await client.patch(
-        "/proposals/bulk",
-        data={
-            "action": "approve",
-            "proposal_ids": [str(created[0].id), str(created[1].id)],
-            "status": "pending",
-            "q": "7j50pager",
-            "page": "1",
-            "page_size": "10",
-        },
-    )
-    assert response.status_code == 200
-    # Two rows left the pending set: the pager in the swapped body reflects that, and only once.
-    assert "Showing 1-4 of 4 proposals" in response.text
-    assert "of 6 proposals" not in response.text
-    assert response.text.count("Per page:") == 1
-
-
-@pytest.mark.asyncio
 async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-3st0: a malformed proposal_ids entry is SKIPPED (never a 500); valid ids still act."""
     p1 = await create_test_proposal(session, original_filename="bulkmal1.mp3")
@@ -457,7 +178,7 @@ async def test_bulk_approve_skips_malformed_id(client: AsyncClient, session: Asy
         data={"action": "approve", "proposal_ids": [str(p1.id), "not-a-uuid"]},
     )
     assert response.status_code == 200
-    assert "1 proposals approved." in response.text
+    assert "1 proposal approved." in response.text
 
     updated1 = await session.get(RenameProposal, p1.id)
     assert updated1 is not None
@@ -489,23 +210,6 @@ async def test_bulk_approve_all_ids_malformed(client: AsyncClient, session: Asyn
     )
     assert response.status_code == 200
     assert "0 proposals approved." in response.text
-
-
-@pytest.mark.asyncio
-async def test_sort_by_confidence(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/?sort=confidence&order=asc returns proposals sorted by confidence ascending."""
-    await create_test_proposal(session, original_filename="high.mp3", proposed_filename="High Conf.mp3", confidence=0.95)
-    await create_test_proposal(session, original_filename="low.mp3", proposed_filename="Low Conf.mp3", confidence=0.30)
-    await create_test_proposal(session, original_filename="mid.mp3", proposed_filename="Mid Conf.mp3", confidence=0.60)
-
-    response = await client.get("/proposals/?status=all&sort=confidence&order=asc", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    text = response.text
-    # Low confidence should appear before high confidence in ascending order
-    low_pos = text.find("Low Conf.mp3")
-    mid_pos = text.find("Mid Conf.mp3")
-    high_pos = text.find("High Conf.mp3")
-    assert low_pos < mid_pos < high_pos
 
 
 @pytest.mark.asyncio
@@ -558,73 +262,6 @@ async def test_bulk_reject(client: AsyncClient, session: AsyncSession) -> None:
     assert updated1.status == ProposalStatus.REJECTED
     assert updated2 is not None
     assert updated2.status == ProposalStatus.REJECTED
-
-
-@pytest.mark.asyncio
-async def test_sort_by_original_filename(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/?sort=original_filename sorts by file's original name."""
-    await create_test_proposal(session, original_filename="zzz.mp3", proposed_filename="Z.mp3")
-    await create_test_proposal(session, original_filename="aaa.mp3", proposed_filename="A.mp3")
-
-    response = await client.get("/proposals/?status=all&sort=original_filename&order=asc", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    text = response.text
-    assert text.find("aaa.mp3") < text.find("zzz.mp3")
-
-
-@pytest.mark.asyncio
-async def test_destination_column_header(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /proposals/ renders a Destination column header in the table."""
-    await create_test_proposal(session)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "Destination" in response.text
-
-
-@pytest.mark.asyncio
-async def test_destination_path_displayed(client: AsyncClient, session: AsyncSession) -> None:
-    """Proposal with proposed_path renders the path text in the table row."""
-    await create_test_proposal(
-        session,
-        proposed_path="performances/artists/Disclosure",
-        proposed_filename="Disclosure - Live @ Coachella 2025.mp3",
-    )
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "performances/artists/Disclosure" in response.text
-
-
-@pytest.mark.asyncio
-async def test_destination_null_path_badge(client: AsyncClient, session: AsyncSession) -> None:
-    """Proposal with null proposed_path renders 'No path' badge."""
-    await create_test_proposal(session, proposed_path=None)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "No path" in response.text
-
-
-@pytest.mark.asyncio
-async def test_row_renders_sparkline_and_timeline_control(client: AsyncClient, session: AsyncSession) -> None:
-    """The review row shows a BPM sparkline SVG and an HTMX timeline expand control."""
-    proposal = await create_test_proposal(session)
-    await add_analysis_windows(session, proposal.file_id)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "<svg" in response.text
-    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
-    assert f'id="timeline-{proposal.id}"' in response.text
-    # Fine-window BPMs flow into a rendered polyline sparkline.
-    assert "<polyline" in response.text
-
-
-@pytest.mark.asyncio
-async def test_row_sparkline_without_windows(client: AsyncClient, session: AsyncSession) -> None:
-    """A file with no analysis windows still renders a (flat) sparkline + timeline control."""
-    proposal = await create_test_proposal(session)
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "<svg" in response.text
-    assert f'hx-get="/proposals/{proposal.id}/timeline"' in response.text
 
 
 @pytest.mark.asyncio
@@ -895,7 +532,7 @@ async def test_bulk_approve_skips_terminal_rows(client: AsyncClient, session: As
         data={"action": "approve", "proposal_ids": [str(pending.id), str(executed.id)]},
     )
     assert response.status_code == 200
-    assert "1 proposals approved" in response.text
+    assert "1 proposal approved · 1 skipped (already actioned)." in response.text
 
     assert (await session.get(RenameProposal, pending.id)).status == ProposalStatus.APPROVED
     assert (await session.get(RenameProposal, executed.id)).status == ProposalStatus.EXECUTED
@@ -1158,17 +795,16 @@ async def test_proposals_history_restore_resolves_to_the_full_shell(client: Asyn
 
 
 @pytest.mark.asyncio
-async def test_proposals_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
-    """The other direction: an ordinary htmx swap must still get the chrome-less fragment.
+async def test_proposals_redirects_with_query_params_and_hx_request(client: AsyncClient) -> None:
+    """phaze-y4s6: an ordinary htmx GET (with query params) also redirects unconditionally now.
 
-    Every control that issues this GET targets #proposal-list-container with hx-swap="innerHTML"
-    (phaze-7j50), so a full document here would nest an entire page inside the container.
+    The legacy in-page HX filter/sort/search surface this control used to swap into
+    ``#proposal-list-container`` (``proposal_table.html``/``pagination.html``/``bulk_actions.html``/
+    ``proposal_list.html``) had no live caller left post-v7-cutover and was deleted outright.
     """
-    response = await client.get("/proposals/?status=pending", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
-    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry the shell rail"
+    response = await client.get("/proposals/?status=pending", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/propose"
 
 
 @pytest.mark.asyncio
