@@ -475,7 +475,16 @@ class ComputeAgentBackend(_BaseBackend):
             stmt = stmt.on_conflict_do_update(
                 # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
                 index_elements=["file_id"],
-                set_={"backend_id": stmt.excluded.backend_id, "status": stmt.excluded.status},
+                set_={
+                    "backend_id": stmt.excluded.backend_id,
+                    "status": stmt.excluded.status,
+                    # phaze-7634: CloudJob.updated_at is a client-side ``onupdate=func.now()``
+                    # (TimestampMixin) that SQLAlchemy does NOT inject into an ON CONFLICT SET (and
+                    # there is no DB trigger), so a re-dispatch would otherwise leave updated_at
+                    # frozen at the row's PREVIOUS write (same defect class as the hold-mode upsert
+                    # above / phaze-c8nz). Stamp it explicitly so a re-dispatch bumps the clock.
+                    "updated_at": func.now(),
+                },
             )
             await session.execute(stmt)
 

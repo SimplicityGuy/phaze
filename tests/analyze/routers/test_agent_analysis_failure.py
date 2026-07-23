@@ -20,13 +20,14 @@ parallel-safe and independent of main.py wiring. Must pass in the ``analyze`` bu
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, update
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
@@ -233,6 +234,48 @@ async def test_report_failed_on_not_yet_completed_row_still_stamps_marker(seed_t
     assert row.error_message == "crashed: second crash", "a not-yet-completed row must still refresh the marker on repeat failure"
     assert row.analysis_completed_at is None
     assert await _no_mixed_row_exists(session)
+
+
+@pytest.mark.asyncio
+async def test_report_failed_repeat_bumps_updated_at_not_created_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-7634: a repeat failure marker refresh bumps updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz on the CAS-guarded ``report_analysis_failed`` upsert: the
+    `set_` clause used to omit `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate`
+    hook never fires for a Core upsert. This exercises the not-yet-completed refresh branch
+    (the `where=analysis_completed_at IS NULL` predicate lets the DO UPDATE fire) -- the CAS
+    predicate itself is untouched by the fix, only which columns the guarded UPDATE writes.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        first = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "timeout", "error": "first crash"})
+        assert first.status_code == 200, first.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. analysis.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(AnalysisResult).where(AnalysisResult.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_repeat = datetime.now(UTC).replace(tzinfo=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        second = await ac.post(f"/api/internal/agent/analysis/{file_id}/failed", json={"reason": "crashed", "error": "second crash"})
+        assert second.status_code == 200, second.text
+
+    row = await _analysis_row(session, file_id)
+    assert row is not None
+    assert row.error_message == "crashed: second crash"
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_repeat - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 # ---------------------------------------------------------------------------

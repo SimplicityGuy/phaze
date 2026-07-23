@@ -80,7 +80,16 @@ async def put_metadata(
         # the SET clause (both are conflict-target / immutable PK).
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={**{k: stmt.excluded[k] for k in dumped}, "failed_at": None, "error_message": None},
+            set_={
+                **{k: stmt.excluded[k] for k in dumped},
+                "failed_at": None,
+                "error_message": None,
+                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+                # CONFLICT DO UPDATE path -- stamp it explicitly so a re-extraction bumps
+                # updated_at instead of freezing it at first write (phaze-c8nz). created_at stays
+                # pinned.
+                "updated_at": func.now(),
+            },
         )
     else:
         # Empty body -- no user field to UPDATE, but STILL clear the failure marker on an
@@ -89,7 +98,7 @@ async def put_metadata(
         # both NULL anyway; a `DO NOTHING` here would strand the marker. Never an empty SET.
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={"failed_at": None, "error_message": None},
+            set_={"failed_at": None, "error_message": None, "updated_at": func.now()},
         )
     await session.execute(stmt)
     # Phase 90 (D-09): the DISCOVERED -> METADATA_EXTRACTED FileRecord.state CAS advance was removed
@@ -170,7 +179,14 @@ async def report_metadata_failed(
     # already-payload-NULL failure row. The ledger clear below stays UNCONDITIONAL either way (the run
     # terminated, so the row must clear to avoid the CR-02 unbounded recovery loop).
     stmt = stmt.on_conflict_do_update(
-        index_elements=["file_id"], set_={"failed_at": now, "error_message": error_message}, where=FileMetadata.failed_at.isnot(None)
+        index_elements=["file_id"],
+        # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+        # CONFLICT DO UPDATE path -- stamp it explicitly (reusing the same `now` value as
+        # failed_at) so a refreshed failure marker bumps updated_at instead of freezing it at
+        # first write (phaze-c8nz). created_at stays pinned. The CAS `where=` predicate below is
+        # unchanged.
+        set_={"failed_at": now, "error_message": error_message, "updated_at": now},
+        where=FileMetadata.failed_at.isnot(None),
     )
     await session.execute(stmt)
     # CR-02: clear the ledger row in the SAME transaction. Key from the PATH file_id ONLY (T-45-05).

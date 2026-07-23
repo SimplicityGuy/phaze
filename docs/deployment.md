@@ -542,7 +542,7 @@ Because `docker-publish.yml` tags both `:latest` and `:<version>`, every release
 ```bash
 # On the app-server host:
 git checkout 2026.7.0        # the last-known-good CalVer release tag (a pre-CalVer rollback legitimately still uses its old v4.0.0 tag — mechanism unchanged)
-just rebuild                 # docker compose up -d --build
+just rebuild                 # docker compose -f docker-compose.yml up -d --build
 ```
 
 To stop and restart cleanly without rebuilding: `just down` (`docker compose down`) then `just up`. The `pgdata` named volume and `./certs/` persist across `down`/`up`, so no data or cert state is lost.

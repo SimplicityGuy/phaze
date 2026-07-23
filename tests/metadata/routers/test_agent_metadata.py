@@ -7,14 +7,14 @@ does not depend on Plans 03/05/06 landing in any particular order.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.database import get_session
 from phaze.models.analysis import AnalysisResult
@@ -132,6 +132,84 @@ async def test_metadata_replay_overwrites(seed_test_agent: tuple[Agent, str], se
     assert rows[0].title == "T2"
     # AUTH-01 attribution check: the row was written by the authenticated agent.
     assert agent.id is not None  # keep "agent" alive for the linter
+
+
+@pytest.mark.asyncio
+async def test_metadata_replay_bumps_updated_at_not_created_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-7634: a conflicting re-PUT bumps FileMetadata.updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz: `on_conflict_do_update`'s `set_` clause used to omit
+    `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate` hook never fires for a Core
+    upsert -- so a re-extracted row kept reporting the FIRST-write timestamp forever. Backdate
+    both columns, re-PUT with a non-empty body (the "if dumped" set_ branch), and assert
+    updated_at moves forward while created_at is untouched.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r1 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "A", "title": "T1"})
+    assert r1.status_code == 200, r1.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. metadata.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r2 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "B", "title": "T2"})
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.artist == "B"
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
+
+
+@pytest.mark.asyncio
+async def test_metadata_empty_put_bumps_updated_at_not_created_at(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """phaze-7634: an empty-body re-PUT (the "else" set_ branch) also bumps updated_at.
+
+    Mirrors ``test_metadata_replay_bumps_updated_at_not_created_at`` but exercises the
+    empty-``model_dump(exclude_unset=True)`` branch, which has its own separate ``set_`` clause.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r1 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={"artist": "Aphex Twin", "title": "Xtal"})
+    assert r1.status_code == 200, r1.text
+
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        r2 = await ac.put(f"/api/internal/agent/metadata/{file_id}", json={})
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.artist == "Aphex Twin", "empty-body PUT must not touch other fields"
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio
@@ -636,6 +714,50 @@ async def test_metadata_failed_with_body_populates_error_message(
     row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
     assert row.failed_at is not None
     assert row.error_message == "error: boom", f"error_message must be '<reason>: <error>', got {row.error_message!r}"
+
+
+@pytest.mark.asyncio
+async def test_metadata_failed_repeat_bumps_updated_at_not_created_at(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+) -> None:
+    """phaze-7634: a repeat failure marker refresh bumps updated_at; created_at stays pinned.
+
+    Same defect class as phaze-c8nz on the CAS-guarded ``report_metadata_failed`` upsert (WR-01,
+    ``where=FileMetadata.failed_at.isnot(None)``): the `set_` clause used to omit `updated_at`.
+    This exercises the already-failed refresh branch -- the CAS predicate itself is untouched by
+    the fix, only which columns the guarded UPDATE writes.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+
+    app = _make_smoke_app(session)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        first = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "error", "error": "first crash"})
+    assert first.status_code == 200, first.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. metadata.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
+    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(FileMetadata).where(FileMetadata.file_id == file_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_repeat = datetime.now(UTC).replace(tzinfo=None)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac:
+        second = await ac.post(f"/api/internal/agent/metadata/{file_id}/failed", json={"reason": "crashed", "error": "second crash"})
+    assert second.status_code == 200, second.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_id))).scalar_one()
+    assert row.error_message == "crashed: second crash"
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_repeat - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio

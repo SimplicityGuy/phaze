@@ -17,7 +17,7 @@ import unicodedata
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import Executable, literal_column, select
+from sqlalchemy import Executable, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -144,6 +144,10 @@ async def upsert_files(
             # AUTH-01 unchanged (agent_id still stamped from the auth dep, never body).
             "batch_id": base_stmt.excluded.batch_id,
             "file_type": base_stmt.excluded.file_type,
+            # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+            # CONFLICT DO UPDATE path -- stamp it explicitly so a rescan bumps updated_at instead
+            # of freezing it at first discovery (phaze-c8nz). created_at stays pinned.
+            "updated_at": func.now(),
         },
     ).returning(
         FileRecord.id,
