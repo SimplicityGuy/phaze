@@ -144,6 +144,36 @@ async def test_list_tracklists_htmx_returns_partial(session: AsyncSession, clien
 
 
 @pytest.mark.asyncio
+async def test_list_tracklists_establishes_the_tracklists_list_landing_target(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-k2lz): GET /tracklists/ (HX-Request) is the ONLY reachable render of this
+    handler -- the non-fragment branch 302-redirects into the shell (SHELL-05/D-03) rather than ever
+    rendering the template, so nothing else in the app ever emits ``#tracklists-list`` first. Before
+    the fix, ``list_tracklists`` fed its own ``is_fragment`` straight through as the template's
+    ``is_hx`` wrapper gate (copied from scan_tab's shape, phaze-64uy), which suppressed the wrapper on
+    every reachable call. Every hx-target="#tracklists-list" swap this page renders --
+    pagination.html's Prev/Next and tracklist_card.html's Unlink button -- therefore had no landing
+    target in the document and silently no-op'd. This handler must always self-establish exactly one
+    ``#tracklists-list`` wrapper.
+    """
+    # Eleven tracklists against the minimum allowed page_size (10) force pagination.html's Next
+    # control (hx-target="#tracklists-list") into the response, so the regression covers a real
+    # swap consumer, not just the bare wrapper.
+    tracklists = [_make_tracklist(external_id=f"tl-{i}") for i in range(11)]
+    session.add_all(tracklists)
+    await session.flush()
+
+    response = await client.get("/tracklists/?page_size=10", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert 'id="tracklists-list"' in response.text
+    # The wrapper appears exactly once -- never zero (this regression), never two (the duplicate-id
+    # class this file's own history already fixed four times over).
+    assert response.text.count('id="tracklists-list"') == 1
+    # Pagination's Next button (page_size=1 forces a second page) targets the wrapper this render
+    # just created -- confirming a genuine landing target now exists for it.
+    assert 'hx-target="#tracklists-list"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_get_tracks(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/{id}/tracks returns track detail partial."""
     tl = _make_tracklist()
@@ -2644,19 +2674,26 @@ async def test_tracklists_restore_header_alone_does_not_return_a_fragment(client
 
 
 @pytest.mark.asyncio
-async def test_tracklists_live_swap_carries_no_duplicate_list_wrapper(client: AsyncClient) -> None:
-    """The live swap fragment carries ZERO ``#tracklists-list`` wrappers (phaze-64uy).
+async def test_tracklists_live_swap_carries_exactly_one_list_wrapper(client: AsyncClient) -> None:
+    """The live swap fragment carries EXACTLY ONE ``#tracklists-list`` wrapper.
 
     ``tracklist_list.html`` used to compute its own ``is_hx`` from
     ``request.headers.get('HX-Request')`` -- the exact expression response_shape rule 1 bans, and
-    the exact defect phaze-xc84 had already found in the sibling ``scan_tab.html``. The handler now
-    supplies the flag as ``wants_fragment(request)``, so ONE predicate drives both the response
-    shape and the wrapper gate and they can no longer disagree.
+    the exact defect phaze-xc84 had already found in the sibling ``scan_tab.html``. phaze-64uy's fix
+    supplied the flag as ``wants_fragment(request)`` instead, on the assumption (copied from
+    scan_tab's shape) that this response always swaps INTO an ALREADY-EXISTING ``#tracklists-list`` --
+    so ZERO copies here was the correct assertion at the time.
 
-    The fragment is swapped INTO the existing ``#tracklists-list``, so a second copy would duplicate
-    the id in the live document and strand every later swap on the stale outer element (the class
-    already on record in phaze-gzrd / op6f / 7j50 / 5p43).
+    phaze-k2lz found that assumption false: unlike scan_tab, ``list_tracklists`` has no non-fragment
+    branch that ever renders the template (the non-fragment case 302-redirects into the shell,
+    SHELL-05/D-03) -- there is nothing in the app that emits ``#tracklists-list`` before this handler
+    runs. Zero copies meant every hx-target="#tracklists-list" swap the fragment itself renders
+    (pagination.html's Prev/Next, tracklist_card.html's Unlink) had no landing target at all. The
+    handler now always self-establishes the wrapper (never zero), while the duplicate-id concern this
+    test originally guarded (phaze-gzrd / op6f / 7j50 / 5p43) is guarded by asserting exactly one, not
+    two -- the mutation routes that swap INSIDE this wrapper (``_render_tracklist_list``, covered by
+    ``test_unlink_tracklist`` et al.) are untouched and still correctly suppress their own copy.
     """
     response = await client.get("/tracklists/?filter=all", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert response.text.count('id="tracklists-list"') == 0, "the fragment swaps INTO #tracklists-list and must not carry a second one"
+    assert response.text.count('id="tracklists-list"') == 1, "the fragment must self-establish its own landing target, exactly once"

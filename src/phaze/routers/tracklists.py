@@ -237,11 +237,21 @@ async def list_tracklists(
         "pagination": pagination,
         "current_page": "tracklists",
         "active_filter": filter,
-        # Same predicate feeds the template's ``#tracklists-list`` wrapper gate, so the two
-        # decisions come from ONE source (phaze-64uy, matching phaze-xc84's scan_tab shape). A live
-        # swap lands INSIDE the existing wrapper and must not carry a second one; every
-        # full-document shape must supply exactly one. Never zero, never two.
-        "is_hx": is_fragment,
+        # phaze-k2lz: this is NOT scan_tab's shape, despite the surface resemblance (phaze-64uy
+        # copied the mechanism without the precondition holding). scan_tab has a real non-fragment
+        # branch (``scan.html``) that establishes ``#scan-panel`` before any in-page swap ever fires,
+        # so passing ``is_fragment`` straight through as ``is_hx`` is correct there: a live swap
+        # really is landing inside an existing wrapper. Here the non-fragment branch 302-redirects
+        # (SHELL-05/D-03) instead of rendering, so this handler's ONLY reachable path IS the fragment
+        # one -- there is no earlier render that ever emits ``#tracklists-list``. Passing ``is_fragment``
+        # here therefore suppressed the wrapper on every single reachable call, so pagination.html's
+        # Prev/Next and tracklist_card.html's Unlink/Link-result buttons -- all hx-target="#tracklists-list"
+        # -- had no landing target anywhere in the document: htmx logged a target error and no-op'd,
+        # exactly the D-01 "in-page HX filter" the SHELL-05 contract promises stays usable. This handler
+        # must always self-establish the wrapper; the ``_render_tracklist_list`` helper used by the
+        # POST mutation routes (unlink/link-result) is untouched and still correctly suppresses it, since
+        # those genuinely DO land inside the wrapper THIS render just created.
+        "is_hx": False,
     }
 
     # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
