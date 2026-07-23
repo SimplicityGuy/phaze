@@ -265,6 +265,22 @@ async def test_lane_detail_template_non_kueue_has_no_inadmissible() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lane_detail_unavailable_lane_renders_true_in_flight_not_zero() -> None:
+    """phaze-pc2q: an unavailable lane must render its TRUE in_flight/cap, never a fabricated "0".
+
+    Mirrors _lane_card.html's phaze-xd8k fix, reintroduced here: a lane can be unreachable for
+    NEW dispatch (``available=False``) while still draining work it already accepted
+    (``in_flight > 0``). A literal "0" reads as "nothing is running" and contradicts the sibling
+    lane card, which already renders the true count for the identical offline state.
+    """
+    lane = {"id": "cloud-a", "kind": "compute", "rank": 2, "cap": 8, "in_flight": 3, "available": False, "quota_wait": 0, "inadmissible": 0}
+    body = _render_lane_detail(lane=lane, recent_completions=[], queue_depths={}, refreshed_at=None, recent_n=20)
+    assert "3/8" in body
+    # The fabricated zero must not appear as the header numerator (a bare "0" span).
+    assert ">0</span>" not in body
+
+
+@pytest.mark.asyncio
 async def test_lane_detail_no_unsafe_filter(client: AsyncClient, session: AsyncSession) -> None:
     """Operator-declared lane id/kind stay Jinja-autoescaped -- never |safe (T-88-05)."""
     lane = await _first_lane(session)
