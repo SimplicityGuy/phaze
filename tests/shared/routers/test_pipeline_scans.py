@@ -22,6 +22,7 @@ configured so most happy-path tests need no extra setup.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import unicodedata
 from unittest.mock import AsyncMock
 import uuid
 
@@ -451,6 +452,59 @@ async def test_post_scans_subpath_allows_triple_dot_filename(
     mock_router.enqueue_for_agent.assert_awaited_once()
     call = mock_router.enqueue_for_agent.await_args
     assert call.kwargs["payload"].scan_path == "/data/music/...thinking.mp3"
+
+
+@pytest.mark.asyncio
+async def test_post_scans_nfd_scan_root_is_scannable(session: AsyncSession) -> None:
+    """phaze-g0if regression: an agent's non-NFC (NFD) ``scan_roots`` entry must be scannable.
+
+    Before the fix, ``joined`` was NFC-normalized but ``agent.scan_roots`` was compared raw: the
+    WR-05 membership check (``form.scan_root not in agent.scan_roots``) is raw-vs-raw and passes,
+    but the D-06 prefix check compared the NFC ``joined`` against the un-normalized root and failed
+    -- even for the bare root with NO subpath (``joined == NFC(scan_root) != scan_root`` when the
+    root itself is not already NFC). NFD is the norm for paths sourced from an HFS+/macOS agent.
+    """
+    nfd_root = unicodedata.normalize("NFD", "/data/Café Del Mar")
+    assert nfd_root != unicodedata.normalize("NFC", nfd_root), "fixture root must be genuinely non-NFC"
+
+    agent = Agent(id="test-agent-nfd", name="Test Agent NFD", token_hash=None, scan_roots=[nfd_root])
+    session.add(agent)
+    await session.commit()
+
+    app, mock_router = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/pipeline/scans",
+            data={"agent_id": "test-agent-nfd", "scan_root": nfd_root, "subpath": ""},
+        )
+
+    assert response.status_code == 200, response.text
+    assert "Scan in progress" in response.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    payload = mock_router.enqueue_for_agent.await_args.kwargs["payload"]
+    assert payload.scan_path == unicodedata.normalize("NFC", nfd_root)
+
+
+@pytest.mark.asyncio
+async def test_post_scans_nfd_scan_root_with_subpath_is_scannable(session: AsyncSession) -> None:
+    """phaze-g0if regression: the prefix gate must also pass for a non-NFC root WITH a subpath."""
+    nfd_root = unicodedata.normalize("NFD", "/data/Café Del Mar")
+
+    agent = Agent(id="test-agent-nfd-sub", name="Test Agent NFD Sub", token_hash=None, scan_roots=[nfd_root])
+    session.add(agent)
+    await session.commit()
+
+    app, mock_router = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.post(
+            "/pipeline/scans",
+            data={"agent_id": "test-agent-nfd-sub", "scan_root": nfd_root, "subpath": "2026/set1.flac"},
+        )
+
+    assert response.status_code == 200, response.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+    payload = mock_router.enqueue_for_agent.await_args.kwargs["payload"]
+    assert payload.scan_path == unicodedata.normalize("NFC", f"{nfd_root}/2026/set1.flac")
 
 
 @pytest.mark.asyncio

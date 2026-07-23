@@ -442,6 +442,18 @@ async def trigger_scan(
             status_code=RENDERABLE_ALERT_STATUS,
         )
 
+    # phaze-g0if: `joined` is NFC-normalized (above), but `agent.scan_roots` is stored verbatim --
+    # nothing upstream (TriggerScanForm, the CLI's `add_agent`, or the JSONB column itself)
+    # normalizes it. A root configured in a non-NFC form (NFD is the norm for paths sourced from an
+    # HFS+/macOS agent, e.g. "Café" decomposed as "Cafe" + combining acute) then byte-differs from
+    # its own NFC-normalized self, so a raw-vs-raw membership check can pass while the
+    # NFC-vs-raw prefix check below it fails for the SAME root -- rejecting a legitimately
+    # configured, un-traversed scan. Normalize every `r` (and the membership check's left side) to
+    # NFC so the membership gate, the prefix gate, and the persisted `scan_path` (`joined`, already
+    # NFC) all agree on one normalization form.
+    scan_root_nfc = unicodedata.normalize("NFC", form.scan_root)
+    scan_roots_nfc = [unicodedata.normalize("NFC", r) for r in agent.scan_roots]
+
     # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
     # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +
     # subpath`` was validated against the prefix list, which allowed a partial
@@ -449,7 +461,7 @@ async def trigger_scan(
     # ``/data/music/foo`` even though ``/data`` itself was never configured. The
     # planning invariant documents ``scan_root rejected when not in selected
     # agent's scan_roots``; tighten the check to require literal membership.
-    if form.scan_root not in agent.scan_roots:
+    if scan_root_nfc not in scan_roots_nfc:
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
@@ -460,7 +472,7 @@ async def trigger_scan(
     # D-06 prefix validation: joined path must match (or descend from) one of
     # the agent's configured scan_roots. Strip trailing slash on roots so
     # `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.
-    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in agent.scan_roots):
+    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in scan_roots_nfc):
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
