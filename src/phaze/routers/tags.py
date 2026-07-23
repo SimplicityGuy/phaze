@@ -170,7 +170,10 @@ async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) 
     link_stmt = (
         select(DiscogsLink)
         .where(DiscogsLink.track_id.in_(track_ids), DiscogsLink.status == "accepted")
-        .order_by(DiscogsLink.confidence.desc())
+        # phaze-evn9: confidence is non-unique, so a tie left the pick arbitrary and unstable
+        # across queries. ``id`` tiebreaks equal confidence deterministically, mirroring the
+        # ``_get_latest_write_log`` / ``_get_write_log_to_undo`` pattern above.
+        .order_by(DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
         .limit(1)
     )
     link_result = await session.execute(link_stmt)

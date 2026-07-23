@@ -9,11 +9,12 @@ import uuid
 
 import pytest
 
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.models.tracklist import Tracklist
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
 
 
@@ -455,6 +456,71 @@ async def test_get_accepted_discogs_link_none_when_no_tracklist_version() -> Non
     got = await _get_accepted_discogs_link(session, uuid.uuid4())
     assert got is None
     session.execute.assert_awaited_once()  # only the version lookup ran
+
+
+@pytest.mark.asyncio
+async def test_get_accepted_discogs_link_confidence_tie_is_deterministic(session: AsyncSession) -> None:
+    """phaze-evn9: two accepted links tied on confidence must resolve to the SAME row every time.
+
+    Before the fix, ``.order_by(DiscogsLink.confidence.desc()).limit(1)`` had no secondary key, so
+    Postgres was free to return either tied row on any given query -- an operator viewing "the"
+    accepted link for a version could see it flip with no underlying data change. The ``id.desc()``
+    tiebreaker makes the pick stable; assert it repeatedly to guard against a re-introduced regression.
+    """
+    file_record, _ = await _create_executed_file(session)
+
+    tracklist_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    session.add(
+        Tracklist(
+            id=tracklist_id,
+            file_id=file_record.id,
+            external_id=f"tl-{uuid.uuid4().hex[:8]}",
+            source_url="https://www.1001tracklists.com/tracklist/tie/test.html",
+            source="1001tracklists",
+            status="matched",
+            match_confidence=90,
+            latest_version_id=version_id,
+        )
+    )
+    session.add(TracklistVersion(id=version_id, tracklist_id=tracklist_id, version_number=1))
+    await session.flush()
+
+    track_low_id = uuid.uuid4()
+    track_high_id = uuid.uuid4()
+    session.add_all(
+        [
+            TracklistTrack(id=track_low_id, version_id=version_id, position=1, artist="A", title="One"),
+            TracklistTrack(id=track_high_id, version_id=version_id, position=2, artist="B", title="Two"),
+        ]
+    )
+    await session.flush()
+
+    # Two DISTINCT tracks each carry one accepted link (the "one accepted per track" unique index
+    # forbids two accepted links on the SAME track), both tied at the same confidence.
+    link_a = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track_low_id,
+        discogs_release_id="1000",
+        confidence=0.9,
+        status="accepted",
+    )
+    link_b = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track_high_id,
+        discogs_release_id="2000",
+        confidence=0.9,
+        status="accepted",
+    )
+    session.add_all([link_a, link_b])
+    await session.commit()
+
+    expected = link_a if link_a.id > link_b.id else link_b
+
+    for _ in range(3):
+        got = await _get_accepted_discogs_link(session, file_record.id)
+        assert got is not None
+        assert got.id == expected.id, "the confidence tie must resolve to the same row on every query"
 
 
 @pytest.mark.asyncio
