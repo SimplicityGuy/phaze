@@ -685,6 +685,33 @@ async def test_generate_cue_buttons_guard_against_double_submit(client: AsyncCli
 
 
 @pytest.mark.asyncio
+async def test_generate_cue_success_on_cue_card_target_returns_preview_card(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-js16: a SUCCESSFUL approve from the v7 cue workspace must re-render #cue-card-{id}
+    with pipeline/partials/_cue_preview.html, not fall through to the legacy cue_row.html.
+
+    Before the fix, the success path forked only on ``HX-Target`` starting with ``tracklist-`` and
+    fell through to ``cue/partials/cue_row.html`` (root id ``cue-row-{id}``) for every other target
+    -- including the v7 workspace card's ``cue-card-{id}``, swapping legacy markup into the v7 grid
+    and losing the in-memory ``.cue`` preview.
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"cue-card-{tracklist.id}"},
+    )
+    assert response.status_code == 200
+    assert f'id="cue-card-{tracklist.id}"' in response.text, "the v7 preview card id must survive a successful approve"
+    assert f'id="cue-row-{tracklist.id}"' not in response.text, "the legacy cue_row.html markup must NOT be swapped in"
+    assert "APPROVE" in response.text, "the eligible card's APPROVE control must still be present (still eligible post-write)"
+
+
+@pytest.mark.asyncio
 async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch skips tracklists without timestamps."""
     _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")
