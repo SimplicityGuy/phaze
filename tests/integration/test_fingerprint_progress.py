@@ -161,3 +161,35 @@ async def test_get_fingerprint_progress_derives_from_output_tables(db_session: A
     # D-17: completed and failed are strict subsets of total (progress bar can never exceed 100%).
     assert progress["completed"] <= progress["total"]
     assert progress["failed"] <= progress["total"]
+
+
+async def test_get_fingerprint_progress_reads_one_statement_not_three(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-4fxw regression: total/completed/failed derive from ONE statement, not three.
+
+    Postgres READ COMMITTED (the engine sets no isolation level) gives each *statement* its
+    own snapshot even inside one transaction. The former implementation ran three independent
+    ``SELECT count(...)`` statements sharing a mutable denominator (``~dedup_resolved_clause()``)
+    -- a concurrent dedup resolve/undo committing between them could change the denominator
+    mid-read and break the documented ``completed ⊆ total`` / ``failed ⊆ total`` invariant (e.g.
+    a bulk undo deleting resolved-markers between the ``total`` and ``completed`` reads could make
+    ``completed`` exceed the ``total`` read moments earlier -- a >100% progress bar). Collapsing to
+    one statement with filtered (conditional) aggregates gives all three keys a single snapshot,
+    closing the race. This pins the collapse directly: exactly ONE ``session.execute`` call.
+    """
+    f_success = await _new_file(db_session, file_type="mp3")
+    await _add_fp(db_session, f_success, "audfprint", "success")
+
+    execute_calls = 0
+    original_execute = db_session.execute
+
+    async def _counting_execute(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        nonlocal execute_calls
+        execute_calls += 1
+        return await original_execute(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db_session, "execute", _counting_execute)
+
+    progress = await get_fingerprint_progress(db_session)
+
+    assert execute_calls == 1
+    assert progress == {"total": 1, "completed": 1, "failed": 0}
