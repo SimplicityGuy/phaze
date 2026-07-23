@@ -911,6 +911,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         # preserve the control-only boundary (tests/test_task_split.py).
         from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
         from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
+            _CLOUD_OWNED_FUNCTIONS,
             _awaiting_cloud_job_ids,
             _build_done_sets,
             _in_flight_cloud_job_ids,
@@ -934,7 +935,13 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
             stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
             if stage is None:
                 continue  # push_file / scan_live_set / controller rows are not enrich badges
-            if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight or _natural_id(row) in awaiting:
+            # phaze-fc2l: SCOPE both cloud exclusions to the functions the cloud_job owns
+            # (_CLOUD_OWNED_FUNCTIONS) -- of the three badge stages only ``process_file`` (analyze) is
+            # cloud-owned. Applying them unscoped over the function-agnostic ``_natural_id`` under-counted
+            # the fingerprint/metadata badge for a cloud-busy file, whose lost fingerprint/metadata rows
+            # recovery DOES re-drive (no cloud second owner). Keeps the badge in parity with recovery.
+            cloud_excluded = row.function in _CLOUD_OWNED_FUNCTIONS and (_natural_id(row) in in_flight or _natural_id(row) in awaiting)
+            if row.key in live or is_domain_completed(row, done_sets) or cloud_excluded:
                 continue
             out[stage] += 1
     return out

@@ -45,6 +45,7 @@ from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, get_live_job_keys, 
 from phaze.services.scheduling_ledger import get_ledger_rows
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import (
+    _CLOUD_OWNED_FUNCTIONS,
     _awaiting_cloud_job_ids,
     _build_done_sets,
     _in_flight_cloud_job_ids,
@@ -152,7 +153,11 @@ async def _recovery_candidate_counts(session: AsyncSession) -> dict[str, int]:
         stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
         if stage is None:
             continue
-        if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight or _natural_id(row) in awaiting:
+        # phaze-fc2l: cloud exclusions are SCOPED to the cloud-owned functions (only process_file among
+        # the badge stages), matching recover_orphaned_work -- a fingerprint/metadata row for a cloud-busy
+        # file still recovers, so the badge must count it.
+        cloud_excluded = row.function in _CLOUD_OWNED_FUNCTIONS and (_natural_id(row) in in_flight or _natural_id(row) in awaiting)
+        if row.key in live or is_domain_completed(row, done_sets) or cloud_excluded:
             continue
         out[stage] += 1
     return out
@@ -272,6 +277,46 @@ async def test_awaiting_cloud_held_file_is_not_orphaned(db_session: AsyncSession
     expected = await _recovery_candidate_counts(db_session)
 
     assert counts["analyze"] == 0
+    assert counts == expected
+
+
+async def test_awaiting_cloud_held_file_orphaned_fingerprint_still_counts(db_session: AsyncSession) -> None:
+    """phaze-fc2l: the cloud exclusion is SCOPED to cloud-owned functions -> a lost fingerprint of a cloud-busy file IS an orphan.
+
+    fingerprint_file is not one of the cloud-owned functions (only process_file among the badge stages
+    is), so the cloud callback/drain never re-drives it -- recover_orphaned_work DOES, and the badge must
+    count it rather than silently dropping it as a cloud-owned row. Guards the fc2l over-exclusion fix in
+    the badge and keeps badge/recovery parity.
+    MUTATION: applying the cloud exclusion UNSCOPED (over all functions) -> counts['fingerprint']==0 -> RED.
+    """
+    f = await _file(db_session)
+    await _ledger(db_session, "fingerprint", f)
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, backend_id=None, s3_key=None, status=CloudJobStatus.AWAITING.value))
+    await db_session.flush()
+
+    counts = await get_stage_orphan_counts(db_session)
+    expected = await _recovery_candidate_counts(db_session)
+
+    assert counts["fingerprint"] == 1
+    assert counts == expected
+
+
+async def test_in_flight_cloud_held_file_orphaned_metadata_still_counts(db_session: AsyncSession) -> None:
+    """phaze-fc2l: an in-flight cloud_job scopes out ONLY the analyze re-drive -> a lost metadata row of that file IS an orphan.
+
+    extract_file_metadata has no cloud second owner, so recovery re-drives it even when the file carries
+    an in-flight cloud_job; the badge must count it. Companion to the awaiting/fingerprint case for the
+    in_flight set + the metadata stage.
+    """
+    f = await _file(db_session)
+    await _ledger(db_session, "metadata", f)
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, backend_id=None, s3_key=None, status=CloudJobStatus.RUNNING.value))
+    await db_session.flush()
+
+    counts = await get_stage_orphan_counts(db_session)
+    expected = await _recovery_candidate_counts(db_session)
+
+    assert counts["metadata"] == 1
     assert counts == expected
 
 
