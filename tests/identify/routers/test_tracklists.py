@@ -832,6 +832,30 @@ async def test_approve_tracklist(session: AsyncSession, client: AsyncClient) -> 
 
 
 @pytest.mark.asyncio
+async def test_approve_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): approve_tracklist re-renders the card badge with the REAL track
+    count, not "0 tracks". The route fetches a bare ``Tracklist`` fresh from the DB -- unlike the
+    list renders, it never set ``_track_count`` on it -- and tracklist_card.html's badge falls back
+    to 0 whenever that dynamic attribute is undefined, falsely reading as if every track vanished.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=3)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+    assert "3 tracks" in response.text
+    assert "0 tracks" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/reject changes status to rejected."""
     tl = _make_tracklist(source="fingerprint", status="proposed")
@@ -843,6 +867,28 @@ async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> N
 
     await session.refresh(tl)
     assert tl.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): reject_tracklist re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=2)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject")
+    assert response.status_code == 200
+    assert "2 tracks" in response.text
+    assert "0 tracks" not in response.text
 
 
 @pytest.mark.asyncio
@@ -1364,6 +1410,30 @@ async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) ->
     # Controller task lands on the controller queue, never a per-agent queue.
     assert controller_queue.captured == [("scrape_and_store_tracklist", {"tracklist_id": str(tl.id)})]
     assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_rescrape_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): rescrape_tracklist re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=4)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    install_fake_queues(client)
+
+    response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    assert "4 tracks" in response.text
+    assert "0 tracks" not in response.text
 
 
 @pytest.mark.asyncio
@@ -2000,6 +2070,30 @@ async def test_match_discogs_enqueues_task(session: AsyncSession, client: AsyncC
     assert response.status_code == 200
     assert controller_queue.captured == [("match_tracklist_to_discogs", {"tracklist_id": str(tl.id)})]
     assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): match_discogs re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=5)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    install_fake_queues(client)
+
+    response = await client.post(f"/tracklists/{tl.id}/match-discogs")
+    assert response.status_code == 200
+    assert "5 tracks" in response.text
+    assert "0 tracks" not in response.text
 
 
 @pytest.mark.asyncio

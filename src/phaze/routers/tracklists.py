@@ -91,6 +91,24 @@ async def _has_candidates(session: AsyncSession, tracklist: Tracklist) -> bool:
     return (result.scalar() or 0) > 0
 
 
+async def _attach_track_count(session: AsyncSession, tracklist: Tracklist) -> None:
+    """Set ``tracklist._track_count`` so tracklist_card.html's badge reads the real count.
+
+    tracklist_card.html renders ``{{ tracklist._track_count if tracklist._track_count is defined
+    else 0 }} tracks`` -- a dynamic, non-mapped attribute (phaze-y7ez) that the list renders
+    (list_tracklists / _render_tracklist_list) populate on every ORM object they hand to the
+    template, but that a bare ``Tracklist`` fetched fresh by a single-card mutation route lacks.
+    Every route that re-renders tracklist_card.html as its response MUST call this first, or the
+    swapped-in card falsely reads "0 tracks" regardless of the real count (indistinguishable from
+    data loss to the operator).
+    """
+    if tracklist.latest_version_id:
+        count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tracklist.latest_version_id))
+        tracklist._track_count = count_result.scalar() or 0  # type: ignore[attr-defined]
+    else:
+        tracklist._track_count = 0  # type: ignore[attr-defined]
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
@@ -575,6 +593,8 @@ async def rescrape_tracklist(
         await routed.queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
     has_candidates = await _has_candidates(session, tracklist) if tracklist else False
+    if tracklist:
+        await _attach_track_count(session, tracklist)
 
     return templates.TemplateResponse(
         request=request,
@@ -936,6 +956,8 @@ async def approve_tracklist(
         if fr and await is_applied(session, fr.id):
             cue_version = _get_cue_version(fr.current_path)
 
+    await _attach_track_count(session, tracklist)
+
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
@@ -957,6 +979,8 @@ async def reject_tracklist(
 
     tracklist.status = "rejected"
     await session.commit()
+
+    await _attach_track_count(session, tracklist)
 
     return templates.TemplateResponse(
         request=request,
@@ -1030,6 +1054,8 @@ async def match_discogs(
 
     routed = await resolve_queue_for_task("match_tracklist_to_discogs", request.app.state, session)
     await routed.queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
+
+    await _attach_track_count(session, tracklist)
 
     return templates.TemplateResponse(
         request=request,
