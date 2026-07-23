@@ -979,6 +979,91 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
+# --- phaze-mits: other_agent_rows are fileserver-local -> scope the agent pick to kind="fileserver" ----
+#
+# The non-push agent partition (process_file / extract_file_metadata / fingerprint_file / scan_live_set /
+# s3_upload) is ALL fileserver-local. An UNSCOPED select_active_agent(session) orders by last_seen_at DESC
+# across ALL kinds, so in a mixed deployment (fileserver + heartbeating compute agent) a per-run heartbeat
+# race could pick the compute agent -- parking fingerprint/meta rows on consumer-less compute lanes and
+# FileNotFounding local process_file into terminal ANALYSIS_FAILED. This mirrors the already-hardened LIVE
+# enqueue path (phaze-5r8f: enqueue_router.resolve_queue_for_task pins kind="fileserver").
+
+
+@pytest.mark.asyncio
+async def test_orphaned_agent_rows_route_to_fileserver_not_a_racing_compute_agent(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mits: fileserver-local agent rows pin to the fileserver even when a compute agent is more-recently-seen.
+
+    Mixed deployment: a fileserver AND a compute agent are both online, with the compute agent the single
+    most-recently-seen non-revoked agent (an unscoped ``last_seen_at DESC`` pick would choose it). The
+    ``other_agent_rows`` partition (here fingerprint_file + process_file, both fileserver-local) must route
+    to the FILESERVER's lanes regardless of the heartbeat race -- never onto the media-less compute agent's
+    consumer-less ``fingerprint`` lane or its FileNotFound-ing ``analyze`` lane.
+    MUTATION: dropping the ``kind="fileserver"`` scope re-routes onto ``cloud-*`` -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    # A fileserver, then a STRICTLY more-recently-seen compute agent (wins an unscoped last_seen_at pick).
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    compute = await seed_active_agent(session, agent_id="cloud", kind="compute")
+    compute.last_seen_at = datetime.now(UTC) + timedelta(minutes=1)
+    session.add(compute)
+    await session.commit()
+
+    fp_file = _make_file()
+    proc_file = _make_file()
+    session.add_all([fp_file, proc_file])
+    await session.commit()
+    await _seed_ledger(session, function="fingerprint_file", file_id=fp_file.id)
+    await _seed_ledger(session, function="process_file", file_id=proc_file.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # Both fileserver-local rows land on the FILESERVER's lanes; the compute agent is NEVER addressed.
+    assert "nox-fingerprint" in router.queues
+    assert "nox-analyze" in router.queues
+    assert not any(name.startswith("cloud") for name in router.queues)
+    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mits: with NO fileserver online, fileserver-local rows skip with a WARNING (never a compute misroute).
+
+    The kind-scoped pick raises ``NoActiveAgentError`` when only a compute agent heartbeats, so the rows
+    are left for a later recovery once a fileserver returns -- exactly the cold-boot skip posture, never a
+    silent enqueue onto a consumer-less compute lane.
+    MUTATION: dropping the ``kind="fileserver"`` scope enqueues onto ``cloud-fingerprint`` -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="cloud", kind="compute")  # ONLY a compute agent online
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # No fileserver -> the row is skipped (no queue touched), never routed to the compute agent.
+    assert router.queues == {}
+    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
+
+
 # --- Predicate totality ----------------------------------------------------------------
 
 
@@ -1116,7 +1201,7 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
     assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
     assert router.queue_for_calls == []
-    assert "no active agent" in caplog.text.lower()
+    assert "no fileserver agent" in caplog.text.lower()
 
 
 # --- Integration: live saq_jobs --------------------------------------------------------
@@ -1382,12 +1467,14 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
 
     Only {UPLOADING, UPLOADED, SUBMITTED, RUNNING} are in-flight; a spilled/terminal FAILED row means
     no backend owns the re-drive anymore, so a still-orphaned process_file row must recover (here to the
-    only online agent, a compute agent). The exclusion is by in-flight status, not by row presence.
+    online FILESERVER). The exclusion is by in-flight status, not by row presence. phaze-mits: the
+    fileserver-local process_file row routes to the FILESERVER (not a compute agent) -- the online agent is
+    seeded as kind="fileserver" so this exercises the cloud_job status exclusion, not the agent-kind scope.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = _make_file()
     session.add(held)
     await session.commit()
@@ -1398,8 +1485,8 @@ async def test_single_owner_terminal_cloud_job_does_not_block_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # Terminal cloud_job -> no backend owner -> the process_file row recovers onto the only online agent.
-    assert "cloud-analyze" in router.queues
+    # Terminal cloud_job -> no backend owner -> the process_file row recovers onto the online fileserver.
+    assert "nox-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -1412,12 +1499,13 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     """SCHED-05 guard: an orphaned process_file row with NO cloud_job still recovers -- no regression.
 
     A genuinely-orphaned file (no cloud_job row was ever written) is not owned by any backend callback,
-    so recovery must still re-drive its process_file row (here to the only online agent) -- no regression.
+    so recovery must still re-drive its process_file row (here to the online FILESERVER) -- no regression.
+    phaze-mits: the fileserver-local process_file row routes to the FILESERVER agent.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="cloud", kind="compute")
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
     held = _make_file()
     session.add(held)
     await session.commit()
@@ -1428,8 +1516,115 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert "cloud-analyze" in router.queues
+    assert "nox-analyze" in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
+# --- phaze-fc2l: the cloud exclusions are SCOPED to the analyze/push functions the cloud_job OWNS -----
+#
+# ``_natural_id`` is function-agnostic (payload['file_id'] for EVERY file-keyed row), so the SCHED-05
+# in-flight and 83-06 awaiting exclusions -- built as file-id sets -- were silently dropping an orphaned
+# fingerprint_file / extract_file_metadata / scan_live_set / search_tracklist row for any file that merely
+# also carried a cloud_job. The cloud callback/drain re-drives ONLY process_file/push_file/s3_upload/
+# submit_cloud_job; the other stages have no cloud second owner, so scoping the exclusions to
+# ``_CLOUD_OWNED_FUNCTIONS`` restores their recovery while keeping the analyze/push single-owner + the
+# CLOUDROUTE-02 local-analysis guard (process_file stays excluded) intact.
+
+
+@pytest.mark.asyncio
+async def test_in_flight_cloud_job_does_not_block_fingerprint_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-fc2l: a file with an in-flight cloud_job still recovers its orphaned fingerprint_file row.
+
+    The in-flight cloud_job owns only the analyze/push re-drive; fingerprint has no cloud second owner, so
+    its lost row MUST recover (onto the fileserver's fingerprint lane) -- the exclusion must not over-reach.
+    MUTATION: reverting to the unscoped exclusion drops the fingerprint row -> reenqueued 0 -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_cloud_job(session, f.id, status=CloudJobStatus.SUBMITTED)  # in-flight analyze/push owner
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # The fingerprint row recovers onto the fileserver's fingerprint lane despite the in-flight cloud_job.
+    assert "nox-fingerprint" in router.queues
+    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_awaiting_cloud_job_does_not_block_fingerprint_recovery(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-fc2l: a file HELD awaiting cloud still recovers its orphaned fingerprint_file row.
+
+    The stage_cloud_window drain owns only the held file's analyze re-drive; a lost fingerprint has no
+    cloud owner and MUST recover. The companion of the in-flight case for the awaiting set.
+    MUTATION: reverting to the unscoped awaiting exclusion drops the fingerprint row -> reenqueued 0 -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_awaiting_cloud_job(session, f.id)  # held long file -> drain owns ONLY its analyze re-drive
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert "nox-fingerprint" in router.queues
+    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_awaiting_cloud_job_still_excludes_the_process_file_row(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-fc2l guard: scoping does NOT weaken the analyze exclusion -- a held file's process_file row stays excluded.
+
+    process_file IS a cloud-owned function, so the CLOUDROUTE-02 / single-owner guarantee is unchanged:
+    a held awaiting-cloud file's process_file row is still excluded (the drain owns local analyze), never
+    routed to the fileserver -- co-seeded here alongside a fingerprint row that DOES recover, proving the
+    per-function scoping splits the two correctly.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox", kind="fileserver")
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_awaiting_cloud_job(session, f.id)
+    await _seed_ledger(session, function="process_file", file_id=f.id)  # cloud-owned -> excluded
+    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)  # not cloud-owned -> recovers
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # process_file stays drain-owned (never analyzed locally); fingerprint recovers.
+    assert "nox-analyze" not in router.queues
+    assert result["stages"]["process_file"]["reenqueued"] == 0
+    assert "nox-fingerprint" in router.queues
+    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
 
 
 # --- Phase 80 (READ-03): SC-2 / SC-3 / D-10 both-cells / D-11 regression cases ----------------------
