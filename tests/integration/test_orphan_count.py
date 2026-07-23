@@ -44,7 +44,14 @@ from phaze.models.stage_skip import StageSkip
 from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, get_live_job_keys, get_stage_orphan_counts
 from phaze.services.scheduling_ledger import get_ledger_rows
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
-from phaze.tasks.reenqueue import _build_done_sets, _in_flight_cloud_job_ids, _ledger_fids, _natural_id, is_domain_completed
+from phaze.tasks.reenqueue import (
+    _awaiting_cloud_job_ids,
+    _build_done_sets,
+    _in_flight_cloud_job_ids,
+    _ledger_fids,
+    _natural_id,
+    is_domain_completed,
+)
 from tests.db_guard import integration_dsns, require_test_database
 
 
@@ -128,22 +135,24 @@ async def _ledger(session: AsyncSession, stage: str, file: FileRecord) -> str:
 async def _recovery_candidate_counts(session: AsyncSession) -> dict[str, int]:
     """Compute the per-enrich-stage recovery-candidate counts INLINE the way recover_orphaned_work does.
 
-    Uses recovery's OWN public predicate (``is_domain_completed`` + ``_build_done_sets`` +
-    ``_in_flight_cloud_job_ids``) over the SAME session so the assertion is a real no-drift proof, not a
-    restatement of the helper's internals. ``get_live_job_keys`` degrades to an empty set when the
-    SAQ-owned ``saq_jobs`` table is absent (the test DB only has the ORM tables), which is correct: no
-    seeded row is live.
+    Uses recovery's OWN public predicate (``is_domain_completed`` + ``_build_done_sets`` + BOTH cloud
+    exclusions ``_in_flight_cloud_job_ids`` and ``_awaiting_cloud_job_ids``) over the SAME session so the
+    assertion is a real no-drift proof, not a restatement of the helper's internals. ``get_live_job_keys``
+    degrades to an empty set when the SAQ-owned ``saq_jobs`` table is absent (the test DB only has the ORM
+    tables), which is correct: no seeded row is live. phaze-w0yr: the ``awaiting`` fourth exclusion mirrors
+    recover_orphaned_work's 83-06 filter -- omitting it re-opened the badge drift this test guards.
     """
     out = {"metadata": 0, "analyze": 0, "fingerprint": 0}
     rows = await get_ledger_rows(session)
     live = await get_live_job_keys(session)
     done_sets = await _build_done_sets(session, _ledger_fids(rows))
     in_flight = await _in_flight_cloud_job_ids(session)
+    awaiting = await _awaiting_cloud_job_ids(session)
     for row in rows:
         stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
         if stage is None:
             continue
-        if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
+        if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight or _natural_id(row) in awaiting:
             continue
         out[stage] += 1
     return out
@@ -243,6 +252,27 @@ async def test_in_flight_cloud_owned_file_is_not_orphaned(db_session: AsyncSessi
     counts = await get_stage_orphan_counts(db_session)
 
     assert counts["analyze"] == 0
+
+
+async def test_awaiting_cloud_held_file_is_not_orphaned(db_session: AsyncSession) -> None:
+    """phaze-w0yr: a file HELD awaiting cloud (cloud_job status='awaiting') is drain-owned -> excluded, matching recovery.
+
+    'awaiting' is deliberately NOT in _in_flight_cloud_job_ids' IN_FLIGHT set, so the pre-fix badge (which
+    subtracted only in_flight) counted such files as phantom orphans that Recover could never clear -- the
+    exact badge/recovery drift (the file is excluded from recover_orphaned_work's replay set via
+    _awaiting_cloud_job_ids). The badge and the inline recovery-candidate re-derivation must BOTH read 0.
+    MUTATION: dropping the awaiting exclusion in _compute_stage_orphan_counts -> counts['analyze']==1 -> RED.
+    """
+    f = await _file(db_session)
+    await _ledger(db_session, "analyze", f)
+    db_session.add(CloudJob(id=uuid.uuid4(), file_id=f.id, backend_id=None, s3_key=None, status=CloudJobStatus.AWAITING.value))
+    await db_session.flush()
+
+    counts = await get_stage_orphan_counts(db_session)
+    expected = await _recovery_candidate_counts(db_session)
+
+    assert counts["analyze"] == 0
+    assert counts == expected
 
 
 async def test_degrades_to_zero_and_session_stays_usable(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
