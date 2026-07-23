@@ -12,7 +12,10 @@ Design notes:
   - The token wire format and hashing are reused verbatim from the HTTP auth
     layer (`phaze.routers.agent_auth.hash_token`); do NOT reimplement sha256.
   - `AGENT_ID_RE` mirrors the `agents.id_charset` CheckConstraint exactly. Ids
-    are validated BEFORE any DB access so an invalid id never opens a session.
+    (and the effective name, explicit or derived) are validated -- including
+    their column-width bounds (`String(64)`/`String(128)`) -- BEFORE any DB
+    access so an invalid id/name never opens a session and never surfaces as
+    a raw driver traceback.
   - The minted token is the only secret this module handles and is emitted via
     `print()` only -- it is NEVER passed to a logger.
   - Subparsers are used so future `agents` subcommands (list/revoke) slot in
@@ -53,15 +56,39 @@ AGENT_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 TOKEN_PREFIX = "phaze_agent_"  # noqa: S105  # nosec B105 — public wire prefix, not a secret
 """Wire-token prefix (phase-25 D-01). Hashed prefix-included by `hash_token`."""
 
+MAX_AGENT_ID_LENGTH = 64
+"""Mirrors `Agent.id` (`String(64)`, models/agent.py). Must be checked BEFORE any DB access —
+a length that only Postgres rejects surfaces as an uncaught DataError, not the CLI's friendly
+error-plus-exit-1 contract (StringDataRightTruncation is a DBAPIError sibling of IntegrityError,
+not a subclass, so the existing `except IntegrityError` around the insert does not catch it)."""
+
+MAX_AGENT_NAME_LENGTH = 128
+"""Mirrors `Agent.name` (`String(128)`, models/agent.py). Same pre-DB rationale as
+:data:`MAX_AGENT_ID_LENGTH` — applies to both an explicit `--name` and the derived/titleized
+name (`agent_id.replace("-", " ").title()`), since titleizing never shortens the string."""
+
 
 def validate_agent_id(agent_id: str) -> None:
-    """Raise ``ValueError`` unless ``agent_id`` fully matches :data:`AGENT_ID_RE`."""
+    """Raise ``ValueError`` unless ``agent_id`` matches :data:`AGENT_ID_RE` and fits the
+    `agents.id` column width (:data:`MAX_AGENT_ID_LENGTH`)."""
     if not AGENT_ID_RE.fullmatch(agent_id):
         msg = (
             f"invalid agent id {agent_id!r}: must match {AGENT_ID_RE.pattern} "
             "(lowercase letters/digits, single hyphens between segments, no "
             "leading/trailing hyphen)"
         )
+        raise ValueError(msg)
+    if len(agent_id) > MAX_AGENT_ID_LENGTH:
+        msg = f"invalid agent id {agent_id!r}: must be at most {MAX_AGENT_ID_LENGTH} characters (got {len(agent_id)})"
+        raise ValueError(msg)
+
+
+def validate_agent_name(name: str) -> None:
+    """Raise ``ValueError`` if ``name`` exceeds the `agents.name` column width
+    (:data:`MAX_AGENT_NAME_LENGTH`). Applies equally to an explicit ``--name`` and the
+    id-derived/titleized default, so callers must run this on the *effective* name."""
+    if len(name) > MAX_AGENT_NAME_LENGTH:
+        msg = f"invalid agent name {name!r}: must be at most {MAX_AGENT_NAME_LENGTH} characters (got {len(name)})"
         raise ValueError(msg)
 
 
@@ -324,6 +351,7 @@ def _main_agents_add(args: argparse.Namespace) -> int:
     # with no roots still fails (validate_scan_roots rejects the empty list path).
     try:
         validate_agent_id(agent_id)
+        validate_agent_name(name)
         if kind == "fileserver":
             if not scan_roots:
                 msg = "--scan-roots is required for --kind fileserver (at least one absolute path)"
