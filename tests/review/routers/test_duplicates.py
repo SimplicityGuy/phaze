@@ -833,6 +833,14 @@ _MALFORMED_ENVELOPES = (
     "null",  # valid JSON, not a container at all
     "42",  # valid JSON scalar
     '"a string"',  # valid JSON string -- iterating it would yield characters
+    # phaze-xe5a: nested deep enough to blow the interpreter's recursion limit inside json.loads
+    # itself. This is RecursionError, not JSONDecodeError -- a sibling failure the guard didn't
+    # catch before the fix, so it escaped as a 500 instead of the 422 every other envelope failure
+    # here gets. Verified in this repo's Python 3.14.5 venv: `"[" * 2000` only raises
+    # JSONDecodeError ("Expecting value") well before the recursion limit; the C scanner needs
+    # ~50k+ levels of unclosed nesting to actually hit RecursionError, so 100_000 is used here to
+    # reliably reproduce the failure class rather than the specific (env-dependent) threshold.
+    "[" * 100_000,
 )
 
 

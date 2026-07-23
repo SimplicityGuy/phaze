@@ -52,6 +52,18 @@ def test_valid_json_of_the_wrong_container_raises_422(raw: str) -> None:
     assert "must be a JSON array" in str(exc_info.value.detail)
 
 
+def test_deeply_nested_input_raises_422_not_recursion_error() -> None:
+    """phaze-xe5a: json.loads raises RecursionError (not JSONDecodeError) on deeply nested input --
+    a sibling of ValueError/JSONDecodeError that escaped the guard's original except clause as an
+    unhandled 500. `"[" * 2000` (the originally reported repro) only raises JSONDecodeError in this
+    interpreter; 100_000 reliably crosses the recursion limit instead."""
+    with pytest.raises(HTTPException) as exc_info:
+        parse_json_array_payload("[" * 100_000, field="file_states")
+
+    assert exc_info.value.status_code == MALFORMED_PAYLOAD_STATUS
+    assert "file_states" in str(exc_info.value.detail)
+
+
 def test_error_detail_names_the_offending_field() -> None:
     """A client posting several form fields must be able to tell which one it got wrong."""
     with pytest.raises(HTTPException) as exc_info:

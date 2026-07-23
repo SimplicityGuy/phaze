@@ -180,7 +180,8 @@ def parse_json_array_payload(raw: str, *, field: str) -> list[Any]:
         The decoded list. Elements are ``Any`` and are NOT guaranteed to be dicts.
 
     Raises:
-        HTTPException: ``422`` if ``raw`` is not valid JSON, or decodes to anything but an array.
+        HTTPException: ``422`` if ``raw`` is not valid JSON, decodes to anything but an array, or
+            is nested deep enough to blow the interpreter's recursion limit.
     """
     try:
         parsed = json.loads(raw)
@@ -188,6 +189,16 @@ def parse_json_array_payload(raw: str, *, field: str) -> list[Any]:
         raise HTTPException(
             status_code=MALFORMED_PAYLOAD_STATUS,
             detail=f"{field} is not valid JSON: {exc.msg}",
+        ) from exc
+    except RecursionError as exc:
+        # CPython's json parser (C scanner and pure-Python fallback alike) raises RecursionError,
+        # not JSONDecodeError, once nesting exceeds the interpreter's recursion limit -- e.g.
+        # `"[" * 50000`. RecursionError is not a ValueError/JSONDecodeError subclass, so it is not
+        # caught above; without this arm it escapes as a 500, defeating rule 1 (envelope failures
+        # are 422, never a bare parse left to fail unguarded).
+        raise HTTPException(
+            status_code=MALFORMED_PAYLOAD_STATUS,
+            detail=f"{field} is nested too deeply to parse",
         ) from exc
 
     if not isinstance(parsed, list):
