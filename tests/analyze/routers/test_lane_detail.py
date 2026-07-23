@@ -185,6 +185,85 @@ async def test_queue_depths_degrade_to_zero_without_app_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# phaze-tbps: get_lane_queue_depths must key an agent-backed COMPUTE lane's queue lookup
+# off the backend's agent_ref, not its registry id -- the two are independent fields, and
+# real dispatch (routers/agent_push.py) enqueues to queue_for(agent_ref, lane). Passing the
+# raw id builds/counts a queue no producer writes and no worker consumes: SAQ.count returns
+# 0 (not an error), so a fully saturated lane renders indistinguishable from idle.
+# ---------------------------------------------------------------------------
+
+_COMPUTE_ID_NE_AGENT_REF_TOML = """
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[backends]]
+kind = "compute"
+id = "oci-a1"
+rank = 30
+cap = 2
+agent_ref = "compute-agent-01"
+scratch_dir = "/srv/scratch"
+push_host = "oci-a1.push.example"
+"""
+
+
+@pytest.mark.asyncio
+async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-tbps acceptance: id != agent_ref, jobs queued on the agent's lanes -> real depths, not zeros.
+
+    Regression fixture for the confirmed defect: a lane-detail read for a compute backend whose
+    registry ``id`` ("oci-a1") differs from its bound ``agent_ref`` ("compute-agent-01") must read
+    the depths off the agent_ref's queues (where real dispatch actually enqueues), not the id's
+    (a queue no producer ever writes to, which silently reads 0 -- "saturated lane looks idle").
+    """
+    from types import SimpleNamespace
+
+    from phaze.services.backends import get_lane_queue_depths
+    from tests._queue_fakes import FakeTaskRouter
+
+    backends_toml_env(_COMPUTE_ID_NE_AGENT_REF_TOML)
+
+    router = FakeTaskRouter()
+    # Seed depths on the agent_ref's lanes -- the queues real dispatch actually writes to.
+    router.set_counts("compute-agent-01", lane="analyze", queued=3, active=2)
+    router.set_counts("compute-agent-01", lane="fingerprint", queued=1, active=0)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_lane_queue_depths(app_state, "oci-a1")
+
+    assert depths["analyze"] == 5, "a saturated agent_ref lane must not read as idle (all zeros)"
+    assert depths["fingerprint"] == 1
+    assert depths["meta"] == 0
+    assert depths["io"] == 0
+    # The queue lookup must have used agent_ref, never the raw backend id.
+    assert "compute-agent-01" in router.queue_for_calls
+    assert "oci-a1" not in router.queue_for_calls
+
+
+@pytest.mark.asyncio
+async def test_queue_depths_local_lane_keeps_backend_id_unresolved(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """Regression guard: a local/non-compute id is NOT run through agent_ref resolution -- behavior preserved."""
+    from types import SimpleNamespace
+
+    from phaze.services.backends import get_lane_queue_depths
+    from tests._queue_fakes import FakeTaskRouter
+
+    backends_toml_env(_COMPUTE_ID_NE_AGENT_REF_TOML)
+
+    router = FakeTaskRouter()
+    router.set_counts("local", lane="analyze", queued=4, active=1)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_lane_queue_depths(app_state, "local")
+
+    assert depths["analyze"] == 5
+    assert "local" in router.queue_for_calls
+
+
+# ---------------------------------------------------------------------------
 # Task 2: GET /pipeline/lanes/{backend_id} endpoint + _lane_detail.html body.
 # ---------------------------------------------------------------------------
 

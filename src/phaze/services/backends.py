@@ -1189,16 +1189,42 @@ async def get_lane_queue_depths(app_state: Any, backend_id: str) -> dict[str, in
     """Return per-lane-tier queue depth ``{analyze, fingerprint, meta, io}`` for a lane's backing agent.
 
     Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
-    ``count("queued") + count("active")`` on the ``phaze-agent-<backend_id>-<lane>`` Queue. Only the
+    ``count("queued") + count("active")`` on the ``phaze-agent-<QUEUE_KEY>-<lane>`` Queue. Only the
     ``queued`` / ``active`` kinds are read (scheduled/cron jobs excluded). Every tier is isolated in its
     own ``try/except -> 0`` so a missing ``app.state.task_router`` (the test lifespan-skip) or a broker
     hiccup degrades that tier to 0 and NEVER 500s the 5s tick (D-00b). Bounded: one count pair per tier,
     no corpus scan. A kueue/unattributed lane whose id names no live agent queue simply reads 0s.
+
+    phaze-tbps: ``AgentTaskRouter.queue_for``'s first param is an AGENT id
+    (``phaze-agent-<agent_id>-<lane>``, ``agent_task_router.py``), NOT a ``ComputeBackend.id`` -- the two
+    are independent fields (``config_backends.py``'s per-variant validator only forbids duplicate
+    ``agent_ref``s, never couples ``id`` to it) and real dispatch keys off ``agent_ref``
+    (``routers/agent_push.py`` enqueues ``process_file`` to ``queue_for(backend.agent_ref, "analyze")``;
+    :meth:`ComputeAgentBackend._agent_ref` is the authoritative binding). Passing the raw ``backend_id``
+    for a registry entry with ``id != agent_ref`` (the documented ``docs/cloud-burst.md`` shape) builds
+    and counts a queue no producer writes and no worker consumes -- SAQ returns 0 (not an error), so a
+    fully saturated lane renders indistinguishable from idle. Resolve THIS backend id through
+    :func:`resolve_compute_backend` first: a ``kind == "compute"`` hit resolves to its bound
+    ``agent_ref`` (the queue key real dispatch actually uses); anything else (local/kueue, or an
+    unresolvable id) falls back to the raw ``backend_id`` unchanged -- current behavior for those lanes
+    is preserved exactly. The resolution itself is guarded the same D-00b way as the per-tier reads: a
+    settings/registry hiccup degrades to the raw ``backend_id`` rather than raising into the 5s tick.
     """
+    queue_key = backend_id
+    try:
+        cfg = cast("ControlSettings", get_settings())
+        compute_backend = resolve_compute_backend(cfg, backend_id)
+        if compute_backend is not None:
+            agent_ref = compute_backend.agent_ref
+            if agent_ref:
+                queue_key = agent_ref
+    except Exception:
+        logger.warning("lane_queue_agent_ref_resolution_degraded", backend_id=backend_id, exc_info=True)
+
     depths: dict[str, int] = dict.fromkeys(LANES, 0)
     for lane in LANES:
         try:
-            queue = app_state.task_router.queue_for(backend_id, lane)
+            queue = app_state.task_router.queue_for(queue_key, lane)
             depths[lane] = await queue.count("queued") + await queue.count("active")
         except Exception:
             depths[lane] = 0
