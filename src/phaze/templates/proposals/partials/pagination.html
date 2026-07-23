@@ -45,7 +45,7 @@
             {% endif %}
 
             {# Pages around current #}
-            {% for p in range([current_page - 1, 2]|max, [current_page + 2, total_pages]|min + 1) %}
+            {% for p in range([current_page - 1, 2]|max, [current_page + 2, total_pages - 1]|min + 1) %}
                 <button
                     hx-get="/proposals/?page={{ p }}&status={{ current_status }}&q={{ search_query | urlencode }}&sort={{ current_sort }}&order={{ current_order }}&page_size={{ pagination.page_size }}"
                     hx-target="#proposal-list-container"

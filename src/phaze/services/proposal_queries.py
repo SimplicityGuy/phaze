@@ -181,6 +181,14 @@ async def get_proposals_page(
     count_result = await session.execute(count_base)
     total = count_result.scalar_one()
 
+    # Clamp the requested page to [1, total_pages] BEFORE it reaches OFFSET (phaze-33sx). An
+    # out-of-range page (e.g. a stale bookmark after a bulk approve/reject shrank the pending
+    # set) must render the last real page instead of an empty one with an inverted
+    # `Pagination.start > Pagination.end` range -- mirrors the `total_pages` math `Pagination`
+    # itself uses so the clamp and the property agree.
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
+    page = min(max(page, 1), total_pages)
+
     # Paginate
     base = base.offset((page - 1) * page_size).limit(page_size)
 
