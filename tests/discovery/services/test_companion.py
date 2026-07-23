@@ -3,9 +3,10 @@
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.services.companion import associate_companions
@@ -16,13 +17,14 @@ def _make_file(
     file_type: str,
     sha256_hash: str | None = None,
     file_size: int = 1000,
+    agent_id: str = "test-fileserver",
 ) -> FileRecord:
     """Helper to create a FileRecord with sensible defaults."""
     if sha256_hash is None:
         sha256_hash = uuid.uuid4().hex + uuid.uuid4().hex[:32]  # 64 hex chars
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
-        agent_id="test-fileserver",
+        agent_id=agent_id,
         id=uuid.uuid4(),
         sha256_hash=sha256_hash,
         original_path=original_path,
@@ -130,6 +132,129 @@ async def test_companions_link_only_to_own_dir(session: AsyncSession) -> None:
     # No cross-directory links
     assert (comp_a.id, media_b.id) not in link_pairs
     assert (comp_b.id, media_a.id) not in link_pairs
+
+
+@pytest.mark.asyncio
+async def test_concurrent_run_that_already_linked_the_pair_does_not_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Idempotent under concurrency (phaze-u6ml): the unlinked-companion read is a
+    snapshot, so a concurrent POST /associate computes the same (companion, media)
+    pairs and commits them first. Simulate that interleaving by injecting the
+    conflicting FileCompanion row immediately after the snapshot read; the run must
+    skip the already-inserted pair (first-writer-wins) instead of raising
+    IntegrityError against uq_file_companions_pair and rolling back the batch."""
+    media = _make_file("/music/album/track.mp3", "mp3")
+    comp = _make_file("/music/album/cover.jpg", "jpg")
+    session.add_all([media, comp])
+    await session.flush()
+
+    real_execute = session.execute
+    injected = False
+
+    async def execute_with_race(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal injected
+        result = await real_execute(stmt, *args, **kwargs)
+        if not injected:
+            # First statement executed is the unlinked-companion snapshot read:
+            # right after it, the "other request" commits the identical pair.
+            injected = True
+            await real_execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=comp.id, media_id=media.id))
+        return result
+
+    monkeypatch.setattr(session, "execute", execute_with_race)
+
+    count = await associate_companions(session)
+
+    # The pair already existed by insert time, so nothing new was inserted --
+    # the documented idempotent no-op, not an IntegrityError/HTTP 500.
+    assert count == 0
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert len(links) == 1
+    assert (links[0].companion_id, links[0].media_id) == (comp.id, media.id)
+
+
+@pytest.mark.asyncio
+async def test_partial_overlap_with_concurrent_run_inserts_only_missing_pairs(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a concurrent run already linked SOME of the computed pairs, the
+    surviving run inserts only the missing ones and counts only those
+    (phaze-u6ml: one conflicting row must not roll back the whole batch)."""
+    media1 = _make_file("/music/album/track1.mp3", "mp3")
+    media2 = _make_file("/music/album/track2.flac", "flac")
+    comp = _make_file("/music/album/cover.jpg", "jpg")
+    session.add_all([media1, media2, comp])
+    await session.flush()
+
+    real_execute = session.execute
+    injected = False
+
+    async def execute_with_race(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal injected
+        result = await real_execute(stmt, *args, **kwargs)
+        if not injected:
+            injected = True
+            await real_execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=comp.id, media_id=media1.id))
+        return result
+
+    monkeypatch.setattr(session, "execute", execute_with_race)
+
+    count = await associate_companions(session)
+
+    assert count == 1
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert {(link.companion_id, link.media_id) for link in links} == {
+        (comp.id, media1.id),
+        (comp.id, media2.id),
+    }
+
+
+@pytest.mark.asyncio
+async def test_companion_does_not_link_to_other_agents_media_at_same_path(session: AsyncSession) -> None:
+    """A companion must link only to media on ITS OWN agent (phaze-vpig).
+
+    original_path is only unique per agent (uq_files_agent_id_original_path), so two
+    fileserver agents can hold files at the identical directory path. A companion on
+    agent A must not link to agent B's media just because the paths collide."""
+    session.add(Agent(id="test-fileserver-b", name="test-fileserver-b", kind="fileserver", scan_roots=[]))
+    await session.flush()
+
+    media_a = _make_file("/data/music/coachella24/set.mp3", "mp3")
+    comp_a = _make_file("/data/music/coachella24/set.cue", "cue")
+    media_b = _make_file("/data/music/coachella24/set.mp3", "mp3", agent_id="test-fileserver-b")
+    session.add_all([media_a, comp_a, media_b])
+    await session.flush()
+
+    count = await associate_companions(session)
+
+    assert count == 1
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert {(link.companion_id, link.media_id) for link in links} == {(comp_a.id, media_a.id)}
+
+
+@pytest.mark.asyncio
+async def test_companions_on_two_agents_each_link_to_own_agents_media(session: AsyncSession) -> None:
+    """Companions in the same-named directory on two agents group per agent and each
+    link only to their own agent's media (phaze-vpig: the grouping side of the fix)."""
+    session.add(Agent(id="test-fileserver-b", name="test-fileserver-b", kind="fileserver", scan_roots=[]))
+    await session.flush()
+
+    media_a = _make_file("/data/music/show1/set.mp3", "mp3")
+    comp_a = _make_file("/data/music/show1/cover.jpg", "jpg")
+    media_b = _make_file("/data/music/show1/set.mp3", "mp3", agent_id="test-fileserver-b")
+    comp_b = _make_file("/data/music/show1/info.nfo", "nfo", agent_id="test-fileserver-b")
+    session.add_all([media_a, comp_a, media_b, comp_b])
+    await session.flush()
+
+    count = await associate_companions(session)
+
+    assert count == 2
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert {(link.companion_id, link.media_id) for link in links} == {
+        (comp_a.id, media_a.id),
+        (comp_b.id, media_b.id),
+    }
 
 
 @pytest.mark.asyncio
