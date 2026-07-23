@@ -2,7 +2,9 @@
 
 These ORM-free request/response models back the two internal-API push callbacks
 (`/pushed` and `/mismatch`). file_id flows on the URL path (AUTH-01); request
-bodies carry only optional diagnostics. Every model is `extra="forbid"`.
+bodies carry only optional diagnostics. Every REQUEST model is `extra="forbid"`;
+RESPONSE models are `extra="ignore"` (phaze-3ggc, Phase 25 convention) so an
+additive control-plane field never hard-fails an older agent's `model_validate`.
 """
 
 from __future__ import annotations
@@ -57,3 +59,20 @@ def test_push_mismatch_response_cleared_required() -> None:
     assert r.cleared is True
     with pytest.raises(pydantic.ValidationError):
         PushMismatchResponse.model_validate({"file_id": str(fid)})
+
+
+def test_pushed_response_tolerates_unknown_field() -> None:
+    """phaze-3ggc: a control-plane-first rolling deploy adding an additive field to the
+    /pushed echo must not raise on an older agent's model_validate."""
+    fid = uuid.uuid4()
+    r = PushedResponse.model_validate({"file_id": str(fid), "status": "pushed", "enqueued": True})
+    assert r.file_id == fid
+    assert r.status == "pushed"
+
+
+def test_push_mismatch_response_tolerates_unknown_field() -> None:
+    """phaze-3ggc: same forward-compat guarantee for the /mismatch echo."""
+    fid = uuid.uuid4()
+    r = PushMismatchResponse.model_validate({"file_id": str(fid), "status": "mismatch", "cleared": False, "retry_after": 5})
+    assert r.file_id == fid
+    assert r.cleared is False
