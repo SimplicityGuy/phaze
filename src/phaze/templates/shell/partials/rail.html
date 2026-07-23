@@ -111,7 +111,13 @@
                 class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776"/></svg>
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Discover</span>
-            <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.discovered">0</span>
+            {# phaze-nebh: every rail numeral gets an explicit, store-bound title + aria-label naming
+               what it measures — a bare number is unlabeled in BOTH the visual and accessible channel
+               otherwise (verified previously true for every count span in this file). #}
+            <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                  x-text="$store.pipeline.discovered"
+                  :title="$store.pipeline.discovered + ' files discovered'"
+                  :aria-label="$store.pipeline.discovered + ' files discovered'">0</span>
         </button>
 
         {# 2 — Enrich · parallel (group) #}
@@ -127,13 +133,22 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Metadata</span>
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.metadataDone">0</span>
+                {# phaze-nebh: render done/total (never a bare numeral -- ambiguous no matter how good
+                   the tooltip is) and bind an explicit :title + :aria-label naming the stage and the
+                   measure, so the two channels agree and neither is empty. #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                      x-text="`${$store.pipeline.metadataDone} / ${$store.pipeline.metadataTotal}`"
+                      :title="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'"
+                      :aria-label="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'">0 / 0</span>
                 {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge — the
                    count recover_orphaned_work would re-enqueue. Rides the #pipeline-stats OOB fanout via
                    $store.pipeline.metadataOrphan (seeded 0 in base.html, no self-poll); hidden at 0 via
-                   x-show. role="status"; amber = "needs attention, not failure" (never red). #}
+                   x-show. role="status"; amber = "needs attention, not failure" (never red).
+                   phaze-nebh: :title added so a sighted operator hovering gets the SAME sentence
+                   assistive tech already gets from aria-label -- previously title-less, aria-only. #}
                 <span x-show="$store.pipeline.metadataOrphan > 0" x-cloak
                       role="status"
+                      :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
                       class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
                       x-text="$store.pipeline.metadataOrphan">0</span>
@@ -179,10 +194,16 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a7.464 7.464 0 0 1-1.15 3.993m1.989 3.559A11.209 11.209 0 0 0 8.25 10.5a3.75 3.75 0 1 1 7.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 0 1-3.6 9.75m6.633-4.596a18.666 18.666 0 0 1-2.485 5.33"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Fingerprint</span>
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.fingerprintDone">0</span>
-                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge. #}
+                {# phaze-nebh: done/total + matching :title/:aria-label (same rationale as Metadata above). #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                      x-text="`${$store.pipeline.fingerprintDone} / ${$store.pipeline.fingerprintTotal}`"
+                      :title="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'"
+                      :aria-label="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'">0 / 0</span>
+                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge.
+                   phaze-nebh: :title added to match the pre-existing :aria-label. #}
                 <span x-show="$store.pipeline.fingerprintOrphan > 0" x-cloak
                       role="status"
+                      :title="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
                       class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
                       x-text="$store.pipeline.fingerprintOrphan">0</span>
@@ -225,10 +246,24 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Analyze</span>
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.analyzeActive">0</span>
-                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge. #}
+                {# phaze-nebh: this numeral used to bind analyzeActive (files IN FLIGHT) while the
+                   identically-styled Metadata/Fingerprint numerals bind *Done (files DONE) -- three
+                   visually-identical grey numerals reading as three different measures, precisely
+                   inverted at a glance ("Analyze 3134" read as "nearly done" actually meant "3,134
+                   still running"). Switch to analyzeDone/analyzeTotal so all three enrich stages
+                   agree on DONE (matches the bead's preferred resolution: "done" reads more naturally
+                   next to a stage name, and in-flight is still surfaced by the ANALYZE workspace's own
+                   sub-count, which analyzeActive continues to drive -- see analyze_workspace.html /
+                   phaze-xd8k). done/total + matching :title/:aria-label, same as Metadata/Fingerprint. #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                      x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`"
+                      :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'"
+                      :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
+                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge.
+                   phaze-nebh: :title added to match the pre-existing :aria-label. #}
                 <span x-show="$store.pipeline.analyzeOrphan > 0" x-cloak
                       role="status"
+                      :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
                       class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
                       x-text="$store.pipeline.analyzeOrphan">0</span>
@@ -287,7 +322,13 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Tracklist</span>
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.tracklistDone">0</span>
+                {# phaze-nebh: sweep -- tracklistDone had no title/aria-label either. No tracklistTotal
+                   key exists in the store (base.html), so this stays a bare DONE count (unambiguous on
+                   its own, unlike the three-way metadata/fingerprint/analyze mix above); label it. #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                      x-text="$store.pipeline.tracklistDone"
+                      :title="$store.pipeline.tracklistDone + ' tracklist files done'"
+                      :aria-label="$store.pipeline.tracklistDone + ' tracklist files done'">0</span>
             </button>
         </div>
 
@@ -300,7 +341,13 @@
                 class="rail-node w-[calc(100%-1rem)] mx-2 mt-1.5 rounded-lg px-3 py-2.5 flex items-center gap-3 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Propose</span>
-            <span class="font-mono text-xs text-gray-500 max-lg:hidden" x-text="$store.pipeline.proposalsDone">0</span>
+            {# phaze-nebh: sweep -- proposalsTotal is already in the store (base.html), so render
+               done/total (same self-explanatory form as metadata/fingerprint/analyze) with a matching
+               :title/:aria-label rather than a bare, unlabeled DONE count. #}
+            <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                  x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`"
+                  :title="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'"
+                  :aria-label="$store.pipeline.proposalsDone + ' of ' + $store.pipeline.proposalsTotal + ' proposals done'">0 / 0</span>
         </button>
 
         {# 5 — Review & Apply (AMBER group · all items STATIC, no store keys in 57).
