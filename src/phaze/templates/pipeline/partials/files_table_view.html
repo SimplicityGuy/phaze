@@ -150,10 +150,18 @@
                            (metadata/analyze -- never fingerprint, which self-retries). HTMX POST to the scoped
                            per-file variant; the ack swaps into this cell's result span. @click.stop keeps the
                            click off the row's record-slide-in hx-get. The failed pill clears on the NEXT poll
-                           tick (not optimistic). aria-label per the Copywriting Contract. #}
+                           tick (not optimistic). aria-label per the Copywriting Contract.
+                           phaze-hyjk: @click.stop alone only covers a MOUSE click. The <tr> also binds
+                           hx-trigger="click, keyup[key=='Enter']" (htmx) AND @keydown.enter (Alpine) for
+                           keyboard activation (line ~143 below). Keyboard-activating THIS button fires a
+                           keydown (bubbles to the row's @keydown.enter -> record:open) and a keyup (bubbles
+                           to the row's htmx keyup[key=='Enter'] trigger -> GET /record/{id}) in addition to
+                           the button's own click -- one Enter keypress firing the retry POST AND opening the
+                           record slide-in. @keydown.stop / @keyup.stop stop those two bubbling phases at the
+                           button, mirroring @click.stop for the pointer path. #}
                         {% if row.buckets[key] == 'failed' and key in _retry_endpoints %}
                         <div class="mt-1 flex items-center gap-2">
-                            <button type="button" @click.stop
+                            <button type="button" @click.stop @keydown.stop @keyup.stop
                                     hx-post="/pipeline/files/{{ row.file.id }}/{{ _retry_endpoints[key] }}/retry"
                                     hx-target="#retry-result-{{ row.file.id }}-{{ key }}" hx-swap="innerHTML"
                                     hx-indicator="#retry-ind-{{ row.file.id }}-{{ key }}"
