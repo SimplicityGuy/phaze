@@ -26,6 +26,7 @@ from tests._queue_fakes import (
     DedupFakeQueue,
     DedupFakeTaskRouter,
     install_fake_queues,
+    make_agent_live,
     seed_active_agent,
     wire_fakes,
 )
@@ -167,7 +168,7 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
     """POST /api/v1/analyze enqueues process_file onto phaze-agent-nox (not default)."""
     session.add_all([_make_file() for _ in range(3)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
@@ -177,7 +178,7 @@ async def test_analyze_enqueues_discovered(client: AsyncClient, session: AsyncSe
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-analyze", "process_file")}
     assert all(q != "default" for q, _, _ in capture)
 
 
@@ -199,7 +200,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     expected_id = str(file_rec.id)
     expected_path = file_rec.original_path
     expected_type = file_rec.file_type
-    agent = await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
@@ -209,7 +210,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox-analyze", "process_file")
+    assert (queue_name, task_name) == ("phaze-agent-test-fileserver-analyze", "process_file")
 
     # All five required fields present -- not just file_id (the pre-fix bug). Phase 44-01
     # added the optional fine_cap/coarse_cap overrides; Phase 50 added expected_sha256/scratch_path
@@ -229,7 +230,7 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
     assert kwargs["file_id"] == expected_id
     assert kwargs["original_path"] == expected_path
     assert kwargs["file_type"] == expected_type
-    assert kwargs["agent_id"] == agent.id
+    assert kwargs["agent_id"] == "test-fileserver"
     assert kwargs["models_path"] == settings.models_path
     # Bulk "Run Analysis" path carries no cap override (deepen is the only elevated-cap caller).
     assert kwargs["fine_cap"] is None
@@ -257,7 +258,7 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     expected_id = str(file_rec.id)
     expected_path = file_rec.original_path
     expected_type = file_rec.file_type
-    agent = await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/extract-metadata")
@@ -267,14 +268,14 @@ async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, s
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox-meta", "extract_file_metadata")
+    assert (queue_name, task_name) == ("phaze-agent-test-fileserver-meta", "extract_file_metadata")
 
     # All four required fields present -- not just file_id (the CR-01 bug).
     assert set(kwargs) == {"file_id", "original_path", "file_type", "agent_id"}
     assert kwargs["file_id"] == expected_id
     assert kwargs["original_path"] == expected_path
     assert kwargs["file_type"] == expected_type
-    assert kwargs["agent_id"] == agent.id
+    assert kwargs["agent_id"] == "test-fileserver"
 
     # The exact kwargs the agent worker receives validate against ExtractMetadataPayload.
     validated = ExtractMetadataPayload.model_validate(kwargs)
@@ -296,7 +297,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/api/v1/analyze")
@@ -304,7 +305,7 @@ async def test_analyze_enqueues_bounded_timeout_and_retries(client: AsyncClient,
     assert response.json()["enqueued"] == 1
 
     await _drain_background()
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -340,7 +341,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     session.add_all(files)
     await session.commit()
     expected_keys = {f"process_file:{f.id}" for f in files}
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/api/v1/analyze")
@@ -348,7 +349,7 @@ async def test_analyze_enqueues_deterministic_key_per_file(client: AsyncClient, 
     assert response.json()["enqueued"] == 3
 
     await _drain_background()
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 3
     # Every enqueue carries a key, and it matches that same enqueue's payload file_id.
     for (task_name, payload), policy in zip(queue.captured, queue.captured_policy, strict=True):
@@ -364,14 +365,14 @@ async def test_analyze_ui_enqueues_bounded_timeout_and_retries(client: AsyncClie
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/pipeline/analyze")
     assert response.status_code == 200
 
     await _drain_background()
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured_policy) == 1
     # Phase 32: the shared helper now also sets the deterministic dedup key.
     assert queue.captured_policy[0] == {"key": expected_key, "timeout": 7200, "retries": 2}
@@ -555,7 +556,7 @@ async def test_analyze_long_file_no_compute_holds_awaiting_cloud(client: AsyncCl
 async def test_analyze_short_and_null_route_to_fileserver_with_key(client: AsyncClient, session: AsyncSession) -> None:
     """A <threshold file AND a null-duration file both route to the fileserver queue with key process_file:<id> (D-06)."""
     short_file, null_file = await _persist_files_with_duration(session, [_SHORT, None])
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/api/v1/analyze")
@@ -565,7 +566,7 @@ async def test_analyze_short_and_null_route_to_fileserver_with_key(client: Async
     assert data["cloud"] == 0
 
     await _drain_background()
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 2
     assert {p["key"] for p in queue.captured_policy} == {f"process_file:{short_file.id}", f"process_file:{null_file.id}"}
 
@@ -595,7 +596,7 @@ async def test_analyze_ui_reports_split_counts(client: AsyncClient, session: Asy
     """
     await _persist_files_with_duration(session, [_LONG, _SHORT, None])
     await seed_active_agent(session, "cloud", kind="compute")
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     wire_fakes(client)
 
     response = await client.post("/pipeline/analyze")
@@ -1392,16 +1393,16 @@ async def test_deepen_enqueues_elevated_cap_on_per_agent_queue(client: AsyncClie
     session.add(file_rec)
     await session.commit()
     expected_id = str(file_rec.id)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
-    assert (queue.name, task_name) == ("phaze-agent-nox-analyze", "process_file")
+    assert (queue.name, task_name) == ("phaze-agent-test-fileserver-analyze", "process_file")
     assert queue.name != "default"
     # The unbounded-deepen sentinel reached the producer and was serialized.
     assert payload["fine_cap"] == 0
@@ -1423,13 +1424,13 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     expected_id = str(file_rec.id)
     expected_path = file_rec.original_path
     expected_type = file_rec.file_type
-    agent = await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert response.status_code == 200
 
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 1
     _, payload = queue.captured[0]
     # All five required fields present (not just file_id) plus the cap overrides.
@@ -1447,7 +1448,7 @@ async def test_deepen_enqueues_complete_process_file_payload(client: AsyncClient
     assert payload["file_id"] == expected_id
     assert payload["original_path"] == expected_path
     assert payload["file_type"] == expected_type
-    assert payload["agent_id"] == agent.id
+    assert payload["agent_id"] == "test-fileserver"
     assert payload["models_path"] == settings.models_path
 
     # The exact kwargs the agent worker receives validate against ProcessFilePayload.
@@ -1469,7 +1470,7 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
     session.add(file_rec)
     await session.commit()
     expected_key = f"process_file:{file_rec.id}"
-    await seed_active_agent(session)
+    await make_agent_live(session)
 
     # Wire the dedup-aware router so the deterministic key collapses an in-flight repeat.
     router = DedupFakeTaskRouter()
@@ -1480,7 +1481,7 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
     # First deepen: enqueues + registers the key.
     r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
     assert r1.status_code == 200
-    queue = router.queues["nox-analyze"]
+    queue = router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 1
     assert queue.captured_policy[0]["key"] == expected_key
 
@@ -1518,7 +1519,7 @@ async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, sess
 @pytest.mark.asyncio
 async def test_deepen_unknown_file_returns_not_found_fragment(client: AsyncClient, session: AsyncSession) -> None:
     """A well-formed but unknown file_id returns a not-found fragment (200), never a 500, and enqueues nothing."""
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     missing_id = uuid.uuid4()
@@ -1558,7 +1559,7 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     failed = await _seed_analysis_failed(session, 3)
     failed_uuids = [f.id for f in failed]  # capture before any expire_all() (avoids async lazy reload)
     failed_ids = {str(fid) for fid in failed_uuids}
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/pipeline/analysis-failed/retry")
@@ -1566,9 +1567,9 @@ async def test_retry_reenqueues_all_failed_and_flips_state(client: AsyncClient, 
     assert "re-queued 3 failed file(s)" in response.text.lower()
 
     await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
-    queue = task_router.queues["nox-analyze"]
+    queue = task_router.queues["test-fileserver-analyze"]
     assert len(queue.captured) == 3
-    assert queue.name == "phaze-agent-nox-analyze"
+    assert queue.name == "phaze-agent-test-fileserver-analyze"
     assert queue.name != "default"
     captured_ids = set()
     for task_name, payload in queue.captured:
@@ -1611,7 +1612,7 @@ async def test_retry_no_active_agent_enqueues_nothing_and_keeps_state(client: As
 @pytest.mark.asyncio
 async def test_retry_zero_failed_is_noop(client: AsyncClient, session: AsyncSession) -> None:
     """No ANALYSIS_FAILED files -> 200, zero enqueues, ack count 0."""
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/analysis-failed/retry")
@@ -1809,7 +1810,7 @@ async def test_deepen_success_path_returns_bootstrap_poller(client: AsyncClient,
     file_rec = _make_file()
     session.add(file_rec)
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
@@ -1948,7 +1949,7 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
     files = [_make_file() for _ in range(3)]
     session.add_all(files)
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/scan-live-sets")
@@ -1957,13 +1958,35 @@ async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(cl
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "scan_live_set")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "scan_live_set")}
     assert all(q != "default" for q, _, _ in capture)
     assert all(q != "controller" for q, _, _ in capture)
     # Every enqueue carries the COMPLETE payload — model_validate (extra="forbid") must accept it.
     for _q, _t, kwargs in capture:
         ScanLiveSetPayload.model_validate(kwargs)
     assert {c[2]["file_id"] for c in capture} == {str(f.id) for f in files}
+
+
+@pytest.mark.asyncio
+async def test_scan_live_sets_stamps_a_fresh_scan_run_id_per_enqueue(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-y07u: the bulk scan trigger stamps a fresh scan_run_id nonce on every enqueue.
+
+    The nonce scopes the worker's idempotency request_id to one RUN, so a deliberate re-scan
+    within the controller's 1h idempotency window is never answered with the cached response.
+    """
+    files = [_make_file() for _ in range(2)]
+    session.add_all(files)
+    await session.commit()
+    await make_agent_live(session)
+    capture = wire_fakes(client)
+
+    assert (await client.post("/pipeline/scan-live-sets")).status_code == 200
+    await _drain_background()
+
+    run_ids = [kwargs["scan_run_id"] for _q, _t, kwargs in capture]
+    assert len(run_ids) == 2
+    assert None not in run_ids
+    assert len(set(run_ids)) == 2  # unique per enqueue
 
 
 @pytest.mark.asyncio
@@ -1975,7 +1998,7 @@ async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: Asy
     await session.flush()
     session.add(_link_tracklist(matched))
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/scan-live-sets")
@@ -2290,7 +2313,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
     """POST /pipeline/analyze enqueues process_file onto phaze-agent-nox + renders the fragment."""
     session.add_all([_make_file() for _ in range(2)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/analyze")
@@ -2300,7 +2323,7 @@ async def test_trigger_analysis_ui_with_files(client: AsyncClient, session: Asyn
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-analyze", "process_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-analyze", "process_file")}
     # UI path enqueues a complete payload too (every job carries all five fields).
     for _q, _t, kwargs in capture:
         ProcessFilePayload.model_validate(kwargs)
@@ -2367,7 +2390,7 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     """POST /api/v1/analyze enqueues a complete ProcessFilePayload in the background."""
     session.add(_make_file())
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
@@ -2378,7 +2401,7 @@ async def test_enqueue_analysis_background(client: AsyncClient, session: AsyncSe
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert queue_name == "phaze-agent-nox-analyze"
+    assert queue_name == "phaze-agent-test-fileserver-analyze"
     assert task_name == "process_file"
     # Complete payload -- all five ProcessFilePayload fields, not just file_id. Phase 44-01
     # added the optional fine_cap/coarse_cap overrides (None on the bulk path).
@@ -2426,7 +2449,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
     """POST /api/v1/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file() for _ in range(3)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/extract-metadata")
@@ -2436,7 +2459,7 @@ async def test_extract_metadata_enqueues(client: AsyncClient, session: AsyncSess
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -2470,7 +2493,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
     """POST /pipeline/extract-metadata enqueues extract_file_metadata onto phaze-agent-nox."""
     session.add_all([_make_file() for _ in range(2)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/extract-metadata")
@@ -2480,7 +2503,7 @@ async def test_trigger_extraction_ui_with_files(client: AsyncClient, session: As
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-meta", "extract_file_metadata")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "extract_file_metadata")}
 
 
 @pytest.mark.asyncio
@@ -2511,7 +2534,7 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
     """POST /pipeline/fingerprint enqueues fingerprint_file onto phaze-agent-nox."""
     session.add_all([_make_file() for _ in range(2)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/fingerprint")
@@ -2521,7 +2544,7 @@ async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: A
 
     await _drain_background()
     assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-fingerprint", "fingerprint_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")}
 
 
 @pytest.mark.asyncio
@@ -2538,7 +2561,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
     await session.flush()
     session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed.id, engine="audfprint", status="failed"))
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/pipeline/fingerprint")
@@ -2547,7 +2570,7 @@ async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncCl
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, payload = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox-fingerprint", "fingerprint_file")
+    assert (queue_name, task_name) == ("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")
     assert payload["file_id"] == str(failed.id)
 
 
@@ -3019,7 +3042,7 @@ async def test_force_local_analyze_api_routes_local_no_hold(client: AsyncClient,
     session.add(RouteControl(id="global", force_local=True))
     await session.commit()
     await _persist_files_with_duration(session, [_LONG])
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     wire_fakes(client)
 
     response = await client.post("/api/v1/analyze")
@@ -3047,7 +3070,7 @@ async def test_force_local_analyze_ui_routes_local_no_hold(client: AsyncClient, 
     session.add(RouteControl(id="global", force_local=True))
     await session.commit()
     await _persist_files_with_duration(session, [_LONG])
-    await seed_active_agent(session, "nox", kind="fileserver")
+    await make_agent_live(session)  # phaze-c9w9: the OWNING agent must be live for local routing
     wire_fakes(client)
 
     response = await client.post("/pipeline/analyze")
@@ -3133,3 +3156,77 @@ async def test_force_local_backfill_zero_mutation_no_op(client: AsyncClient, ses
     # ledger row -- it stays exactly one process_file:<id> row (the with_ledger=True seed), untouched.
     rows = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{long_failed.id}"))).scalars().all()
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# phaze-c9w9: multi-fileserver ownership routing -- bulk triggers route each file
+# to its OWNING agent, never one most-recently-seen pick for the whole set.
+# ---------------------------------------------------------------------------
+
+
+def _make_file_owned_by(agent_id: str) -> FileRecord:
+    """A FileRecord owned by ``agent_id`` (the phaze-c9w9 ownership-routing fixtures)."""
+    uid = uuid.uuid4()
+    return FileRecord(
+        agent_id=agent_id,
+        id=uid,
+        sha256_hash=uid.hex,
+        original_path=f"/music/{uid.hex}.mp3",
+        original_filename=f"{uid.hex}.mp3",
+        current_path=f"/music/{uid.hex}.mp3",
+        file_type="mp3",
+        file_size=1000,
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_metadata_routes_each_file_to_its_owning_agent(client: AsyncClient, session: AsyncSession) -> None:
+    """THE phaze-c9w9 endpoint regression: EXTRACT ALL with two live fileservers routes per OWNER.
+
+    ``fileserver-west`` is seeded LAST (most recently seen) -- the pre-fix single
+    ``select_active_agent`` pick would land BOTH files on west's meta lane, including east's file
+    (whose path exists only on east's mount). Post-fix each file lands on its owner's queue.
+    """
+    await seed_active_agent(session, "fileserver-east")
+    await seed_active_agent(session, "fileserver-west")  # most recently seen -> the pre-fix winner
+    east_file = _make_file_owned_by("fileserver-east")
+    west_file = _make_file_owned_by("fileserver-west")
+    session.add_all([east_file, west_file])
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/extract-metadata")
+    assert response.status_code == 200
+    assert response.json()["enqueued"] == 2
+
+    await _drain_background()
+    destinations = {kwargs["file_id"]: q for q, _t, kwargs in capture}
+    assert destinations == {
+        str(east_file.id): "phaze-agent-fileserver-east-meta",
+        str(west_file.id): "phaze-agent-fileserver-west-meta",
+    }
+
+
+@pytest.mark.asyncio
+async def test_analyze_skips_files_of_offline_owner_and_routes_the_rest(client: AsyncClient, session: AsyncSession) -> None:
+    """Run Analysis with one owner offline: the live owner's file routes; the offline owner's is skipped.
+
+    phaze-c9w9: the offline owner's file must NOT be rerouted onto the live agent's mount (the
+    spurious-terminal-failure / cross-agent-corruption shapes); it is reported ``skipped`` instead.
+    """
+    await seed_active_agent(session, "fileserver-east")
+    east_file = _make_file_owned_by("fileserver-east")
+    # test-fileserver (the conftest FK parent) is never-seen -> its file's owner is offline.
+    offline_file = _make_file()
+    session.add_all([east_file, offline_file])
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/analyze")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["local"] == 1
+    assert data["skipped"] == 1
+
+    await _drain_background()
+    assert [(q, kwargs["file_id"]) for q, _t, kwargs in capture] == [("phaze-agent-fileserver-east-analyze", str(east_file.id))]

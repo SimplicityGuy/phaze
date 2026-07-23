@@ -8,8 +8,10 @@ import pytest
 from phaze.services.fingerprint import (
     AudfprintAdapter,
     CombinedMatch,
+    EngineQueryError,
     FingerprintEngine,
     FingerprintOrchestrator,
+    FingerprintQueryUnavailableError,
     IngestResult,
     PanakoAdapter,
     QueryMatch,
@@ -150,7 +152,8 @@ class TestPanakoAdapter:
         assert result[0].confidence == 72.0
         await adapter.close()
 
-    async def test_query_returns_empty_on_non_200(self):
+    async def test_query_returns_empty_on_4xx(self):
+        """A 4xx is a FILE-level rejection by a healthy engine -- still an empty result (phaze-z7yw)."""
         transport = httpx.MockTransport(lambda _request: httpx.Response(404))
         adapter = PanakoAdapter(base_url="http://test:8002")
         adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test:8002")
@@ -170,15 +173,17 @@ class TestPanakoAdapter:
         assert result.error is not None
         await adapter.close()
 
-    async def test_query_returns_empty_on_exception(self):
+    async def test_query_raises_engine_error_on_exception(self):
+        """A transport failure is an ENGINE-level fault: raise, never a silent empty (phaze-z7yw)."""
+
         def raise_error(request):
             raise httpx.ConnectError("Connection refused")
 
         transport = httpx.MockTransport(raise_error)
         adapter = PanakoAdapter(base_url="http://test:8002")
         adapter._client = httpx.AsyncClient(transport=transport, base_url="http://test:8002")
-        result = await adapter.query("/data/music/test.mp3")
-        assert result == []
+        with pytest.raises(EngineQueryError):
+            await adapter.query("/data/music/test.mp3")
         await adapter.close()
 
 
@@ -341,6 +346,45 @@ class TestConfigSettings:
         assert s.panako_url == "http://panako:8002"
 
 
+class TestSidecarHttpTimeout:
+    """App-side client timeouts must exceed the sidecars' subprocess budget (phaze-mv1f).
+
+    The sidecars now allow SUBPROCESS_TIMEOUT (default 3600s) per engine run, sized for
+    multi-hour concert sets. The adapters previously capped every call at 120.0s, so the
+    app side timed out first and the sidecar budget was meaningless.
+    """
+
+    def test_default_exceeds_sidecar_subprocess_budget(self):
+        import phaze.services.fingerprint as fp
+
+        assert fp.SIDECAR_HTTP_TIMEOUT_SEC > 3600
+
+    def test_adapters_use_the_long_timeout(self):
+        import phaze.services.fingerprint as fp
+
+        for adapter in (AudfprintAdapter(), PanakoAdapter()):
+            assert adapter._client.timeout.read == fp.SIDECAR_HTTP_TIMEOUT_SEC
+            # A down sidecar must still fail fast; only the request budget is long.
+            assert adapter._client.timeout.connect == 10.0
+
+    async def test_health_uses_short_per_request_timeout(self):
+        # A wedged sidecar must surface as unhealthy quickly, not pin health_all for the
+        # full ingest budget.
+        seen: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            seen["timeout"] = request.extensions.get("timeout")
+            return httpx.Response(200, json={"status": "ok"})
+
+        adapter = AudfprintAdapter(base_url="http://test:8001")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(_capture), base_url="http://test:8001")
+        assert await adapter.health() is True
+        await adapter.close()
+        timeout = seen["timeout"]
+        assert isinstance(timeout, dict)
+        assert timeout["read"] == 35.0
+
+
 class TestQueryMatchTimestamp:
     """Tests for QueryMatch timestamp field."""
 
@@ -452,3 +496,87 @@ class TestIngestErrorClassification:
         orchestrator = FingerprintOrchestrator(engines=[audfprint])
         results = await orchestrator.ingest_all("/data/music/test.mp3")
         assert results["audfprint"].engine_error is True
+
+
+class TestQueryErrorClassification:
+    """phaze-z7yw: the query path must distinguish an ENGINE outage from a genuine no-match.
+
+    ``scan_live_set`` writes a TERMINAL 'no_matches' verdict (and clears the recovery ledger
+    row) on an empty ``combined_query`` result, so this classification is load-bearing: let a
+    5xx/transport failure collapse to ``[]`` and a total sidecar outage silently converts the
+    whole scanned backlog into permanent, success-looking no-match verdicts -- the query-path
+    twin of the phaze-ds1z ingest drain.
+    """
+
+    def _adapter(self, adapter_cls, handler):
+        adapter = adapter_cls(base_url="http://test:9000")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test:9000")
+        return adapter
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_raises_engine_query_error(self, adapter_cls):
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, json={"error": "internal"}))
+        with pytest.raises(EngineQueryError, match="HTTP 500"):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_transport_error_raises_engine_query_error(self, adapter_cls):
+        def raise_error(_request):
+            raise httpx.ConnectError("Connection refused")
+
+        adapter = self._adapter(adapter_cls, raise_error)
+        with pytest.raises(EngineQueryError, match="Connection refused"):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_4xx_is_file_level_empty(self, adapter_cls):
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(422, json={"error": "undecodable"}))
+        assert await adapter.query("/data/music/test.mp3") == []
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_200_empty_matches_is_a_genuine_no_match(self, adapter_cls):
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(200, json={"matches": []}))
+        assert await adapter.query("/data/music/test.mp3") == []
+        await adapter.close()
+
+    def _mock_engine(self, name: str, weight: float, query: AsyncMock) -> MagicMock:
+        engine = MagicMock()
+        engine.name = name
+        engine.weight = weight
+        engine.query = query
+        return engine
+
+    async def test_combined_query_raises_when_all_engines_error(self):
+        audfprint = self._mock_engine("audfprint", 0.6, AsyncMock(side_effect=EngineQueryError("audfprint", "down")))
+        panako = self._mock_engine("panako", 0.4, AsyncMock(side_effect=EngineQueryError("panako", "down")))
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        with pytest.raises(FingerprintQueryUnavailableError, match="all fingerprint engines"):
+            await orchestrator.combined_query("/data/music/test.mp3")
+
+    async def test_combined_query_survives_partial_outage_with_matches(self):
+        """One engine down + one healthy match -> single-engine result (capped), no raise."""
+        audfprint = self._mock_engine("audfprint", 0.6, AsyncMock(side_effect=EngineQueryError("audfprint", "down")))
+        panako = self._mock_engine("panako", 0.4, AsyncMock(return_value=[QueryMatch(track_id="t1", confidence=95.0)]))
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        matches = await orchestrator.combined_query("/data/music/test.mp3")
+        assert len(matches) == 1
+        assert matches[0].track_id == "t1"
+        assert matches[0].confidence == 70.0  # single-engine cap (D-12)
+
+    async def test_combined_query_partial_outage_empty_is_genuine_no_match(self):
+        """One engine down + one healthy empty answer -> [], NOT an outage raise."""
+        audfprint = self._mock_engine("audfprint", 0.6, AsyncMock(side_effect=EngineQueryError("audfprint", "down")))
+        panako = self._mock_engine("panako", 0.4, AsyncMock(return_value=[]))
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        assert await orchestrator.combined_query("/data/music/test.mp3") == []
+
+    async def test_combined_query_treats_any_raise_as_engine_error(self):
+        """A non-EngineQueryError raise out of query() still counts toward the all-errored floor."""
+        audfprint = self._mock_engine("audfprint", 0.6, AsyncMock(side_effect=RuntimeError("adapter bug")))
+        panako = self._mock_engine("panako", 0.4, AsyncMock(side_effect=httpx.ConnectError("refused")))
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        with pytest.raises(FingerprintQueryUnavailableError):
+            await orchestrator.combined_query("/data/music/test.mp3")

@@ -35,7 +35,7 @@ from sqlalchemy import select
 from phaze.enums.stage import Stage, Status, domain_completed
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
-from tests._queue_fakes import install_fake_queues, seed_active_agent
+from tests._queue_fakes import install_fake_queues, make_agent_live
 
 
 if TYPE_CHECKING:
@@ -80,7 +80,7 @@ async def _seed_failed(session: AsyncSession, n: int) -> set[str]:
 async def test_retry_clears_analysis_failure_marker(client: AsyncClient, session: AsyncSession) -> None:
     """CR-01: after retry, no retried file retains ``analysis.failed_at`` (the stale-marker regression)."""
     failed_ids = await _seed_failed(session, 3)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     response = await client.post("/pipeline/analysis-failed/retry")
@@ -103,7 +103,7 @@ async def test_retry_clears_marker_without_touching_state(client: AsyncClient, s
     files.state -- so a file can never end up in the old contradictory fingerprinted-yet-failed pair.
     """
     failed_ids = await _seed_failed(session, 2)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     assert (await client.post("/pipeline/analysis-failed/retry")).status_code == 200
@@ -121,7 +121,7 @@ async def test_retry_clears_marker_without_touching_state(client: AsyncClient, s
 async def test_retried_file_is_not_domain_completed(client: AsyncClient, session: AsyncSession) -> None:
     """A retried file must derive ``not_started`` so Phase 80 recovery re-runs it rather than skipping it."""
     await _seed_failed(session, 1)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     assert (await client.post("/pipeline/analysis-failed/retry")).status_code == 200
@@ -139,7 +139,7 @@ async def test_retried_file_is_not_domain_completed(client: AsyncClient, session
 async def test_retry_with_no_active_agent_mutates_nothing(client: AsyncClient, session: AsyncSession) -> None:
     """Phase-30 guard survives the fix: with no agent online, neither state nor marker is touched."""
     failed_ids = await _seed_failed(session, 2)
-    install_fake_queues(client)  # no seed_active_agent -> NoActiveAgentError path
+    install_fake_queues(client)  # owner never brought live -> NoActiveAgentError path
 
     response = await client.post("/pipeline/analysis-failed/retry")
     assert response.status_code == 200

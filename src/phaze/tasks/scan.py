@@ -2,8 +2,12 @@
 
 scan_live_set
     Fingerprint-query a live-set file and POST the resolved tracklist via the
-    agent HTTP boundary. Idempotency: a stable uuid5(NAMESPACE_URL, "phaze-scan-{file_id}")
-    request_id collapses SAQ retries to one tracklist on the controller side.
+    agent HTTP boundary. Idempotency (phaze-y07u): a stable
+    uuid5(NAMESPACE_URL, "phaze-scan-{file_id}-{scan_run_id}") request_id collapses SAQ
+    retries of ONE run to one tracklist on the controller side, while distinct runs
+    (each enqueue stamps a fresh scan_run_id nonce) get distinct request_ids -- so a
+    deliberate re-scan within the server's 1h idempotency window is never answered
+    with the previous run's cached response.
 
 scan_directory (Phase 27 D-11..D-14)
     Walk a directory on the agent host, SHA-256 each known-extension file, POST
@@ -40,6 +44,7 @@ from phaze.schemas.agent_scan_batches import ScanBatchPatch
 from phaze.schemas.agent_tasks import ScanDirectoryPayload, ScanLiveSetPayload
 from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistTrackPayload
 from phaze.services.agent_client import AgentApiServerError
+from phaze.services.fingerprint import FingerprintQueryUnavailableError
 from phaze.services.hashing import compute_sha256
 
 
@@ -119,8 +124,21 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     api: PhazeAgentClient = ctx["api_client"]
     orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
 
-    matches = await orchestrator.combined_query(payload.original_path)
+    try:
+        matches = await orchestrator.combined_query(payload.original_path)
+    except FingerprintQueryUnavailableError:
+        # phaze-z7yw: a TOTAL engine outage (every sidecar down or 5xx-ing) is NOT a no-match.
+        # Re-raise for SAQ retry/backoff WITHOUT acking report_scan_terminal, so the
+        # scan_live_set:<file_id> ledger row survives and recovery re-enqueues the file once
+        # the outage ends. Acking here would convert the outage into a permanent,
+        # success-looking 'no_matches' verdict -- the query-path twin of the phaze-ds1z
+        # ingest-drain bug.
+        logger.warning("scan_live_set: all fingerprint engines unavailable; leaving ledger row for retry", file_id=str(payload.file_id))
+        raise
     if not matches:
+        # A genuine no-match: combined_query raises on a total engine outage (phaze-z7yw), so
+        # an empty result here means at least one HEALTHY engine answered and found nothing.
+        #
         # No-match COMPLETE: this scan run has NO tracklist callback, so it must ack the
         # control side directly to clear scan_live_set:<file_id> -- otherwise a legitimate
         # no-match scan would re-enqueue on EVERY recovery (Phase 45 Blocker 2 / T-45-16).
@@ -141,10 +159,19 @@ async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
                 raise  # retryable (or job absent): let SAQ retry; the row survives for the real retry
         return {"file_id": str(payload.file_id), "status": "no_matches"}
 
-    # Build the wire payload. Idempotency key = stable UUID per file_id so SAQ retries
-    # of the same job collapse to one tracklist (server's Redis cache catches the replay).
-    # Using uuid5 with payload.file_id + a phase namespace; predictable across retries.
-    request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}")
+    # Build the wire payload. Idempotency key = stable UUID per (file_id, scan_run_id) so SAQ
+    # retries of the SAME job collapse to one tracklist (the server's Redis cache catches the
+    # replay -- retries rerun with the identical kwargs, hence the identical scan_run_id), while
+    # a NEW scan run (fresh nonce stamped at enqueue) gets a fresh request_id. phaze-y07u: keyed
+    # on file_id alone this was deterministic per FILE forever, so a deliberate re-scan within
+    # the server's 1h idempotency window got the CACHED response back -- the freshly computed
+    # (better) match set was silently discarded and the task still reported status='scanned'
+    # with the stale tracklist_id/version. A pre-upgrade in-flight job carries no scan_run_id
+    # (None): keep the legacy per-file key so ITS retries still dedupe against the original POST.
+    if payload.scan_run_id is not None:
+        request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}-{payload.scan_run_id}")
+    else:
+        request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}")
     external_id = f"fp-{payload.file_id.hex[:12]}"
 
     tracks = [

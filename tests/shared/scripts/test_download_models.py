@@ -19,7 +19,10 @@ real network I/O and ZERO real sleep.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import httpx
 import pytest
@@ -37,7 +40,7 @@ from phaze.scripts.download_models import (
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterator
 
 
 _CLASSIFIER_BASE = "https://essentia.upf.edu/models/classifiers"
@@ -53,6 +56,11 @@ def _patch_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     sleeps: list[float] = []
     monkeypatch.setattr(download_models.time, "sleep", lambda delay: sleeps.append(delay))
     return sleeps
+
+
+def _scratch_files(directory: Path) -> list[str]:
+    """All lingering download scratch files (any ``*.part*`` name, incl. ``.part.<pid>``)."""
+    return sorted(p.name for p in directory.glob("*.part*"))
 
 
 # --------------------------------------------------------------------------- #
@@ -73,8 +81,8 @@ def test_download_one_streams_atomically(tmp_path: Path) -> None:
 
     assert dest.exists(), "destination must exist after successful download"
     assert dest.read_bytes() == payload
-    # The atomic `.part` rename means no temp file is left behind on success.
-    assert not (tmp_path / "subdir" / "model.pb.part").exists()
+    # The atomic scratch-file rename means no temp file is left behind on success.
+    assert _scratch_files(tmp_path / "subdir") == []
 
 
 @respx.mock
@@ -93,7 +101,7 @@ def test_download_one_4xx_raises_and_no_dest_written(tmp_path: Path) -> None:
         _download_one(url, dest)
 
     assert not dest.exists(), "failed download must NOT leave dest in place"
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may linger after a fail-fast 4xx"
+    assert _scratch_files(tmp_path) == [], "no scratch file may linger after a fail-fast 4xx"
     # Fail-fast: a 4xx is NOT in the retry tuple, so the route is hit exactly once
     # even though a retry loop exists (260608-i21).
     assert route.call_count == 1, "a 4xx must fail fast without retrying"
@@ -122,7 +130,7 @@ def test_download_one_retries_transient_then_succeeds(
 
     assert dest.exists(), "file must download successfully on a later attempt"
     assert dest.read_bytes() == payload
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may remain after success"
+    assert _scratch_files(tmp_path) == [], "no scratch file may remain after success"
     assert len(sleeps) == 2, "backoff must sleep once per failed attempt before success"
 
 
@@ -169,7 +177,7 @@ def test_download_one_raises_after_exhausting_attempts(
     assert f"{download_models._MAX_ATTEMPTS} attempts" in str(excinfo.value)
     assert route.call_count == download_models._MAX_ATTEMPTS, "must try exactly _MAX_ATTEMPTS times"
     assert not dest.exists(), "an exhausted download must NOT promote a dest file"
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may linger after exhaustion"
+    assert _scratch_files(tmp_path) == [], "no scratch file may linger after exhaustion"
 
 
 @respx.mock
@@ -188,7 +196,7 @@ def test_download_one_failed_attempt_leaves_no_truncated_dest(
         _download_one(url, dest)
 
     assert not dest.exists(), "no truncated dest may be promoted"
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "the .part scratch file must be cleaned up"
+    assert _scratch_files(tmp_path) == [], "the scratch file must be cleaned up"
 
 
 @respx.mock
@@ -214,8 +222,81 @@ def test_download_one_retries_truncated_read_then_succeeds(
 
     assert dest.exists(), "a truncated transfer must be retried, then succeed"
     assert dest.read_bytes() == payload
-    assert not dest.with_suffix(dest.suffix + ".part").exists()
+    assert _scratch_files(tmp_path) == []
     assert len(sleeps) == 1, "exactly one backoff between the truncated read and the full one"
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent-writer safety: per-process unique scratch names (phaze-mb8d)      #
+# --------------------------------------------------------------------------- #
+
+
+@respx.mock
+def test_download_one_scratch_name_is_process_unique(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mb8d: the scratch file promoted into place is ``<dest>.part.<pid>``.
+
+    A fixed shared ``.part`` name let a concurrent lane worker's ``open("wb")``
+    truncate this process's in-flight stream; the pid suffix makes the scratch
+    path unique per process, so each writer promotes only bytes it streamed.
+    """
+    url = "https://example.test/unique.pb"
+    dest = tmp_path / "unique.pb"
+    promoted_from: list[str] = []
+    real_replace = os.replace
+
+    def capturing_replace(src: object, dst: object) -> None:
+        promoted_from.append(Path(str(src)).name)
+        real_replace(str(src), str(dst))
+
+    monkeypatch.setattr(download_models.os, "replace", capturing_replace)
+    respx.get(url).mock(return_value=httpx.Response(200, content=b"weights"))
+
+    _download_one(url, dest)
+
+    assert promoted_from == [f"unique.pb.part.{os.getpid()}"], "the scratch name must carry this process's pid"
+    assert dest.read_bytes() == b"weights"
+
+
+@respx.mock
+def test_download_one_concurrent_writer_cannot_tear_in_flight_stream(
+    tmp_path: Path,
+) -> None:
+    """phaze-mb8d: a second 'process' completing the same dest mid-stream tears nothing.
+
+    Simulates the first-boot race: while writer A streams ``model.pb``, writer B
+    (a different pid, faked via ``os.getpid``) runs a COMPLETE ``_download_one``
+    of the same dest. With the old shared ``.part`` name, B's ``open("wb")``
+    truncated A's scratch file and B's promote renamed it away, so A either
+    promoted torn bytes or crashed on ``FileNotFoundError``. With pid-unique
+    scratch names both writers promote intact payloads: B's full file lands
+    mid-stream, A's full file wins afterwards, and no scratch files linger.
+    """
+    url_a = "https://example.test/lane-a/model.pb"
+    url_b = "https://example.test/lane-b/model.pb"
+    dest = tmp_path / "model.pb"
+    payload_a = b"A" * 4096
+    payload_b = b"B" * 4096
+
+    def _a_chunks() -> Iterator[bytes]:
+        yield payload_a[:2048]
+        # Writer A's scratch file is already open on disk (created before streaming).
+        assert dest.with_suffix(f".pb.part.{os.getpid()}").exists(), "A's scratch file must exist mid-stream"
+        # Interleaved writer "B" from another pid completes the same dest.
+        with mock.patch.object(download_models.os, "getpid", return_value=999_999_999):
+            _download_one(url_b, dest)
+        assert dest.read_bytes() == payload_b, "B must promote its own intact payload mid-A-stream"
+        yield payload_a[2048:]
+
+    respx.get(url_a).mock(return_value=httpx.Response(200, content=_a_chunks()))
+    respx.get(url_b).mock(return_value=httpx.Response(200, content=payload_b))
+
+    _download_one(url_a, dest)
+
+    assert dest.read_bytes() == payload_a, "A (last promoter) must land its own intact, untorn payload"
+    assert _scratch_files(tmp_path) == [], "neither writer may leave a scratch file behind"
 
 
 # --------------------------------------------------------------------------- #
@@ -301,8 +382,84 @@ def test_ensure_present_local_redownloads_wrong_size_file(
 
     assert dest.read_bytes() == full_payload, "wrong-size file must be replaced by the full payload"
     assert dest.stat().st_size == len(full_payload)
-    assert not dest.with_suffix(dest.suffix + ".part").exists(), "no .part may remain"
+    assert _scratch_files(tmp_path) == [], "no scratch file may remain"
     assert get_route.call_count == 1, "a wrong-size file must be re-fetched exactly once"
+
+
+@respx.mock
+def test_ensure_present_local_repair_wrong_size_raises_and_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: a repair download whose size violates the manifest must FAIL, not be blessed.
+
+    The server responds with a self-consistent body (its own Content-Length matches
+    the bytes streamed, so ``_download_one`` promotes it) whose size disagrees with
+    the pinned manifest — the upstream-re-publish / proxy-error-page scenario. The
+    repair path must re-validate against ``expected_size``, delete the mismatched
+    file, and raise a per-file RuntimeError naming both sizes.
+    """
+    url = "https://example.test/republished.pb"
+    dest = tmp_path / "republished.pb"
+    dest.write_bytes(b"stale")  # wrong size -> triggers the repair path
+    _patch_sleep(monkeypatch)
+    wrong_payload = b"republished-weights-with-a-new-size" * 4
+    expected_size = len(wrong_payload) + 12345  # manifest disagrees with what the server now serves
+
+    get_route = respx.get(url).mock(return_value=httpx.Response(200, content=wrong_payload))
+
+    with pytest.raises(RuntimeError, match=r"republished\.pb") as excinfo:
+        _ensure_present_local(url, dest, expected_size)
+
+    assert str(len(wrong_payload)) in str(excinfo.value), "the on-disk size must be named"
+    assert str(expected_size) in str(excinfo.value), "the manifest size must be named"
+    assert get_route.call_count == 1, "a manifest violation is not retryable; the route is hit once"
+    assert not dest.exists(), "the manifest-violating file must be deleted, never left for essentia to load"
+
+
+@respx.mock
+def test_ensure_present_local_repair_missing_file_wrong_size_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: the missing-file repair path enforces the same manifest re-validation."""
+    url = "https://example.test/fresh-wrong.pb"
+    dest = tmp_path / "fresh-wrong.pb"
+    _patch_sleep(monkeypatch)
+    wrong_payload = b"error page pretending to be a weight file"
+
+    respx.get(url).mock(return_value=httpx.Response(200, content=wrong_payload))
+
+    with pytest.raises(RuntimeError, match=r"fresh-wrong\.pb"):
+        _ensure_present_local(url, dest, len(wrong_payload) + 1)
+
+    assert not dest.exists(), "a manifest-violating fresh download must not be left in place"
+
+
+@respx.mock
+def test_ensure_present_local_repair_chunked_wrong_size_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-10ij: a chunked response (no Content-Length) is still caught by the manifest check.
+
+    ``_download_one`` validates nothing on a Content-Length-absent response, so the
+    post-repair manifest comparison is the ONLY integrity gate on this path.
+    """
+    url = "https://example.test/chunked.pb"
+    dest = tmp_path / "chunked.pb"
+    _patch_sleep(monkeypatch)
+
+    def _chunks() -> Iterator[bytes]:
+        yield b"partial-chunked-body"
+
+    # Iterator content -> Transfer-Encoding: chunked, no Content-Length header.
+    respx.get(url).mock(return_value=httpx.Response(200, content=_chunks()))
+
+    with pytest.raises(RuntimeError, match=r"chunked\.pb"):
+        _ensure_present_local(url, dest, 999_999)
+
+    assert not dest.exists()
 
 
 # --------------------------------------------------------------------------- #

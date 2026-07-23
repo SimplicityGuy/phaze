@@ -37,6 +37,7 @@ from phaze.services.enqueue_router import (
     RoutedQueue,
     lane_for_task,
     resolve_queue_for_task,
+    resolve_queues_for_owned_files,
     select_active_agent,
 )
 from tests._queue_fakes import seed_active_agent, stub_app_state
@@ -337,6 +338,127 @@ async def test_resolve_unknown_task_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="unroutable task"):
         await resolve_queue_for_task("bogus_task", app_state, None)
+
+
+# ---------------------------------------------------------------------------
+# phaze-c9w9: ownership routing -- file-keyed agent tasks land on the file's
+# OWNING agent, never the most-recently-seen fileserver.
+# ---------------------------------------------------------------------------
+
+
+def _owned(agent_id: str) -> object:
+    """A minimal OwnedFile stand-in (the helper only reads ``.agent_id``)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(agent_id=agent_id)
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_agent_id_routes_to_owner_not_most_recent(session: AsyncSession) -> None:
+    """THE phaze-c9w9 regression: with TWO live fileservers, the owning agent wins -- not the newer one.
+
+    Pre-fix, resolve picked the most-recently-seen fileserver (here ``fileserver-west``), landing
+    ``fileserver-east``'s files on west's mount: a missing path (spurious terminal failure) or a
+    DIFFERENT file at the same path (silent cross-agent result corruption).
+    """
+    now = datetime.now(UTC)
+    await _seed_agent(session, agent_id="fileserver-east", last_seen_at=now - timedelta(minutes=5))
+    await _seed_agent(session, agent_id="fileserver-west", last_seen_at=now)  # most recently seen
+    app_state = stub_app_state()
+
+    routed = await resolve_queue_for_task("process_file", app_state, session, agent_id="fileserver-east")
+
+    assert routed.agent_id == "fileserver-east"
+    assert routed.queue.name == "phaze-agent-fileserver-east-analyze"
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_agent_id_offline_owner_raises_never_reroutes(session: AsyncSession) -> None:
+    """An offline owner raises NoActiveAgentError -- the task is NEVER rerouted to another live agent."""
+    await _seed_agent(session, agent_id="fileserver-dead", last_seen_at=None)  # never seen
+    await _seed_agent(session, agent_id="fileserver-live", last_seen_at=datetime.now(UTC))
+    app_state = stub_app_state()
+
+    with pytest.raises(NoActiveAgentError):
+        await resolve_queue_for_task("process_file", app_state, session, agent_id="fileserver-dead")
+
+
+@pytest.mark.asyncio
+async def test_resolve_with_agent_id_wrong_kind_raises(session: AsyncSession) -> None:
+    """A live COMPUTE agent named as owner still raises -- file-keyed tasks are fileserver-only (phaze-5r8f)."""
+    await _seed_agent(session, agent_id="compute-burst", last_seen_at=datetime.now(UTC), kind="compute")
+    app_state = stub_app_state()
+
+    with pytest.raises(NoActiveAgentError):
+        await resolve_queue_for_task("scan_live_set", app_state, session, agent_id="compute-burst")
+
+
+@pytest.mark.asyncio
+async def test_resolve_controller_task_with_agent_id_raises() -> None:
+    """agent_id on a controller task is a programming error -> ValueError (fail loud)."""
+    app_state = stub_app_state()
+
+    with pytest.raises(ValueError, match="not agent-scoped"):
+        await resolve_queue_for_task("generate_proposals", app_state, None, agent_id="fileserver-01")
+
+
+@pytest.mark.asyncio
+async def test_resolve_owned_files_groups_by_owner(session: AsyncSession) -> None:
+    """Bulk grouping: each owner's files land on THAT owner's lane queue, order preserved within a group."""
+    now = datetime.now(UTC)
+    await _seed_agent(session, agent_id="fileserver-east", last_seen_at=now - timedelta(minutes=5))
+    await _seed_agent(session, agent_id="fileserver-west", last_seen_at=now)
+    app_state = stub_app_state()
+    e1, w1, e2 = _owned("fileserver-east"), _owned("fileserver-west"), _owned("fileserver-east")
+
+    routed_groups, skipped = await resolve_queues_for_owned_files("extract_file_metadata", app_state, session, [e1, w1, e2])
+
+    assert skipped == []
+    by_agent = {routed.agent_id: (routed, group) for routed, group in routed_groups}
+    assert set(by_agent) == {"fileserver-east", "fileserver-west"}
+    east_routed, east_group = by_agent["fileserver-east"]
+    assert east_group == [e1, e2]
+    assert east_routed.queue.name == "phaze-agent-fileserver-east-meta"
+    _, west_group = by_agent["fileserver-west"]
+    assert west_group == [w1]
+
+
+@pytest.mark.asyncio
+async def test_resolve_owned_files_skips_offline_owner_files(session: AsyncSession) -> None:
+    """Files owned by an offline agent are SKIPPED (returned separately), never rerouted to the live one."""
+    await _seed_agent(session, agent_id="fileserver-live", last_seen_at=datetime.now(UTC))
+    await _seed_agent(session, agent_id="fileserver-dead", last_seen_at=None)
+    app_state = stub_app_state()
+    live_file, dead_file = _owned("fileserver-live"), _owned("fileserver-dead")
+
+    routed_groups, skipped = await resolve_queues_for_owned_files("fingerprint_file", app_state, session, [live_file, dead_file])
+
+    assert skipped == [dead_file]
+    assert len(routed_groups) == 1
+    routed, group = routed_groups[0]
+    assert routed.agent_id == "fileserver-live"
+    assert group == [live_file]
+
+
+@pytest.mark.asyncio
+async def test_resolve_owned_files_all_owners_offline_raises(session: AsyncSession) -> None:
+    """Non-empty set with NO live owner raises NoActiveAgentError (callers keep their empty-state)."""
+    await _seed_agent(session, agent_id="fileserver-dead", last_seen_at=None)
+    app_state = stub_app_state()
+
+    with pytest.raises(NoActiveAgentError):
+        await resolve_queues_for_owned_files("process_file", app_state, session, [_owned("fileserver-dead")])
+
+
+@pytest.mark.asyncio
+async def test_resolve_owned_files_empty_set_is_a_noop(session: AsyncSession) -> None:
+    """An empty file set returns ([], []) without raising (zero-selection triggers stay 200)."""
+    app_state = stub_app_state()
+
+    routed_groups, skipped = await resolve_queues_for_owned_files("process_file", app_state, session, [])
+
+    assert routed_groups == []
+    assert skipped == []
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import pytest
 from phaze.services.analysis import (
     GENRE_MODEL,
     MODEL_SETS,
+    AnalysisDecodeError,
     CoarseWindow,
     FineWindow,
     ModelConfig,
@@ -630,6 +631,43 @@ def test_analyze_file_coarse_failure_isolation(mock_es: MagicMock, mock_get_labe
     assert result["style"] is None
     assert result["danceability"] is None
     assert result["features"] == {}
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=600.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_raises_when_every_window_fails(mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock) -> None:
+    """phaze-zibn: total decode failure must raise, not return an empty success.
+
+    A truncated file whose header still probes a duration fails EasyLoader on every
+    window in BOTH passes. Per-window isolation previously returned a normal result
+    dict (all-None aggregates, 0 analyzed windows), the completion PUT stamped
+    analysis_completed_at, and the undecodable file was permanently recorded as
+    successfully analyzed. The all-windows-failed floor raises instead.
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+    mock_es.EasyLoader.side_effect = RuntimeError("no decodable frames")
+
+    with pytest.raises(AnalysisDecodeError, match="all analysis windows failed to decode"):
+        analyze_file("/fake/truncated.mp3", "/fake/models")
+
+
+@patch("phaze.services.analysis._probe_duration_sec", return_value=0.0)
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_zero_natural_windows_does_not_trip_the_decode_floor(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, _mock_dur: MagicMock
+) -> None:
+    """A zero-duration probe yields 0 natural windows in both passes: 0/0 coverage is not
+    'every window failed', so the phaze-zibn floor must not fire (the 0/0 shape stays the
+    caller's concern -- job_runner already floors it)."""
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/empty.mp3", "/fake/models")
+
+    assert result["fine_windows_total"] == 0
+    assert result["coarse_windows_total"] == 0
+    assert result["windows"] == []
 
 
 def test_derive_danceability_returns_none_when_absent() -> None:

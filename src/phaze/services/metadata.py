@@ -19,12 +19,31 @@ logger = structlog.get_logger(__name__)
 class TagReadError(Exception):
     """Raised by :func:`extract_tags` in ``strict`` mode when a file cannot be read/parsed.
 
-    The default (non-strict) reader swallows every open/parse failure into an all-``None``
-    :class:`ExtractedTags`, which is correct for best-effort ingestion but wrong for
-    verify-after-write: there a swallowed re-read is indistinguishable from a file that
-    genuinely has no tags (phaze-vq3g). ``strict=True`` raises this instead so the caller can
-    tell "could not re-read" apart from "tags absent".
+    The default (non-strict) reader swallows PARSE failures into an all-``None``
+    :class:`ExtractedTags` (I/O failures propagate as ``OSError`` -- phaze-todn), which is
+    correct for best-effort ingestion but wrong for verify-after-write: there a swallowed
+    re-read is indistinguishable from a file that genuinely has no tags (phaze-vq3g).
+    ``strict=True`` raises this instead so the caller can tell "could not re-read" apart
+    from "tags absent".
     """
+
+
+def _io_cause(exc: BaseException) -> OSError | None:
+    """Return the ``OSError`` in *exc*'s explicit cause chain, if any (phaze-todn).
+
+    mutagen wraps open/read failures in ``MutagenError`` (raised ``from`` the original
+    ``OSError``), so classifying an extraction failure as I/O-vs-parse requires walking
+    ``__cause__``. Only the explicit chain is inspected -- ``__context__`` can carry an
+    unrelated exception that happened to be in flight.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__
+    return None
 
 
 @dataclass
@@ -199,8 +218,15 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
     """Extract audio tags from a file using mutagen.
 
     Returns an ExtractedTags dataclass with normalized fields and raw tag dump.
-    On any error or missing tags, returns ExtractedTags with all None fields
-    and an empty raw_tags dict.
+    A file that opens cleanly but is unrecognized or carries no/unparseable tags
+    returns ExtractedTags with all None fields and an empty raw_tags dict.
+
+    An I/O failure (``OSError``, incl. ``FileNotFoundError`` -- the file is missing, or
+    the media mount hiccuped) PROPAGATES instead of degrading to an empty result
+    (phaze-todn): swallowing it here made the metadata stage report a successful
+    all-``None`` extraction for a file it never read, permanently masking the failure
+    from the task's terminal-failure/retry machinery. Callers that want the degrade
+    behavior must catch ``OSError`` explicitly.
 
     Args:
         file_path: Path to the audio file.
@@ -209,6 +235,11 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
             paths use this so a re-read failure is distinguishable from genuinely-absent tags
             (phaze-vq3g). A file that opens cleanly but carries no tags is NOT an error -- it
             returns an all-``None`` result in both modes.
+
+    Raises:
+        OSError: The file could not be READ (non-strict mode). Distinct from "the file has
+            no tags", which stays a successful empty extraction.
+        TagReadError: Any open/parse failure in ``strict`` mode (phaze-vq3g).
     """
     try:
         audio = mutagen.File(file_path)
@@ -216,7 +247,19 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
         if strict:
             msg = f"failed to read tags from {file_path}: {exc}"
             raise TagReadError(msg) from exc
-        logger.debug("Failed to open file with mutagen: %s", file_path)
+        if isinstance(exc, OSError):
+            # phaze-todn: a read failure is NOT 'no tags' -- let the caller's failure/retry
+            # machinery run instead of recording an empty successful extraction.
+            raise
+        io_error = _io_cause(exc)
+        if io_error is not None:
+            # mutagen wraps open/read OSErrors in MutagenError (which does NOT subclass
+            # OSError), so unwrap and re-raise the underlying I/O failure -- same
+            # phaze-todn rule as the direct-OSError branch above.
+            raise io_error from exc
+        # The file was readable but mutagen could not parse it (corrupt/exotic tag data):
+        # a genuinely-unparseable-tags case, kept as an empty successful extraction.
+        logger.debug("Failed to parse tags with mutagen: %s", file_path)
         return ExtractedTags()
 
     if audio is None:

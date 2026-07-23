@@ -169,6 +169,29 @@ async def _run_analysis_with_progress(
                 await _post_progress_count(api, file_id, last_count)
 
 
+async def _report_terminal_failure(api: PhazeAgentClient, file_id: uuid.UUID, failure: AnalysisFailurePayload) -> None:
+    """Deliver a TERMINAL failure report without letting delivery failure escape (phaze-x3dg).
+
+    The inner-timeout and child-crash outcomes are terminal by design (T-43-08: no blind
+    re-run of a >timeout file), but the report POST used to run unprotected inside the
+    outer try: a transient control-plane outage during the POST escaped into the generic
+    ``except Exception`` handler, converting a terminal outcome into a full SAQ retry of a
+    deterministically-doomed multi-hour analysis (and reporting ``reason="error"`` on the
+    final attempt, corrupting the timeout/crashed distinction). On delivery failure we log
+    and move on — the caller still returns the terminal status dict, and queue-loss
+    reconcile/Recover delivers the file's state later.
+    """
+    try:
+        await api.report_analysis_failed(file_id, failure)
+    except Exception:
+        logger.warning(
+            "process_file: terminal failure report POST failed — keeping the terminal outcome "
+            "(no re-analysis); reconcile/recovery will deliver the state later",
+            file_id=str(file_id),
+            reason=failure.reason,
+        )
+
+
 async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     """Run essentia analysis on a local file and post results via HTTP."""
     payload = ProcessFilePayload.model_validate(kwargs)
@@ -271,12 +294,17 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             # Inner kill (the driver SIGKILLs a child past analysis_inner_timeout_sec): the file
             # is deterministically too long. TERMINAL -- report and return NORMALLY so SAQ marks
             # the job COMPLETE (no blind re-run of a >timeout file; T-43-08). RESEARCH §Q5.
-            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="timeout"))
+            # The report is delivery-guarded (phaze-x3dg): a failed POST must not escape into
+            # the generic retry path and re-run the doomed analysis.
+            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="timeout"))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
-        except AnalysisSubprocessError:
+        except AnalysisSubprocessError as exc:
             # essentia OOM/segfault/raise crashed the child (nonzero exit). Also deterministic ->
-            # TERMINAL the same way (the ProcessExpired mapping, preserved).
-            await api.report_analysis_failed(payload.file_id, AnalysisFailurePayload(reason="crashed"))
+            # TERMINAL the same way (the ProcessExpired mapping, preserved). The child's terminal
+            # error line rides along as detail so the durable failure marker names the actual
+            # cause -- e.g. phaze-zibn's AnalysisDecodeError (every window failed to decode)
+            # is distinguishable from an essentia segfault without re-running anything.
+            await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 
         features = analysis.get("features", {}) if isinstance(analysis, dict) else {}

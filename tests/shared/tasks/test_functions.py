@@ -418,6 +418,59 @@ async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -
 
     assert result == {"file_id": str(file_id), "status": "analysis_failed"}
     api.report_analysis_failed.assert_awaited_once()
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "crashed"
+    # phaze-zibn: the child's terminal error line rides along as detail so the durable
+    # failure marker names the actual cause (e.g. AnalysisDecodeError vs a segfault).
+    assert failure.error is not None
+    assert "essentia died" in failure.error
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_timeout_report_post_failure_stays_terminal(mock_pool: AsyncMock) -> None:
+    """A failed terminal-failure report POST must NOT convert the timeout outcome into a retry.
+
+    phaze-x3dg: the report used to run unprotected inside the outer try, so a transient
+    control-plane outage escaped into the generic handler and SAQ blindly re-ran a
+    deterministically-doomed multi-hour analysis. The task must still return the terminal
+    status dict (SAQ marks the job COMPLETE) with reason='timeout' attempted exactly once —
+    no reason='error' fallback report, no re-raise.
+    """
+    file_id = uuid.uuid4()
+    mock_pool.side_effect = TimeoutError("inner timeout")
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(side_effect=RuntimeError("app server mid-restart"))
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True)  # retries left — the escape path SAQ would have taken
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result == {"file_id": str(file_id), "status": "analysis_failed"}
+    api.report_analysis_failed.assert_awaited_once()
+    assert api.report_analysis_failed.await_args.args[1].reason == "timeout"
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_crash_report_post_failure_stays_terminal(mock_pool: AsyncMock) -> None:
+    """Same delivery guard for the child-crash branch: a failed reason='crashed' report
+    still ends terminally instead of re-raising into the generic retry path (phaze-x3dg)."""
+    from phaze.services.analysis_exec import AnalysisSubprocessError
+
+    file_id = uuid.uuid4()
+    mock_pool.side_effect = AnalysisSubprocessError("analysis child failed (exit 1)", exit_code=1)
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(side_effect=RuntimeError("app server mid-restart"))
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result == {"file_id": str(file_id), "status": "analysis_failed"}
+    api.report_analysis_failed.assert_awaited_once()
     assert api.report_analysis_failed.await_args.args[1].reason == "crashed"
     api.put_analysis.assert_not_awaited()
 

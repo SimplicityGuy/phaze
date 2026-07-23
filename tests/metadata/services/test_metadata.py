@@ -2,8 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from phaze.services.metadata import (
     ExtractedTags,
+    TagReadError,
     _first_str,
     _parse_track,
     _parse_year,
@@ -340,18 +343,60 @@ class TestExtractTagsNoTags:
         assert result.raw_tags == {}
 
 
-class TestExtractTagsNonexistent:
-    """Tests for extract_tags on nonexistent files."""
+class TestExtractTagsReadFailure:
+    """phaze-todn: an I/O failure must PROPAGATE, never masquerade as an empty extraction.
+
+    Swallowing OSError here made the metadata stage upsert an all-None row and report
+    success for a file it never read (moved/deleted file, media-mount hiccup) -- the
+    task's terminal-failure/retry machinery exists for exactly these errors and was
+    unreachable.
+    """
 
     @patch("phaze.services.metadata.mutagen.File")
-    def test_nonexistent_file_returns_empty(self, mock_file):
+    def test_nonexistent_file_raises(self, mock_file):
         mock_file.side_effect = FileNotFoundError("No such file")
 
-        result = extract_tags("/nonexistent/file.mp3")
+        with pytest.raises(FileNotFoundError, match="No such file"):
+            extract_tags("/nonexistent/file.mp3")
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_transient_os_error_raises(self, mock_file):
+        mock_file.side_effect = OSError("Input/output error")
+
+        with pytest.raises(OSError, match="Input/output error"):
+            extract_tags("/mnt/media/track.mp3")
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_mutagen_wrapped_io_error_raises_the_underlying_os_error(self, mock_file):
+        """mutagen wraps open failures in MutagenError (not an OSError subclass); the
+        underlying OSError must be unwrapped and re-raised, not treated as a parse error."""
+        import mutagen
+
+        original = FileNotFoundError(2, "No such file or directory")
+        wrapped = mutagen.MutagenError(original)
+        wrapped.__cause__ = original
+        mock_file.side_effect = wrapped
+
+        with pytest.raises(FileNotFoundError):
+            extract_tags("/gone/track.mp3")
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_strict_mode_wraps_os_error_in_tag_read_error(self, mock_file):
+        """Strict mode keeps the phaze-vq3g contract: every open failure becomes TagReadError."""
+        mock_file.side_effect = OSError("Input/output error")
+
+        with pytest.raises(TagReadError, match="Input/output error"):
+            extract_tags("/mnt/media/track.mp3", strict=True)
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_parse_error_still_returns_empty(self, mock_file):
+        """A readable file whose tags mutagen cannot parse stays a successful empty extraction."""
+        mock_file.side_effect = ValueError("can't sync to MPEG frame")
+
+        result = extract_tags("/music/corrupt_header.mp3")
 
         assert isinstance(result, ExtractedTags)
         assert result.artist is None
-        assert result.title is None
         assert result.raw_tags == {}
 
 

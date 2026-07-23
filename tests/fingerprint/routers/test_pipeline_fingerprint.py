@@ -11,7 +11,7 @@ import pytest
 from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.schemas.agent_tasks import FingerprintFilePayload
-from tests._queue_fakes import seed_active_agent, wire_fakes
+from tests._queue_fakes import make_agent_live, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
     """POST /api/v1/fingerprint enqueues fingerprint_file onto phaze-agent-nox-fingerprint (not default)."""
     session.add_all([_make_file() for _ in range(3)])
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/fingerprint")
@@ -59,7 +59,7 @@ async def test_trigger_fingerprint_enqueues_eligible(client: AsyncClient, sessio
 
     await _drain_background()
     assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-nox-fingerprint", "fingerprint_file")}
+    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")}
     assert all(q != "default" for q, _, _ in capture)
 
 
@@ -77,7 +77,7 @@ async def test_trigger_fingerprint_enqueues_complete_payload(client: AsyncClient
     await session.commit()
     expected_id = str(file_rec.id)
     expected_path = file_rec.original_path
-    agent = await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     response = await client.post("/api/v1/fingerprint")
@@ -87,13 +87,13 @@ async def test_trigger_fingerprint_enqueues_complete_payload(client: AsyncClient
     await _drain_background()
     assert len(capture) == 1
     queue_name, task_name, kwargs = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-nox-fingerprint", "fingerprint_file")
+    assert (queue_name, task_name) == ("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")
 
     # All three required fields present -- not just file_id (the CR-02 bug).
     assert set(kwargs) == {"file_id", "original_path", "agent_id"}
     assert kwargs["file_id"] == expected_id
     assert kwargs["original_path"] == expected_path
-    assert kwargs["agent_id"] == agent.id
+    assert kwargs["agent_id"] == "test-fileserver"
 
     # The exact kwargs the agent worker receives validate against FingerprintFilePayload.
     validated = FingerprintFilePayload.model_validate(kwargs)

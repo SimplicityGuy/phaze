@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import os
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
@@ -15,6 +16,19 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
+
+# phaze-mv1f: must exceed the sidecars' SUBPROCESS_TIMEOUT (default 3600s, sized for
+# multi-hour concert sets) or the app-side call times out first and the sidecar budget is
+# meaningless -- the old 120.0 did exactly that. Read via os.environ rather than
+# phaze.config to keep this module's import chain httpx+structlog only (agent-worker
+# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar
+# still fails fast instead of pinning the lane for an hour.
+SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "3900"))
+_SIDECAR_HTTP_TIMEOUT = httpx.Timeout(SIDECAR_HTTP_TIMEOUT_SEC, connect=10.0)
+# Health probes are cheap (audfprint: filesystem-only; panako: a JVM probe capped at 30s
+# by its own HEALTH_TIMEOUT) -- a wedged sidecar must surface as unhealthy quickly, not
+# hang health_all for the full ingest budget.
+_SIDECAR_HEALTH_TIMEOUT = httpx.Timeout(35.0, connect=10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +54,31 @@ class IngestResult:
     status: str
     error: str | None = None
     engine_error: bool = False
+
+
+class EngineQueryError(RuntimeError):
+    """ENGINE-level ``/query`` failure: the sidecar is down, unreachable, or 5xx-ing (phaze-z7yw).
+
+    The query-path twin of ``IngestResult.engine_error``: it separates "the engine could not
+    answer" from "the engine answered and found nothing". ``query()`` raising this (instead of
+    returning ``[]``) is what lets ``combined_query`` tell a total outage apart from a genuine
+    no-match -- before it existed, both collapsed to an empty list and ``scan_live_set`` drained
+    an engine outage into permanent, success-looking ``no_matches`` verdicts.
+    """
+
+    def __init__(self, engine: str, message: str) -> None:
+        super().__init__(f"{engine}: {message}")
+        self.engine = engine
+
+
+class FingerprintQueryUnavailableError(RuntimeError):
+    """EVERY fingerprint engine failed a query at the ENGINE level (phaze-z7yw).
+
+    Raised by ``combined_query`` so its empty-list return keeps a single meaning: at least one
+    healthy engine answered and genuinely found no matches. Callers must treat this as a
+    transient outage (re-raise for retry/backoff) and must NOT record a terminal per-file
+    verdict -- the query-path mirror of the phaze-ds1z ingest rule.
+    """
 
 
 @dataclass
@@ -115,13 +154,40 @@ async def _post_ingest(client: httpx.AsyncClient, engine: str, file_path: str) -
     return IngestResult(status="failed", error=f"HTTP {resp.status_code}: {resp.text}", engine_error=engine_error)
 
 
+async def _post_query(client: httpx.AsyncClient, engine: str, file_path: str) -> list[QueryMatch]:
+    """POST ``/query`` and classify the outcome as engine-level or file-level (phaze-z7yw).
+
+    The query-path mirror of :func:`_post_ingest`, shared by both sidecar adapters so the
+    classification cannot drift between them:
+
+    - 200                    -> parsed ``QueryMatch`` list (possibly empty: a genuine no-match)
+    - 5xx / transport error  -> raises :class:`EngineQueryError` (the sidecar is sick; an empty
+      answer here is an OUTAGE, and the caller must NOT record a terminal no-match verdict)
+    - any other non-200      -> ``[]`` (the sidecar is healthy and rejected THIS file -- a real,
+      file-specific outcome safe to treat as no matches)
+    """
+    try:
+        resp = await client.post("/query", json={"file_path": file_path})
+    except Exception as exc:
+        # Connect/read/timeout: the sidecar is unreachable, not the file's fault.
+        logger.warning("fingerprint query transport failure", engine=engine, error=str(exc))
+        raise EngineQueryError(engine, f"query transport failure: {exc}") from exc
+    if resp.status_code >= 500:
+        logger.warning("fingerprint query engine failure", engine=engine, status_code=resp.status_code)
+        raise EngineQueryError(engine, f"query engine failure: HTTP {resp.status_code}")
+    if resp.status_code != 200:
+        return []
+    data = resp.json()
+    return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"], timestamp=m.get("timestamp")) for m in data.get("matches", [])]
+
+
 class AudfprintAdapter:
     """HTTP client adapter for the audfprint container (D-06)."""
 
     def __init__(self, base_url: str = "http://audfprint:8001", weight: float = 0.6) -> None:
         self.base_url = base_url
         self._weight = weight
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=_SIDECAR_HTTP_TIMEOUT)
 
     @property
     def name(self) -> str:
@@ -136,21 +202,13 @@ class AudfprintAdapter:
         return await _post_ingest(self._client, self.name, file_path)
 
     async def query(self, file_path: str) -> list[QueryMatch]:
-        """POST /query with file_path, return list of QueryMatch."""
-        try:
-            resp = await self._client.post("/query", json={"file_path": file_path})
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"], timestamp=m.get("timestamp")) for m in data.get("matches", [])]
-        except Exception:
-            logger.exception("audfprint query failed")
-            return []
+        """POST /query with file_path, return list of QueryMatch (classified per phaze-z7yw)."""
+        return await _post_query(self._client, self.name, file_path)
 
     async def health(self) -> bool:
         """GET /health, return True if 200."""
         try:
-            resp = await self._client.get("/health")
+            resp = await self._client.get("/health", timeout=_SIDECAR_HEALTH_TIMEOUT)
             return resp.status_code == 200
         except Exception:
             return False
@@ -166,7 +224,7 @@ class PanakoAdapter:
     def __init__(self, base_url: str = "http://panako:8002", weight: float = 0.4) -> None:
         self.base_url = base_url
         self._weight = weight
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=_SIDECAR_HTTP_TIMEOUT)
 
     @property
     def name(self) -> str:
@@ -181,21 +239,13 @@ class PanakoAdapter:
         return await _post_ingest(self._client, self.name, file_path)
 
     async def query(self, file_path: str) -> list[QueryMatch]:
-        """POST /query with file_path, return list of QueryMatch."""
-        try:
-            resp = await self._client.post("/query", json={"file_path": file_path})
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            return [QueryMatch(track_id=m["track_id"], confidence=m["confidence"], timestamp=m.get("timestamp")) for m in data.get("matches", [])]
-        except Exception:
-            logger.exception("panako query failed")
-            return []
+        """POST /query with file_path, return list of QueryMatch (classified per phaze-z7yw)."""
+        return await _post_query(self._client, self.name, file_path)
 
     async def health(self) -> bool:
         """GET /health, return True if 200."""
         try:
-            resp = await self._client.get("/health")
+            resp = await self._client.get("/health", timeout=_SIDECAR_HEALTH_TIMEOUT)
             return resp.status_code == 200
         except Exception:
             return False
@@ -237,18 +287,32 @@ class FingerprintOrchestrator:
         If both engines match same track: weighted average.
         If only one engine matches: cap at 70.0 (D-12).
         Sort by confidence descending.
+
+        Raises :class:`FingerprintQueryUnavailableError` when EVERY engine failed at the
+        ENGINE level (phaze-z7yw), so an empty return always means at least one healthy
+        engine answered and genuinely found no matches -- never a masked total outage.
         """
         # Collect matches by track_id from each engine
         matches_by_track: dict[str, dict[str, float]] = defaultdict(dict)
+        errors_by_engine: dict[str, str] = {}
 
         for engine in self.engines:
             try:
                 engine_matches = await engine.query(file_path)
-            except Exception:
+            except Exception as exc:
+                # An adapter that raises out of ``query`` is an engine-level fault by
+                # construction (the adapters classify every per-file rejection themselves and
+                # return, never raise) -- the query-path mirror of ingest_all (phaze-z7yw).
                 logger.exception("Engine %s query failed", engine.name)
+                errors_by_engine[engine.name] = str(exc)
                 continue
             for match in engine_matches:
                 matches_by_track[match.track_id][engine.name] = match.confidence
+
+        if self.engines and len(errors_by_engine) == len(self.engines):
+            detail = "; ".join(f"{name}: {error}" for name, error in errors_by_engine.items())
+            msg = f"all fingerprint engines failed to answer the query: {detail}"
+            raise FingerprintQueryUnavailableError(msg)
 
         # Calculate combined scores
         combined: list[CombinedMatch] = []

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from saq import Job
+from sqlalchemy import update
 
 from phaze.models.agent import Agent
 from phaze.services.enqueue_router import LANES
@@ -386,6 +387,21 @@ def stub_app_state() -> SimpleNamespace:
             return self.queue_for(agent_id, "")
 
     return SimpleNamespace(controller_queue=controller_queue, task_router=_StubRouter())
+
+
+async def make_agent_live(session: AsyncSession, agent_id: str = "test-fileserver") -> None:
+    """Stamp ``last_seen_at`` on an EXISTING agent row so ownership routing resolves it.
+
+    phaze-c9w9: file-keyed agent tasks route to the FILE's owning agent
+    (``FileRecord.agent_id``) iff that agent is live -- never to the most-recently-seen
+    fileserver. ``make_file`` owns its rows to the conftest-seeded ``test-fileserver``
+    FK parent, which is deliberately never-seen (``last_seen_at IS NULL``) so the
+    no-active-agent paths stay testable. Tests that expect a file-keyed enqueue to
+    ROUTE call this to bring the owner live (the update happens inside the per-test
+    transaction, so hermeticity is preserved).
+    """
+    await session.execute(update(Agent).where(Agent.id == agent_id).values(last_seen_at=datetime.now(UTC)))
+    await session.commit()
 
 
 async def seed_active_agent(session: AsyncSession, agent_id: str = "nox", *, kind: str = "fileserver") -> Agent:
