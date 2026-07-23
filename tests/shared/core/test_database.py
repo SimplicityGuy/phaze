@@ -64,6 +64,39 @@ async def test_run_migrations_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_run_migrations_escapes_percent_in_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A percent-encoded credential in ``settings.database_url`` must not crash ``run_migrations`` (phaze-7oya).
+
+    ``_run_upgrade_head_sync`` builds a ConfigParser-backed Alembic ``Config`` and stores
+    ``settings.database_url`` into it via ``set_main_option`` BEFORE calling
+    ``command.upgrade`` (mocked here so no real DB/env.py is touched) -- so this exercises the
+    escaping at the ``database.py`` call site directly, independent of alembic/env.py's own
+    (separately tested) escaping. A real Postgres password with a URL-reserved character (e.g.
+    ``p@ss`` -> ``p%40ss``) produces exactly this literal ``%`` shape. Pre-fix, ``set_main_option``
+    itself raises ``ValueError('invalid interpolation syntax')`` before ``command.upgrade`` is
+    ever reached.
+    """
+    monkeypatch.setattr(db.settings, "auto_migrate", True)
+    monkeypatch.setattr(db.settings, "database_url", "postgresql+asyncpg://phaze:s3cret%40home@db:5432/phaze")
+
+    upgrade_calls: list[tuple[object, str]] = []
+
+    def _fake_upgrade(cfg: object, revision: str) -> None:
+        upgrade_calls.append((cfg, revision))
+
+    monkeypatch.setattr(db.command, "upgrade", _fake_upgrade)
+
+    await db.run_migrations()  # must not raise
+
+    assert len(upgrade_calls) == 1
+    cfg, revision = upgrade_calls[0]
+    assert revision == "head"
+    assert cfg.get_main_option("sqlalchemy.url") == "postgresql+asyncpg://phaze:s3cret%40home@db:5432/phaze", (
+        "escaped round-trip must deinterpolate back to the original literal URL"
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_migrations_skips_when_auto_migrate_false(monkeypatch: pytest.MonkeyPatch) -> None:
     """``settings.auto_migrate=false`` must short-circuit before invoking alembic."""
     monkeypatch.setattr(db.settings, "auto_migrate", False)
