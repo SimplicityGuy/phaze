@@ -1,18 +1,29 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
-# Host port for the ephemeral integration-test Postgres (5433 avoids the dev DB on 5432)
+# Host port for the SHARED test-harness Postgres (5433 avoids the dev DB on 5432). This
+# container is deliberately reused across every concurrent worktree/session (via `test-db`,
+# `test-db-for`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
+# protect it. `integration-test` does NOT use this container; it has its own dedicated pair below.
 test_db_port := env_var_or_default("PHAZE_TEST_DB_PORT", "5433")
-# Fixed container name for the ephemeral integration-test Postgres
+# Fixed container name for the SHARED test-harness Postgres
 test_db_container := "phaze-test-db"
-# Host port for the ephemeral integration-test Redis (6380 avoids a dev Redis on 6379)
+# Host port for the SHARED test-harness Redis (6380 avoids a dev Redis on 6379)
 test_redis_port := env_var_or_default("PHAZE_TEST_REDIS_PORT", "6380")
-# Fixed container name for the ephemeral integration-test Redis
+# Fixed container name for the SHARED test-harness Redis
 test_redis_container := "phaze-test-redis"
 # Logical database count on the test Redis. Redis defaults to 16; we raise it so the per-worktree
 # index space (DB 0 is the allocation registry, seats get 1..N-1) comfortably exceeds any realistic
 # concurrent-seat count. `just test-db-for <name>` allocates out of this space.
 test_redis_databases := env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64")
+# Dedicated, disposable Postgres + Redis for `just integration-test` ONLY (phaze-pik6). A SEPARATE
+# container pair (own names + ports) so integration-test's auto-teardown EXIT trap can never
+# `docker rm -f` the SHARED phaze-test-db/phaze-test-redis harness other concurrent worktrees rely
+# on -- the same isolation principle as perf_db_container below, applied to the one-shot test path.
+integration_db_container := "phaze-integration-test-db"
+integration_db_port := env_var_or_default("PHAZE_INTEGRATION_TEST_DB_PORT", "5434")
+integration_redis_container := "phaze-integration-test-redis"
+integration_redis_port := env_var_or_default("PHAZE_INTEGRATION_TEST_REDIS_PORT", "6381")
 # Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
 # (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
 # (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
@@ -351,7 +362,7 @@ test-db-for name:
     echo "  export MIGRATIONS_TEST_DATABASE_URL=\"postgresql+asyncpg://phaze:phaze@localhost:${port}/${migrations_db}\""
     echo "  export PHAZE_REDIS_URL=\"redis://localhost:${redis_port}/${redis_db}\""
 
-[doc('Stop and remove the ephemeral integration-test Postgres + Redis')]
+[doc('Stop and remove the SHARED test-harness Postgres + Redis (phaze-test-db/phaze-test-redis) -- affects every concurrent worktree/session using them')]
 [group('test')]
 test-db-down:
     #!/usr/bin/env bash
@@ -360,16 +371,79 @@ test-db-down:
     docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
 
-[doc('Run the full suite against self-contained ephemeral Postgres + Redis (auto teardown)')]
+[doc('Stop and remove the DEDICATED integration-test Postgres + Redis (never the shared phaze-test-db/phaze-test-redis harness)')]
+[group('test')]
+integration-test-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker rm -f "{{integration_db_container}}" >/dev/null 2>&1 || true
+    docker rm -f "{{integration_redis_container}}" >/dev/null 2>&1 || true
+    echo "🧹 Removed {{integration_db_container}} + {{integration_redis_container}}"
+
+[doc('Run the full suite against DEDICATED, disposable Postgres + Redis (auto teardown; phaze-pik6 -- never touches the SHARED phaze-test-db/phaze-test-redis harness other worktrees rely on)')]
 [group('test')]
 integration-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    just test-db
-    trap 'just test-db-down' EXIT
-    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
-    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_migrations_test"
-    export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
+    container="{{integration_db_container}}"
+    port="{{integration_db_port}}"
+    redis_container="{{integration_redis_container}}"
+    redis_port="{{integration_redis_port}}"
+    # This pair of containers is DEDICATED to this one-shot invocation (own names, own ports --
+    # never phaze-test-db/phaze-test-redis), so the unconditional rm-then-run below and the
+    # EXIT-trap teardown are safe: nothing else can be relying on THESE specific containers the
+    # way concurrent worktrees rely on the shared harness (phaze-pik6). Two concurrent
+    # `integration-test` invocations on the same host would still race each other here -- that is
+    # a self-contained, documented one-shot recipe, not the shared multi-seat path (that's
+    # `test-db-for` + `check`), so it is out of scope for this fix.
+    trap 'docker rm -f "{{integration_db_container}}" "{{integration_redis_container}}" >/dev/null 2>&1 || true' EXIT
+    echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker run -d --name "$container" \
+        -e POSTGRES_USER=phaze \
+        -e POSTGRES_PASSWORD=phaze \
+        -e POSTGRES_DB=phaze_test \
+        -p "${port}:5432" \
+        postgres:18-alpine >/dev/null
+    echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port}..."
+    docker rm -f "$redis_container" >/dev/null 2>&1 || true
+    docker run -d --name "$redis_container" \
+        -p "${redis_port}:6379" \
+        redis:7-alpine >/dev/null
+    echo "⏳ Waiting for Postgres to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
+            db_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${db_ready:-0}" != "1" ]; then
+        echo "❌ ${container} did not become ready within 30s" >&2
+        docker logs "$container" >&2 || true
+        exit 1
+    fi
+    echo "⏳ Waiting for Redis to accept connections..."
+    for _ in $(seq 1 30); do
+        if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
+            redis_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "${redis_ready:-0}" != "1" ]; then
+        echo "❌ ${redis_container} did not become ready within 30s" >&2
+        docker logs "$redis_container" >&2 || true
+        exit 1
+    fi
+    docker exec "$container" psql -U phaze -d phaze_test -tc \
+        "SELECT 1 FROM pg_database WHERE datname = 'phaze_migrations_test'" \
+        | grep -q 1 \
+        || docker exec "$container" psql -U phaze -d phaze_test \
+            -c "CREATE DATABASE phaze_migrations_test OWNER phaze;" >/dev/null
+    export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_test"
+    export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_migrations_test"
+    export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"
     uv run pytest tests/ -q
 
 [doc('Run ruff linter')]
@@ -404,14 +478,15 @@ check: lint typecheck
     set -euo pipefail
     # A fresh worktree has no Postgres/Redis of its own -- `test` (bare `uv run
     # pytest`) then dies at fixture setup dialing the CI-matching localhost:5432
-    # default (tests/conftest.py:45). `just integration-test` already solves this
-    # for a one-shot run, but its `test-db-down` EXIT trap would tear down a
-    # services container other concurrent worktrees/sessions are relying on if
-    # `check` reused it. So: provision (idempotently, via the existing `test-db`
-    # recipe) and export the matching env here, but never tear down -- leave that
-    # to an explicit `just test-db-down`. If the caller already exported
-    # TEST_DATABASE_URL (CI, another `just` recipe, a shared multi-worktree rig
-    # with per-worktree database names), respect it verbatim and skip provisioning.
+    # default (tests/conftest.py:45). `check` provisions the SHARED test harness
+    # (idempotently, via the existing `test-db` recipe) and exports the matching env
+    # here, but never tears it down -- unlike `integration-test`, which runs against
+    # its own DEDICATED containers with an auto-teardown EXIT trap (phaze-pik6),
+    # `check` must leave phaze-test-db/phaze-test-redis running for other concurrent
+    # worktrees/sessions relying on them; explicit teardown is `just test-db-down`. If
+    # the caller already exported TEST_DATABASE_URL (CI, another `just` recipe, a
+    # shared multi-worktree rig with per-worktree database names), respect it
+    # verbatim and skip provisioning.
     if [ -z "${TEST_DATABASE_URL:-}" ]; then
         just test-db
         export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:{{test_db_port}}/phaze_test"
