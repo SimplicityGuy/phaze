@@ -1685,6 +1685,32 @@ async def test_rescrape_tracklist_preserves_track_count(session: AsyncSession, c
 
 
 @pytest.mark.asyncio
+async def test_rescrape_tracklist_preserves_cue_version(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-xho0): rescrape_tracklist re-renders the card with the REAL on-disk CUE
+    version, not a hardcoded 0. Before the fix, an approved tracklist with an existing CUE lost its
+    "CUE vN / Regenerate CUE" badge and fell back to a first-time "Generate CUE" button after a
+    re-scrape, even though the file already has a CUE written.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(_make_executed_proposal(file.id))
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, status="approved")
+    session.add(tl)
+    await session.flush()
+
+    install_fake_queues(client)
+
+    with patch("phaze.routers.tracklists._get_cue_version", return_value=2):
+        response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    assert "CUE v2" in response.text
+    assert "Regenerate CUE" in response.text
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist_has_candidates_in_context(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape includes has_candidates when candidates exist."""
     tl = _make_tracklist()
@@ -2342,6 +2368,30 @@ async def test_match_discogs_preserves_track_count(session: AsyncSession, client
     assert response.status_code == 200
     assert "5 tracks" in response.text
     assert "0 tracks" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_preserves_cue_version(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-xho0): match_discogs re-renders the card with the REAL on-disk CUE
+    version -- see test_rescrape_tracklist_preserves_cue_version for the full defect description.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+    session.add(_make_executed_proposal(file.id))
+    await session.flush()
+
+    tl = _make_tracklist(file_id=file.id, status="approved")
+    session.add(tl)
+    await session.flush()
+
+    install_fake_queues(client)
+
+    with patch("phaze.routers.tracklists._get_cue_version", return_value=4):
+        response = await client.post(f"/tracklists/{tl.id}/match-discogs")
+    assert response.status_code == 200
+    assert "CUE v4" in response.text
+    assert "Regenerate CUE" in response.text
 
 
 @pytest.mark.asyncio
