@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import importlib.metadata
 import random
 import re
+import time
 from typing import ClassVar
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 import httpx
 import structlog
+
+from phaze.config import get_settings
 
 
 logger = structlog.get_logger(__name__)
@@ -87,13 +91,57 @@ class ScrapedTracklist:
     source_url: str = ""
 
 
+class _TTLCache[T]:
+    """Minimal in-process TTL cache, shared across `TracklistScraper` instances (phaze-hu8v).
+
+    1001Tracklists' own robots.txt asks for an 8s crawl-delay per request, and a tracklist for a
+    past event essentially never changes -- the cheapest polite request is the one never made. A
+    full persistent cache (checking the tracklists/tracklist_versions tables before scraping, or
+    honoring ETag/If-Modified-Since) is a larger, separate change; this simple in-memory cache
+    covers the common case of the same query/URL being looked up repeatedly within one running
+    process (e.g. a batched rescan), without adding a storage dependency.
+    """
+
+    def __init__(self, ttl_seconds: float) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: dict[str, tuple[float, T]] = {}
+
+    def get(self, key: str) -> T | None:
+        """Return the cached value for key, or None if absent/expired."""
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            del self._entries[key]
+            return None
+        return value
+
+    def set(self, key: str, value: T) -> None:
+        """Cache value under key for this cache's configured TTL."""
+        self._entries[key] = (time.monotonic() + self._ttl_seconds, value)
+
+    def clear(self) -> None:
+        """Drop every cached entry (test isolation)."""
+        self._entries.clear()
+
+
 class TracklistScraper:
     """Async scraper for 1001Tracklists.com with rate limiting."""
 
     BASE_URL = "https://www.1001tracklists.com"
     SEARCH_URL = f"{BASE_URL}/search/result.php"
-    MIN_DELAY = 2.0
-    MAX_DELAY = 5.0
+
+    # phaze-hu8v: robots.txt publishes "Crawl-delay: 8" for general agents (verified live
+    # 2026-07-18). We previously crawled at 2-5s -- 1.6x to 4x FASTER than permitted, out of
+    # compliance on every request. 8.0 is a hard floor; MAX_DELAY only adds jitter ABOVE it, it
+    # must never bring the sampled delay back under the published minimum.
+    MIN_DELAY = 8.0
+    MAX_DELAY = 12.0
+
+    # phaze-hu8v: tracklists don't change once published -- cache search/scrape results in-process
+    # for a while so a batched job re-touching the same query/URL doesn't re-hit the site at all.
+    _CACHE_TTL_SECONDS: ClassVar[float] = 6 * 60 * 60  # 6 hours
 
     # Hosts a scrape is ever allowed to target (phaze-k5zz). Exact-match only -- comparing against
     # urlsplit().hostname (never .netloc, which can carry userinfo like "evil@1001tracklists.com")
@@ -130,18 +178,19 @@ class TracklistScraper:
     _META_EVENT_SELECTOR = ".evtName"
     _META_DATE_SELECTOR = ".evtDate"
 
-    _DEFAULT_HEADERS: ClassVar[dict[str, str]] = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://www.1001tracklists.com/",
-    }
-
     _EXTERNAL_ID_PATTERN = re.compile(r"/tracklist/([^/?#]+)")
     # phaze-mk6y: the href-embedded date trails the slug, e.g.
     # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
     # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
     _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:[/?#]|$)")
+
+    # phaze-hu8v: shared across every TracklistScraper instance in this process, since each
+    # search/scrape call site (tasks/tracklist.py) constructs a fresh scraper per job. A
+    # process-lifetime, in-memory TTL cache is the simplest way to make "repeat lookups don't
+    # re-hit the site" true across those short-lived instances without adding a storage
+    # dependency; see `_TTLCache` docstring for why this isn't the full persistent cache.
+    _search_cache: ClassVar[_TTLCache[list[TracklistSearchResult]]] = _TTLCache(_CACHE_TTL_SECONDS)
+    _tracklist_cache: ClassVar[_TTLCache[ScrapedTracklist]] = _TTLCache(_CACHE_TTL_SECONDS)
 
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         """Initialize scraper with optional httpx client."""
@@ -149,8 +198,25 @@ class TracklistScraper:
             self._client = client
             self._owns_client = False
         else:
-            self._client = httpx.AsyncClient(headers=self._DEFAULT_HEADERS, timeout=30.0)
+            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0)
             self._owns_client = True
+
+    @staticmethod
+    def _build_headers() -> dict[str, str]:
+        """Build request headers, including an honest, identifying User-Agent (phaze-hu8v).
+
+        Previously spoofed a desktop Chrome UA with no way for 1001tracklists.com to identify us,
+        contact us, or apply a phaze-specific policy. Read at construction time (not baked into a
+        module-level constant) so tests can exercise a fresh `get_settings()` value.
+        """
+        settings = get_settings()
+        version = importlib.metadata.version("phaze")
+        return {
+            "User-Agent": f"phaze/{version} (+{settings.scraper_contact_url})",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.1001tracklists.com/",
+        }
 
     @classmethod
     def _is_allowed_url(cls, url: str) -> bool:
@@ -176,6 +242,11 @@ class TracklistScraper:
         rows that none of them could be parsed from -- that is a stale-selector defect, and must
         be distinguishable from a normal empty result (phaze-mk6y).
         """
+        cached = self._search_cache.get(query)
+        if cached is not None:
+            logger.debug("Search cache hit for: %s", query)
+            return cached
+
         await self._rate_limit()
 
         try:
@@ -192,7 +263,7 @@ class TracklistScraper:
             return []
 
         try:
-            return self._parse_search_results(response.text)
+            results = self._parse_search_results(response.text)
         except SearchParseFailureError:
             # Already logged at ERROR inside _parse_search_results with the candidate count.
             # Propagate rather than collapsing to [] -- that collapse is exactly phaze-mk6y.
@@ -200,6 +271,9 @@ class TracklistScraper:
         except Exception:
             logger.warning("Failed to parse search results for: %s", query, exc_info=True)
             return []
+
+        self._search_cache.set(query, results)
+        return results
 
     def _parse_search_results(self, html: str) -> list[TracklistSearchResult]:
         """Parse search result HTML into TracklistSearchResult objects.
@@ -292,6 +366,11 @@ class TracklistScraper:
             logger.warning("Refusing to scrape disallowed URL: %s", url)
             raise DisallowedScrapeHostError(url)
 
+        cached = self._tracklist_cache.get(url)
+        if cached is not None:
+            logger.debug("Tracklist scrape cache hit for: %s", url)
+            return cached
+
         await self._rate_limit()
 
         try:
@@ -342,7 +421,7 @@ class TracklistScraper:
             track = self._parse_track_item(track_item, idx)
             tracks.append(track)
 
-        return ScrapedTracklist(
+        scraped = ScrapedTracklist(
             external_id=external_id,
             title=title,
             artist=artist,
@@ -351,6 +430,8 @@ class TracklistScraper:
             tracks=tracks,
             source_url=url,
         )
+        self._tracklist_cache.set(url, scraped)
+        return scraped
 
     def _parse_track_item(self, item: Tag, position: int) -> ScrapedTrack:
         """Parse a single track item from the tracklist page."""

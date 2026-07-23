@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from phaze.config import get_settings
 from phaze.services.tracklist_scraper import (
     DisallowedScrapeHostError,
     ScrapedTracklist,
@@ -111,6 +112,31 @@ def _mock_response(status_code: int, text: str) -> httpx.Response:
     return httpx.Response(status_code=status_code, text=text, request=httpx.Request("GET", "https://example.com"))
 
 
+@pytest.fixture(autouse=True)
+def _clear_scraper_caches():
+    """Reset the process-wide TTL caches (phaze-hu8v) so tests never leak state via shared keys."""
+    TracklistScraper._search_cache.clear()
+    TracklistScraper._tracklist_cache.clear()
+    yield
+    TracklistScraper._search_cache.clear()
+    TracklistScraper._tracklist_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_rate_limit_sleep(request):
+    """Stub asyncio.sleep for every test except the one that specifically asserts its bounds.
+
+    MIN_DELAY/MAX_DELAY are now 8.0/12.0s (phaze-hu8v, robots.txt Crawl-delay compliance) --
+    without this, every test exercising search()/scrape_tracklist() would burn 8-12 real wall
+    seconds. `test_rate_limit_delay` installs its own nested patch to inspect the sampled delay.
+    """
+    if request.node.name == "test_rate_limit_delay":
+        yield
+        return
+    with patch("phaze.services.tracklist_scraper.asyncio.sleep", new_callable=AsyncMock):
+        yield
+
+
 class TestTracklistScraperSearch:
     """Tests for TracklistScraper.search()."""
 
@@ -166,6 +192,12 @@ class TestTracklistScraperSearch:
             mock_sleep.assert_called_once()
             delay = mock_sleep.call_args[0][0]
             assert scraper.MIN_DELAY <= delay <= scraper.MAX_DELAY
+
+    def test_min_delay_meets_robots_txt_crawl_delay_floor(self):
+        """robots.txt publishes Crawl-delay: 8 (verified live 2026-07-18); the sampled delay must
+        never be able to go below that, and jitter only ever adds time above the floor (phaze-hu8v)."""
+        assert TracklistScraper.MIN_DELAY >= 8.0
+        assert TracklistScraper.MAX_DELAY >= TracklistScraper.MIN_DELAY
 
 
 class TestTracklistScraperSearchParseFailure:
@@ -485,3 +517,100 @@ class TestTracklistScraperLifecycle:
         scraper = TracklistScraper(client=injected)
         await scraper.close()
         injected.aclose.assert_not_called()
+
+
+class TestTracklistScraperHonestUserAgent:
+    """phaze-hu8v: replace the spoofed Chrome UA with an honest, identifying one."""
+
+    def test_owned_client_uses_honest_identifying_user_agent(self):
+        """A self-constructed client's User-Agent identifies phaze and a contact URL, and no
+        longer pretends to be a browser."""
+        scraper = TracklistScraper()
+        user_agent = scraper._client.headers["User-Agent"]
+
+        assert user_agent.startswith("phaze/")
+        assert "Chrome" not in user_agent
+        assert "Mozilla" not in user_agent
+
+        settings = get_settings()
+        assert settings.scraper_contact_url in user_agent
+
+    def test_build_headers_includes_accept_and_referer(self):
+        """The rest of the header set (Accept/Accept-Language/Referer) is unchanged by the UA fix."""
+        headers = TracklistScraper._build_headers()
+        assert headers["Referer"] == "https://www.1001tracklists.com/"
+        assert "text/html" in headers["Accept"]
+
+    def test_injected_client_headers_are_not_overridden(self):
+        """Passing an explicit client (as every test and every real call site does) bypasses
+        _build_headers entirely -- the caller owns that client's headers."""
+        injected = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=injected)
+        assert scraper._client is injected
+
+
+class TestTracklistScraperCaching:
+    """phaze-hu8v: repeat lookups must not re-hit the site."""
+
+    @pytest.mark.asyncio
+    async def test_search_cache_hit_skips_second_network_call(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
+        scraper = TracklistScraper(client=client)
+
+        first = await scraper.search("Skrillex Coachella")
+        second = await scraper.search("Skrillex Coachella")
+
+        assert client.post.await_count == 1
+        assert second == first
+
+    @pytest.mark.asyncio
+    async def test_search_cache_is_keyed_per_query(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
+        scraper = TracklistScraper(client=client)
+
+        await scraper.search("Skrillex Coachella")
+        await scraper.search("deadmau5 EDC")
+
+        assert client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_search_does_not_cache_a_403(self):
+        """A blocked/transient response must not poison the cache with a permanent []."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(403, "Forbidden"))
+        scraper = TracklistScraper(client=client)
+
+        await scraper.search("Skrillex")
+        await scraper.search("Skrillex")
+
+        assert client.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_scrape_cache_hit_skips_second_network_call(self):
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
+        scraper = TracklistScraper(client=client)
+        url = "https://www.1001tracklists.com/tracklist/cache1/test.html"
+
+        first = await scraper.scrape_tracklist(url)
+        second = await scraper.scrape_tracklist(url)
+
+        assert client.get.await_count == 1
+        assert second is first
+
+    @pytest.mark.asyncio
+    async def test_scrape_does_not_cache_a_403(self):
+        """A blocked/challenge page must never be cached as if it were a valid scrape (phaze-o8sy)."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(403, "<html><body>Access denied</body></html>"))
+        scraper = TracklistScraper(client=client)
+        url = "https://www.1001tracklists.com/tracklist/cache2/test.html"
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await scraper.scrape_tracklist(url)
+        with pytest.raises(httpx.HTTPStatusError):
+            await scraper.scrape_tracklist(url)
+
+        assert client.get.await_count == 2
