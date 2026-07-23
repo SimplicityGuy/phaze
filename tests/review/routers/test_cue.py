@@ -646,6 +646,45 @@ async def test_generate_cue_error_preserves_preview_card_on_cue_card_target(clie
 
 
 @pytest.mark.asyncio
+async def test_generate_cue_buttons_guard_against_double_submit(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """phaze-efu0: every CUE generate/regenerate/APPROVE surface must carry ``hx-disabled-elt="this"``
+    so a second click while the first POST is in flight is dropped client-side instead of writing a
+    phantom ``.vN.cue`` version file.
+
+    Covers all three CUE-generate surfaces: the legacy cue-page row (``cue_row.html``, default
+    target), the tracklist card (``tracklist_card.html``, ``tracklist-`` target), and the v7 cue
+    workspace preview card (``_cue_preview.html``, ``cue-card-`` target).
+    """
+    tracklist, file_record = await _create_approved_tracklist_with_file(session)
+
+    audio_path = tmp_path / file_record.original_filename
+    audio_path.write_text("fake audio")
+    file_record.current_path = str(audio_path)
+    await session.commit()
+
+    # cue_row.html (default / legacy cue-page surface).
+    row_response = await client.post(f"/cue/{tracklist.id}/generate")
+    assert row_response.status_code == 200
+    assert 'hx-disabled-elt="this"' in row_response.text
+
+    # tracklist_card.html (tracklist-card surface).
+    card_response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"tracklist-{tracklist.id}"},
+    )
+    assert card_response.status_code == 200
+    assert 'hx-disabled-elt="this"' in card_response.text
+
+    # _cue_preview.html (v7 cue-workspace APPROVE surface).
+    preview_response = await client.post(
+        f"/cue/{tracklist.id}/generate",
+        headers={"HX-Target": f"cue-card-{tracklist.id}"},
+    )
+    assert preview_response.status_code == 200
+    assert 'hx-disabled-elt="this"' in preview_response.text
+
+
+@pytest.mark.asyncio
 async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/generate-batch skips tracklists without timestamps."""
     _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")

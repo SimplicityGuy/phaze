@@ -99,14 +99,16 @@
         <button hx-post="/cue/{{ tracklist.id }}/generate"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs text-green-600 dark:text-green-400 hover:text-green-700 dark:text-green-400 font-semibold px-2 py-1">
+                hx-disabled-elt="this"
+                class="text-xs text-green-600 dark:text-green-400 hover:text-green-700 dark:text-green-400 font-semibold px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed">
             Regenerate CUE
         </button>
         {% else %}
         <button hx-post="/cue/{{ tracklist.id }}/generate"
                 hx-target="#tracklist-{{ tracklist.id }}"
                 hx-swap="outerHTML"
-                class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md">
+                hx-disabled-elt="this"
+                class="text-xs bg-green-600 hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-md disabled:opacity-50 disabled:cursor-not-allowed">
             Generate CUE
         </button>
         {% endif %}
