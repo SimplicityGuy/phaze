@@ -179,39 +179,78 @@ test-db:
     port="{{test_db_port}}"
     redis_container="{{test_redis_container}}"
     redis_port="{{test_redis_port}}"
+    # Race-safe bootstrap (phaze-20vd): this recipe is invoked concurrently from multiple
+    # worktrees, so the create path must never `docker rm -f` a container we merely
+    # observed as absent -- a sibling invocation may have created (or be about to create)
+    # it in the window between our inspect and our own action, and `rm -f`ing it would wipe
+    # that sibling's freshly-provisioned databases out from under it. Instead: try `docker
+    # start` (a no-op success if a stopped container of this name already exists), then
+    # fall back to `docker run`. If a racing sibling's `docker run` wins in that same
+    # window, ours fails with docker's "name already in use" -- that is the expected LOSER
+    # path here, not a fatal error: fall through (via run_or_yield below) and let the
+    # readiness wait further down confirm the winner's container came up.
+    run_or_yield() {
+        local name="$1" verb="$2"
+        shift 2
+        local run_err
+        run_err="$(mktemp)"
+        if docker run -d --name "$name" "$@" >/dev/null 2>"$run_err"; then
+            rm -f "$run_err"
+            return 0
+        fi
+        if grep -q "is already in use" "$run_err"; then
+            echo "🔁 ${name} was ${verb} by a concurrent invocation; continuing"
+            rm -f "$run_err"
+            return 0
+        fi
+        cat "$run_err" >&2
+        rm -f "$run_err"
+        return 1
+    }
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
-        docker rm -f "$container" >/dev/null 2>&1 || true
         echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
-        docker run -d --name "$container" \
-            -e POSTGRES_USER=phaze \
-            -e POSTGRES_PASSWORD=phaze \
-            -e POSTGRES_DB=phaze_test \
-            -p "${port}:5432" \
-            postgres:18-alpine >/dev/null
+        if ! docker start "$container" >/dev/null 2>&1; then
+            run_or_yield "$container" "created" \
+                -e POSTGRES_USER=phaze \
+                -e POSTGRES_PASSWORD=phaze \
+                -e POSTGRES_DB=phaze_test \
+                -p "${port}:5432" \
+                postgres:18-alpine
+        fi
     fi
     redis_databases="{{test_redis_databases}}"
-    start_redis=1
-    if [ "$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)" = "true" ]; then
+    redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    if [ "$redis_running" != "true" ]; then
+        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
+        docker start "$redis_container" >/dev/null 2>&1 || true
+        redis_running="$(docker inspect -f '{{{{.State.Running}}' "$redis_container" 2>/dev/null || echo false)"
+    fi
+    if [ "$redis_running" = "true" ]; then
         # A container started before this setting existed (or with a smaller value) only has 16
         # logical databases. Recreate it rather than silently handing out indices it cannot address.
+        # This check applies whether the container was already running or was just reused via
+        # `docker start` above -- either way it now genuinely exists, so removing it here is a
+        # deliberate resize, never a speculative rm racing a sibling's in-flight create.
         current_databases="$(docker exec "$redis_container" redis-cli CONFIG GET databases 2>/dev/null | tail -n1 || echo 0)"
         if [ "${current_databases:-0}" -ge "$redis_databases" ]; then
-            echo "🟥 ${redis_container} already running on port ${redis_port} (${current_databases} logical DBs)"
-            start_redis=0
+            echo "🟥 ${redis_container} running on port ${redis_port} (${current_databases} logical DBs)"
         else
             echo "♻️  ${redis_container} has only ${current_databases:-0} logical DBs (need ${redis_databases}); recreating."
             echo "    This CLEARS the test Redis, including per-worktree DB allocations. Re-run"
             echo "    'just test-db-for <name>' in each active worktree afterwards."
+            docker rm -f "$redis_container" >/dev/null 2>&1 || true
+            run_or_yield "$redis_container" "recreated" \
+                -p "${redis_port}:6379" \
+                redis:7-alpine redis-server --databases "$redis_databases"
         fi
-    fi
-    if [ "$start_redis" = "1" ]; then
-        docker rm -f "$redis_container" >/dev/null 2>&1 || true
-        echo "🟥 Starting ${redis_container} (redis:7-alpine, ${redis_databases} logical DBs) on host port ${redis_port}..."
-        docker run -d --name "$redis_container" \
+    else
+        # Neither running nor startable (no container of this name existed) -- create fresh,
+        # tolerating a racing sibling's concurrent create as described above.
+        run_or_yield "$redis_container" "created" \
             -p "${redis_port}:6379" \
-            redis:7-alpine redis-server --databases "$redis_databases" >/dev/null
+            redis:7-alpine redis-server --databases "$redis_databases"
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
