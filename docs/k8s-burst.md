@@ -36,7 +36,7 @@ Secret are **cluster-admin** responsibilities. Per Kueue backend, phaze referenc
 RBAC, or Secret objects at runtime. This document is the **authoritative spec** for those
 operator-owned objects (D-02), applied **once per cluster** the registry targets; the live
 clusters are the operator's infrastructure. The ready-to-paste homelab change request is
-[`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
+[`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
 For the canonical per-field config reference (the `[[backends]]` / `[backends.kube]` / `[[buckets]]`
 schema, defaults, inline `*_file` secret support), see
@@ -680,7 +680,7 @@ Apply cluster objects **before** adding the `kind="kueue"` entry to `backends.to
 LocalQueue must exist before the availability probe runs and before any Job submits). Repeat
 steps 1–3 **in each cluster** the registry targets. The ready-to-paste homelab change request —
 with `datum@nox` / `datum@lux` SSH steps — is
-[`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
+[`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
 1. **Cluster (operator), per cluster:** create the namespace, then `kubectl apply` the
    ResourceFlavor → ClusterQueue → LocalQueue (runbook §1–§3), against that cluster's context.
@@ -734,7 +734,7 @@ cluster:
 
 ## See also
 
-- [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md)
+- [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md)
   — the ready-to-paste homelab apply steps + deploy ordering (D-02).
 - [configuration.md → Backend registry (`backends.toml`)](configuration.md#backend-registry-backendstoml)
   — the canonical per-field reference for `[[backends]]` / `[backends.kube]` / `[[buckets]]`
