@@ -106,7 +106,22 @@ def _kubeconfig_dict_from(kube: KubeConfig) -> dict[str, Any]:
     dict for its client cache key, so distinct dicts (distinct clusters) key distinct cached clients.
     """
     if kube.kubeconfig is not None:
-        return cast("dict[str, Any]", yaml.safe_load(kube.kubeconfig.get_secret_value()))
+        try:
+            parsed = yaml.safe_load(kube.kubeconfig.get_secret_value())
+        except yaml.YAMLError as exc:
+            # PyYAML's MarkedYAMLError subclasses embed a verbatim snippet of the offending
+            # document line (bearer tokens, client-key-data) in str(exc) via problem_mark's
+            # get_snippet(). Re-raise sanitized -- location only, never the document text -- and
+            # suppress the chained cause (`from None`) so the snippet-bearing exception never
+            # propagates to a logger (T-54-07).
+            location = ""
+            mark = getattr(exc, "problem_mark", None)
+            if mark is not None:
+                location = f" at line {mark.line + 1}, column {mark.column + 1}"
+            raise KubeStagingError(f"Kueue backend kubeconfig is not valid YAML ({type(exc).__name__}{location})") from None
+        if not isinstance(parsed, dict):
+            raise KubeStagingError("Kueue backend kubeconfig did not parse to a YAML mapping")
+        return cast("dict[str, Any]", parsed)
     token = kube.sa_token.get_secret_value() if kube.sa_token else None
     return {
         "apiVersion": "v1",
