@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +62,15 @@ async def put_fingerprint(
         set_={
             "status": stmt.excluded.status,
             "error_message": stmt.excluded.error_message,
+            # TimestampMixin.updated_at's ORM onupdate=func.now() (models/base.py) only fires
+            # for ORM-level UPDATE statements -- it is NOT applied on this Core ON CONFLICT DO
+            # UPDATE path. Stamp it explicitly with the server clock (func.now(), NOT
+            # stmt.excluded.updated_at -- the excluded row carries the INSERT-side default, not
+            # the time the conflict resolution actually happened) so re-fingerprinting a row
+            # bumps updated_at instead of freezing it at first write (phaze-c8nz). created_at is
+            # deliberately left out of set_ -- it means "first time we recorded a result for
+            # this (file, engine)" and must stay pinned to the original INSERT.
+            "updated_at": func.now(),
         },
     )
     await session.execute(stmt)

@@ -1,15 +1,22 @@
-"""CUE sheet management UI router -- generation, batch generation, and CUE management page."""
+"""CUE sheet management UI router -- per-file generation, plus a legacy bookmark redirect.
 
-import asyncio
+phaze-y4s6: the standalone CUE management LIST page (``GET /cue/`` fragment branch,
+``cue/partials/cue_list.html``) and the batch-generate action (``POST /cue/generate-batch``,
+which rendered the same list) had no live caller left post-v7-cutover -- the live Cue workspace
+(``pipeline/partials/cue_workspace.html``) renders its cards inline with no list/pagination UI and
+no bulk-generate control. Both were deleted; ``GET /cue/`` now only resolves the legacy bookmark
+into the shell (SHELL-05).
+"""
+
 from pathlib import Path
 import re
 from typing import Any
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -18,9 +25,7 @@ from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.routers.response_shape import wants_fragment
 from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
-from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 from phaze.services.stage_status import applied_clause, is_applied
 
 
@@ -54,8 +59,8 @@ def _eligible_tracklist_stmt() -> Select[Any]:
 
     phaze-dboy: the timestamp-existence check is scoped to ``Tracklist.latest_version_id`` --
     NOT "any version ever" -- because that is the ONLY version actual generation ever reads
-    (``_build_cue_tracks(session, tracklist.latest_version_id)`` in both ``generate_cue`` and
-    ``generate_batch``). A re-scrape/re-fingerprint can create a newer ``latest_version_id``
+    (``_build_cue_tracks(session, tracklist.latest_version_id)`` in ``generate_cue``). A
+    re-scrape/re-fingerprint can create a newer ``latest_version_id``
     whose tracks carry no timestamps while an OLDER version still has them; scoping this
     predicate to "any version" previously listed that tracklist as eligible with a Generate
     button that could never succeed (always "No tracks have timestamps"), permanently
@@ -89,9 +94,10 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
     Pass ``limit`` to bound the result set at the SQL level. WR-03: the review-card consumer
     (``services.review.get_cue_review_cards``) passes ``limit=_MAX_REVIEW_ROWS`` so the DB never
     returns more than the render cap -- the eligible half is then genuinely memory-bounded, not just
-    loop-capped after materializing every eligible pair. The count/batch callers (``_get_cue_stats``,
-    ``generate_batch``) call with no ``limit`` and get the full set. The OFFSET-paged render read in
-    ``list_cue`` does NOT use this helper -- see :func:`paged_stmt` there instead.
+    loop-capped after materializing every eligible pair. This is the ONLY live reader of the
+    eligible set left in this router (phaze-y4s6 removed the dead ``list_cue`` / ``generate_batch``
+    legacy list-page routes, whose only purpose was rendering the now-deleted
+    ``cue/partials/cue_list.html``).
     """
     stmt = _eligible_tracklist_stmt().order_by(*_ELIGIBLE_DISPLAY_ORDER, Tracklist.id)
     if limit is not None:
@@ -99,67 +105,6 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
 
     result = await session.execute(stmt)
     return list(result.tuples().all())
-
-
-def _count_generated_sync(pairs: list[tuple[Tracklist, FileRecord]]) -> int:
-    """Synchronous filesystem probe for the 'generated' stat (phaze-rkvb).
-
-    Bundles the per-file :func:`_get_cue_version` probe (``Path.exists`` plus, when a base ``.cue``
-    exists, a full ``iterdir`` of the audio file's parent directory) for the WHOLE eligible set into
-    ONE function, run via :func:`asyncio.to_thread` from :func:`_get_cue_stats`. The eligible set
-    carries no ``LIMIT`` and the media files live on the documented NFS/SMB file-server mount, so
-    looping this synchronously on the event loop -- as it did before this fix -- blocked every SSE
-    stream, poll, and concurrent request for the scan's duration, with no timeout if the mount
-    stalls (an unbounded, unrecoverable freeze of the single API worker).
-    """
-    return sum(1 for _tl, fr in pairs if _get_cue_version(fr.current_path) > 0)
-
-
-async def _missing_timestamps_count(session: AsyncSession) -> int:
-    """Count approved + EXECUTED-file tracklists with NO tracks with timestamps on the LATEST
-    version (phaze-dboy -- mirrors ``_eligible_tracklist_stmt``'s scope so this is the true
-    inverse of "eligible", not a broader "any version" set that undercounts).
-
-    A pure ``SELECT count(...)`` -- NOT a full-corpus materialization -- so callers that already
-    hold the eligible set in memory (e.g. :func:`generate_batch`) can call this directly instead
-    of going through :func:`_get_cue_stats` and re-querying the eligible set a second time.
-    """
-    has_timestamp_subq = select(TracklistTrack.version_id).where(TracklistTrack.timestamp.is_not(None)).distinct()
-
-    missing_stmt = (
-        select(func.count(Tracklist.id))
-        .join(FileRecord, Tracklist.file_id == FileRecord.id)
-        .where(
-            Tracklist.status == "approved",
-            Tracklist.file_id.is_not(None),
-            applied_clause(),
-            # A tracklist with no version at all (latest_version_id IS NULL) has no timestamps
-            # either -- NULL.not_in(...) is SQL NULL (neither true nor false), so it must be
-            # OR'd in explicitly or it silently drops out of the "missing" count.
-            or_(Tracklist.latest_version_id.is_(None), Tracklist.latest_version_id.not_in(has_timestamp_subq)),
-        )
-    )
-    missing_result = await session.execute(missing_stmt)
-    return missing_result.scalar() or 0
-
-
-async def _cue_stats_from_eligible_pairs(session: AsyncSession, eligible_pairs: list[tuple[Tracklist, FileRecord]]) -> dict[str, int]:
-    """Compute CUE generation statistics from an ALREADY-materialized eligible set (phaze-8lpg).
-
-    Shared by :func:`_get_cue_stats` (which materializes the eligible set itself) and
-    :func:`generate_batch` (which already holds it from its generation loop) so a caller that has
-    the eligible set in hand never re-queries it just to compute stats.
-    """
-    generated = await asyncio.to_thread(_count_generated_sync, eligible_pairs)
-    missing_timestamps = await _missing_timestamps_count(session)
-    return {"eligible": len(eligible_pairs), "generated": generated, "missing_timestamps": missing_timestamps}
-
-
-async def _get_cue_stats(session: AsyncSession) -> dict[str, int]:
-    """Compute CUE generation statistics."""
-    # Eligible: approved + EXECUTED file + has timestamps
-    eligible_pairs = await _get_eligible_tracklist_query(session)
-    return await _cue_stats_from_eligible_pairs(session, eligible_pairs)
 
 
 def _get_cue_version(file_path: str) -> int:
@@ -239,97 +184,19 @@ async def _load_tracklist_with_file(session: AsyncSession, tracklist_id: uuid.UU
     return row[0], row[1]
 
 
-@router.get("/", response_class=HTMLResponse)
-async def list_cue(
-    request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render ONE bounded page of the CUE management list.
+@router.get("/", response_class=RedirectResponse)
+async def list_cue() -> RedirectResponse:
+    """SHELL-05 (D-03): resolve a legacy ``/cue/`` bookmark into the v7.0 shell.
 
-    phaze-hdho: this used to re-run the UNORDERED-past-its-display-key eligible query on every page
-    request and slice the fully materialized list in Python (``eligible_pairs[offset:offset+page_size]``).
-    ``Tracklist.artist``/``Tracklist.event`` are both nullable, so any set of tracklists sharing a
-    source and the same (or NULL) artist/event tied on the ORDER BY -- and Postgres gives NO stability
-    guarantee for tied rows across two SEPARATE query executions. Page 1 and page 2 are independent
-    HTTP requests, each re-running the query, so a boundary row's tie-group placement could flip
-    between them: silently duplicated onto both pages, or dropped from both.
-
-    Routed through :mod:`phaze.services.pagination` instead: :func:`paged_stmt` appends the mandatory
-    unique ``Tracklist.id`` tiebreaker AFTER the existing display order (contract rule 4), so the
-    total ordering is deterministic and OFFSET paging can no longer skip or duplicate a row. ``page``/
-    ``page_size`` clamp rather than raise (rule 5); ``has_next`` rides the ``page_size + 1`` sentinel,
-    never a whole-corpus COUNT (rule 2); the read is SAVEPOINT degrade-safe (rule 6) -- any DB error
-    rolls back the nested scope alone and renders an EMPTY page rather than 500ing the workspace.
+    phaze-y4s6: this used to also serve an in-page HX-filtered/paginated list (rendering
+    ``cue/partials/cue_list.html``), but the live v7.0 Cue workspace
+    (``pipeline/partials/cue_workspace.html``) renders its cards inline from
+    ``services.review.get_cue_review_cards`` with no pagination and never hx-gets this bare
+    path -- there is no live caller left to preserve an HX-filter branch for (unlike the sibling
+    ``/proposals/`` redirect). The dead list/pagination logic and its template were deleted
+    outright.
     """
-    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
-    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    #
-    # phaze-64uy (HYGIENE, not a live defect): ``wants_fragment`` per response_shape.py contract
-    # rule 1. No template pushes a ``/cue/`` URL, so no history restore can reach this handler
-    # today; the conversion removes the banned raw-header branch and makes the handler correct in
-    # advance of anything adding ``hx-push-url`` to the cue controls.
-    if not wants_fragment(request):
-        return RedirectResponse(url="/s/cue", status_code=302)
-
-    stats = await _get_cue_stats(session)
-
-    page = clamp_page(page)
-    page_size = clamp_page_size(page_size)
-    try:
-        async with session.begin_nested():
-            stmt = paged_stmt(
-                _eligible_tracklist_stmt(),
-                page=page,
-                page_size=page_size,
-                order_by=_ELIGIBLE_DISPLAY_ORDER,
-                tiebreaker=(Tracklist.id,),
-            )
-            raw = (await session.execute(stmt)).tuples().all()
-    except Exception:
-        logger.warning("cue_list_page_degraded", page=page, page_size=page_size, exc_info=True)
-        raw = []
-    page_pairs, has_next = split_sentinel(list(raw), page_size)
-
-    # Build tracklist data with CUE status
-    tracklists: list[dict[str, Any]] = []
-    for tl, fr in page_pairs:
-        cue_version = _get_cue_version(fr.current_path)
-
-        # Load track count
-        if tl.latest_version_id:
-            count_result = await session.execute(select(func.count(TracklistTrack.id)).where(TracklistTrack.version_id == tl.latest_version_id))
-            track_count = count_result.scalar() or 0
-        else:
-            track_count = 0
-
-        tracklists.append(
-            {
-                "id": tl.id,
-                "artist": tl.artist or "Unknown Artist",
-                "event": tl.event or "",
-                "date": tl.date,
-                "track_count": track_count,
-                "cue_version": cue_version,
-                "source": tl.source,
-            }
-        )
-
-    # No whole-corpus total (paging contract rule 2): has_next already came off the +1 sentinel above.
-    pagination = Page[tuple[Tracklist, FileRecord]](page=page, page_size=page_size, has_next=has_next)
-
-    context: dict[str, Any] = {
-        "request": request,
-        "current_page": "cue",
-        "stats": stats,
-        "tracklists": tracklists,
-        "pagination": pagination,
-    }
-
-    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
-    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="cue/partials/cue_list.html", context=context)
+    return RedirectResponse(url="/s/cue", status_code=302)
 
 
 @router.post("/{tracklist_id}/generate", response_class=HTMLResponse)
@@ -403,26 +270,6 @@ async def generate_cue(
             context={"request": request, "card": card, "toast_message": toast_msg},
         )
 
-    if hx_target.startswith("tracklist-"):
-        # Request came from tracklist card -- return updated card.
-        # phaze-fig9: tracklist_card.html renders its track-count chip from the derived
-        # `tracklist._track_count` attribute (Undefined -> 0 on a bare ORM object), so attach the
-        # count we already computed above instead of letting the swapped-in card falsely read "0
-        # tracks". Also attach `_cue_version` for the same reason `_attach_track_count` exists --
-        # consistency with every other tracklist_card.html-rendering route.
-        tracklist._track_count = track_count  # type: ignore[attr-defined]
-        tracklist._cue_version = cue_version  # type: ignore[attr-defined]
-        return templates.TemplateResponse(
-            request=request,
-            name="tracklists/partials/tracklist_card.html",
-            context={
-                "request": request,
-                "tracklist": tracklist,
-                "cue_version": cue_version,
-                "toast_message": toast_msg,
-            },
-        )
-
     row_data: dict[str, Any] = {
         "id": tracklist.id,
         "artist": tracklist.artist or "Unknown Artist",
@@ -439,104 +286,6 @@ async def generate_cue(
         context={
             "request": request,
             "tracklist": row_data,
-            "toast_message": toast_msg,
-        },
-    )
-
-
-@router.post("/generate-batch", response_class=HTMLResponse)
-async def generate_batch(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Batch-generate CUE files for all eligible tracklists.
-
-    phaze-8lpg: restructured from three full-corpus passes (the generation loop, a second full
-    re-materialization of the eligible set for the response, and ``_get_cue_stats``' own full pass)
-    down to exactly ONE full-corpus materialization -- the generation loop itself, which by
-    definition must visit every eligible file to generate its CUE. The response then renders a
-    single BOUNDED page through the SAME ``paged_stmt`` contract :func:`list_cue` uses, instead of
-    re-querying and rendering the whole corpus a second time behind a fabricated
-    ``Pagination(page=1, total=...)``. Each per-file disk write (:func:`write_cue_file`: synchronous
-    ``exists()``/``iterdir()`` probes plus ``open()``/``write()`` against the media mount) is
-    offloaded via ``asyncio.to_thread`` so the event loop is free between files rather than frozen
-    for the write's duration.
-    """
-    eligible_pairs = await _get_eligible_tracklist_query(session)
-    generated_count = 0
-
-    for tl, fr in eligible_pairs:
-        if not tl.latest_version_id:
-            continue
-
-        cue_tracks = await _build_cue_tracks(session, tl.latest_version_id)
-        if not any(t.timestamp_seconds is not None for t in cue_tracks):
-            continue
-
-        audio_path = Path(fr.current_path)
-        try:
-            content = generate_cue_content(audio_path.name, fr.file_type, cue_tracks)
-            # phaze-8lpg: write_cue_file's next_cue_path() exists()/iterdir() probes plus the
-            # open()/write() itself are synchronous, blocking media-mount I/O -- offload to a
-            # worker thread instead of running them inline on the event loop.
-            await asyncio.to_thread(write_cue_file, content, audio_path)
-            generated_count += 1
-        except Exception:
-            logger.exception("Failed to generate CUE for tracklist %s", tl.id)
-            continue
-
-    toast_msg = f"Generated {generated_count} CUE files"
-
-    # phaze-8lpg: compute stats from the eligible_pairs ALREADY materialized above (the generation
-    # loop) instead of calling _get_cue_stats (which would re-run _get_eligible_tracklist_query),
-    # then render exactly ONE bounded page -- the SAME paged_stmt path list_cue uses -- instead of
-    # re-materializing and rendering the whole corpus a second time.
-    stats = await _cue_stats_from_eligible_pairs(session, eligible_pairs)
-    page_size = DEFAULT_PAGE_SIZE
-    try:
-        async with session.begin_nested():
-            stmt = paged_stmt(
-                _eligible_tracklist_stmt(),
-                page=1,
-                page_size=page_size,
-                order_by=_ELIGIBLE_DISPLAY_ORDER,
-                tiebreaker=(Tracklist.id,),
-            )
-            raw = (await session.execute(stmt)).tuples().all()
-    except Exception:
-        logger.warning("cue_generate_batch_render_degraded", exc_info=True)
-        raw = []
-    page_pairs, has_next = split_sentinel(list(raw), page_size)
-
-    tracklists: list[dict[str, Any]] = []
-    for tl, fr in page_pairs:
-        cue_version = _get_cue_version(fr.current_path)
-        track_count = await _get_track_count(session, tl.latest_version_id)
-
-        tracklists.append(
-            {
-                "id": tl.id,
-                "artist": tl.artist or "Unknown Artist",
-                "event": tl.event or "",
-                "date": tl.date,
-                "track_count": track_count,
-                "cue_version": cue_version,
-                "source": tl.source,
-            }
-        )
-
-    # No whole-corpus total (mirrors list_cue -- paging contract rule 2): has_next comes off the
-    # page_size + 1 sentinel above, not a COUNT over the full eligible set.
-    pagination = Page[tuple[Tracklist, FileRecord]](page=1, page_size=page_size, has_next=has_next)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="cue/partials/cue_list.html",
-        context={
-            "request": request,
-            "tracklists": tracklists,
-            "stats": stats,
-            "pagination": pagination,
             "toast_message": toast_msg,
         },
     )
@@ -591,9 +340,10 @@ async def _render_generate_error(
     phaze-2w49: htmx's oobSwap strips the OOB toast element from the response fragment
     unconditionally, then runs the PRIMARY ``outerHTML`` swap against the now-empty remainder --
     with no empty-guard, ``swapOuterHTML`` inserts nothing and calls ``target.remove()``. A
-    toast-only 200 therefore deletes the very card/row the toast is complaining about on all three
-    generate surfaces (the pipeline preview card, the tracklist card, and the cue row). Every error
-    branch must re-render its own primary content alongside the toast instead.
+    toast-only 200 therefore deletes the very card/row the toast is complaining about on either
+    generate surface (the pipeline preview card or the cue row -- phaze-y4s6 removed the third,
+    the tracklist card, along with the rest of the dead legacy tracklists UI). Every error branch
+    must re-render its own primary content alongside the toast instead.
     """
     hx_target = request.headers.get("HX-Target", "")
     cue_version = _get_cue_version(file_record.current_path) if file_record is not None else 0
@@ -604,13 +354,6 @@ async def _render_generate_error(
             request=request,
             name="pipeline/partials/_cue_preview.html",
             context={"request": request, "card": card, "toast_message": message},
-        )
-
-    if hx_target.startswith("tracklist-"):
-        return templates.TemplateResponse(
-            request=request,
-            name="tracklists/partials/tracklist_card.html",
-            context={"request": request, "tracklist": tracklist, "cue_version": cue_version, "toast_message": message},
         )
 
     row_data: dict[str, Any] = {

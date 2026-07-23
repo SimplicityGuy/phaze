@@ -83,6 +83,13 @@ class TestMatchParsing:
         assert len(matches) == 1
         assert matches[0].track_id == "/audio/smoke.wav"
 
+    def test_real_match_yields_timestamp_from_match_start(self, panako_app: ModuleType) -> None:
+        """phaze-nldg: "Match start (s)" (field 7 / tail[1]) is the reference-track offset --
+        exactly the track-start timestamp a tracklist wants -- so it must be carried through.
+        """
+        matches = panako_app._parse_matches(f"{HEADER}\n{REAL_MATCH_ROW}\n")
+        assert matches[0].timestamp == "1.4"
+
     def test_null_sentinel_is_not_a_match(self, panako_app: ModuleType) -> None:
         """The no-match sentinel must NOT become a phantom {track_id: "null"} result.
 
@@ -111,6 +118,15 @@ class TestMatchParsing:
 
     def test_unparseable_numeric_field_is_logged_and_skipped(self, panako_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
         row = "1 ; 1 ; /audio/a.wav ; 0.0 ; 0.0 ; /audio/b.wav ; 123 ; 0.0 ; 0.0 ; NOTANUMBER ; 1.0 % ; 1.0 %; 0.00"
+        with caplog.at_level("WARNING"):
+            assert panako_app._parse_matches(row) == []
+        assert "Failed to parse match line" in caplog.text
+
+    def test_unparseable_match_start_field_is_logged_and_skipped(self, panako_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        """phaze-nldg: "Match start (s)" (tail[1]) is now load-bearing for the timestamp --
+        an unparseable value there must skip the row the same way an unparseable score does.
+        """
+        row = "1 ; 1 ; /audio/a.wav ; 0.0 ; 0.0 ; /audio/b.wav ; 123 ; NOTANUMBER ; 0.0 ; 36 ; 1.0 % ; 1.0 %; 0.00"
         with caplog.at_level("WARNING"):
             assert panako_app._parse_matches(row) == []
         assert "Failed to parse match line" in caplog.text

@@ -50,6 +50,7 @@ class QueryMatch(BaseModel):
 
     track_id: str
     confidence: float
+    timestamp: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -143,11 +144,13 @@ _TAIL_RE = re.compile(r"\s+with\s+(\d+)\s+of\s+(\d+)\s+common hashes\s+at rank\s
 # default shape: ref sits between the fixed " raw hashes as " terminator of the query message
 # and the trailing float-typed " at {t} s". Non-greedy ref + the anchored " at {float} s$" tail
 # means a ref path that itself contains " at <n> s" still resolves to the LAST (real) time field.
-_DEFAULT_REF_RE = re.compile(r"raw hashes as (?P<ref>.+?)\s+at\s+-?\d+(?:\.\d+)?\s+s$")
+# phaze-nldg: `time` (upstream's `{t:6.1f}`) is the match's offset INTO the reference track --
+# i.e. exactly the track-start timestamp a tracklist wants -- so capture it, not just consume it.
+_DEFAULT_REF_RE = re.compile(r"raw hashes as (?P<ref>.+?)\s+at\s+(?P<time>-?\d+(?:\.\d+)?)\s+s$")
 # -R shape: ref is everything after the fixed landmark " to time {t} s in ". Anchoring on
 # " to time {float} s in " (instead of counting " in " occurrences) is robust to a query path
 # that itself contains " in " -- the second ' in ' the old code chased is not positionally stable.
-_TIMERANGE_REF_RE = re.compile(r"to time\s+-?\d+(?:\.\d+)?\s+s in (?P<ref>.+)$")
+_TIMERANGE_REF_RE = re.compile(r"to time\s+(?P<time>-?\d+(?:\.\d+)?)\s+s in (?P<ref>.+)$")
 
 
 def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
@@ -186,7 +189,12 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
         total_hashes = int(tail.group(2))
         confidence = (matched_hashes / total_hashes * 100.0) if total_hashes > 0 else 0.0
         confidence = min(100.0, max(0.0, confidence))
-        matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2)))
+        # phaze-nldg: emit the parsed offset as a plain seconds string (e.g. "12.3") -- well
+        # under the tracklist_tracks.timestamp varchar(20) cap (phaze-btlu) and already one of
+        # the formats `cue_generator.parse_timestamp_string` accepts verbatim (its third,
+        # raw-float branch).
+        timestamp = str(round(float(ref_match.group("time")), 1))
+        matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2), timestamp=timestamp))
 
     return matches, parse_failures
 

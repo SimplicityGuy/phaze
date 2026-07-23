@@ -32,6 +32,13 @@ class FileRecord(TimestampMixin, Base):
     sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     original_path: Mapped[str] = mapped_column(Text, nullable=False)
     original_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    # phaze-x4ux: derived, mojibake-repaired copy of `original_filename`, populated ONCE at
+    # ingest (routers/agent_files.py::upsert_files) when the repair actually changes the text;
+    # NULL otherwise, so `COALESCE(original_filename_repaired, original_filename)` always yields
+    # the best-known-clean display/search text. `original_filename` itself is NEVER rewritten --
+    # it is the byte-faithful record of what is actually on disk; renaming the file is the
+    # separate, human-approved rename-proposal workflow's job, not this column's.
+    original_filename_repaired: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_type: Mapped[str] = mapped_column(String(10), nullable=False)
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)

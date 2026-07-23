@@ -92,9 +92,53 @@ async def test_scan_with_matches_posts_tracklist() -> None:
     # Artist/title intentionally None per W5 Option (b) -- controller-side enrichment
     assert body.tracks[0].artist is None
     assert body.tracks[0].title is None
+    # phaze-nldg: timestamp=match.timestamp is a straight pass-through -- lock it against
+    # regressing back to always-None now that combined_query actually populates it.
+    assert body.tracks[0].timestamp == "00:01:23"
+    assert body.tracks[1].timestamp == "00:04:56"
     # Phase 45 (L-02): the MATCH path clears via create_tracklist -- it must NOT also ack
     # (no double-clear of scan_live_set:<file_id>).
     api.report_scan_terminal.assert_not_awaited()
+
+
+async def test_scan_match_timestamp_at_varchar20_cap_is_accepted() -> None:
+    """phaze-nldg / phaze-btlu: a 20-char timestamp (the column's exact cap) must pass through.
+
+    combined_query now actually emits engine-sourced timestamps (previously always None), so
+    the tracklist_tracks.timestamp varchar(20) cap becomes load-bearing on this path for the
+    first time. This locks that the wire schema's max_length=20 accommodates the longest value
+    this path can realistically produce (e.g. "HH:MM:SS.f" scraper-style strings are far
+    shorter; the fingerprint engines themselves emit short plain-seconds strings like "12.3").
+    """
+    from phaze.tasks.scan import scan_live_set
+
+    twenty_char_timestamp = "1" * 20
+    assert len(twenty_char_timestamp) == 20
+    matches = [CombinedMatch(track_id="track-1", confidence=85.0, timestamp=twenty_char_timestamp)]
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock(return_value=MagicMock(tracklist_id=uuid.uuid4(), version=1, track_count=1))
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(return_value=matches)
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+
+    result = await scan_live_set(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "scanned"
+    body = api.create_tracklist.await_args.args[0]
+    assert body.tracks[0].timestamp == twenty_char_timestamp
+
+
+async def test_scan_match_timestamp_over_varchar20_cap_is_rejected() -> None:
+    """A 21-char timestamp is machine-rejected by the wire schema before it ever reaches SQL.
+
+    Guards the ceiling side of the phaze-btlu cap: this path must fail loudly (a validation
+    error visible to the caller/operator), not silently truncate or 500 deep in Postgres.
+    """
+    from phaze.schemas.agent_tracklists import TracklistTrackPayload
+
+    twenty_one_char_timestamp = "1" * 21
+    with pytest.raises(ValidationError):
+        TracklistTrackPayload(position=1, timestamp=twenty_one_char_timestamp, confidence=85.0)
 
 
 async def test_scan_request_id_is_stable_across_calls() -> None:

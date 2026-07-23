@@ -9,12 +9,13 @@ import uuid
 
 import pytest
 
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.models.tracklist import Tracklist
-from phaze.routers.tags import _determine_file_status, _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
+from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.routers.tags import _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
 
 
 if TYPE_CHECKING:
@@ -98,86 +99,6 @@ async def test_list_tags_full_page(client: AsyncClient, session: AsyncSession) -
 
 
 @pytest.mark.asyncio
-async def test_list_tags_htmx_partial(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/ with HX-Request header returns partial (no full HTML)."""
-    await _create_executed_file(session)
-    response = await client.get("/tags/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "<!DOCTYPE html>" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_list_tags_default_order_is_filename_ascending(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-a6hm.7: with no ``sort``/``order``, rows come back filename-ascending (TAGS_SORT default)."""
-    await _create_executed_file(session, filename="Zulu - Track.mp3")
-    await _create_executed_file(session, filename="Alpha - Track.mp3")
-
-    response = await client.get("/tags/", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert response.text.index("Alpha - Track.mp3") < response.text.index("Zulu - Track.mp3")
-
-
-@pytest.mark.asyncio
-async def test_list_tags_sort_by_filename_desc_reverses_rows(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-a6hm.7: ``sort=filename&order=desc`` is server-side -- the SQL ORDER BY reverses, not the DOM."""
-    await _create_executed_file(session, filename="Alpha - Track.mp3")
-    await _create_executed_file(session, filename="Zulu - Track.mp3")
-
-    response = await client.get("/tags/?sort=filename&order=desc", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert response.text.index("Zulu - Track.mp3") < response.text.index("Alpha - Track.mp3")
-
-
-@pytest.mark.asyncio
-async def test_list_tags_sort_by_format(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-a6hm.7: "Format" is whitelisted onto ``FileRecord.file_type``."""
-    await _create_executed_file(session, filename="A.flac", file_type="flac")
-    await _create_executed_file(session, filename="B.mp3", file_type="mp3")
-
-    response = await client.get("/tags/?sort=file_type&order=desc", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert response.text.index("B.mp3") < response.text.index("A.flac")
-
-
-@pytest.mark.asyncio
-async def test_list_tags_unwhitelisted_sort_degrades_to_default_not_422(client: AsyncClient, session: AsyncSession) -> None:
-    """column_sort contract rule 3: an unrecognised ``sort`` degrades to the default; it never 422s.
-
-    ``sort`` and ``order`` resolve independently (SortContract.resolve): an unwhitelisted ``sort``
-    (a real ``FileRecord`` column that is deliberately NOT offered) falls back to the default KEY
-    (``filename``) but a valid ``order`` still applies to it -- so this asserts on the DEFAULT KEY's
-    direction, not that ``order`` is ignored too.
-    """
-    await _create_executed_file(session, filename="Alpha - Track.mp3")
-    await _create_executed_file(session, filename="Zulu - Track.mp3")
-
-    response = await client.get("/tags/?sort=original_path&order=desc", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    # "original_path" never reached a column (rule 2): the response 200s with the default key
-    # (filename) under the requested "desc" direction, rather than 422-ing or raising.
-    assert response.text.index("Zulu - Track.mp3") < response.text.index("Alpha - Track.mp3")
-
-
-@pytest.mark.asyncio
-async def test_list_tags_sort_headers_carry_aria_sort_and_preserve_page_size(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-a6hm.7: the active header announces its direction; header links preserve page_size (rule 4)."""
-    await _create_executed_file(session)
-
-    response = await client.get("/tags/?sort=file_type&order=desc&page_size=50", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert 'aria-sort="descending"' in response.text
-    assert 'aria-sort="none"' in response.text
-    assert "page_size=50" in response.text
-    assert "sort=filename" in response.text  # the Filename header's own (inactive) link
-    assert "sort=file_type" in response.text
-
-
-@pytest.mark.asyncio
 async def test_list_tags_empty_state(client: AsyncClient, session: AsyncSession) -> None:
     """Phase 57 (SHELL-05): the tags empty-state moved to the shell workspace node.
 
@@ -187,123 +108,6 @@ async def test_list_tags_empty_state(client: AsyncClient, session: AsyncSession)
     response = await client.get("/tags/", follow_redirects=False)
     assert response.status_code == 302
     assert response.headers["location"] == "/s/tagwrite"
-
-
-@pytest.mark.asyncio
-async def test_compare_tags(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/{file_id}/compare returns comparison with all 6 fields."""
-    file_record, _ = await _create_executed_file(
-        session,
-        filename="DJ Shadow - Live @ Coachella 2024.mp3",
-        artist="DJ Shadow",
-        title="Live Set",
-    )
-    response = await client.get(f"/tags/{file_record.id}/compare")
-    assert response.status_code == 200
-    assert "Tag Comparison" in response.text
-    assert "Artist" in response.text
-    assert "Title" in response.text
-    assert "Album" in response.text
-    assert "Year" in response.text
-    assert "Genre" in response.text
-
-
-@pytest.mark.asyncio
-async def test_inline_edit_returns_input(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/{file_id}/edit/artist returns HTML input with hx-put."""
-    file_record, _ = await _create_executed_file(session)
-    response = await client.get(f"/tags/{file_record.id}/edit/artist")
-    assert response.status_code == 200
-    assert "hx-put" in response.text
-    assert "input" in response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_inline_edit_invalid_field(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /tags/{file_id}/edit/invalid returns 400."""
-    file_record, _ = await _create_executed_file(session)
-    response = await client.get(f"/tags/{file_record.id}/edit/invalid_field")
-    assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_inline_edit_save(client: AsyncClient, session: AsyncSession) -> None:
-    """PUT /tags/{file_id}/edit/artist with form data returns display span."""
-    file_record, _ = await _create_executed_file(session)
-    response = await client.put(
-        f"/tags/{file_record.id}/edit/artist",
-        data={"artist": "New Artist"},
-    )
-    assert response.status_code == 200
-    assert "New Artist" in response.text
-    assert "hx-get" in response.text
-
-
-@pytest.mark.asyncio
-async def test_compare_tags_renders_id_stamped_hidden_write_inputs(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-8wzi: the Write Tags form's hidden inputs carry the stable id save_tag_field OOB-syncs.
-
-    Without a stable, predictable id, the PUT response has nothing to target and the operator's
-    inline edit can never reach the value the form actually submits.
-    """
-    # artist/title left None so the filename-parse fallback proposes a change (current None -> a
-    # non-None proposed value), which is what makes ``has_changes`` true and the form render at all.
-    file_record, _ = await _create_executed_file(session, filename="New Artist - New Title.mp3", artist=None, title=None)
-    response = await client.get(f"/tags/{file_record.id}/compare")
-    assert response.status_code == 200
-    assert f'id="tag-write-hidden-artist-{file_record.id}"' in response.text
-
-
-@pytest.mark.asyncio
-async def test_inline_edit_save_oob_syncs_write_tags_hidden_input(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-8wzi: saving an inline edit OOB-swaps the Write Tags form's hidden input to the typed
-    value, so the form -- which lives OUTSIDE the table the edited <td> is inside of and is otherwise
-    never touched by the edit's own "closest td" swap -- submits what the operator actually typed
-    instead of the stale pre-edit snapshot frozen at compare-render time.
-    """
-    file_record, _ = await _create_executed_file(session, artist="Sven Vath")
-    response = await client.put(
-        f"/tags/{file_record.id}/edit/artist",
-        data={"artist": "Sven Väth"},
-    )
-    assert response.status_code == 200
-    body = response.text
-    assert 'hx-swap-oob="true"' in body
-    assert f'id="tag-write-hidden-artist-{file_record.id}"' in body
-    assert 'name="artist"' in body
-    assert 'value="Sven Väth"' in body
-
-
-@pytest.mark.asyncio
-async def test_inline_edit_save_then_write_uses_edited_value(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-8wzi end-to-end: the value the OOB sync carries is what write_file_tags receives and
-    writes, and the write is correctly classified as a manual edit (not silently reported as
-    source="proposal" when the operator's correction was in fact used).
-    """
-    file_record, _ = await _create_executed_file(session, artist="Sven Vath", title="Old Title")
-
-    edit_response = await client.put(
-        f"/tags/{file_record.id}/edit/artist",
-        data={"artist": "Sven Väth"},
-    )
-    assert "Sven Väth" in edit_response.text
-
-    # The browser's htmx runtime would have OOB-swapped the hidden input to "Sven Väth" by now; the
-    # test client has no DOM, so submit what that swap would have produced (the exact value asserted
-    # in the OOB fragment above) to prove the write path honors it end-to-end.
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Sven Vath", "title": "Old Title"}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write_tags,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        write_response = await client.post(
-            f"/tags/{file_record.id}/write",
-            data={"artist": "Sven Väth", "title": "Old Title"},
-        )
-
-    assert write_response.status_code == 200
-    written_tags = mock_write_tags.call_args.args[1]
-    assert written_tags["artist"] == "Sven Väth", "the operator's correction must be what mutagen writes"
 
 
 @pytest.mark.asyncio
@@ -321,7 +125,7 @@ async def test_write_tags_success(client: AsyncClient, session: AsyncSession) ->
             data={"artist": "New Artist", "title": "New Title"},
         )
     assert response.status_code == 200
-    assert "completed" in response.text.lower() or "Done" in response.text
+    assert "Tags written to" in response.text
 
 
 @pytest.mark.asyncio
@@ -343,14 +147,19 @@ async def test_write_tags_non_integer_year_and_track_number_kept_as_string(clien
 
 @pytest.mark.asyncio
 async def test_write_tags_non_executed_rejected(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /tags/{file_id}/write for a non-applied file (no executed proposal) returns error."""
+    """POST /tags/{file_id}/write for a non-applied file (no executed proposal) redraws the pending row with a toast.
+
+    phaze-y4s6: this used to bare-400 for a non-v7 caller; the only caller left is the v7 tagwrite
+    workspace, so the response is always the shared ``_diff_row.html`` (200 + toast), never a raw
+    error string a non-htmx client would have to parse.
+    """
     file_record, _ = await _create_executed_file(session, applied=False)
     response = await client.post(
         f"/tags/{file_record.id}/write",
         data={"artist": "Test"},
     )
-    assert response.status_code == 400
-    assert "executed" in response.text.lower() or "Only" in response.text
+    assert response.status_code == 200
+    assert "Only executed files can have tags written." in response.text
 
 
 @pytest.mark.asyncio
@@ -385,7 +194,7 @@ async def test_write_tags_empty_body_uses_fallback(client: AsyncClient, session:
         response = await client.post(f"/tags/{file_record.id}/write")
 
     assert response.status_code == 200
-    assert "completed" in response.text.lower() or "Done" in response.text
+    assert "Tags written to" in response.text
 
     # Verify write_tags was called with non-empty tags (the computed proposed tags)
     mock_write.assert_called_once()
@@ -396,7 +205,7 @@ async def test_write_tags_empty_body_uses_fallback(client: AsyncClient, session:
 
 @pytest.mark.asyncio
 async def test_write_tags_response_has_row_id(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /tags/{file_id}/write response HTML contains id='row-{file_id}' for HTMX targeting."""
+    """POST /tags/{file_id}/write response HTML contains id='tagwrite-row-{file_id}' for HTMX targeting."""
     file_record, _ = await _create_executed_file(session, artist="Test Artist")
 
     with (
@@ -410,21 +219,10 @@ async def test_write_tags_response_has_row_id(client: AsyncClient, session: Asyn
         )
 
     assert response.status_code == 200
-    assert f'id="row-{file_record.id}"' in response.text
+    assert f'id="tagwrite-row-{file_record.id}"' in response.text
 
 
 # --- helper unit tests --------------------------------------------------------
-
-
-def test_determine_file_status_pending_when_no_write_log() -> None:
-    assert _determine_file_status(None) == "pending"
-
-
-def test_determine_file_status_returns_write_log_status() -> None:
-    """A present write log surfaces its own status verbatim."""
-    log = MagicMock()
-    log.status = "completed"
-    assert _determine_file_status(log) == "completed"
 
 
 @pytest.mark.asyncio
@@ -458,12 +256,78 @@ async def test_get_accepted_discogs_link_none_when_no_tracklist_version() -> Non
 
 
 @pytest.mark.asyncio
-async def test_get_tracklist_for_file_tolerates_multiple_links(client: AsyncClient, session: AsyncSession) -> None:
+async def test_get_accepted_discogs_link_confidence_tie_is_deterministic(session: AsyncSession) -> None:
+    """phaze-evn9: two accepted links tied on confidence must resolve to the SAME row every time.
+
+    Before the fix, ``.order_by(DiscogsLink.confidence.desc()).limit(1)`` had no secondary key, so
+    Postgres was free to return either tied row on any given query -- an operator viewing "the"
+    accepted link for a version could see it flip with no underlying data change. The ``id.desc()``
+    tiebreaker makes the pick stable; assert it repeatedly to guard against a re-introduced regression.
+    """
+    file_record, _ = await _create_executed_file(session)
+
+    tracklist_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    session.add(
+        Tracklist(
+            id=tracklist_id,
+            file_id=file_record.id,
+            external_id=f"tl-{uuid.uuid4().hex[:8]}",
+            source_url="https://www.1001tracklists.com/tracklist/tie/test.html",
+            source="1001tracklists",
+            status="matched",
+            match_confidence=90,
+            latest_version_id=version_id,
+        )
+    )
+    session.add(TracklistVersion(id=version_id, tracklist_id=tracklist_id, version_number=1))
+    await session.flush()
+
+    track_low_id = uuid.uuid4()
+    track_high_id = uuid.uuid4()
+    session.add_all(
+        [
+            TracklistTrack(id=track_low_id, version_id=version_id, position=1, artist="A", title="One"),
+            TracklistTrack(id=track_high_id, version_id=version_id, position=2, artist="B", title="Two"),
+        ]
+    )
+    await session.flush()
+
+    # Two DISTINCT tracks each carry one accepted link (the "one accepted per track" unique index
+    # forbids two accepted links on the SAME track), both tied at the same confidence.
+    link_a = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track_low_id,
+        discogs_release_id="1000",
+        confidence=0.9,
+        status="accepted",
+    )
+    link_b = DiscogsLink(
+        id=uuid.uuid4(),
+        track_id=track_high_id,
+        discogs_release_id="2000",
+        confidence=0.9,
+        status="accepted",
+    )
+    session.add_all([link_a, link_b])
+    await session.commit()
+
+    expected = link_a if link_a.id > link_b.id else link_b
+
+    for _ in range(3):
+        got = await _get_accepted_discogs_link(session, file_record.id)
+        assert got is not None
+        assert got.id == expected.id, "the confidence tie must resolve to the same row on every query"
+
+
+@pytest.mark.asyncio
+async def test_get_tracklist_for_file_tolerates_multiple_links(session: AsyncSession) -> None:
     """phaze-1am9: a file with TWO linked tracklists must not raise MultipleResultsFound.
 
     ``tracklists.file_id`` has only a non-unique index and mainline paths (>=90 auto-link, fingerprint
     re-scan) create multiple tracklists per file. The helper must pick the highest-confidence link
-    deterministically instead of crashing (which 500s /tags/ and silently empties the tagwrite queue).
+    deterministically instead of crashing (which used to 500 the legacy /tags/ list and silently
+    empty the tagwrite queue).
     """
     file_record, _ = await _create_executed_file(session)
 
@@ -496,52 +360,30 @@ async def test_get_tracklist_for_file_tolerates_multiple_links(client: AsyncClie
     link = await _get_accepted_discogs_link(session, file_record.id)
     assert link is None  # no accepted DiscogsLink seeded; the point is it returns cleanly
 
-    # The list page renders (previously a MultipleResultsFound 500 for every file once one bad file existed).
-    resp = await client.get("/tags/", headers={"HX-Request": "true"})
-    assert resp.status_code == 200
 
-
-# --- route not-found / invalid-field guards -----------------------------------
-
-
-@pytest.mark.asyncio
-async def test_compare_tags_missing_file_404(client: AsyncClient) -> None:
-    response = await client.get(f"/tags/{uuid.uuid4()}/compare")
-    assert response.status_code == 404
-    assert "not found" in response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_edit_tag_field_missing_file_404(client: AsyncClient) -> None:
-    response = await client.get(f"/tags/{uuid.uuid4()}/edit/artist")
-    assert response.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_save_tag_field_invalid_field_400(client: AsyncClient) -> None:
-    """The field allow-list is checked before the file lookup -> 400, not 404."""
-    response = await client.put(f"/tags/{uuid.uuid4()}/edit/not_a_field", data={"not_a_field": "x"})
-    assert response.status_code == 400
-    assert "invalid field" in response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_save_tag_field_missing_file_404(client: AsyncClient) -> None:
-    """A valid field but absent file falls through to the 404 branch."""
-    response = await client.put(f"/tags/{uuid.uuid4()}/edit/artist", data={"artist": "x"})
-    assert response.status_code == 404
+# --- route not-found guards ----------------------------------------------------
+#
+# phaze-y4s6 removed compare_tags/edit_tag_field/save_tag_field entirely (the legacy tag list's
+# comparison + inline-edit surface had no live caller left post-v7-cutover), so the not-found /
+# invalid-field tests that used to cover those routes went with them.
 
 
 @pytest.mark.asyncio
 async def test_write_file_tags_missing_file_404(client: AsyncClient) -> None:
+    """phaze-y4s6: a missing file now redraws with a 200 + OOB toast, not a bare 404 (there is no
+    other caller left to preserve the bare-404 shape for -- see write_file_tags's docstring).
+    """
     response = await client.post(f"/tags/{uuid.uuid4()}/write", data={"artist": "x"})
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert "File not found" in response.text
 
 
 @pytest.mark.asyncio
 async def test_undo_tag_write_missing_file_404(client: AsyncClient) -> None:
+    """phaze-y4s6: same shape change as write_file_tags -- 200 + OOB toast, not a bare 404."""
     response = await client.post(f"/tags/{uuid.uuid4()}/undo")
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert "File not found" in response.text
 
 
 # --- write_file_tags status/toast branches ------------------------------------
@@ -741,8 +583,16 @@ async def test_undo_tag_write_v7_no_prior_write_surfaces_toast_and_pending_row(c
 
 
 @pytest.mark.asyncio
-async def test_write_tags_without_v7_target_keeps_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
-    """The legacy tag list/comparison pages (no v7 HX-Target) still get tag_row.html back (phaze-nvll)."""
+async def test_write_tags_ignores_legacy_hx_target_and_always_returns_the_v7_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-y4s6: the legacy ``tag_row.html`` fallback is gone; every caller gets the v7 row back.
+
+    ``write_file_tags``/``undo_tag_write`` used to fork on ``_is_v7_tagwrite_target`` -- a legacy
+    ``HX-Target: row-{file_id}`` (from the now-deleted tag list/comparison pages) got the legacy
+    ``tag_row.html`` response, the v7 tagwrite workspace another. That legacy surface had no live
+    caller left post-v7-cutover and was deleted outright (phaze-nvll's negotiation with it), so the
+    v7 ``_diff_row.html`` response is now the ONLY shape -- even for a request that still carries the
+    old legacy ``HX-Target`` (e.g. a stale client).
+    """
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     with (
@@ -757,7 +607,8 @@ async def test_write_tags_without_v7_target_keeps_legacy_response(client: AsyncC
         )
 
     assert response.status_code == 200
-    assert f'id="row-{file_record.id}"' in response.text
+    assert f'id="tagwrite-row-{file_record.id}"' in response.text
+    assert f'id="row-{file_record.id}"' not in response.text
 
 
 def _add_tag_write_log(session: AsyncSession, file_id: uuid.UUID, status: TagWriteStatus) -> None:
@@ -840,12 +691,16 @@ async def test_tags_history_restore_resolves_to_a_full_document(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_tags_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
-    """The other direction: an ordinary htmx swap must still get the chrome-less fragment."""
-    response = await client.get("/tags/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+async def test_tags_redirects_even_with_hx_request_header(client: AsyncClient) -> None:
+    """phaze-y4s6: GET /tags/ redirects unconditionally now, even with an HX-Request header.
+
+    The in-page HX list/sort fragment this used to preserve (``tags/partials/tag_list.html``) had no
+    live caller left post-v7-cutover and was deleted outright -- unlike the sibling ``/proposals/``
+    redirect, there is no HX-filter branch here to keep working.
+    """
+    response = await client.get("/tags/", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/tagwrite"
 
 
 @pytest.mark.asyncio
@@ -963,7 +818,11 @@ async def test_undo_skips_no_op_marker_shadow(client: AsyncClient, session: Asyn
 
 @pytest.mark.asyncio
 async def test_undo_with_only_failed_write_reports_nothing_to_undo(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-soph: a file whose only log is FAILED never wrote to disk -> nothing to undo (404)."""
+    """phaze-soph: a file whose only log is FAILED never wrote to disk -> nothing to undo.
+
+    phaze-y4s6: redraws the row (200 + toast) rather than a bare 404 -- there is no other caller
+    left to preserve the bare-404 shape for (see undo_tag_write's docstring).
+    """
     file_record, _ = await _create_executed_file(session)
     await _add_write_log(
         session,
@@ -976,7 +835,7 @@ async def test_undo_with_only_failed_write_reports_nothing_to_undo(client: Async
     )
 
     response = await client.post(f"/tags/{file_record.id}/undo")
-    assert response.status_code == 404
+    assert response.status_code == 200
     assert "no prior tag write" in response.text.lower()
 
 

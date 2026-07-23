@@ -132,24 +132,18 @@ _TEXT = "lands in a Text column -- unbounded, no cap needed (rule 2)"
 _NOT_STORED = "never reaches a column; consumed as a control value in-route"
 
 PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
-    ("/proposals/", "status"): _WHITELIST,
-    ("/proposals/", "q"): _TEXT,
-    ("/proposals/", "sort"): _WHITELIST,
-    ("/proposals/", "order"): _WHITELIST,
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
     ("/proposals/{proposal_id}/edit", "facet"): _WHITELIST,
     ("/proposals/bulk", "action"): _WHITELIST,
-    # phaze-gc5d added these four so a bulk approve/reject re-renders the SAME view it was issued
-    # from instead of resetting to page 1 of the default filter. They are the identical params the
-    # ``/proposals/`` entries above govern, and they reach the database through the identical path:
-    # ``bulk_action`` hands them to ``_proposal_list_context``, the helper it SHARES with
-    # ``list_proposals``. phaze-a6hm.10 moved WHERE that whitelist lives without changing the
-    # classification: ``_proposal_list_context`` now resolves ``sort``/``order`` through
-    # ``proposal_sort.LEGACY_PROPOSAL_SORT`` (the shared column_sort contract) instead of the
-    # private ``valid_sort_columns`` set ``get_proposals_page`` used to hold, which that bead
-    # deleted. The guarantee is strictly stronger -- resolution is a lookup in a mapping to
-    # already-constructed column objects, so an unwhitelisted value has no column to reach at all
-    # (column_sort rule 2) -- so these stay _WHITELIST. Same param, same helper, same whitelist.
+    # phaze-y4s6: ``GET /proposals/`` (status/q/sort/order) and the matching four params on
+    # ``PATCH /proposals/bulk`` were removed along with the legacy ``#proposal-list-container``
+    # surface (``proposal_list.html``/``proposal_table.html``/``pagination.html``/
+    # ``bulk_actions.html``/``bulk_response.html``) they fed -- ``_proposal_list_context``, their
+    # shared helper, went with them. ``GET /proposals/`` is now a bare SHELL-05 redirect with no
+    # query params at all, and ``bulk_action`` serves only the v7 propose workspace's bulk bar,
+    # whose view state rides in the query string (``ListViewState.from_request``, no
+    # ``_param_cases()`` entry needed -- see the note below) rather than these now-deleted Form
+    # fields.
     #
     # The v7 ``/s/propose`` workspace sorts the same table but has NO entry here, deliberately: it
     # reads its display state off ``request.query_params`` via ``ListViewState.from_request`` rather
@@ -157,10 +151,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # for it would be rejected as stale by ``test_registries_have_no_stale_entries``. Its bound comes
     # from the same ``PROPOSE_SORT`` whitelist, asserted directly in
     # tests/shared/core/test_propose_workspace_sorting.py.
-    ("/proposals/bulk", "status"): _WHITELIST,
-    ("/proposals/bulk", "q"): _TEXT,
-    ("/proposals/bulk", "sort"): _WHITELIST,
-    ("/proposals/bulk", "order"): _WHITELIST,
     ("/execution/progress/{batch_id}", "batch_id"): _NOT_STORED,
     ("/audit/", "status"): _WHITELIST,
     ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,
@@ -168,13 +158,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/duplicates/{group_hash}/undo", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "file_states"): _NOT_STORED,
     ("/duplicates/undo-all", "file_states"): _NOT_STORED,
-    ("/tracklists/", "filter"): _WHITELIST,
-    ("/tracklists/scan/status", "job_ids"): _NOT_STORED,
-    ("/tracklists/scan/status", "agent_id"): "bounded: max_length=128 + pattern",
-    ("/tracklists/link-result", "external_id"): "operator-facing mirror of the agent path; String(50) -- see phaze-btlu",
-    ("/tracklists/link-result", "url"): _TEXT,
-    ("/tracklists/tracks/{track_id}/edit/{field}", "field"): _WHITELIST,
-    ("/tracklists/{tracklist_id}/reject-low", "threshold"): _NOT_STORED,
     ("/pipeline/stats", "lane"): _WHITELIST,
     ("/pipeline/lanes/{backend_id}", "backend_id"): _WHITELIST,
     ("/pipeline/files", "stage"): _WHITELIST,
@@ -218,10 +201,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
     ("/audit/", "sort"): _WHITELIST,
     ("/audit/", "order"): _WHITELIST,
-    # phaze-a6hm.7: the tag review list's TAGS_SORT contract -- same SortContract/SortState
-    # mechanism as the six entries above, classified the same way for the same reason.
-    ("/tags/", "sort"): _WHITELIST,
-    ("/tags/", "order"): _WHITELIST,
+    # phaze-y4s6: the tag review list's TAGS_SORT contract (phaze-a6hm.7) was removed along with
+    # GET /tags/'s dead fragment branch and the tag_list.html it fed -- the live tagwrite workspace
+    # has no list-level sort control (see routers/tags.py's module docstring).
     # phaze-a6hm.8: same EXEC_AGENTS_SORT contract, adapted for a table with no backing SQL SELECT
     # (execution.py's per-agent rollup is a Redis hash projection) -- the whitelist->accessor mapping
     # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.
@@ -241,12 +223,10 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/search/", "q"): _TEXT,
     ("/search/", "artist"): _TEXT,
     ("/search/", "genre"): _TEXT,
-    ("/tags/{file_id}/edit/{field}", "field"): _WHITELIST,
     # Bulk-action id lists: FastAPI reports the ELEMENT type for a ``list[str] = Form(...)``, so they
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
     ("/duplicates/resolve-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
-    ("/tracklists/scan", "file_ids"): "list[str] Form; each element parsed to UUID in-route",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
     ("/pipeline/scans", "agent_id"): "validated against the known agent set (D-06) before use",

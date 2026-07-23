@@ -1064,6 +1064,120 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
     assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
 
 
+# --- phaze-fjii: recovery routes EACH agent row to its OWNING fileserver (not one shared pick) --------
+#
+# phaze-c9w9 fixed the LIVE enqueue paths to route each file-keyed agent task to the FILE's owning agent
+# (``payload["agent_id"]``) iff that agent is a live fileserver -- never to "the single most-recently-seen
+# fileserver". Recovery was never updated: it picked ONE ``select_active_agent(kind="fileserver")`` and
+# replayed EVERY orphaned agent row onto it, so in a multi-fileserver deployment every recovered row
+# landed on ONE agent's lanes regardless of the payload's real owner (whose mount holds the actual path).
+# recover_orphaned_work now groups agent rows by their stored ``payload["agent_id"]`` and replays each onto
+# THAT owner's lane queue, skipping (never rerouting) rows whose owner is offline.
+
+
+def _agent_payload_owned_by(function: str, file_id: uuid.UUID, *, agent_id: str) -> dict[str, Any]:
+    """A stored agent-row payload whose OWNING ``agent_id`` is ``agent_id`` (phaze-fjii routing key)."""
+    payload = _agent_payload(function, file_id)
+    payload["agent_id"] = agent_id
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_agent_rows_route_to_each_rows_owning_fileserver(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-fjii: with TWO owning fileservers online, each orphaned row lands on ITS OWNER's lanes.
+
+    Two live fileservers (``fs-a``, ``fs-b``); one orphaned ``process_file`` row owned by ``fs-a`` and one
+    orphaned ``fingerprint_file`` row owned by ``fs-b``. Each must replay onto its OWNER's lane -- the
+    process_file onto ``fs-a-analyze`` and the fingerprint onto ``fs-b-fingerprint`` -- and NEITHER may
+    cross-route onto the other owner (whose media mount lacks the path).
+    MUTATION: reverting to one shared ``select_active_agent(kind="fileserver")`` pick lands BOTH rows on the
+    single most-recently-seen fileserver (``fs-b``) -> ``fs-b-analyze`` present, ``fs-a-analyze`` absent -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    # Two fileservers; fs-b is strictly more-recently-seen (the shared-pick winner an old recovery used).
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")
+    fs_b = await seed_active_agent(session, agent_id="fs-b", kind="fileserver")
+    fs_b.last_seen_at = datetime.now(UTC) + timedelta(minutes=1)
+    session.add(fs_b)
+    await session.commit()
+
+    file_a = _make_file()
+    file_b = _make_file()
+    session.add_all([file_a, file_b])
+    await session.commit()
+    await _seed_ledger(
+        session, function="process_file", file_id=file_a.id, payload=_agent_payload_owned_by("process_file", file_a.id, agent_id="fs-a")
+    )
+    await _seed_ledger(
+        session, function="fingerprint_file", file_id=file_b.id, payload=_agent_payload_owned_by("fingerprint_file", file_b.id, agent_id="fs-b")
+    )
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # Each row lands on ITS OWNER's lane; neither cross-routes onto the other fileserver.
+    assert "fs-a-analyze" in router.queues
+    assert "fs-b-fingerprint" in router.queues
+    assert "fs-b-analyze" not in router.queues  # fs-a's process_file never lands on fs-b
+    assert "fs-a-fingerprint" not in router.queues  # fs-b's fingerprint never lands on fs-a
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    # Exactly one enqueue landed on each owner's queue.
+    assert [payload["file_id"] for _, payload in router.queues["fs-a-analyze"].captured] == [str(file_a.id)]
+    assert [payload["file_id"] for _, payload in router.queues["fs-b-fingerprint"].captured] == [str(file_b.id)]
+
+
+@pytest.mark.asyncio
+async def test_agent_row_with_offline_owner_is_skipped_not_rerouted(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-fjii: a row whose owner is OFFLINE is skipped -- never rerouted onto another live fileserver.
+
+    Only ``fs-a`` is online; one orphaned ``process_file`` row is owned by ``fs-a`` (recovers) and one by the
+    OFFLINE ``fs-b`` (never seeded). The ``fs-b`` row must be SKIPPED -- left for a later recovery once its
+    owner returns -- and must NOT be misrouted onto ``fs-a`` (whose mount lacks fs-b's path, the exact
+    misroute phaze-c9w9 established the skip contract to prevent).
+    MUTATION: reverting to one shared pick reroutes the fs-b-owned row onto ``fs-a`` -> two enqueues on
+    ``fs-a-analyze`` -> RED.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="fs-a", kind="fileserver")  # fs-b is NOT online
+
+    file_a = _make_file()
+    file_b = _make_file()
+    session.add_all([file_a, file_b])
+    await session.commit()
+    await _seed_ledger(
+        session, function="process_file", file_id=file_a.id, payload=_agent_payload_owned_by("process_file", file_a.id, agent_id="fs-a")
+    )
+    await _seed_ledger(
+        session, function="process_file", file_id=file_b.id, payload=_agent_payload_owned_by("process_file", file_b.id, agent_id="fs-b")
+    )
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    # fs-a's row recovers onto fs-a; fs-b's row is skipped -- fs-b's file NEVER lands on fs-a.
+    assert "fs-a-analyze" in router.queues
+    assert "fs-b-analyze" not in router.queues  # fs-b offline -> its lane is never created
+    assert [payload["file_id"] for _, payload in router.queues["fs-a-analyze"].captured] == [str(file_a.id)]
+    assert str(file_b.id) not in [payload["file_id"] for _, payload in router.queues["fs-a-analyze"].captured]
+    # One recovered (fs-a), one left orphaned (fs-b) -- the skipped row is NOT counted as reenqueued.
+    assert result["stages"]["process_file"]["reenqueued"] == 1
+
+
 # --- Predicate totality ----------------------------------------------------------------
 
 
@@ -1201,7 +1315,8 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
     assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
     assert router.queue_for_calls == []
-    assert "no fileserver agent" in caplog.text.lower()
+    # phaze-fjii: the owning fileserver ("nox") is offline -> its rows skip with a WARNING, never rerouted.
+    assert "offline -- rows skipped, not rerouted" in caplog.text.lower()
 
 
 # --- Integration: live saq_jobs --------------------------------------------------------

@@ -14,6 +14,7 @@ import structlog
 
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.text_repair import repair_mojibake
 from phaze.services.tracklist_matcher import compute_match_confidence, parse_live_set_filename, should_auto_link
 from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistScraper
 
@@ -205,8 +206,14 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
             logger.info("tracklist search completed", file_id=file_id, status="not_found", results_found=0)
             return {"file_id": file_id, "results_found": 0, "auto_linked": False, "status": "not_found"}
 
-        # Parse filename for artist/event/date signals
-        parsed = parse_live_set_filename(file_record.original_filename)
+        # Parse filename for artist/event/date signals. phaze-x4ux: repair mojibake on the file
+        # side of the match BEFORE parsing/comparing -- FileRecord.original_filename is never
+        # rewritten (it stays the byte-faithful on-disk record), so this repairs only the local
+        # signal used for matching, not the stored column. `file_metadata.artist` is repaired
+        # defensively too (metadata extraction already repairs new tags at ingest -- see
+        # services/metadata.py::_first_str -- but this covers rows extracted before that fix
+        # shipped; repair_mojibake is a no-op on already-clean text).
+        parsed = parse_live_set_filename(repair_mojibake(file_record.original_filename))
         file_artist: str | None = None
         file_event: str | None = None
         file_date = None
@@ -214,7 +221,7 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
         if parsed:
             file_artist, file_event, file_date = parsed
         elif file_record.file_metadata:
-            file_artist = file_record.file_metadata.artist
+            file_artist = repair_mojibake(file_record.file_metadata.artist) if file_record.file_metadata.artist else None
             file_event = None  # No event info from tags
 
         # Build search query
@@ -235,6 +242,16 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
         results = await scraper.search(query)
         for search_result in results:
             scraped = await scraper.scrape_tracklist(search_result.url)
+            # phaze-x4ux: repair mojibake on the scraped side too -- 1001Tracklists page text is
+            # an external source and can itself carry a mis-decode. Mutated in place (before both
+            # the match-confidence scoring below and the eventual Tracklist row persistence in
+            # _store_scraped_tracklist) so the repair happens ONCE at this ingest boundary rather
+            # than being re-applied at every later read. `tracklists.search_vector` is a DB
+            # GENERATED column over exactly `artist`/`event`, so this also keeps that index clean.
+            if scraped.artist is not None:
+                scraped.artist = repair_mojibake(scraped.artist)
+            if scraped.event is not None:
+                scraped.event = repair_mojibake(scraped.event)
             # phaze-rkxy: pass the scraped date so the Pitfall-3 date-mismatch cap actually
             # fires in the auto-link path. Hardcoding None here made the cap dead and let a
             # wrong-date tracklist auto-link on artist+event alone.

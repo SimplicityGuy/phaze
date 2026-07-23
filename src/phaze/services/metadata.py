@@ -11,6 +11,7 @@ from mutagen.mp4 import MP4
 import structlog
 
 from phaze.services.pg_text import sanitize_pg_text
+from phaze.services.text_repair import repair_mojibake
 
 
 logger = structlog.get_logger(__name__)
@@ -106,13 +107,19 @@ _sanitize_pg_text = sanitize_pg_text
 def _first_str(val: Any) -> str | None:
     """Extract the first string from a tag value.
 
-    Handles lists, ID3 text frames, and plain strings.
+    Handles lists, ID3 text frames, and plain strings. Runs the result through
+    :func:`~phaze.services.text_repair.repair_mojibake` (phaze-x4ux) -- this is the ingest
+    boundary for artist/title/album/genre, the ONE place a mis-decoded tag (e.g. a UTF-8 filename
+    or comment misread as cp1252/latin-1 upstream) gets persisted, so repairing here means every
+    downstream reader (search, tracklist matching, rename proposals) sees clean text without
+    needing its own repair call. Conservative and a no-op on already-clean text -- see the
+    module's own safety-gate documentation.
     """
     if val is None:
         return None
     if isinstance(val, list):
-        return _sanitize_pg_text(str(val[0])) if val else None
-    return _sanitize_pg_text(str(val))
+        return repair_mojibake(_sanitize_pg_text(str(val[0]))) if val else None
+    return repair_mojibake(_sanitize_pg_text(str(val)))
 
 
 def _parse_year(val: str | None) -> int | None:

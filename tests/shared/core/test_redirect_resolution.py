@@ -74,16 +74,16 @@ async def test_legacy_route_redirects_one_hop(client: AsyncClient, legacy: str, 
 
 
 @pytest.mark.asyncio
-async def test_hx_filter_not_redirected(client: AsyncClient) -> None:
-    """SHELL-05 / D-01 -- an in-page HX filter on a legacy route is NOT hijacked by the redirect.
+async def test_proposals_redirects_even_with_hx_request_header(client: AsyncClient) -> None:
+    """phaze-y4s6: ``/proposals/`` now redirects unconditionally, even with ``HX-Request: true``.
 
-    A filter keystroke arrives with ``HX-Request: true`` and must keep returning the
-    existing filter partial (200, content-only) so the app stays fully usable through
-    cutover -- the redirect fires ONLY when ``HX-Request`` is absent.
+    This used to be the one legacy route with an in-page HX filter branch left intact (D-01):
+    ``proposals/partials/filter_tabs.html`` and ``pagination.html`` still pushed ``/proposals/?...``
+    into history. Both were subsequently adapted (``filter_tabs.html``) or deleted
+    (``pagination.html``/``proposal_table.html``/``bulk_actions.html``/``proposal_list.html``) --
+    the live v7 propose workspace's filter tabs now target ``/s/propose``, never this bare path --
+    so there is no live HX-filter caller left to preserve a non-redirect branch for.
     """
-    response = await client.get("/proposals/", headers={"HX-Request": "true"})
-    # NOT a redirect -- the conditional guard let the existing HX-filter branch run.
-    assert response.status_code not in (302, 307), "an HX filter request must not be redirected (D-01)"
-    assert response.status_code == 200
-    # The filter partial is content-only: no full-document wrapper (the shell chrome persists).
-    assert "<html" not in response.text
+    response = await client.get("/proposals/", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/propose"

@@ -18,6 +18,7 @@ The interactive stepper/pause buttons must NOT be nested inside the rail's navig
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from fastapi.templating import Jinja2Templates
 import pytest
@@ -145,6 +146,89 @@ def test_orphan_badge_is_amber_and_role_status(stage: str) -> None:
     # Amber, light + dark pair (the established "needs attention, not failure" hue).
     assert "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400" in html
     assert 'role="status"' in html
+
+
+# ---------------------------------------------------------------------------
+# phaze-nebh — the grey numeral is semantically consistent (DONE, not a per-stage
+# done/in-flight mix) and both channels (title + aria-label) explain what it measures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stage", _ENRICH_STAGES)
+def test_enrich_numeral_renders_done_over_total(stage: str) -> None:
+    """Every enrich-stage grey numeral renders done/total from the SAME measure (Done), never a bare count.
+
+    Before this fix, metadata/fingerprint bound ``{stage}Done`` (files DONE) while analyze bound
+    ``analyzeActive`` (files IN FLIGHT) -- three identically-styled numerals reading as three
+    different measures. All three now agree on done/total.
+    """
+    html = _render_rail()
+
+    assert f"$store.pipeline.{stage}Done" in html
+    assert f"$store.pipeline.{stage}Total" in html
+    # The literal in-flight key must not back the analyze numeral any more.
+    if stage == "analyze":
+        assert 'x-text="$store.pipeline.analyzeActive"' not in html, (
+            "the analyze rail numeral must no longer bind analyzeActive (in-flight) -- it must "
+            "agree with metadata/fingerprint on analyzeDone (done), per phaze-nebh"
+        )
+
+
+@pytest.mark.parametrize("stage", _ENRICH_STAGES)
+def test_enrich_numeral_has_matching_title_and_aria_label(stage: str) -> None:
+    """The grey numeral's :title and :aria-label are BOTH present, bound, and identical (agree with each other)."""
+    html = _render_rail()
+
+    title_match = re.search(rf':title="([^"]*{stage}Done[^"]*)"', html)
+    aria_match = re.search(rf':aria-label="([^"]*{stage}Done[^"]*)"', html)
+    assert title_match, f"{stage} done/total numeral is missing a :title naming the measure"
+    assert aria_match, f"{stage} done/total numeral is missing an :aria-label naming the measure"
+    assert title_match.group(1) == aria_match.group(1), (
+        f"{stage} numeral's :title and :aria-label disagree -- a title and an aria-label that "
+        "disagree is worse than either alone (phaze-nebh design note)"
+    )
+    # Names the stage and the measure, not just the stage name (which the button's own title
+    # attribute already repeats -- rail.html PROBLEM 2).
+    assert stage in title_match.group(1)
+    assert "done" in title_match.group(1)
+
+
+@pytest.mark.parametrize("stage", _ENRICH_STAGES)
+def test_orphan_badge_title_matches_aria_label(stage: str) -> None:
+    """The amber orphan badge's :title agrees with its pre-existing :aria-label (both channels, same sentence)."""
+    html = _render_rail()
+
+    title_match = re.search(rf':title="([^"]*{stage}Orphan[^"]*)"', html)
+    aria_match = re.search(rf':aria-label="([^"]*{stage}Orphan[^"]*)"', html)
+    assert title_match, f"{stage} orphan badge is missing a :title (previously aria-only, PROBLEM 2)"
+    assert aria_match, f"{stage} orphan badge is missing its :aria-label"
+    assert title_match.group(1) == aria_match.group(1), f"{stage} orphan badge :title and :aria-label disagree"
+
+
+def test_discover_numeral_has_title_and_aria_label() -> None:
+    """Sweep: the Discover node's bare 'discovered' numeral also gets a :title + :aria-label."""
+    html = _render_rail()
+
+    assert re.search(r':title="\$store\.pipeline\.discovered[^"]*"', html), "Discover numeral missing :title"
+    assert re.search(r':aria-label="\$store\.pipeline\.discovered[^"]*"', html), "Discover numeral missing :aria-label"
+
+
+def test_tracklist_numeral_has_title_and_aria_label() -> None:
+    """Sweep: the Tracklist node's tracklistDone numeral also gets a :title + :aria-label."""
+    html = _render_rail()
+
+    assert re.search(r':title="\$store\.pipeline\.tracklistDone[^"]*"', html), "Tracklist numeral missing :title"
+    assert re.search(r':aria-label="\$store\.pipeline\.tracklistDone[^"]*"', html), "Tracklist numeral missing :aria-label"
+
+
+def test_propose_numeral_renders_done_over_total_with_labels() -> None:
+    """Sweep: the Propose node renders done/total (proposalsTotal already exists in the store) and is labelled."""
+    html = _render_rail()
+
+    assert "$store.pipeline.proposalsDone" in html
+    assert "$store.pipeline.proposalsTotal" in html
+    assert re.search(r':title="\$store\.pipeline\.proposalsDone[^"]*"', html), "Propose numeral missing :title"
+    assert re.search(r':aria-label="\$store\.pipeline\.proposalsDone[^"]*"', html), "Propose numeral missing :aria-label"
 
 
 # ---------------------------------------------------------------------------

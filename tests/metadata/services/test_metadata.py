@@ -564,6 +564,58 @@ class TestStripsNulBytes:
                 assert "\x00" not in value
 
 
+class TestFirstStrRepairsMojibake:
+    """phaze-x4ux: _first_str is the metadata-extraction ingest boundary for repair_mojibake.
+
+    artist/title/album/genre are the ONE place a mis-decoded tag gets persisted, so repairing
+    here means every downstream reader (search, tracklist matching, rename proposals) sees clean
+    text -- see services/metadata.py::_first_str's docstring.
+    """
+
+    def test_repairs_double_encoded_scalar(self):
+        assert _first_str("Sven VÃƒÂ¤th") == "Sven Väth"
+
+    def test_repairs_double_encoded_list(self):
+        assert _first_str(["Sven VÃƒÂ¤th"]) == "Sven Väth"
+
+    def test_no_op_on_already_clean_text(self):
+        assert _first_str("Sven Väth") == "Sven Väth"
+        assert _first_str("Björk") == "Björk"
+
+    def test_no_op_on_pure_ascii(self):
+        assert _first_str("Carl Cox") == "Carl Cox"
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_extract_tags_repairs_mojibake_artist(self, mock_file):
+        """End-to-end through extract_tags (ID3 TPE1), not just the _first_str unit."""
+        from mutagen.id3 import ID3
+
+        mock_audio = MagicMock()
+        mock_tags = MagicMock(spec=ID3)
+
+        mock_tpe1 = MagicMock()
+        mock_tpe1.text = ["Sven VÃƒÂ¤th"]
+
+        def id3_get(key):
+            if key == "TPE1":
+                return mock_tpe1
+            return None
+
+        mock_tags.get = id3_get
+        mock_tags.items.return_value = [("TPE1", mock_tpe1)]
+
+        mock_audio.tags = mock_tags
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 100.0
+        mock_audio.info.bitrate = 128000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.mp3")
+
+        assert result.artist == "Sven Väth"
+
+
 class TestSanitizePgText:
     """Direct tests for _sanitize_pg_text: strip NUL + lone surrogates, preserve the rest."""
 

@@ -388,6 +388,17 @@ class BaseSettings(PydanticBaseSettings):
     # Discogsography service URL (shared base; concurrency-tunable on Control)
     discogsography_url: str = "http://discogsography:8000"
 
+    # phaze-hu8v: 1001Tracklists' robots.txt invites general crawling but the scraper previously
+    # spoofed a desktop Chrome User-Agent with no contact info, giving the site operator no way
+    # to identify us or apply a phaze-specific policy. Embedded in the honest UA
+    # ("phaze/<version> (+<url>)"); exposed as a setting rather than hardcoded so it can be
+    # updated (e.g. to a real contact email) without a code change.
+    scraper_contact_url: str = Field(
+        default="https://github.com/SimplicityGuy/phaze",
+        validation_alias=AliasChoices("PHAZE_SCRAPER_CONTACT_URL", "scraper_contact_url"),
+        description="Contact URL embedded in the honest 1001Tracklists scraper User-Agent (phaze-hu8v).",
+    )
+
     # Internal agent API (Phase 25)
     agent_token_prefix: str = "phaze_agent_"  # noqa: S105
     agent_file_chunk_max: int = 1000
