@@ -1,10 +1,14 @@
-{# quick-260707-cvz: three-state self-polling deepen-progress fragment.
+{# quick-260707-cvz: self-polling deepen-progress fragment.
 
    Terminal-halt idiom (mirrors scan_progress_card.html, Pitfall 6): the non-terminal
    branches (running / queued) carry hx-get + hx-trigger="every 2s" + hx-swap="outerHTML";
-   the terminal branches (gone / complete) OMIT all three. Because the swap is outerHTML,
-   replacing the polling fragment with a terminal one removes the trigger and HTMX stops
-   polling automatically.
+   the terminal branches (gone / failed / complete) OMIT all three. Because the swap is
+   outerHTML, replacing the polling fragment with a terminal one removes the trigger and
+   HTMX stops polling automatically.
+
+   phaze-l9nc: `failed` is a terminal branch alongside gone/complete -- without it, a deepen
+   that fails left the running/queued branches (both self-re-arming) as the only reachable
+   states, so a failed re-analysis polled "Re-analyzing" forever.
 
    Counts (fine_done / fine_total) are numeric ints (autoescaped, None-guarded to 0 by the
    endpoint) -- never essentia strings, never raw HTML (T-cvz-02). The root element in every
@@ -14,6 +18,10 @@
 {% if gone %}
 <span class="text-sm text-red-600 dark:text-red-400 font-medium" aria-live="polite">
     File no longer available — deepen cannot be tracked.
+</span>
+{% elif failed %}
+<span class="text-sm text-red-600 dark:text-red-400 font-medium" aria-live="polite">
+    Deepen failed — see analysis history for details.
 </span>
 {% elif complete %}
 <span class="text-sm text-green-600 dark:text-green-400 font-medium" aria-live="polite">

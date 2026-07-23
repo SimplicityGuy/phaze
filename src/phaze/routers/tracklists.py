@@ -112,6 +112,25 @@ async def _attach_track_count(session: AsyncSession, tracklist: Tracklist) -> No
         tracklist._track_count = 0  # type: ignore[attr-defined]
 
 
+async def _compute_cue_version(session: AsyncSession, tracklist: Tracklist) -> int:
+    """Compute the real on-disk CUE version for ``tracklist``, or 0 if none applies (phaze-xho0).
+
+    tracklist_card.html renders its CUE affordance (badge + Regenerate-vs-Generate label) off the
+    ``cue_version`` context key (or ``tracklist._cue_version`` if set). A route that re-renders the
+    card MUST compute this the same way :func:`approve_tracklist` does -- ``file_id`` -> ``FileRecord``
+    -> ``is_applied`` -> :func:`phaze.routers.cue._get_cue_version` -- rather than passing a literal
+    ``0``, or a tracklist with an existing CUE on disk falsely renders the first-time "Generate CUE"
+    button instead of "CUE vN / Regenerate CUE".
+    """
+    if not tracklist.file_id:
+        return 0
+    fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tracklist.file_id))
+    fr = fr_result.scalar_one_or_none()
+    if fr and await is_applied(session, fr.id):
+        return _get_cue_version(fr.current_path)
+    return 0
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/tracklists", tags=["tracklists"])
@@ -633,13 +652,18 @@ async def rescrape_tracklist(
         await routed.queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tracklist_id))
 
     has_candidates = await _has_candidates(session, tracklist) if tracklist else False
+    cue_version = 0
     if tracklist:
         await _attach_track_count(session, tracklist)
+        # phaze-xho0: compute the real on-disk version instead of a literal 0 -- an approved,
+        # applied tracklist with an existing CUE must keep showing "CUE vN / Regenerate CUE",
+        # not fall back to the first-time "Generate CUE" affordance after a re-scrape.
+        cue_version = await _compute_cue_version(session, tracklist)
 
     return templates.TemplateResponse(
         request=request,
         name="tracklists/partials/tracklist_card.html",
-        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": 0, "has_candidates": has_candidates},
+        context={"request": request, "tracklist": tracklist, "rescrape_queued": True, "cue_version": cue_version, "has_candidates": has_candidates},
     )
 
 
@@ -989,12 +1013,7 @@ async def approve_tracklist(
     tracklist.status = "approved"
     await session.commit()
 
-    cue_version = 0
-    if tracklist.file_id:
-        fr_result = await session.execute(select(FileRecord).where(FileRecord.id == tracklist.file_id))
-        fr = fr_result.scalar_one_or_none()
-        if fr and await is_applied(session, fr.id):
-            cue_version = _get_cue_version(fr.current_path)
+    cue_version = await _compute_cue_version(session, tracklist)
 
     await _attach_track_count(session, tracklist)
 
@@ -1096,6 +1115,8 @@ async def match_discogs(
     await routed.queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tracklist_id))
 
     await _attach_track_count(session, tracklist)
+    # phaze-xho0: compute the real on-disk version instead of a literal 0 -- see rescrape_tracklist.
+    cue_version = await _compute_cue_version(session, tracklist)
 
     return templates.TemplateResponse(
         request=request,
@@ -1104,7 +1125,7 @@ async def match_discogs(
             "request": request,
             "tracklist": tracklist,
             "match_queued": True,
-            "cue_version": 0,
+            "cue_version": cue_version,
             "has_candidates": await _has_candidates(session, tracklist),
         },
     )

@@ -20,6 +20,11 @@
      * row_state      -- "pending" (default) shows Approve/Edit/Skip; "approved"/"applied" show the
                          emerald lifecycle word + a neutral UNDO (Pattern 6). get_pending_proposal_rows
                          returns only PENDING rows, so the workspaces render the pending branch.
+     * oob            -- (phaze-71hi) when true, marks this row's own root `hx-swap-oob="true"` so a
+                         response whose primary swap target is elsewhere (e.g. the bulk-approve
+                         status div) can still update this row IN PLACE. Default false -- the normal
+                         single-row mutation responses (`hx-target`/`hx-swap="outerHTML"` on the row
+                         itself) must NOT also carry hx-swap-oob.
 
    Trust boundary: every before/after/file cell is autoescaped by Jinja and is NEVER rendered raw or
    unescaped -- DB-sourced filenames/paths cross into rendered HTML (T-60-XSS). Colour is a static
@@ -31,6 +36,7 @@
 {% set _primary = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md bg-emerald-600/90 hover:bg-emerald-500 text-white font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-500' %}
 {% set _sec = 'inline-flex items-center justify-center h-7 px-2.5 rounded-md border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-[11px] font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500' %}
 <div id="{{ row_id_prefix }}-{{ pid }}"
+     {% if oob|default(false) %}hx-swap-oob="true"{% endif %}
      class="px-6 py-3 border-b border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer{% if row_state and row_state != 'pending' %} opacity-70{% endif %}"
      x-data='{ editing:false, val:{{ after|tojson }} }'>
     <div class="flex items-center justify-between">

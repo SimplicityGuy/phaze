@@ -1744,6 +1744,64 @@ async def test_deepen_progress_gone_state_halts_poll(client: AsyncClient, sessio
 
 
 @pytest.mark.asyncio
+async def test_deepen_progress_failed_state_halts_poll(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-l9nc: a failed_at stamped AFTER since renders the terminal 'Deepen failed' fragment,
+    with NO poll trigger -- without this, the frozen fine_windows counters (fine_done < fine_total
+    at the point of failure) kept the running branch (self-re-arming) forever.
+    """
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=12,
+            fine_windows_total=40,
+            analysis_completed_at=None,
+            # Fresh report_analysis_failed stamp AFTER the click -> failed (terminal).
+            failed_at=datetime.fromtimestamp(_CVZ_SINCE + 100, tz=UTC),
+            error_message="agent crashed",
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen failed" in response.text
+    # Terminal -> polling halted (outerHTML swap removed the trigger).
+    assert "hx-trigger" not in response.text
+    assert "Re-analyzing" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_progress_stale_failed_at_does_not_short_circuit_retry(client: AsyncClient, session: AsyncSession) -> None:
+    """A failed_at from BEFORE this click (an unrelated earlier failure) must not read as this
+    re-run's failure -- the in-flight retry keeps polling on its own fine_windows counters.
+    """
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.flush()
+    session.add(
+        AnalysisResult(
+            file_id=file_rec.id,
+            fine_windows_analyzed=5,
+            fine_windows_total=40,
+            analysis_completed_at=None,
+            # Stale pre-click failure (<= since) -> NOT this click's failure.
+            failed_at=datetime.fromtimestamp(_CVZ_SINCE - 100, tz=UTC),
+            error_message="an earlier, unrelated failure",
+        )
+    )
+    await session.commit()
+
+    response = await client.get(f"/pipeline/files/{file_rec.id}/deepen-progress?since={_CVZ_SINCE}")
+    assert response.status_code == 200
+    assert "Deepen failed" not in response.text
+    assert "5/40 windows" in response.text
+    assert "hx-trigger" in response.text
+
+
+@pytest.mark.asyncio
 async def test_deepen_progress_stale_sampled_result_not_complete(client: AsyncClient, session: AsyncSession) -> None:
     """A stale sampled result completed at exactly `since` is NOT shown as complete (> boundary, not >=)."""
     file_rec = _make_file()

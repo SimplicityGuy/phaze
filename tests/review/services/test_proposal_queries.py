@@ -282,6 +282,49 @@ async def test_get_proposals_page_pagination(session: AsyncSession) -> None:
     assert pagination.total_pages == 3
 
 
+@pytest.mark.asyncio
+async def test_get_proposals_page_clamps_out_of_range_page_to_the_last_page(session: AsyncSession) -> None:
+    """phaze-33sx: a page past the end renders the LAST real page instead of an empty one.
+
+    30 proposals at page_size=50 -> total_pages=1. Requesting page=5 (e.g. a bookmarked/forward
+    navigated URL, or a bulk approve/reject on the last page shrinking the pending set out from under
+    it) must clamp to page=1 and return its rows, not OFFSET past the end into an empty result with
+    an inverted ``Pagination.start > Pagination.end`` range.
+    """
+    for i in range(30):
+        await _create_proposal(session, original_filename=f"g{i}.mp3", proposed_filename=f"G{i}.mp3")
+
+    proposals, pagination = await get_proposals_page(session, status="all", page=5, page_size=50)
+    assert pagination.page == 1, "the clamped page must be reported, not the requested out-of-range one"
+    assert len(proposals) == 30
+    assert pagination.total == 30
+    assert pagination.start <= pagination.end, "start must never exceed end"
+    assert pagination.start == 1
+    assert pagination.end == 30
+
+
+@pytest.mark.asyncio
+async def test_get_proposals_page_clamps_to_the_last_page_with_multiple_pages(session: AsyncSession) -> None:
+    """The same clamp with more than one real page: page=99 must land on the true last page (3)."""
+    for i in range(25):
+        await _create_proposal(session, original_filename=f"h{i}.mp3", proposed_filename=f"H{i}.mp3")
+
+    proposals, pagination = await get_proposals_page(session, status="all", page=99, page_size=10)
+    assert pagination.page == 3
+    assert len(proposals) == 5, "page 3 of 25 rows at page_size=10 holds the 5-row remainder"
+    assert pagination.start <= pagination.end
+
+
+@pytest.mark.asyncio
+async def test_get_proposals_page_clamps_to_page_one_when_the_corpus_is_empty(session: AsyncSession) -> None:
+    """total=0 -> total_pages is 1 (Pagination's own convention); page=7 clamps down to it."""
+    proposals, pagination = await get_proposals_page(session, status="all", page=7, page_size=25)
+    assert pagination.page == 1
+    assert proposals == []
+    assert pagination.start == 0
+    assert pagination.end == 0
+
+
 # ---------------------------------------------------------------------------
 # update_proposal_status
 # ---------------------------------------------------------------------------

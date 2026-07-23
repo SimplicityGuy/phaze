@@ -42,7 +42,7 @@
                 <span class="px-2 text-gray-400 dark:text-gray-500">...</span>
             {% endif %}
 
-            {% for p in range([current - 1, 2]|max, [current + 2, total_pages]|min + 1) %}
+            {% for p in range([current - 1, 2]|max, [current + 2, total_pages - 1]|min + 1) %}
                 <button
                     hx-get="/duplicates/?page={{ p }}&page_size={{ pagination.page_size }}"
                     hx-target="#duplicates-list"

@@ -382,10 +382,36 @@ async def generate_cue(
     # Return updated row + OOB toast
     track_count = await _get_track_count(session, tracklist.latest_version_id)
 
-    # Detect if request came from tracklist card (HX-Target starts with "tracklist-")
+    # Detect which surface the request came from via HX-Target.
     hx_target = request.headers.get("HX-Target", "")
+
+    # phaze-js16: the v7 cue-workspace card's APPROVE targets #cue-card-{id} -- mirror the
+    # cue-card- branch _render_generate_error already has (phaze-2w49) so a SUCCESSFUL approve
+    # re-renders the same _cue_preview.html card instead of falling through to the legacy
+    # cue/partials/cue_row.html markup. The write just succeeded, so the card stays eligible with
+    # a fresh in-memory preview of the CUE we just wrote (no extra query needed -- `content` IS it).
+    if hx_target.startswith("cue-card-"):
+        card = {
+            "tracklist_id": tracklist.id,
+            "set_name": audio_path.stem,
+            "eligible": True,
+            "cue_text": content,
+        }
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/_cue_preview.html",
+            context={"request": request, "card": card, "toast_message": toast_msg},
+        )
+
     if hx_target.startswith("tracklist-"):
-        # Request came from tracklist card -- return updated card
+        # Request came from tracklist card -- return updated card.
+        # phaze-fig9: tracklist_card.html renders its track-count chip from the derived
+        # `tracklist._track_count` attribute (Undefined -> 0 on a bare ORM object), so attach the
+        # count we already computed above instead of letting the swapped-in card falsely read "0
+        # tracks". Also attach `_cue_version` for the same reason `_attach_track_count` exists --
+        # consistency with every other tracklist_card.html-rendering route.
+        tracklist._track_count = track_count  # type: ignore[attr-defined]
+        tracklist._cue_version = cue_version  # type: ignore[attr-defined]
         return templates.TemplateResponse(
             request=request,
             name="tracklists/partials/tracklist_card.html",

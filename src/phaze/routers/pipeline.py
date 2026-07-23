@@ -113,9 +113,14 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # the DB reconcile is the authority; the counter is a backstop cache, never an override).
 # ``discovery`` and ``execute`` have no maintained counter (``scan_directory`` /
 # ``execute_approved_batch`` are deterministic-key-exempt), so they never fall back.
-# In practice the counter only exceeds 0 after real completions — at which point the DB
-# reflects them too unless the DB source degraded — so applying the counter on ``done==0``
-# is harmless when the stage is genuinely empty (counter is also 0 there).
+# phaze-y0wz: the counter only exceeds 0 after real completions, but it is a durable, never-reset
+# INCR (services/pipeline_counters.py) that OUTLIVES the rows it counted — a full corpus delete
+# (``delete_scan``) cascades away FileRecord/metadata/analysis but never touches Redis. So
+# ``done==0`` does NOT imply "counter is also 0 there"; a genuinely-emptied corpus reads
+# ``done==0``/``total==0`` while the counter still carries the whole pre-delete completion count.
+# ``_reconciled_done`` caps the fallback at ``stage_total`` UNCONDITIONALLY (including
+# ``stage_total == 0``, where the cap degrades the fallback to ``stage_done``) so this state
+# renders 0, not a phantom historical count.
 # WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
 # ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
 # ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
@@ -160,15 +165,28 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
 
     DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
     back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
-    if that sum is itself > 0. The fallback is capped at ``stage_total`` (when known, > 0) so
-    re-run-inflated counters cannot render a ``done`` larger than the denominator (WR-03).
+    if that sum is itself > 0. The fallback is capped at ``stage_total`` (WR-03) so
+    re-run-inflated counters cannot render a ``done`` larger than the denominator.
+
+    phaze-y0wz: the cap holds UNCONDITIONALLY, including ``stage_total == 0``. The durable
+    Redis ``completed`` counters (plain INCR, never decremented/reset — see
+    ``services/pipeline_counters.py``) survive a full corpus delete (``delete_scan`` cascades
+    away the FileRecord/metadata/analysis rows but never touches Redis), so ``stage_total == 0``
+    is NOT proof of DB degradation — it is also exactly what a genuinely-emptied or
+    genuinely-empty corpus reads. Previously ``stage_total > 0`` gated the cap, so it went dead
+    in that exact state and an emptied corpus rendered its entire pre-delete completion history
+    as a phantom, uncapped ``done`` against a ``total`` of 0. Capping at ``stage_total`` (0 here)
+    means the fallback degrades to ``stage_done`` (already known to be 0, from the guard above)
+    whenever the denominator is 0 — including ``scan_search``, whose ``total`` the DB layer
+    documents as ALWAYS ``None`` -> 0 (``get_stage_progress``), so this also retires that node's
+    permanent uncapped double-count (summing ``scan_live_set`` + ``search_tracklist``).
     """
     if stage_done > 0:
         return stage_done
     fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
     if fallback <= 0:
         return stage_done
-    return min(fallback, stage_total) if stage_total > 0 else fallback
+    return min(fallback, stage_total) if stage_total > 0 else stage_done
 
 
 def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
@@ -2242,9 +2260,18 @@ async def deepen_progress(
     ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
     completed_at until the fresh ``put_analysis`` lands.
 
+    FAILURE PREDICATE (phaze-l9nc, timestamp-gated, mirrors the completion predicate): a re-run
+    is failed only when ``report_analysis_failed`` has stamped ``failed_at`` AFTER this click
+    (``> requested_at``). Without this, a deepen that fails leaves the frozen fine_windows
+    counters (fine_done < fine_total) satisfying ``running`` forever -- the fragment never
+    reaches a terminal branch and polls every 2s for the life of the tab. A stale pre-click
+    ``failed_at`` (from an unrelated earlier failure) is NOT this re-run's failure and must not
+    short-circuit an in-flight retry.
+
     State machine (evaluated in order): malformed ``since`` -> 422 (terminal, no query run);
-    missing file -> gone (terminal); complete predicate -> complete (terminal); fine_total
-    truthy AND fine_done < fine_total -> running (poll); otherwise -> queued/starting (poll).
+    missing file -> gone (terminal); failed predicate -> failed (terminal); complete predicate ->
+    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
+    otherwise -> queued/starting (poll).
     """
     try:
         requested_at = datetime.fromtimestamp(since, tz=UTC)
@@ -2264,6 +2291,7 @@ async def deepen_progress(
             context={
                 "request": request,
                 "gone": True,
+                "failed": False,
                 "complete": False,
                 "running": False,
                 "fine_done": 0,
@@ -2276,11 +2304,28 @@ async def deepen_progress(
     analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
     analysis = analysis_result.scalar_one_or_none()
 
-    complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
+    # phaze-l9nc: read failed_at (never checked before this fix) so a deepen that terminally
+    # fails halts the poller instead of looping the running/queued branches forever. Gated on
+    # `> requested_at` for the same reason `complete` is: a stale pre-click failed_at (an
+    # unrelated earlier failure on this file, since cleared by a successful re-analysis or still
+    # pending a fresh retry) must not be read as THIS click's outcome.
+    #
+    # Known interaction (noted, not fixed here -- out of scope, phaze-ts1d owns agent_analysis.py):
+    # report_analysis_failed's CAS guard (`WHERE analysis_completed_at IS NULL`) makes the failure
+    # stamp a no-op whenever the deepen target already has a completed analysis -- exactly the
+    # common "sampled" case the Deepen button is offered on. In that case failed_at is never set
+    # for this re-run, `failed` stays False, and the fragment falls through to `running`/`queued`
+    # on the frozen fine_windows counters. This predicate still correctly halts the poller for
+    # every case where failed_at IS stamped (e.g. a deepen on a file with no prior completed
+    # analysis); it does not regress or worsen the CAS-guarded case, which was already unable to
+    # reach `complete` either.
+    failed = analysis is not None and analysis.failed_at is not None and analysis.failed_at > requested_at
+
+    complete = (not failed) and analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
 
     fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
     fine_total = (analysis.fine_windows_total or 0) if analysis is not None else 0
-    running = (not complete) and fine_total > 0 and fine_done < fine_total
+    running = (not failed) and (not complete) and fine_total > 0 and fine_done < fine_total
 
     return templates.TemplateResponse(
         request=request,
@@ -2288,6 +2333,7 @@ async def deepen_progress(
         context={
             "request": request,
             "gone": False,
+            "failed": failed,
             "complete": complete,
             "running": running,
             "fine_done": fine_done,

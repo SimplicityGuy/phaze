@@ -1020,6 +1020,97 @@ async def test_approve_without_hx_target_returns_legacy_response(client: AsyncCl
 
 
 # ---------------------------------------------------------------------------
+# bulk-approve-high-confidence row sync for the v7 Rename/Move workspaces (phaze-71hi)
+#
+# rename_workspace.html / move_workspace.html hx-target this endpoint at their own tiny
+# #rename-trigger-response / #move-trigger-response status div, and the workspaces run no row poll
+# (R-2) to pick a change up on their own. Before this fix, every row the predicate approved stayed
+# rendered PENDING with live APPROVE/EDIT/SKIP controls; a subsequent click 409'd silently.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_from_rename_workspace_syncs_approved_row(client: AsyncClient, session: AsyncSession) -> None:
+    """From the Rename workspace, the response OOB-swaps the transitioned row to row_state=approved."""
+    high = await create_test_proposal(session, confidence=0.95, original_filename="high.mp3")
+    low = await create_test_proposal(session, confidence=0.5, original_filename="low.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
+    )
+    assert response.status_code == 200
+    body = response.text
+
+    high_row = await session.get(RenameProposal, high.id)
+    assert high_row is not None
+    assert high_row.status == ProposalStatus.APPROVED.value
+
+    # The transitioned row is OOB-swapped in place, keyed to the rename-row prefix, showing the
+    # approved lifecycle affordances -- not left with live APPROVE/EDIT/SKIP controls (phaze-71hi).
+    assert f'id="rename-row-{high.id}"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert "approved" in body
+    assert "UNDO" in body
+
+    # The still-pending row (confidence below threshold) must NOT appear in the response at all --
+    # it was never transitioned, so no OOB fragment is needed for it.
+    assert f"rename-row-{low.id}" not in body
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_from_move_workspace_syncs_approved_row(client: AsyncClient, session: AsyncSession) -> None:
+    """From the Move workspace, the OOB row fragment uses the move-row prefix and path facet."""
+    high = await create_test_proposal(session, confidence=0.95, proposed_path="performances/A", original_filename="high.mp3")
+
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "move-trigger-response"},
+    )
+    assert response.status_code == 200
+    body = response.text
+
+    assert f'id="move-row-{high.id}"' in body
+    assert 'hx-swap-oob="true"' in body
+    assert "approved" in body
+    assert (await session.get(RenameProposal, high.id)).status == ProposalStatus.APPROVED.value
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_v7_response_omits_nonexistent_stats_bar(client: AsyncClient, session: AsyncSession) -> None:
+    """The v7 response must not OOB-target #stats-bar -- it does not exist in the v7 shell (phaze-71hi)."""
+    await create_test_proposal(session, confidence=0.95)
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
+    )
+    assert response.status_code == 200
+    assert "stats-bar" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_zero_matches_returns_toast_with_no_oob_rows(client: AsyncClient, session: AsyncSession) -> None:
+    """No pending row meets the predicate: a toast is returned but no OOB row fragment is emitted."""
+    await create_test_proposal(session, confidence=0.5)
+    response = await client.patch(
+        "/proposals/bulk-approve-high-confidence",
+        headers={"HX-Request": "true", "HX-Target": "rename-trigger-response"},
+    )
+    assert response.status_code == 200
+    assert "Nothing matched" in response.text
+    assert 'hx-swap-oob="true"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_high_confidence_without_v7_target_returns_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
+    """The legacy proposals list (no v7 HX-Target) keeps the original approve_response.html shape."""
+    await create_test_proposal(session, confidence=0.95)
+    response = await client.patch("/proposals/bulk-approve-high-confidence")
+    assert response.status_code == 200
+    assert "stats-bar" in response.text
+
+
+# ---------------------------------------------------------------------------
 # GET /proposals/ history-restore response shape (phaze-64uy)
 #
 # proposals/partials/filter_tabs.html and proposals/partials/pagination.html BOTH set

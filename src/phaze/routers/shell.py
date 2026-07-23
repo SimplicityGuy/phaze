@@ -87,7 +87,12 @@ STAGE_PARTIALS: dict[str, str] = {
     # A STATIC string literal (T-57-01: `stage` is NEVER spliced into a template path) that also
     # doubles as a dead-template-guard entry root. Placed right after summary -- the file-level
     # overview sibling of the stage-level Summary landing.
-    "files": "pipeline/partials/files_table_view.html",
+    # phaze-mrhq: points at the thin HOST wrapper (files_workspace.html), not files_table_view.html
+    # directly -- mirrors the analyze_workspace.html / _analyze_files.html host+fragment split
+    # (phaze-5462). files_table_view.html is the swap-target FRAGMENT every filter/sort/pager click
+    # re-fetches from GET /pipeline/files; it carries no id of its own, so the id-bearing host div
+    # here is never nested inside itself.
+    "files": "pipeline/partials/files_workspace.html",
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
     "discover": "pipeline/partials/discover_workspace.html",
