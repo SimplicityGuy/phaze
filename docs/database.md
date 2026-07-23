@@ -33,6 +33,16 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `dedup_resolution`    | Per-file 1:1 sidecar marking a duplicate resolved to a canonical file (marker-row existence = resolved) |
 | `stage_skip`          | Per-`(file_id, stage)` sidecar marking an operator force-skip of an enrich stage      |
 
+One further table shares the database but is **not** in the list above because it is not an
+Alembic-managed model: **`saq_jobs`**. Since Phase 36 the SAQ broker is a `PostgresQueue`, and
+SAQ creates and owns this table itself (`CREATE TABLE IF NOT EXISTS`, outside the migration
+chain). phaze still reads and mutates it directly with raw parameterized SQL from
+`services/stage_control.py` — the per-stage pause / resume / priority helpers reorder or park
+the *existing* queued backlog that the `before_enqueue` hook can only stamp on new jobs. Because
+`saq_jobs` has no `function` column (the name lives inside the serialized `job` BYTEA blob),
+those helpers filter on the Phase-35 deterministic key prefix `key LIKE '<function>:%'`, always
+guarded by `status = 'queued'`.
+
 ### Entity relationships
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
@@ -100,7 +110,14 @@ from its output tables (`metadata`, `fingerprint_results`, `analysis`, `proposal
   off `analyze` on the standalone `cloud_job` sidecar row (not a file state).
 - `ScanStatus` (`scan_batch.py`): `running`, `completed`, `failed`, `live`.
 - `ProposalStatus` (`proposal.py`): `pending`, `approved`, `rejected`, `executed`, `failed`.
-- `TagWriteStatus` (`tag_write_log.py`): `completed`, `failed`, `discrepancy`.
+- `TagWriteStatus` (`tag_write_log.py`, 5 members): `completed`, `failed`, `discrepancy`,
+  `verify_failed` (phaze-vq3g — the on-disk write landed but the immediate verify re-read
+  failed; distinct from `discrepancy`, where the write landed the *wrong* values, and from
+  `failed`, where it never landed. Non-terminal, so the file resurfaces and a later submit
+  self-heals to `completed`), and `no_op` (WR-01 — a *terminal* marker for a file whose
+  server-computed proposal has zero changes; the idempotency anti-join evicts it from the
+  candidate window so it can never starve qualifying files). The column is a plain
+  `String(20)` (no PG enum / CHECK), so adding a member needs no migration.
 - `ExecutionStatus` is defined in `src/phaze/enums/execution.py` and re-exported from
   `models/execution.py`.
 

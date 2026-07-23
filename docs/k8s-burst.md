@@ -8,9 +8,12 @@
 (REG-01) — and you can declare **several at once**, each with its own cost-tier `rank`,
 concurrency `cap`, `[backends.kube]` connection block, and `buckets` staging set. For every
 **long** audio set (duration ≥ `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`) the tiered drain routes the
-file rank-first to a Kueue backend: the control plane stages the file's bytes to that backend's
-S3-compatible staging bucket, submits a **suspended one-shot Kueue `Job`**, and a pod analyzes
-the file and POSTs the result back to `/api/internal/agent/*` — reconciled by `file_id`. The
+file rank-first to a Kueue backend: the control plane *orchestrates* staging into that backend's
+S3-compatible staging bucket — it initiates the multipart upload, presigns the part URLs, and
+completes the object, while the **file-server agent** (which owns the media mount) transfers the
+bytes via the `io` lane's `s3_upload` task; the control plane never touches file bytes (DIST-01).
+It then submits a **suspended one-shot Kueue `Job`**, and a pod analyzes
+the file and PUTs the result back to `/api/internal/agent/*` — reconciled by `file_id`. The
 object is deleted after analysis. There is **no persistent pod disk** and **no long-lived
 compute host** — the execution unit is an ephemeral, quota-scheduled batch Job.
 
@@ -62,16 +65,16 @@ flowchart LR
     reconcile["reconcile_cloud_jobs (*/5 cron)<br/>per-backend, backend_id-scoped"]
     kc_a["kr8s client A (context: kueue-a)"]
     kc_b["kr8s client B (context: kueue-b)"]
-    callback["POST /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
+    callback["PUT /api/internal/agent/analysis/{file_id}<br/>(the ONLY result channel)"]
   end
   subgraph clusterA["Kueue backend A (rank 10, cap N_A)"]
     lqA["LocalQueue phaze-lq"]
-    podA["one-shot pod (presign GET → analyze → POST → exit)"]
+    podA["one-shot pod (presign GET → analyze → PUT → exit)"]
     bktA["buckets: A staging set"]
   end
   subgraph clusterB["Kueue backend B (rank 20, cap N_B)"]
     lqB["LocalQueue phaze-lq"]
-    podB["one-shot pod (presign GET → analyze → POST → exit)"]
+    podB["one-shot pod (presign GET → analyze → PUT → exit)"]
     bktB["buckets: B staging set"]
   end
   drain --> selbk
@@ -83,8 +86,8 @@ flowchart LR
   s3_staging -->|"presign PUT/GET"| bktB
   lqA -->|"Kueue admits"| podA
   lqB -->|"Kueue admits"| podB
-  podA -->|"POST result (the ONLY result channel)"| callback
-  podB -->|"POST result (the ONLY result channel)"| callback
+  podA -->|"PUT result (the ONLY result channel)"| callback
+  podB -->|"PUT result (the ONLY result channel)"| callback
 ```
 
 **Rank-tiered spillover** — per candidate file, `select_backend` prefers the lowest-`rank`
@@ -93,7 +96,7 @@ OFFLINE, and finally to slow local (staleness-gated):
 
 ```mermaid
 flowchart TD
-  f["AWAITING_CLOUD file (oldest first)"] --> r1{"rank 10 Kueue<br/>available & slot free?"}
+  f["file with cloud_job status='awaiting'<br/>(oldest first)"] --> r1{"rank 10 Kueue<br/>available & slot free?"}
   r1 -->|yes| d1["dispatch → stage to A's bucket + submit Job"]
   r1 -->|"FULL or OFFLINE"| r2{"rank 20 Kueue<br/>available & slot free?"}
   r2 -->|yes| d2["dispatch → stage to B's bucket + submit Job"]
@@ -101,7 +104,7 @@ flowchart TD
   loc -->|"all cloud OFFLINE → immediately"| dl["route LOCAL (rank 99)"]
   loc -->|"cloud online-but-FULL → after cloud_spill_to_local_after_seconds"| dl
   loc -->|"cloud budget spent (attempts exhausted)"| dl
-  loc -->|"otherwise"| hold["hold in AWAITING_CLOUD (next tick)"]
+  loc -->|"otherwise"| hold["hold at cloud_job status='awaiting' (next tick)"]
 ```
 
 _A registry with no non-local backend (`cloud_enabled` False) ⇒ long files route LOCAL, no kube
@@ -153,6 +156,14 @@ id = "kueue-a"
 rank = 10
 cap = 4
 buckets = ["stage-a", "stage-shared"]
+agent_ref = "k8s-kueue-a"   # OPTIONAL (phaze-ifcr) — the kind="compute" Agent.id whose bearer
+                            # token this cluster's one-shot job_runner pods authenticate with.
+                            # A kueue-backend agent row can never heartbeat (job_runner pods never
+                            # call the heartbeat endpoint), so binding it structurally here is what
+                            # lets the admin-agents dedupe filter key on it. Omit it and the dedupe
+                            # falls back to id/name string-coincidence against the backend's own id
+                            # — which silently misses when they differ (e.g. backend "vox" / agent
+                            # "k8s-vox").
 
   [backends.kube]
   api_url = "https://kueue-a.mesh:6443"
@@ -172,6 +183,7 @@ id = "kueue-b"
 rank = 20
 cap = 2
 buckets = ["stage-b"]
+agent_ref = "k8s-kueue-b"   # optional; distinct per cluster
 
   [backends.kube]
   api_url = "https://kueue-b.mesh:6443"
@@ -208,9 +220,10 @@ secret_access_key_file = "/run/secrets/s3-secret-key"
 
 ## Submit → reconcile lifecycle (Phase 54)
 
-Instead of an rsync push to a long-lived agent, the control plane stages the file's bytes to S3
-and submits a **suspended one-shot Kueue Job**; a pod runs the analysis and PUTs the result
-back. Two control-plane pieces own this:
+Instead of an rsync push to a long-lived agent, the file is staged into S3 (control plane initiates
++ presigns + completes; the file-server agent PUTs the bytes) and the control plane submits a
+**suspended one-shot Kueue Job**; a pod runs the analysis and PUTs the result back. Two
+control-plane pieces own this:
 
 - **`submit_cloud_job`** (the fast producer, `phaze.tasks.submit_cloud_job`) — a
   controller-queue task that does ONE kube POST (a suspended `batch/v1` Job named
@@ -220,7 +233,7 @@ back. Two control-plane pieces own this:
   **cron-only** `*/5 * * * *` CronJob registered on the controller. There is **no live kube
   watch**: each tick it re-reads the in-flight Jobs/Workloads and reconciles them.
 
-**The callback is the only result channel (KSUBMIT-03).** The one-shot pod PUTs its analysis
+**The callback is the only result channel (KSUBMIT-03).** The one-shot pod `PUT`s its analysis
 result to the existing `/api/internal/agent/analysis/{file_id}` callback — the SAME endpoint the
 local/agent path uses, reconciled by `file_id`. `reconcile_cloud_jobs` **never** writes an
 analysis result; it only drives cleanup, re-drive, and alerting. This is what makes "a
@@ -229,21 +242,40 @@ dropped/expired watch never loses or duplicates a result" true.
 **What the reconcile cron does per tick:**
 
 - **Iterates the `cloud_job` sidecar** — `SELECT cloud_job WHERE status IN (SUBMITTED, RUNNING)`
-  is the in-flight registry. It reads each Job (succeeded/failed) and, when not yet terminal,
-  the paired Kueue Workload for admission state.
+  is the *post-submit* half of the read. It reads each Job (succeeded/failed) and, when not yet
+  terminal, the paired Kueue Workload for admission state.
 - **Delete-after-record ordering** — on a terminal outcome it records the result in Postgres and
   **commits** *before* it deletes the Job, so the status read can never lose to GC.
   `JOB_TTL_SECONDS` (900s, `ttlSecondsAfterFinished`) is only the never-reconciled backstop.
 - **S3 cleanup on a no-callback terminal** — a `Failed`/`Evicted`/lost Job (no callback landed)
   triggers `s3_staging.delete_staged_object(file_id)` before the Job delete. The **success**
   path does NOT delete S3 — the callback already deleted it inline.
-- **Bounded re-drive then ANALYSIS_FAILED** — a no-callback terminal under
+- **Bounded re-drive then spill to local (SCHED-03)** — a no-callback terminal under
   `cloud_submit_max_attempts` (default 3) increments `cloud_job.attempts` and re-drives a fresh
-  `submit_cloud_job`; at the cap the file is marked `ANALYSIS_FAILED` (no cross-target fallback).
+  `submit_cloud_job`. **At the cap the file is NOT hard-failed.** The sidecar is re-stamped
+  `status='awaiting'` with `attempts` already equal to the cap, so the next drain tick's
+  `select_backend` excludes every cloud backend (`attempts >= cap`) and routes the file to the
+  local safety net. A *local* failure — never cloud flakiness — is the only path into
+  `ANALYSIS_FAILED` (D-04).
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
   **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
   quota) is **silent** and waits forever — never mistaken for a failure.
+
+**The in-flight registry is wider than the Kueue read (phaze-ul2v).** `in_flight_count` — what
+consumes a backend's `cap` — counts `{UPLOADING, UPLOADED, SUBMITTED, RUNNING}`; only
+`{SUCCEEDED, FAILED}` are terminal. The pre-submit `{UPLOADING, UPLOADED}` half has no Kueue object
+to reconcile against and is normally terminalized *solely* by the agent's HTTP callbacks
+(`/uploaded`, `/failed`), so a dead file-server agent or a lost `s3_upload` job would strand the row
+— and its cap slot — forever. `KueueBackend._reap_stranded_staging` is the safety net: it runs
+**first** on every reconcile tick (before the Job/Workload read), tallied as `staging_reaped`, and
+spills age-stranded staging rows back to `status='awaiting'`. The bounds are
+`PHAZE_CLOUD_UPLOADING_STALE_AFTER_SEC` (default `21600` — 6h, deliberately larger than the longest
+legitimate multi-GB multipart upload) and `PHAZE_CLOUD_UPLOADED_STALE_AFTER_SEC` (default `900` —
+15 min, because an `UPLOADED` row is expected to reach `SUBMITTED` within one controller hop). The
+callback path stays primary: a row whose `s3_upload` job is still live in the broker is never
+reaped, and each reap increments `attempts`, so a repeatedly-stranding file eventually spends its
+cloud budget and routes local.
 
 `reconcile_cloud_jobs` is **control-only** (kube creds live on the control plane, DIST-01) and
 **cron-only** — never operator-enqueued.
@@ -371,7 +403,7 @@ cluster-wide**:
 
 > **`localqueues: get` is load-bearing.** Without it the Phase 56 startup probe 403s and the
 > dashboard falsely reports "K8s LocalQueue unreachable" forever, even on a healthy cluster.
-> The `tests/test_deployment/test_k8s_runbook.py::test_rbac_covers_call_graph` guard asserts
+> The `tests/agents/deployment/test_k8s_runbook.py::test_rbac_covers_call_graph` guard asserts
 > this verb floor is present so it can never be dropped.
 
 The Role is **namespaced** (`kind: Role`, not `ClusterRole`) and the RoleBinding binds it in
@@ -716,9 +748,14 @@ cluster:
       `batch/v1` Job labeled `kueue.x-k8s.io/queue-name: phaze-lq` is created and admitted by
       Kueue (`kubectl get workloads -n phaze` shows it `Admitted`).
 - [ ] **The availability probe is happy.** With the `kind="kueue"` entry added and the control
-      plane restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert for
-      that backend (the probe GETs the LocalQueue via the backend's `context` — confirms
-      `localqueues: get` is granted). Repeat per backend.
+      plane restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert (the
+      probe GETs the LocalQueue via each backend's `context` — confirms `localqueues: get` is
+      granted). **The alert is aggregate, not per-backend:** the probe runs per cluster, but the
+      surfaced flag is a single Redis key (`phaze:k8s:localqueue_unreachable`) set iff **any**
+      configured cluster is unreachable, and it is written **once, at controller startup** — not on
+      a poll. So one bad cluster lights the alert for the whole deploy, and clearing it means fixing
+      the cluster **and restarting the control plane**. Read the controller's startup WARNING log
+      lines to tell which cluster failed.
 - [ ] **A long file routes through Kueue.** Trigger analysis on a set whose duration ≥
       `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the tiered drain picks the lowest-rank available
       backend, the file stages to that backend's `pick_bucket` choice (recorded on

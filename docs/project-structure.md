@@ -48,7 +48,7 @@ phaze/
 │   │   └── tag_write_log.py    #   TagWriteLog (append-only tag-write audit trail)
 │   ├── routers/                # API + UI endpoints
 │   │   ├── health.py           #   GET /health
-│   │   ├── shell.py            #   v7.0 console shell: GET / (Analyze default) + GET /s/<stage> workspace swaps
+│   │   ├── shell.py            #   v7.0 console shell: GET / (Summary landing placeholder, SQ3-02) + GET /s/<stage> workspace swaps
 │   │   ├── pipeline.py         #   Stage triggers + /pipeline/stats poll (/pipeline/ 302-redirects to the shell)
 │   │   ├── pipeline_scans.py   #   Admin scan trigger + HTMX scan-batch polling
 │   │   ├── proposals.py        #   Proposal review + approval UI
@@ -64,14 +64,21 @@ phaze/
 │   │   ├── pipeline_stages.py  #   Per-stage control plane: pause/resume/priority endpoints
 │   │   ├── record.py           #   Per-file full-record read-only fragment route
 │   │   ├── routing.py          #   Force-local master routing override (thin write endpoint)
-│   │   └── agent_*.py          #   Distributed-agent internal API (14 routers under /api/internal/agent):
-│   │       │                   #     auth, identity, heartbeat, files, metadata, fingerprint,
-│   │       │                   #     analysis, proposals, execution, exec_batches,
-│   │       │                   #     scan_batches, tracklists, push, s3
+│   │   ├── column_sort.py      #   THE sortable-column contract for every operator-facing table (whitelist + direction)
+│   │   ├── proposal_sort.py    #   The RenameProposal sortable-column whitelist (shared by its two surfaces)
+│   │   ├── request_guards.py   #   THE untrusted-input contract: envelope parse/shape guards (422, never a 500)
+│   │   ├── response_shape.py   #   THE htmx response-shape contract: what document shape + status a handler owes
+│   │   ├── view_state.py       #   THE list-view state carrier (filter/search/page/sort) for htmx-swapped tables
+│   │   ├── agent_auth.py       #   NOT a router: exports the get_authenticated_agent bearer-token dependency
+│   │   └── agent_*.py          #   Distributed-agent internal API (13 routers under /api/internal/agent):
+│   │       │                   #     files, metadata, fingerprint, execution, heartbeat, identity,
+│   │       │                   #     analysis, push, s3, tracklists, proposals,
+│   │       │                   #     scan_batches, exec_batches
 │   ├── schemas/                # Pydantic request/response models
 │   │   ├── companion.py        #   Companion/duplicate schemas
 │   │   ├── pipeline_scans.py   #   Pipeline scan-trigger schemas
 │   │   ├── agent_tasks.py      #   Agent task-routing payload schemas
+│   │   ├── wire_bounds.py      #   THE Wire Bounds Contract: every inbound value bounded to fit its column
 │   │   └── agent_*.py          #   Distributed-agent contract schemas (13, DB-free, loaded in agent worker):
 │   │       │                   #     identity, heartbeat, files, metadata, fingerprint, analysis,
 │   │       │                   #     proposals, execution, exec_batches, scan_batches, tracklists,
@@ -79,6 +86,13 @@ phaze/
 │   ├── services/               # Business logic
 │   │   ├── hashing.py          #   Shared hashing utilities
 │   │   ├── metadata.py         #   Tag extraction via mutagen
+│   │   ├── pagination.py       #   THE paging contract: bounded page size + mandatory unique tiebreaker
+│   │   ├── bulk_insert.py      #   Split a multi-row INSERT to fit PostgreSQL's bind-parameter limit
+│   │   ├── like_escape.py      #   Escape LIKE/ILIKE metacharacters so operator-typed search text matches literally
+│   │   ├── queue_introspection.py # Operator-facing SAQ `active` breakdown: RUNNING vs CLAIMED-but-buffered
+│   │   ├── fingerprint_requeue.py # Outage recovery: re-queue files whose fingerprint stage burned during an engine outage
+│   │   ├── text_repair.py      #   Repair double-encoded UTF-8 ("mojibake") in already-decoded str values
+│   │   ├── text_repair_backfill.py # Idempotent backfill of files.original_filename_repaired for pre-045 rows
 │   │   ├── pg_text.py          #   Sanitize free text for PostgreSQL UTF8 storage (NUL/surrogate stripping)
 │   │   ├── analysis.py         #   BPM/key/mood via essentia
 │   │   ├── analysis_enqueue.py #   FastAPI-free producer for process_file jobs (deterministic key + payload)
@@ -128,9 +142,10 @@ phaze/
 │   │   ├── scan.py             #   scan_directory (agent-side chunked file discovery) + scan_live_set (fingerprint matching)
 │   │   ├── reenqueue.py        #   Control-side recover_orphaned_work: gated all-stages queue-loss recovery (Phase 42)
 │   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
+│   │   ├── aborting_reaper.py  #   Control-side every-minute cron: reap SAQ rows stuck in status='aborting' (phaze-e57w)
 │   │   ├── tracklist.py        #   scrape/search/refresh tracklists
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
-│   │   ├── heartbeat.py        #   30s cron: POST agent heartbeat
+│   │   ├── heartbeat.py        #   30s agent heartbeat POST, run as a startup asyncio background task (Phase 46, not a cron)
 │   │   ├── push.py             #   push_file: rsync-over-SSH push of media to compute scratch
 │   │   ├── s3_upload.py        #   upload_file_s3: multipart-PUT upload to presigned URLs
 │   │   ├── submit_cloud_job.py #   Control-plane fast Kube-submit producer
@@ -154,15 +169,17 @@ phaze/
 │   └── templates/              # Jinja2 HTML templates (HTMX + Tailwind)
 │       ├── base.html           #   Base layout (SRI-pinned CDN assets)
 │       ├── shell/              #   v7.0 console shell (three-column DAG-centric layout)
-│       │   ├── shell.html      #     Three-column shell served by GET / (Analyze default)
+│       │   ├── shell.html      #     Three-column shell served by GET / (Summary landing placeholder, SQ3-02)
+│       │   ├── _stage_fragment.html #  The bare /s/<stage> fragment returned to an HX-Request swap
 │       │   └── partials/       #     rail.html (DAG rail nav), header.html (⌘K + status strip),
-│       │       │               #     cmdk_modal.html (⌘K command palette), record_host.html (record slide-in)
+│       │       │               #     cmdk_modal.html (⌘K command palette), record_host.html (record slide-in),
+│       │       │               #     summary_placeholder.html (the DB-free Summary landing),
+│       │       │               #     _force_local_pill.html (force-local routing override pill)
 │       ├── record/             #   Per-file record slide-in body
 │       ├── pipeline/           #   /s/<stage> workspace partials (partials/<stage>_workspace.html) + stats_bar poll partial
 │       ├── proposals/          #   Proposal approval UI
 │       ├── execution/          #   Execution dashboard + audit log
 │       ├── duplicates/         #   Duplicate resolution UI
-│       ├── tracklists/         #   Tracklist management UI
 │       ├── cue/                #   CUE sheet management UI
 │       ├── search/             #   Cross-entity search UI
 │       ├── tags/               #   Tag review UI
@@ -185,7 +202,10 @@ phaze/
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (squashed to a single baseline: 039_baseline_schema.py)
+│   └── versions/               #   Migration scripts (7): the flattened 039_baseline_schema.py plus the
+│                               #   post-baseline chain 040..045 (tag_write_log timestamptz, tracklist_version
+│                               #   unique, scheduling_ledger redrive_attempt, discogs one-accepted-per-track,
+│                               #   scan_batches no-duplicate-running, files.original_filename_repaired)
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks
@@ -205,12 +225,16 @@ phaze/
 │   ├── perf_explain.py         #   EXPLAIN (ANALYZE, BUFFERS) hot queries + time /pipeline/stats
 │   ├── perf_analyze_workspace.py # Baseline the Analyze-workspace slowdown at 200K scale
 │   ├── analyze_browser_soak.py #   Real-browser verification of the Analyze workspace at 200K scale
+│   ├── backfill_mojibake_filenames.py # One-shot operator backfill of files.original_filename_repaired (phaze-x4ux)
 │   └── parity/                 #   Fingerprint-engine parity fixtures (compare/dump analysis, reference.wav)
 ├── docker-compose.yml          # Service orchestration
 ├── docker-compose.dev.yml      # Local development overlay (opt-in: just up-dev; never auto-merged)
 ├── docker-compose.agent.yml    # Distributed file-server agent stack
 ├── docker-compose.cloud-agent.yml # OCI A1 cloud compute-agent stack
-├── Dockerfile                  # Single-stage image (shared by API, worker, agent, watcher)
+├── Dockerfile                  # Multi-stage image (css-builder → base) shared by API, worker, agent, watcher;
+│                               # the css-builder stage compiles Tailwind v4 with the pinned standalone binary (no Node)
+├── Dockerfile.agent-arm64      # Production arm64 analysis agent — builds essentia from source (no aarch64 wheel exists)
+├── Dockerfile.job              # x86 Kueue Job-runner image FROM the api base; adds only the one-shot CMD, zero new deps
 ├── justfile                    # Developer commands
 ├── pyproject.toml              # Project config + tool settings
 └── uv.lock                     # Frozen dependency versions
@@ -225,7 +249,7 @@ workspace partial under `templates/pipeline/partials/`:
 
 | Template | Role |
 | -------- | ---- |
-| `templates/shell/shell.html` | The three-column shell served by `GET /` (Analyze selected by default) |
+| `templates/shell/shell.html` | The three-column shell served by `GET /` (the Summary landing placeholder is selected by default, SQ3-02) |
 | `templates/shell/partials/rail.html` | The DAG rail — the navigation spine (stage nodes + live counts) |
 | `templates/shell/partials/header.html` | Header: wave logo, ⌘K trigger, and the compute/agent status strip |
 | `templates/shell/partials/cmdk_modal.html` | The ⌘K command palette (unified search + commands) |
@@ -237,6 +261,8 @@ stage's workspace fragment to swap into the `#stage-workspace` target:
 
 | `/s/<stage>` | Workspace partial |
 | ------------ | ----------------- |
+| `/s/summary` | `shell/partials/summary_placeholder.html` — the DB-free `/` landing (SQ3-01/SQ3-02); no context branch in `_render_stage` |
+| `/s/files` | `pipeline/partials/files_workspace.html` — the Phase-87 per-file stage-matrix workspace (host wrapper for the `files_table_view.html` swap fragment) |
 | `/s/discover` | `pipeline/partials/discover_workspace.html` |
 | `/s/metadata` · `/s/fingerprint` · `/s/analyze` | `pipeline/partials/{metadata,fingerprint,analyze}_workspace.html` |
 | `/s/trackid` · `/s/tracklist` | `pipeline/partials/{trackid,tracklist}_workspace.html` |

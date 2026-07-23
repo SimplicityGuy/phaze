@@ -98,14 +98,26 @@ Run these steps from a terminal. Each `just` recipe is defined in the `justfile`
    > (`PHAZE_AUTO_MIGRATE=true`), so the schema is normally already at head after
    > `just up`. Running `just db-upgrade` is a safe, idempotent confirmation —
    > and the explicit command you use when auto-migrate is disabled.
+   >
+   > **Host vs container:** `just db-upgrade` runs `uv run alembic` on the **host**, but the
+   > shipped `.env` points `DATABASE_URL` at the Docker service DNS name
+   > (`…@postgres:5432/phaze`), which does not resolve outside the compose network — the
+   > command fails there. Before running it from the host, swap `DATABASE_URL` (and
+   > `PHAZE_QUEUE_URL` / `REDIS_URL` alongside it) to their `localhost` forms, as documented
+   > at the top of `.env.example`. If auto-migrate is left on, you can skip this step entirely.
 
 ## ✅ First Run / Verify
 
 Confirm the API is healthy:
 
 ```bash
-curl http://localhost:8000/health
+curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health
 ```
+
+The container entrypoint bootstraps a self-signed internal CA and execs `uvicorn` with
+`--ssl-keyfile`/`--ssl-certfile`, so the server speaks **HTTPS** — hence `--cacert`. Plain
+`http://localhost:8000` applies only under `just up-dev`, whose dev overlay skips the
+cert-bootstrap entrypoint.
 
 Expected response (the endpoint checks the database with a `SELECT 1` before answering):
 
@@ -120,8 +132,8 @@ If you get a connection error, the containers may still be starting — check
 
 | Service | URL / Address | Stack | Notes |
 | ------- | ------------- | ----- | ----- |
-| 🖥️ **Web UI / API** | http://localhost:8000 | core (`just up`) | FastAPI app + HTMX admin UI |
-| 🐘 **PostgreSQL** | `localhost:5432` | core (`just up`) | user/password `phaze` / `phaze` |
+| 🖥️ **Web UI / API** | https://localhost:8000 | core (`just up`) | FastAPI app + HTMX admin UI. HTTPS with a self-signed internal CA — browsers warn until you trust `certs/phaze-ca.crt`; curl needs `--cacert ./certs/phaze-ca.crt`. Plain HTTP only under `just up-dev`. |
+| 🐘 **PostgreSQL** | `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | core (`just up`) | user `POSTGRES_USER` (default `phaze`); `POSTGRES_PASSWORD` is **required** — compose fails to parse without it |
 | 🔴 **Redis** | `localhost:6379` | core (`just up`) | bound to `127.0.0.1` in dev; password from `REDIS_PASSWORD` |
 | 🎯 **audfprint** | `audfprint:8001` (internal) | agent (`just up-agent`) | landmark fingerprint sidecar |
 | 🎼 **panako** | `panako:8002` (internal) | agent (`just up-agent`) | tempo-robust fingerprint sidecar |
@@ -156,8 +168,9 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
 
 1. **Open the console.**
 
-   Visit http://localhost:8000/ — the three-column DAG-centric console opens with the
-   **Analyze** stage selected by default. The left DAG rail shows every pipeline stage with
+   Visit https://localhost:8000/ — the three-column DAG-centric console opens on the static,
+   DB-free **Summary** landing placeholder; **Analyze** is one rail click away at
+   `/s/analyze`. The left DAG rail shows every pipeline stage with
    a live count; clicking a stage swaps the center workspace in place. Press **⌘K** at any
    time for the command palette (search files/tracklists/artists or jump to a stage).
 
@@ -171,8 +184,8 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
    ```bash
    # Equivalent HTMX form POST against the api host (agent_id must be a registered,
    # non-revoked agent id; scan_root must be one of that agent's configured scan_roots):
-   API_HOST=http://localhost:8000
-   curl -s -X POST "$API_HOST/pipeline/scans" \
+   API_HOST=https://localhost:8000
+   curl -s --cacert ./certs/phaze-ca.crt -X POST "$API_HOST/pipeline/scans" \
      -d "agent_id=dev-agent" -d "scan_root=/data/music"
    ```
 
@@ -180,7 +193,7 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
    batch ID (see the Recent Scans panel on the Discover workspace, or poll directly):
 
    ```bash
-   curl -s "$API_HOST/pipeline/scans/<BATCH_ID>"     # HTMX progress-card fragment
+   curl -s --cacert ./certs/phaze-ca.crt "$API_HOST/pipeline/scans/<BATCH_ID>"   # HTMX progress-card fragment
    ```
 
 3. **Run the pipeline stages.** From the DAG rail, open each stage workspace (`/s/<stage>`) and advance the discovered files through:
@@ -209,7 +222,7 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
    Approved proposals are committed to disk through the safe copy-verify-delete protocol
    from the execution view (`POST /execution/start`), with live progress at
    `GET /execution/progress/{batch_id}`. The audit trail of every operation is at
-   http://localhost:8000/audit/.
+   https://localhost:8000/audit/.
 
 ## 🩹 Common Setup Issues
 
@@ -233,7 +246,8 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
 
 - **`just up` fails with a port already in use (8000, 5432, or 6379).**
   Another process is bound to one of the published ports. Stop the conflicting service,
-  or change the mapping — `API_PORT` and `REDIS_BIND_IP` are configurable in `.env`.
+  or change the mapping — `API_PORT`, `POSTGRES_BIND_IP` (the 5432 publish, default
+  `127.0.0.1`), and `REDIS_BIND_IP` are configurable in `.env`.
   Inspect what is running with `just docker-ps`.
 
 - **Fingerprint health checks fail.**

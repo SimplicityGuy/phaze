@@ -42,7 +42,8 @@ Phaze's admin UI is a **three-column "Hybrid Console"** shell — a single scree
 content tabs. The pipeline **DAG rail** on the left is the navigation spine: it shows every
 stage with a live count, and clicking a stage swaps the center **stage workspace** in place
 over HTMX (`GET /s/<stage>`, no full-page reload and no tab bar). The right column is the
-per-file pane. `/` renders the shell with **Analyze** selected by default.
+per-file pane. `/` renders the shell on the static, DB-free **Summary** landing placeholder
+(SQ3-02); **Analyze** is one rail click away at `/s/analyze`.
 
 - **DAG rail = navigation.** Discover → Enrich (Metadata · Fingerprint · Analyze) →
   Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
@@ -209,7 +210,7 @@ Every control-plane enqueue (API endpoint or admin-UI action) routes to a **name
 - **Controller-bound tasks** — `generate_proposals`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs`, `refresh_tracklists` — route to the `controller` queue, consumed by the application-server `phaze-worker`.
 - **Per-agent tasks** — `process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `scan_directory`, `execute_approved_batch`, `s3_upload`, `push_file` — route via the `AgentTaskRouter` to a **per-lane** `phaze-agent-<id>-<lane>` queue, consumed by the matching file-server lane worker. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
 
-**Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **four lane workers from one image** — `analyze` (`process_file`), `fingerprint` (`fingerprint_file`), `meta` (`extract_file_metadata` / `scan_directory` / `scan_live_set` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). CPU-bound lanes (`analyze` 4 + `fingerprint` 2) sum within nox's 8 cores with essentia/TF pinned single-threaded; `io` is off the CPU budget. Exactly **one** liveness heartbeat runs per agent (the `analyze` lane) — so the heartbeat's `queue_depth` is analyze-lane-only, while the dashboard's `get_queue_activity` (which sums all four lanes + the legacy base) is the authoritative all-lane figure. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
+**Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **four lane workers from one image** — `analyze` (`process_file`), `fingerprint` (`fingerprint_file`), `meta` (`extract_file_metadata` / `scan_directory` / `scan_live_set` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). CPU-bound lanes (`analyze` 4 + `fingerprint` 2) sum within nox's 8 cores with essentia/TF pinned single-threaded; `io` is off the CPU budget. **Every** lane worker heartbeats (`PHAZE_AGENT_HEARTBEAT=true` on all four), each beat tagged with its own lane and carrying that lane's `queue_depth` — the control plane keeps the per-lane breakdown, sums an honest all-lane depth, and takes `max(last_seen)` for liveness (phaze-30fo). This replaced the former "exactly one heartbeat per agent, on `analyze`" rule: pinning the whole liveness signal to one process meant a stalled `analyze` worker marked the agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other three lanes were busy. Only the transitional `worker-drain` consumer sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, so its untagged beat would wipe the per-lane breakdown. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
 
 Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/shared/core/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
 
@@ -270,16 +271,27 @@ cp .env.example .env          # Edit to configure paths and API keys
 just download-models           # Required for audio analysis
 just up-all                    # Start all services (core + agent stacks)
 just db-upgrade                # Run database migrations
-curl http://localhost:8000/health   # Verify: {"status": "ok"}
+curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"status": "ok"}
 ```
 
 | Service          | URL                     | Default Credentials         |
 | ---------------- | ----------------------- | --------------------------- |
-| 🌐 **Web UI**    | http://localhost:8000   | None                        |
-| 🐘 **PostgreSQL**| `localhost:5432`        | `phaze` / `phaze`           |
+| 🌐 **Web UI**    | https://localhost:8000  | None                        |
+| 🐘 **PostgreSQL**| `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | `${POSTGRES_USER:-phaze}` / `POSTGRES_PASSWORD` (**required** — no default) |
 | 🔴 **Redis**     | `localhost:6379`        | `REDIS_PASSWORD` (default `changeme`) |
 | 🎵 **Audfprint** | `audfprint:8001` (agent stack) | None                   |
 | 🎧 **Panako**    | `panako:8002` (agent stack)    | None                   |
+
+> **TLS:** the container entrypoint bootstraps a self-signed internal CA and execs `uvicorn`
+> with `--ssl-keyfile`/`--ssl-certfile`, so the server speaks **HTTPS** on 8000. Pass the CA to
+> curl (`--cacert ./certs/phaze-ca.crt`); a browser will warn once on the self-signed chain until
+> you trust `certs/phaze-ca.crt`. Plain `http://localhost:8000` applies **only** under `just up-dev`,
+> whose dev overlay deliberately skips the cert-bootstrap entrypoint.
+
+> **Postgres publish:** `POSTGRES_PASSWORD` is fail-fast required (`${POSTGRES_PASSWORD:?}`, phaze-rnh7)
+> — `docker compose` errors at parse time without it. The port publishes as
+> `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432`: loopback-only by default; set `POSTGRES_BIND_IP` to the
+> app-server LAN IP when agents on other hosts must reach the queue broker.
 
 > **Fingerprint sidecars:** `audfprint` and `panako` run in the agent stack (`docker-compose.agent.yml`) with no published host ports. Reach them on the Docker network at `audfprint:8001` / `panako:8002`; start them with `just up-agent` (agent stack only) or `just up-all` (both stacks on one host).
 
@@ -335,11 +347,26 @@ just test-db            # start the ephemeral services and leave them running (i
 just test-db-down       # stop and remove the ephemeral services
 ```
 
-The ephemeral services listen on **5433** (Postgres) and **6380** (Redis) to avoid colliding with a
-dev database/cache on the default 5432/6379. Override the ports with `PHAZE_TEST_DB_PORT` and
-`PHAZE_TEST_REDIS_PORT`. The test database URLs honor the `TEST_DATABASE_URL` and
-`MIGRATIONS_TEST_DATABASE_URL` env vars (Redis via `PHAZE_REDIS_URL`); with nothing set they default
-to `localhost:5432`, matching CI.
+The **shared** harness started by `just test-db` (also used by `just check`) listens on **5433**
+(Postgres) and **6380** (Redis) to avoid colliding with a dev database/cache on the default
+5432/6379; override with `PHAZE_TEST_DB_PORT` / `PHAZE_TEST_REDIS_PORT`. `just integration-test`
+does **not** use that pair — it runs against its own dedicated, disposable container pair whose
+host ports are dynamically assigned (port `0`, read back via `docker port`) so two concurrent runs
+can never collide; pin them with `PHAZE_INTEGRATION_TEST_DB_PORT` / `PHAZE_INTEGRATION_TEST_REDIS_PORT`
+only for a single deliberate invocation (e.g. attaching a debugger).
+
+The test database URLs honor the `TEST_DATABASE_URL` and `MIGRATIONS_TEST_DATABASE_URL` env vars
+(Redis via `PHAZE_REDIS_URL`); with nothing set they default to **`localhost:5433`** — the local
+ephemeral harness, deliberately **not** 5432, which is reserved for the developer's own database
+(`tests/db_guard.py`). This default is *not* what CI uses: CI always exports its own
+`TEST_DATABASE_URL` against its 5432 service container and never relies on it.
+
+**Concurrent agents/worktrees:** never share Postgres *or* Redis between seats. `just test-db-for
+<name>` creates the isolated pair `phaze_<name>_test` + `phaze_<name>_migrations_test` on the shared
+harness, allocates a dedicated Redis logical database out of the test container's 64-index space
+(DB 0 holds the allocation registry, so re-running it for the same worktree is idempotent), and
+prints the exact `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` exports to
+use.
 
 `just check` (and therefore a bare `bh work check`/`bh work submit` in a brand-new worktree, which
 have nothing exported and no services running) auto-provisions: if `TEST_DATABASE_URL` isn't
@@ -381,7 +408,7 @@ GitHub Actions runs on every push and PR:
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
 | **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
 | **Fingerprint**| audfprint + Panako                      | Audio deduplication + identification |
-| **AI/LLM**     | litellm (pinned `>=1.85.6,<1.86.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
+| **AI/LLM**     | litellm (pinned `>=1.85.7,<1.86.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
 | **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |
 | **UI**         | Jinja2 + HTMX + Tailwind CSS + Alpine.js| Server-rendered interactive UI       |

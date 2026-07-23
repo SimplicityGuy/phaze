@@ -274,14 +274,19 @@ class BaseSettings(PydanticBaseSettings):
         validation_alias=AliasChoices("PHAZE_LANE_IO_CONCURRENCY", "lane_io_concurrency"),
         description="Concurrency of the io lane worker (s3_upload/push_file; network-bound, off CPU budget).",
     )
-    # quick-260707-dh1: the liveness heartbeat is agent-level, not lane-level. Compose sets
-    # this true on EXACTLY ONE lane worker (analyze) and false on the other three so an agent
-    # reports one authoritative last_seen, never N duplicate heartbeats. All-mode (no lane)
-    # defaults to True (today's single-worker behavior).
+    # phaze-30fo: EVERY lane worker heartbeats, each beat tagged with its own lane. Compose sets
+    # this true on all four lane workers; last_seen_at is inherently max(last_seen) across them and
+    # the control plane keeps a per-lane depth breakdown. This REPLACES the former quick-260707-dh1
+    # convention (true on exactly the analyze worker, false on the other three): that pinned the
+    # agent's whole liveness signal -- and its work-routing rank, via select_active_agent's
+    # ORDER BY last_seen_at DESC -- to ONE process, so a stalled analyze worker marked the agent
+    # DEAD and cost it routing while its other three lanes were busy. Only the transitional
+    # all-mode worker-drain sets this false: it is unlaned, and an untagged beat would wipe the
+    # per-lane breakdown. All-mode (no lane) still defaults to True.
     agent_heartbeat_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices("PHAZE_AGENT_HEARTBEAT", "agent_heartbeat_enabled"),
-        description="Whether this agent worker launches the liveness heartbeat background task (exactly one lane per agent).",
+        description="Whether this agent worker launches the liveness heartbeat background task (every lane worker does; unlaned drain workers opt out).",
     )
     worker_job_timeout: int = 600
     worker_max_retries: int = 4
