@@ -48,6 +48,10 @@ _SCAN_TRANSITIONS: dict[ScanStatus, frozenset[ScanStatus]] = {
     ScanStatus.RUNNING: frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED}),
 }
 
+# phaze-v392: the row-state set the terminal guard below is keyed off, reused for the
+# completed_at stamp at step 7 too so there is exactly one definition of "terminal".
+_TERMINAL_SCAN_STATUSES: frozenset[ScanStatus] = frozenset({ScanStatus.COMPLETED, ScanStatus.FAILED})
+
 
 def _row_to_response(batch: ScanBatch) -> ScanBatchPatchResponse:
     """Echo the current row state as a ScanBatchPatchResponse (D-Discretion §4)."""
@@ -85,11 +89,41 @@ async def patch_scan_batch(
         )
 
     cur = ScanStatus(batch.status)
+    set_fields = body.model_dump(exclude_unset=True)
+
+    # 2b. phaze-v392: terminal-state guard, gated on the ROW STATE rather than on whether the
+    # PATCH body happens to carry `status`. `ScanBatchPatch` makes every field optional and the
+    # agent legitimately sends status-less progress PATCHes (`ScanBatchPatch(processed_files=...)`
+    # -- tasks/scan.py:236/302/309, no status field at all). Every guard below this point (the old
+    # steps 3-5) was conditioned on `body.status is not None`, so a status-less PATCH fell straight
+    # through into the unconditional setattr loop (step 6) with NO terminal check: a COMPLETED/
+    # FAILED batch could have `processed_files`/`total_files`/`error_message` silently overwritten
+    # and its heartbeat re-stamped -- e.g. a SAQ at-least-once retry re-running an already-completed
+    # `scan_directory` task and re-issuing its status-less progress PATCHes against the terminal row.
+    #
+    # Mirrors the `allowed_from` CAS idiom used by `update_proposal_status` / `update_proposal_fields`
+    # (services/proposal_queries.py, phaze-uu17/phaze-3tj4): mutation is gated on the row's CURRENT
+    # status being in an allowed set, evaluated before any write, regardless of which fields the
+    # caller happens to set. A genuinely no-op PATCH (nothing set at all, or only `status`
+    # re-affirming the row's own terminal value with no other mutating field) still gets the
+    # idempotent 200 echo -- everything else against a terminal row is refused with 409.
+    if cur in _TERMINAL_SCAN_STATUSES:
+        is_pure_echo = not set_fields or (set(set_fields.keys()) == {"status"} and body.status is not None and ScanStatus(body.status) == cur)
+        if is_pure_echo:
+            return _row_to_response(batch)
+        if body.status is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"illegal transition {cur.value} -> {ScanStatus(body.status).value}",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"scan batch status is terminal ({cur.value}); cannot apply further updates",
+        )
 
     # 3. Idempotent same-state PATCH: if `body.status == batch.status` AND no
     # other mutating field was set, echo the current row WITHOUT a DB write
     # (Phase 26 D-08 invariant -- no updated_at bump).
-    set_fields = body.model_dump(exclude_unset=True)
     if body.status is not None and ScanStatus(body.status) == cur and set(set_fields.keys()) == {"status"}:
         # Same-state PATCH with no other fields: no-op echo (zero DB writes).
         return _row_to_response(batch)
@@ -128,7 +162,7 @@ async def patch_scan_batch(
     # returned at step 3 (so a same-state PATCH never stamps it); LIVE is
     # rejected at step 4; RUNNING is non-terminal. Guarding on `completed_at is
     # None` keeps it idempotent across repeated terminal PATCHes (first wins).
-    if body.status is not None and ScanStatus(body.status) in {ScanStatus.COMPLETED, ScanStatus.FAILED} and batch.completed_at is None:
+    if body.status is not None and ScanStatus(body.status) in _TERMINAL_SCAN_STATUSES and batch.completed_at is None:
         batch.completed_at = datetime.now(UTC)
 
     await session.commit()

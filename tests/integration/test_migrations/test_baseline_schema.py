@@ -89,6 +89,7 @@ _EXPECTED_PARTIAL_INDEXES = frozenset(
         "uq_proposals_file_id_pending",
         "uq_scan_batches_agent_id_live",
         "ix_discogs_links_one_accepted_per_track",
+        "uq_scan_batches_agent_id_scan_path_running",
     }
 )
 
@@ -196,8 +197,9 @@ def test_baseline_is_the_only_migration() -> None:
     040 (phaze-36rc) lands tag_write_log timestamptz; 041 (phaze-5vmt) lands the
     UNIQUE(tracklist_id, version_number) constraint; 042 (phaze-2jl1 / phaze-y0j0) lands the
     scheduling_ledger.redrive_attempt column; 043 (phaze-gl1k) lands the partial
-    UNIQUE(track_id) WHERE status='accepted' on discogs_links. Any other resurrected 0xx chain
-    file is a regression.
+    UNIQUE(track_id) WHERE status='accepted' on discogs_links; 044 (phaze-1a71) lands the partial
+    UNIQUE(agent_id, scan_path) WHERE status='running' on scan_batches. Any other resurrected 0xx
+    chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -206,6 +208,7 @@ def test_baseline_is_the_only_migration() -> None:
         "041_tracklist_version_unique.py",
         "042_scheduling_ledger_redrive_attempt.py",
         "043_discogs_link_one_accepted_per_track.py",
+        "044_scan_batches_no_duplicate_running.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -214,10 +217,10 @@ def test_baseline_is_the_only_migration() -> None:
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (043: + discogs_links one-accepted-per-track)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (044: + scan_batches no-duplicate-running)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "043"
+    assert version == "044"
 
 
 @pytest.mark.asyncio
@@ -275,6 +278,43 @@ async def test_discogs_link_one_accepted_per_track_enforced(migrated_engine: Asy
                 text("INSERT INTO discogs_links (id, track_id, discogs_release_id, confidence, status) VALUES (:id, :tid, 'r-2', 80.0, 'accepted')"),
                 {"id": uuid.uuid4(), "tid": track_id},
             )
+
+
+@pytest.mark.asyncio
+async def test_scan_batches_no_duplicate_running_enforced(migrated_engine: AsyncEngine) -> None:
+    """044 adds a partial UNIQUE(agent_id, scan_path) WHERE status='running': a second RUNNING
+    batch for the same agent+path is rejected at the DB level (phaze-1a71 durable guard)."""
+    agent_id, scan_path = "baseline-scan-agent", "/data/music"
+    async with migrated_engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO agents (id, name, kind, created_at, updated_at) VALUES (:id, :id, 'fileserver', NOW(), NOW())"),
+            {"id": agent_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
+                "VALUES (:id, :agent_id, :scan_path, 'running', 0, 0)"
+            ),
+            {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
+        )
+    with pytest.raises(IntegrityError):
+        async with migrated_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
+                    "VALUES (:id, :agent_id, :scan_path, 'running', 0, 0)"
+                ),
+                {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
+            )
+    # A second COMPLETED batch for the same agent+path is fine -- the guard is RUNNING-scoped only.
+    async with migrated_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO scan_batches (id, agent_id, scan_path, status, total_files, processed_files) "
+                "VALUES (:id, :agent_id, :scan_path, 'completed', 5, 5)"
+            ),
+            {"id": uuid.uuid4(), "agent_id": agent_id, "scan_path": scan_path},
+        )
 
 
 @pytest.mark.asyncio
@@ -449,7 +489,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "043"
+        assert version == "044"
     finally:
         if engine is not None:
             await engine.dispose()

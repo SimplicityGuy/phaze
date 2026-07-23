@@ -197,6 +197,14 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
 
     An empty map means "no annotations"; the template hides any agent whose deduped is 0.
 
+    phaze-n2d2: ``ScanBatch.created_at`` carries no uniqueness constraint (``TimestampMixin``'s
+    ``server_default=func.now()``), so two completed batches for the same agent can share a value
+    and the window's ``rn == 1`` pick is executor-arbitrary on that tie -- the per-agent ``deduped``
+    annotation can then differ between renders (and flip hidden/shown, since the template hides an
+    agent whose deduped is 0). Appending the unique ``ScanBatch.id`` (DESC, matching the descending
+    ``created_at``) makes the window's ``order_by`` total, mirroring the tiebreaker already applied
+    to the sibling LIMIT queries (phaze-rgxg / commit dd5f2a2).
+
     Both reads run inside ONE SAVEPOINT (``session.begin_nested()``) so a failure rolls back the
     NESTED scope ALONE (CR-01): ``build_recent_scans`` (``routers.pipeline_scans``) loads ``ScanBatch``
     ORM rows on this SAME session BEFORE calling here, and ``build_dashboard_context`` similarly loads
@@ -210,7 +218,7 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
                 select(
                     ScanBatch.agent_id.label("agent_id"),
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc())).label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
@@ -853,11 +861,13 @@ async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
 
     orphan(stage) = the number of ``scheduling_ledger`` rows for the stage's function that are NEITHER
     live (a queued/active ``saq_jobs`` key) NOR domain-completed NOR owned by an in-flight ``cloud_job``
-    -- i.e. EXACTLY the set :func:`phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for
-    that stage. Parity with recovery is DEFINITIONAL (T-87-31 / OQ-2): this reuses recovery's OWN
-    classification predicate (``is_domain_completed`` + the per-stage done-set derivation
-    ``_build_done_sets`` + the in-flight cloud exclusion ``_in_flight_cloud_job_ids``) rather than
-    re-deriving the done clauses here, so the amber rail badge can never drift from what recovery does.
+    NOR HELD awaiting cloud (a ``cloud_job(status='awaiting')`` sidecar) -- i.e. EXACTLY the set
+    :func:`phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for that stage. Parity with
+    recovery is DEFINITIONAL (T-87-31 / OQ-2): this reuses recovery's OWN classification predicate
+    (``is_domain_completed`` + the per-stage done-set derivation ``_build_done_sets`` + BOTH cloud
+    exclusions ``_in_flight_cloud_job_ids`` and ``_awaiting_cloud_job_ids``) rather than re-deriving the
+    done clauses here, so the amber rail badge can never drift from what recovery does (phaze-w0yr:
+    the ``_awaiting_cloud_job_ids`` fourth exclusion was added to match recovery's 83-06 filter).
 
     Returns ``{metadata, analyze, fingerprint}`` -> int (the three :data:`STAGE_TO_FUNCTION` enrich
     functions ``extract_file_metadata`` / ``process_file`` / ``fingerprint_file``); ``push_file`` /
@@ -897,7 +907,8 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     keep the last-good cache value on failure instead of poisoning it with all-zeros (D-03).
 
     The classification predicate is REUSED verbatim from recovery
-    (:func:`phaze.tasks.reenqueue.is_domain_completed` + ``_build_done_sets`` + ``_in_flight_cloud_job_ids``);
+    (:func:`phaze.tasks.reenqueue.is_domain_completed` + ``_build_done_sets`` + BOTH cloud exclusions
+    ``_in_flight_cloud_job_ids`` and ``_awaiting_cloud_job_ids``);
     parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
     / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
     preserve the control-only agent-worker boundary (``tests/shared/core/test_task_split.py``); do NOT hoist.
@@ -908,6 +919,8 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         # preserve the control-only boundary (tests/test_task_split.py).
         from phaze.services.scheduling_ledger import get_ledger_rows  # noqa: PLC0415 -- deferred: keeps the reenqueue<->pipeline cycle broken
         from phaze.tasks.reenqueue import (  # noqa: PLC0415 -- deferred: reenqueue is control-only + imports FROM this module (cycle)
+            _CLOUD_OWNED_FUNCTIONS,
+            _awaiting_cloud_job_ids,
             _build_done_sets,
             _in_flight_cloud_job_ids,
             _ledger_fids,
@@ -919,11 +932,24 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         live = await get_live_job_keys(session)
         done_sets = await _build_done_sets(session, _ledger_fids(rows))
         in_flight = await _in_flight_cloud_job_ids(session)
+        # phaze-w0yr: mirror recover_orphaned_work's FOUR-way filter. Since 83-06 recovery ALSO
+        # excludes any file HELD in AWAITING_CLOUD (a cloud_job(status='awaiting') sidecar; 'awaiting'
+        # is deliberately NOT in _in_flight_cloud_job_ids' IN_FLIGHT set) -- the stage_cloud_window
+        # drain owns it, so recovery never re-enqueues it. Omitting this set counted files Recover will
+        # never re-drive (e.g. legacy pre-83-06 held-file process_file:<id> rows) as phantom stuck-work
+        # the amber rail badge could never clear. Read ONCE alongside in_flight (the two are disjoint).
+        awaiting = await _awaiting_cloud_job_ids(session)
         for row in rows:
             stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
             if stage is None:
                 continue  # push_file / scan_live_set / controller rows are not enrich badges
-            if row.key in live or is_domain_completed(row, done_sets) or _natural_id(row) in in_flight:
+            # phaze-fc2l: SCOPE both cloud exclusions to the functions the cloud_job owns
+            # (_CLOUD_OWNED_FUNCTIONS) -- of the three badge stages only ``process_file`` (analyze) is
+            # cloud-owned. Applying them unscoped over the function-agnostic ``_natural_id`` under-counted
+            # the fingerprint/metadata badge for a cloud-busy file, whose lost fingerprint/metadata rows
+            # recovery DOES re-drive (no cloud second owner). Keeps the badge in parity with recovery.
+            cloud_excluded = row.function in _CLOUD_OWNED_FUNCTIONS and (_natural_id(row) in in_flight or _natural_id(row) in awaiting)
+            if row.key in live or is_domain_completed(row, done_sets) or cloud_excluded:
                 continue
             out[stage] += 1
     return out

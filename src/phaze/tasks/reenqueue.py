@@ -325,6 +325,19 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     return select(FileRecord.id).where(_fids_scope(fids, "p_ids"), or_(succeeded, domain_completed_clause(Stage.ANALYZE)))
 
 
+# phaze-fc2l: the ONLY functions a file's cloud_job actually owns the re-drive of -- the analyze/push
+# pipeline. The SCHED-05 (in-flight) and 83-06 (awaiting) cloud exclusions exist to keep exactly ONE
+# recovery owner for these rows (the backend reconcile/`/pushed` callback for in-flight, the
+# stage_cloud_window drain for awaiting), and CLOUDROUTE-02 for process_file (a held long file is never
+# routed to a fileserver for LOCAL analysis). Because ``_natural_id`` is function-AGNOSTIC (it returns
+# ``payload['file_id']`` for EVERY file-keyed row -- fingerprint_file / extract_file_metadata /
+# scan_live_set / search_tracklist included), an UNSCOPED cloud exclusion silently dropped those
+# unrelated stages' recovery for any file that merely happened to also have a cloud_job. The cloud
+# callback/drain re-drives ONLY these four; fingerprint/metadata/scan/tracklist have no cloud second
+# owner, so scoping the two exclusions to this set lets their orphaned rows recover normally.
+_CLOUD_OWNED_FUNCTIONS: frozenset[str] = frozenset({"process_file", "push_file", "s3_upload", "submit_cloud_job"})
+
+
 async def _awaiting_cloud_job_ids(session: AsyncSession) -> set[str]:
     """File-id strings for files HELD in AWAITING_CLOUD (a ``cloud_job(status='awaiting')`` sidecar row).
 
@@ -528,13 +541,18 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # ledger seed. Read ONCE, alongside in_flight (the two sets are disjoint -- 'awaiting' ∉ IN_FLIGHT).
         awaiting_cloud = await _awaiting_cloud_job_ids(session)
 
+        # phaze-fc2l: SCOPE the two cloud exclusions to the functions the cloud_job actually owns
+        # (_CLOUD_OWNED_FUNCTIONS). _natural_id is function-agnostic, so an unscoped exclusion dropped an
+        # orphaned fingerprint_file / extract_file_metadata / scan_live_set / search_tracklist row for
+        # ANY file that merely also had an in-flight/awaiting cloud_job -- silently skipping recovery the
+        # cloud callback/drain will never perform. A non-cloud-owned row for a cloud-busy file recovers
+        # normally; process_file/push_file/s3_upload/submit_cloud_job still defer to their single owner.
         orphaned = [
             r
             for r in rows
             if r.key not in live
             and not is_domain_completed(r, done_sets)
-            and _natural_id(r) not in in_flight
-            and _natural_id(r) not in awaiting_cloud
+            and (r.function not in _CLOUD_OWNED_FUNCTIONS or (_natural_id(r) not in in_flight and _natural_id(r) not in awaiting_cloud))
         ]
 
         # Initialize every keyed function to zero so the return shape is TOTAL (and a stage with no
@@ -579,13 +597,22 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
                 for row in push_rows:
                     await _replay_row(fileserver_queue, row, stages[row.function])
 
-        # Remaining agent rows need any online agent (cold boot may have none -> skip, never raise).
+        # Remaining agent rows need any online FILESERVER agent (cold boot may have none -> skip, never raise).
         if other_agent_rows:
             try:
-                agent = await select_active_agent(session)
+                # phaze-mits (mirrors phaze-5r8f / enqueue_router.resolve_queue_for_task): these rows are
+                # ALL fileserver-local (process_file / extract_file_metadata / fingerprint_file /
+                # scan_live_set / s3_upload) -- the media-mount owner is the ONLY valid consumer. An
+                # UNSCOPED pick (kind=None orders by last_seen_at across ALL kinds) races the heartbeat
+                # and could land a fileserver-local task on a media-less compute agent, where
+                # process_file's path read FileNotFounds into terminal ANALYSIS_FAILED and the
+                # fingerprint/meta lanes have NO consumer (the parked non-terminal row then wedges the
+                # global saq_jobs.key forever). Scope to kind="fileserver" -- matching the push_file
+                # branch just above (D-10) and CLOUDROUTE-02.
+                agent = await select_active_agent(session, kind="fileserver")
             except NoActiveAgentError:
                 logger.warning(
-                    "recover_orphaned_work: no active agent -- agent-routed ledger rows skipped (cold boot)",
+                    "recover_orphaned_work: no fileserver agent -- agent-routed ledger rows skipped (cold boot)",
                     agent_rows=len(other_agent_rows),
                 )
             else:

@@ -33,6 +33,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -392,13 +393,19 @@ async def trigger_scan(
     On success: create a RUNNING ScanBatch, enqueue `scan_directory`, return
     the in-progress `scan_progress_card.html` for HTMX swap.
 
+    phaze-1a71: the insert is guarded by `uq_scan_batches_agent_id_scan_path_running`
+    (migration 044, one RUNNING batch per agent+path) -- a double submit for the same
+    path fails this INSERT with an `IntegrityError`, which renders the same
+    `scan_submit_error.html` alert rather than dispatching a second concurrent, unbounded
+    full SHA-256 archive walk of the same tree.
+
     On enqueue failure: mark the just-created batch FAILED and return
     `scan_submit_error.html` (UI-SPEC failure-surfacing copy).
 
     STATUS CONTRACT (phaze-u1gf, `routers/response_shape.py` rule 3): EVERY failure
     branch above renders `scan_submit_error.html` with
     :data:`~phaze.routers.response_shape.RENDERABLE_ALERT_STATUS` (200), NOT the 400/503
-    it used to. All five are *renderable alerts*: the form posts with
+    it used to. Every failure is a *renderable alert*: the form posts with
     `hx-target="#scan-submit-result" hx-swap="innerHTML"`, so there is a swap target the
     operator is looking at right now -- which is exactly the test in contract rule 4 that
     separates this module from `request_guards` rule 1's 422. htmx 2.x's default
@@ -442,6 +449,18 @@ async def trigger_scan(
             status_code=RENDERABLE_ALERT_STATUS,
         )
 
+    # phaze-g0if: `joined` is NFC-normalized (above), but `agent.scan_roots` is stored verbatim --
+    # nothing upstream (TriggerScanForm, the CLI's `add_agent`, or the JSONB column itself)
+    # normalizes it. A root configured in a non-NFC form (NFD is the norm for paths sourced from an
+    # HFS+/macOS agent, e.g. "Café" decomposed as "Cafe" + combining acute) then byte-differs from
+    # its own NFC-normalized self, so a raw-vs-raw membership check can pass while the
+    # NFC-vs-raw prefix check below it fails for the SAME root -- rejecting a legitimately
+    # configured, un-traversed scan. Normalize every `r` (and the membership check's left side) to
+    # NFC so the membership gate, the prefix gate, and the persisted `scan_path` (`joined`, already
+    # NFC) all agree on one normalization form.
+    scan_root_nfc = unicodedata.normalize("NFC", form.scan_root)
+    scan_roots_nfc = [unicodedata.normalize("NFC", r) for r in agent.scan_roots]
+
     # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
     # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +
     # subpath`` was validated against the prefix list, which allowed a partial
@@ -449,7 +468,7 @@ async def trigger_scan(
     # ``/data/music/foo`` even though ``/data`` itself was never configured. The
     # planning invariant documents ``scan_root rejected when not in selected
     # agent's scan_roots``; tighten the check to require literal membership.
-    if form.scan_root not in agent.scan_roots:
+    if scan_root_nfc not in scan_roots_nfc:
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
@@ -460,7 +479,7 @@ async def trigger_scan(
     # D-06 prefix validation: joined path must match (or descend from) one of
     # the agent's configured scan_roots. Strip trailing slash on roots so
     # `"/data/music"` matches both `"/data/music"` and `"/data/music/2026"`.
-    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in agent.scan_roots):
+    if not any(joined == r or joined.startswith(r.rstrip("/") + "/") for r in scan_roots_nfc):
         return templates.TemplateResponse(
             request=request,
             name="pipeline/partials/scan_submit_error.html",
@@ -481,7 +500,23 @@ async def trigger_scan(
         last_progress_at=datetime.now(UTC),
     )
     session.add(batch)
-    await session.commit()
+    # phaze-1a71: `uq_scan_batches_agent_id_scan_path_running` (migration 044) is the durable,
+    # race-safe duplicate-dispatch guard -- a read-then-insert check on the Python side is a
+    # TOCTOU (two concurrent submits can both pass a read before either commits), so the
+    # database enforces "at most one RUNNING batch per (agent_id, scan_path)" atomically at
+    # insert time instead. A double submit (a slow first request re-clicked, or a re-submit an
+    # hour into a scan that looks stalled) now fails HERE with an IntegrityError rather than
+    # dispatching a second concurrent, unbounded full SHA-256 archive walk of the same tree.
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/scan_submit_error.html",
+            context={"request": request, "error_message": "A scan is already running for this path."},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
     await session.refresh(batch)
 
     # Enqueue scan_directory via AgentTaskRouter (Phase 26 D-19). On enqueue

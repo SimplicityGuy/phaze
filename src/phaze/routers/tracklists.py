@@ -394,10 +394,27 @@ async def trigger_scan(
         if record is None:
             # No FileRecord for this id; skip rather than dead-letter the job.
             continue
-        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.original_path, agent_id=agent_id)
+        # phaze-wsuf: use current_path, NOT original_path. A live-set file that already had a
+        # rename/move proposal EXECUTED has its original_path pointing at a path execution
+        # deleted; current_path is the field the system maintains as the file's live on-disk
+        # location (equal to original_path until a move). Scanning original_path targets a
+        # deleted path for an executed file -- either a hard failure or a false-negative clean
+        # "no_matches" COMPLETE, permanently unscannable.
+        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id)
         job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
         if job is not None:
             job_ids.append(job.key)
+
+    # phaze-jdt4: zero enqueued jobs must render the TERMINAL state (done=True), not the polling
+    # state. job_ids ends up empty whenever every submitted id was skipped -- a malformed UUID
+    # (above), a FileRecord deleted/deduped between the scan-tab render and this submit, or every
+    # `queue.enqueue` returning None -- and with done=False the progress partial's polling div
+    # (`hx-get=".../scan/status?job_ids=&agent_id=..."`, `hx-trigger="every 3s"`) hits
+    # `scan_status`'s `job_ids: str = Query(..., min_length=1)`, which 422s forever: HTMX never
+    # swaps on a 4xx, so the panel is stuck on "Scanning... (0 of 0 files)" indefinitely. The
+    # completion formula `completed >= total` (scan_status) is trivially True for total=0, so the
+    # terminal state is rendered directly here instead, mirroring the no_active_agent branch above.
+    done = len(job_ids) == 0
 
     return templates.TemplateResponse(
         request=request,
@@ -408,7 +425,7 @@ async def trigger_scan(
             "agent_id": routed.agent_id,
             "total": len(job_ids),
             "completed": 0,
-            "done": False,
+            "done": done,
             "tracklists_created": 0,
             "no_active_agent": False,
         },

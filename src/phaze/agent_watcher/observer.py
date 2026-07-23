@@ -3,8 +3,23 @@
 ``WatcherEventHandler`` is the sole sanctioned bridge between the watchdog
 Observer's OS thread and the asyncio-owned :class:`Debouncer`. It:
 
-1. Subscribes to ``FileCreatedEvent`` + ``FileModifiedEvent`` only (D-01).
-   Other watchdog event types (move, delete, *DirEvent) are ignored.
+1. Subscribes to ``FileCreatedEvent`` + ``FileModifiedEvent`` + ``FileMovedEvent``
+   (phaze-0z29). Delete and ``*DirEvent`` types are still ignored.
+   ``FileMovedEvent`` handling exists because rsync's atomic delivery
+   (write to a filtered-out temp name, then rename to the final name) --
+   and any in-tree ``mv``/rename of an existing music/video file -- never
+   produces a ``FileCreatedEvent``/``FileModifiedEvent`` for the final
+   path under the native inotify observer; only a single paired
+   ``FileMovedEvent(src, dest)`` is emitted. A move whose destination
+   lands OUTSIDE the watched tree is not observable here at all: the
+   watchdog inotify emitter degrades an unpaired ``IN_MOVED_FROM`` to a
+   ``FileDeletedEvent`` (there is no watch on the destination directory to
+   pair it with), so it never reaches ``on_moved``. Symmetrically, a move
+   INTO the watched tree from outside degrades to a ``FileCreatedEvent``
+   and is already handled by ``on_created``. That leaves ``on_moved`` to
+   handle exactly the paired, fully-in-tree case; dispatching only
+   ``event.dest_path`` (the settled final name) and ignoring ``src_path``
+   avoids double-ingesting the same file under two keys.
 2. Filters by ``EXTENSION_MAP`` -- only ``FileCategory.MUSIC`` and
    ``FileCategory.VIDEO`` paths enter the debouncer (SCAN-03).
 3. Dispatches the RAW OS path (whatever Unicode normalization form the
@@ -44,7 +59,14 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Callable
 
-    from watchdog.events import DirCreatedEvent, DirModifiedEvent, FileCreatedEvent, FileModifiedEvent
+    from watchdog.events import (
+        DirCreatedEvent,
+        DirModifiedEvent,
+        DirMovedEvent,
+        FileCreatedEvent,
+        FileModifiedEvent,
+        FileMovedEvent,
+    )
 
 
 logger = structlog.get_logger(__name__)
@@ -103,3 +125,22 @@ class WatcherEventHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         self._filter_and_dispatch(event.src_path)
+
+    def on_moved(self, event: DirMovedEvent | FileMovedEvent) -> None:
+        """Handle a paired, fully-in-tree rename (rsync atomic delivery, `mv`, dir renames).
+
+        Only ``event.dest_path`` -- the settled final name -- is dispatched.
+        ``event.src_path`` is intentionally never touched here: dispatching
+        both would double-ingest the same on-disk file under two debouncer
+        keys, and the old path no longer exists once the rename completes.
+        As documented on the module docstring, a move that crosses the
+        watched-tree boundary in either direction never reaches this method
+        at all -- watchdog's inotify emitter degrades those to a plain
+        ``FileCreatedEvent``/``FileDeletedEvent`` before ``on_moved`` is
+        invoked. Directory renames recurse via watchdog's own
+        ``generate_sub_moved_events``, which emits one ``FileMovedEvent``
+        per contained file -- so no extra recursion is needed here.
+        """
+        if event.is_directory:
+            return
+        self._filter_and_dispatch(event.dest_path)
