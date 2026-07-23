@@ -75,7 +75,7 @@
             {% if current_page > 3 %}
                 <span class="px-2 text-gray-400 dark:text-gray-500" aria-hidden="true">…</span>
             {% endif %}
-            {% for p in range([current_page - 1, 2] | max, [current_page + 2, total_pages] | min + 1) %}
+            {% for p in range([current_page - 1, 2] | max, [current_page + 2, total_pages - 1] | min + 1) %}
                 {{ page_link(p, none, p == current_page) }}
             {% endfor %}
             {% if current_page < total_pages - 2 %}
