@@ -3,7 +3,7 @@
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.models.agent import Agent
@@ -132,6 +132,80 @@ async def test_companions_link_only_to_own_dir(session: AsyncSession) -> None:
     # No cross-directory links
     assert (comp_a.id, media_b.id) not in link_pairs
     assert (comp_b.id, media_a.id) not in link_pairs
+
+
+@pytest.mark.asyncio
+async def test_concurrent_run_that_already_linked_the_pair_does_not_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Idempotent under concurrency (phaze-u6ml): the unlinked-companion read is a
+    snapshot, so a concurrent POST /associate computes the same (companion, media)
+    pairs and commits them first. Simulate that interleaving by injecting the
+    conflicting FileCompanion row immediately after the snapshot read; the run must
+    skip the already-inserted pair (first-writer-wins) instead of raising
+    IntegrityError against uq_file_companions_pair and rolling back the batch."""
+    media = _make_file("/music/album/track.mp3", "mp3")
+    comp = _make_file("/music/album/cover.jpg", "jpg")
+    session.add_all([media, comp])
+    await session.flush()
+
+    real_execute = session.execute
+    injected = False
+
+    async def execute_with_race(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal injected
+        result = await real_execute(stmt, *args, **kwargs)
+        if not injected:
+            # First statement executed is the unlinked-companion snapshot read:
+            # right after it, the "other request" commits the identical pair.
+            injected = True
+            await real_execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=comp.id, media_id=media.id))
+        return result
+
+    monkeypatch.setattr(session, "execute", execute_with_race)
+
+    count = await associate_companions(session)
+
+    # The pair already existed by insert time, so nothing new was inserted --
+    # the documented idempotent no-op, not an IntegrityError/HTTP 500.
+    assert count == 0
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert len(links) == 1
+    assert (links[0].companion_id, links[0].media_id) == (comp.id, media.id)
+
+
+@pytest.mark.asyncio
+async def test_partial_overlap_with_concurrent_run_inserts_only_missing_pairs(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a concurrent run already linked SOME of the computed pairs, the
+    surviving run inserts only the missing ones and counts only those
+    (phaze-u6ml: one conflicting row must not roll back the whole batch)."""
+    media1 = _make_file("/music/album/track1.mp3", "mp3")
+    media2 = _make_file("/music/album/track2.flac", "flac")
+    comp = _make_file("/music/album/cover.jpg", "jpg")
+    session.add_all([media1, media2, comp])
+    await session.flush()
+
+    real_execute = session.execute
+    injected = False
+
+    async def execute_with_race(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal injected
+        result = await real_execute(stmt, *args, **kwargs)
+        if not injected:
+            injected = True
+            await real_execute(insert(FileCompanion).values(id=uuid.uuid4(), companion_id=comp.id, media_id=media1.id))
+        return result
+
+    monkeypatch.setattr(session, "execute", execute_with_race)
+
+    count = await associate_companions(session)
+
+    assert count == 1
+    result = await session.execute(select(FileCompanion))
+    links = result.scalars().all()
+    assert {(link.companion_id, link.media_id) for link in links} == {
+        (comp.id, media1.id),
+        (comp.id, media2.id),
+    }
 
 
 @pytest.mark.asyncio
