@@ -1,0 +1,38 @@
+{# phaze-71hi: v7 bulk-approve-high-confidence response for the Rename/Path and Move-files
+   workspaces. Swapped innerHTML into the small #rename-trigger-response / #move-trigger-response
+   status div named by the button's own hx-target -- so this fragment's non-OOB body is just the
+   toast copy -- PLUS one hx-swap-oob pipeline/partials/_diff_row.html fragment (row_state=
+   "approved") per row this request's >=90% confidence predicate actually transitioned. Without
+   these OOB swaps every just-approved row kept rendering PENDING with live APPROVE/EDIT/SKIP
+   controls (the workspaces deliberately run no row poll -- R-2), and a later click on one 409'd
+   silently (APPROVE_REJECT_FROM = frozenset({PENDING})).
+
+   Context (router-supplied):
+     * toast_message -- the "<n> proposals approved." / "Nothing matched ..." copy.
+     * is_bulk        -- always True; keeps toast.html's per-proposal Undo button suppressed.
+     * approved_rows  -- list of _diff_row_context() dicts (oob=True already set on each). #}
+<p class="text-sm text-gray-500 dark:text-gray-400">{{ toast_message }}</p>
+
+{% for row in approved_rows %}
+{% with row_id_prefix=row.row_id_prefix,
+        pid=row.pid,
+        file=row.file,
+        original_path=row.original_path,
+        before=row.before,
+        after=row.after,
+        approve_url=row.approve_url,
+        skip_url=row.skip_url,
+        undo_url=row.undo_url,
+        edit_url=row.edit_url,
+        edit_facet=row.edit_facet,
+        row_state=row.row_state,
+        oob=row.oob %}
+    {% include "pipeline/partials/_diff_row.html" %}
+{% endwith %}
+{% endfor %}
+
+{# OOB: inject toast (mirrors approve_response.html; #stats-bar is deliberately NOT emitted here --
+   it does not exist in the v7 shell, unlike the legacy list this endpoint also still serves). #}
+<div hx-swap-oob="beforeend:#toast-container">
+    {% include "proposals/partials/toast.html" %}
+</div>

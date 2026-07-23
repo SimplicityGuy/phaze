@@ -3,8 +3,13 @@
   header `ml-auto` status-strip cluster, immediately LEFT of the Agents pill. Two SERVER-RENDERED
   states from `force_local` (state carried by the WORD label, NEVER hue-only — WCAG 1.4.1):
 
-    - normal  (force_local False): neutral pill, `CLOUD ROUTING`,  aria-checked="true"
-    - engaged (force_local True):  loud amber incident pill + warning glyph, `FORCED LOCAL`, aria-checked="false"
+    - normal  (force_local False): neutral pill, `CLOUD ROUTING`,  aria-checked="false"
+    - engaged (force_local True):  loud amber incident pill + warning glyph, `FORCED LOCAL`, aria-checked="true"
+
+  `aria-checked` reflects the CURRENT state of the action named by `aria-label` ("Force all
+  analysis routing to local") -- checked/true means force-local IS engaged (phaze-93fx). Only
+  `hx-vals` below carries the INVERTED (toggle-to) value; do not copy that inversion into
+  `aria-checked`.
 
   Instant-on both directions, no confirm modal (R-4 — reverting to local is the safe direction). It
   `hx-post`s the OPPOSITE `engage` to the thin write endpoint; the authoritative new state comes from
@@ -16,7 +21,7 @@
 <button type="button"
         id="force-local-pill"
         role="switch"
-        aria-checked="{{ 'false' if force_local else 'true' }}"
+        aria-checked="{{ 'true' if force_local else 'false' }}"
         aria-label="Force all analysis routing to local (incident revert)"
         hx-post="/pipeline/routing/force-local"
         hx-vals='{"engage": {{ 'false' if force_local else 'true' }}}'

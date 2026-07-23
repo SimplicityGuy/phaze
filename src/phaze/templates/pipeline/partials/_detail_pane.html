@@ -101,7 +101,7 @@
            below; until it lands the resting empty state stays visible (never a blank open pane), and
            if the fetch fails the pane simply stays closed instead of lying about being open. #}
         x-init="const _id = new URLSearchParams(location.search).get(param); if (_id) { selectedId = triggerPrefix + _id; }"
-         @keydown.escape.window="if (open && ![...document.querySelectorAll('[role=&quot;dialog&quot;]')].some(d => d.offsetParent !== null)) hide()"
+         @keydown.escape.window="if (open && ![...document.querySelectorAll('[role=&quot;dialog&quot;]')].some(d => d.getClientRects().length > 0)) hide()"
          role="region"
          aria-labelledby="detail-pane-heading"
          aria-live="polite"
