@@ -1,11 +1,21 @@
-"""Tag review UI router -- side-by-side comparison, inline editing, and tag writing."""
+"""Tag review UI router -- per-file / bulk tag writing, undo, and a legacy bookmark redirect.
+
+phaze-y4s6: the standalone tag review list + comparison page (``GET /tags/`` fragment branch,
+``tags/partials/tag_list.html``) and its per-row expand-into inline-edit/compare surface
+(``tag_comparison.html``/``inline_edit.html``/``inline_display.html``/``tag_row.html``) had no live
+caller left post-v7-cutover -- the live tagwrite workspace
+(``pipeline/partials/tagwrite_workspace.html``) renders its queue through the shared
+``_diff_row.html`` and explicitly ships no inline-edit or comparison surface. All of it was deleted
+outright; ``GET /tags/`` now only resolves the legacy bookmark into the shell (SHELL-05), and
+``write_file_tags``/``undo_tag_write`` always return the v7 ``_diff_row.html`` shape.
+"""
 
 from pathlib import Path
 from typing import Any
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,9 +28,6 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
-from phaze.routers.column_sort import SortableColumn, SortContract
-from phaze.routers.response_shape import wants_fragment
-from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
@@ -40,8 +47,6 @@ FIELD_LABELS: dict[str, str] = {
     "genre": "Genre",
     "track_number": "Track #",
 }
-
-VALID_FIELDS = set(CORE_FIELDS)
 
 # D-03: bound the operator-triggered no-discrepancy bulk loop. Reviving the applied() gate can make a
 # large first-time-visible applied backlog suddenly enumerable; cap one submit at a batch of this size
@@ -274,13 +279,6 @@ def _qualifies_for_bulk_write(comparison: list[dict[str, Any]]) -> bool:
     return not any(c["current"] is not None and c["proposed"] is None for c in comparison)
 
 
-def _determine_file_status(write_log: TagWriteLog | None) -> str:
-    """Determine the tag write status for a file."""
-    if write_log is None:
-        return "pending"
-    return write_log.status
-
-
 def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
     """Join a comparison's ``current`` (before) or ``proposed`` (after) side into a display string.
 
@@ -300,16 +298,13 @@ def _summarize_tags(comparison: list[dict[str, Any]], side: str) -> str:
 # ZERO undo controls, so the outerHTML swap after APPROVE destroyed the row (and the UNDO button
 # that would have reversed it) in the same stroke, and bare 400/404 strings on a stale row (file
 # gone / no longer executed / no prior write) were silently dropped by htmx (it does not swap
-# non-2xx bodies by default; shell.html only special-cases #record-body). The legacy tag list/
-# comparison pages (tag_list.html, tag_comparison.html) target `#row-{file_id}` and must keep
-# getting tag_row.html back, so the v7 response is opt-in via the same HX-Target negotiation
-# proposals.py uses (phaze-3a2j).
+# non-2xx bodies by default; shell.html only special-cases #record-body).
+#
+# phaze-y4s6: the legacy tag list/comparison pages (tag_list.html, tag_comparison.html) that used
+# to target `#row-{file_id}` and require the opt-in HX-Target negotiation below had no live caller
+# left post-v7-cutover and were deleted outright (along with tag_row.html itself), so both routes
+# now always return the v7 _diff_row.html response -- there is no other shape left to negotiate.
 _V7_TAGWRITE_ROW_PREFIX = "tagwrite-row"
-
-
-def _is_v7_tagwrite_target(request: Request, file_id: uuid.UUID) -> bool:
-    """True when the request came from the v7 tagwrite diff-row workspace."""
-    return request.headers.get("HX-Target", "") == f"{_V7_TAGWRITE_ROW_PREFIX}-{file_id}"
 
 
 async def _tagwrite_row_context(session: AsyncSession, file_record: FileRecord, *, row_state: str) -> dict[str, Any]:
@@ -359,200 +354,20 @@ def _tagwrite_stale_toast_response(request: Request, toast_message: str) -> HTML
     )
 
 
-# phaze-a6hm.7 sortable-column contract for the tag review list (phaze-a6hm.1). Declared at import
-# time next to the handler it serves (contract rule 6). Only ``FileRecord`` columns are whitelisted
-# here -- "Changes" and "Status" are computed per-row in Python from the tracklist/Discogs proposal
-# and the latest ``TagWriteLog`` (see the loop below), not a single SQL expression, so they stay
-# plain (non-sortable) headers rather than being forced through a fabricated column (contract rule
-# 2: the whitelist maps to REAL column objects, never a name reached some other way).
-TAGS_SORT = SortContract(
-    endpoint="/tags/",
-    target="#tags-table-view",
-    columns=(
-        SortableColumn(key="filename", label="Filename", expression=FileRecord.original_filename),
-        SortableColumn(key="file_type", label="Format", expression=FileRecord.file_type),
-    ),
-    default_key="filename",
-)
+@router.get("/", response_class=RedirectResponse)
+async def list_tags() -> RedirectResponse:
+    """SHELL-05 (D-03): resolve a legacy ``/tags/`` bookmark into the v7.0 shell.
 
-
-@router.get("/", response_class=HTMLResponse)
-async def list_tags(
-    request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=10, le=100),
-    sort: str | None = Query(None),
-    order: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render the tag review list page or HTMX partial."""
-    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
-    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    #
-    # phaze-64uy (HYGIENE, not a live defect): ``wants_fragment`` per response_shape.py contract
-    # rule 1. No template pushes a ``/tags/`` URL, so no history restore can reach this handler
-    # today; converted to close the banned raw-header branch rather than to fix a live symptom.
-    if not wants_fragment(request):
-        return RedirectResponse(url="/s/tagwrite", status_code=302)
-
-    # phaze-a6hm.7: resolve BEFORE the read -- ``sort``/``order`` are raw wire strings here and a
-    # whitelisted key/direction afterwards; the query below never sees the untrusted value
-    # (column_sort contract rules 2/3). ``page_size`` rides view_state so a header click preserves it
-    # (rule 4); ``page`` deliberately does not -- a re-sort returns to page 1.
-    sort_state = TAGS_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
-
-    # Query applied files with metadata (an executed proposal exists, READ-05/D-01). The resolved
-    # sort supplies the DISPLAY order; ``FileRecord.id`` is the mandatory unique tiebreaker (never
-    # the sort column itself -- an operator-chosen key ties far more often than filename does) so
-    # OFFSET paging below can't silently skip or duplicate a row across two page renders.
-    stmt = select(FileRecord).options(selectinload(FileRecord.file_metadata)).where(applied_clause()).order_by(*sort_state.order_by(), FileRecord.id)
-
-    # Count total
-    count_stmt = select(func.count(FileRecord.id)).where(applied_clause())
-    count_result = await session.execute(count_stmt)
-    total = count_result.scalar() or 0
-
-    # Paginate
-    offset = (page - 1) * page_size
-    stmt = stmt.offset(offset).limit(page_size)
-
-    result = await session.execute(stmt)
-    file_records = list(result.scalars().all())
-
-    # Build file data with proposed tags and status
-    files: list[dict[str, Any]] = []
-    for fr in file_records:
-        tracklist = await _get_tracklist_for_file(session, fr.id)
-        discogs_link = await _get_accepted_discogs_link(session, fr.id)
-        proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-        write_log = await _get_latest_write_log(session, fr.id)
-        comparison = _build_comparison(fr.file_metadata, proposed)
-        changes = _count_changes(comparison)
-        status = _determine_file_status(write_log)
-
-        files.append(
-            {
-                "id": fr.id,
-                "filename": fr.original_filename,
-                "file_type": fr.file_type,
-                "changes": changes,
-                "status": status,
-                "comparison": comparison,
-            }
-        )
-
-    stats = await _get_tag_stats(session)
-    pagination = Pagination(page=page, page_size=page_size, total=total)
-
-    context: dict[str, Any] = {
-        "request": request,
-        "current_page": "tags",
-        "files": files,
-        "stats": stats,
-        "pagination": pagination,
-        "sort": sort_state,
-    }
-
-    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
-    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="tags/partials/tag_list.html", context=context)
-
-
-@router.get("/{file_id}/compare", response_class=HTMLResponse)
-async def compare_tags(
-    request: Request,
-    file_id: uuid.UUID,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Return the tag comparison panel for a file."""
-    file_record = await _get_file_with_metadata(session, file_id)
-    if file_record is None:
-        return HTMLResponse(content="File not found", status_code=404)
-
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    discogs_link = await _get_accepted_discogs_link(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-    comparison = _build_comparison(file_record.file_metadata, proposed)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tags/partials/tag_comparison.html",
-        context={
-            "request": request,
-            "file": file_record,
-            "comparison": comparison,
-            "proposed_tags": proposed,
-            "field_labels": FIELD_LABELS,
-        },
-    )
-
-
-@router.get("/{file_id}/edit/{field}", response_class=HTMLResponse)
-async def edit_tag_field(
-    request: Request,
-    file_id: uuid.UUID,
-    field: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Return inline edit input for a proposed tag field."""
-    if field not in VALID_FIELDS:
-        return HTMLResponse(content="Invalid field", status_code=400)
-
-    file_record = await _get_file_with_metadata(session, file_id)
-    if file_record is None:
-        return HTMLResponse(content="File not found", status_code=404)
-
-    tracklist = await _get_tracklist_for_file(session, file_id)
-    discogs_link = await _get_accepted_discogs_link(session, file_id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-    value = proposed.get(field, "")
-
-    return templates.TemplateResponse(
-        request=request,
-        name="tags/partials/inline_edit.html",
-        context={
-            "request": request,
-            "file_id": file_id,
-            "field": field,
-            "value": value,
-            "label": FIELD_LABELS.get(field, field),
-        },
-    )
-
-
-@router.put("/{file_id}/edit/{field}", response_class=HTMLResponse)
-async def save_tag_field(
-    request: Request,
-    file_id: uuid.UUID,
-    field: str,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Save an inline edit for a proposed tag field and return display span."""
-    if field not in VALID_FIELDS:
-        return HTMLResponse(content="Invalid field", status_code=400)
-
-    file_record = await _get_file_with_metadata(session, file_id)
-    if file_record is None:
-        return HTMLResponse(content="File not found", status_code=404)
-
-    form_data = await request.form()
-    new_value = str(form_data.get(field, ""))
-
-    # Compute original proposed to determine if changed
-    current_val = getattr(file_record.file_metadata, field, None) if file_record.file_metadata else None
-    changed = str(new_value) != str(current_val) if current_val is not None and new_value else (current_val is not None) != bool(new_value)
-
-    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; no raw/`| safe` interpolation of the form value, so this is not a direct tainted response.
-        request=request,
-        name="tags/partials/inline_display.html",
-        context={
-            "request": request,
-            "file_id": file_id,
-            "field": field,
-            "value": new_value,
-            "changed": changed,
-        },
-    )
+    phaze-y4s6: this used to also serve an in-page HX-filtered/paginated/sorted table (rendering
+    ``tags/partials/tag_list.html``, its per-row expand-into ``tag_comparison.html`` inline-edit
+    comparison panel, and the ``edit_tag_field``/``save_tag_field`` inline-edit fragments it alone
+    offered). The live v7.0 tagwrite workspace (``pipeline/partials/tagwrite_workspace.html``)
+    renders its own queue via the shared ``_diff_row.html`` and explicitly ships NO inline-edit
+    ("Tag inline-edit is OUT of the initial cut") and no comparison page -- there was no live
+    caller left to preserve any of that surface for, so it and the ``TAGS_SORT`` contract that fed
+    it were deleted outright.
+    """
+    return RedirectResponse(url="/s/tagwrite", status_code=302)
 
 
 @router.post("/{file_id}/write", response_class=HTMLResponse)
@@ -561,24 +376,26 @@ async def write_file_tags(
     file_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Execute tag write for a file using form-submitted proposed values."""
-    is_v7 = _is_v7_tagwrite_target(request, file_id)
+    """Execute tag write for a file using form-submitted proposed values.
 
+    phaze-y4s6: this used to fork on ``_is_v7_tagwrite_target`` (the shared ``_diff_row.html``
+    workspace response vs a legacy ``tag_row.html`` fallback for the non-v7 tag review list). That
+    legacy list (``tags/partials/tag_list.html``/``tag_comparison.html``, the only surface that ever
+    POSTed here without the v7 ``HX-Target``) had no live caller left post-v7-cutover and was
+    deleted outright, along with ``tag_row.html`` (its sole other includer). The v7 response shape
+    is therefore now the ONLY shape.
+    """
     file_record = await _get_file_with_metadata(session, file_id)
     if file_record is None:
-        # phaze-nvll defect 3: a stale v7 row (file gone) gets a 200 + OOB toast so the failure is
+        # phaze-nvll defect 3: a stale row (file gone) gets a 200 + OOB toast so the failure is
         # actually visible, instead of a bare 404 htmx silently drops for this target.
-        if is_v7:
-            return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
-        return HTMLResponse(content="File not found", status_code=404)
+        return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
     if not await is_applied(session, file_id):
         # phaze-nvll defect 3: file still exists (a stale row -- the execution was reverted since
         # render), so redraw it unchanged (still pending) alongside the toast rather than dropping it.
-        if is_v7:
-            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
-            return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written.")
-        return HTMLResponse(content="Only executed files can have tags written", status_code=400)
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, "Only executed files can have tags written.")
 
     form_data = await request.form()
 
@@ -629,34 +446,13 @@ async def write_file_tags(
         status = "failed"
         toast_message = f"Tag write failed: {exc}"
 
-    if is_v7:
-        # phaze-nvll defects 1+2: the v7 row gets the shared _diff_row.html back, in "approved" (WITH
-        # a working UNDO) for a write that LANDED on disk (COMPLETED/DISCREPANCY/VERIFY_FAILED -- all
-        # mutated the file), or "pending" (APPROVE still available to retry) when nothing was actually
-        # written (FAILED / a raised ValueError).
-        row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED) else "pending"
-        row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
-        return _tagwrite_diff_row_response(request, row_context, toast_message)
-
-    # Rebuild file data for the updated row
-    comparison = _build_comparison(file_record.file_metadata, tags)
-    changes = _count_changes(comparison)
-
-    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the toast/comparison values are escaped on render (no raw/`| safe`), so this is not a direct tainted response.
-        request=request,
-        name="tags/partials/tag_row.html",
-        context={
-            "request": request,
-            "file": {
-                "id": file_record.id,
-                "filename": file_record.original_filename,
-                "file_type": file_record.file_type,
-                "changes": changes,
-                "status": status,
-            },
-            "toast_message": toast_message,
-        },
-    )
+    # phaze-nvll defects 1+2: the row gets the shared _diff_row.html back, in "approved" (WITH a
+    # working UNDO) for a write that LANDED on disk (COMPLETED/DISCREPANCY/VERIFY_FAILED -- all
+    # mutated the file), or "pending" (APPROVE still available to retry) when nothing was actually
+    # written (FAILED / a raised ValueError).
+    row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED) else "pending"
+    row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
+    return _tagwrite_diff_row_response(request, row_context, toast_message)
 
 
 def _bulk_write_toast(written: int, discrepancy: int, verify_failed: int, failed: int) -> str:
@@ -838,38 +634,6 @@ async def bulk_write_no_discrepancies(
     )
 
 
-async def _undo_legacy_row_response(
-    request: Request,
-    session: AsyncSession,
-    file_record: FileRecord,
-    *,
-    status: str,
-    toast_message: str,
-) -> HTMLResponse:
-    """Render the legacy ``tag_row.html`` for an undo outcome (shared by the no-op and write paths)."""
-    tracklist = await _get_tracklist_for_file(session, file_record.id)
-    discogs_link = await _get_accepted_discogs_link(session, file_record.id)
-    proposed = compute_proposed_tags(file_record.file_metadata, tracklist, file_record.original_filename, discogs_link=discogs_link)
-    comparison = _build_comparison(file_record.file_metadata, proposed)
-    changes = _count_changes(comparison)
-
-    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; toast/comparison values are escaped on render.
-        request=request,
-        name="tags/partials/tag_row.html",
-        context={
-            "request": request,
-            "file": {
-                "id": file_record.id,
-                "filename": file_record.original_filename,
-                "file_type": file_record.file_type,
-                "changes": changes,
-                "status": status,
-            },
-            "toast_message": toast_message,
-        },
-    )
-
-
 @router.post("/{file_id}/undo", response_class=HTMLResponse)
 async def undo_tag_write(
     request: Request,
@@ -879,18 +643,18 @@ async def undo_tag_write(
     """REVIEW-05 (D-04): revert a tag write by re-applying ``TagWriteLog.before_tags``.
 
     Reuses the EXISTING :func:`execute_tag_write` mutagen path (``source="undo"``) to restore the
-    snapshot captured before the latest write -- NO new apply/undo logic. Returns 404 when the file
-    has no prior write log. Appends one further ``TagWriteLog`` so the append-only audit trail stays
-    coherent (REVIEW-05: every apply, including a reversal, is one audit row).
-    """
-    is_v7 = _is_v7_tagwrite_target(request, file_id)
+    snapshot captured before the latest write -- NO new apply/undo logic. Appends one further
+    ``TagWriteLog`` so the append-only audit trail stays coherent (REVIEW-05: every apply,
+    including a reversal, is one audit row).
 
+    phaze-y4s6: this used to fork on ``_is_v7_tagwrite_target`` the same way ``write_file_tags``
+    did; the legacy ``tag_row.html`` fallback it shared with that route is gone (see
+    ``write_file_tags``'s docstring), so the v7 ``_diff_row.html`` response is now the ONLY shape.
+    """
     file_record = await _get_file_with_metadata(session, file_id)
     if file_record is None:
-        # phaze-nvll defect 3: a stale v7 row (file gone) gets a 200 + OOB toast, not a bare 404.
-        if is_v7:
-            return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
-        return HTMLResponse(content="File not found", status_code=404)
+        # phaze-nvll defect 3: a stale row (file gone) gets a 200 + OOB toast, not a bare 404.
+        return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
     # phaze-soph: target the latest row that ACTUALLY wrote to disk (COMPLETED/DISCREPANCY, not a
     # prior undo), skipping FAILED/NO_OP shadows whose before_tags would restore the wrong state.
@@ -898,10 +662,8 @@ async def undo_tag_write(
     if latest is None:
         # phaze-nvll defect 3: nothing to undo (a race/stale row) -- redraw the row as pending
         # alongside the toast rather than silently doing nothing.
-        if is_v7:
-            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
-            return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
-        return HTMLResponse(content="No prior tag write to undo", status_code=404)
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
 
     # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
     # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
@@ -909,10 +671,8 @@ async def undo_tag_write(
     newest = await _get_latest_write_log(session, file_id)
     if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
         already_message = f"Tags for {file_record.original_filename} were already reverted."
-        if is_v7:
-            row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
-            return _tagwrite_diff_row_response(request, row_context, already_message)
-        return await _undo_legacy_row_response(request, session, file_record, status="pending", toast_message=already_message)
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, already_message)
 
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()
@@ -937,12 +697,9 @@ async def undo_tag_write(
             "read-only or corrupted. Check file permissions and try again."
         )
 
-    if is_v7:
-        # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
-        # reversal write actually completed; a failed reversal keeps "approved" (UNDO stays available
-        # to retry) rather than claiming a revert that did not happen.
-        row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
-        row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
-        return _tagwrite_diff_row_response(request, row_context, toast_message)
-
-    return await _undo_legacy_row_response(request, session, file_record, status=log_entry.status, toast_message=toast_message)
+    # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
+    # reversal write actually completed; a failed reversal keeps "approved" (UNDO stays available
+    # to retry) rather than claiming a revert that did not happen.
+    row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
+    row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
+    return _tagwrite_diff_row_response(request, row_context, toast_message)

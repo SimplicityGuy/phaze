@@ -201,10 +201,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # STRUCTURAL guarantee as the pipeline six above -- see the comment there.
     ("/audit/", "sort"): _WHITELIST,
     ("/audit/", "order"): _WHITELIST,
-    # phaze-a6hm.7: the tag review list's TAGS_SORT contract -- same SortContract/SortState
-    # mechanism as the six entries above, classified the same way for the same reason.
-    ("/tags/", "sort"): _WHITELIST,
-    ("/tags/", "order"): _WHITELIST,
+    # phaze-y4s6: the tag review list's TAGS_SORT contract (phaze-a6hm.7) was removed along with
+    # GET /tags/'s dead fragment branch and the tag_list.html it fed -- the live tagwrite workspace
+    # has no list-level sort control (see routers/tags.py's module docstring).
     # phaze-a6hm.8: same EXEC_AGENTS_SORT contract, adapted for a table with no backing SQL SELECT
     # (execution.py's per-agent rollup is a Redis hash projection) -- the whitelist->accessor mapping
     # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.
@@ -224,7 +223,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/search/", "q"): _TEXT,
     ("/search/", "artist"): _TEXT,
     ("/search/", "genre"): _TEXT,
-    ("/tags/{file_id}/edit/{field}", "field"): _WHITELIST,
     # Bulk-action id lists: FastAPI reports the ELEMENT type for a ``list[str] = Form(...)``, so they
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
