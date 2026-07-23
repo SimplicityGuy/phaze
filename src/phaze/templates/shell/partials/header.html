@@ -13,6 +13,11 @@
   COMPUTE-02: the "Agents · N" total now sums $store.pipeline.agentOnline (heartbeating agents,
   semantics UNTOUCHED) + $store.pipeline.computeLanesActive (ACTIVE compute lanes) so the header
   reflects both online-agent classes — still refreshed by the SAME existing OOB poll, no new timer.
+
+  phaze-74ii (phaze-nebh residue): the numeral was outside phaze-nebh's rail.html surface and was
+  left title/aria-label-less. Same treatment as the rail's done/total numerals: an explicit,
+  store-bound :title + :aria-label naming exactly what the sum counts (agentOnline + computeLanesActive),
+  agreeing with each other.
 #}
 <header class="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-gray-200 dark:border-phaze-border bg-gray-50 dark:bg-phaze-panel">
 
@@ -54,7 +59,10 @@
         </span>
         <a href="/admin/agents"
            class="font-jura tracking-wider px-3 h-8 flex items-center rounded-lg bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
-            <span>Agents&nbsp;·&nbsp;</span><span x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive">0</span>
+            <span>Agents&nbsp;·&nbsp;</span><span
+                  x-text="$store.pipeline.agentOnline + $store.pipeline.computeLanesActive"
+                  :title="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'"
+                  :aria-label="($store.pipeline.agentOnline + $store.pipeline.computeLanesActive) + ' heartbeating agents and active compute lanes online'">0</span>
         </a>
     </div>
 
