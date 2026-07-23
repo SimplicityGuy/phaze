@@ -85,6 +85,23 @@ _DOWNLOAD_CONNECT_TIMEOUT_S = 30.0
 _DOWNLOAD_READ_TIMEOUT_S = 300.0
 
 
+class PresignedDownloadError(RuntimeError):
+    """Raised when the presigned-GET download fails, message redacted (D-13 style).
+
+    httpx's ``HTTPStatusError`` renders ``str(response.url)`` verbatim into its message, and the
+    staging GET URL is presigned (X-Amz-Signature/X-Amz-Credential in the query string) -- a
+    complete, live, self-authenticating credential. The caller logs download failures with
+    ``log.exception`` (``exc_info=True``), so an unwrapped ``HTTPStatusError`` would put that
+    credential into the pod's log stream. Mirrors ``agent_client``'s ``METHOD path -> status``
+    redaction: carry only the status code and the URL with its query string stripped.
+    """
+
+
+def _redact_query(url: str) -> str:
+    """Strip the query string from ``url`` so a presigned credential never reaches a log line."""
+    return urlparse(url)._replace(query="").geturl()
+
+
 def _elapsed_ms(start: float) -> int:
     """Whole-millisecond wall-clock delta since ``start`` (``time.monotonic``)."""
     return int((time.monotonic() - start) * 1000)
@@ -177,10 +194,21 @@ async def _download_to(url: str, dest: Path) -> None:
     object store (T-52-04). ``verify`` defaults to True (system CAs) for the
     public bucket endpoint — distinct from the internal-CA callback (the CA is
     mounted from a K8s Secret at runtime, KDEPLOY-06).
+
+    A non-2xx response raises ``PresignedDownloadError`` rather than letting
+    ``httpx.HTTPStatusError`` propagate: that exception's message embeds the FULL
+    presigned URL (including ``X-Amz-Signature``/``X-Amz-Credential``), and the caller's
+    ``log.exception`` would otherwise put that live credential into the pod's log stream. The
+    original exception is deliberately NOT chained (``from None``) -- structlog's
+    ``format_exc_info`` renders a chained cause's message too, which would leak the URL right
+    back through the "direct cause" traceback section.
     """
     timeout = httpx.Timeout(_DOWNLOAD_CONNECT_TIMEOUT_S, read=_DOWNLOAD_READ_TIMEOUT_S)
     async with httpx.AsyncClient(timeout=timeout) as downloader, downloader.stream("GET", url) as resp:
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            raise PresignedDownloadError(f"GET {_redact_query(url)} -> {resp.status_code}") from None
         with dest.open("wb") as fh:
             async for chunk in resp.aiter_bytes(_DOWNLOAD_CHUNK_BYTES):
                 fh.write(chunk)
