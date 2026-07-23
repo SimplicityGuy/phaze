@@ -157,8 +157,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     # Step 3a (Phase 29 D-21 / 260608-u8g): ensure essentia weights present.
     # The healthy path is a pure local os.stat size-manifest check (zero network,
     # near-instant). Placed AFTER whoami so auth fails fast (~60s). WORKER-ONLY
-    # (Phase 29 WARNING-7): the watcher does not call this -- only the worker owns
-    # the download to avoid a .part-file race on fresh /models volumes.
+    # (Phase 29 WARNING-7): the watcher does not call this. Since quick-260707-dh1
+    # FOUR lane workers boot this same startup concurrently against one shared rw
+    # /models mount, so single-owner no longer holds by topology; concurrent-boot
+    # safety is an exclusive flock inside ensure_models_present plus per-process
+    # unique .part.<pid> scratch names in the downloader (phaze-mb8d) -- the
+    # winner downloads, waiters block then re-validate to a zero-network no-op.
     # asyncio.to_thread keeps even the rare repair path (network + time.sleep
     # backoff) off the event loop, preventing the scan_directory job
     # starvation/timeout that motivated this change (260608-u8g). to_thread accepts

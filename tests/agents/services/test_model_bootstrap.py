@@ -10,7 +10,10 @@ Always-validate contract (the count gate was removed in 260608-jbg):
 
 from __future__ import annotations
 
+import fcntl
 import logging
+import subprocess
+import sys
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -119,6 +122,125 @@ def test_ensure_models_present_download_failure(
     with pytest.raises(RuntimeError, match="Model download failed") as excinfo:
         mb.ensure_models_present(tmp_path)
     assert excinfo.value.__cause__ is underlying
+
+
+def test_ensure_models_present_holds_exclusive_flock_during_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mb8d: the download runs UNDER an exclusive flock on the models-dir lockfile.
+
+    The probe opens an independent fd on the lockfile mid-``download_to`` and
+    verifies a non-blocking exclusive flock is denied (flock conflicts across
+    independent open file descriptions, including within one process), i.e. a
+    sibling lane worker booting concurrently would block until the download ends.
+    """
+    import phaze.tasks._shared.model_bootstrap as mb
+
+    lock_states: list[str] = []
+
+    def probing_download(target: Path) -> tuple[int, int]:
+        with (target / mb._LOCK_FILENAME).open("a") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_states.append("held")
+            else:
+                lock_states.append("unlocked")
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        return (0, 0)
+
+    monkeypatch.setattr(mb, "download_to", probing_download)
+
+    mb.ensure_models_present(tmp_path)
+
+    assert lock_states == ["held"], "the exclusive download lock must be held while download_to runs"
+
+
+def test_ensure_models_present_sweeps_stale_scratch_files_not_the_lockfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-mb8d: stale ``*.part*`` leftovers from crashed writers are swept under the lock.
+
+    Both the pre-fix fixed name (``.part``) and the pid-suffixed name
+    (``.part.<pid>``) are garbage once the exclusive lock is held; the lockfile
+    itself and real weight files must survive.
+    """
+    import phaze.tasks._shared.model_bootstrap as mb
+
+    (tmp_path / "discogs-effnet-bs64-1.pb.part").write_bytes(b"crashed legacy writer")
+    (tmp_path / "mood_happy-musicnn-msd-2.pb.part.12345").write_bytes(b"crashed pid writer")
+    (tmp_path / "gender-musicnn-mtt-2.json.part.99").write_bytes(b"{}")
+    (tmp_path / "intact.pb").write_bytes(b"real weight")
+
+    monkeypatch.setattr(mb, "download_to", MagicMock(return_value=(0, 0)))
+
+    mb.ensure_models_present(tmp_path)
+
+    assert list(tmp_path.glob("*.part*")) == [], "every stale scratch file must be removed"
+    assert (tmp_path / "intact.pb").read_bytes() == b"real weight", "real weights must survive the sweep"
+    assert (tmp_path / mb._LOCK_FILENAME).exists(), "the lockfile itself must not be swept"
+
+
+_CONCURRENT_BOOT_CHILD = """
+import sys
+import time
+from pathlib import Path
+
+import phaze.tasks._shared.model_bootstrap as mb
+
+models_dir = Path(sys.argv[1])
+log_path = Path(sys.argv[2])
+
+
+def slow_download(target):
+    with log_path.open("a") as fh:
+        fh.write(f"start {time.monotonic()}\\n")
+    time.sleep(0.2)
+    with log_path.open("a") as fh:
+        fh.write(f"end {time.monotonic()}\\n")
+    return (0, 0)
+
+
+mb.download_to = slow_download
+mb.ensure_models_present(models_dir)
+"""
+
+
+def test_ensure_models_present_serializes_across_processes(tmp_path: Path) -> None:
+    """phaze-mb8d: three concurrent OS processes never overlap inside download_to.
+
+    Reproduces the first-boot topology (multiple lane workers, one shared models
+    dir) with real subprocesses: each child patches ``download_to`` to log a
+    start/end interval around a sleep, then calls ``ensure_models_present`` on
+    the SAME directory. With the exclusive flock the intervals must be strictly
+    serialized (start/end pairs never interleave); without it all three starts
+    land before any end.
+    """
+    models_dir = tmp_path / "models"
+    log_path = tmp_path / "intervals.log"
+
+    procs = [
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", _CONCURRENT_BOOT_CHILD, str(models_dir), str(log_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(3)
+    ]
+    for proc in procs:
+        _stdout, stderr = proc.communicate(timeout=120)
+        assert proc.returncode == 0, f"child worker failed: {stderr.decode()}"
+
+    events = []
+    for line in log_path.read_text().splitlines():
+        kind, stamp = line.split()
+        events.append((float(stamp), kind))
+    events.sort()
+
+    assert len(events) == 6, "each of the 3 workers must log exactly one start and one end"
+    assert [kind for _, kind in events] == ["start", "end"] * 3, "download intervals must never overlap across processes"
 
 
 def test_download_models_classifier_count_matches_bash() -> None:
