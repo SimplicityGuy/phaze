@@ -2260,9 +2260,18 @@ async def deepen_progress(
     ``analysis_completed_at``, so a re-deepen of an already-ANALYZED file keeps its OLD
     completed_at until the fresh ``put_analysis`` lands.
 
+    FAILURE PREDICATE (phaze-l9nc, timestamp-gated, mirrors the completion predicate): a re-run
+    is failed only when ``report_analysis_failed`` has stamped ``failed_at`` AFTER this click
+    (``> requested_at``). Without this, a deepen that fails leaves the frozen fine_windows
+    counters (fine_done < fine_total) satisfying ``running`` forever -- the fragment never
+    reaches a terminal branch and polls every 2s for the life of the tab. A stale pre-click
+    ``failed_at`` (from an unrelated earlier failure) is NOT this re-run's failure and must not
+    short-circuit an in-flight retry.
+
     State machine (evaluated in order): malformed ``since`` -> 422 (terminal, no query run);
-    missing file -> gone (terminal); complete predicate -> complete (terminal); fine_total
-    truthy AND fine_done < fine_total -> running (poll); otherwise -> queued/starting (poll).
+    missing file -> gone (terminal); failed predicate -> failed (terminal); complete predicate ->
+    complete (terminal); fine_total truthy AND fine_done < fine_total -> running (poll);
+    otherwise -> queued/starting (poll).
     """
     try:
         requested_at = datetime.fromtimestamp(since, tz=UTC)
@@ -2282,6 +2291,7 @@ async def deepen_progress(
             context={
                 "request": request,
                 "gone": True,
+                "failed": False,
                 "complete": False,
                 "running": False,
                 "fine_done": 0,
@@ -2294,11 +2304,28 @@ async def deepen_progress(
     analysis_result = await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))
     analysis = analysis_result.scalar_one_or_none()
 
-    complete = analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
+    # phaze-l9nc: read failed_at (never checked before this fix) so a deepen that terminally
+    # fails halts the poller instead of looping the running/queued branches forever. Gated on
+    # `> requested_at` for the same reason `complete` is: a stale pre-click failed_at (an
+    # unrelated earlier failure on this file, since cleared by a successful re-analysis or still
+    # pending a fresh retry) must not be read as THIS click's outcome.
+    #
+    # Known interaction (noted, not fixed here -- out of scope, phaze-ts1d owns agent_analysis.py):
+    # report_analysis_failed's CAS guard (`WHERE analysis_completed_at IS NULL`) makes the failure
+    # stamp a no-op whenever the deepen target already has a completed analysis -- exactly the
+    # common "sampled" case the Deepen button is offered on. In that case failed_at is never set
+    # for this re-run, `failed` stays False, and the fragment falls through to `running`/`queued`
+    # on the frozen fine_windows counters. This predicate still correctly halts the poller for
+    # every case where failed_at IS stamped (e.g. a deepen on a file with no prior completed
+    # analysis); it does not regress or worsen the CAS-guarded case, which was already unable to
+    # reach `complete` either.
+    failed = analysis is not None and analysis.failed_at is not None and analysis.failed_at > requested_at
+
+    complete = (not failed) and analysis is not None and analysis.analysis_completed_at is not None and analysis.analysis_completed_at > requested_at
 
     fine_done = (analysis.fine_windows_analyzed or 0) if analysis is not None else 0
     fine_total = (analysis.fine_windows_total or 0) if analysis is not None else 0
-    running = (not complete) and fine_total > 0 and fine_done < fine_total
+    running = (not failed) and (not complete) and fine_total > 0 and fine_done < fine_total
 
     return templates.TemplateResponse(
         request=request,
@@ -2306,6 +2333,7 @@ async def deepen_progress(
         context={
             "request": request,
             "gone": False,
+            "failed": failed,
             "complete": complete,
             "running": running,
             "fine_done": fine_done,
