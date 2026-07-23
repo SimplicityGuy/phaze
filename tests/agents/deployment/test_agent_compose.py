@@ -495,11 +495,14 @@ def test_cleanup_package_list_matches_published_images() -> None:
 
     Derives the published GHCR package set from docker-publish.yml's build matrix
     (``("phaze" + image_suffix).rstrip("/")`` over each ``matrix.include`` entry,
-    where the empty api suffix collapses to the bare-repo ``phaze`` package) and
-    asserts it equals cleanup-images.yml's ``matrix.package`` set. If either
-    workflow drifts — a new published image without a cleanup entry, or a cleanup
-    entry for an unpublished/orphan path (e.g. the historical ``phaze/api``) — the
-    symmetric difference pinpoints exactly which side diverged.
+    where the empty api suffix collapses to the bare-repo ``phaze`` package),
+    plus the Phase 52 ``build-job-runner`` job's ``phaze/job`` package — published
+    outside the ``build-and-push`` matrix via its own metadata step (``images:
+    ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/job``) — and asserts the union
+    equals cleanup-images.yml's ``matrix.package`` set. If either workflow drifts
+    — a new published image without a cleanup entry, or a cleanup entry for an
+    unpublished/orphan path (e.g. the historical ``phaze/api``) — the symmetric
+    difference pinpoints exactly which side diverged.
     """
     assert PUBLISH_WORKFLOW_PATH.exists(), f"docker-publish.yml missing at {PUBLISH_WORKFLOW_PATH}"
     assert CLEANUP_WORKFLOW_PATH.exists(), f"cleanup-images.yml missing at {CLEANUP_WORKFLOW_PATH}"
@@ -507,6 +510,20 @@ def test_cleanup_package_list_matches_published_images() -> None:
     publish = yaml.safe_load(PUBLISH_WORKFLOW_PATH.read_text())
     matrix_include = publish["jobs"]["build-and-push"]["strategy"]["matrix"]["include"]
     published_packages = {("phaze" + entry["image_suffix"]).rstrip("/") for entry in matrix_include}
+
+    # build-job-runner (needs: build-and-push) publishes phaze/job via its own
+    # metadata step rather than the build-and-push matrix. Its `images` value is
+    # `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}<suffix>`; only the suffixed
+    # (actually pushed) image counts — the unsuffixed metadata step there just
+    # resolves the FROM base tag and pushes nothing.
+    job_runner_steps = publish["jobs"]["build-job-runner"]["steps"]
+    for step in job_runner_steps:
+        images = (step.get("with") or {}).get("images")
+        if not isinstance(images, str):
+            continue
+        suffix = images.split("${{ env.IMAGE_NAME }}", 1)[-1]
+        if suffix:
+            published_packages.add(("phaze" + suffix).rstrip("/"))
 
     cleanup = yaml.safe_load(CLEANUP_WORKFLOW_PATH.read_text())
     cleanup_packages = set(cleanup["jobs"]["cleanup"]["strategy"]["matrix"]["package"])
