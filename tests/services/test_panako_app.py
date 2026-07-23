@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 from httpx import ASGITransport, AsyncClient
 
+from tests.services.conftest import load_service_module
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -123,6 +125,55 @@ class TestMatchParsing:
             lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         )
         assert "unrecognized output" in (panako_app._probe_jar() or "")
+
+
+class TestSemicolonPathParsing:
+    """File paths containing ';' must not shift fields (phaze-9pmn).
+
+    Panako embeds the raw query/match paths verbatim in its ';'-separated record with no
+    quoting or escaping. The old blind positional ``split(';')`` turned a matched file
+    like "Sven; Vath - Cocoon.mp3" into a phantom match with a truncated track_id and a
+    confidence read from the wrong column -- or silently dropped the row entirely.
+    """
+
+    def test_match_path_with_semicolon_survives_intact(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/query.wav ; 1.376 ; 24.432 ; /data/music/Sven; Vath - Cocoon.mp3 ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        matches = panako_app._parse_matches(row)
+        assert len(matches) == 1
+        assert matches[0].track_id == "/data/music/Sven; Vath - Cocoon.mp3"
+        assert matches[0].confidence == 0.75
+
+    def test_query_path_with_semicolon_does_not_shift_match_fields(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/Artist; Live at Coachella.mp3 ; 1.376 ; 24.432 ; /audio/ref.wav ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        matches = panako_app._parse_matches(row)
+        assert len(matches) == 1
+        assert matches[0].track_id == "/audio/ref.wav"
+        assert matches[0].confidence == 0.75
+
+    def test_semicolons_in_both_paths(self, panako_app: ModuleType) -> None:
+        row = (
+            "1 ; 1 ; /audio/Artist; Live at Coachella.mp3 ; 1.376 ; 24.432 ; "
+            "/data/music/Sven; Vath - Cocoon.mp3 ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        )
+        matches = panako_app._parse_matches(row)
+        assert [m.track_id for m in matches] == ["/data/music/Sven; Vath - Cocoon.mp3"]
+
+    def test_multiple_semicolons_in_match_path(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/q.wav ; 0.0 ; 10.0 ; /m/a; b; c.mp3 ; 42 ; 0.0 ; 10.0 ; 36 ; 1.000 % ; 1.000 %; 0.50"
+        matches = panako_app._parse_matches(row)
+        assert [m.track_id for m in matches] == ["/m/a; b; c.mp3"]
+
+    def test_semicolon_path_with_negative_score_still_skipped(self, panako_app: ModuleType) -> None:
+        row = "1 ; 1 ; /audio/q.wav ; 0.0 ; 10.0 ; /m/a; b.mp3 ; 42 ; 0.0 ; 10.0 ; -1 ; 1.000 % ; 1.000 %; 0.00"
+        assert panako_app._parse_matches(row) == []
+
+    def test_structurally_unrecoverable_row_is_logged_and_skipped(self, panako_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        # No adjacent numeric pair bracketing the paths -> the record structure is gone;
+        # warn and skip rather than fabricate a match from arbitrary fragments.
+        row = "1 ; 1 ; /audio/q.wav ; notafloat ; alsonot ; /m/a.mp3 ; 42 ; 0.0 ; 10.0 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+        with caplog.at_level("WARNING"):
+            assert panako_app._parse_matches(row) == []
+        assert "Failed to parse match line" in caplog.text
 
 
 class TestSubprocessWrappers:
@@ -263,6 +314,60 @@ class TestFailuresAreLoggedServerSide:
         with caplog.at_level("ERROR"):
             panako_app._log_subprocess_failure("ingest", "/audio/x.wav", result)
         assert "<no stderr>" in caplog.text
+
+
+class TestSubprocessTimeout:
+    """Duration-appropriate, env-wired timeout with structured TimeoutExpired handling (phaze-mv1f).
+
+    SUBPROCESS_TIMEOUT was a hardcoded 120 (the README documented an env var that was
+    never wired), so every multi-hour concert set -- the archive's primary content --
+    deterministically timed out, and subprocess.TimeoutExpired propagated uncaught as a
+    raw 500 traceback.
+    """
+
+    def test_default_timeout_is_sized_for_long_sets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUBPROCESS_TIMEOUT", raising=False)
+        mod = load_service_module("panako", "phaze_test_panako_timeout_default")
+        assert mod.SUBPROCESS_TIMEOUT == 3600
+
+    def test_timeout_env_override_is_wired(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUBPROCESS_TIMEOUT", "7000")
+        mod = load_service_module("panako", "phaze_test_panako_timeout_override")
+        assert mod.SUBPROCESS_TIMEOUT == 7000
+
+    def test_run_commands_pass_configured_timeout(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(panako_app, "SUBPROCESS_TIMEOUT", 1234)
+        seen: list[object] = []
+
+        def _capture(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _capture)
+        panako_app._run_ingest("/audio/x.wav")
+        panako_app._run_query("/audio/x.wav")
+        assert seen == [1234, 1234]
+
+    @staticmethod
+    def _raise_timeout(_file_path: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="java", timeout=1234)
+
+    async def test_ingest_timeout_returns_structured_504(
+        self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(panako_app, "_run_ingest", self._raise_timeout)
+        with caplog.at_level("ERROR"):
+            status, body = await _post(panako_app, "/ingest")
+        assert status == 504
+        assert "timed out after" in body["detail"]
+        assert "/audio/smoke.wav" in body["detail"]
+        assert "timed out" in caplog.text
+
+    async def test_query_timeout_returns_structured_504(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(panako_app, "_run_query", self._raise_timeout)
+        status, body = await _post(panako_app, "/query")
+        assert status == 504
+        assert "timed out after" in body["detail"]
 
 
 class TestLmdbModuleFlag:

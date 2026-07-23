@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import os
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
@@ -15,6 +16,19 @@ if TYPE_CHECKING:
 
 
 logger = structlog.get_logger(__name__)
+
+# phaze-mv1f: must exceed the sidecars' SUBPROCESS_TIMEOUT (default 3600s, sized for
+# multi-hour concert sets) or the app-side call times out first and the sidecar budget is
+# meaningless -- the old 120.0 did exactly that. Read via os.environ rather than
+# phaze.config to keep this module's import chain httpx+structlog only (agent-worker
+# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar
+# still fails fast instead of pinning the lane for an hour.
+SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "3900"))
+_SIDECAR_HTTP_TIMEOUT = httpx.Timeout(SIDECAR_HTTP_TIMEOUT_SEC, connect=10.0)
+# Health probes are cheap (audfprint: filesystem-only; panako: a JVM probe capped at 30s
+# by its own HEALTH_TIMEOUT) -- a wedged sidecar must surface as unhealthy quickly, not
+# hang health_all for the full ingest budget.
+_SIDECAR_HEALTH_TIMEOUT = httpx.Timeout(35.0, connect=10.0)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +135,7 @@ class AudfprintAdapter:
     def __init__(self, base_url: str = "http://audfprint:8001", weight: float = 0.6) -> None:
         self.base_url = base_url
         self._weight = weight
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=_SIDECAR_HTTP_TIMEOUT)
 
     @property
     def name(self) -> str:
@@ -150,7 +164,7 @@ class AudfprintAdapter:
     async def health(self) -> bool:
         """GET /health, return True if 200."""
         try:
-            resp = await self._client.get("/health")
+            resp = await self._client.get("/health", timeout=_SIDECAR_HEALTH_TIMEOUT)
             return resp.status_code == 200
         except Exception:
             return False
@@ -166,7 +180,7 @@ class PanakoAdapter:
     def __init__(self, base_url: str = "http://panako:8002", weight: float = 0.4) -> None:
         self.base_url = base_url
         self._weight = weight
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=_SIDECAR_HTTP_TIMEOUT)
 
     @property
     def name(self) -> str:
@@ -195,7 +209,7 @@ class PanakoAdapter:
     async def health(self) -> bool:
         """GET /health, return True if 200."""
         try:
-            resp = await self._client.get("/health")
+            resp = await self._client.get("/health", timeout=_SIDECAR_HEALTH_TIMEOUT)
             return resp.status_code == 200
         except Exception:
             return False

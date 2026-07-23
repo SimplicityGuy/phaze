@@ -74,7 +74,7 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 |----------------------|---------------------------------|------------------------------------|
 | `AUDFPRINT_SCRIPT`   | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
 | `FPRINT_DB`          | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
-| `SUBPROCESS_TIMEOUT` | `120`                           | Subprocess timeout (seconds)       |
+| `SUBPROCESS_TIMEOUT` | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
 
 ## Volumes
 
@@ -90,4 +90,4 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 - The Phaze worker communicates with this service via HTTP at `http://audfprint:8001`
 - Database is auto-created on first ingest if it does not exist
 - audfprint uses its native `.pklz` serialized format for fingerprint storage
-- Subprocess timeout of 120 seconds per operation
+- Subprocess timeout of 3600 seconds per operation (env-configurable via `SUBPROCESS_TIMEOUT`; multi-hour concert sets are the primary content)
