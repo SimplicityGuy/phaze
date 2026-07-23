@@ -76,6 +76,28 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
     # Files belonging to this batch -- the scoping anchor for every child delete.
     files_of_batch = select(FileRecord.id).where(FileRecord.batch_id == batch_id)
 
+    # phaze-q1ow: lock the batch's file rows FOR UPDATE before running any of the child
+    # deletes. Every FK below is a bare `ForeignKey("files.id")` with NO `ondelete` (see the
+    # module docstring), so the FINAL `DELETE FROM files` (step 15 below) runs Postgres' normal
+    # RI NO-ACTION check -- and a still-running pipeline worker (fingerprint/metadata/analysis/
+    # proposal) can legitimately commit a NEW child row referencing one of these files AFTER an
+    # earlier step here deletes that table's existing rows but BEFORE the files delete runs,
+    # leaving a freshly-committed row referencing a file this transaction is about to delete.
+    # That raises ForeignKeyViolation on the files DELETE and aborts the WHOLE cascade.
+    #
+    # Any INSERT of a row with an FK to files.id takes an implicit `FOR KEY SHARE` lock on the
+    # referenced file row to enforce RI -- which conflicts with `FOR UPDATE`. Acquiring `FOR
+    # UPDATE` on every file row of this batch FIRST, inside this same transaction, means: a
+    # worker's insert that arrives after commit simply FK-fails against the already-deleted file
+    # (the correct, cheap place for that race to resolve); a worker's insert already in flight
+    # blocks on the file row's lock until ITS transaction ends, so this cascade's own `FOR
+    # UPDATE` acquisition waits for it -- never racing partway through the ordered deletes. This
+    # does not eliminate the wasted-retry cost for the losing side, it only serializes the
+    # cascade against the read window so `DELETE FROM files` can never observe a row committed
+    # mid-cascade (see the fix's own longer-term note: gating deletion on no live/queued jobs for
+    # the batch's files would remove the retry cost entirely, but is a larger scheduling change).
+    await session.execute(files_of_batch.with_for_update())
+
     # Tracklist chain subqueries (4 levels deep). NULL-file_id tracklists are
     # excluded automatically: ``file_id IN (files_of_batch)`` never matches NULL.
     tracklists_of_batch = select(Tracklist.id).where(Tracklist.file_id.in_(files_of_batch))
