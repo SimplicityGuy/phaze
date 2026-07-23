@@ -21,6 +21,7 @@ jobs:
           - phaze
           - phaze/audfprint
           - phaze/panako
+          - phaze/job
       fail-fast: false
 
     permissions:
