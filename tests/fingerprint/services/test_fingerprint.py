@@ -341,6 +341,45 @@ class TestConfigSettings:
         assert s.panako_url == "http://panako:8002"
 
 
+class TestSidecarHttpTimeout:
+    """App-side client timeouts must exceed the sidecars' subprocess budget (phaze-mv1f).
+
+    The sidecars now allow SUBPROCESS_TIMEOUT (default 3600s) per engine run, sized for
+    multi-hour concert sets. The adapters previously capped every call at 120.0s, so the
+    app side timed out first and the sidecar budget was meaningless.
+    """
+
+    def test_default_exceeds_sidecar_subprocess_budget(self):
+        import phaze.services.fingerprint as fp
+
+        assert fp.SIDECAR_HTTP_TIMEOUT_SEC > 3600
+
+    def test_adapters_use_the_long_timeout(self):
+        import phaze.services.fingerprint as fp
+
+        for adapter in (AudfprintAdapter(), PanakoAdapter()):
+            assert adapter._client.timeout.read == fp.SIDECAR_HTTP_TIMEOUT_SEC
+            # A down sidecar must still fail fast; only the request budget is long.
+            assert adapter._client.timeout.connect == 10.0
+
+    async def test_health_uses_short_per_request_timeout(self):
+        # A wedged sidecar must surface as unhealthy quickly, not pin health_all for the
+        # full ingest budget.
+        seen: dict[str, object] = {}
+
+        def _capture(request: httpx.Request) -> httpx.Response:
+            seen["timeout"] = request.extensions.get("timeout")
+            return httpx.Response(200, json={"status": "ok"})
+
+        adapter = AudfprintAdapter(base_url="http://test:8001")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(_capture), base_url="http://test:8001")
+        assert await adapter.health() is True
+        await adapter.close()
+        timeout = seen["timeout"]
+        assert isinstance(timeout, dict)
+        assert timeout["read"] == 35.0
+
+
 class TestQueryMatchTimestamp:
     """Tests for QueryMatch timestamp field."""
 

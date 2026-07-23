@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 from httpx import ASGITransport, AsyncClient
 
+from tests.services.conftest import load_service_module
+
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -312,6 +314,60 @@ class TestFailuresAreLoggedServerSide:
         with caplog.at_level("ERROR"):
             panako_app._log_subprocess_failure("ingest", "/audio/x.wav", result)
         assert "<no stderr>" in caplog.text
+
+
+class TestSubprocessTimeout:
+    """Duration-appropriate, env-wired timeout with structured TimeoutExpired handling (phaze-mv1f).
+
+    SUBPROCESS_TIMEOUT was a hardcoded 120 (the README documented an env var that was
+    never wired), so every multi-hour concert set -- the archive's primary content --
+    deterministically timed out, and subprocess.TimeoutExpired propagated uncaught as a
+    raw 500 traceback.
+    """
+
+    def test_default_timeout_is_sized_for_long_sets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUBPROCESS_TIMEOUT", raising=False)
+        mod = load_service_module("panako", "phaze_test_panako_timeout_default")
+        assert mod.SUBPROCESS_TIMEOUT == 3600
+
+    def test_timeout_env_override_is_wired(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SUBPROCESS_TIMEOUT", "7000")
+        mod = load_service_module("panako", "phaze_test_panako_timeout_override")
+        assert mod.SUBPROCESS_TIMEOUT == 7000
+
+    def test_run_commands_pass_configured_timeout(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(panako_app, "SUBPROCESS_TIMEOUT", 1234)
+        seen: list[object] = []
+
+        def _capture(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _capture)
+        panako_app._run_ingest("/audio/x.wav")
+        panako_app._run_query("/audio/x.wav")
+        assert seen == [1234, 1234]
+
+    @staticmethod
+    def _raise_timeout(_file_path: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="java", timeout=1234)
+
+    async def test_ingest_timeout_returns_structured_504(
+        self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(panako_app, "_run_ingest", self._raise_timeout)
+        with caplog.at_level("ERROR"):
+            status, body = await _post(panako_app, "/ingest")
+        assert status == 504
+        assert "timed out after" in body["detail"]
+        assert "/audio/smoke.wav" in body["detail"]
+        assert "timed out" in caplog.text
+
+    async def test_query_timeout_returns_structured_504(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(panako_app, "_run_query", self._raise_timeout)
+        status, body = await _post(panako_app, "/query")
+        assert status == 504
+        assert "timed out after" in body["detail"]
 
 
 class TestLmdbModuleFlag:

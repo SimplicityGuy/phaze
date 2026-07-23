@@ -75,7 +75,7 @@ Confidence scores are 0-100, derived from Panako's match percentage. The output 
 | Constant             | Default           | Description                        |
 |----------------------|-------------------|------------------------------------|
 | `PANAKO_JAR`         | `/app/panako.jar` | Path to Panako shadow JAR          |
-| `SUBPROCESS_TIMEOUT` | `120`             | Subprocess timeout (seconds)       |
+| `SUBPROCESS_TIMEOUT` | `3600`            | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
 
 ## Volumes
 
@@ -91,4 +91,4 @@ Confidence scores are 0-100, derived from Panako's match percentage. The output 
 - Multi-stage Docker build: JDK 17 for Gradle build, then JRE 21 runtime to minimize image size
 - Panako uses LMDB for storage, which requires `HOME=/data/fprint` for writable access
 - The Phaze worker communicates with this service via HTTP at `http://panako:8002`
-- Subprocess timeout of 120 seconds per operation
+- Subprocess timeout of 3600 seconds per operation (env-configurable via `SUBPROCESS_TIMEOUT`; multi-hour concert sets are the primary content)

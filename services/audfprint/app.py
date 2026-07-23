@@ -24,7 +24,12 @@ _db_lock = asyncio.Lock()
 
 AUDFPRINT_SCRIPT = "/app/audfprint/audfprint.py"
 FPRINT_DB = "/data/fprint/fprint.pklz"
-SUBPROCESS_TIMEOUT = 120
+# phaze-mv1f: the archive's primary content is multi-hour concert sets (the analyze lane
+# budgets 6600s/file for the same reason), and audfprint decodes + landmarks the WHOLE
+# file -- the old hardcoded 120s made every long recording deterministically
+# unfingerprintable. The README always documented SUBPROCESS_TIMEOUT as an env var, but
+# it was never actually wired; now it is.
+SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
 
 
 class IngestRequest(BaseModel):
@@ -206,7 +211,14 @@ async def health() -> HealthResponse:
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the audfprint fingerprint database."""
     async with _db_lock:
-        result = await asyncio.to_thread(_run_ingest, request.file_path)
+        try:
+            result = await asyncio.to_thread(_run_ingest, request.file_path)
+        except subprocess.TimeoutExpired:
+            # subprocess.run kills the child on timeout, then raises. Left uncaught this
+            # was a raw 500 traceback instead of a structured error (phaze-mv1f).
+            detail = f"audfprint ingest timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
+            logger.error(detail)
+            raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
         logger.error("audfprint ingest failed for %s: %s", request.file_path, result.stderr)
         raise HTTPException(status_code=500, detail=result.stderr)
@@ -219,7 +231,12 @@ async def query(request: IngestRequest) -> QueryResponse:
     if not Path(FPRINT_DB).exists():
         return QueryResponse(matches=[])
     async with _db_lock:
-        result = await asyncio.to_thread(_run_query, request.file_path)
+        try:
+            result = await asyncio.to_thread(_run_query, request.file_path)
+        except subprocess.TimeoutExpired:
+            detail = f"audfprint query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
+            logger.error(detail)
+            raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr)
     matches, parse_failures = _parse_matches(result.stdout)

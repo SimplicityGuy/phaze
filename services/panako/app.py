@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 import subprocess
 
@@ -15,7 +16,12 @@ logger = logging.getLogger("panako-service")
 app = FastAPI(title="Panako Service", version="0.1.0")
 
 PANAKO_JAR = "/app/panako.jar"
-SUBPROCESS_TIMEOUT = 120
+# phaze-mv1f: the archive's primary content is multi-hour concert sets (the analyze lane
+# budgets 6600s/file for the same reason), and Panako store/query decodes the WHOLE file
+# through the JVM -- the old hardcoded 120s made every long recording deterministically
+# unfingerprintable. The README always documented SUBPROCESS_TIMEOUT as an env var, but
+# it was never actually wired; now it is.
+SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
 
 # Panako stores fingerprints in LMDB via lmdbjava, which reaches into java.nio.Buffer
 # by reflection. Since JDK 16 the module system denies that by default, so EVERY store
@@ -245,7 +251,14 @@ async def health(response: Response) -> HealthResponse:
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the Panako fingerprint database."""
-    result = await asyncio.to_thread(_run_ingest, request.file_path)
+    try:
+        result = await asyncio.to_thread(_run_ingest, request.file_path)
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills the child on timeout, then raises. Left uncaught this
+        # was a raw 500 traceback instead of a structured error (phaze-mv1f).
+        detail = f"Panako ingest timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
+        logger.error(detail)
+        raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
         _log_subprocess_failure("ingest", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
@@ -255,7 +268,12 @@ async def ingest(request: IngestRequest) -> IngestResponse:
 @app.post("/query", response_model=QueryResponse)
 async def query(request: IngestRequest) -> QueryResponse:
     """Query the Panako database for matches."""
-    result = await asyncio.to_thread(_run_query, request.file_path)
+    try:
+        result = await asyncio.to_thread(_run_query, request.file_path)
+    except subprocess.TimeoutExpired:
+        detail = f"Panako query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
+        logger.error(detail)
+        raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
         _log_subprocess_failure("query", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)

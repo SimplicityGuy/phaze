@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from tests.services.conftest import load_service_module
+
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -406,6 +408,107 @@ class TestIngestEndpointBootstrap:
 
         assert resp.status_code == 500
         assert any("audfprint ingest failed" in record.message and "boom: disk full" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Subprocess timeout: duration-appropriate, env-wired, cleanly surfaced (phaze-mv1f)
+#
+# The bug: SUBPROCESS_TIMEOUT was a hardcoded 120 (the README documented an env var that
+# was never wired), so every multi-hour concert set -- the archive's PRIMARY content --
+# deterministically timed out; and subprocess.TimeoutExpired propagated uncaught, turning
+# the timeout into a raw 500 traceback instead of a structured error.
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessTimeoutConfiguration:
+    """The timeout must be sized for multi-hour sets and actually read the environment."""
+
+    def test_default_timeout_is_sized_for_long_sets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUBPROCESS_TIMEOUT", raising=False)
+        mod = load_service_module("audfprint", "phaze_test_audfprint_timeout_default")
+        assert mod.SUBPROCESS_TIMEOUT == 3600
+
+    def test_timeout_env_override_is_wired(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The README always documented SUBPROCESS_TIMEOUT as an env var; before the fix
+        # the override silently did not exist.
+        monkeypatch.setenv("SUBPROCESS_TIMEOUT", "7000")
+        mod = load_service_module("audfprint", "phaze_test_audfprint_timeout_override")
+        assert mod.SUBPROCESS_TIMEOUT == 7000
+
+    def test_run_commands_pass_configured_timeout(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app, "SUBPROCESS_TIMEOUT", 1234)
+        seen: list[object] = []
+
+        def _capture(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _capture)
+        audfprint_app._run_ingest("/data/real/song.mp3")
+        audfprint_app._run_query("/data/real/song.mp3")
+        assert seen == [1234, 1234]
+
+
+class TestTimeoutExpiredHandling:
+    """A timed-out engine run must surface as a structured 504, not an unhandled traceback."""
+
+    @staticmethod
+    def _raise_timeout(_file_path: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="audfprint", timeout=1234)
+
+    async def test_ingest_timeout_returns_structured_504(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(audfprint_app, "_run_ingest", self._raise_timeout)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.post("/ingest", json={"file_path": "/data/real/twohourset.mp3"})
+
+        assert resp.status_code == 504
+        assert "timed out after" in resp.json()["detail"]
+        assert "/data/real/twohourset.mp3" in resp.json()["detail"]
+        assert any("timed out" in record.message for record in caplog.records)
+
+    async def test_query_timeout_returns_structured_504(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app, "_run_query", self._raise_timeout)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/query", json={"file_path": "/data/query/twohourset.mp3"})
+
+        assert resp.status_code == 504
+        assert "timed out after" in resp.json()["detail"]
+
+    async def test_db_lock_released_after_ingest_timeout(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The timeout must not leak the DB lock, or every later ingest/query deadlocks.
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        calls: list[str] = []
+
+        def _flaky(file_path: str) -> subprocess.CompletedProcess[str]:
+            calls.append(file_path)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(cmd="audfprint", timeout=1)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(audfprint_app, "_run_ingest", _flaky)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            first = await client.post("/ingest", json={"file_path": "/data/real/a.mp3"})
+            second = await client.post("/ingest", json={"file_path": "/data/real/b.mp3"})
+
+        assert first.status_code == 504
+        assert second.status_code == 200
+        assert not audfprint_app._db_lock.locked()
 
 
 # ---------------------------------------------------------------------------
