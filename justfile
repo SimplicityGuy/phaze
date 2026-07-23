@@ -107,7 +107,10 @@ logs:
 [doc('Rebuild and restart services')]
 [group('dev')]
 rebuild: tailwind
-    docker compose up -d --build
+    # phaze-ckui (phaze-476w class): pass -f docker-compose.yml EXPLICITLY, same as
+    # `up`/`up-dev`/`up-all` -- a bare `docker compose up` auto-merges a stray
+    # docker-compose.override.yml if one exists in the repo root.
+    docker compose -f docker-compose.yml up -d --build
 
 [doc('Download the standalone Tailwind binary (NO Node) and rebuild app.css')]
 [group('build')]
