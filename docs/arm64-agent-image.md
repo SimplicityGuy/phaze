@@ -148,7 +148,7 @@ The arm64 image is built, parity-checked against an x86 golden, and pushed to GH
 
 ```mermaid
 flowchart LR
-  build["build-arm64<br/>(native ubuntu-24.04-arm)<br/>multi-stage build → 4 spike fixes baked in<br/>load + import-smoke, warm scope=arm64 cache<br/>NO push"]
+  build["build-arm64<br/>(native ubuntu-24.04-arm)<br/>single-stage build → 4 spike fixes baked in<br/>load + import-smoke, warm scope=arm64 cache<br/>NO push"]
   golden["parity-golden-x86<br/>dump_analysis.py in x86 api image<br/>→ golden-x86.json"]
   guard["parity-guard<br/>rebuild arm64 from cache (identical digest)<br/>dump via python3 → compare vs golden<br/>BPM/key exact · scores within --atol"]
   push["gated push<br/>push:true + provenance + sbom<br/>-arm64 tags + OCI labels"]
@@ -166,6 +166,11 @@ flowchart LR
 | `just parity-dump IMAGE [MODELS] [OUT] [INTERP]` | the shared dump path both CI jobs delegate to; `INTERP` selects `uv run python` (x86) vs `python3` (arm64 `--system` 3.13) |
 | `just parity-check [TAG]` | operator mirror of the CI parity-guard (provision models → dump arm64 actual → compare against golden) |
 | `just parity-golden-regen [TAG]` | regenerate `golden-x86.json` from the x86 api image (CI is authoritative) |
+
+> **`scripts/parity/golden-x86.json` is NOT committed** (only `reference.wav` and the two
+> scripts are). On a clean checkout `just parity-check` has nothing to compare against —
+> run `just parity-golden-regen` first, or download the `golden-x86.json` artifact from the
+> CI `parity-golden-x86` job.
 
 ### The CI gate (`docker-publish.yml`)
 

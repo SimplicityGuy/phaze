@@ -173,8 +173,9 @@ Tracing one music file from disk to a finished move:
    `INCR`/`EXPIRE` over a 60s window), calls the LLM with a Pydantic
    `BatchProposalResponse` schema, clamps confidence to `[0,1]`, and `store_proposals`
    **upserts** the one active `RenameProposal` per file (idempotent partial-index upsert;
-   see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35))
-   while transitioning each file to `PROPOSAL_GENERATED`.
+   see [Pipeline Determinism & Observability](#-pipeline-determinism--observability-phase-35)).
+   It writes **no file-level state** — Phase 90 dropped that enum, so the propose stage's
+   `done` is derived on read from the existence of the `proposals` row itself.
 5. **Human review.** Proposals appear at `GET /proposals/` (`routers/proposals.py`) for
    approve/reject — see the [Approval Pipeline](#-approval-pipeline) below.
 6. **Execution.** Approved proposals run copy-verify-delete on the owning agent
@@ -252,10 +253,12 @@ so it can never block an enqueue or job teardown.
 `uq_proposals_file_id_pending` (`ON (file_id) WHERE status = 'pending'`, alembic 019,
 declared in `models/proposal.py`). Because the index covers only PENDING rows, a re-run of
 `generate_proposals` overwrites an existing pending proposal in place instead of appending a
-second one, while an APPROVED / EXECUTED / REJECTED proposal is never a conflict target —
-human approvals survive any number of re-runs. A companion guard refuses to drag a file in
-a terminal state (`APPROVED` / `REJECTED` / `EXECUTED` / `DUPLICATE_RESOLVED`) back to
-`PROPOSAL_GENERATED`.
+second one, while an APPROVED / EXECUTED / REJECTED / FAILED proposal is never a conflict target —
+human approvals survive any number of re-runs. That index predicate **is** the whole guard: since
+Phase 90 there is no file-level state to drag backwards, and a duplicate resolution is recorded on
+the standalone `dedup_resolution` sidecar row (Phase 90, D-09) rather than as a file state, so
+neither is reachable from a proposal re-run. `store_proposals` also rejects an out-of-range LLM
+`file_index` (WR-01) rather than wrapping onto the wrong file.
 
 ### Per-stage DB-truth progress
 
@@ -292,7 +295,9 @@ workspace into `#stage-workspace` over HTMX (`GET /s/<stage>`). The standalone p
 dashboard page and its single-partial DAG canvas were removed in CUT-02 (Phase 62); the
 underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
 `build_dashboard_context`) are unchanged and now back the Analyze workspace instead, and
-`/pipeline/` is a pure 302 redirect into the shell root `/`. The stage graph itself is
+`/pipeline/` is a pure 302 redirect into the shell root `/` — which since SQ3-02
+(quick-260707-sq3) lands on the static, DB-free **Summary** placeholder, with Analyze one rail
+click away at `/s/analyze`. The stage graph itself is
 unchanged: only Metadata and Analyze converge into Proposals; fingerprint and the tracklist
 subgraph have no edge into Proposals.
 
@@ -319,11 +324,22 @@ lifespan as `app.state.task_router`.
   matching. It also owns the **cloud/backend control plane**: `stage_cloud_window` (the
   tiered-drain top-up cron, `tasks/release_awaiting_cloud.py`), `submit_cloud_job`
   (Kueue Job submission), and `reconcile_cloud_jobs` (the `*/5` in-flight cloud-job
-  reconcile cron). It connects to Postgres directly.
-- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the
+  reconcile cron). It further registers the control-only reapers and recovery producer:
+  `reap_stalled_scans` (every-minute no-progress scan reaper), `reap_stuck_aborting_jobs`
+  (every-minute reaper for SAQ rows stuck in `status='aborting'`, `tasks/aborting_reaper.py`,
+  phaze-e57w — deleting them releases the deterministic key so the blocked file is
+  re-queueable), and `recover_orphaned_work` (the gated boot-time queue-loss recovery pass).
+  It connects to Postgres directly.
+- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **8**
   file-bound functions: `process_file`, `extract_file_metadata`, `fingerprint_file`,
-  `scan_live_set`, `scan_directory`, `execute_approved_batch`, and `push_file` (Phase 50 —
-  the fileserver rsync-over-SSH push of a long file to the compute agent's scratch dir).
+  `scan_live_set`, `scan_directory`, `execute_approved_batch`, `push_file` (Phase 50 —
+  the fileserver rsync-over-SSH push of a long file to the compute agent's scratch dir), and
+  `s3_upload` (Phase 53 — the multipart-PUT upload to presigned S3 URLs; registered under an
+  explicit `(name, func)` tuple so its SAQ name stays `s3_upload`). With `PHAZE_AGENT_LANE`
+  set, the worker registers **only that lane's subset** — `analyze` / `fingerprint` / `meta` /
+  `io` per `LANE_TASKS` (`services/enqueue_router.py`, the single source of truth for
+  task→lane membership); all-mode registers all 8, and the union of the four lanes equals
+  `AGENT_TASKS` (quick-260707-dh1, asserted in `tests/shared/core/test_task_split.py`).
   Its startup hook
   authenticates against the application server, downloads essentia weights if missing, builds
   the `FingerprintOrchestrator` (audfprint + Panako adapters), sizes the per-file analysis
@@ -404,10 +420,12 @@ controller fans out approved proposals across agents:
 
 ### Internal-agent HTTP API
 
-All agent → server communication funnels through routers under
-`/api/internal/agent/*` (registered in `main.py`): `auth`, `identity`, `heartbeat`,
-`files`, `metadata`, `fingerprint`, `analysis`, `proposals`, `execution`, `exec-batches`,
-`scan-batches`, and `tracklists`. The `agent_id` is always taken from the authenticated
+All agent → server communication funnels through **13** routers under
+`/api/internal/agent/*` (registered in `main.py`): `files`, `metadata`, `fingerprint`,
+`execution`, `heartbeat`, `identity`, `analysis`, `push`, `s3`, `tracklists`, `proposals`,
+`scan-batches`, and `exec-batches`. (`routers/agent_auth.py` is **not** a router — it exports
+the `get_authenticated_agent` dependency the handlers depend on.) The `agent_id` is always
+taken from the authenticated
 bearer token (`get_authenticated_agent`), never from the request body, so a forged body
 field returns `422`. Full endpoint reference: [API Reference](api.md).
 
@@ -601,7 +619,7 @@ down, so it was possible to deviate silently.
 The enforcing test is a live checklist, not a suppression list: known gaps are recorded as
 **strict xfail**, so when a fix lands the entry stops matching and the suite fails until the entry
 is deleted. A new unclassified wire field also fails — that is what stops the next regression.
-||||||| 83c75fe
+
 ## 🛡️ Untrusted-Input Contract
 
 Every request path that parses a raw client string, or looks up a row an earlier request named,
@@ -697,7 +715,10 @@ changed (REQUIREMENTS "logic unchanged" rule).
 ### Rail-as-nav swap contract
 
 `src/phaze/routers/shell.py` owns the shell. `GET /` renders the full three-column shell with
-**Analyze** selected by default; clicking a rail node issues an HTMX `GET /s/<stage>` that
+the **Summary** landing placeholder selected — a static, DB-free stage with no context branch in
+`_render_stage` (SQ3-02, quick-260707-sq3, which repointed the default landing away from Analyze;
+Analyze is unchanged and stays one rail click away at `/s/analyze`). Clicking a rail node
+issues an HTMX `GET /s/<stage>` that
 returns only the stage's content fragment and swaps it into the single `#stage-workspace`
 target (`hx-push-url` keeps the URL bookmarkable). `stage` is resolved through a strict
 static whitelist, `STAGE_PARTIALS` (`shell.py`), that maps each rail-node id to its

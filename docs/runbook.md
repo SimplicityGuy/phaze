@@ -2,7 +2,8 @@
 # Operator Runbook — backend lanes, force-local revert & secrets
 
 This is the day-to-day operator runbook for the multi-cloud backend registry (2026.7.1). It
-covers the incident controls and read-outs an operator uses at the pipeline dashboard:
+covers the incident controls and read-outs an operator uses in the v7.0 console shell (`/` — the
+legacy `GET /pipeline/` 302-redirects there):
 
 - **[Force-local incident revert](#force-local-incident-revert)** — the master toggle that pins
   all analysis to local, live, with no redeploy.
@@ -25,10 +26,11 @@ across mixed arm64/x86 hosts, see [multi-compute.md](multi-compute.md).
 
 When a cloud backend misbehaves (a Kueue cluster is wedged, a compute agent is unreachable, or a
 staging bucket is throwing errors) and you want **all** analysis to run on the local file server
-**right now**, use the **force-local master toggle** in the pipeline header. It is the incident
+**right now**, use the **force-local master toggle** in the shell header. It is the incident
 "pull everything back to local" switch — reversible, one click, and **no redeploy**.
 
-**Where it is.** The pipeline header carries a single master pill:
+**Where it is.** The shell header carries a single master pill, seeded on **every** page (not just
+Analyze), so the global incident control shows correct state everywhere:
 
 | Pill state | Meaning |
 |------------|---------|

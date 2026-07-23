@@ -121,6 +121,9 @@ Operator controls that steer the three agent pipeline stages (`metadata` / `anal
 |--------|-----------------------------------------------------|---------------------------------------------------------------------------|
 | GET    | `/pipeline/files`                                   | Per-file table fragment, paginated + filterable by stage/bucket           |
 | GET    | `/pipeline/analyze-files`                           | Analyze workspace per-file table fragment (bounded default set or a filtered page) |
+| GET    | `/pipeline/pending-files`                           | Pending-files table fragment for a stage (`?stage=`, paginated + sortable)  |
+| GET    | `/pipeline/trackid-files`                           | Track-ID workspace per-file table fragment (paginated + sortable)          |
+| GET    | `/pipeline/tracklist-sets`                          | Tracklist-sets table fragment (paginated + sortable)                       |
 | GET    | `/pipeline/lanes/{backend_id}`                      | Lane-detail body fragment for a backend lane (local/Kueue/cloud)           |
 | GET    | `/pipeline/files/{file_id}/trace/{stage}`           | Per-file, per-stage eligibility trace (diagnostic)                        |
 | GET    | `/pipeline/files/{file_id}/deepen-progress`         | HTMX poll target for the "Deepen analysis" progress surface               |
@@ -148,7 +151,7 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
-| GET    | `/proposals/`                 | List proposals (HTML, filterable)  |
+| GET    | `/proposals/`                 | Legacy route: 302-redirects into the v7.0 shell's Propose workspace (`/s/propose`) |
 | PATCH  | `/proposals/{id}/approve`     | Approve a proposal                 |
 | PATCH  | `/proposals/{id}/reject`      | Reject a proposal                  |
 | PATCH  | `/proposals/{id}/undo`        | Revert to pending                  |
@@ -164,54 +167,33 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 |--------|-----------------------------------|--------------------------------------|
 | POST   | `/execution/start`                | Start batch execution (copy-verify-delete) |
 | GET    | `/execution/progress/{batch_id}`  | SSE stream with real-time progress   |
+| GET    | `/execution/agents-table`         | Per-agent execution table re-sorted by a header-chosen column (`?batch_id=&sort=&order=`, HTMX partial) |
 | GET    | `/audit/`                         | Audit log (HTML, filterable)         |
 
 ## Duplicates (`/duplicates`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
-| GET    | `/duplicates/`                | List duplicate groups (HTML)       |
-| GET    | `/duplicates/{hash}/compare`  | Comparison table for a group       |
-| POST   | `/duplicates/{hash}/resolve`  | Mark non-canonical as duplicates   |
-| POST   | `/duplicates/{hash}/undo`     | Undo resolution                    |
+| GET    | `/duplicates/`                | Legacy route: 302-redirects into the v7.0 shell's Dedupe workspace (`/s/dedupe`) |
+| GET    | `/duplicates/{group_hash}/compare`  | Comparison table for a group       |
+| POST   | `/duplicates/{group_hash}/resolve`  | Mark non-canonical as duplicates   |
+| POST   | `/duplicates/{group_hash}/undo`     | Undo resolution                    |
 | POST   | `/duplicates/resolve-all`     | Bulk resolve all groups            |
 | POST   | `/duplicates/undo-all`        | Undo bulk resolution               |
 
 ## Tracklists (`/tracklists`)
 
+The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s6); the tracklist workflow now lives in the shell's Track ID workspace (`/s/tracklist`). A single legacy route remains:
+
 | Method | Path                                    | Description                          |
 |--------|-----------------------------------------|--------------------------------------|
-| GET    | `/tracklists/`                          | List tracklists (HTML, filterable)   |
-| GET    | `/tracklists/scan`                      | Show unscanned files                 |
-| POST   | `/tracklists/scan`                      | Trigger fingerprint scan             |
-| GET    | `/tracklists/scan/status`               | Scan progress                        |
-| GET    | `/tracklists/{id}/tracks`               | View tracks in tracklist             |
-| POST   | `/tracklists/{id}/link`                 | Manually link to file                |
-| POST   | `/tracklists/{id}/unlink`               | Remove link                          |
-| POST   | `/tracklists/{id}/rescrape`             | Re-scrape from 1001Tracklists        |
-| POST   | `/tracklists/{id}/approve`              | Approve tracklist                    |
-| POST   | `/tracklists/{id}/reject`               | Reject tracklist                     |
-| GET    | `/tracklists/{id}/search`               | Search for better match              |
-| POST   | `/tracklists/search`                    | Manual tracklist search              |
-| POST   | `/tracklists/{id}/reject-low`           | Bulk reject low-confidence tracks    |
-| POST   | `/tracklists/{id}/match-discogs`        | Match tracklist to Discogs           |
-| POST   | `/tracklists/{id}/bulk-link`            | Bulk link tracks to Discogs          |
-| POST   | `/tracklists/{id}/undo-link`            | Undo auto-link                       |
-| GET    | `/tracklists/{id}/tracks/{tid}/discogs` | Get Discogs match candidates         |
-| POST   | `/tracklists/discogs-links/{id}/accept` | Accept Discogs link                  |
-| DELETE | `/tracklists/discogs-links/{id}`        | Dismiss Discogs link                 |
-| GET    | `/tracklists/tracks/{id}/edit/{field}`  | Inline edit UI                       |
-| PUT    | `/tracklists/tracks/{id}/edit/{field}`  | Save inline edit                     |
-| DELETE | `/tracklists/tracks/{id}`               | Delete track                         |
+| GET    | `/tracklists/`                          | Legacy route: 302-redirects into the v7.0 shell's Track ID workspace (`/s/tracklist`) |
 
 ## Tags (`/tags`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
-| GET    | `/tags/`                      | List files with tag metadata (HTML)|
-| GET    | `/tags/{file_id}/compare`     | Tag comparison panel               |
-| GET    | `/tags/{file_id}/edit/{field}`| Inline edit input                  |
-| PUT    | `/tags/{file_id}/edit/{field}`| Save inline edit                   |
+| GET    | `/tags/`                      | Legacy route: 302-redirects into the v7.0 shell's Tag Write workspace (`/s/tagwrite`) |
 | POST   | `/tags/{file_id}/write`       | Execute tag write to file          |
 | POST   | `/tags/bulk-write-no-discrepancies` | Server-predicate bulk tag-write over files with no discrepancies |
 | POST   | `/tags/{file_id}/undo`        | Undo a tag write (restore prior tags) |
@@ -220,9 +202,8 @@ Only **terminal** scans (`completed` / `failed`) are deletable; the delete runs 
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
-| GET    | `/cue/`                       | CUE sheet management page (HTML)   |
+| GET    | `/cue/`                       | Legacy route: 302-redirects into the v7.0 shell's CUE workspace (`/s/cue`) |
 | POST   | `/cue/{tracklist_id}/generate`| Generate CUE file for a tracklist  |
-| POST   | `/cue/generate-batch`         | Batch generate CUE files           |
 
 ## Search (`/search`)
 
@@ -255,7 +236,7 @@ Operator-facing liveness page for registered worker agents. Read-only; these end
 
 ## SAQ Monitoring UI (`/saq`)
 
-SAQ's built-in queue-monitoring dashboard, mounted into the `phaze-api` app at the `/saq` subpath (not the standalone `saq --web` server, no extra bound port). It is wired up during app startup and reuses the lifespan-created SAQ queue instances — the named **controller** queue plus one queue per non-revoked agent — so it opens no second Redis connection pool. The Pipeline Dashboard links to it via a **Queue Monitor ↗** link in the page header.
+SAQ's built-in queue-monitoring dashboard, mounted into the `phaze-api` app at the `/saq` subpath (not the standalone `saq --web` server, no extra bound port). It is wired up during app startup and reuses the lifespan-created SAQ `PostgresQueue` instances — the named **controller** queue plus, for each non-revoked `kind="fileserver"` agent, its four lane queues (analyze/fingerprint/meta/io) and its legacy base queue — so it opens no extra broker connections beyond opening those queues' psycopg pools. Kueue-routed `kind="compute"` agents bypass SAQ entirely and are not mounted. The Pipeline Dashboard links to it via a **Queue Monitor ↗** link in the page header.
 
 The mount is gated by `PHAZE_ENABLE_SAQ_UI` (default on; see [configuration.md](configuration.md)). When disabled, no `/saq` route is registered.
 

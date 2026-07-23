@@ -329,14 +329,23 @@ id          = "a1"
 kind        = "compute"
 rank        = 10                 # cost-tier ordering — lower runs sooner
 cap         = 1                  # concurrency cap (RAM-bound single analysis on the 12 GB A1)
-agent_ref   = "phaze-agent-<compute_agent_id>"   # REQUIRED — the agent node the rsync push dispatches to
+agent_ref   = "<compute_agent_id>"   # REQUIRED — the registered compute `Agent.id` this lane
+                                     # dispatches to (an Agent id, NOT a queue name — resolved via
+                                     # select_agent_by_id(..., kind="compute"))
+push_host   = "<a1-host>"        # REQUIRED — the rsync/ssh destination host for this lane
 scratch_dir = "/scratch"         # REQUIRED — remote scratch dir the push lands in; MUST match the A1's PHAZE_CLOUD_SCRATCH_DIR
+ssh_user    = "phaze"            # optional — falls back to the file server's configured push user
 ```
+
+> **`push_host` is required, not optional.** A `kind="compute"` entry without `agent_ref`,
+> `push_host`, **and** `scratch_dir` fails **at construction** (`ComputeBackend._require_dispatch_fields`),
+> so the control plane refuses to boot on the restart this step instructs. Do not omit it.
 
 The registry is **startup-read** — editing `backends.toml` on a running controller does **nothing**
 until the controller worker + api restart. Once the `compute` backend is declared, long files begin
-routing to the A1 rank-first, and any pre-existing `AWAITING_CLOUD` rows held from before the change
-are released by the tiered drain. For the Kubernetes lane declare a `kind="kueue"` backend (with a
+routing to the A1 rank-first, and any files held from before the change (their `cloud_job` sidecar
+sitting at `status='awaiting'`) are released by the tiered drain. For the Kubernetes lane declare a
+`kind="kueue"` backend (with a
 `[backends.kube]` submodel and a `[[buckets]]` staging entry) instead — see the dedicated
 [k8s-burst.md](k8s-burst.md) runbook. Both lanes can be declared **simultaneously**; the scheduler
 drains across all of them by rank. See *Enabling the compute backend & runtime-state semantics*
@@ -349,10 +358,16 @@ Confirm the end-to-end path with this checklist:
 - [ ] **Agent registers.** The compute agent appears on `/admin/agents` and reaches **alive**
       within ~60s of `docker compose -f docker-compose.cloud-agent.yml up -d` (heartbeat OK).
 - [ ] **A long file routes to cloud.** Trigger analysis on a set whose duration ≥
-      `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the file enters `AWAITING_CLOUD` (not the local
-      queue).
+      `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm it is held for cloud rather than entering the local
+      queue — the file gains a `cloud_job` sidecar row at `status='awaiting'` and the pipeline
+      dashboard's **"Awaiting cloud"** card increments.
 - [ ] **The file pushes.** The file server's `push_file` job transfers it via rsync-over-SSH to
-      the A1 scratch dir; the file moves through `PUSHING` → `PUSHED` and the sha256 verifies.
+      the A1 scratch dir and the sha256 verifies. The sidecar advances
+      `awaiting` → `uploading` → `uploaded`, which the dashboard surfaces as
+      **"Staged (pushing)"** then **"Analyzing (cloud)"**. (Phase 90 removed the `FileState` enum
+      and the `files.state` column — there are no `AWAITING_CLOUD` / `PUSHING` / `PUSHED` file
+      states to look for; stage/status is derived from the `cloud_job` sidecar and the output
+      tables via `services/stage_status.py`.)
 - [ ] **The compute agent drains a `process_file`.** The A1 worker reads the pushed file from
       scratch, analyzes it, and posts results that reconcile by `file_id`.
 - [ ] **Scratch is cleaned.** The pushed file is deleted from the A1 scratch volume after
@@ -375,10 +390,10 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
 
 - **All-local (default) = no non-local backend.** With an absent `backends.toml` (or a registry of
   only `kind="local"`), `cloud_enabled` derives **`False`**: every file — short and long — routes
-  to the local file-server queue exactly as before cloud burst existed. The routing seam never sets
-  `AWAITING_CLOUD`, the drain no-ops, and backfill-to-cloud is rejected. Long files may then time
-  out locally and fail cleanly as `ANALYSIS_FAILED`. A fresh deploy ships **dormant** this way until
-  the operator declares a non-local backend and completes Steps 1–6.
+  to the local file-server queue exactly as before cloud burst existed. The routing seam never
+  writes an `awaiting` `cloud_job` row, the drain no-ops, and backfill-to-cloud is rejected. Long
+  files may then time out locally and fail cleanly (a FAILED analyze stage). A fresh deploy ships
+  **dormant** this way until the operator declares a non-local backend and completes Steps 1–6.
 - **`kind="compute"` = OCI A1 compute agent (this page).** Long files route to the A1 via
   rsync-over-SSH. Requires the backend's `agent_ref` and `scratch_dir` (the latter matched to the
   A1's `cloud_scratch_dir`). This is **one rank-tiered lane among N** — you may declare **more than
@@ -393,9 +408,10 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
   controller worker + api must restart for a `backends.toml` edit to take effect. (For a
   *no-restart* incident revert, use the force-local pill — see *Reverting to local* below.)
 - **In-flight work drains; dropping a cloud backend only stops NEW cloud work.** Files already
-  `PUSHING`/`PUSHED` finish across a restart (state is durable in Postgres); no mid-transfer/
-  mid-analysis abort, no scratch reclaim. Held `AWAITING_CLOUD` rows from before a backend is added
-  release once a cloud backend is declared.
+  mid-flight (`cloud_job.status` in `uploading` / `uploaded` / `submitted` / `running`) finish
+  across a restart (the sidecar is durable in Postgres); no mid-transfer/mid-analysis abort, no
+  scratch reclaim. Files held at `status='awaiting'` from before a backend is added release once a
+  cloud backend is declared.
 - **`nox`'s `PHAZE_PUSH_KNOWN_HOSTS` must be re-provisioned** with the A1's SSH **host key** after
   the A1 is up (Phase 50 strict known_hosts), or the rsync-over-SSH push fails host verification.
 
@@ -404,7 +420,8 @@ N** the registry resolves simultaneously (`resolve_backends`), not a single glob
 With N backends resolved, the controller's `stage_cloud_window` drain replaces the old
 single-backend "stay one ahead" in-flight window with a **rank-first tiered drain**. Each tick it
 snapshots every backend's `is_available()` and `remaining = cap - in_flight_count()` once, then
-routes each FIFO `AWAITING_CLOUD` candidate through the pure `select_backend` policy:
+routes each FIFO awaiting-cloud candidate (a file carrying a `cloud_job` row at `status='awaiting'`)
+through the pure `select_backend` policy:
 
 - **Rank-first dispatch.** The available lowest-`rank` backend with a free slot wins; a lowest-rank
   backend that is at `cap` **spills to the next rank**, per candidate.
@@ -417,7 +434,7 @@ routes each FIFO `AWAITING_CLOUD` candidate through the pure `select_backend` po
   `cloud_submit_max_attempts` is excluded from cloud/Kueue candidates and routes to local only —
   local is never excluded, it is the guaranteed safety net.
 - **Clean holds.** When nothing is eligible this tick, `select_backend` returns `None` and the file
-  stays `AWAITING_CLOUD` (a no-op hold, never a failure).
+  stays at `cloud_job.status='awaiting'` (a no-op hold, never a failure).
 
 ### Reverting to local
 
@@ -425,7 +442,8 @@ Two paths, matching the incident-vs-planned distinction:
 
 - **Incident revert (no restart).** Engage the pipeline header **force-local** pill (BEUI-02): it
   writes a durable `route_control` row that gates both the drain and the duration router **live**.
-  Files already held `AWAITING_CLOUD` stay held (the drain no-ops); new long files route local.
+  Files already held at `cloud_job.status='awaiting'` stay held (the drain no-ops); new long files
+  route local.
   Reversible, no redeploy — see [runbook.md → Force-local incident revert](runbook.md#force-local-incident-revert).
 - **Planned revert.** Drop the `kind="compute"` (and/or `kind="kueue"`) entry from `backends.toml`
   and restart the controller worker + api. `cloud_enabled` derives back to `False` and the deploy is

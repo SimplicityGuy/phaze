@@ -54,18 +54,42 @@ slot ≈ one core and the budget stays honest: `OMP_NUM_THREADS=1`, `TF_NUM_INTR
 `TF_NUM_INTEROP_THREADS=1` (set in `docker-compose.agent.yml`). This addresses the load-18-on-8-cores
 oversubscription observed under the old single pool.
 
-## Heartbeat — exactly one per agent (A1 caveat)
+## Heartbeat — every lane beats, tagged with its lane (phaze-30fo)
 
-The liveness heartbeat (Phase 46 asyncio background task) is **agent-level, not lane-level**. It runs
-in **exactly one** lane worker — `worker-analyze`, via `PHAZE_AGENT_HEARTBEAT=true` (false on the other
-three lanes) — so an agent reports one authoritative `last_seen`, never N duplicate heartbeats.
+The liveness heartbeat (Phase 46 asyncio background task) runs in **every** lane worker —
+`PHAZE_AGENT_HEARTBEAT=true` on all four (`docker-compose.agent.yml`) — and each beat carries a
+`lane` tag (`analyze` | `fingerprint` | `meta` | `io`).
 
-**Caveat (A1, by design):** the heartbeat reads `ctx["worker"].queue`, which in the analyze-lane worker
-is the **analyze lane's depth only**. The heartbeat's `queue_depth` field is therefore analyze-lane-only,
-NOT the whole agent. This is intentional and acceptable — the heartbeat needs only liveness, and cross-lane
-reads would add coupling for a cosmetic field. The **authoritative all-lane in-flight figure** is the
-dashboard's `get_queue_activity` (`src/phaze/services/pipeline.py`), which sums queued+active across all
-four lane queues **plus** the legacy base queue per agent.
+This **replaced** the original quick-260707-dh1 convention (heartbeat on exactly `worker-analyze`,
+false on the other three). Pinning the agent's entire liveness signal to one process meant that when
+that process stalled, the agent was classified DEAD after 300s while its other three lanes were
+actively working (observed on nox, 2026-07-18). That was never only a display bug:
+`Agent.last_seen_at` is also the **work-routing key** — `enqueue_router.select_active_agent` orders by
+`last_seen_at DESC` — so a stale beat sorted the busiest machine in the fleet to the bottom and cost
+it work (`src/phaze/tasks/agent_worker.py`, `src/phaze/routers/agent_heartbeat.py`).
+
+Two consequences, both handled server-side:
+
+- **`last_seen_at` is refreshed by ANY lane's beat.** It is always set to `now()`, so it is inherently
+  `max(last_seen)` across lanes — no explicit `GREATEST` needed, and one stalled lane can no longer
+  paint the whole agent DEAD.
+- **`last_status` keeps a per-lane breakdown under `lanes`, and the top-level `queue_depth` is the
+  cross-lane SUM.** The merge is a single atomic statement (`_LANE_MERGE_SQL` in
+  `routers/agent_heartbeat.py`) rather than a Python read-modify-write, because four lanes beat
+  concurrently (~4 writes/30s per agent) and an interleaved Python merge would silently drop a lane
+  from the breakdown until its next tick. The admin table already renders
+  `last_status['queue_depth']`, so that column went from analyze-lane-only to the agent's true
+  all-lane total with no template change.
+
+The `lane` field on the heartbeat schema is **optional** (`schemas/agent_heartbeat.py`): an agent on
+an older image, or in all-mode (no lane split), posts without it, and a required field would 422 every
+one of those beats — turning a liveness fix into a liveness outage during a rolling deploy. `None`
+means "unlaned beat" and is stored the way it always was. `worker-drain` stays
+`PHAZE_AGENT_HEARTBEAT=false` for the same reason: it is unlaned, so its beat carries no lane tag.
+
+The dashboard's `get_queue_activity` (`src/phaze/services/pipeline.py`) remains the broker-side
+in-flight view, summing queued+active across all four lane queues **plus** the legacy base queue
+per agent.
 
 ## Compute (cloud/x86) agent — single lane
 

@@ -78,7 +78,7 @@ The repo ships three deployment compose files plus a dev overlay:
 |---------|---------------|---------|-------|------|
 | `api` | build `Dockerfile` | `uv run python -m phaze.entrypoint` | `${API_PORT:-8000}:8000` | FastAPI + admin UI behind TLS. Mounts `${CA_PATH:-./certs}:/certs:rw` for the cert bootstrap. |
 | `worker` | build `Dockerfile` | `uv run saq phaze.tasks.controller.settings` | — | Control-role SAQ worker (`PHAZE_ROLE=control`). Fileless; no volume mounts. |
-| `postgres` | `postgres:18-alpine` | — | `5432:5432` | Primary database. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
+| `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7). Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
 | `redis` | `redis:8-alpine` | `redis-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
 
 `api` and `worker` are built from the same `Dockerfile` and differ only by their `command`: `api` runs the cert-bootstrap entrypoint then uvicorn; `worker` runs the controller SAQ worker with `PHAZE_ROLE=control`.
@@ -87,11 +87,11 @@ The repo ships three deployment compose files plus a dev overlay:
 
 | Service | Image / build | Command | Role |
 |---------|---------------|---------|------|
-| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; default concurrency 4). Runs the agent's ONE liveness heartbeat (`PHAZE_AGENT_HEARTBEAT=true`). |
-| `worker-fingerprint` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `fingerprint` lane (`fingerprint_file`; default concurrency 2). |
-| `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`scan_live_set`/`execute_approved_batch`; default concurrency 2). |
-| `worker-io` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `io` lane (`s3_upload`/`push_file`; default concurrency 4). |
-| `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. |
+| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; default concurrency 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all four lane workers, phaze-30fo). |
+| `worker-fingerprint` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `fingerprint` lane (`fingerprint_file`; default concurrency 2). Heartbeats with `lane=fingerprint`. |
+| `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`scan_live_set`/`execute_approved_batch`; default concurrency 2). Heartbeats with `lane=meta`. |
+| `worker-io` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `io` lane (`s3_upload`/`push_file`; default concurrency 4). Heartbeats with `lane=io`. |
+| `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. The only worker with `PHAZE_AGENT_HEARTBEAT=false`: it is unlaned, so an untagged beat would wipe the per-lane breakdown the four lane workers maintain. |
 | `watcher` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run python -m phaze.agent_watcher` | Always-on directory watcher (`PHAZE_ROLE=agent`). |
 | `audfprint` | `ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 | `panako` | `ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
@@ -207,6 +207,9 @@ On the **app-server host**:
 git clone https://github.com/simplicityguy/phaze.git
 cd phaze
 cp .env.example .env
+# Edit .env: set POSTGRES_PASSWORD to a strong unique value — compose parse FAILS if unset
+# Edit .env: set POSTGRES_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10) so
+#            agents can reach the SAQ broker; at the 127.0.0.1 default they cannot
 # Edit .env: set REDIS_PASSWORD to a strong unique value (>= 32 chars)
 # Edit .env: set REDIS_BIND_IP to the app-server's private LAN IP (e.g., 192.168.1.10)
 # Edit .env: set PHAZE_QUEUE_URL (raw libpq postgresql:// DSN) — the SAQ Postgres broker.
@@ -380,7 +383,7 @@ You should see (per lane worker; `lane=` varies by service):
 - `Models downloaded successfully to /models`
 - `phaze.tasks.agent_worker startup complete agent_id=fileserver-east queue=phaze-agent-fileserver-east-analyze lane=analyze`
 
-After ~5 minutes, the heartbeat — an asyncio background task in `worker-analyze` (every 30s; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
+After ~5 minutes, the heartbeat — an asyncio background task in **each** of the four lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
 
 > **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation (DIST-01).
 
@@ -478,7 +481,7 @@ flowchart LR
     arm -->|"docker-compose.cloud-agent.yml"| compute["kind=compute agent"]
 ```
 
-The single-stage `Dockerfile` (`FROM python:3.14-slim AS base`) installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
+The `Dockerfile` is multi-stage. A `css-builder` stage (`FROM python:3.14-slim AS css-builder`) compiles `assets/src/app.css` → `src/phaze/static/css/app.css` with the pinned standalone Tailwind v4 binary (`TAILWIND_VERSION=v4.3.2`, kept in sync with the justfile `tailwind` recipe — no Node, no CDN); the final `base` stage (`FROM python:3.14-slim AS base`) copies only the generated CSS. `base` installs deps with `uv sync --frozen --no-dev` in cached layers, copies `src/`, `alembic/`, and `alembic.ini`, runs as the non-root `phaze` user, and exposes port 8000. The `api` and `worker` containers share this image and diverge only by `command`.
 
 You can also build/push manually with `just`: `just docker-build`, `just docker-validate` (hadolint), `just docker-compose-validate`, and `just image-push` (requires a `gh` token with `packages:write`).
 
@@ -490,6 +493,8 @@ Production-critical variables:
 
 | Variable | Host | Why it matters |
 |----------|------|----------------|
+| `POSTGRES_PASSWORD` | app-server | `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7); there is no weak silent default. Use a strong unique value and keep `DATABASE_URL` / `PHAZE_QUEUE_URL` in sync with it. |
+| `POSTGRES_BIND_IP` | app-server | Interface the published `:5432` binds to. Must be the app-server's private LAN IP so agents can open their `PHAZE_QUEUE_URL` psycopg3 pool to the broker — at the `127.0.0.1` default they cannot reach it. Never `0.0.0.0`, never a public IP. Mirrors `REDIS_BIND_IP`. |
 | `REDIS_PASSWORD` | app-server | `redis-server --requirepass`; compose parse fails if unset. Use a unique high-entropy value (>= 32 chars). |
 | `REDIS_BIND_IP` | app-server | Must be the app-server's private LAN IP so agents on other hosts can reach Redis. Never `0.0.0.0`, never a public IP. |
 | `PHAZE_QUEUE_URL` | app-server + file-server | The SAQ Postgres broker DSN (**raw libpq** `postgresql://…`, NOT `+asyncpg`). On agents it points at the app-server Postgres LAN IP:5432 — open that firewall edge (relaxes D-25). Carries DB credentials; use the `_FILE` secret form. Keep the per-queue pool budget under Postgres `max_connections`. |
@@ -562,8 +567,8 @@ It is harmless if the row is already absent (e.g. on a fresh broker or after a `
 ## Monitoring & Health
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
-- **Agent heartbeat / liveness:** exactly one lane worker per agent — `worker-analyze` — runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). The other three lane workers (`worker-fingerprint`/`worker-meta`/`worker-io`) run with `PHAZE_AGENT_HEARTBEAT=false` so an agent reports one authoritative `last_seen`, never duplicate heartbeats (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
-- **Sidecar health:** the `audfprint` and `panako` fingerprint sidecars expose `/health`; `just audfprint-health` and `just panako-health` exec into a service named `worker` and curl them — stale post-lane-split terminology (`docker-compose.agent.yml` no longer has a plain `worker` service; see [agent-queue-lanes.md](agent-queue-lanes.md)). On a file server, check sidecar health directly instead, e.g. `docker compose -f docker-compose.agent.yml exec worker-analyze curl -sf http://audfprint:8001/health`.
+- **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-fingerprint`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention (phaze-30fo): pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other three lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
+- **Sidecar health:** the `audfprint` and `panako` fingerprint sidecars expose `/health`. `just audfprint-health` and `just panako-health` exec into the **sidecar containers themselves** via the agent stack (`docker compose -f docker-compose.agent.yml exec audfprint …` / `… exec panako …`) and hit `http://localhost:8001/health` / `:8002/health` with a `python -m urllib.request` one-liner — the image ships no `curl`, and the sidecars are not services in the core compose project.
 - **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
 - **Logging:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. No external metrics/tracing exporter (Sentry, Datadog, OpenTelemetry) is configured in this repo. <!-- VERIFY: any external log aggregation, alerting, or metrics dashboard configured at the deployment level (outside the repo) is not represented here. -->
 
@@ -579,7 +584,7 @@ docker compose exec api ls -la /data/music
 Or trust the structural test that runs in CI:
 
 ```bash
-uv run pytest tests/test_deployment/ -v
+uv run pytest tests/agents/deployment/ -v
 ```
 
 The compose-parse tests assert that `docker-compose.yml` declares no `SCAN_PATH`, `MODELS_PATH`, or `OUTPUT_PATH` bind mounts on `api` or `worker` services — only `./certs/` is mounted on `api` (and that one is required for the cert bootstrap).
@@ -625,6 +630,8 @@ This runs `bash scripts/download-models.sh models`, populating `./models/` direc
 
 Before shipping a file-server host to production:
 
+- [ ] `POSTGRES_PASSWORD` set to a strong unique value — `docker compose` fails to parse without it (phaze-rnh7); `DATABASE_URL` / `PHAZE_QUEUE_URL` updated to match
+- [ ] `POSTGRES_BIND_IP` set to the app-server's private LAN IP — at the `127.0.0.1` default agents cannot reach the `PHAZE_QUEUE_URL` broker on `:5432` (never `0.0.0.0`, never the public IP)
 - [ ] `REDIS_PASSWORD` set to a unique high-entropy value (>= 32 chars) — never the default
 - [ ] `REDIS_BIND_IP` set to the app-server's private LAN IP (never `0.0.0.0`, never the public IP)
 - [ ] `PHAZE_AGENT_ENV=production` — enables the redis-password-required and https-required guards in `AgentSettings`

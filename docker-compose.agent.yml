@@ -59,8 +59,8 @@ services:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_LANE=analyze
       - PHAZE_LANE_ANALYZE_CONCURRENCY=${PHAZE_LANE_ANALYZE_CONCURRENCY:-4}
-      # The ONLY heartbeat: exactly one liveness heartbeat per agent (A1 caveat: its queue_depth
-      # is analyze-lane-only; the dashboard's get_queue_activity is the authoritative all-lane figure).
+      # phaze-30fo: every lane worker heartbeats (see the header block above) — this beat is tagged
+      # lane=analyze; the dashboard's get_queue_activity remains the authoritative all-lane figure.
       - PHAZE_AGENT_HEARTBEAT=true
       # CPU-bound lane: pin essentia/TF single-threaded so one slot ≈ one core (honest budget).
       - OMP_NUM_THREADS=1

@@ -26,7 +26,7 @@ staleness gate (or immediately when every cloud lane is offline).
 
 ```mermaid
 flowchart TD
-  cand["long file (AWAITING_CLOUD)<br/>duration ≥ PHAZE_CLOUD_ROUTE_THRESHOLD_SEC"] --> sel["select_backend policy<br/>(rank-first, cap-aware, per candidate)"]
+  cand["long file (cloud_job status='awaiting')<br/>duration ≥ PHAZE_CLOUD_ROUTE_THRESHOLD_SEC"] --> sel["select_backend policy<br/>(rank-first, cap-aware, per candidate)"]
 
   sel -->|"1st choice — cheapest"| a1["compute · a1-arm64<br/>RANK 10 · cap 2<br/>free OCI A1 (arm64)"]
   sel -.->|"spill when a1-arm64 is at cap or offline"| x86["compute · x86-spill<br/>RANK 20 · cap 4<br/>paid/trial x86 box"]
@@ -99,7 +99,8 @@ Ranks encode your cost preference; the scheduler always drains lowest rank first
 | final catch | `local` (file server) | `99` | `1` | **No marginal cost, but slow** — the guaranteed safety net. Reached only under the staleness gate (all cloud full and the file has waited) or immediately when every cloud lane is offline. |
 
 Raise a lane's `rank` to make it *less* preferred; lower it to make it *more* preferred. Two lanes
-at the **same** rank tie-break deterministically by `id` (see
+at the **same** rank tie-break by **utilization first** (`in_flight / cap`, least-loaded wins), then
+by stable lexicographic `id` — the SCHED-04 sort key is `(rank, utilization, id)` (see
 [runbook.md → Spillover behavior](runbook.md#spillover-behavior)).
 
 ## Running the compose once per compute agent
