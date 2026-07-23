@@ -1959,11 +1959,17 @@ async def test_backfill_candidates_boundary_is_inclusive(session: AsyncSession) 
 
 
 def _scan_batch(agent_id: str, *, batch_id: uuid.UUID, created_at: object = None) -> ScanBatch:
-    """Build a ScanBatch with an INJECTABLE id, for tiebreaker tests that need a fixed pk."""
+    """Build a ScanBatch with an INJECTABLE id, for tiebreaker tests that need a fixed pk.
+
+    ``scan_path`` is per-batch-id (not a shared literal): phaze-1a71's
+    ``uq_scan_batches_agent_id_scan_path_running`` allows at most one RUNNING batch per
+    (agent_id, scan_path), and these tests seed many RUNNING rows for the SAME agent to
+    exercise the id tiebreaker -- a shared path would collide with that guard.
+    """
     batch = ScanBatch(
         id=batch_id,
         agent_id=agent_id,
-        scan_path="/music",
+        scan_path=f"/music/{batch_id}",
         status=ScanStatus.RUNNING.value,
         total_files=0,
         processed_files=0,

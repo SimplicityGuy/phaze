@@ -166,10 +166,12 @@ async def test_threshold_boundary(
     """
     _patch_threshold(monkeypatch, seconds=300)
     now = datetime.now(UTC)
+    # Distinct scan_path per row: phaze-1a71's uq_scan_batches_agent_id_scan_path_running allows
+    # at most one RUNNING batch per (agent_id, scan_path), and both rows here share an agent.
     # ~at threshold: 290s old < 300s window -> survives.
-    at_id = await _seed(session, status=ScanStatus.RUNNING, last_progress_at=now - timedelta(seconds=290))
+    at_id = await _seed(session, status=ScanStatus.RUNNING, last_progress_at=now - timedelta(seconds=290), scan_path="/music/at-threshold")
     # just past: 320s old > 300s window -> reaped.
-    past_id = await _seed(session, status=ScanStatus.RUNNING, last_progress_at=now - timedelta(seconds=320))
+    past_id = await _seed(session, status=ScanStatus.RUNNING, last_progress_at=now - timedelta(seconds=320), scan_path="/music/past-threshold")
 
     result = await reap_stalled_scans(_make_ctx(async_engine))
 
