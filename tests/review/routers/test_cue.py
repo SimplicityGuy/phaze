@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 import uuid
@@ -120,11 +119,16 @@ async def test_cue_list_full_page(client: AsyncClient, session: AsyncSession) ->
 
 @pytest.mark.asyncio
 async def test_cue_list_htmx_partial(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ with HX-Request header returns partial without full page wrapper."""
+    """phaze-y4s6: GET /cue/ redirects unconditionally now, even with an HX-Request header.
+
+    The in-page HX list/pagination fragment this used to preserve (``cue/partials/cue_list.html``)
+    had no live caller left post-v7-cutover and was deleted outright -- unlike the sibling
+    ``/proposals/`` redirect, there is no HX-filter branch here to keep working.
+    """
     await _create_approved_tracklist_with_file(session)
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "<!DOCTYPE html>" not in response.text
+    response = await client.get("/cue/", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/cue"
 
 
 @pytest.mark.asyncio
@@ -264,180 +268,6 @@ async def test_generate_cue_unparseable_timestamp_returns_friendly_toast_not_500
 
 
 @pytest.mark.asyncio
-async def test_cue_list_shows_generated_count_after_generation(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """GET /cue/ stats show generated count > 0 after generating a CUE file."""
-    tracklist, file_record = await _create_approved_tracklist_with_file(session)
-
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    # Generate a CUE first
-    await client.post(f"/cue/{tracklist.id}/generate")
-    assert audio_path.with_suffix(".cue").exists()
-
-    # Now list page should show generated count and CUE version
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "CUE v1" in response.text or "Regenerate" in response.text
-
-
-@pytest.mark.asyncio
-async def test_cue_list_shows_version_after_regeneration(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """GET /cue/ shows correct version number after regenerating CUE."""
-    tracklist, file_record = await _create_approved_tracklist_with_file(session)
-
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    # Generate twice to create v2
-    await client.post(f"/cue/{tracklist.id}/generate")
-    await client.post(f"/cue/{tracklist.id}/generate")
-    v2_path = audio_path.parent / f"{audio_path.stem}.v2.cue"
-    assert v2_path.exists()
-
-    # List page should show version 2
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "CUE v2" in response.text
-
-
-@pytest.mark.asyncio
-async def test_batch_generate_with_write_failure_continues(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/generate-batch continues past write failures and logs the error."""
-    _tl1, file1 = await _create_approved_tracklist_with_file(session, artist="Good")
-    _tl2, file2 = await _create_approved_tracklist_with_file(session, artist="Bad")
-
-    for fr in [file1, file2]:
-        audio_path = tmp_path / fr.original_filename
-        audio_path.write_text("fake audio")
-        fr.current_path = str(audio_path)
-    await session.commit()
-
-    call_count = 0
-
-    def _write_side_effect(content: str, audio_path_arg: Path) -> Path:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise OSError("Permission denied")
-        from phaze.services.cue_generator import write_cue_file as real_write
-
-        return real_write(content, audio_path_arg)
-
-    with patch("phaze.routers.cue.write_cue_file", side_effect=_write_side_effect):
-        response = await client.post("/cue/generate-batch")
-    assert response.status_code == 200
-    assert "Generated 1 CUE files" in response.text
-
-
-@pytest.mark.asyncio
-async def test_tracklist_list_shows_cue_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """GET /tracklists/ computes CUE version for approved tracklists with executed files."""
-    tracklist, file_record = await _create_approved_tracklist_with_file(session)
-
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    # Generate a CUE file
-    await client.post(f"/cue/{tracklist.id}/generate")
-    assert audio_path.with_suffix(".cue").exists()
-
-    # Tracklist list should return 200 with CUE version computed
-    response = await client.get("/tracklists/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_generate_batch(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/generate-batch generates CUEs for all eligible tracklists."""
-    _tracklist1, file1 = await _create_approved_tracklist_with_file(session, artist="Artist A")
-    _tracklist2, file2 = await _create_approved_tracklist_with_file(session, artist="Artist B")
-
-    # Set up temp paths
-    for fr in [file1, file2]:
-        audio_path = tmp_path / fr.original_filename
-        audio_path.write_text("fake audio")
-        fr.current_path = str(audio_path)
-    await session.commit()
-
-    response = await client.post("/cue/generate-batch")
-    assert response.status_code == 200
-    assert "Generated 2 CUE files" in response.text or "toast-container" in response.text
-
-
-@pytest.mark.asyncio
-async def test_generate_batch_offloads_write_to_thread(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-8lpg: each per-file write_cue_file call must run off the event loop via asyncio.to_thread."""
-    from phaze.routers import cue as cue_router
-
-    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    with patch.object(cue_router.asyncio, "to_thread", wraps=cue_router.asyncio.to_thread) as mock_to_thread:
-        response = await client.post("/cue/generate-batch")
-
-    assert response.status_code == 200
-    assert "Generated 1 CUE files" in response.text
-    write_calls = [c for c in mock_to_thread.call_args_list if c.args and c.args[0] is cue_router.write_cue_file]
-    assert len(write_calls) == 1, "write_cue_file must be offloaded via asyncio.to_thread exactly once per generated file"
-
-
-@pytest.mark.asyncio
-async def test_generate_batch_materializes_eligible_set_exactly_once(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-8lpg: the eligible set is queried once (the generation loop), not re-materialized for the response."""
-    from phaze.routers import cue as cue_router
-
-    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    with patch.object(cue_router, "_get_eligible_tracklist_query", wraps=cue_router._get_eligible_tracklist_query) as mock_query:
-        response = await client.post("/cue/generate-batch")
-
-    assert response.status_code == 200
-    assert mock_query.call_count == 1, "the eligible set must be materialized exactly once, not twice"
-
-
-@pytest.mark.asyncio
-async def test_generate_batch_renders_a_bounded_page_not_the_whole_corpus(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-8lpg: the post-batch response renders ONE bounded page (paged_stmt), not the full eligible set."""
-    from phaze.routers import cue as cue_router
-    from phaze.services.pagination import MIN_PAGE_SIZE
-
-    # paged_stmt/split_sentinel clamp page_size to >= MIN_PAGE_SIZE internally, so the corpus must
-    # exceed MIN_PAGE_SIZE for a bound to be observable at all.
-    total = MIN_PAGE_SIZE + 1
-    for i in range(total):
-        _tracklist, fr = await _create_approved_tracklist_with_file(session, artist=f"Artist {i}", event=f"Event {i}")
-        audio_path = tmp_path / fr.original_filename
-        audio_path.write_text("fake audio")
-        fr.current_path = str(audio_path)
-    await session.commit()
-
-    with patch.object(cue_router, "DEFAULT_PAGE_SIZE", MIN_PAGE_SIZE):
-        response = await client.post("/cue/generate-batch")
-
-    assert response.status_code == 200
-    # All of them were still generated on disk...
-    assert f"Generated {total} CUE files" in response.text
-    # ...but only the bounded page (MIN_PAGE_SIZE rows) is rendered in the response fragment (each
-    # row's top-level `id="cue-row-<id>"` marker is a stable per-row count -- cue_row.html also
-    # emits the same id twice more as hx-target attributes on action buttons).
-    assert response.text.count('id="cue-row-') == MIN_PAGE_SIZE
-
-
-@pytest.mark.asyncio
 async def test_generate_cue_regenerate_increments_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """POST /cue/{id}/generate twice creates versioned CUE files."""
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
@@ -458,48 +288,6 @@ async def test_generate_cue_regenerate_increments_version(client: AsyncClient, s
     # Should have v2 file
     v2_path = audio_path.parent / f"{audio_path.stem}.v2.cue"
     assert v2_path.exists()
-
-
-@pytest.mark.asyncio
-async def test_cue_list_shows_source_badge(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ shows source badge for each tracklist."""
-    await _create_approved_tracklist_with_file(session, source="1001tracklists")
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert "1001tracklists" in response.text
-
-
-@pytest.mark.asyncio
-async def test_cue_list_fingerprint_first(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/ sorts fingerprint-sourced tracklists before 1001tracklists."""
-    await _create_approved_tracklist_with_file(session, artist="ZZZ Last", source="1001tracklists")
-    await _create_approved_tracklist_with_file(session, artist="AAA First", source="fingerprint")
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    text = response.text
-    # Fingerprint artist should appear before 1001tracklists artist
-    fp_pos = text.index("AAA First")
-    tt_pos = text.index("ZZZ Last")
-    assert fp_pos < tt_pos, "Fingerprint-sourced tracklist should appear before 1001tracklists-sourced"
-
-
-@pytest.mark.asyncio
-async def test_generate_cue_returns_tracklist_card_when_target_is_tracklist(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/{id}/generate with HX-Target: tracklist-{id} returns tracklist card with Regenerate CUE."""
-    tracklist, file_record = await _create_approved_tracklist_with_file(session)
-
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    response = await client.post(
-        f"/cue/{tracklist.id}/generate",
-        headers={"HX-Target": f"tracklist-{tracklist.id}"},
-    )
-    assert response.status_code == 200
-    assert "Regenerate CUE" in response.text
-    assert "CUE v1" in response.text
 
 
 @pytest.mark.asyncio
@@ -576,51 +364,6 @@ async def test_generate_cue_error_preserves_row_on_default_target(client: AsyncC
 
 
 @pytest.mark.asyncio
-async def test_generate_cue_error_preserves_tracklist_card_on_tracklist_target(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-2w49 (tracklist-card surface): HX-Target: tracklist-{id} must keep #tracklist-{id}.
-
-    tracklist_card.html's "Regenerate CUE" button gates only on ``cue_version``, so a routine
-    "must be approved" error is reachable here without the tracklist being re-eligible -- the OOB-
-    only response used to wipe the row silently on this surface.
-    """
-    file_id = uuid.uuid4()
-    file_record = FileRecord(
-        agent_id="test-fileserver",
-        id=file_id,
-        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
-        original_path="/music/test.mp3",
-        original_filename="test.mp3",
-        current_path=str(tmp_path / "test.mp3"),
-        file_type="mp3",
-        file_size=50_000_000,
-    )
-    session.add(file_record)
-    session.add(RenameProposal(id=uuid.uuid4(), file_id=file_id, proposed_filename="test.mp3", status=ProposalStatus.EXECUTED))
-    (tmp_path / "test.mp3").write_text("fake")
-
-    tracklist = Tracklist(
-        id=uuid.uuid4(),
-        external_id=f"ext-{uuid.uuid4().hex[:8]}",
-        source_url="https://example.com",
-        file_id=file_id,
-        artist="Test",
-        latest_version_id=uuid.uuid4(),
-        source="1001tracklists",
-        status="proposed",  # Not approved
-    )
-    session.add(tracklist)
-    await session.commit()
-
-    response = await client.post(
-        f"/cue/{tracklist.id}/generate",
-        headers={"HX-Target": f"tracklist-{tracklist.id}"},
-    )
-    assert response.status_code == 200
-    assert f'id="tracklist-{tracklist.id}"' in response.text, "the tracklist card must survive the error, not be deleted"
-    assert "approved" in response.text.lower()
-
-
-@pytest.mark.asyncio
 async def test_generate_cue_error_preserves_preview_card_on_cue_card_target(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """phaze-2w49 (pipeline preview-card surface): HX-Target: cue-card-{id} must keep #cue-card-{id}.
 
@@ -651,9 +394,10 @@ async def test_generate_cue_buttons_guard_against_double_submit(client: AsyncCli
     so a second click while the first POST is in flight is dropped client-side instead of writing a
     phantom ``.vN.cue`` version file.
 
-    Covers all three CUE-generate surfaces: the legacy cue-page row (``cue_row.html``, default
-    target), the tracklist card (``tracklist_card.html``, ``tracklist-`` target), and the v7 cue
-    workspace preview card (``_cue_preview.html``, ``cue-card-`` target).
+    Covers both remaining CUE-generate surfaces: the legacy cue-page row (``cue_row.html``, default
+    target) and the v7 cue workspace preview card (``_cue_preview.html``, ``cue-card-`` target).
+    phaze-y4s6 removed the third, the tracklist card (``tracklist-`` target), along with the rest
+    of the dead legacy tracklists UI.
     """
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
 
@@ -666,14 +410,6 @@ async def test_generate_cue_buttons_guard_against_double_submit(client: AsyncCli
     row_response = await client.post(f"/cue/{tracklist.id}/generate")
     assert row_response.status_code == 200
     assert 'hx-disabled-elt="this"' in row_response.text
-
-    # tracklist_card.html (tracklist-card surface).
-    card_response = await client.post(
-        f"/cue/{tracklist.id}/generate",
-        headers={"HX-Target": f"tracklist-{tracklist.id}"},
-    )
-    assert card_response.status_code == 200
-    assert 'hx-disabled-elt="this"' in card_response.text
 
     # _cue_preview.html (v7 cue-workspace APPROVE surface).
     preview_response = await client.post(
@@ -709,122 +445,6 @@ async def test_generate_cue_success_on_cue_card_target_returns_preview_card(clie
     assert f'id="cue-card-{tracklist.id}"' in response.text, "the v7 preview card id must survive a successful approve"
     assert f'id="cue-row-{tracklist.id}"' not in response.text, "the legacy cue_row.html markup must NOT be swapped in"
     assert "APPROVE" in response.text, "the eligible card's APPROVE control must still be present (still eligible post-write)"
-
-
-@pytest.mark.asyncio
-async def test_generate_cue_success_on_tracklist_target_shows_real_track_count(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-fig9: a successful generate/regenerate on a tracklist card must keep the real track
-    count, not fall back to "0 tracks".
-
-    tracklist_card.html derives the chip from the non-mapped ``tracklist._track_count`` attribute,
-    which a bare ORM object re-rendered by ``generate_cue``'s ``tracklist-`` branch never carried.
-    """
-    tracklist, file_record = await _create_approved_tracklist_with_file(session, track_count=5)
-
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    response = await client.post(
-        f"/cue/{tracklist.id}/generate",
-        headers={"HX-Target": f"tracklist-{tracklist.id}"},
-    )
-    assert response.status_code == 200
-    assert "5 tracks" in response.text, "the swapped-in card must show the real track count, not fall back to 0"
-    assert "0 tracks" not in response.text
-
-
-@pytest.mark.asyncio
-async def test_generate_batch_skips_no_timestamps(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/generate-batch skips tracklists without timestamps."""
-    _tl_with, file_with = await _create_approved_tracklist_with_file(session, artist="With Timestamps")
-    _tl_without, file_without = await _create_approved_tracklist_with_file(session, artist="No Timestamps", with_timestamps=False)
-
-    for fr in [file_with, file_without]:
-        audio_path = tmp_path / fr.original_filename
-        audio_path.write_text("fake audio")
-        fr.current_path = str(audio_path)
-    await session.commit()
-
-    response = await client.post("/cue/generate-batch")
-    assert response.status_code == 200
-    assert "Generated 1 CUE files" in response.text
-
-
-@pytest.mark.asyncio
-async def test_generate_batch_unparseable_timestamp_does_not_abort_whole_batch(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-97u7: _build_cue_tracks runs BEFORE generate_batch's per-row try/except (cue.py:404
-    vs :409) -- an unhandled ValueError there would 500 the WHOLE batch, not just the bad row.
-    """
-    _tl_good, file_good = await _create_approved_tracklist_with_file(session, artist="Good")
-    tl_bad, file_bad = await _create_approved_tracklist_with_file(session, artist="Bad", track_count=1)
-
-    bad_track_result = await session.execute(select(TracklistTrack).where(TracklistTrack.version_id == tl_bad.latest_version_id))
-    bad_track = bad_track_result.scalars().one()
-    bad_track.timestamp = ""
-    await session.commit()
-
-    for fr in [file_good, file_bad]:
-        audio_path = tmp_path / fr.original_filename
-        audio_path.write_text("fake audio")
-        fr.current_path = str(audio_path)
-    await session.commit()
-
-    response = await client.post("/cue/generate-batch")
-    assert response.status_code == 200
-    assert "Generated 1 CUE files" in response.text  # the good row still generated
-
-
-@pytest.mark.asyncio
-async def test_cue_list_pagination(client: AsyncClient, session: AsyncSession) -> None:
-    """GET /cue/?page=2 returns second page of results."""
-    # Create enough tracklists to paginate (default page_size=25)
-    for i in range(3):
-        await _create_approved_tracklist_with_file(session, artist=f"Artist {i}")
-
-    response = await client.get("/cue/?page=1&page_size=10", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_cue_list_pagination_tie_group_no_skip_or_duplicate(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-hdho: paging a large tie group must never skip or duplicate a row across pages.
-
-    Every fixture here shares the SAME source/artist/event, so all rows tie completely on the CUE
-    list's display ORDER BY (``(source == 'fingerprint').desc(), artist, event``). Before the fix,
-    ``list_cue`` re-ran that non-unique ORDER BY on EVERY page request and sliced the fully
-    materialized list in Python -- Postgres gives no stability guarantee for a tie group across two
-    SEPARATE query executions, so a boundary row could land on both pages (duplicate) or on neither
-    (silently skipped). A test that only inspects page 1 would not catch this; this one pages through
-    the WHOLE set and asserts the union of every page is exact -- every row exactly once.
-    """
-    total_rows = 25
-    page_size = 10  # MIN_PAGE_SIZE -- forces 3 pages (10, 10, 5) over one fully-tied group.
-    expected_ids: set[str] = set()
-    for _ in range(total_rows):
-        tracklist, _file_record = await _create_approved_tracklist_with_file(
-            session, artist="Tied Artist", event="Tied Event", source="1001tracklists"
-        )
-        expected_ids.add(str(tracklist.id))
-
-    row_id_re = re.compile(r'id="cue-row-([0-9a-fA-F-]{36})"')
-    seen_per_page: list[list[str]] = []
-    page = 1
-    while True:
-        response = await client.get(f"/cue/?page={page}&page_size={page_size}", headers={"HX-Request": "true"})
-        assert response.status_code == 200
-        row_ids = row_id_re.findall(response.text)
-        if not row_ids:
-            break
-        seen_per_page.append(row_ids)
-        page += 1
-        assert page <= total_rows + 1, "pagination did not terminate -- possible duplicate/skip loop"
-
-    all_seen = [row_id for page_rows in seen_per_page for row_id in page_rows]
-    assert len(all_seen) == len(set(all_seen)), "a row appeared on more than one page (duplicate)"
-    assert set(all_seen) == expected_ids, "the union of all pages must contain every eligible row exactly once"
-    assert [len(page_rows) for page_rows in seen_per_page] == [10, 10, 5], "25 rows at page_size=10 must split into pages of 10/10/5"
 
 
 @pytest.mark.asyncio
@@ -884,72 +504,13 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_get_cue_stats_offloads_generated_scan_to_thread(session: AsyncSession, tmp_path: Path) -> None:
-    """phaze-rkvb: the per-file '.cue exists' filesystem probe backing the 'generated' stat must
-    run OFF the event loop via ``asyncio.to_thread``, not inline in the async handler -- an
-    unbounded, synchronous ``exists()``/``iterdir()`` scan over the whole eligible set on an
-    NFS/SMB media mount previously froze the API event loop for the scan's duration on every
-    ``/cue/`` render. Correctness of the resulting count is covered by
-    ``test_cue_list_shows_generated_count_after_generation``; this test guards the offload
-    mechanism itself so a future edit cannot silently move the scan back onto the loop.
-    """
-    from phaze.routers import cue as cue_router
-
-    _tracklist, file_record = await _create_approved_tracklist_with_file(session)
-    audio_path = tmp_path / file_record.original_filename
-    audio_path.write_text("fake audio")
-    file_record.current_path = str(audio_path)
-    await session.commit()
-
-    with patch.object(cue_router.asyncio, "to_thread", wraps=cue_router.asyncio.to_thread) as mock_to_thread:
-        stats = await cue_router._get_cue_stats(session)
-
-    mock_to_thread.assert_called_once()
-    assert mock_to_thread.call_args.args[0] is cue_router._count_generated_sync
-    assert stats["eligible"] == 1
-    assert stats["generated"] == 0  # no .cue written yet
-
-
-def test_count_generated_sync_counts_only_files_with_a_cue_on_disk(tmp_path: Path) -> None:
-    """Unit test for the bundled sync scan (phaze-rkvb): mixed generated/ungenerated pairs."""
-    from phaze.routers.cue import _count_generated_sync
-
-    with_cue = tmp_path / "with_cue.mp3"
-    with_cue.write_text("audio")
-    (tmp_path / "with_cue.cue").write_text("cue content")
-
-    without_cue = tmp_path / "without_cue.mp3"
-    without_cue.write_text("audio")
-
-    def _record(path: Path) -> FileRecord:
-        return FileRecord(
-            agent_id="test-fileserver",
-            id=uuid.uuid4(),
-            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
-            original_path=str(path),
-            original_filename=path.name,
-            current_path=str(path),
-            file_type="mp3",
-            file_size=1,
-        )
-
-    pairs = [
-        (None, _record(with_cue)),
-        (None, _record(without_cue)),
-    ]
-
-    assert _count_generated_sync(pairs) == 1
-
-
-@pytest.mark.asyncio
 async def test_eligibility_scoped_to_latest_version_not_any_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """phaze-dboy: a tracklist whose ONLY timestamped track lives on an OLDER version (a
     re-scrape/re-fingerprint created a newer ``latest_version_id`` with no timestamps) must be
-    excluded from ``eligible`` and counted in ``missing_timestamps`` -- generation only ever
-    reads ``latest_version_id``, so counting "any version" produced an always-failing
-    "eligible" row that permanently inflated eligible past generated.
+    excluded from the eligible set -- generation only ever reads ``latest_version_id``, so
+    counting "any version" produced an always-failing "eligible" row.
     """
-    from phaze.routers.cue import _get_cue_stats, _get_eligible_tracklist_query
+    from phaze.routers.cue import _get_eligible_tracklist_query
 
     tracklist, file_record = await _create_approved_tracklist_with_file(session, artist="Stale Version", track_count=1)
 
@@ -980,84 +541,28 @@ async def test_eligibility_scoped_to_latest_version_not_any_version(client: Asyn
     eligible_pairs = await _get_eligible_tracklist_query(session)
     assert tracklist.id not in {tl.id for tl, _fr in eligible_pairs}, "stale-version timestamps must not count as eligible"
 
-    stats = await _get_cue_stats(session)
-    assert stats["eligible"] == 0
-    assert stats["missing_timestamps"] == 1
-
-    # Generation must fail cleanly (not silently "succeed" against the stale v1 data) and batch
-    # generation must skip it rather than counting it.
+    # Generation must fail cleanly (not silently "succeed" against the stale v1 data).
     response = await client.post(f"/cue/{tracklist.id}/generate")
     assert response.status_code == 200
     assert "timestamps" in response.text.lower()
 
-    batch_response = await client.post("/cue/generate-batch")
-    assert "Generated 0 CUE files" in batch_response.text
-
-
-@pytest.mark.asyncio
-async def test_cue_list_paged_stmt_has_unique_tiebreaker(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-hdho: guard against silently dropping the paging contract's mandatory tiebreaker.
-
-    ``paged_stmt`` raises ``ValueError`` if ``tiebreaker`` is empty (services.pagination rule 4), but
-    that guard only fires if a future edit still CALLS ``paged_stmt`` WITHOUT a tiebreaker -- it would
-    not catch a regression that passes a non-unique column (e.g. reverting to ``Tracklist.artist``) or
-    reverts ``list_cue`` to raw offset/limit Python slicing (the original bug shape) entirely. This
-    wraps ``phaze.routers.cue.paged_stmt`` around the ACTUAL statement ``GET /cue/`` executes and
-    asserts the final compiled ``ORDER BY`` key is the unique ``Tracklist.id`` column.
-
-    Deliberately NOT relying on Postgres reproducing tie-order instability across two live queries to
-    prove the bug: the bead's own adversarial review notes the pure-tie-nondeterminism mechanism
-    "rarely fires on a static table with a stable plan between two close reads" -- an assertion tied to
-    that would be a flaky, unreliable regression guard. Asserting the compiled ORDER BY shape of the
-    router's OWN call is exact and deterministic regardless of the Postgres instance running the suite.
-    """
-    from phaze.services.pagination import paged_stmt as real_paged_stmt
-
-    await _create_approved_tracklist_with_file(session)
-
-    captured: list[str] = []
-
-    def _capturing_paged_stmt(*args: object, **kwargs: object) -> object:
-        stmt = real_paged_stmt(*args, **kwargs)  # type: ignore[arg-type]
-        captured.append(str(stmt))
-        return stmt
-
-    with patch("phaze.routers.cue.paged_stmt", side_effect=_capturing_paged_stmt):
-        response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert captured, "list_cue must route its eligible-tracklist read through paged_stmt"
-
-    order_by_clause = captured[0].split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
-    sort_keys = [key.strip() for key in order_by_clause.split(",")]
-    assert sort_keys[-1] == "tracklists.id", (
-        f"the LAST ORDER BY key of the router's OWN paged_stmt call must be the unique Tracklist.id "
-        f"tiebreaker so OFFSET paging can never skip or duplicate a tied row across pages -- got: {sort_keys}"
-    )
-
 
 # ---------------------------------------------------------------------------
-# ``/cue/`` history-restore response shape (phaze-64uy) -- HYGIENE, not a live defect.
+# ``GET /cue/`` -- legacy bookmark redirect only (phaze-y4s6).
 #
-# This handler branched on the raw ``HX-Request`` header, which routers/response_shape.py rule 1
-# bans outright. But NOTHING in the template corpus pushes a ``/cue/`` URL into history
-# (no template carries hx-push-url on a /cue/ control), so no history restore can currently REACH this handler and the raw check was not
-# reachable-broken the way shell.py / proposals.py / duplicates.py / admin_agents.py were.
-#
-# It is converted, and pinned here, so that adding ``hx-push-url`` to these controls later cannot
-# silently re-introduce the defect: the shape would already be correct on the day the URL starts
-# entering history.
+# The in-page HX list/pagination fragment this handler used to serve (``cue/partials/cue_list.html``)
+# had no live caller left post-v7-cutover and was deleted outright, along with the paging/history-
+# restore branches that used to distinguish a live htmx swap from a bookmark/restore. Every shape
+# now redirects unconditionally -- these tests pin that down across the header combinations the
+# old branching handler used to care about.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cue_history_restore_does_not_return_a_fragment(client: AsyncClient) -> None:
-    """A history-restore GET ``/cue/`` falls through to the shell redirect, not the fragment.
-
-    Asserts the SHAPE, not merely a 200 -- before the fix this returned a 200 fragment, which htmx
-    would have swapped into ``<body>``, replacing the whole page.
-    """
-    response = await client.get("/cue/", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"})
-    assert response.status_code == 302, "a restore must not be answered with a chrome-less 200 fragment"
+async def test_cue_history_restore_redirects_to_the_shell(client: AsyncClient) -> None:
+    """A history-restore GET ``/cue/`` redirects, same as any other shape."""
+    response = await client.get("/cue/", headers={"HX-Request": "true", "HX-History-Restore-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
     assert response.headers["location"] == "/s/cue"
 
 
@@ -1076,17 +581,8 @@ async def test_cue_history_restore_resolves_to_a_full_document(client: AsyncClie
 
 
 @pytest.mark.asyncio
-async def test_cue_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
-    """The other direction: an ordinary htmx swap must still get the chrome-less fragment."""
-    response = await client.get("/cue/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
-
-
-@pytest.mark.asyncio
-async def test_cue_restore_header_alone_does_not_return_a_fragment(client: AsyncClient) -> None:
-    """The restore header dominates even without ``HX-Request`` (response_shape rule 2)."""
-    response = await client.get("/cue/", headers={"HX-History-Restore-Request": "true"})
+async def test_cue_restore_header_alone_redirects_to_the_shell(client: AsyncClient) -> None:
+    """The restore header alone (no HX-Request) redirects too."""
+    response = await client.get("/cue/", headers={"HX-History-Restore-Request": "true"}, follow_redirects=False)
     assert response.status_code == 302
     assert response.headers["location"] == "/s/cue"

@@ -168,13 +168,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/duplicates/{group_hash}/undo", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "file_states"): _NOT_STORED,
     ("/duplicates/undo-all", "file_states"): _NOT_STORED,
-    ("/tracklists/", "filter"): _WHITELIST,
-    ("/tracklists/scan/status", "job_ids"): _NOT_STORED,
-    ("/tracklists/scan/status", "agent_id"): "bounded: max_length=128 + pattern",
-    ("/tracklists/link-result", "external_id"): "operator-facing mirror of the agent path; String(50) -- see phaze-btlu",
-    ("/tracklists/link-result", "url"): _TEXT,
-    ("/tracklists/tracks/{track_id}/edit/{field}", "field"): _WHITELIST,
-    ("/tracklists/{tracklist_id}/reject-low", "threshold"): _NOT_STORED,
     ("/pipeline/stats", "lane"): _WHITELIST,
     ("/pipeline/lanes/{backend_id}", "backend_id"): _WHITELIST,
     ("/pipeline/files", "stage"): _WHITELIST,
@@ -246,7 +239,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
     ("/duplicates/resolve-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
-    ("/tracklists/scan", "file_ids"): "list[str] Form; each element parsed to UUID in-route",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
     ("/pipeline/scans", "agent_id"): "validated against the known agent set (D-06) before use",
