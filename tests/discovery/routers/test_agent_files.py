@@ -28,6 +28,7 @@ Phase 35 (D-06) update:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -35,7 +36,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
@@ -151,6 +152,46 @@ async def test_replay_no_duplicates(authenticated_client: AsyncClient, seed_test
     assert r2.status_code == 200
     result = await session.execute(select(sa_func.count()).select_from(FileRecord))
     assert result.scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_rescan_bumps_updated_at_not_created_at(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-7634: a conflicting rescan (same agent_id + original_path) bumps FileRecord.updated_at;
+    created_at stays pinned.
+
+    Same defect class as phaze-c8nz: `on_conflict_do_update`'s `set_` clause used to omit
+    `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate` hook never fires for a Core
+    upsert -- so a rescanned row kept reporting the FIRST-discovery timestamp forever. Backdate
+    both columns, re-POST the same record, and assert updated_at moves forward while created_at
+    is untouched.
+    """
+    record = _make_record()
+    r1 = await authenticated_client.post("/api/internal/agent/files", json={"files": [record]})
+    assert r1.status_code == 200, r1.text
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
+    # well in the past. files.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns -- use
+    # a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(
+        update(FileRecord).where(FileRecord.original_path == record["original_path"]).values(created_at=outage_time, updated_at=outage_time)
+    )
+    await session.commit()
+
+    before_rescan = datetime.now(UTC).replace(tzinfo=None)
+
+    r2 = await authenticated_client.post("/api/internal/agent/files", json={"files": [record]})
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    row = (await session.execute(select(FileRecord).where(FileRecord.original_path == record["original_path"]))).scalar_one()
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-discovery value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_rescan - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.asyncio

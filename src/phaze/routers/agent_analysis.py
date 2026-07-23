@@ -216,7 +216,15 @@ async def put_analysis(
         # (both are conflict-target / immutable PK -- existing row keeps its existing id).
         stmt = stmt.on_conflict_do_update(
             index_elements=["file_id"],
-            set_={**{k: stmt.excluded[k] for k in dumped}, "failed_at": None, "error_message": None},
+            set_={
+                **{k: stmt.excluded[k] for k in dumped},
+                "failed_at": None,
+                "error_message": None,
+                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+                # CONFLICT DO UPDATE path -- stamp it explicitly so a re-analysis bumps updated_at
+                # instead of freezing it at first write (phaze-c8nz). created_at stays pinned.
+                "updated_at": func.now(),
+            },
         )
     else:
         # Empty body -- no-op for existing rows; INSERT still happens for fresh ones.
@@ -338,6 +346,10 @@ async def post_analysis_progress(
         set_={
             "fine_windows_analyzed": stmt.excluded.fine_windows_analyzed,
             "fine_windows_total": stmt.excluded.fine_windows_total,
+            # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+            # CONFLICT DO UPDATE path -- stamp it explicitly so a progress bump moves updated_at
+            # instead of freezing it at first write (phaze-c8nz). created_at stays pinned.
+            "updated_at": func.now(),
         },
     )
     await session.execute(stmt)
@@ -415,7 +427,17 @@ async def report_analysis_failed(
     # a completed row is left untouched (a benign no-op, mirroring report_metadata_failed's WR-01).
     stmt = stmt.on_conflict_do_update(
         index_elements=["file_id"],
-        set_={"failed_at": now, "error_message": error_message, "analysis_completed_at": None},
+        set_={
+            "failed_at": now,
+            "error_message": error_message,
+            "analysis_completed_at": None,
+            # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core ON
+            # CONFLICT DO UPDATE path -- stamp it explicitly (reusing the same `now` value as
+            # failed_at) so the failure marker bumps updated_at instead of freezing it at first
+            # write (phaze-c8nz). created_at stays pinned. The CAS `where=` predicate below is
+            # unchanged -- this addition only touches which columns the guarded UPDATE writes.
+            "updated_at": now,
+        },
         where=AnalysisResult.analysis_completed_at.is_(None),
     )
     # An INSERT .. ON CONFLICT DO UPDATE returns a CursorResult at runtime (exposing rowcount); the

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import os
 from typing import TYPE_CHECKING
 import uuid
@@ -11,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
 import redis.asyncio as redis_async
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.database import get_session
 from phaze.models.file import FileRecord
@@ -206,6 +207,65 @@ async def test_tracklist_replay_with_new_request_id_creates_new_version(
     assert body_a["tracklist_id"] == body_b["tracklist_id"]  # same tracklist row
     assert body_a["version"] == 1
     assert body_b["version"] == 2
+
+
+@pytest.mark.integration
+async def test_tracklist_replay_bumps_updated_at_not_created_at(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """phaze-7634: a conflicting re-upsert (new request_id, same external_id) bumps
+    Tracklist.updated_at; created_at stays pinned.
+
+    Regression for the same defect class as phaze-c8nz: `on_conflict_do_update`'s `set_`
+    clause used to omit `updated_at`, and `TimestampMixin.updated_at`'s ORM `onupdate` hook
+    never fires for a Core upsert -- so a replayed tracklist create kept reporting the
+    FIRST-write timestamp forever. This test backdates BOTH columns to a fixed point in the
+    past, then replays the create with a fresh request_id (forcing the `ON CONFLICT
+    (external_id) DO UPDATE` branch) and asserts updated_at moves forward while created_at
+    stays put.
+    """
+    agent, raw_token = seed_test_agent
+    file_id = await _seed_file(session, agent.id)
+    ext = f"fp-updated-at-{file_id.hex[:8]}"
+    payload_a = {
+        "file_id": str(file_id),
+        "source": "fingerprint",
+        "external_id": ext,
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r1 = await ac.post("/api/internal/agent/tracklists", json=payload_a)
+    assert r1.status_code == 200, r1.text
+    tracklist_id = uuid.UUID(r1.json()["tracklist_id"])
+
+    # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook entirely) to a
+    # fixed point well in the past. tracklists.created_at/updated_at are TIMESTAMP WITHOUT TIME
+    # ZONE columns -- use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
+    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    await session.execute(update(Tracklist).where(Tracklist.id == tracklist_id).values(created_at=outage_time, updated_at=outage_time))
+    await session.commit()
+
+    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+
+    payload_b = {
+        **payload_a,
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "B", "title": "T2"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r2 = await ac.post("/api/internal/agent/tracklists", json=payload_b)
+    assert r2.status_code == 200, r2.text
+
+    session.expire_all()
+    row = (await session.execute(select(Tracklist).where(Tracklist.id == tracklist_id))).scalar_one()
+    assert row.created_at == outage_time, "created_at must stay pinned to the first-write value"
+    assert row.updated_at > outage_time, "updated_at must move forward off the stale outage-window value"
+    assert row.updated_at >= before_reupsert - timedelta(seconds=5), (
+        "updated_at must reflect the server clock at conflict-resolution time, not the stale backdated value"
+    )
 
 
 @pytest.mark.integration

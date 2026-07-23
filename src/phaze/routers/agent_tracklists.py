@@ -157,7 +157,15 @@ async def _run_owner_path(
         )
         .on_conflict_do_update(
             index_elements=["external_id"],
-            set_={"file_id": body.file_id, "source": body.source},
+            set_={
+                "file_id": body.file_id,
+                "source": body.source,
+                # TimestampMixin.updated_at's ORM onupdate=func.now() never fires on this Core
+                # ON CONFLICT DO UPDATE path -- stamp it explicitly so a replayed tracklist
+                # create bumps updated_at instead of freezing it at first write (phaze-c8nz).
+                # created_at stays pinned: it means "first time this external_id was recorded".
+                "updated_at": func.now(),
+            },
         )
         .returning(Tracklist.id)
     )
