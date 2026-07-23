@@ -35,9 +35,33 @@ _CREATE = (
 )
 _DROP = "DROP INDEX uq_scan_batches_agent_id_scan_path_running"
 
+# Pre-index dedupe (the migration-041/phaze-am5p lesson, applied as in migration 043): the very bug
+# this index guards against has been LIVE, so an existing database can already hold two-or-more
+# RUNNING rows for one (agent_id, scan_path) -- creating the unique index over them would abort the
+# upgrade. Fail all but the newest RUNNING row per pair (newest created_at, id tiebreaker -- the
+# duplicate most likely to still be a real in-flight scan), stamping completed_at and an
+# explanatory error_message so the survivors of the historical double-dispatch read as terminal
+# rather than lingering RUNNING forever. Static string-literal DML -- no interpolation.
+_DEDUPE_EXISTING = """
+UPDATE public.scan_batches sb
+SET status = 'failed',
+    completed_at = now(),
+    error_message = 'migration 044: superseded duplicate RUNNING batch (pre-phaze-1a71 double dispatch); newest RUNNING batch for this agent+path kept'
+WHERE sb.status = 'running'
+  AND EXISTS (
+    SELECT 1
+    FROM public.scan_batches newer
+    WHERE newer.agent_id = sb.agent_id
+      AND newer.scan_path = sb.scan_path
+      AND newer.status = 'running'
+      AND (newer.created_at, newer.id) > (sb.created_at, sb.id)
+  )
+"""
+
 
 def upgrade() -> None:
-    """Add the one-RUNNING-batch-per-(agent, path) guard."""
+    """Dedupe pre-existing duplicate RUNNING batches, then add the one-RUNNING-per-(agent, path) guard."""
+    op.execute(_DEDUPE_EXISTING)
     op.execute(_CREATE)
 
 
