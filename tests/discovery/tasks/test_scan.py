@@ -133,6 +133,31 @@ async def test_orchestrator_error_propagates() -> None:
     api.create_tracklist.assert_not_awaited()
 
 
+async def test_total_engine_outage_is_not_a_terminal_no_match() -> None:
+    """phaze-z7yw: a total fingerprint outage must NOT ack report_scan_terminal.
+
+    combined_query raising FingerprintQueryUnavailableError means every engine failed at
+    the ENGINE level. scan_live_set must re-raise (SAQ retry/backoff) WITHOUT writing the
+    terminal no-match ack, so the scan_live_set:<file_id> ledger row survives and recovery
+    re-enqueues the file after the outage -- instead of converting the outage into a
+    permanent, success-looking 'no_matches' verdict.
+    """
+    from phaze.services.fingerprint import FingerprintQueryUnavailableError
+    from phaze.tasks.scan import scan_live_set
+
+    api = AsyncMock()
+    api.create_tracklist = AsyncMock()
+    orchestrator = AsyncMock()
+    orchestrator.combined_query = AsyncMock(side_effect=FingerprintQueryUnavailableError("all fingerprint engines failed"))
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+
+    with pytest.raises(FingerprintQueryUnavailableError):
+        await scan_live_set(ctx, **_make_payload_kwargs())
+
+    api.report_scan_terminal.assert_not_awaited()
+    api.create_tracklist.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Phase 45 (L-02): scan terminal-ack on the create_tracklist failure path
 # ---------------------------------------------------------------------------

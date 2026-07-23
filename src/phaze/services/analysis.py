@@ -27,6 +27,21 @@ import essentia.standard as es
 log = logging.getLogger(__name__)
 
 
+class AnalysisDecodeError(RuntimeError):
+    """EVERY analysis window failed to decode -- the file's audio stream is unusable (phaze-zibn).
+
+    Raised by :func:`analyze_file` when the duration probe succeeded (the container header is
+    readable, so the natural window count is non-zero) but the per-window ``EasyLoader`` decode
+    failed on every fine AND every coarse window -- e.g. a truncated download whose valid ID3
+    header reports a long duration over no decodable frames. Without this floor the per-window
+    failure isolation returned a success dict with all-``None`` aggregates and zero analyzed
+    windows, the completion PUT stamped ``analysis_completed_at``, and the undecodable file was
+    permanently recorded as successfully analyzed. Raising instead routes the file to the
+    callers' existing terminal failure handling (``report_analysis_failed`` /
+    ``ANALYSIS_FAILED``), consistent with the timeout/crash paths.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Type definitions for model registry
 # ---------------------------------------------------------------------------
@@ -593,8 +608,12 @@ def analyze_file(
         every window with audio is analyzed (no minimum-length floor).
 
     Per-window failures are logged and skipped — one bad window never fails the
-    file. Window sizes default to the ``AgentSettings`` defaults (30/180/15) and
-    may be overridden by the agent worker.
+    file. The one floor (phaze-zibn): if EVERY window fails in BOTH passes while
+    the natural window count was non-zero, :class:`AnalysisDecodeError` is raised
+    instead of returning an empty success — total decode failure is a file-level
+    failure, not a completed analysis. Window sizes default to the
+    ``AgentSettings`` defaults (30/180/15) and may be overridden by the agent
+    worker.
 
     To keep per-file cost constant regardless of duration, each pass is bounded
     by a cap (``fine_cap``/``coarse_cap``, defaults 60/30): a file whose natural
@@ -629,6 +648,16 @@ def analyze_file(
         file_path, total_sec, fine_window_sec, fine_min_sec, fine_cap, progress_cb=progress_cb
     )
     coarse_windows, coarse_total, coarse_sampled = _analyze_coarse_windows(file_path, total_sec, coarse_window_sec, models_dir, coarse_cap)
+
+    # phaze-zibn: per-window failure isolation must not mask TOTAL decode failure. If the
+    # file naturally had windows to analyze but every single one failed in BOTH passes, the
+    # audio stream is undecodable (e.g. a valid header over a truncated/corrupt payload) --
+    # raise so the callers route it to their terminal failure handling instead of recording
+    # an empty all-None result as a completed analysis. A partial failure (>=1 window
+    # analyzed in either pass) remains a genuine partial success.
+    if not fine_windows and not coarse_windows and (fine_total > 0 or coarse_total > 0):
+        msg = f"all analysis windows failed to decode ({fine_total} fine + {coarse_total} coarse natural windows, 0 analyzed): {file_path}"
+        raise AnalysisDecodeError(msg)
 
     windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
     windows.extend(w.as_payload_dict() for w in coarse_windows)
