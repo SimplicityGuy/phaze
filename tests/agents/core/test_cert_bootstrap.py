@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 import pytest
 
-from phaze.cert_bootstrap import _parse_san_entries, ensure_certs_present
+from phaze.cert_bootstrap import _parse_san_entries, _write_private_key_file, ensure_certs_present
 
 
 if TYPE_CHECKING:
@@ -149,6 +149,42 @@ def test_file_modes_are_correct(tmp_path: Path) -> None:
     assert (tmp_path / "phaze-server.crt").stat().st_mode & 0o777 == 0o644
     assert (tmp_path / "phaze-ca.key").stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "phaze-server.key").stat().st_mode & 0o777 == 0o600
+
+
+def test_private_key_file_is_0600_from_birth_not_via_later_chmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-d39i: `_write_private_key_file` must create the file at mode 0600 via `os.open`'s
+    own `mode` argument, not `write_bytes()` (0o666 & ~umask, typically 0644) followed by a
+    later `.chmod(0o600)` -- the create-then-chmod pattern that leaves the private key
+    world-readable for a window on a host bind mount (and permanently so if the process dies
+    in that window). Assert both the final mode AND that `Path.chmod` is never invoked by the
+    helper, so a regression back to write-then-chmod is caught even if the end mode happens to
+    match."""
+    from pathlib import Path as _Path
+
+    chmod_calls: list[tuple[_Path, int]] = []
+    real_chmod = _Path.chmod
+
+    def _tracking_chmod(self: _Path, mode: int, **kwargs: object) -> None:
+        chmod_calls.append((self, mode))
+        real_chmod(self, mode, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_Path, "chmod", _tracking_chmod)
+
+    key_path = tmp_path / "some.key"
+    _write_private_key_file(key_path, b"fake-private-key-bytes")
+
+    assert key_path.stat().st_mode & 0o777 == 0o600
+    assert key_path.read_bytes() == b"fake-private-key-bytes"
+    assert chmod_calls == [], f"_write_private_key_file must not narrow permissions after the fact via chmod: {chmod_calls}"
+
+
+def test_certs_dir_created_with_0700_mode(tmp_path: Path) -> None:
+    """phaze-d39i: `ensure_certs_present` must create a brand-new certs dir at 0700, not the
+    world-traversable 0755 default `Path.mkdir(parents=True, exist_ok=True)` produces -- the dir
+    sits on a host bind mount that holds the CA private key."""
+    certs_dir = tmp_path / "certs"
+    ensure_certs_present(certs_dir, cn="localhost", sans_csv=_DEFAULT_SANS)
+    assert certs_dir.stat().st_mode & 0o777 == 0o700
 
 
 def test_leaf_san_entries_match_input(tmp_path: Path) -> None:
