@@ -769,10 +769,18 @@ async def test_apply_increments_and_promote_do_not_resurrect_reaped_key(
     promote = agent_exec_batches._get_promote_status_script(redis_client)
     try:
         gone = "exec:reaped-batch-pyv3"
-        # The HINCRBY apply must NOT auto-create the reaped key.
-        result = await apply_increments(keys=[gone], args=["completed", "1", "subjobs_completed", "1"], client=redis_client)
+        marker = "exec_progress_req:reaped-batch-pyv3-req"
+        # phaze-gtau signature: KEYS=[batch, marker], ARGV=[ttl, field, by, ...]. The HINCRBY apply
+        # must NOT auto-create the reaped batch key -- and it must NOT claim the request marker for a
+        # dead batch (the reaped-batch guard fires BEFORE the marker is set).
+        result = await apply_increments(
+            keys=[gone, marker],
+            args=[str(agent_exec_batches._TTL_SECONDS), "completed", "1", "subjobs_completed", "1"],
+            client=redis_client,
+        )
         assert int(result) == 0
         assert await redis_client.exists(gone) == 0
+        assert await redis_client.exists(marker) == 0  # no marker claimed for a reaped batch
 
         # The promote must NOT recreate a status-bearing phantom on a reaped key either.
         result = await promote(keys=[gone, agent_exec_batches.ACTIVE_DISPATCH_KEY], args=["some-batch-id"], client=redis_client)
@@ -781,3 +789,142 @@ async def test_apply_increments_and_promote_do_not_resurrect_reaped_key(
     finally:
         agent_exec_batches._apply_increments_script = None
         agent_exec_batches._promote_status_script = None
+
+
+# ---------------------------------------------------------------------------
+# phaze-gtau: a crash BETWEEN the (old) marker-set point and the increments must
+# no longer burn the marker with the counters lost -- the retry must re-apply them.
+# ---------------------------------------------------------------------------
+
+
+def _make_client_capturing_errors(session: AsyncSession, redis_client: redis_async.Redis, token: str) -> AsyncClient:
+    """A smoke client that surfaces an unhandled handler exception as a 500 response.
+
+    ``raise_app_exceptions=False`` lets the fault-injection tests observe the crashed
+    request as an HTTP 500 (what the agent client's tenacity/SAQ retry sees) and then
+    drive the retry, instead of the exception propagating out of ``ac.post``.
+    """
+    app = _make_smoke_app(session, redis_client)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    return AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {token}"})
+
+
+@pytest.mark.integration
+async def test_mid_span_crash_before_increments_does_not_burn_marker_and_retry_applies(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-gtau: a first attempt that crashes at the apply step leaves the marker UNSET, so the retry re-applies.
+
+    Simulates the burned-token-mid-span path: the handler dies exactly where the OLD ordering had already
+    durably SET the idempotency marker but had NOT yet run the HINCRBYs. The first POST 500s; because the
+    marker is now set ATOMICALLY WITH the increments (not before them), it was never claimed -- so the
+    identical-request_id retry is NOT short-circuited and the counters land exactly once.
+
+    MUTATION (revert to ``SET NX marker`` BEFORE the HINCRBY pipeline): the first POST burns the marker, the
+    retry dedups into a clean 200, ``completed`` stays 0 -> RED.
+    """
+    agent, raw_token = seed_test_agent
+    batch_id = uuid.uuid4()
+    await _seed_exec_hash(redis_client, batch_id, agent.id)
+    request_id = uuid.uuid4()
+    req_key = f"{agent_exec_batches._REQ_PREFIX}{request_id}"
+    body = _make_progress_body(batch_id=batch_id, agent_id=agent.id, terminal_step="deleted", request_id=request_id)
+
+    # Inject a crash on the FIRST apply-increments invocation only; the retry runs the real script.
+    real_getter = agent_exec_batches._get_apply_increments_script
+    state = {"first": True}
+
+    def _flaky_getter(client: redis_async.Redis) -> object:
+        real_script = real_getter(client)
+
+        async def _wrapper(*, keys: list[str], args: list[str], client: redis_async.Redis) -> object:
+            if state["first"]:
+                state["first"] = False
+                raise RuntimeError("simulated crash between marker-set and increments (phaze-gtau)")
+            return await real_script(keys=keys, args=args, client=client)
+
+        return _wrapper
+
+    monkeypatch.setattr(agent_exec_batches, "_get_apply_increments_script", _flaky_getter)
+
+    async with _make_client_capturing_errors(session, redis_client, raw_token) as ac:
+        r1 = await ac.post(f"/api/internal/agent/exec-batches/{batch_id}/progress", json=body)
+        # The crashed attempt 500s and -- critically -- left the marker UNSET and the counters untouched.
+        assert r1.status_code == 500, r1.text
+        assert await redis_client.exists(req_key) == 0, "the crashed attempt must NOT have burned the idempotency marker"
+        assert (await redis_client.hget(f"exec:{batch_id}", "completed")) == "0"
+
+        # The retry (identical request_id) now applies the increments -- they were not lost.
+        r2 = await ac.post(f"/api/internal/agent/exec-batches/{batch_id}/progress", json=body)
+        assert r2.status_code == 200, r2.text
+
+    h = await redis_client.hgetall(f"exec:{batch_id}")
+    assert h["completed"] == "1", f"retry must apply the lost increment exactly once, got {h['completed']!r}"
+    assert h["copied"] == "1"
+    assert h["verified"] == "1"
+    assert h["deleted"] == "1"
+    assert await redis_client.exists(req_key) == 1, "the successful retry claims the marker atomically with the counters"
+
+
+@pytest.mark.integration
+async def test_mid_span_crash_on_terminal_event_recovers_promotion_on_retry(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-gtau (terminal-loss half): a crashed terminal event must not strand the batch at 'running'.
+
+    The lost event is the ``sub_batch_terminal=True`` one, so under the OLD ordering the burned marker meant
+    ``subjobs_completed`` never reached ``subjobs_expected``, the promote never fired, and the batch streamed
+    'running' until the 24h TTL dropped the hash -- a permanent strand. Here the retry re-applies the terminal
+    increment AND promotes to 'complete'.
+
+    MUTATION (revert to marker-before-increments): the retry dedups, ``subjobs_completed`` stays 0, status
+    stays 'running' -> RED.
+    """
+    agent, raw_token = seed_test_agent
+    batch_id = uuid.uuid4()
+    await _seed_exec_hash(redis_client, batch_id, agent.id, subjobs_expected=1, subjobs_completed=0)
+    request_id = uuid.uuid4()
+    body = _make_progress_body(
+        batch_id=batch_id,
+        agent_id=agent.id,
+        terminal_step="deleted",
+        sub_batch_terminal=True,
+        request_id=request_id,
+    )
+
+    real_getter = agent_exec_batches._get_apply_increments_script
+    state = {"first": True}
+
+    def _flaky_getter(client: redis_async.Redis) -> object:
+        real_script = real_getter(client)
+
+        async def _wrapper(*, keys: list[str], args: list[str], client: redis_async.Redis) -> object:
+            if state["first"]:
+                state["first"] = False
+                raise RuntimeError("simulated crash on the terminal event (phaze-gtau)")
+            return await real_script(keys=keys, args=args, client=client)
+
+        return _wrapper
+
+    monkeypatch.setattr(agent_exec_batches, "_get_apply_increments_script", _flaky_getter)
+
+    async with _make_client_capturing_errors(session, redis_client, raw_token) as ac:
+        r1 = await ac.post(f"/api/internal/agent/exec-batches/{batch_id}/progress", json=body)
+        assert r1.status_code == 500, r1.text
+        # Mid-span crash: nothing promoted yet, and the batch is NOT stranded because the marker is unset.
+        h_after_crash = await redis_client.hgetall(f"exec:{batch_id}")
+        assert h_after_crash["subjobs_completed"] == "0"
+        assert h_after_crash["status"] == "running"
+
+        r2 = await ac.post(f"/api/internal/agent/exec-batches/{batch_id}/progress", json=body)
+        assert r2.status_code == 200, r2.text
+
+    h = await redis_client.hgetall(f"exec:{batch_id}")
+    assert h["subjobs_completed"] == "1", f"retry must apply the lost terminal increment, got {h['subjobs_completed']!r}"
+    assert h["status"] == "complete", f"retry must promote the batch instead of stranding at 'running', got {h['status']!r}"

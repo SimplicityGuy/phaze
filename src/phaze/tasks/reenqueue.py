@@ -73,11 +73,14 @@ a bare ``.in_(fids)`` (the asyncpg 32767 param cap -- the ledger reached ~44.5K 
 incident). Deriving "done" directly inverts the set-size characteristic (the pending sets were small;
 the done set is most of a 200K corpus), which the ledger scope keeps at O(|ledger|).
 
-Routing carries forward the Phase-32 pitfalls: agent rows route to the active agent's per-agent
-queue via ``select_active_agent`` + ``ctx["task_router"].queue_for(agent.id)`` -- NEVER the
-consumer-less controller queue (Pitfall 1); controller rows route to ``ctx["queue"]``. Zero live
-agents (common right after a cold reboot; Pitfall 3) logs a warning and skips the agent-routed rows
-instead of raising. The cached ``task_router`` is reused, never reconstructed per call (Pitfall 4).
+Routing carries forward the Phase-32 pitfalls: agent rows route to EACH row's OWNING fileserver
+agent (``payload["agent_id"]``, phaze-fjii) via ``select_agent_by_id`` +
+``ctx["task_router"].queue_for(agent.id, lane)`` -- NEVER the consumer-less controller queue
+(Pitfall 1), and never a single "most-recently-seen" fileserver that would misroute other owners'
+rows; controller rows route to ``ctx["queue"]``. An offline / non-fileserver owner (common right
+after a cold reboot; Pitfall 3) logs a warning and skips THAT owner's agent-routed rows instead of
+raising -- never rerouting them onto another agent. The cached ``task_router`` is reused, never
+reconstructed per call (Pitfall 4).
 """
 
 from __future__ import annotations
@@ -98,7 +101,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.services.backends import IN_FLIGHT
-from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_active_agent
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
 from phaze.services.stage_status import domain_completed_clause, done_clause, skipped_clause
@@ -482,6 +485,69 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
         tally["reenqueued"] += 1
 
 
+async def _replay_agent_rows_by_owner(
+    session: AsyncSession,
+    task_router: Any,
+    rows: list[SchedulingLedger],
+    stages: dict[str, dict[str, int]],
+) -> None:
+    """Replay agent-routed ledger rows onto EACH row's OWNING fileserver agent (phaze-fjii).
+
+    phaze-c9w9 fixed the LIVE enqueue paths (``resolve_queue_for_task`` /
+    ``resolve_queues_for_owned_files``) to route every file-keyed agent task to the FILE's owning
+    agent (``payload["agent_id"]``) iff that agent is a live fileserver -- never to "the single
+    most-recently-seen fileserver". Recovery was never updated: it picked ONE
+    ``select_active_agent(kind="fileserver")`` and replayed every orphaned agent row onto it, so in
+    a multi-fileserver deployment every recovered row landed on ONE agent's lanes regardless of the
+    payload's real owner. That agent's mount lacks the other owners' paths, so ``process_file``
+    FileNotFounds into terminal ANALYSIS_FAILED and the fingerprint/meta lanes wedge on a
+    consumer-less key -- a silent misroute of everyone else's work.
+
+    This mirrors phaze-c9w9's contract for the recovery path: group ``rows`` by their stored
+    ``payload["agent_id"]`` (encounter order preserved within each group), resolve each owner
+    independently via :func:`select_agent_by_id` (same liveness filter, ``kind="fileserver"``), and
+    replay each row onto that owner's per-function lane queue. An owner that is offline / revoked /
+    never-seen / not a fileserver is SKIPPED with a WARNING -- its rows are NEVER rerouted onto
+    another agent (the exact misroute this fixes); a later recovery re-drives them once the owner is
+    back. A row whose payload carries no ``agent_id`` (malformed / legacy) is likewise skipped rather
+    than blind-routed, since its true owner is unknowable.
+    """
+    if not rows:
+        return
+
+    owners: dict[str | None, list[SchedulingLedger]] = {}
+    for row in rows:
+        owner_id = (row.payload or {}).get("agent_id")
+        owners.setdefault(owner_id, []).append(row)
+
+    for owner_id, owned in owners.items():
+        if owner_id is None:
+            logger.warning(
+                "recover_orphaned_work: agent-routed ledger row has no owning agent_id -- skipped, never rerouted (phaze-fjii)",
+                functions=sorted({r.function for r in owned}),
+                rows=len(owned),
+            )
+            continue
+        try:
+            # phaze-fjii (mirrors phaze-c9w9 / enqueue_router.resolve_queue_for_task's per-file
+            # ``agent_id`` form): the destination is THIS owner iff it is a live fileserver, or
+            # nothing -- never "some other live fileserver" whose mount lacks the path.
+            agent = await select_agent_by_id(session, owner_id, kind="fileserver")
+        except NoActiveAgentError:
+            logger.warning(
+                "recover_orphaned_work: owning fileserver agent offline -- rows skipped, not rerouted (phaze-fjii)",
+                agent_id=owner_id,
+                functions=sorted({r.function for r in owned}),
+                rows=len(owned),
+            )
+            continue
+        # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
+        # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
+        for row in owned:
+            agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
+            await _replay_row(agent_queue, row, stages[row.function])
+
+
 async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
     """Gated, ledger-driven, idempotent restart/queue-loss recovery producer (Phase 45).
 
@@ -498,8 +564,10 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
     2. RECOVER (when ``saq_jobs`` is empty, OR ``force=True``): read the ledger rows + the live keys +
        the per-stage done sets ONCE; ``orphaned = [r for r in rows if r.key not in live and not
        is_domain_completed(r, done_sets)]``. Partition by ``r.routing``: controller rows replay on
-       ``ctx["queue"]``; agent rows replay on the active agent's per-agent queue. On
-       ``NoActiveAgentError`` (cold boot, D-05) the agent rows skip with a WARNING (zero counts) while
+       ``ctx["queue"]``; agent rows replay onto EACH row's OWNING fileserver agent
+       (``payload["agent_id"]``, phaze-fjii -- mirroring phaze-c9w9's live-path per-owner routing),
+       resolved via :func:`select_agent_by_id`. An offline / non-fileserver owner (cold boot, D-05)
+       has its rows SKIPPED with a WARNING (zero counts) -- never rerouted onto another agent -- while
        the controller rows still replay. Each producer's ``None`` return (deterministic-key dedup)
        counts as ``skipped``, otherwise ``reenqueued``.
 
@@ -581,47 +649,13 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
             await _replay_row(ctx["queue"], row, stages[row.function])
 
         # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
-        # the rsync); with no fileserver online, skip with a WARNING (the next staging-cron tick / a
-        # later recovery re-drives the still-PUSHING file -- never enqueue it onto a compute agent).
-        if push_rows:
-            try:
-                fileserver_agent = await select_active_agent(session, kind="fileserver")
-            except NoActiveAgentError:
-                logger.warning(
-                    "recover_orphaned_work: no fileserver agent -- push_file rows skipped for the staging cron (D-10)",
-                    push_rows=len(push_rows),
-                )
-            else:
-                # quick-260707-dh1: push_rows are all push_file -> the io lane.
-                fileserver_queue = ctx["task_router"].queue_for(fileserver_agent.id, lane_for_task("push_file"))
-                for row in push_rows:
-                    await _replay_row(fileserver_queue, row, stages[row.function])
+        # the rsync); an offline owner skips with a WARNING (the next staging-cron tick / a later
+        # recovery re-drives the still-PUSHING file -- never enqueue it onto a compute agent).
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], push_rows, stages)
 
-        # Remaining agent rows need any online FILESERVER agent (cold boot may have none -> skip, never raise).
-        if other_agent_rows:
-            try:
-                # phaze-mits (mirrors phaze-5r8f / enqueue_router.resolve_queue_for_task): these rows are
-                # ALL fileserver-local (process_file / extract_file_metadata / fingerprint_file /
-                # scan_live_set / s3_upload) -- the media-mount owner is the ONLY valid consumer. An
-                # UNSCOPED pick (kind=None orders by last_seen_at across ALL kinds) races the heartbeat
-                # and could land a fileserver-local task on a media-less compute agent, where
-                # process_file's path read FileNotFounds into terminal ANALYSIS_FAILED and the
-                # fingerprint/meta lanes have NO consumer (the parked non-terminal row then wedges the
-                # global saq_jobs.key forever). Scope to kind="fileserver" -- matching the push_file
-                # branch just above (D-10) and CLOUDROUTE-02.
-                agent = await select_active_agent(session, kind="fileserver")
-            except NoActiveAgentError:
-                logger.warning(
-                    "recover_orphaned_work: no fileserver agent -- agent-routed ledger rows skipped (cold boot)",
-                    agent_rows=len(other_agent_rows),
-                )
-            else:
-                # quick-260707-dh1: other_agent_rows are MIXED functions (process_file /
-                # extract_file_metadata / fingerprint_file) -> derive the lane PER ROW via
-                # lane_for_task(row.function). An unmapped function raises loudly (never a bad queue).
-                for row in other_agent_rows:
-                    agent_queue = ctx["task_router"].queue_for(agent.id, lane_for_task(row.function))
-                    await _replay_row(agent_queue, row, stages[row.function])
+        # Remaining agent rows re-drive onto their OWNING fileserver (cold boot / offline owner -> skip,
+        # never raise).
+        await _replay_agent_rows_by_owner(session, ctx["task_router"], other_agent_rows, stages)
 
     logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, stages=stages)
     return {"detected_loss": detected_loss, "forced": force, "stages": stages}

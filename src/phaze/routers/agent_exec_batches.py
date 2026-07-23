@@ -1,6 +1,8 @@
 """POST /api/internal/agent/exec-batches/{batch_id}/progress -- per-proposal terminal-state event (Phase 28 D-05, D-17).
 
-Handler ordering (the ORDER is part of the contract, per T-28-02-S1/I1):
+Handler ordering (the ORDER is part of the contract, per T-28-02-S1/I1). Stages 1-3 are the
+D-17 cross-tenant SECURITY guards and their order is FIXED; phaze-gtau reworked only the
+token-vs-work ordering below them (stages 4-6):
   1. 403 if ``body.agent_id != agent.id`` -- cross-tenant guard BEFORE any
      state read (mirrors Phase 26 D-08 timing-side-channel pattern; a leaked
      ``batch_id`` cannot be probed via 200 vs 404 timing).
@@ -12,13 +14,20 @@ Handler ordering (the ORDER is part of the contract, per T-28-02-S1/I1):
      per-agent rollup is pre-set at dispatch time (D-09 step 5), so its
      absence is structural proof the caller wasn't part of this dispatch
      (D-17 step 4).
-  4. SET NX EX dedup on ``exec_progress_req:{request_id}`` -- duplicate
-     returns 200 with NO HINCRBY (Stripe-style idempotency; D-15).
-  5. HINCRBY counters per the D-07 rules (computed by ``_compute_increments``;
-     pipelined for one network round-trip).
-  6. If ``sub_batch_terminal`` is True, HINCRBY ``subjobs_completed`` and
-     promote ``status`` to ``"complete"`` / ``"complete_with_errors"`` when
-     ``subjobs_completed == subjobs_expected`` (D-07 final clause).
+  4/5. ATOMIC dedup + D-07 counters + request marker (phaze-gtau). ONE Lua
+     script (``_APPLY_INCREMENTS_LUA``) checks the ``exec_progress_req:{request_id}``
+     idempotency marker, applies the D-07 HINCRBY set (computed by
+     ``_compute_increments``, plus ``subjobs_completed`` when terminal), and SETs
+     the marker -- all in one round-trip. The marker becomes authoritative ONLY
+     together with the counters, so a crash mid-span can never burn the marker with
+     the increments unapplied (the old ``SET NX marker`` BEFORE the HINCRBY pipeline
+     silently lost them on the retry). A duplicate request_id applies nothing
+     (Stripe-style idempotency; D-15); a reaped batch applies nothing (phaze-pyv3).
+  6. If ``sub_batch_terminal`` is True, promote ``status`` to ``"complete"`` /
+     ``"complete_with_errors"`` when ``subjobs_completed == subjobs_expected`` (D-07
+     final clause). Runs even on a deduped replay so a crash between the atomic
+     apply and the promotion cannot strand a terminal batch at ``"running"`` on retry
+     (the promotion is idempotent).
 
 This module deliberately omits ``from __future__ import annotations`` so
 FastAPI can resolve ``Annotated[redis_async.Redis, Depends(_get_redis)]`` at
@@ -107,28 +116,40 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
     return _promote_status_script
 
 
-# phaze-pyv3: apply the D-07 HINCRBY counter set ONLY if the exec:{batch_id} hash still exists,
-# atomically. Stages 2/3 confirm the key exists earlier in the handler, but the batch's 24h TTL can
-# fire between those HEXISTS checks and these HINCRBYs; a bare HINCRBY would then RESURRECT the key
-# with arbitrary counter fields and, per Redis semantics, NO expiry -- leaking it forever (the TTL
-# is the only reaper) and feeding any attached SSE stream a status-less phantom hash. The EXISTS
-# check + HINCRBYs run in one round trip so a key reaped mid-request stays reaped (returns 0).
-# ARGV is a flat [field, by, field, by, ...] list; the caller appends ('subjobs_completed', 1) when
-# the sub-batch is terminal. Returns 1 if applied, 0 if the key was already gone.
+# phaze-gtau: apply the D-07 HINCRBY counter set AND claim the request-idempotency marker
+# (KEYS[2]) ATOMICALLY, in one round-trip. The marker becomes authoritative ONLY together with the
+# HINCRBYs, closing the window the prior "SET NX marker, THEN pipeline HINCRBY" ordering left open:
+# a crash between the marker set and the increments burned the marker with the counters unapplied,
+# so the tenacity/SAQ retry (identical request_id) short-circuited on the marker into a clean 200
+# and the increments were LOST forever (a lost terminal event stranded the batch at 'running' until
+# its 24h TTL). Here either BOTH the increments and the marker land, or NEITHER; a duplicate
+# request (marker already present) applies nothing.
+#
+# phaze-pyv3 (PRESERVED): the EXISTS(KEYS[1]) guard keeps a batch reaped by its 24h TTL between the
+# stage 2/3 HEXISTS checks and here from being RESURRECTED by a bare HINCRBY (which would leak a
+# TTL-less, status-less phantom hash forever). The apply is a no-op when the hash is already gone,
+# and the marker is NOT claimed for a dead batch (nothing to protect against a replay of).
+#
+# KEYS[1] = exec:{batch_id}; KEYS[2] = exec_progress_req:{request_id}. ARGV[1] = marker TTL seconds;
+# ARGV[2..] is a flat [field, by, field, by, ...] list; the caller appends ('subjobs_completed', 1)
+# when the sub-batch is terminal. Returns 1 if applied+claimed, 0 if the hash was already gone
+# (pyv3), -1 if the request was a duplicate (marker already present -> nothing applied).
 _APPLY_INCREMENTS_LUA = """
+if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-local i = 1
+local i = 2
 while i < #ARGV do
   redis.call('HINCRBY', KEYS[1], ARGV[i], tonumber(ARGV[i + 1]))
   i = i + 2
 end
+redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[1]))
 return 1
 """
 _apply_increments_script: "AsyncScript | None" = None
 
 
 def _get_apply_increments_script(redis_client: redis_async.Redis) -> "AsyncScript":
-    """Return the cached EXISTS-guarded HINCRBY script, registering it on first call."""
+    """Return the cached atomic dedup+HINCRBY+marker script, registering it on first call (phaze-gtau)."""
     global _apply_increments_script
     if _apply_increments_script is None:
         _apply_increments_script = redis_client.register_script(_APPLY_INCREMENTS_LUA)
@@ -205,11 +226,12 @@ async def post_exec_batch_progress(
 
     Security:
         - ``agent`` is bound from the auth dep, NEVER from the body (AUTH-01).
-        - The 4-stage validation is ORDERED: cross-tenant 403 fires BEFORE
+        - The D-17 validation is ORDERED: cross-tenant 403 fires BEFORE
           any HEXISTS read so a forged ``agent_id`` cannot leak whether a
-          ``batch_id`` exists via 404-vs-403 timing.
-        - Idempotency via SET NX EX 3600 on ``exec_progress_req:{request_id}``
-          makes the endpoint safe for SAQ-retry replays (D-15).
+          ``batch_id`` exists via 404-vs-403 timing (stages 1-3, UNCHANGED).
+        - Idempotency via the ``exec_progress_req:{request_id}`` marker, set
+          ATOMICALLY with the counters (phaze-gtau), makes the endpoint safe
+          for SAQ-retry replays (D-15) without a mid-span crash losing them.
     """
     # ---- Stage 1: cross-tenant guard. Runs BEFORE any Redis state read
     # (D-17 step 2 / T-28-02-S1 / T-28-02-I1). A leaked batch_id paired
@@ -241,37 +263,42 @@ async def post_exec_batch_progress(
             detail="agent was not part of this dispatch",
         )
 
-    # ---- Stage 4: SET NX EX dedup. Duplicate POST (same request_id within
-    # the 1-hour window) returns 200 with NO HINCRBY (D-15). Replays from
-    # SAQ retries are safe.
+    # ---- Stage 4+5 (phaze-gtau): dedup + D-07 counters + the request-idempotency marker, applied
+    # as ONE atomic Lua (``_APPLY_INCREMENTS_LUA``). The marker becomes authoritative ONLY together
+    # with the HINCRBYs, so a crash mid-span can never leave the marker set with the increments
+    # unapplied. The OLD ordering set the marker (SET NX) FIRST and only THEN ran the HINCRBY
+    # pipeline: a crash / Redis timeout / pod eviction in that gap durably burned the marker, and the
+    # agent's tenacity/SAQ retry (identical request_id, persisted in the job meta) short-circuited on
+    # the marker into a clean 200 with the counters LOST forever -- a lost terminal event stranded the
+    # batch at 'running' until the 24h TTL dropped the hash. Now either both land or neither does; a
+    # duplicate request_id applies nothing (D-15 dedup), and a batch reaped by its 24h TTL between the
+    # stage 2/3 HEXISTS checks and here applies nothing and is never resurrected (phaze-pyv3). Note
+    # the D-17 stages 1-3 above are UNCHANGED -- only this token-vs-work ordering moved. ARGV is
+    # [ttl, field, by, ...] with the optional sub_batch_terminal ('subjobs_completed', 1) appended.
     req_key = f"{_REQ_PREFIX}{body.request_id}"
-    won = await redis_client.set(req_key, "1", nx=True, ex=_TTL_SECONDS)
-    if not won:
-        return Response(status_code=status.HTTP_200_OK)
-
-    # ---- Stage 5: HINCRBY the D-07 counter set. phaze-pyv3: applied via an EXISTS-guarded Lua
-    # script (``_APPLY_INCREMENTS_LUA``) rather than a bare pipeline. HINCRBY on a missing key
-    # auto-creates it, so if the batch's 24h TTL fired between the stage 2/3 HEXISTS checks and here,
-    # a plain pipeline would resurrect the reaped exec:{batch_id} hash TTL-less (a permanent leak +
-    # a status-less phantom that wedges attached SSE streams). The script's leading EXISTS check
-    # makes the whole apply a no-op when the key is already gone, atomically. ARGV is flat
-    # [field, by, ...] with the optional sub_batch_terminal ('subjobs_completed', 1) appended.
     increments = _compute_increments(body)
-    apply_args: list[str] = []
+    apply_args: list[str] = [str(_TTL_SECONDS)]
     for field, by in increments.items():
         apply_args.extend((field, str(by)))
     if body.sub_batch_terminal:
         apply_args.extend(("subjobs_completed", "1"))
     apply_increments = _get_apply_increments_script(redis_client)
-    await apply_increments(keys=[key], args=apply_args, client=redis_client)
+    await apply_increments(keys=[key, req_key], args=apply_args, client=redis_client)
 
     # ---- Stage 6: terminal-status detection + promotion (D-07 final clause).
-    # ONLY fires when the agent marks this as its last proposal in the
-    # sub-batch -- avoids polling the equality check on every progress POST.
-    # The read-then-write is delegated to a Lua script so it executes
-    # atomically on the Redis server; under >=3 concurrent terminal sub-jobs
-    # this is what prevents a stale `failed` read from promoting a failed
-    # batch to "complete" (issue #61).
+    # Fires whenever the agent marks this as its last proposal in the sub-batch
+    # -- INCLUDING on a duplicate replay whose increments were deduped above.
+    # phaze-gtau: promoting on the deduped path is REQUIRED, not wasteful -- it
+    # covers the crash window between the atomic apply+marker (stage 4+5) and this
+    # promotion. Were it skipped once the marker is present, a crash there would
+    # leave the terminal ``subjobs_completed`` applied but the status never
+    # promoted, stranding the batch at 'running' forever on retry (the terminal-loss
+    # half of the defect). The promotion is idempotent: HSET status is a set and the
+    # ``exec:active`` release is GET==batch_id-guarded (phaze-fa2p), so re-running it
+    # on a true duplicate is a harmless no-op. The read-then-write is delegated to a
+    # Lua script so it executes atomically on the Redis server; under >=3 concurrent
+    # terminal sub-jobs this is what prevents a stale `failed` read from promoting a
+    # failed batch to "complete" (issue #61).
     if body.sub_batch_terminal:
         promote_status = _get_promote_status_script(redis_client)
         # phaze-fa2p: pass the sentinel key + this batch_id so a terminal promotion also releases
