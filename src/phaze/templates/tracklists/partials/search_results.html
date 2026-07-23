@@ -20,6 +20,7 @@
                 {{ result.confidence }}%
             </span>
         </div>
+        {% if file_id %}
         <form hx-post="/tracklists/link-result"
               hx-target="#tracklists-list"
               hx-swap="innerHTML"
@@ -32,6 +33,15 @@
                 Link Tracklist
             </button>
         </form>
+        {% else %}
+        {# file_id is None: the tracklist being searched from has no linked file (e.g. right after
+           Unlink). Posting file_id="None" would 422 at link_search_result's uuid.UUID Form field and
+           HTMX silently swallows the non-2xx response (phaze-g2yk) -- so omit the Link affordance
+           entirely rather than emit a control that always fails. #}
+        <span class="text-xs text-gray-400 dark:text-gray-500" title="This tracklist has no linked file to attach a match to.">
+            No file linked
+        </span>
+        {% endif %}
     </div>
     {% endfor %}
     {% else %}

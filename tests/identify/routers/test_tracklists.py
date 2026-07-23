@@ -144,6 +144,36 @@ async def test_list_tracklists_htmx_returns_partial(session: AsyncSession, clien
 
 
 @pytest.mark.asyncio
+async def test_list_tracklists_establishes_the_tracklists_list_landing_target(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-k2lz): GET /tracklists/ (HX-Request) is the ONLY reachable render of this
+    handler -- the non-fragment branch 302-redirects into the shell (SHELL-05/D-03) rather than ever
+    rendering the template, so nothing else in the app ever emits ``#tracklists-list`` first. Before
+    the fix, ``list_tracklists`` fed its own ``is_fragment`` straight through as the template's
+    ``is_hx`` wrapper gate (copied from scan_tab's shape, phaze-64uy), which suppressed the wrapper on
+    every reachable call. Every hx-target="#tracklists-list" swap this page renders --
+    pagination.html's Prev/Next and tracklist_card.html's Unlink button -- therefore had no landing
+    target in the document and silently no-op'd. This handler must always self-establish exactly one
+    ``#tracklists-list`` wrapper.
+    """
+    # Eleven tracklists against the minimum allowed page_size (10) force pagination.html's Next
+    # control (hx-target="#tracklists-list") into the response, so the regression covers a real
+    # swap consumer, not just the bare wrapper.
+    tracklists = [_make_tracklist(external_id=f"tl-{i}") for i in range(11)]
+    session.add_all(tracklists)
+    await session.flush()
+
+    response = await client.get("/tracklists/?page_size=10", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert 'id="tracklists-list"' in response.text
+    # The wrapper appears exactly once -- never zero (this regression), never two (the duplicate-id
+    # class this file's own history already fixed four times over).
+    assert response.text.count('id="tracklists-list"') == 1
+    # Pagination's Next button (page_size=1 forces a second page) targets the wrapper this render
+    # just created -- confirming a genuine landing target now exists for it.
+    assert 'hx-target="#tracklists-list"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_get_tracks(session: AsyncSession, client: AsyncClient) -> None:
     """GET /tracklists/{id}/tracks returns track detail partial."""
     tl = _make_tracklist()
@@ -802,6 +832,30 @@ async def test_approve_tracklist(session: AsyncSession, client: AsyncClient) -> 
 
 
 @pytest.mark.asyncio
+async def test_approve_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): approve_tracklist re-renders the card badge with the REAL track
+    count, not "0 tracks". The route fetches a bare ``Tracklist`` fresh from the DB -- unlike the
+    list renders, it never set ``_track_count`` on it -- and tracklist_card.html's badge falls back
+    to 0 whenever that dynamic attribute is undefined, falsely reading as if every track vanished.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=3)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/approve")
+    assert response.status_code == 200
+    assert "3 tracks" in response.text
+    assert "0 tracks" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/reject changes status to rejected."""
     tl = _make_tracklist(source="fingerprint", status="proposed")
@@ -813,6 +867,28 @@ async def test_reject_tracklist(session: AsyncSession, client: AsyncClient) -> N
 
     await session.refresh(tl)
     assert tl.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_reject_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): reject_tracklist re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist(source="fingerprint", status="proposed")
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=2)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    response = await client.post(f"/tracklists/{tl.id}/reject")
+    assert response.status_code == 200
+    assert "2 tracks" in response.text
+    assert "0 tracks" not in response.text
 
 
 @pytest.mark.asyncio
@@ -1337,6 +1413,30 @@ async def test_rescrape_tracklist(session: AsyncSession, client: AsyncClient) ->
 
 
 @pytest.mark.asyncio
+async def test_rescrape_tracklist_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): rescrape_tracklist re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=4)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    install_fake_queues(client)
+
+    response = await client.post(f"/tracklists/{tl.id}/rescrape")
+    assert response.status_code == 200
+    assert "4 tracks" in response.text
+    assert "0 tracks" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_rescrape_tracklist_has_candidates_in_context(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/{id}/rescrape includes has_candidates when candidates exist."""
     tl = _make_tracklist()
@@ -1493,6 +1593,47 @@ async def test_search_better_match_releases_connection_before_scrape(session: As
     # A commit (releasing the read txn / pooled connection) precedes the network scrape.
     assert "search" in order
     assert order.index("commit") < order.index("search")
+
+
+@pytest.mark.asyncio
+async def test_search_better_match_unlinked_tracklist_omits_link_affordance(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-g2yk): a tracklist with no linked file (e.g. right after Unlink) has
+    ``file_id=None``. The Jinja default renderer stringifies ``None`` to the literal text "None",
+    so a naive hidden ``<input value="{{ file_id }}">`` would POST ``file_id=None`` to
+    ``/tracklists/link-result``, whose ``file_id: uuid.UUID = Form(...)`` cannot parse that string
+    and 422s -- a silent no-op since HTMX swallows non-2xx swaps. The Link form/button must be
+    omitted (not merely blank-valued) whenever ``file_id`` is falsy, replaced with a clear
+    disabled-state affordance.
+    """
+    tl = _make_tracklist(file_id=None, external_id="unlinked-tl")
+    tl.artist = "Real Artist"
+    tl.event = "Coachella"
+    session.add(tl)
+    await session.flush()
+
+    search_result = TracklistSearchResult(
+        external_id="better1",
+        title="Real Artist @ Coachella",
+        url="https://www.1001tracklists.com/tracklist/better1/x.html",
+        artist="Real Artist",
+        date="2024-04-14",
+    )
+
+    with patch("phaze.routers.tracklists.TracklistScraper") as mock_scraper_cls:
+        mock_scraper = mock_scraper_cls.return_value
+        mock_scraper.search = AsyncMock(return_value=[search_result])
+        mock_scraper.close = AsyncMock()
+
+        response = await client.get(f"/tracklists/{tl.id}/search")
+
+    assert response.status_code == 200
+    # Never emit a UUID-typed hidden field carrying the literal string "None".
+    assert 'value="None"' not in response.text
+    # No Link form/button is rendered for a result reached from an unlinked tracklist search.
+    assert "/tracklists/link-result" not in response.text
+    assert "Link Tracklist" not in response.text
+    # A clear, non-actionable affordance replaces it.
+    assert "No file linked" in response.text
 
 
 @pytest.mark.asyncio
@@ -1929,6 +2070,30 @@ async def test_match_discogs_enqueues_task(session: AsyncSession, client: AsyncC
     assert response.status_code == 200
     assert controller_queue.captured == [("match_tracklist_to_discogs", {"tracklist_id": str(tl.id)})]
     assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_match_discogs_preserves_track_count(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-y7ez): match_discogs re-renders the card badge with the REAL track
+    count -- see test_approve_tracklist_preserves_track_count for the full defect description.
+    """
+    tl = _make_tracklist()
+    session.add(tl)
+    await session.flush()
+
+    version, tracks = _make_version_with_tracks(session, tl, num_tracks=5)
+    session.add(version)
+    session.add_all(tracks)
+    await session.flush()
+    tl.latest_version_id = version.id
+    await session.flush()
+
+    install_fake_queues(client)
+
+    response = await client.post(f"/tracklists/{tl.id}/match-discogs")
+    assert response.status_code == 200
+    assert "5 tracks" in response.text
+    assert "0 tracks" not in response.text
 
 
 @pytest.mark.asyncio
@@ -2603,19 +2768,26 @@ async def test_tracklists_restore_header_alone_does_not_return_a_fragment(client
 
 
 @pytest.mark.asyncio
-async def test_tracklists_live_swap_carries_no_duplicate_list_wrapper(client: AsyncClient) -> None:
-    """The live swap fragment carries ZERO ``#tracklists-list`` wrappers (phaze-64uy).
+async def test_tracklists_live_swap_carries_exactly_one_list_wrapper(client: AsyncClient) -> None:
+    """The live swap fragment carries EXACTLY ONE ``#tracklists-list`` wrapper.
 
     ``tracklist_list.html`` used to compute its own ``is_hx`` from
     ``request.headers.get('HX-Request')`` -- the exact expression response_shape rule 1 bans, and
-    the exact defect phaze-xc84 had already found in the sibling ``scan_tab.html``. The handler now
-    supplies the flag as ``wants_fragment(request)``, so ONE predicate drives both the response
-    shape and the wrapper gate and they can no longer disagree.
+    the exact defect phaze-xc84 had already found in the sibling ``scan_tab.html``. phaze-64uy's fix
+    supplied the flag as ``wants_fragment(request)`` instead, on the assumption (copied from
+    scan_tab's shape) that this response always swaps INTO an ALREADY-EXISTING ``#tracklists-list`` --
+    so ZERO copies here was the correct assertion at the time.
 
-    The fragment is swapped INTO the existing ``#tracklists-list``, so a second copy would duplicate
-    the id in the live document and strand every later swap on the stale outer element (the class
-    already on record in phaze-gzrd / op6f / 7j50 / 5p43).
+    phaze-k2lz found that assumption false: unlike scan_tab, ``list_tracklists`` has no non-fragment
+    branch that ever renders the template (the non-fragment case 302-redirects into the shell,
+    SHELL-05/D-03) -- there is nothing in the app that emits ``#tracklists-list`` before this handler
+    runs. Zero copies meant every hx-target="#tracklists-list" swap the fragment itself renders
+    (pagination.html's Prev/Next, tracklist_card.html's Unlink) had no landing target at all. The
+    handler now always self-establishes the wrapper (never zero), while the duplicate-id concern this
+    test originally guarded (phaze-gzrd / op6f / 7j50 / 5p43) is guarded by asserting exactly one, not
+    two -- the mutation routes that swap INSIDE this wrapper (``_render_tracklist_list``, covered by
+    ``test_unlink_tracklist`` et al.) are untouched and still correctly suppress their own copy.
     """
     response = await client.get("/tracklists/?filter=all", headers={"HX-Request": "true"})
     assert response.status_code == 200
-    assert response.text.count('id="tracklists-list"') == 0, "the fragment swaps INTO #tracklists-list and must not carry a second one"
+    assert response.text.count('id="tracklists-list"') == 1, "the fragment must self-establish its own landing target, exactly once"

@@ -116,3 +116,56 @@ async def test_filter_state_is_url_carried(client: AsyncClient, session: AsyncSe
     # The active filter axes are reflected as selected options (survives the record slide-in re-render).
     assert '<option value="metadata" selected>' in body
     assert '<option value="failed" selected>' in body
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_plain_request_returns_full_page(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-p7ox): a plain (non-htmx) GET of the pushed URL returns the FULL page.
+
+    The filter form and Clear-filter anchor both ``hx-push-url="true"`` the bare
+    ``/pipeline/files`` endpoint (D-03's URL-carried-lens idiom). Before the fix, this handler
+    unconditionally returned the chrome-less ``files_table_view.html`` fragment -- no
+    ``<html>``, no CSS, no htmx, no Alpine -- so an F5 reload or a bookmark of a filtered view
+    rendered a broken, unstyled page.
+    """
+    resp = await client.get("/pipeline/files?stage=metadata&bucket=failed")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<html" in body.lower(), "a plain request must return a full document, not a fragment"
+    assert "<h1" in body, "the page heading must be present"
+    assert 'id="files-table-view"' in body, "the swap target itself must be present in the full page"
+    # The filter selection still round-trips through the full-page render.
+    assert '<option value="metadata" selected>' in body
+    assert '<option value="failed" selected>' in body
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_history_restore_returns_full_page(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-p7ox): a history-restore GET returns the FULL page, chrome included.
+
+    On a history-cache miss (routine -- htmx's historyCacheSize is 10) htmx re-fetches the pushed
+    URL with BOTH ``HX-Request`` and ``HX-History-Restore-Request`` set, ignores hx-target, and
+    swaps the response into ``<body>`` (response_shape.py rule 2). A fragment here replaces the
+    whole page with an orphaned filter bar + table and no way out but a manual reload.
+    """
+    resp = await client.get(
+        "/pipeline/files?stage=metadata&bucket=failed",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<html" in body.lower(), "a history restore must return a full document, not a fragment"
+    assert "<h1" in body, "the <h1> page heading must survive a history restore"
+    assert 'id="files-table-view"' in body, "the swap target itself must be present in the full page"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_live_htmx_swap_still_returns_the_fragment(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-p7ox): an ordinary htmx swap (no restore header) still gets the
+    chrome-less fragment -- the fix must not turn every live filter/pagination swap into a full page.
+    """
+    resp = await client.get("/pipeline/files?stage=metadata&bucket=failed", headers={"HX-Request": "true"})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
+    assert 'id="files-table-view"' in body
