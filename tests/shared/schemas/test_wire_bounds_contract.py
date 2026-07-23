@@ -86,10 +86,18 @@ SCHEMA_BINDINGS: dict[type[BaseModel], type] = {
 UNMAPPED_BODY_FIELDS: dict[type[BaseModel], dict[str, str]] = {
     HeartbeatRequest: {
         # The whole heartbeat lands in Agent.last_status JSONB (agent_heartbeat.py), never in a
-        # scalar column -- JSONB has no width to match, so rule 1/3 do not apply.
+        # scalar column -- so none of these match a live column and rule 1/3's column-derived check
+        # cannot run automatically. That does NOT mean queue_depth is actually unbounded: see its
+        # inline comment in schemas/agent_heartbeat.py (phaze-s4r0) -- _LANE_MERGE_SQL sums it via
+        # `::bigint`, so it carries a real Field(ge=0, le=QUEUE_DEPTH_MAX) domain bound even though
+        # this test has no column to check it against.
         "agent_version": "-> Agent.last_status JSONB, no scalar column",
-        "worker_pid": "-> Agent.last_status JSONB, no scalar column",
-        "queue_depth": "-> Agent.last_status JSONB, no scalar column",
+        "worker_pid": "-> Agent.last_status JSONB, no scalar column; bounded ge=1/le=INT32_MAX as a "
+        "sane pid domain (defense-in-depth -- never reaches a numeric cast, unlike queue_depth)",
+        "queue_depth": "-> Agent.last_status['lanes'][lane] JSONB, no scalar column -- but "
+        "_LANE_MERGE_SQL sums every lane via `::bigint` (routers/agent_heartbeat.py), so its "
+        "effective domain is int8 headroom-capped: Field(ge=0, le=QUEUE_DEPTH_MAX) in "
+        "schemas/agent_heartbeat.py (phaze-s4r0), not 'no width to match'",
         "lane": "-> Agent.last_status['lanes'] JSONB key, no scalar column",
     },
     ProposalStatePatch: {
