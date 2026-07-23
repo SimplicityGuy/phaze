@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze import cli
-from phaze.cli import add_agent, derive_queue_name, validate_agent_id, validate_scan_roots
+from phaze.cli import add_agent, derive_queue_name, validate_agent_id, validate_agent_name, validate_scan_roots
 from phaze.models.agent import Agent
 from phaze.routers.agent_auth import hash_token
 from tests.conftest import TEST_DATABASE_URL
@@ -58,6 +58,31 @@ def test_validate_agent_id_rejects_bad(bad: str) -> None:
 @pytest.mark.parametrize("good", ["x-y", "a1", "fileserver-east", "abc", "a-b-c"])
 def test_validate_agent_id_accepts_good(good: str) -> None:
     assert validate_agent_id(good) is None
+
+
+def test_validate_agent_id_rejects_65_chars() -> None:
+    """phaze-pev8: a charset-valid id past the `agents.id` String(64) column width must be
+    rejected here, BEFORE any DB access -- Postgres would otherwise raise StringDataRightTruncation
+    (surfaced by SQLAlchemy as DataError, a DBAPIError sibling of IntegrityError, not a subclass),
+    which escapes the CLI's `except IntegrityError` as a raw traceback."""
+    too_long = "a" * 65
+    with pytest.raises(ValueError, match="must be at most 64 characters"):
+        validate_agent_id(too_long)
+
+
+def test_validate_agent_id_accepts_64_chars() -> None:
+    assert validate_agent_id("a" * 64) is None
+
+
+def test_validate_agent_name_rejects_129_chars() -> None:
+    """phaze-pev8: mirrors the `agents.name` String(128) column width."""
+    too_long = "x" * 129
+    with pytest.raises(ValueError, match="must be at most 128 characters"):
+        validate_agent_name(too_long)
+
+
+def test_validate_agent_name_accepts_128_chars() -> None:
+    assert validate_agent_name("x" * 128) is None
 
 
 def test_validate_scan_roots_rejects_relative() -> None:
@@ -133,6 +158,44 @@ def test_main_relative_scan_root_exits_before_db(capsys: pytest.CaptureFixture[s
     rc = cli.main(["agents", "add", "--id", "ok-id", "--scan-roots", "relative/path"])
     assert rc == 1
     assert capsys.readouterr().err.strip()
+
+
+def test_main_65_char_id_exits_before_db(capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-pev8: a 65-char all-lowercase kebab id passes AGENT_ID_RE but exceeds the
+    `agents.id` String(64) column -- must be a friendly error-plus-exit-1, not a raw
+    DataError traceback from an opened DB session."""
+    over_long_id = "a" * 65
+    rc = cli.main(["agents", "add", "--id", over_long_id, "--scan-roots", "/data/music"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "must be at most 64 characters" in captured.err
+    assert "phaze_agent_" not in captured.out  # no token minted -- no session opened
+
+
+def test_main_129_char_explicit_name_exits_before_db(capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-pev8: an explicit --name past the `agents.name` String(128) column must be
+    rejected before any DB access."""
+    over_long_name = "n" * 129
+    rc = cli.main(["agents", "add", "--id", "ok-id", "--name", over_long_name, "--scan-roots", "/data/music"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "must be at most 128 characters" in captured.err
+    assert "phaze_agent_" not in captured.out
+
+
+def test_main_derived_titleized_name_over_128_exits_before_db(capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-pev8: with no --name, the default is `agent_id.replace("-", " ").title()`, which
+    never changes the string's length (only "-" -> " " and case). So once :func:`validate_agent_id`
+    bounds the id at 64 chars, the titleized default can never exceed the 128-char name column --
+    the id check now transitively closes the originally-reported "long id -> over-long derived
+    name" path. This asserts that ordering directly: an id long enough to have tripped the old
+    unbounded-name bug is rejected by the id-length check first, before the name is even derived."""
+    over_long_id = "a-" * 64 + "a"  # 129 chars, well past MAX_AGENT_ID_LENGTH
+    rc = cli.main(["agents", "add", "--id", over_long_id, "--scan-roots", "/data/music"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "must be at most 64 characters" in captured.err
+    assert "phaze_agent_" not in captured.out
 
 
 def test_main_success_inserts_and_prints(
