@@ -92,7 +92,7 @@ async def _has_candidates(session: AsyncSession, tracklist: Tracklist) -> bool:
 
 
 async def _attach_track_count(session: AsyncSession, tracklist: Tracklist) -> None:
-    """Set ``tracklist._track_count`` so tracklist_card.html's badge reads the real count.
+    """Set ``tracklist._track_count`` so the tracklist_card.html badge reads the real count.
 
     tracklist_card.html renders ``{{ tracklist._track_count if tracklist._track_count is defined
     else 0 }} tracks`` -- a dynamic, non-mapped attribute (phaze-y7ez) that the list renders
@@ -262,8 +262,8 @@ async def list_tracklists(
         # really is landing inside an existing wrapper. Here the non-fragment branch 302-redirects
         # (SHELL-05/D-03) instead of rendering, so this handler's ONLY reachable path IS the fragment
         # one -- there is no earlier render that ever emits ``#tracklists-list``. Passing ``is_fragment``
-        # here therefore suppressed the wrapper on every single reachable call, so pagination.html's
-        # Prev/Next and tracklist_card.html's Unlink/Link-result buttons -- all hx-target="#tracklists-list"
+        # here therefore suppressed the wrapper on every single reachable call, so the Prev/Next in
+        # pagination.html and the Unlink/Link-result buttons in tracklist_card.html -- all hx-target="#tracklists-list"
         # -- had no landing target anywhere in the document: htmx logged a target error and no-op'd,
         # exactly the D-01 "in-page HX filter" the SHELL-05 contract promises stays usable. This handler
         # must always self-establish the wrapper; the ``_render_tracklist_list`` helper used by the
