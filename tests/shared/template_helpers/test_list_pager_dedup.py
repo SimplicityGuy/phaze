@@ -1,4 +1,4 @@
-"""Jinja-render tests for the copy-pasted `>7-page` pagers (phaze-rv40 / phaze-7jbt / phaze-hb0a).
+"""Jinja-render tests for the copy-pasted `>7-page` pagers (phaze-rv40, phaze-7jbt, phaze-hb0a).
 
 Each of ``pipeline/partials/_list_pager.html``, ``duplicates/partials/pagination.html`` and
 ``proposals/partials/pagination.html`` builds its "pages around current" window with
@@ -65,6 +65,17 @@ def _render_pipeline_pager(*, page: int, page_size: int, total: int) -> str:
     return response.body.decode()
 
 
+def _render_duplicates_pager(*, page: int, page_size: int, total: int) -> str:
+    """Render the duplicates list pager (phaze-7jbt)."""
+    pagination = Pagination(page=page, page_size=page_size, total=total)
+    response = _templates.TemplateResponse(
+        request=_fake_request(),
+        name="duplicates/partials/pagination.html",
+        context={"pagination": pagination},
+    )
+    return response.body.decode()
+
+
 # ---------------------------------------------------------------------------
 # pipeline/partials/_list_pager.html -- phaze-rv40
 # ---------------------------------------------------------------------------
@@ -91,3 +102,20 @@ def test_pipeline_pager_unaffected_when_current_page_is_not_near_the_end() -> No
     html = _render_pipeline_pager(page=1, page_size=25, total=200)
     assert html.count(">8</button>") == 1
     assert html.count('aria-current="page"') == 1
+
+
+# ---------------------------------------------------------------------------
+# duplicates/partials/pagination.html -- phaze-7jbt
+# ---------------------------------------------------------------------------
+
+
+def test_duplicates_pager_last_page_button_renders_once_on_the_final_page() -> None:
+    html = _render_duplicates_pager(page=9, page_size=10, total=90)
+    assert html.count(">9</button>") == 1
+    assert html.count("bg-blue-600") == 1
+
+
+def test_duplicates_pager_last_page_button_renders_once_near_the_end() -> None:
+    for page in (7, 8):
+        html = _render_duplicates_pager(page=page, page_size=10, total=90)
+        assert html.count(">9</button>") == 1, f"duplicate '9' button at current_page={page}"
