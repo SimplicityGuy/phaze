@@ -43,7 +43,6 @@ import uuid
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
@@ -53,7 +52,7 @@ from phaze.services.scan_deletion import delete_scan_cascade
 
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncEngine
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 
 pytestmark = pytest.mark.integration
