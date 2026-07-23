@@ -113,9 +113,14 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # the DB reconcile is the authority; the counter is a backstop cache, never an override).
 # ``discovery`` and ``execute`` have no maintained counter (``scan_directory`` /
 # ``execute_approved_batch`` are deterministic-key-exempt), so they never fall back.
-# In practice the counter only exceeds 0 after real completions — at which point the DB
-# reflects them too unless the DB source degraded — so applying the counter on ``done==0``
-# is harmless when the stage is genuinely empty (counter is also 0 there).
+# phaze-y0wz: the counter only exceeds 0 after real completions, but it is a durable, never-reset
+# INCR (services/pipeline_counters.py) that OUTLIVES the rows it counted — a full corpus delete
+# (``delete_scan``) cascades away FileRecord/metadata/analysis but never touches Redis. So
+# ``done==0`` does NOT imply "counter is also 0 there"; a genuinely-emptied corpus reads
+# ``done==0``/``total==0`` while the counter still carries the whole pre-delete completion count.
+# ``_reconciled_done`` caps the fallback at ``stage_total`` UNCONDITIONALLY (including
+# ``stage_total == 0``, where the cap degrades the fallback to ``stage_done``) so this state
+# renders 0, not a phantom historical count.
 # WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
 # ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
 # ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
@@ -160,15 +165,28 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
 
     DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
     back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
-    if that sum is itself > 0. The fallback is capped at ``stage_total`` (when known, > 0) so
-    re-run-inflated counters cannot render a ``done`` larger than the denominator (WR-03).
+    if that sum is itself > 0. The fallback is capped at ``stage_total`` (WR-03) so
+    re-run-inflated counters cannot render a ``done`` larger than the denominator.
+
+    phaze-y0wz: the cap holds UNCONDITIONALLY, including ``stage_total == 0``. The durable
+    Redis ``completed`` counters (plain INCR, never decremented/reset — see
+    ``services/pipeline_counters.py``) survive a full corpus delete (``delete_scan`` cascades
+    away the FileRecord/metadata/analysis rows but never touches Redis), so ``stage_total == 0``
+    is NOT proof of DB degradation — it is also exactly what a genuinely-emptied or
+    genuinely-empty corpus reads. Previously ``stage_total > 0`` gated the cap, so it went dead
+    in that exact state and an emptied corpus rendered its entire pre-delete completion history
+    as a phantom, uncapped ``done`` against a ``total`` of 0. Capping at ``stage_total`` (0 here)
+    means the fallback degrades to ``stage_done`` (already known to be 0, from the guard above)
+    whenever the denominator is 0 — including ``scan_search``, whose ``total`` the DB layer
+    documents as ALWAYS ``None`` -> 0 (``get_stage_progress``), so this also retires that node's
+    permanent uncapped double-count (summing ``scan_live_set`` + ``search_tracklist``).
     """
     if stage_done > 0:
         return stage_done
     fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
     if fallback <= 0:
         return stage_done
-    return min(fallback, stage_total) if stage_total > 0 else fallback
+    return min(fallback, stage_total) if stage_total > 0 else stage_done
 
 
 def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
