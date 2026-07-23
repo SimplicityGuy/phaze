@@ -22,7 +22,14 @@ from typing import TYPE_CHECKING
 import unicodedata
 from unittest.mock import MagicMock
 
-from watchdog.events import DirCreatedEvent, DirModifiedEvent, FileCreatedEvent, FileModifiedEvent
+from watchdog.events import (
+    DirCreatedEvent,
+    DirModifiedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+)
 
 from phaze.agent_watcher.observer import WatcherEventHandler
 
@@ -300,3 +307,93 @@ def test_event_handler_ignores_directories_in_on_modified() -> None:
 
     assert loop.call_soon_threadsafe.call_count == 0
     assert touch.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# phaze-0z29: FileMovedEvent handling (rsync atomic temp->rename delivery,
+# in-tree renames/reorganization).
+# ---------------------------------------------------------------------------
+
+
+def test_event_handler_dispatches_dest_path_on_moved() -> None:
+    """A FileMovedEvent (e.g. rsync's temp->final rename) dispatches dest_path.
+
+    This is the core phaze-0z29 fix: the watcher's native inotify mode never
+    sees a FileCreatedEvent/FileModifiedEvent for an rsync-delivered file --
+    only a single paired FileMovedEvent(src, dest) -- so on_moved must exist
+    and must dispatch the settled destination path.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_moved(FileMovedEvent(src_path="/music/.show.mkv.a1B2c3", dest_path="/music/show.mkv"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    args, _ = loop.call_soon_threadsafe.call_args
+    assert args[0] is touch
+    assert args[1] == "/music/show.mkv"
+
+
+def test_event_handler_on_moved_does_not_dispatch_src_path() -> None:
+    """The old (src) path must never be dispatched -- only dest_path.
+
+    Dispatching both would touch the debouncer under two distinct keys for
+    what is a single on-disk file, double-ingesting it.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_moved(FileMovedEvent(src_path="/music/old.mp3", dest_path="/music/new.mp3"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    dispatched = [call.args[1] for call in loop.call_soon_threadsafe.call_args_list]
+    assert dispatched == ["/music/new.mp3"]
+    assert "/music/old.mp3" not in dispatched
+
+
+def test_event_handler_on_moved_filters_dest_extension() -> None:
+    """A move whose dest_path extension is not music/video is still filtered out.
+
+    E.g. an in-tree rename that lands on a companion (.nfo/.jpg/...) or
+    otherwise-uninteresting extension must not reach the debouncer.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_moved(FileMovedEvent(src_path="/music/a.tmp", dest_path="/music/notes.txt"))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
+
+
+def test_event_handler_ignores_directory_moves() -> None:
+    """DirMovedEvent (directory rename) fires no direct dispatch.
+
+    Directory renames recurse via watchdog's own generate_sub_moved_events,
+    which emits one FileMovedEvent per contained file -- handled by the
+    FileMovedEvent path above. The directory event itself must be a no-op.
+    """
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_moved(DirMovedEvent(src_path="/music/old_dir", dest_path="/music/new_dir"))
+
+    assert loop.call_soon_threadsafe.call_count == 0
+    assert touch.call_count == 0
+
+
+def test_event_handler_on_moved_decodes_bytes_paths() -> None:
+    """Bytes dest_path (some platforms emit bytes) is decoded via os.fsdecode, matching on_created/on_modified."""
+    loop = MagicMock()
+    touch = MagicMock()
+    handler = WatcherEventHandler(loop=loop, debouncer_touch=touch)
+
+    handler.on_moved(FileMovedEvent(src_path=b"/music/.a.mp3.tmp", dest_path=b"/music/a.mp3"))
+
+    assert loop.call_soon_threadsafe.call_count == 1
+    args, _ = loop.call_soon_threadsafe.call_args
+    assert args[1] == "/music/a.mp3"
