@@ -1618,6 +1618,44 @@ async def test_get_agent_reconciliations_rescan_counts_latest_only(session: Asyn
 
 
 @pytest.mark.asyncio
+async def test_get_agent_reconciliations_tiebreaks_tied_created_at_by_id_desc(session: AsyncSession) -> None:
+    """rn==1 for a ``created_at`` tie must be the MAX id (``ScanBatch.id.desc()`` tiebreak), not
+    arbitrary heap/plan order.
+
+    Mirrors the phaze-c6j5 regression-guard technique (``test_get_agent_recent_scans_tiebreaker_
+    orders_tied_created_at_by_id_desc`` above): seeds several completed batches for ONE agent
+    sharing an EXPLICIT ``created_at`` with ids assigned in a SCRAMBLED order relative to insertion,
+    and pins each batch's ``total_files`` to a value derived from its id index so the row actually
+    selected as rn==1 is identifiable precisely. Only the ``ScanBatch.id.desc()`` tiebreaker
+    appended to the window's ``order_by`` (matching the primary ``created_at.desc()``) makes the
+    "agent's most recent completed batch" pick deterministic on a tie; without it the pick tracks
+    Postgres heap/plan order, not id order -- which the scrambled insertion order below defeats.
+    """
+    await seed_active_agent(session, "nox")
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive: test schema's created_at is TIMESTAMP WITHOUT TZ
+    # 5 fixed, distinct ids -- inserted in a SCRAMBLED order (not ascending, not descending).
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{i:02d}") for i in range(5)]
+    scrambled_indices = [2, 0, 4, 1, 3]
+    for i in scrambled_indices:
+        batch = ScanBatch(
+            id=ids[i],
+            agent_id="nox",
+            scan_path="/music",
+            status=ScanStatus.COMPLETED.value,
+            total_files=(i + 1) * 10,
+            processed_files=(i + 1) * 10,
+        )
+        batch.created_at = tied_at  # type: ignore[assignment]
+        session.add(batch)
+    await session.commit()
+
+    recon = await get_agent_reconciliations(session)
+
+    # id DESC as the tiebreak -> ids[4] (the LARGEST id) must win -> total_files=(4+1)*10=50.
+    assert recon["nox"]["scanned"] == 50
+
+
+@pytest.mark.asyncio
 async def test_get_agent_reconciliations_degrades_to_empty_on_db_error() -> None:
     """A forced read error degrades to an empty map (no annotations), never raising.
 

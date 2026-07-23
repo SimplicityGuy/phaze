@@ -197,6 +197,14 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
 
     An empty map means "no annotations"; the template hides any agent whose deduped is 0.
 
+    phaze-n2d2: ``ScanBatch.created_at`` carries no uniqueness constraint (``TimestampMixin``'s
+    ``server_default=func.now()``), so two completed batches for the same agent can share a value
+    and the window's ``rn == 1`` pick is executor-arbitrary on that tie -- the per-agent ``deduped``
+    annotation can then differ between renders (and flip hidden/shown, since the template hides an
+    agent whose deduped is 0). Appending the unique ``ScanBatch.id`` (DESC, matching the descending
+    ``created_at``) makes the window's ``order_by`` total, mirroring the tiebreaker already applied
+    to the sibling LIMIT queries (phaze-rgxg / commit dd5f2a2).
+
     Both reads run inside ONE SAVEPOINT (``session.begin_nested()``) so a failure rolls back the
     NESTED scope ALONE (CR-01): ``build_recent_scans`` (``routers.pipeline_scans``) loads ``ScanBatch``
     ORM rows on this SAME session BEFORE calling here, and ``build_dashboard_context`` similarly loads
@@ -210,7 +218,9 @@ async def get_agent_reconciliations(session: AsyncSession) -> dict[str, dict[str
                 select(
                     ScanBatch.agent_id.label("agent_id"),
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                    func.row_number()
+                    .over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc()))
+                    .label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
