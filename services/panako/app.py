@@ -58,6 +58,7 @@ class QueryMatch(BaseModel):
 
     track_id: str
     confidence: float
+    timestamp: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -211,7 +212,7 @@ def _parse_matches(stdout: str) -> list[QueryMatch]:
             continue
         tail = [p.strip() for p in parts[-_TRAILING_FIELDS:]]
         track_id = _match_path(parts[2:-_TRAILING_FIELDS])
-        if track_id is None or not _is_float(tail[3]) or not _is_float(tail[6]):
+        if track_id is None or not _is_float(tail[1]) or not _is_float(tail[3]) or not _is_float(tail[6]):
             logger.warning("Failed to parse match line: %s", line)
             continue
         # Panako emits a SENTINEL ROW for "no match found" rather than emitting
@@ -226,7 +227,13 @@ def _parse_matches(stdout: str) -> list[QueryMatch]:
             continue
         match_percentage = float(tail[6])  # seconds-with-match percentage
         confidence = min(100.0, max(0.0, match_percentage))
-        matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2)))
+        # phaze-nldg: tail[1] ("match start") is the offset INTO the matched reference track
+        # where this match begins -- exactly the track-start timestamp a tracklist wants.
+        # Emitted as a plain seconds string, well under the tracklist_tracks.timestamp
+        # varchar(20) cap (phaze-btlu) and one of the formats
+        # `cue_generator.parse_timestamp_string` accepts verbatim (its raw-float branch).
+        timestamp = str(round(float(tail[1]), 1))
+        matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2), timestamp=timestamp))
     return matches
 
 

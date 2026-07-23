@@ -260,6 +260,62 @@ class TestFingerprintOrchestrator:
         # track-low: 0.6*50 + 0.4*60 = 30 + 24 = 54.0
         assert matches[1].confidence == pytest.approx(54.0)
 
+    async def test_combined_query_carries_timestamp_from_single_engine_match(self):
+        """phaze-nldg: a single-engine match's timestamp must survive into CombinedMatch.
+
+        Before the fix, combined_query's accumulation kept ONLY confidence per (track_id,
+        engine), discarding QueryMatch.timestamp entirely -- so tasks/scan.py's
+        `timestamp=match.timestamp` pass-through was always None even when the engine
+        reported a genuine match offset.
+        """
+        audfprint = self._make_mock_engine(
+            "audfprint",
+            0.6,
+            query_results=[QueryMatch(track_id="track-1", confidence=95.0, timestamp="12.3")],
+        )
+        panako = self._make_mock_engine("panako", 0.4, query_results=[])
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        matches = await orchestrator.combined_query("/data/music/test.mp3")
+        assert len(matches) == 1
+        assert matches[0].timestamp == "12.3"
+
+    async def test_combined_query_carries_best_scoring_engines_timestamp(self):
+        """When both engines match the same track_id, the BEST-SCORING engine's timestamp wins.
+
+        panako's raw per-engine confidence (90.0) beats audfprint's (80.0) here, so the
+        combined match's timestamp must be panako's offset, not audfprint's, even though
+        audfprint's own weight (0.6) is higher and dominates the weighted-average confidence.
+        """
+        audfprint = self._make_mock_engine(
+            "audfprint",
+            0.6,
+            query_results=[QueryMatch(track_id="track-1", confidence=80.0, timestamp="5.0")],
+        )
+        panako = self._make_mock_engine(
+            "panako",
+            0.4,
+            query_results=[QueryMatch(track_id="track-1", confidence=90.0, timestamp="7.5")],
+        )
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        matches = await orchestrator.combined_query("/data/music/test.mp3")
+        assert len(matches) == 1
+        # 0.6 * 80 + 0.4 * 90 = 84.0 (weighted average still governs confidence)
+        assert matches[0].confidence == pytest.approx(84.0)
+        assert matches[0].timestamp == "7.5"
+
+    async def test_combined_query_timestamp_none_when_engine_reports_none(self):
+        """An engine that matches without a timestamp still yields a clean CombinedMatch."""
+        audfprint = self._make_mock_engine(
+            "audfprint",
+            0.6,
+            query_results=[QueryMatch(track_id="track-1", confidence=95.0, timestamp=None)],
+        )
+        panako = self._make_mock_engine("panako", 0.4, query_results=[])
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+        matches = await orchestrator.combined_query("/data/music/test.mp3")
+        assert len(matches) == 1
+        assert matches[0].timestamp is None
+
     async def test_ingest_all_calls_both_engines(self):
         """ingest_all calls both engines and returns per-engine results."""
         audfprint = self._make_mock_engine("audfprint", 0.6)
