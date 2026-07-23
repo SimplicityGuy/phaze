@@ -269,6 +269,9 @@ async def put_analysis(
     # is the earliest control-visible moment the analyze outcome is known. Key is reconstructed
     # from the fixed function name + the PATH file_id ONLY (never a body field -- AUTH-01 /
     # T-45-05: a body field cannot redirect the clear to another file's key).
+    # phaze-3yln: clear_ledger_entry carries its own ownership guard, so a "deepen analysis"
+    # re-enqueue that lands its fresh ledger row + live saq_jobs row for this key BEFORE this
+    # callback runs is not deleted here -- see scheduling_ledger.clear_ledger_entry's docstring.
     await clear_ledger_entry(session, f"process_file:{file_id}")
 
     # D-14 reaper: reap the inert `awaiting` cloud_job hold-over row this file may carry. D-05's
