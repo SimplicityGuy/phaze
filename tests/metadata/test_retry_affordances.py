@@ -30,7 +30,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services.pipeline import get_metadata_failed_files
-from tests._queue_fakes import install_fake_queues, seed_active_agent, wire_fakes
+from tests._queue_fakes import install_fake_queues, make_agent_live, wire_fakes
 
 
 if TYPE_CHECKING:
@@ -95,7 +95,7 @@ async def test_per_file_retry_reenqueues_one_file_on_meta_lane(client: AsyncClie
     """
     file = await _seed_failed_file(session)
     other = await _seed_failed_file(session)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{file.id}/metadata-failed/retry")
@@ -103,8 +103,8 @@ async def test_per_file_retry_reenqueues_one_file_on_meta_lane(client: AsyncClie
     assert "re-queued 1 failed file(s) for metadata extraction" in response.text.lower()
     assert "for analysis" not in response.text.lower()
 
-    queue = task_router.queues["nox-meta"]
-    assert queue.name == "phaze-agent-nox-meta"
+    queue = task_router.queues["test-fileserver-meta"]
+    assert queue.name == "phaze-agent-test-fileserver-meta"
     assert queue.name != "default"
     assert len(queue.captured) == 1
     task_name, payload = queue.captured[0]
@@ -122,7 +122,7 @@ async def test_per_file_retry_leaves_failure_row_in_place(client: AsyncClient, s
     """D-11: the per-file retry re-enqueues WITHOUT clearing ``failed_at`` (else the file reads DONE forever)."""
     file = await _seed_failed_file(session)
     fid = file.id  # capture before expiry (an expired ORM attr would lazy-reload outside greenlet)
-    await seed_active_agent(session)
+    await make_agent_live(session)
     install_fake_queues(client)
 
     response = await client.post(f"/pipeline/files/{fid}/metadata-failed/retry")
@@ -161,7 +161,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
     await session.commit()
     session.add(FileMetadata(file_id=done_file.id, artist="Real", title="Track"))
     await session.commit()
-    await seed_active_agent(session)
+    await make_agent_live(session)
     capture = wire_fakes(client)
 
     r1 = await client.post(f"/pipeline/files/{done_file.id}/metadata-failed/retry")
@@ -179,7 +179,7 @@ async def test_per_file_retry_non_failed_file_is_noop(client: AsyncClient, sessi
 async def test_bulk_retry_reenqueues_all_failed_metadata(client: AsyncClient, session: AsyncSession) -> None:
     """Regression backstop: the bulk endpoint re-drives EVERY failed-metadata file on the meta lane."""
     files = [await _seed_failed_file(session) for _ in range(3)]
-    await seed_active_agent(session)
+    await make_agent_live(session)
     _, task_router = install_fake_queues(client)
 
     response = await client.post("/pipeline/metadata-failed/retry")
@@ -187,6 +187,6 @@ async def test_bulk_retry_reenqueues_all_failed_metadata(client: AsyncClient, se
     assert "re-queued 3 failed file(s) for metadata extraction" in response.text.lower()
 
     await _drain_background()  # phaze-zecg: the enqueue loop now runs as a background task
-    queue = task_router.queues["nox-meta"]
+    queue = task_router.queues["test-fileserver-meta"]
     assert queue.name != "default"
     assert {p["file_id"] for _t, p in queue.captured} == {str(f.id) for f in files}

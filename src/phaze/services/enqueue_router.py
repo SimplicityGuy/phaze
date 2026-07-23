@@ -37,20 +37,39 @@ most-recently-seen non-revoked agent (``revoked_at IS NULL`` AND
 simplest deterministic rule; round-robin / least-loaded dispatch is deferred. The
 ``revoked_at IS NULL`` predicate excludes the permanently-revoked
 ``legacy-application-server`` (its ``revoked_at`` equals its ``created_at``).
+
+Ownership affinity (phaze-c9w9): the most-recently-seen rule is a LIVENESS pick, not a
+placement policy. Every file-keyed agent task (``process_file`` / ``extract_file_metadata`` /
+``fingerprint_file`` / ``scan_live_set``) runs against a path on ONE specific fileserver's
+media mount -- the agent recorded on ``FileRecord.agent_id`` (the composite unique key
+``(agent_id, original_path)`` explicitly models the same path existing under two different
+agents as two different files). With two live fileservers the most-recently-seen winner flaps
+with heartbeat timing, landing agent A's files on agent B, where the path either does not
+exist (spurious -- for analyze, TERMINAL -- failure rows) or names B's DIFFERENT bytes (silent
+cross-agent result corruption). File-keyed producers therefore pass the owning ``agent_id``
+into :func:`resolve_queue_for_task` (bulk producers group via
+:func:`resolve_queues_for_owned_files`); :func:`select_active_agent` remains only for tasks
+with no owning file.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from sqlalchemy import select
+import structlog
 
 from phaze.models.agent import Agent
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from saq import Queue
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+logger = structlog.get_logger(__name__)
 
 
 CONTROLLER_TASKS: frozenset[str] = frozenset(
@@ -222,17 +241,25 @@ async def resolve_queue_for_task(
     task_name: str,
     app_state: Any,
     session: AsyncSession | None,
+    *,
+    agent_id: str | None = None,
 ) -> RoutedQueue:
     """Resolve ``task_name`` to the queue a real worker consumes.
 
     - ``task_name in CONTROLLER_TASKS`` -> ``app_state.controller_queue`` (agent_id None).
-    - ``task_name in AGENT_TASKS`` -> the per-agent queue for the selected active
-      agent. Requires ``session`` (raises ``ValueError`` if ``None``); the agent is
-      chosen via :func:`select_active_agent` (which may raise
-      :class:`NoActiveAgentError`).
+      ``agent_id`` must be ``None`` (the controller queue is not agent-scoped; fail loud).
+    - ``task_name in AGENT_TASKS`` -> the per-agent queue. Requires ``session`` (raises
+      ``ValueError`` if ``None``). With ``agent_id`` given (phaze-c9w9: a file-keyed task,
+      passing the FILE's owning ``FileRecord.agent_id``) the destination is THAT agent iff
+      it is a live fileserver (:func:`select_agent_by_id`); without it, the most-recently-seen
+      live fileserver (:func:`select_active_agent`) -- for agent tasks with no owning file.
+      Both raise :class:`NoActiveAgentError` when the target is not live.
     - anything else -> ``ValueError`` (fail loud; never returns the default queue).
     """
     if task_name in CONTROLLER_TASKS:
+        if agent_id is not None:
+            msg = f"controller task {task_name!r} is not agent-scoped; agent_id must be None"
+            raise ValueError(msg)
         queue = app_state.controller_queue
         # Phase 36: open the PostgresQueue broker pool (built open=False) before the caller
         # enqueues. connect() is idempotent (guarded by self._connected) -- a no-op after the
@@ -251,7 +278,15 @@ async def resolve_queue_for_task(
         # pick (any kind, most-recently-seen) could route a fileserver-local task to a media-less
         # compute agent where the path does not exist -- an intermittent failure gated on heartbeat
         # timing. Compute agents are only ever addressed explicitly via agent_ref / queue_for.
-        agent = await select_active_agent(session, kind="fileserver")
+        #
+        # phaze-c9w9: when the caller names the file's owning agent, the destination is THAT agent
+        # or nothing -- never "some other live fileserver" (whose mount lacks the path, or worse,
+        # holds a DIFFERENT file at the same path). select_agent_by_id keeps the identical liveness
+        # filter, so an offline/revoked owner raises NoActiveAgentError instead of misrouting.
+        if agent_id is not None:
+            agent = await select_agent_by_id(session, agent_id, kind="fileserver")
+        else:
+            agent = await select_active_agent(session, kind="fileserver")
         # quick-260707-dh1: route to the task's LANE queue (phaze-agent-<id>-<lane>), never the
         # bare base. lane_for_task raises for an unmapped name -- but task_name is in AGENT_TASKS
         # here, so it always resolves.
@@ -261,3 +296,59 @@ async def resolve_queue_for_task(
         return RoutedQueue(queue, agent.id)
     msg = f"unroutable task: {task_name}"
     raise ValueError(msg)
+
+
+class OwnedFile(Protocol):
+    """Structural shape of a row that carries an owning ``agent_id`` (``FileRecord``)."""
+
+    @property
+    def agent_id(self) -> str: ...
+
+
+async def resolve_queues_for_owned_files[FileT: OwnedFile](
+    task_name: str,
+    app_state: Any,
+    session: AsyncSession,
+    files: Sequence[FileT],
+) -> tuple[list[tuple[RoutedQueue, list[FileT]]], list[FileT]]:
+    """Group ``files`` by owning ``agent_id`` and resolve each owner's lane queue (phaze-c9w9).
+
+    The bulk-producer companion to :func:`resolve_queue_for_task`'s per-file ``agent_id`` form:
+    every bulk trigger used to resolve ONE most-recently-seen fileserver and land its entire
+    pending set there, silently misrouting files owned by any other agent. Here each distinct
+    owner is resolved independently (same liveness rule as :func:`select_agent_by_id`,
+    ``kind="fileserver"``), preserving encounter order within each group.
+
+    Returns ``(routed_groups, skipped)``:
+
+    - ``routed_groups`` -- one ``(RoutedQueue, files)`` pair per LIVE owning agent.
+    - ``skipped`` -- files whose owner is offline/revoked/unknown. They are NEVER rerouted to
+      another agent (the misroute this exists to prevent); the caller reports/logs them and the
+      operator retries once the owner is back.
+
+    Raises :class:`NoActiveAgentError` when ``files`` is non-empty and NO owner is live, so
+    callers keep their existing "no active agent" empty-state on the total-outage path.
+    """
+    groups: dict[str, list[FileT]] = {}
+    for f in files:
+        groups.setdefault(f.agent_id, []).append(f)
+
+    routed_groups: list[tuple[RoutedQueue, list[FileT]]] = []
+    skipped: list[FileT] = []
+    for owner_id, owned in groups.items():
+        try:
+            routed = await resolve_queue_for_task(task_name, app_state, session, agent_id=owner_id)
+        except NoActiveAgentError:
+            logger.warning(
+                "owning agent offline -- files skipped, not rerouted",
+                task=task_name,
+                agent_id=owner_id,
+                skipped=len(owned),
+            )
+            skipped.extend(owned)
+            continue
+        routed_groups.append((routed, owned))
+    if files and not routed_groups:
+        msg = f"no owning fileserver agent is live for any of the {len(files)} file(s) pending {task_name!r}"
+        raise NoActiveAgentError(msg)
+    return routed_groups, skipped

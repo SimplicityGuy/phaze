@@ -18,7 +18,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistSearchResult
-from tests._queue_fakes import install_fake_queues, seed_active_agent
+from tests._queue_fakes import install_fake_queues, make_agent_live, seed_active_agent
 
 
 def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3", current_path: str | None = None) -> FileRecord:
@@ -616,8 +616,8 @@ def test_scan_progress_cta_has_no_dead_alpine_refs() -> None:
 
 @pytest.mark.asyncio
 async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
-    """POST /tracklists/scan enqueues a full ScanLiveSetPayload onto the agent queue."""
-    await seed_active_agent(session, "nox")
+    """POST /tracklists/scan enqueues a full ScanLiveSetPayload onto the OWNING agent's queue (phaze-c9w9)."""
+    await make_agent_live(session)
     _controller, task_router = install_fake_queues(client)
 
     file = _make_file()
@@ -629,21 +629,21 @@ async def test_trigger_scan(session: AsyncSession, client: AsyncClient) -> None:
     assert "Scanning..." in response.text
 
     # scan_live_set captured on the per-agent queue, never the controller.
-    agent_queue = task_router.queues["nox-meta"]
-    assert agent_queue.name == "phaze-agent-nox-meta"
+    agent_queue = task_router.queues["test-fileserver-meta"]
+    assert agent_queue.name == "phaze-agent-test-fileserver-meta"
     assert len(agent_queue.captured) == 1
     task_name, payload = agent_queue.captured[0]
     assert task_name == "scan_live_set"
     assert payload["file_id"] == str(file.id)
     assert payload["original_path"] == file.original_path
-    assert payload["agent_id"] == "nox"
+    assert payload["agent_id"] == "test-fileserver"
     # The enqueued payload must validate against the strict ScanLiveSetPayload so the
     # worker no longer dead-letters it (the v4.0.8 payload-incident class).
     assert ScanLiveSetPayload.model_validate(payload)
 
     # The progress partial's poll URL carries agent_id so the status poll targets
     # the same per-agent queue.
-    assert "agent_id=nox" in response.text
+    assert "agent_id=test-fileserver" in response.text
 
 
 @pytest.mark.asyncio
@@ -656,8 +656,8 @@ async def test_trigger_scan_skips_file_id_without_record(session: AsyncSession, 
     response = await client.post("/tracklists/scan", data={"file_ids": [missing_id]})
     assert response.status_code == 200
 
-    # No FileRecord for the submitted id -> nothing enqueued for it.
-    assert task_router.queues["nox-meta"].captured == []
+    # No FileRecord for the submitted id -> no owner to resolve, nothing enqueued anywhere.
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
@@ -670,17 +670,21 @@ async def test_trigger_scan_skips_malformed_file_id(session: AsyncSession, clien
     assert response.status_code == 200
 
     # A malformed id is dropped before the DB query, never enqueued, never a 500.
-    assert task_router.queues["nox-meta"].captured == []
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
 async def test_trigger_scan_no_active_agent(session: AsyncSession, client: AsyncClient) -> None:
     """POST /tracklists/scan with zero active agents enqueues nothing, shows empty-state."""
-    # Only the conftest legacy agent exists (last_seen_at is None -> excluded).
+    # Only the conftest agents exist (last_seen_at is None -> excluded), so the file's OWNING
+    # agent (test-fileserver, phaze-c9w9) is offline and the whole selection is unroutable.
     _controller, task_router = install_fake_queues(client)
 
-    file_id = str(uuid.uuid4())
-    response = await client.post("/tracklists/scan", data={"file_ids": [file_id]})
+    file = _make_file()
+    session.add(file)
+    await session.flush()
+
+    response = await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})
     assert response.status_code == 200
     assert "No active agent" in response.text
     # Nothing enqueued anywhere.
@@ -698,7 +702,7 @@ async def test_trigger_scan_uses_current_path_for_an_executed_moved_file(session
     deleted -- either a hard failure or a false-negative clean "no_matches" COMPLETE, permanently
     unscannable.
     """
-    await seed_active_agent(session, "nox")
+    await make_agent_live(session)
     _controller, task_router = install_fake_queues(client)
 
     file = _make_file(original_path="/music/original-location.mp3", current_path="/music/renamed/moved.mp3")
@@ -708,13 +712,67 @@ async def test_trigger_scan_uses_current_path_for_an_executed_moved_file(session
     response = await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})
     assert response.status_code == 200
 
-    agent_queue = task_router.queues["nox-meta"]
+    agent_queue = task_router.queues["test-fileserver-meta"]
     _task_name, payload = agent_queue.captured[0]
     # The enqueued payload's `original_path` FIELD carries the file's CURRENT path value --
     # see the ScanLiveSetPayload docstring's phaze-wsuf exception note.
     assert payload["original_path"] == "/music/renamed/moved.mp3"
     assert payload["original_path"] != file.original_path
     assert ScanLiveSetPayload.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_routes_each_file_to_its_owning_agent(session: AsyncSession, client: AsyncClient) -> None:
+    """THE phaze-c9w9 scan regression: a batch spanning two live fileservers routes per OWNER.
+
+    ``fileserver-west`` is seeded LAST (most recently seen) -- the pre-fix single pick would land
+    BOTH files on west's meta lane. Post-fix each file lands on its owner's queue, the payload
+    carries the OWNER's agent_id, and the poll URL threads BOTH agent ids so ``scan_status`` can
+    look each job key up on the right lane queue.
+    """
+    await seed_active_agent(session, "fileserver-east")
+    await seed_active_agent(session, "fileserver-west")  # most recently seen -> the pre-fix winner
+    _controller, task_router = install_fake_queues(client)
+
+    east_file = _make_file(original_path="/music/east.mp3")
+    east_file.agent_id = "fileserver-east"
+    west_file = _make_file(original_path="/music/west.mp3")
+    west_file.agent_id = "fileserver-west"
+    session.add_all([east_file, west_file])
+    await session.flush()
+
+    response = await client.post("/tracklists/scan", data={"file_ids": [str(east_file.id), str(west_file.id)]})
+    assert response.status_code == 200
+    assert "Scanning..." in response.text
+
+    east_queue = task_router.queues["fileserver-east-meta"]
+    west_queue = task_router.queues["fileserver-west-meta"]
+    assert [(t, p["file_id"], p["agent_id"]) for t, p in east_queue.captured] == [("scan_live_set", str(east_file.id), "fileserver-east")]
+    assert [(t, p["file_id"], p["agent_id"]) for t, p in west_queue.captured] == [("scan_live_set", str(west_file.id), "fileserver-west")]
+    # The poll URL carries BOTH routed agent ids (comma-separated) for the cross-queue job lookup.
+    assert "agent_id=fileserver-east,fileserver-west" in response.text
+
+
+@pytest.mark.asyncio
+async def test_scan_status_looks_up_jobs_across_multiple_agent_queues(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-c9w9: the status poll resolves each job key across EVERY routed agent's meta lane.
+
+    A job enqueued on west's queue is a ``None`` miss on east's -- the poll must keep looking and
+    find it on west instead of counting it complete/vanished.
+    """
+    _controller, task_router = install_fake_queues(client)
+
+    from saq import Status as SaqStatus
+
+    mock_job = MagicMock()
+    mock_job.status = SaqStatus.COMPLETE
+    mock_job.result = {"status": "scanned"}
+    task_router.queue_for("fileserver-east", "meta").job = AsyncMock(return_value=None)  # miss on east
+    task_router.queue_for("fileserver-west", "meta").job = AsyncMock(return_value=mock_job)  # hit on west
+
+    response = await client.get("/tracklists/scan/status?job_ids=job-1&agent_id=fileserver-east,fileserver-west")
+    assert response.status_code == 200
+    assert "1 tracklist(s) created" in response.text
 
 
 @pytest.mark.asyncio

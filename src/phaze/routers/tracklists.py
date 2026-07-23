@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
+import structlog
 
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
@@ -23,13 +24,15 @@ from phaze.routers.cue import _get_cue_version
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ScanLiveSetPayload
 from phaze.services.cue_generator import parse_timestamp_string
-from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task
+from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, resolve_queue_for_task, resolve_queues_for_owned_files
 from phaze.services.proposal_queries import Pagination
 from phaze.services.stage_status import is_applied
 from phaze.services.tracklist_matcher import compute_match_confidence, parse_live_set_filename
 from phaze.services.tracklist_scraper import TracklistScraper
 from phaze.tasks.tracklist import _store_scraped_tracklist
 
+
+logger = structlog.get_logger(__name__)
 
 EDITABLE_FIELDS = {"artist", "title", "timestamp"}
 
@@ -352,11 +355,27 @@ async def trigger_scan(
     file_ids: list[str] = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Trigger batch fingerprint scanning for selected files on an active agent."""
+    """Trigger batch fingerprint scanning for selected files, each on its OWNING agent (phaze-c9w9)."""
+    # Parse submitted ids into UUIDs, skipping malformed strings (never a 500).
+    parsed_ids: list[uuid.UUID] = []
+    for fid in file_ids:
+        try:
+            parsed_ids.append(uuid.UUID(fid))
+        except ValueError:
+            continue
+
+    # Resolve the matching FileRecords so each enqueue carries the original_path.
+    records_result = await session.execute(select(FileRecord).where(FileRecord.id.in_(parsed_ids)))
+    records = {record.id: record for record in records_result.scalars()}
+    ordered_records = [records[file_id] for file_id in parsed_ids if file_id in records]
+
     try:
-        routed = await resolve_queue_for_task("scan_live_set", request.app.state, session)
+        # phaze-c9w9: group the selection by each file's OWNING agent and route per group --
+        # never one most-recently-seen pick for the whole batch (a file whose owner is offline
+        # is skipped, not rerouted onto a different agent's mount).
+        routed_groups, skipped_records = await resolve_queues_for_owned_files("scan_live_set", request.app.state, session, ordered_records)
     except NoActiveAgentError:
-        # No file-server agent is online; surface a visible empty-state and enqueue nothing.
+        # No owning file-server agent is online; surface a visible empty-state and enqueue nothing.
         return templates.TemplateResponse(
             request=request,
             name="tracklists/partials/scan_progress.html",
@@ -372,38 +391,27 @@ async def trigger_scan(
             },
         )
 
-    # Parse submitted ids into UUIDs, skipping malformed strings (never a 500).
-    parsed_ids: list[uuid.UUID] = []
-    for fid in file_ids:
-        try:
-            parsed_ids.append(uuid.UUID(fid))
-        except ValueError:
-            continue
-
-    # Resolve the matching FileRecords so each enqueue carries the original_path.
-    records_result = await session.execute(select(FileRecord).where(FileRecord.id.in_(parsed_ids)))
-    records = {record.id: record for record in records_result.scalars()}
-
-    # scan_live_set is an AGENT_TASK, so resolve_queue_for_task always returns a
-    # non-None agent_id; cast narrows str | None -> str for ScanLiveSetPayload.
-    agent_id = cast("str", routed.agent_id)
+    if skipped_records:
+        logger.warning("trigger_scan: owning agent offline -- files skipped", skipped=len(skipped_records))
 
     job_ids: list[str] = []
-    for file_id in parsed_ids:
-        record = records.get(file_id)
-        if record is None:
-            # No FileRecord for this id; skip rather than dead-letter the job.
-            continue
-        # phaze-wsuf: use current_path, NOT original_path. A live-set file that already had a
-        # rename/move proposal EXECUTED has its original_path pointing at a path execution
-        # deleted; current_path is the field the system maintains as the file's live on-disk
-        # location (equal to original_path until a move). Scanning original_path targets a
-        # deleted path for an executed file -- either a hard failure or a false-negative clean
-        # "no_matches" COMPLETE, permanently unscannable.
-        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id)
-        job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
-        if job is not None:
-            job_ids.append(job.key)
+    agent_ids: list[str] = []
+    for routed, group in routed_groups:
+        # scan_live_set is an AGENT_TASK, so each routed group carries a non-None agent_id;
+        # cast narrows str | None -> str for ScanLiveSetPayload.
+        agent_id = cast("str", routed.agent_id)
+        agent_ids.append(agent_id)
+        for record in group:
+            # phaze-wsuf: use current_path, NOT original_path. A live-set file that already had a
+            # rename/move proposal EXECUTED has its original_path pointing at a path execution
+            # deleted; current_path is the field the system maintains as the file's live on-disk
+            # location (equal to original_path until a move). Scanning original_path targets a
+            # deleted path for an executed file -- either a hard failure or a false-negative clean
+            # "no_matches" COMPLETE, permanently unscannable.
+            payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id)
+            job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
+            if job is not None:
+                job_ids.append(job.key)
 
     # phaze-jdt4: zero enqueued jobs must render the TERMINAL state (done=True), not the polling
     # state. job_ids ends up empty whenever every submitted id was skipped -- a malformed UUID
@@ -422,7 +430,9 @@ async def trigger_scan(
         context={
             "request": request,
             "job_ids": ",".join(job_ids),
-            "agent_id": routed.agent_id,
+            # phaze-c9w9: the poll may now span multiple owning agents' lane queues -- thread the
+            # DISTINCT routed agent ids (comma-separated) through to scan_status.
+            "agent_id": ",".join(agent_ids),
             "total": len(job_ids),
             "completed": 0,
             "done": done,
@@ -456,15 +466,18 @@ def _scan_failure_identifier(job: Any) -> str:
 async def scan_status(
     request: Request,
     job_ids: str = Query(..., min_length=1),
-    agent_id: str = Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128),
+    agent_id: str = Query(..., pattern=r"^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$", max_length=128),
 ) -> HTMLResponse:
-    """Poll scan progress by checking SAQ job results on the per-agent queue.
+    """Poll scan progress by checking SAQ job results on the per-agent queue(s).
 
-    ``scan_live_set`` jobs are enqueued onto the selected agent's meta lane
+    ``scan_live_set`` jobs are enqueued onto each owning agent's meta lane
     (``phaze-agent-<id>-meta``), and ``queue.job(job_key)`` lookups are
-    queue-scoped, so the poll must target the SAME lane queue the job was enqueued
-    on (quick-260707-dh1). The ``agent_id`` is echoed from ``trigger_scan`` through
-    the progress partial.
+    queue-scoped, so the poll must target the SAME lane queue each job was enqueued
+    on (quick-260707-dh1). phaze-c9w9: ``trigger_scan`` routes each file to its
+    OWNING agent, so a batch can span several agents; ``agent_id`` is the
+    comma-separated distinct routed agent ids echoed through the progress partial,
+    and each job key is looked up across those lane queues (a miss on one queue is
+    ``None``; the first hit wins).
 
     COMPLETE and FAILED are handled as SEPARATE branches (not folded into one
     ``job.status in (...)`` check) because SAQ only populates ``job.result`` from
@@ -477,7 +490,8 @@ async def scan_status(
     ``original_path`` when available, else the first line of ``job.error``)
     instead of being silently folded into ``completed`` with no error entry.
     """
-    queue = request.app.state.task_router.queue_for(agent_id, lane_for_task("scan_live_set"))
+    lane = lane_for_task("scan_live_set")
+    queues = [request.app.state.task_router.queue_for(aid, lane) for aid in agent_id.split(",")]
     ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
 
     completed = 0
@@ -485,7 +499,11 @@ async def scan_status(
     errors: list[str] = []
 
     for job_key in ids:
-        job = await queue.job(job_key)
+        job = None
+        for queue in queues:
+            job = await queue.job(job_key)
+            if job is not None:
+                break
         if job is None:
             completed += 1
             continue
