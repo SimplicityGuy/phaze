@@ -21,8 +21,9 @@ from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistSearchRe
 from tests._queue_fakes import install_fake_queues, seed_active_agent
 
 
-def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -> FileRecord:
-    """Create a test FileRecord."""
+def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3", current_path: str | None = None) -> FileRecord:
+    """Create a test FileRecord. ``current_path`` defaults to ``original_path`` (pre-move state);
+    pass it explicitly to simulate an executed (moved) file (phaze-wsuf)."""
     filename = original_path.rsplit("/", 1)[-1]
     return FileRecord(
         agent_id="test-fileserver",
@@ -30,7 +31,7 @@ def _make_file(original_path: str = "/music/test.mp3", file_type: str = "mp3") -
         sha256_hash="a" * 64,
         original_path=original_path,
         original_filename=filename,
-        current_path=original_path,
+        current_path=current_path if current_path is not None else original_path,
         file_type=file_type,
         file_size=1000,
     )
@@ -685,6 +686,35 @@ async def test_trigger_scan_no_active_agent(session: AsyncSession, client: Async
     # Nothing enqueued anywhere.
     assert task_router.queues == {}
     assert task_router.queue_for_calls == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_scan_uses_current_path_for_an_executed_moved_file(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-wsuf: an already-executed (moved) file must be scanned at its CURRENT path.
+
+    A rename/move proposal execution physically relocates the file and deletes the original;
+    `current_path` is the field the system maintains as the file's live on-disk location.
+    Enqueuing `original_path` (the scan-time path) would target a path execution already
+    deleted -- either a hard failure or a false-negative clean "no_matches" COMPLETE, permanently
+    unscannable.
+    """
+    await seed_active_agent(session, "nox")
+    _controller, task_router = install_fake_queues(client)
+
+    file = _make_file(original_path="/music/original-location.mp3", current_path="/music/renamed/moved.mp3")
+    session.add(file)
+    await session.flush()
+
+    response = await client.post("/tracklists/scan", data={"file_ids": [str(file.id)]})
+    assert response.status_code == 200
+
+    agent_queue = task_router.queues["nox-meta"]
+    _task_name, payload = agent_queue.captured[0]
+    # The enqueued payload's `original_path` FIELD carries the file's CURRENT path value --
+    # see the ScanLiveSetPayload docstring's phaze-wsuf exception note.
+    assert payload["original_path"] == "/music/renamed/moved.mp3"
+    assert payload["original_path"] != file.original_path
+    assert ScanLiveSetPayload.model_validate(payload)
 
 
 @pytest.mark.asyncio

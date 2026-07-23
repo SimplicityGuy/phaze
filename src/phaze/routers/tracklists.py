@@ -394,7 +394,13 @@ async def trigger_scan(
         if record is None:
             # No FileRecord for this id; skip rather than dead-letter the job.
             continue
-        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.original_path, agent_id=agent_id)
+        # phaze-wsuf: use current_path, NOT original_path. A live-set file that already had a
+        # rename/move proposal EXECUTED has its original_path pointing at a path execution
+        # deleted; current_path is the field the system maintains as the file's live on-disk
+        # location (equal to original_path until a move). Scanning original_path targets a
+        # deleted path for an executed file -- either a hard failure or a false-negative clean
+        # "no_matches" COMPLETE, permanently unscannable.
+        payload = ScanLiveSetPayload(file_id=record.id, original_path=record.current_path, agent_id=agent_id)
         job = await routed.queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
         if job is not None:
             job_ids.append(job.key)
