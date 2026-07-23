@@ -1,0 +1,18 @@
+{# phaze-p7ox: the non-fragment shape GET /pipeline/files owes a plain request, a bookmark/reload,
+   or an htmx history-restore (response_shape.py rule 2 -- a restore ignores hx-target and swaps into
+   <body>, so it must never receive the chrome-less files_table_view.html fragment).
+
+   Mirrors execution/audit_log.html: a standalone page extending base.html, hosting the SAME
+   partial (pipeline/partials/files_table_view.html) the live htmx filter/pagination swaps already
+   target (#files-table-view), so a restored/reloaded document and a live swap render byte-identical
+   table content -- just with (this page) or without (the fragment) the surrounding chrome. No
+   include_poll_seeds: base.html fires no /pipeline/stats poll, so there is nothing for that OOB
+   fanout to seed here. #}
+{% extends "base.html" %}
+
+{% block title %}Files - Phaze{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold leading-tight text-gray-900 dark:text-gray-100 mb-6">Files</h1>
+{% include "pipeline/partials/files_table_view.html" %}
+{% endblock %}

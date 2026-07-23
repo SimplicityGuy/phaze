@@ -12,9 +12,26 @@
 {# OOB: inject bulk toast #}
 <div hx-swap-oob="beforeend:#toast-container">
     {# undo_target: dedupe_workspace.html's persistent "#dedupe-bulk-response" status div, NOT the
-       v7-cutover-deleted #duplicates-list (phaze-be1j) -- it always exists in the live shell, unlike
-       the per-group cards this bulk action doesn't OOB-touch (R-2). #}
+       v7-cutover-deleted #duplicates-list (phaze-be1j) -- it always exists in the live shell. #}
     {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML" %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>
+
+{# OOB: remove every rendered duplicate-group card (phaze-wgse). The primary swap above only touches
+   whichever container the caller's hx-target points at -- the standalone /duplicates page targets
+   #duplicates-list (the whole card list, already replaced by the primary swap above, so this is a
+   harmless no-op there since it declares no #dupe-group-{hash} ids), but the pipeline Dedupe workspace
+   (pipeline/partials/dedupe_workspace.html) targets #dedupe-bulk-response, a status div ABOVE the card
+   list, not the card list itself. Without this, every #dupe-group-{hash} card (pipeline/partials/
+   _dupe_group.html) stayed fully rendered with live keeper radios below the "all resolved" banner,
+   letting an operator re-POST /duplicates/{hash}/resolve against an already-archived group. Mirrors the
+   phaze-gwe1 OOB row-removal idiom (tags/partials/bulk_write_response.html) -- delete each card the
+   operator was shown, using the SUBMITTED group_hashes so a group a concurrent request already resolved
+   between render and this POST (the `continue` branch in the router) disappears too, not just the ones
+   this call wrote. #}
+{% if group_hashes is defined %}
+{% for hash in group_hashes %}
+<div id="dupe-group-{{ hash }}" hx-swap-oob="delete"></div>
+{% endfor %}
+{% endif %}

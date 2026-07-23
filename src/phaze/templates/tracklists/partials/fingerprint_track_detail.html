@@ -15,23 +15,31 @@
             {% for track in tracks %}
             <tr class="border-b border-gray-50 hover:bg-gray-50 dark:hover:bg-phaze-panel dark:bg-phaze-panel">
                 <td class="py-2 pr-3 text-gray-400 dark:text-gray-500 w-8">{{ track.position }}</td>
-                <td class="py-2 pr-3 text-gray-900 dark:text-gray-100 cursor-pointer hover:bg-blue-50 dark:bg-blue-950"
-                    hx-get="/tracklists/tracks/{{ track.id }}/edit/artist"
-                    hx-target="this"
-                    hx-swap="innerHTML">
-                    {{ track.artist or '-' }}
+                <td class="py-2 pr-3 text-gray-900 dark:text-gray-100 hover:bg-blue-50 dark:bg-blue-950">
+                    {# Bug fix (phaze-rv0x): the hx-get used to live on this <td>. Since hx-swap="innerHTML"
+                       only replaces the td's CHILDREN, the td node (and its click listener) survived the
+                       swap into edit mode, so any click landing inside the open <input> (e.g. repositioning
+                       the caret) bubbled to the td and re-fired the GET, discarding the operator's typed
+                       edit. Binding the trigger to an inner <span> instead -- mirroring
+                       inline_display_field.html, which is what a save swaps back in -- means the trigger
+                       element itself is removed from the DOM when edit mode opens, so there is nothing left
+                       to re-fire while the input is focused. #}
+                    <span hx-get="/tracklists/tracks/{{ track.id }}/edit/artist"
+                          hx-target="closest td"
+                          hx-swap="innerHTML"
+                          class="cursor-pointer">{{ track.artist or '-' }}</span>
                 </td>
-                <td class="py-2 pr-3 text-gray-900 dark:text-gray-100 cursor-pointer hover:bg-blue-50 dark:bg-blue-950"
-                    hx-get="/tracklists/tracks/{{ track.id }}/edit/title"
-                    hx-target="this"
-                    hx-swap="innerHTML">
-                    {{ track.title or '-' }}
+                <td class="py-2 pr-3 text-gray-900 dark:text-gray-100 hover:bg-blue-50 dark:bg-blue-950">
+                    <span hx-get="/tracklists/tracks/{{ track.id }}/edit/title"
+                          hx-target="closest td"
+                          hx-swap="innerHTML"
+                          class="cursor-pointer">{{ track.title or '-' }}</span>
                 </td>
-                <td class="py-2 pr-3 text-gray-400 dark:text-gray-500 cursor-pointer hover:bg-blue-50 dark:bg-blue-950"
-                    hx-get="/tracklists/tracks/{{ track.id }}/edit/timestamp"
-                    hx-target="this"
-                    hx-swap="innerHTML">
-                    {{ track.timestamp or '-' }}
+                <td class="py-2 pr-3 text-gray-400 dark:text-gray-500 hover:bg-blue-50 dark:bg-blue-950">
+                    <span hx-get="/tracklists/tracks/{{ track.id }}/edit/timestamp"
+                          hx-target="closest td"
+                          hx-swap="innerHTML"
+                          class="cursor-pointer">{{ track.timestamp or '-' }}</span>
                 </td>
                 <td class="py-2 pr-3">
                     {% set confidence = track.confidence %}
