@@ -20,10 +20,17 @@ test_redis_databases := env_var_or_default("PHAZE_TEST_REDIS_DATABASES", "64")
 # container pair (own names + ports) so integration-test's auto-teardown EXIT trap can never
 # `docker rm -f` the SHARED phaze-test-db/phaze-test-redis harness other concurrent worktrees rely
 # on -- the same isolation principle as perf_db_container below, applied to the one-shot test path.
-integration_db_container := "phaze-integration-test-db"
-integration_db_port := env_var_or_default("PHAZE_INTEGRATION_TEST_DB_PORT", "5434")
-integration_redis_container := "phaze-integration-test-redis"
-integration_redis_port := env_var_or_default("PHAZE_INTEGRATION_TEST_REDIS_PORT", "6381")
+# phaze-987z: these are NAME PREFIXES, not fixed names -- the recipe below appends a
+# per-invocation unique token (shell PID + $RANDOM) so two concurrent `integration-test` runs
+# never share a container name and can never `docker rm -f` each other's containers. Host ports
+# default to a dynamically-assigned free port (read back via `docker port`); set
+# PHAZE_INTEGRATION_TEST_DB_PORT/_REDIS_PORT to pin a fixed port instead (e.g. for a debugger
+# that needs a stable address -- note a pinned port reintroduces the two-concurrent-runs race,
+# so only pin it for a single deliberate invocation).
+integration_db_container_prefix := "phaze-integration-test-db"
+integration_db_port := env_var_or_default("PHAZE_INTEGRATION_TEST_DB_PORT", "0")
+integration_redis_container_prefix := "phaze-integration-test-redis"
+integration_redis_port := env_var_or_default("PHAZE_INTEGRATION_TEST_REDIS_PORT", "0")
 # Dedicated ephemeral Postgres for the Phase-82 PERF-02 /pipeline/stats bench. A SEPARATE container
 # (own port 5545) so an explicit `just test-db-down`/`test-db` recreate on the shared phaze-test-db
 # (e.g. from a sibling session) can never wipe the ~200K seeded perf corpus mid-measurement.
@@ -374,45 +381,67 @@ test-db-down:
     docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
 
-[doc('Stop and remove the DEDICATED integration-test Postgres + Redis (never the shared phaze-test-db/phaze-test-redis harness)')]
+[doc('Stop and remove any leftover DEDICATED integration-test Postgres + Redis containers (matches the phaze-integration-test- name prefix, so it sweeps up every invocations containers; never the shared phaze-test-db/phaze-test-redis harness)')]
 [group('test')]
 integration-test-down:
     #!/usr/bin/env bash
     set -euo pipefail
-    docker rm -f "{{integration_db_container}}" >/dev/null 2>&1 || true
-    docker rm -f "{{integration_redis_container}}" >/dev/null 2>&1 || true
-    echo "🧹 Removed {{integration_db_container}} + {{integration_redis_container}}"
+    # phaze-987z: container names now carry a per-invocation unique suffix, so there is no
+    # single fixed name left to `docker rm -f` -- sweep by name PREFIX instead. This is the
+    # explicit cleanup path for anything an EXIT trap missed (e.g. a killed -9 shell).
+    ids="$(docker ps -aq --filter "name=phaze-integration-test-" 2>/dev/null || true)"
+    if [ -n "$ids" ]; then
+        # shellcheck disable=SC2086  # $ids is a docker-generated, space-separated list of container IDs
+        docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+    echo "🧹 Removed any leftover phaze-integration-test-* containers"
 
-[doc('Run the full suite against DEDICATED, disposable Postgres + Redis (auto teardown; phaze-pik6 -- never touches the SHARED phaze-test-db/phaze-test-redis harness other worktrees rely on)')]
+[doc('Run the full suite against DEDICATED, disposable Postgres + Redis (auto teardown; phaze-pik6/phaze-987z -- per-invocation unique container names + dynamic ports so concurrent runs never race; never touches the SHARED phaze-test-db/phaze-test-redis harness other worktrees rely on)')]
 [group('test')]
 integration-test:
     #!/usr/bin/env bash
     set -euo pipefail
-    container="{{integration_db_container}}"
-    port="{{integration_db_port}}"
-    redis_container="{{integration_redis_container}}"
-    redis_port="{{integration_redis_port}}"
-    # This pair of containers is DEDICATED to this one-shot invocation (own names, own ports --
-    # never phaze-test-db/phaze-test-redis), so the unconditional rm-then-run below and the
-    # EXIT-trap teardown are safe: nothing else can be relying on THESE specific containers the
-    # way concurrent worktrees rely on the shared harness (phaze-pik6). Two concurrent
-    # `integration-test` invocations on the same host would still race each other here -- that is
-    # a self-contained, documented one-shot recipe, not the shared multi-seat path (that's
-    # `test-db-for` + `check`), so it is out of scope for this fix.
-    trap 'docker rm -f "{{integration_db_container}}" "{{integration_redis_container}}" >/dev/null 2>&1 || true' EXIT
-    echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
-    docker rm -f "$container" >/dev/null 2>&1 || true
-    docker run -d --name "$container" \
-        -e POSTGRES_USER=phaze \
-        -e POSTGRES_PASSWORD=phaze \
-        -e POSTGRES_DB=phaze_test \
-        -p "${port}:5432" \
-        postgres:18-alpine >/dev/null
-    echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port}..."
-    docker rm -f "$redis_container" >/dev/null 2>&1 || true
-    docker run -d --name "$redis_container" \
-        -p "${redis_port}:6379" \
-        redis:7-alpine >/dev/null
+    # phaze-987z: a per-invocation unique token (this shell's PID + $RANDOM) so two concurrent
+    # `integration-test` runs never share a container name -- the EXIT trap below then only
+    # ever removes THIS invocation's own containers, never another run's.
+    token="$$_${RANDOM}"
+    container="{{integration_db_container_prefix}}-${token}"
+    redis_container="{{integration_redis_container_prefix}}-${token}"
+    fixed_db_port="{{integration_db_port}}"
+    fixed_redis_port="{{integration_redis_port}}"
+    trap 'docker rm -f "$container" "$redis_container" >/dev/null 2>&1 || true' EXIT
+    if [ "$fixed_db_port" = "0" ]; then
+        echo "🐘 Starting ${container} (postgres:18-alpine) on a dynamically-assigned host port..."
+        docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze \
+            -e POSTGRES_PASSWORD=phaze \
+            -e POSTGRES_DB=phaze_test \
+            -p 127.0.0.1::5432 \
+            postgres:18-alpine >/dev/null
+        port="$(docker port "$container" 5432/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
+    else
+        port="$fixed_db_port"
+        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port} (pinned via PHAZE_INTEGRATION_TEST_DB_PORT)..."
+        docker run -d --name "$container" \
+            -e POSTGRES_USER=phaze \
+            -e POSTGRES_PASSWORD=phaze \
+            -e POSTGRES_DB=phaze_test \
+            -p "${port}:5432" \
+            postgres:18-alpine >/dev/null
+    fi
+    if [ "$fixed_redis_port" = "0" ]; then
+        echo "🟥 Starting ${redis_container} (redis:7-alpine) on a dynamically-assigned host port..."
+        docker run -d --name "$redis_container" \
+            -p 127.0.0.1::6379 \
+            redis:7-alpine >/dev/null
+        redis_port="$(docker port "$redis_container" 6379/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
+    else
+        redis_port="$fixed_redis_port"
+        echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port} (pinned via PHAZE_INTEGRATION_TEST_REDIS_PORT)..."
+        docker run -d --name "$redis_container" \
+            -p "${redis_port}:6379" \
+            redis:7-alpine >/dev/null
+    fi
     echo "⏳ Waiting for Postgres to accept connections..."
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d phaze_test >/dev/null 2>&1; then
