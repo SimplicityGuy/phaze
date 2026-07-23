@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 import pytest
@@ -198,6 +200,41 @@ async def test_search_proposals(client: AsyncClient, session: AsyncSession) -> N
     response = await client.get("/proposals/?status=all&q=coachella", headers={"HX-Request": "true"})
     assert response.status_code == 200
     assert "Coachella" in response.text
+
+
+@pytest.mark.asyncio
+async def test_pagination_and_sort_urls_urlencode_search_query(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-ro47: `&`/`=`/`#` in the search text must not corrupt pager/sort hx-get URLs.
+
+    Un-encoded, ``q=Drum & Bass`` splices a bogus `` Bass`` parameter after the real ``q``
+    (Starlette resolves duplicate params from the FIRST occurrence, so injected params can win
+    over the template's own ``sort``/``order``/``page_size``), and a bare ``#`` truncates the rest
+    of the URL client-side. This parses every ``hx-get="/proposals/?..."`` URL emitted by
+    pagination.html and proposal_table.html and asserts the search text round-trips intact and
+    sort/order/page_size all survive.
+    """
+    query = "Drum & Bass #1 100% mix=on"
+    await create_test_proposal(session, proposed_filename=f"{query} track.mp3", original_filename="rt.mp3")
+    response = await client.get(
+        "/proposals/",
+        params={"status": "all", "q": query, "sort": "confidence", "order": "desc"},
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+
+    urls = re.findall(r'hx-get="([^"]+)"', response.text)
+    proposal_urls = [u for u in urls if u.startswith("/proposals/?")]
+    assert proposal_urls, "expected at least one pagination/sort hx-get URL to be rendered"
+
+    for url in proposal_urls:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        assert params.get("q") == [query], f"search query corrupted in {url!r}: got {params.get('q')!r}"
+        assert "sort" in params, f"sort param lost (likely truncated by an un-encoded '#') in {url!r}"
+        assert "order" in params, f"order param lost (likely truncated by an un-encoded '#') in {url!r}"
+        # Un-encoded, the raw '#' would have been parsed as the URL FRAGMENT delimiter by
+        # urlparse itself -- proving the client (browser/htmx) would truncate there too.
+        assert parsed.fragment == ""
 
 
 @pytest.mark.asyncio

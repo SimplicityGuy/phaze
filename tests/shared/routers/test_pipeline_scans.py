@@ -427,6 +427,82 @@ async def test_post_scans_subpath_rejects_dotdot(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_subpath_rejects_nul_byte(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """phaze-jpji: a NUL byte in subpath rejects with a swappable error card; NO 500, NO batch.
+
+    A NUL survives NFC normalization, is not a ``..`` component, and does not break the
+    scan_root membership/prefix checks -- so before the fix it sailed through every other
+    validation layer and reached ``session.commit()``, where asyncpg raises
+    ``CharacterNotInRepertoireError`` (PostgreSQL cannot store NUL in a UTF8 text column). That
+    exception escaped the handler as a raw 500, violating the documented contract that EVERY
+    failure branch renders ``scan_submit_error.html`` with ``RENDERABLE_ALERT_STATUS``.
+    """
+    ac, mock_router = smoke
+    pre_count = await _count_batches(session)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "music\x00evil"},
+    )
+    assert response.status_code == RENDERABLE_ALERT_STATUS
+    assert 'role="alert"' in response.text
+    assert "Subpath must not contain" in response.text
+
+    # Atomicity: NO ScanBatch row created on rejection (and no orphan row from an aborted txn).
+    post_count = await _count_batches(session)
+    assert post_count == pre_count
+    # And NO enqueue.
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_scans_subpath_rejects_nul_via_direct_handler_invocation(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-jpji: the reject-branch fires even when the NUL only appears AFTER NFC normalization.
+
+    httpx form-encodes ``data=`` through :func:`urllib.parse.urlencode`, which round-trips a raw
+    NUL just fine (unlike a lone surrogate, which cannot be UTF-8 encoded at all -- an invalid
+    surrogate could only reach the handler via a raw malformed byte stream, not a well-formed HTTP
+    request, so it is covered at the unit level in ``tests/shared/test_pg_text.py`` instead).
+    This test additionally proves the guard checks the POST-normalization ``joined`` path (not
+    just the raw subpath), by monkeypatching ``unicodedata.normalize`` to inject a NUL that was
+    not present in the original request -- mirroring the existing prefix-mismatch test's technique
+    for exercising a normalization edge case.
+    """
+    ac, mock_router = smoke
+    pre_count = await _count_batches(session)
+
+    from phaze.routers import pipeline_scans as ps_mod
+
+    original_normalize = ps_mod.unicodedata.normalize
+
+    def _normalize_injecting_nul(form: str, text: str) -> str:
+        if text.startswith("/data/music/"):
+            return text.replace("2026", "2026\x00")
+        return original_normalize(form, text)
+
+    monkeypatch.setattr(ps_mod.unicodedata, "normalize", _normalize_injecting_nul)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    assert response.status_code == RENDERABLE_ALERT_STATUS, response.text
+    assert 'role="alert"' in response.text
+    assert "Subpath must not contain" in response.text
+
+    post_count = await _count_batches(session)
+    assert post_count == pre_count
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_post_scans_subpath_allows_triple_dot_filename(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
