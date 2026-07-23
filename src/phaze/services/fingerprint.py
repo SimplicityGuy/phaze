@@ -292,8 +292,12 @@ class FingerprintOrchestrator:
         ENGINE level (phaze-z7yw), so an empty return always means at least one healthy
         engine answered and genuinely found no matches -- never a masked total outage.
         """
-        # Collect matches by track_id from each engine
-        matches_by_track: dict[str, dict[str, float]] = defaultdict(dict)
+        # Collect matches by track_id from each engine. Each engine's match carries its own
+        # (confidence, timestamp) pair -- phaze-nldg: the timestamp must survive this
+        # accumulation so it can be threaded into CombinedMatch below (previously only
+        # confidence was kept, so combined_query's output always carried a None timestamp,
+        # even when an engine reported a genuine match offset).
+        matches_by_track: dict[str, dict[str, tuple[float, str | None]]] = defaultdict(dict)
         errors_by_engine: dict[str, str] = {}
 
         for engine in self.engines:
@@ -307,7 +311,7 @@ class FingerprintOrchestrator:
                 errors_by_engine[engine.name] = str(exc)
                 continue
             for match in engine_matches:
-                matches_by_track[match.track_id][engine.name] = match.confidence
+                matches_by_track[match.track_id][engine.name] = (match.confidence, match.timestamp)
 
         if self.engines and len(errors_by_engine) == len(self.engines):
             detail = "; ".join(f"{name}: {error}" for name, error in errors_by_engine.items())
@@ -317,7 +321,8 @@ class FingerprintOrchestrator:
         # Calculate combined scores
         combined: list[CombinedMatch] = []
 
-        for track_id, engine_scores in matches_by_track.items():
+        for track_id, engine_hits in matches_by_track.items():
+            engine_scores = {name: score for name, (score, _ts) in engine_hits.items()}
             if len(engine_scores) == len(self.engines):
                 # Both engines matched: weighted average (weights sum to 1.0)
                 confidence = sum(self.engines_by_name[name].weight * score for name, score in engine_scores.items())
@@ -326,7 +331,15 @@ class FingerprintOrchestrator:
                 raw_score = next(iter(engine_scores.values()))
                 confidence = min(70.0, raw_score)
 
-            combined.append(CombinedMatch(track_id=track_id, confidence=confidence, engines=dict(engine_scores)))
+            # Carry the BEST-SCORING engine's timestamp through (phaze-nldg): when multiple
+            # engines matched the same track_id, prefer the offset from whichever engine gave
+            # the highest raw per-engine confidence, since that engine's placement is the more
+            # trustworthy one. Ties break on dict iteration order (deterministic per engine
+            # registration order in self.engines).
+            best_engine = max(engine_hits, key=lambda name: engine_hits[name][0])
+            timestamp = engine_hits[best_engine][1]
+
+            combined.append(CombinedMatch(track_id=track_id, confidence=confidence, engines=dict(engine_scores), timestamp=timestamp))
 
         # Sort by confidence descending
         combined.sort(key=lambda m: m.confidence, reverse=True)

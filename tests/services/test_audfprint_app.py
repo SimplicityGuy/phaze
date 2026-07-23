@@ -91,6 +91,21 @@ class TestParseMatchesDefaultShape:
         matches, _ = audfprint_app._parse_matches(line)
         assert matches[0].confidence == 100.0
 
+    def test_default_line_yields_timestamp_from_offset(self, audfprint_app: ModuleType) -> None:
+        """phaze-nldg: the {t:6.1f} offset into the reference track is a track-start timestamp."""
+        line = default_line("/q.wav", 8.4, 1234, "/ref/track.mp3", 12.3, 456, 789, 0)
+        matches, _ = audfprint_app._parse_matches(line)
+        assert matches[0].timestamp == "12.3"
+
+    def test_default_ref_path_containing_at_token_still_yields_real_timestamp(self, audfprint_app: ModuleType) -> None:
+        # The ref path itself contains " at 3.0 s" -- the timestamp must resolve to the LAST
+        # (real) time field, not the decoy embedded in the path.
+        ref = "/data/ref/recorded at 3.0 s live/track.mp3"
+        line = default_line("/q.wav", 8.4, 1234, ref, 12.3, 100, 200, 1)
+        matches, failures = audfprint_app._parse_matches(line)
+        assert failures == 0
+        assert matches[0].timestamp == "12.3"
+
 
 class TestParseMatchesTimeRangeShape:
     """The -R/--find-time-range report shape."""
@@ -110,6 +125,12 @@ class TestParseMatchesTimeRangeShape:
         matches, failures = audfprint_app._parse_matches(line)
         assert failures == 0
         assert matches[0].track_id == "/data/ref/track01.mp3"
+
+    def test_timerange_line_yields_timestamp_from_offset(self, audfprint_app: ModuleType) -> None:
+        """phaze-nldg: the {t:6.1f} "to time" offset is a track-start timestamp too."""
+        line = timerange_line(45.2, 3.1, "/data/query/song.wav", 12.3, "/data/ref/track01.mp3", 456, 789, 0)
+        matches, _ = audfprint_app._parse_matches(line)
+        assert matches[0].timestamp == "12.3"
 
 
 class TestParseMatchesFailureAccounting:
