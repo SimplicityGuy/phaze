@@ -790,15 +790,17 @@ fingerprint:
 fingerprint-progress:
     curl -s http://localhost:8000/api/v1/fingerprint/progress | python -m json.tool
 
-[doc('Check audfprint container health')]
+[doc('Check audfprint container health (execs into the audfprint sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
 audfprint-health:
-    docker compose exec worker curl -sf http://audfprint:8001/health | python -m json.tool
+    docker compose -f docker-compose.agent.yml exec audfprint \
+        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8001/health')), indent=2))"
 
-[doc('Check panako container health')]
+[doc('Check panako container health (execs into the panako sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
 panako-health:
-    docker compose exec worker curl -sf http://panako:8002/health | python -m json.tool
+    docker compose -f docker-compose.agent.yml exec panako \
+        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8002/health')), indent=2))"
 
 [doc('Update pre-commit hooks (with frozen SHAs)')]
 [group('maintenance')]
