@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import random
 import re
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag
 import httpx
@@ -14,6 +15,19 @@ import structlog
 
 
 logger = structlog.get_logger(__name__)
+
+
+class DisallowedScrapeHostError(ValueError):
+    """Raised when a URL's scheme or host falls outside the 1001Tracklists allow-list.
+
+    Guards scrape_tracklist() against SSRF: a compromised/malicious search-results response or a
+    DB-stored source_url pointing at an internal address (e.g. cloud metadata, an internal Docker
+    service) must never reach the outbound HTTP client (phaze-k5zz).
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__(f"Refusing to scrape disallowed URL: {url!r}")
+        self.url = url
 
 
 @dataclass
@@ -61,6 +75,14 @@ class TracklistScraper:
     MIN_DELAY = 2.0
     MAX_DELAY = 5.0
 
+    # Hosts a scrape is ever allowed to target (phaze-k5zz). Exact-match only -- comparing against
+    # urlsplit().hostname (never .netloc, which can carry userinfo like "evil@1001tracklists.com")
+    # and lower-cased, so this can't be bypassed by case tricks or a lookalike subdomain such as
+    # "www.1001tracklists.com.evil.com" (a suffix/substring check would wrongly allow that). The
+    # bare apex is included alongside "www" because 1001tracklists.com redirects there and both
+    # are legitimate hosts the scraper can encounter in a source_url.
+    _ALLOWED_HOSTS: ClassVar[frozenset[str]] = frozenset({"1001tracklists.com", "www.1001tracklists.com"})
+
     # CSS selectors as class constants for easy updating
     _SEARCH_ITEM_SELECTOR = ".bItm"
     _SEARCH_TITLE_SELECTOR = ".bItmT a"
@@ -92,6 +114,17 @@ class TracklistScraper:
         else:
             self._client = httpx.AsyncClient(headers=self._DEFAULT_HEADERS, timeout=30.0)
             self._owns_client = True
+
+    @classmethod
+    def _is_allowed_url(cls, url: str) -> bool:
+        """Return True iff url is https and its host is on the 1001Tracklists allow-list.
+
+        Uses ``.hostname`` (not ``.netloc``) so userinfo tricks like ``https://evil@
+        1001tracklists.com`` can't smuggle a different apparent netloc past the check, and
+        lower-cases the comparison so the allow-list match is case-insensitive (phaze-k5zz).
+        """
+        parts = urlsplit(url)
+        return parts.scheme == "https" and parts.hostname is not None and parts.hostname.lower() in cls._ALLOWED_HOSTS
 
     async def _rate_limit(self) -> None:
         """Apply rate limiting delay between requests."""
@@ -143,7 +176,19 @@ class TracklistScraper:
                 continue
             external_id = match.group(1)
 
-            url = f"{self.BASE_URL}{href}" if str(href).startswith("/") else str(href)
+            href_str = str(href)
+            if href_str.startswith("/"):
+                url = f"{self.BASE_URL}{href_str}"
+            else:
+                # Absolute href from the response body -- e.g. a compromised/malicious upstream
+                # response embedding "http://169.254.169.254/tracklist/x/", which the external_id
+                # pattern above matches as a substring. Only forward it if scheme+host clear the
+                # allow-list; otherwise drop this result rather than let a poisoned search page
+                # hand the caller an SSRF target (phaze-k5zz).
+                if not self._is_allowed_url(href_str):
+                    logger.warning("Skipping search result with disallowed href host: %s", href_str)
+                    continue
+                url = href_str
 
             # Extract optional artist and date
             artist_el = item.select_one(self._SEARCH_ARTIST_SELECTOR)
@@ -165,7 +210,17 @@ class TracklistScraper:
         """Scrape a tracklist detail page and extract track data.
 
         Extracts title, artist, event, date, and individual track entries.
+
+        Raises:
+            DisallowedScrapeHostError: url's scheme is not https or its host is not on the
+                1001Tracklists allow-list. Checked BEFORE any network I/O so a malicious/poisoned
+                source_url (attacker-controlled DB row or search-result href) never reaches the
+                outbound HTTP client -- the SSRF surface this method previously had (phaze-k5zz).
         """
+        if not self._is_allowed_url(url):
+            logger.warning("Refusing to scrape disallowed URL: %s", url)
+            raise DisallowedScrapeHostError(url)
+
         await self._rate_limit()
 
         try:
