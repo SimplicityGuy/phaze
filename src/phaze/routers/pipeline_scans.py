@@ -45,6 +45,7 @@ from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, 
 from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS
 from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.schemas.pipeline_scans import TriggerScanForm
+from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import get_agent_reconciliations
 from phaze.services.scan_deletion import delete_scan_cascade
 
@@ -385,10 +386,13 @@ async def trigger_scan(
 
     Validation layers (T-27-03):
     1. NFC-normalize the joined `scan_root + '/' + subpath` (Pitfall 3).
-    2. Reject literal `..` as a path component (WR-01, see the inline comment below --
+    2. Reject NUL (U+0000) / lone surrogates in the joined path (phaze-jpji) -- see the
+       inline comment below; PostgreSQL cannot store these in a UTF8 text column and none
+       of the other three layers happen to catch them.
+    3. Reject literal `..` as a path component (WR-01, see the inline comment below --
        not a bare substring check, to avoid false-positives on triple-dot filenames).
-    3. Look up the agent; reject if missing or revoked.
-    4. Enforce prefix-against `agent.scan_roots` (D-06).
+    4. Look up the agent; reject if missing or revoked.
+    5. Enforce prefix-against `agent.scan_roots` (D-06).
 
     On success: create a RUNNING ScanBatch, enqueue `scan_directory`, return
     the in-progress `scan_progress_card.html` for HTMX swap.
@@ -429,6 +433,25 @@ async def trigger_scan(
     # (``../../etc/passwd``) without false-positives on triple-dot filenames.
     joined_raw = f"{form.scan_root.rstrip('/')}/{form.subpath.lstrip('/')}" if form.subpath else form.scan_root
     joined = unicodedata.normalize("NFC", joined_raw)
+
+    # phaze-jpji: NUL (U+0000) survives NFC normalization, is not a ".." component, and does
+    # not break the scan_root membership/prefix checks below -- so a NUL-bearing subpath sailed
+    # through every other layer and 500'd at `session.commit()` (asyncpg
+    # CharacterNotInRepertoireError; PostgreSQL cannot store NUL in a UTF8 text column),
+    # violating this handler's documented contract that EVERY failure branch renders
+    # scan_submit_error.html. Reject explicitly rather than sanitize: silently stripping the
+    # NUL (services.pg_text.sanitize_pg_text) would point the scan at a DIFFERENT filesystem
+    # path than the operator typed, which is worse than refusing the request outright. A NUL
+    # -- or a lone surrogate, which PostgreSQL equally cannot store -- is never legitimate in a
+    # filesystem path.
+    if contains_pg_invalid_chars(joined):
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/scan_submit_error.html",
+            context={"request": request, "error_message": "Subpath must not contain NUL bytes or invalid Unicode."},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
+
     if ".." in PurePosixPath(joined).parts:
         return templates.TemplateResponse(
             request=request,

@@ -14,7 +14,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pagination import MIN_PAGE_SIZE
-from phaze.services.search_queries import SearchResult, get_summary_counts, search
+from phaze.services.search_queries import SearchResult, distinct_artists, get_summary_counts, search
 
 
 if TYPE_CHECKING:
@@ -195,6 +195,51 @@ async def test_search_genre_filter(session: AsyncSession) -> None:
     results, _pagination = await search(session, "dj", genre="house")
     assert len(results) >= 1
     assert all(r.genre == "house" for r in results if r.result_type == "file")
+
+
+@pytest.mark.asyncio
+async def test_search_artist_filter_underscore_is_literal(session: AsyncSession) -> None:
+    """phaze-ba79: `_` in the artist facet must match only itself -- not "any single character" --
+    or `Coachella_Radio` would also over-match `CoachellaXRadio`."""
+    await create_test_file(session, original_filename="a.mp3", artist="Coachella_Radio", title="Test Set")
+    await create_test_file(session, original_filename="b.mp3", artist="CoachellaXRadio", title="Test Set")
+    results, _pagination = await search(session, "test set", artist="Coachella_Radio")
+    file_results = [r for r in results if r.result_type == "file"]
+    assert len(file_results) == 1
+    assert file_results[0].artist == "Coachella_Radio"
+
+
+@pytest.mark.asyncio
+async def test_search_artist_filter_backslash_round_trips(session: AsyncSession) -> None:
+    """phaze-ba79: an artist tag containing a literal backslash (e.g. `AC\\DC`) must match itself --
+    without escaping, `\\D` is consumed as a LIKE escape sequence and collapses to a literal `D`."""
+    await create_test_file(session, original_filename="a.mp3", artist="AC\\DC", title="Thunderstruck")
+    results, _pagination = await search(session, "thunderstruck", artist="AC\\DC")
+    file_results = [r for r in results if r.result_type == "file"]
+    assert len(file_results) == 1
+    assert file_results[0].artist == "AC\\DC"
+
+
+@pytest.mark.asyncio
+async def test_search_genre_filter_percent_is_literal(session: AsyncSession) -> None:
+    """phaze-ba79: `%` in the genre facet must match only itself -- not "zero or more characters"."""
+    await create_test_file(session, original_filename="a.mp3", artist="DJ", genre="80% House", title="Retro Mix")
+    await create_test_file(session, original_filename="b.mp3", artist="DJ", genre="House", title="Retro Mix")
+    results, _pagination = await search(session, "retro mix", genre="80% House")
+    file_results = [r for r in results if r.result_type == "file"]
+    assert len(file_results) == 1
+    assert file_results[0].genre == "80% House"
+
+
+@pytest.mark.asyncio
+async def test_search_tracklist_artist_filter_underscore_is_literal(session: AsyncSession) -> None:
+    """phaze-ba79: the tracklist branch's artist ILIKE (line 111) must escape `_` too."""
+    await create_test_tracklist(session, artist="Deep_House_Crew", event="Underscore Test")
+    await create_test_tracklist(session, artist="DeepXHouseXCrew", event="Underscore Test")
+    results, _pagination = await search(session, "underscore test", artist="Deep_House_Crew")
+    tracklist_results = [r for r in results if r.result_type == "tracklist"]
+    assert len(tracklist_results) == 1
+    assert tracklist_results[0].artist == "Deep_House_Crew"
 
 
 @pytest.mark.asyncio
@@ -487,6 +532,16 @@ async def test_discogs_artist_filter(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_discogs_artist_filter_backslash_round_trips(session: AsyncSession) -> None:
+    """phaze-ba79: the Discogs branch's artist ILIKE (line 138) must escape a literal backslash too."""
+    await create_test_discogs_link(session, discogs_artist="AC\\DC", discogs_title="Back In Black")
+    results, _pagination = await search(session, "back in black", artist="AC\\DC")
+    discogs_results = [r for r in results if r.result_type == "discogs_release"]
+    assert len(discogs_results) == 1
+    assert discogs_results[0].artist == "AC\\DC"
+
+
+@pytest.mark.asyncio
 async def test_search_unions_all_entities_without_status_facet(session: AsyncSession) -> None:
     """Phase 90 (PR-A, D-11): with the pipeline-status facet removed, a query ALWAYS unions all entities.
 
@@ -511,3 +566,31 @@ async def test_get_summary_counts_includes_discogs(session: AsyncSession) -> Non
     await create_test_discogs_link(session, discogs_artist="Candidate Artist", discogs_title="Candidate Album", status="candidate")
     counts = await get_summary_counts(session)
     assert counts["discogs_count"] == 1  # Only accepted
+
+
+# ---------------------------------------------------------------------------
+# distinct_artists() -- LIKE-escaping round trip (phaze-ba79)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_distinct_artists_underscore_is_literal(session: AsyncSession) -> None:
+    """`_` in the query must match only itself, not "any single character"."""
+    await create_test_file(session, original_filename="a.mp3", artist="Coachella_Radio")
+    await create_test_file(session, original_filename="b.mp3", artist="CoachellaXRadio")
+    artists = await distinct_artists(session, "Coachella_Radio")
+    assert artists == ["Coachella_Radio"]
+
+
+@pytest.mark.asyncio
+async def test_distinct_artists_backslash_artist_round_trips_into_search(session: AsyncSession) -> None:
+    """phaze-ba79's exact failure scenario: an artist suggested by `distinct_artists` (autocomplete)
+    must be able to match itself when round-tripped straight into `search(artist=...)`."""
+    await create_test_file(session, original_filename="a.mp3", artist="AC\\DC", title="Thunderstruck")
+    suggested = await distinct_artists(session, "AC")
+    assert "AC\\DC" in suggested
+
+    results, _pagination = await search(session, "thunderstruck", artist=suggested[0])
+    file_results = [r for r in results if r.result_type == "file"]
+    assert len(file_results) == 1
+    assert file_results[0].artist == "AC\\DC"

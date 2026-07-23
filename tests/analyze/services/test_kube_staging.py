@@ -30,6 +30,7 @@ from httpx import Response
 import kr8s
 from pydantic import SecretStr, ValidationError
 import pytest
+import structlog
 import yaml
 
 from phaze.config_backends import KubeConfig
@@ -307,6 +308,49 @@ def test_kubeconfig_dict_from_parses_inline_kubeconfig_yaml() -> None:
     assert kc == yaml.safe_load(_KUBECONFIG_YAML)
     assert kc["current-context"] == "ctx-primary"
     assert kc["clusters"][0]["cluster"]["server"] == KUBE_TEST_API_URL
+
+
+def test_kubeconfig_dict_from_malformed_yaml_never_leaks_token(caplog: pytest.LogCaptureFixture) -> None:
+    """A malformed kubeconfig (phaze-7hzo): PyYAML's MarkedYAMLError embeds a verbatim snippet of the
+    offending line -- including a credential sitting on it -- in ``str(exc)``. ``_kubeconfig_dict_from``
+    must catch that, raise a sanitized ``KubeStagingError`` (location only), and suppress the chained
+    cause (``from None``) so the snippet-bearing exception can never reach a logger (T-54-07)."""
+    secret_token = "SUPER-SECRET-BEARER-TOKEN-abc123"
+    # A stray tab in the indentation before the token line is a genuine PyYAML structural fault
+    # (ScannerError) -- unlike base64 corruption of the value, which stays parseable as a scalar.
+    malformed_yaml = f"""\
+apiVersion: v1
+kind: Config
+users:
+- name: u1
+  user:
+\t token: {secret_token}
+"""
+    with pytest.raises(kube_staging.KubeStagingError) as exc_info:
+        kube_staging._kubeconfig_dict_from(_kube(kubeconfig=SecretStr(malformed_yaml), api_url=None))
+
+    message = str(exc_info.value)
+    assert secret_token not in message
+    assert exc_info.value.__cause__ is None  # `from None`: no chained MarkedYAMLError to leak later
+
+    # Mirror the real leak site (backends.py:780): a structlog warning with exc_info=True over the
+    # escaped exception. Even with the traceback rendered, the redacted message means the token
+    # never lands in the log stream (T-54-07).
+    logger = structlog.get_logger("test_kube_staging")
+    with caplog.at_level("WARNING"):
+        try:
+            raise exc_info.value
+        except kube_staging.KubeStagingError:
+            logger.warning("simulated_reconcile_guard", exc_info=True)
+    assert secret_token not in caplog.text
+
+
+def test_kubeconfig_dict_from_rejects_non_mapping_yaml() -> None:
+    """A syntactically valid YAML document that is NOT a mapping (e.g. a bare scalar/list) must still
+    fail loud with a sanitized ``KubeStagingError`` rather than returning a non-dict to callers that
+    index it like a kubeconfig."""
+    with pytest.raises(kube_staging.KubeStagingError, match="mapping"):
+        kube_staging._kubeconfig_dict_from(_kube(kubeconfig=SecretStr("- just\n- a\n- list\n"), api_url=None))
 
 
 async def test_api_passes_dict_kubeconfig_and_context(monkeypatch: pytest.MonkeyPatch) -> None:

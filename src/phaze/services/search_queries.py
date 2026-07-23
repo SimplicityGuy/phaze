@@ -13,6 +13,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
+from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, paged_stmt, split_sentinel
 from phaze.services.proposal_queries import Pagination
 
@@ -78,10 +79,15 @@ async def search(
         .where(file_tsvector.op("@@")(ts_query))
     )
 
+    # LIKE-metacharacter escaping (phaze-ba79): `like_wildcard` escapes `%`/`_`/`\` in the raw
+    # facet text before wrapping it in `%...%`, so a `_`-bearing value (e.g. `Coachella_2024`)
+    # matches literally instead of `_` acting as a single-char wildcard, and an artist tag
+    # containing a literal `\` (e.g. `AC\DC`) round-trips through the ⌘K autocomplete instead of
+    # the backslash being silently consumed as the LIKE escape character.
     if artist:
-        file_q = file_q.where(FileMetadata.artist.ilike(f"%{artist}%"))
+        file_q = file_q.where(FileMetadata.artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
     if genre:
-        file_q = file_q.where(FileMetadata.genre.ilike(f"%{genre}%"))
+        file_q = file_q.where(FileMetadata.genre.ilike(like_wildcard(genre), escape=LIKE_ESCAPE_CHAR))
     if date_from:
         file_q = file_q.where(FileRecord.created_at >= date_from)
     if date_to:
@@ -108,7 +114,7 @@ async def search(
     ).where(tracklist_tsvector.op("@@")(ts_query))
 
     if artist:
-        tracklist_q = tracklist_q.where(Tracklist.artist.ilike(f"%{artist}%"))
+        tracklist_q = tracklist_q.where(Tracklist.artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
     if date_from:
         tracklist_q = tracklist_q.where(Tracklist.date >= date_from)
     if date_to:
@@ -135,7 +141,7 @@ async def search(
     )
 
     if artist:
-        discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(f"%{artist}%"))
+        discogs_q = discogs_q.where(DiscogsLink.discogs_artist.ilike(like_wildcard(artist), escape=LIKE_ESCAPE_CHAR))
 
     # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
     combined = union_all(file_q, tracklist_q, discogs_q).subquery()
@@ -189,16 +195,18 @@ async def distinct_artists(session: AsyncSession, query: str, *, limit: int = 20
     read-only ``SELECT DISTINCT`` over ``FileMetadata.artist`` + ``Tracklist.artist``, each
     filtered by ``IS NOT NULL`` and a parameterized (bound) ILIKE. The ``%{query}%`` pattern is
     bound by SQLAlchemy, never string-interpolated into the SQL text (T-61-06) — mirrors the
-    existing ``search()`` ``artist=`` filter.
+    existing ``search()`` ``artist=`` filter, including its LIKE-metacharacter escaping
+    (phaze-ba79): without it, an artist containing ``%``, ``_``, or a literal backslash returned here could never
+    match itself when round-tripped into ``search(artist=...)``.
 
     Pitfall 4: both artist columns are UNINDEXED ``Text``. The caller owns the debounce
     (>=150-250ms), a ``len(query) >= 2`` gate, and relies on the ``LIMIT`` here to bound the
     per-keystroke scan. A real trigram index is deferred (a schema change, out of the
     presentation scope of this phase).
     """
-    like = f"%{query}%"
-    fm = select(FileMetadata.artist).where(FileMetadata.artist.is_not(None), FileMetadata.artist.ilike(like))
-    tl = select(Tracklist.artist).where(Tracklist.artist.is_not(None), Tracklist.artist.ilike(like))
+    like = like_wildcard(query)
+    fm = select(FileMetadata.artist).where(FileMetadata.artist.is_not(None), FileMetadata.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
+    tl = select(Tracklist.artist).where(Tracklist.artist.is_not(None), Tracklist.artist.ilike(like, escape=LIKE_ESCAPE_CHAR))
     combined = union_all(fm, tl).subquery()
     rows = await session.execute(select(combined.c.artist).distinct().limit(limit))
     return [artist for (artist,) in rows if artist]

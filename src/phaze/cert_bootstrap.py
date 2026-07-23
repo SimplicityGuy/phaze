@@ -41,13 +41,17 @@ Algorithm (RESEARCH Pattern 1):
       BasicConstraints(ca=True) critical, KeyUsage(key_cert_sign+crl_sign+digital_signature) critical.
     - Leaf: 2-year validity, SubjectAlternativeName from sans_csv,
       BasicConstraints(ca=False) critical, KeyUsage(digital_signature+key_encipherment) critical.
-    - Private keys serialized as PKCS8 / NoEncryption (bind-mount is 0600).
+    - Private keys serialized as PKCS8 / NoEncryption: this relies on the KEY
+      FILE ITSELF being written 0600 from the first byte (``_write_private_key_file``,
+      phaze-d39i) plus the containing ``certs_dir`` being created 0700, not on
+      any assumption about the host-side bind-mount's own permissions.
 """
 
 from __future__ import annotations
 
 import datetime
 import ipaddress
+import os
 from typing import TYPE_CHECKING, NoReturn
 
 from cryptography import x509
@@ -200,32 +204,49 @@ def _san_set(entries: list[x509.GeneralName]) -> frozenset[tuple[str, str]]:
     return frozenset(_san_entry_key(entry) for entry in entries)
 
 
+def _write_private_key_file(path: Path, data: bytes) -> None:
+    """Write private-key bytes to ``path`` at mode 0600 from the FIRST byte (phaze-d39i).
+
+    ``Path.write_bytes`` creates the file at 0o666 masked by the process umask
+    (typically 0644, world-readable) and only a SUBSEQUENT ``chmod`` narrows it,
+    leaving a window -- on a host bind mount -- where the private key is
+    world-readable, and a permanent 0644 file if the process dies in that
+    window. ``os.open`` with an explicit ``mode`` applies it atomically at
+    creation time (still subject to umask for bits it doesn't request, but
+    0o600 requests no group/other bits at all, so there is nothing for the
+    umask to widen).
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
 def _write_ca(ca_crt: Path, ca_key_path: Path, ca_key: ec.EllipticCurvePrivateKey, ca_cert: x509.Certificate) -> None:
-    """Write the CA cert (0644) + private key (0600) to disk."""
+    """Write the CA cert (0644) + private key (0600, from birth) to disk."""
     ca_crt.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
     ca_crt.chmod(0o644)
-    ca_key_path.write_bytes(
+    _write_private_key_file(
+        ca_key_path,
         ca_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
-        )
+        ),
     )
-    ca_key_path.chmod(0o600)
 
 
 def _write_leaf(server_crt: Path, server_key: Path, leaf_key: ec.EllipticCurvePrivateKey, leaf_cert: x509.Certificate) -> None:
-    """Write the leaf cert (0644) + private key (0600) to disk."""
+    """Write the leaf cert (0644) + private key (0600, from birth) to disk."""
     server_crt.write_bytes(leaf_cert.public_bytes(serialization.Encoding.PEM))
     server_crt.chmod(0o644)
-    server_key.write_bytes(
+    _write_private_key_file(
+        server_key,
         leaf_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption(),
-        )
+        ),
     )
-    server_key.chmod(0o600)
 
 
 def _load_ca(ca_crt: Path, ca_key_path: Path) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate] | None:
@@ -317,11 +338,16 @@ def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
           the desired set computed from ``sans_csv``. Otherwise this is a
           no-op.
 
-    File modes (RESEARCH Pattern 1 + CONTEXT.md specifics):
+    File modes (RESEARCH Pattern 1 + CONTEXT.md specifics; dir mode + key
+    create-mode hardened by phaze-d39i):
+        - ``certs_dir``           0700  (created from birth; other same-uid-1000
+                                    sidecar containers still traverse it fine,
+                                    see docker-compose*.yml)
         - ``phaze-ca.crt``        0644  (public; distributed to agents)
-        - ``phaze-ca.key``        0600  (private CA signing key; never leaves app server)
+        - ``phaze-ca.key``        0600  (private CA signing key, from birth;
+                                    never leaves app server)
         - ``phaze-server.crt``    0644
-        - ``phaze-server.key``    0600
+        - ``phaze-server.key``    0600  (from birth)
 
     On actual CA generation the loud banner is emitted via BOTH ``print()``
     (stdout, ``# noqa: T201`` intentional) AND ``logger.warning()``
@@ -331,7 +357,7 @@ def ensure_certs_present(certs_dir: Path, cn: str, sans_csv: str) -> None:
     client trusts -- did not change.
     """
     try:
-        certs_dir.mkdir(parents=True, exist_ok=True)
+        certs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     except PermissionError as exc:
         _reraise_actionable_permission_error(certs_dir, exc)
     ca_crt = certs_dir / "phaze-ca.crt"

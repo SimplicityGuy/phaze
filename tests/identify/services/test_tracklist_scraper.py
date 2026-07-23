@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from phaze.services.tracklist_scraper import ScrapedTracklist, TracklistScraper, TracklistSearchResult
+from phaze.services.tracklist_scraper import DisallowedScrapeHostError, ScrapedTracklist, TracklistScraper, TracklistSearchResult
 
 
 # --- Fixtures ---
@@ -263,6 +263,105 @@ class TestTracklistScraperSearchEdgeCases:
         html = '<html><body><div class="bItm"><div class="bItmT"><a href="/festival/edc.html">EDC</a></div></div></body></html>'
         scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
         assert scraper._parse_search_results(html) == []
+
+
+class TestTracklistScraperSsrfGuard:
+    """SSRF regression coverage for phaze-k5zz.
+
+    A compromised/malicious upstream search response can embed an absolute href pointing at an
+    internal address, and _EXTERNAL_ID_PATTERN's substring match on "/tracklist/([^/]+)/" is
+    satisfied by paths like "http://169.254.169.254/tracklist/x/". Both _parse_search_results and
+    scrape_tracklist must reject anything off the 1001Tracklists host allow-list.
+    """
+
+    def test_parse_search_results_drops_internal_ip_absolute_href(self):
+        """An absolute href pointing at a cloud-metadata-style internal IP is dropped, not forwarded."""
+        html = (
+            '<html><body><div class="bItm"><div class="bItmT">'
+            '<a href="http://169.254.169.254/tracklist/x/evil.html">Metadata</a>'
+            "</div></div></body></html>"
+        )
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        assert scraper._parse_search_results(html) == []
+
+    def test_parse_search_results_drops_lookalike_domain_absolute_href(self):
+        """A lookalike domain (real domain as a subdomain of an attacker-controlled one) is dropped."""
+        html = (
+            '<html><body><div class="bItm"><div class="bItmT">'
+            '<a href="https://1001tracklists.com.evil.com/tracklist/x/evil.html">Fake</a>'
+            "</div></div></body></html>"
+        )
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        assert scraper._parse_search_results(html) == []
+
+    def test_parse_search_results_keeps_legitimate_relative_href(self):
+        """A normal relative href from the real site still resolves and is kept."""
+        html = '<html><body><div class="bItm"><div class="bItmT"><a href="/tracklist/abc123/skrillex.html">Skrillex</a></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        results = scraper._parse_search_results(html)
+        assert len(results) == 1
+        assert results[0].url == "https://www.1001tracklists.com/tracklist/abc123/skrillex.html"
+
+    def test_parse_search_results_keeps_legitimate_absolute_href(self):
+        """A legitimate absolute href on the allow-listed host is kept unchanged."""
+        html = (
+            '<html><body><div class="bItm"><div class="bItmT">'
+            '<a href="https://www.1001tracklists.com/tracklist/abc123/skrillex.html">Skrillex</a>'
+            "</div></div></body></html>"
+        )
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        results = scraper._parse_search_results(html)
+        assert len(results) == 1
+        assert results[0].url == "https://www.1001tracklists.com/tracklist/abc123/skrillex.html"
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_rejects_internal_ip_url(self):
+        """scrape_tracklist refuses a cloud-metadata-style internal IP URL before any request."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(DisallowedScrapeHostError):
+            await scraper.scrape_tracklist("http://169.254.169.254/tracklist/x/evil.html")
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_rejects_off_allowlist_https_host(self):
+        """scrape_tracklist refuses an https URL whose host is not on the allow-list."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(DisallowedScrapeHostError):
+            await scraper.scrape_tracklist("https://evil.com/tracklist/x/evil.html")
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_rejects_lookalike_domain(self):
+        """scrape_tracklist refuses a lookalike domain that merely contains the real one as a substring."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=client)
+        with pytest.raises(DisallowedScrapeHostError):
+            await scraper.scrape_tracklist("https://1001tracklists.com.evil.com/tracklist/x/evil.html")
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_rejects_userinfo_trick(self):
+        """A userinfo trick (https://evil@1001tracklists.com/...) must not smuggle a disallowed host past hostname checks."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        scraper = TracklistScraper(client=client)
+        # hostname here IS 1001tracklists.com (userinfo "evil@" is stripped by urlsplit), so this
+        # one is actually ALLOWED -- included to document that .hostname, not .netloc, is what
+        # gates the request.
+        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_EMPTY_SEARCH_HTML))
+        result = await scraper.scrape_tracklist("https://evil@1001tracklists.com/tracklist/abc123/test.html")
+        assert result.external_id == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_still_works_for_legitimate_url(self):
+        """The allow-list guard does not break the normal, legitimate scrape path."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
+        scraper = TracklistScraper(client=client)
+        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
+        assert isinstance(result, ScrapedTracklist)
+        assert result.external_id == "abc123"
 
 
 class TestTracklistScraperLifecycle:

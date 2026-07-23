@@ -8,8 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone audfprint
-RUN git clone --depth 1 https://github.com/dpwe/audfprint.git /app/audfprint
+# Pin the upstream clone to an exact commit (mirrors Dockerfile.panako's PANAKO_REF
+# pin). Upstream publishes no versioned release tag for the audfprint script
+# bundle, so a SHA is the only stable ref available. An unpinned `master` clone
+# means the artifact this image is built from can change underneath us between
+# two builds of the same phaze release -- silently, since docker-publish.yml
+# rebuilds and republishes this image on every main push / release tag.
+ARG AUDFPRINT_SHA=cb03ba99feafd41b8874307f0f4e808a6ce34362
+RUN git clone --filter=blob:none https://github.com/dpwe/audfprint.git /app/audfprint \
+    && git -C /app/audfprint checkout --detach "${AUDFPRINT_SHA}"
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /bin/

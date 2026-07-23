@@ -34,3 +34,13 @@ def sanitize_pg_text(s: str) -> str:
     characters and noncharacters are preserved.
     """
     return _PG_INVALID_CHARS.sub("", s)
+
+
+def contains_pg_invalid_chars(s: str) -> bool:
+    """Return ``True`` if ``s`` contains NUL (U+0000) or a lone Unicode surrogate.
+
+    For callers that must REJECT unstorable input rather than silently strip it -- e.g. a
+    filesystem path, where dropping a NUL would resolve to a different path than the operator
+    typed. Uses the same character class as :func:`sanitize_pg_text`.
+    """
+    return _PG_INVALID_CHARS.search(s) is not None
