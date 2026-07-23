@@ -477,8 +477,11 @@ check: lint typecheck
     #!/usr/bin/env bash
     set -euo pipefail
     # A fresh worktree has no Postgres/Redis of its own -- `test` (bare `uv run
-    # pytest`) then dies at fixture setup dialing the CI-matching localhost:5432
-    # default (tests/conftest.py:45). `check` provisions the SHARED test harness
+    # pytest`) then dies at fixture setup dialing tests/db_guard.py's resolve_test_dsn()
+    # default (localhost:5433, the local ephemeral harness -- NOT the same as CI, which
+    # always exports its own TEST_DATABASE_URL against its 5432 service container and
+    # never relies on this default) with nothing listening there yet. `check` provisions
+    # the SHARED test harness
     # (idempotently, via the existing `test-db` recipe) and exports the matching env
     # here, but never tears it down -- unlike `integration-test`, which runs against
     # its own DEDICATED containers with an auto-teardown EXIT trap (phaze-pik6),
@@ -494,16 +497,6 @@ check: lint typecheck
         export PHAZE_REDIS_URL="redis://localhost:{{test_redis_port}}/0"
     fi
     just test
-
-[doc('Trigger a file scan (requires running services)')]
-[group('scan')]
-scan:
-    curl -s -X POST http://localhost:8000/api/v1/scan | python -m json.tool
-
-[doc('Check scan status by batch ID')]
-[group('scan')]
-scan-status BATCH_ID:
-    curl -s http://localhost:8000/api/v1/scan/{{BATCH_ID}} | python -m json.tool
 
 [doc('Run pip-audit for dependency vulnerability scanning')]
 [group('security')]
@@ -575,8 +568,17 @@ image-push:
         ["audfprint"]="services/audfprint/Dockerfile.audfprint"
         ["panako"]="services/panako/Dockerfile.panako"
     )
+    # Matches docker-publish.yml's image_suffix matrix (Phase 29 D-15): the api image
+    # publishes BARE (ghcr.io/<owner>/<repo>:<tag>, no sub-path -- docker-compose.agent.yml's
+    # watcher/worker services pull exactly that reference), while the fingerprint sidecars get
+    # a /<service> sub-path.
+    declare -A IMAGE_SUFFIX=(
+        ["api"]=""
+        ["audfprint"]="/audfprint"
+        ["panako"]="/panako"
+    )
     for SERVICE in "${!IMAGES[@]}"; do
-        IMAGE="${REGISTRY}/${OWNER}/${REPO}/${SERVICE}:${TAG}"
+        IMAGE="${REGISTRY}/${OWNER}/${REPO}${IMAGE_SUFFIX[$SERVICE]}:${TAG}"
         echo "🐳 Building and pushing ${IMAGE}..."
         docker build -f "${IMAGES[$SERVICE]}" -t "${IMAGE}" .
         docker push "${IMAGE}"
@@ -728,11 +730,6 @@ db-downgrade:
 [group('db')]
 db-history:
     uv run alembic history
-
-[doc('Run the state↔derived shadow-compare gate against the target DB (MIG-02). Exit nonzero on hard divergence.')]
-[group('db')]
-shadow-compare *ARGS:
-    uv run python -m phaze.cli.shadow_compare {{ ARGS }}
 
 [doc('Start a DEDICATED ephemeral Postgres for the PERF-02 bench (own port, never wiped by test-db recreates)')]
 [group('db')]
