@@ -1,14 +1,18 @@
-"""Jinja-render tests for the copy-pasted `>7-page` pagers (phaze-rv40, phaze-7jbt, phaze-hb0a).
+"""Jinja-render tests for the copy-pasted `>7-page` pager (phaze-rv40).
 
-Each of ``pipeline/partials/_list_pager.html``, ``duplicates/partials/pagination.html`` and
-``proposals/partials/pagination.html`` builds its "pages around current" window with
+``pipeline/partials/_list_pager.html`` builds its "pages around current" window with
 ``range(max(current-1, 2), min(current+2, total_pages) + 1)`` and THEN unconditionally renders a
 standalone "always show last page" button. Whenever ``current_page >= total_pages - 2`` the window's
 own upper bound already reaches ``total_pages``, so the standalone button re-emits it: the last page
 number renders twice, and on the actual final page BOTH copies carry the active-page highlight
-(``aria-current="page"`` on the pipeline pager; the ``bg-blue-600`` class on all three).
+(``aria-current="page"``).
 
-Renders the templates directly (the same technique ``test_progress_partial.py`` uses) rather than
+phaze-y4s6 removed the two siblings this module used to also cover: ``proposals/partials/
+pagination.html`` (phaze-hb0a) and ``duplicates/partials/pagination.html`` (phaze-7jbt). Both
+belonged to legacy list-container surfaces (``#proposal-list-container`` / the legacy
+``/duplicates/`` group list) that had no live caller left post-v7-cutover and were deleted outright.
+
+Renders the template directly (the same technique ``test_progress_partial.py`` uses) rather than
 seeding 175+ DB rows to reach the `>7-page` branch through a real request -- the defect is pure
 Jinja loop arithmetic, so exercising it with a synthetic ``Pagination`` is both faster and a more
 direct regression test than an equivalent HTTP round trip.
@@ -65,34 +69,6 @@ def _render_pipeline_pager(*, page: int, page_size: int, total: int) -> str:
     return response.body.decode()
 
 
-def _render_duplicates_pager(*, page: int, page_size: int, total: int) -> str:
-    """Render the duplicates list pager (phaze-7jbt)."""
-    pagination = Pagination(page=page, page_size=page_size, total=total)
-    response = _templates.TemplateResponse(
-        request=_fake_request(),
-        name="duplicates/partials/pagination.html",
-        context={"pagination": pagination},
-    )
-    return response.body.decode()
-
-
-def _render_proposals_pager(*, page: int, page_size: int, total: int) -> str:
-    """Render the legacy proposals list pager (phaze-hb0a)."""
-    pagination = Pagination(page=page, page_size=page_size, total=total)
-    response = _templates.TemplateResponse(
-        request=_fake_request(),
-        name="proposals/partials/pagination.html",
-        context={
-            "pagination": pagination,
-            "current_status": "all",
-            "search_query": "",
-            "current_sort": "confidence",
-            "current_order": "asc",
-        },
-    )
-    return response.body.decode()
-
-
 # ---------------------------------------------------------------------------
 # pipeline/partials/_list_pager.html -- phaze-rv40
 # ---------------------------------------------------------------------------
@@ -119,37 +95,3 @@ def test_pipeline_pager_unaffected_when_current_page_is_not_near_the_end() -> No
     html = _render_pipeline_pager(page=1, page_size=25, total=200)
     assert html.count(">8</button>") == 1
     assert html.count('aria-current="page"') == 1
-
-
-# ---------------------------------------------------------------------------
-# duplicates/partials/pagination.html -- phaze-7jbt
-# ---------------------------------------------------------------------------
-
-
-def test_duplicates_pager_last_page_button_renders_once_on_the_final_page() -> None:
-    html = _render_duplicates_pager(page=9, page_size=10, total=90)
-    assert html.count(">9</button>") == 1
-    assert html.count("bg-blue-600") == 1
-
-
-def test_duplicates_pager_last_page_button_renders_once_near_the_end() -> None:
-    for page in (7, 8):
-        html = _render_duplicates_pager(page=page, page_size=10, total=90)
-        assert html.count(">9</button>") == 1, f"duplicate '9' button at current_page={page}"
-
-
-# ---------------------------------------------------------------------------
-# proposals/partials/pagination.html -- phaze-hb0a
-# ---------------------------------------------------------------------------
-
-
-def test_proposals_pager_last_page_button_renders_once_on_the_final_page() -> None:
-    html = _render_proposals_pager(page=13, page_size=25, total=312)
-    assert html.count(">13</button>") == 1
-    assert html.count("bg-blue-600") == 1
-
-
-def test_proposals_pager_last_page_button_renders_once_near_the_end() -> None:
-    for page in (11, 12):
-        html = _render_proposals_pager(page=page, page_size=25, total=312)
-        assert html.count(">13</button>") == 1, f"duplicate '13' button at current_page={page}"

@@ -134,10 +134,16 @@ async def test_tag_undo_reapplies_before_tags(client: AsyncClient, session: Asyn
 
 @pytest.mark.asyncio
 async def test_tag_undo_missing_log_returns_404(client: AsyncClient, session: AsyncSession) -> None:
-    """Undo on a file with no prior write log 404s (nothing to reverse)."""
+    """Undo on a file with no prior write log redraws the pending row with a toast (nothing to reverse).
+
+    phaze-y4s6: routers/tags.py's write/undo routes always return the v7 _diff_row.html shape now
+    (the legacy non-v7 bare-404 fallback had no live caller left and was removed), so this is a
+    200 + toast, not a bare 404.
+    """
     file = await _executed_file(session)
     resp = await client.post(f"/tags/{file.id}/undo")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert "No prior tag write to undo." in resp.text
 
 
 @pytest.mark.asyncio

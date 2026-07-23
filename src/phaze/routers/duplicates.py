@@ -5,25 +5,21 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.routers.request_guards import parse_json_array_payload
-from phaze.routers.response_shape import wants_fragment
 from phaze.services.dedup import (
-    count_duplicate_groups,
     find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
-    find_duplicate_groups_with_metadata,
     get_duplicate_stats,
     resolve_group,
     score_group,
     undo_resolve,
 )
-from phaze.services.proposal_queries import Pagination
 from phaze.services.review import build_dupe_group_card
 
 
@@ -81,47 +77,18 @@ def _compute_best_values(group: dict[str, Any]) -> dict[str, str]:
     return best
 
 
-@router.get("/", response_class=HTMLResponse)
-async def list_duplicates(
-    request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=10, le=100),
-    session: AsyncSession = Depends(get_session),
-) -> Response:
-    """Render the duplicate groups list page, or an HTMX group list fragment."""
-    # SHELL-05 (D-03): a plain (non-HX) GET / bookmark resolves into the v7.0 shell.
-    # The in-page HX filter branch below is left intact so the app stays usable (D-01).
-    #
-    # phaze-64uy: ``wants_fragment``, not the raw ``HX-Request`` header (response_shape.py
-    # contract rule 1). ``duplicates/partials/pagination.html`` sets ``hx-push-url="true"`` on
-    # every ``/duplicates/?page=...`` control, so a Back with the snapshot evicted arrives as a
-    # restore carrying BOTH headers -- and htmx swaps a restore into ``<body>``, ignoring
-    # ``hx-target``. The raw check answered that with the ~284-byte ``group_list.html``
-    # fragment, replacing the entire document with it. Restores now redirect into the shell.
-    if not wants_fragment(request):
-        return RedirectResponse(url="/s/dedupe", status_code=302)
+@router.get("/", response_class=RedirectResponse)
+async def list_duplicates() -> RedirectResponse:
+    """SHELL-05 (D-03): resolve a legacy ``/duplicates/`` bookmark into the v7.0 shell.
 
-    offset = (page - 1) * page_size
-    groups = await find_duplicate_groups_with_metadata(session, limit=page_size, offset=offset)
-    stats = await get_duplicate_stats(session)
-    total = await count_duplicate_groups(session)
-
-    for group in groups:
-        score_group(group)
-
-    pagination = Pagination(page=page, page_size=page_size, total=total)
-
-    context: dict[str, Any] = {
-        "request": request,
-        "groups": groups,
-        "stats": stats,
-        "pagination": pagination,
-        "current_page": "duplicates",
-    }
-
-    # CUT-02 (Phase 62): the non-HX path already 302-redirected above (SHELL-05), so this is
-    # reached only for HX rail swaps -- the LIVE shell pagination/filter/sort fragment (D-03b).
-    return templates.TemplateResponse(request=request, name="duplicates/partials/group_list.html", context=context)
+    phaze-y4s6: this used to also serve an in-page HX-filtered/paginated group list (rendering
+    ``duplicates/partials/group_list.html``, composed of ``group_card.html`` + ``pagination.html``).
+    The live v7.0 Dedupe workspace (``pipeline/partials/dedupe_workspace.html``) renders its
+    ``dupe_group`` cards inline via ``services/review.get_dedupe_groups`` with no pagination and
+    never hx-gets this bare path -- there was no live caller left to preserve an HX-filter branch
+    for. The dead list/pagination templates were deleted outright.
+    """
+    return RedirectResponse(url="/s/dedupe", status_code=302)
 
 
 @router.get("/{group_hash}/compare", response_class=HTMLResponse)
