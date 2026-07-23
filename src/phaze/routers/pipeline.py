@@ -32,6 +32,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
+from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -1033,6 +1034,18 @@ async def pipeline_files(
     ride ``sort``'s ``view_state`` (contract rule 4) alongside ``page_size``, so a header click keeps
     the operator's filter lens and a Prev/Next click keeps the operator's chosen order via
     :meth:`~phaze.routers.column_sort.SortState.query_state` in the template.
+
+    phaze-p7ox: ``_status_filter_bar.html``'s filter form and Clear-filter anchor both
+    ``hx-push-url="true"`` THIS endpoint into the address bar (D-03's URL-carried-lens idiom), but
+    this handler used to unconditionally return the chrome-less ``files_table_view.html`` fragment --
+    no ``wants_fragment()`` fork, no full-document fallback. Per ``response_shape.py`` rule 2, a
+    history-restore (Back/Forward after htmx's 10-entry cache evicts the snapshot -- routine) sets
+    ``HX-Request: true`` too but IGNORES ``hx-target`` and swaps into ``<body>``, so the fragment
+    replaced the whole page with an orphaned filter bar + table; a plain reload/bookmark of the
+    pushed URL (no htmx headers at all) hit the exact same branch and served a raw fragment with no
+    ``<html>``, CSS, htmx, or Alpine. Mirroring ``audit_log`` (``execution.py``): a live htmx swap
+    (``wants_fragment`` True) still gets the same bare fragment, unchanged; anything else -- a plain
+    request or a restore -- gets the full ``pipeline/files.html`` page instead.
     """
     stage_enum: Stage | None = None
     if stage:
@@ -1047,16 +1060,16 @@ async def pipeline_files(
         view_state={"page_size": page_size, "stage": stage_enum.value if stage_enum is not None else None, "bucket": bucket_val},
     )
     files_page = await get_files_page(session, page=page, page_size=page_size, stage=stage_enum, bucket=bucket_val, sort=sort_state)
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/files_table_view.html",
-        context={
-            "files_page": files_page,
-            "active_stage": stage_enum.value if stage_enum is not None else None,
-            "active_bucket": bucket_val,
-            "sort": sort_state,
-        },
-    )
+    context = {
+        "files_page": files_page,
+        "active_stage": stage_enum.value if stage_enum is not None else None,
+        "active_bucket": bucket_val,
+        "sort": sort_state,
+    }
+    if wants_fragment(request):
+        return templates.TemplateResponse(request=request, name="pipeline/partials/files_table_view.html", context=context)
+
+    return templates.TemplateResponse(request=request, name="pipeline/files.html", context=context)
 
 
 @router.get("/pipeline/analyze-files", response_class=HTMLResponse)
