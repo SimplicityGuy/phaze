@@ -76,6 +76,23 @@ def _render_duplicates_pager(*, page: int, page_size: int, total: int) -> str:
     return response.body.decode()
 
 
+def _render_proposals_pager(*, page: int, page_size: int, total: int) -> str:
+    """Render the legacy proposals list pager (phaze-hb0a)."""
+    pagination = Pagination(page=page, page_size=page_size, total=total)
+    response = _templates.TemplateResponse(
+        request=_fake_request(),
+        name="proposals/partials/pagination.html",
+        context={
+            "pagination": pagination,
+            "current_status": "all",
+            "search_query": "",
+            "current_sort": "confidence",
+            "current_order": "asc",
+        },
+    )
+    return response.body.decode()
+
+
 # ---------------------------------------------------------------------------
 # pipeline/partials/_list_pager.html -- phaze-rv40
 # ---------------------------------------------------------------------------
@@ -119,3 +136,20 @@ def test_duplicates_pager_last_page_button_renders_once_near_the_end() -> None:
     for page in (7, 8):
         html = _render_duplicates_pager(page=page, page_size=10, total=90)
         assert html.count(">9</button>") == 1, f"duplicate '9' button at current_page={page}"
+
+
+# ---------------------------------------------------------------------------
+# proposals/partials/pagination.html -- phaze-hb0a
+# ---------------------------------------------------------------------------
+
+
+def test_proposals_pager_last_page_button_renders_once_on_the_final_page() -> None:
+    html = _render_proposals_pager(page=13, page_size=25, total=312)
+    assert html.count(">13</button>") == 1
+    assert html.count("bg-blue-600") == 1
+
+
+def test_proposals_pager_last_page_button_renders_once_near_the_end() -> None:
+    for page in (11, 12):
+        html = _render_proposals_pager(page=page, page_size=25, total=312)
+        assert html.count(">13</button>") == 1, f"duplicate '13' button at current_page={page}"
