@@ -7,12 +7,19 @@
    target (#files-table-view), so a restored/reloaded document and a live swap render byte-identical
    table content -- just with (this page) or without (the fragment) the surrounding chrome. No
    include_poll_seeds: base.html fires no /pipeline/stats poll, so there is nothing for that OOB
-   fanout to seed here. #}
+   fanout to seed here.
+
+   phaze-mrhq: this page owns id="files-table-view" itself (mirroring files_workspace.html, the
+   /s/files rail workspace's host) -- files_table_view.html carries no id of its own, so a live
+   filter/sort/pager swap that lands on this page's DOM replaces this div's innerHTML rather than
+   nesting a second #files-table-view inside it. #}
 {% extends "base.html" %}
 
 {% block title %}Files - Phaze{% endblock %}
 
 {% block content %}
 <h1 class="text-2xl font-semibold leading-tight text-gray-900 dark:text-gray-100 mb-6">Files</h1>
-{% include "pipeline/partials/files_table_view.html" %}
+<div id="files-table-view">
+    {% include "pipeline/partials/files_table_view.html" %}
+</div>
 {% endblock %}

@@ -1,0 +1,21 @@
+{# phaze-mrhq: the thin HOST for the /s/files rail workspace.
+
+   Mirrors the analyze_workspace.html / _analyze_files.html split (phaze-5462): the id-bearing
+   element lives HERE, on the host, and the swap-target FRAGMENT (files_table_view.html) carries
+   no id of its own. Before this split, files_table_view.html was both (a) the STAGE_PARTIALS
+   partial rendered directly into #stage-workspace for the /s/files workspace AND (b) the fragment
+   GET /pipeline/files returns for every filter/sort/pager hx-get -- and that fragment's own root
+   div carried the SAME id="files-table-view" it was being swapped into. Every interaction therefore
+   nested a fresh #files-table-view inside the existing one (innerHTML swap replaces the host's
+   content with a copy of the host). Splitting host and fragment means the swap always lands
+   CONTENT under the host id, never a second id-bearing element.
+
+   The shared OOB seed-target placeholders (87-09 gap-fix) move here too: they are a WORKSPACE-only
+   concern (the single chrome /pipeline/stats poll needs a pre-existing landing target), so they sit
+   as a SIBLING of #files-table-view, exactly as they did inside files_table_view.html before. The
+   pipeline_files() filter/pagination endpoint never renders this host, so the fragment it returns
+   never re-emits (and never duplicates) the seeds. #}
+{% if include_poll_seeds %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endif %}
+<div id="files-table-view">
+    {% include "pipeline/partials/files_table_view.html" %}
+</div>

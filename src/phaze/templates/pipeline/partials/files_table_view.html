@@ -53,15 +53,15 @@
    fingerprint is DELIBERATELY absent: a failed fingerprint self-retries via the eligible_clause
    pending set (ELIG-04), so it has NO manual retry backend and NO per-row/bulk control (RESEARCH). #}
 {% set _retry_endpoints = {'metadata': 'metadata-failed', 'analyze': 'analysis-failed'} %}
-{# Phase 87 (87-09 gap-fix): when this partial is mounted as the /s/files WORKSPACE (shell._render_stage
-   sets include_poll_seeds), it must host the shared OOB seed-target placeholders like every other
-   workspace — otherwise the single chrome /pipeline/stats poll's OOB seeds (rail orphan badge, priority
-   store, agent-busy gating, cloud-card sinks) land nowhere and log htmx:oobErrorNoTarget every 5s while
-   the badges stick at 0. A SIBLING of #files-table-view (not inside it), so the inner filter/pagination
-   swaps that target #files-table-view never duplicate the seed ids. The pipeline_files() filter endpoint
-   omits the flag, so the fragment it returns carries no seeds. #}
-{% if include_poll_seeds %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endif %}
-<div id="files-table-view">
+{# phaze-mrhq: this fragment deliberately carries NO id on its own. The HOST (files_workspace.html,
+   the STAGE_PARTIALS entry for the /s/files rail workspace) owns id="files-table-view", and every
+   hx-get here (filter bar, sort headers, Prev/Next pager) swaps innerHTML INTO that host. When this
+   fragment also carried the id, each swap nested a second #files-table-view inside the first --
+   duplicate ids that grew one level deeper per filter/sort/pager click (mirrors the analyze-view fix,
+   phaze-5462). The host owns the id and the shared OOB seed-target placeholders (87-09 gap-fix); this
+   fragment is content only. pipeline_files() (pipeline.py) returns this same fragment for the live
+   filter/sort/pager swap and pipeline/files.html includes it for the bookmark/reload/history-restore
+   full page -- both host-side wrappers own the id, so this partial never needs to. #}
     {# One legend per surface (D-01) -- single-sourced in _stage_matrix.html's legend_only branch. #}
     <div class="px-6 pt-2">{% with legend_only=True %}{% include "pipeline/partials/_stage_matrix.html" %}{% endwith %}</div>
     {# Per-stage status filter lens (87-05, UI-02 / D-03) -- URL-carried, failure-inclusive; ONE canonical
@@ -192,4 +192,3 @@
     </nav>
     {% endif %}
     {% endif %}
-</div>
