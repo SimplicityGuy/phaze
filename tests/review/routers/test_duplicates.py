@@ -81,34 +81,24 @@ async def test_list_duplicates_returns_html(session: AsyncSession, client: Async
 
 
 @pytest.mark.asyncio
-async def test_list_duplicates_htmx_returns_partial(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /duplicates/ with HX-Request header returns partial without full base.html."""
+async def test_list_duplicates_redirects_even_with_hx_request_header(session: AsyncSession, client: AsyncClient) -> None:
+    """phaze-y4s6: GET /duplicates/ redirects unconditionally now, even with an HX-Request header.
+
+    The in-page HX group-list/pagination fragment this used to preserve
+    (``duplicates/partials/group_list.html``, composed of ``group_card.html`` + ``pagination.html``)
+    had no live caller left post-v7-cutover and was deleted outright -- the live Dedupe workspace
+    (``pipeline/partials/dedupe_workspace.html``) renders its cards inline with no pagination and
+    never hx-gets this bare path.
+    """
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
     await session.flush()
 
-    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
+    response = await client.get("/duplicates/", headers={"HX-Request": "true"}, follow_redirects=False)
 
-    assert response.status_code == 200
-    # Partial should NOT contain full base.html elements
-    assert "<!DOCTYPE html>" not in response.text
-    # But should have group content
-    assert HASH_A[:12] in response.text
-
-
-@pytest.mark.asyncio
-async def test_empty_state(session: AsyncSession, client: AsyncClient) -> None:
-    """GET /duplicates/ with no duplicate files returns empty state message."""
-    # Add a single unique file (no duplicates)
-    f1 = _make_file("/dir/unique.mp3", "mp3", HASH_A)
-    session.add(f1)
-    await session.flush()
-
-    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
-
-    assert response.status_code == 200
-    assert "No duplicates found" in response.text
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/dedupe"
 
 
 @pytest.mark.asyncio
@@ -175,6 +165,7 @@ async def test_resolve_group_with_canonical_id_outside_group_resolves_nothing(se
     from sqlalchemy import select
 
     from phaze.models.dedup_resolution import DedupResolution
+    from phaze.services.review import get_dedupe_groups
 
     f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
@@ -193,10 +184,10 @@ async def test_resolve_group_with_canonical_id_outside_group_resolves_nothing(se
     marker_ids = set((await session.execute(select(DedupResolution.file_id))).scalars().all())
     assert marker_ids == set()
 
-    # The group is still visible, unresolved, in the listing (it did not silently vanish).
-    listing = await client.get("/duplicates/", headers={"HX-Request": "true"})
-    assert listing.status_code == 200
-    assert HASH_A[:12] in listing.text
+    # The group is still visible, unresolved, in the live Dedupe workspace's own group source (it
+    # did not silently vanish).
+    groups = await get_dedupe_groups(session)
+    assert any(g["sha256_hash"] == HASH_A for g in groups)
 
 
 @pytest.mark.asyncio
@@ -394,7 +385,9 @@ async def test_bulk_undo(session: AsyncSession, client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_resolved_groups_not_shown(session: AsyncSession, client: AsyncClient) -> None:
-    """After resolving a group, GET /duplicates/ no longer shows that group."""
+    """After resolving a group, it no longer appears in the live Dedupe workspace's group source."""
+    from phaze.services.review import get_dedupe_groups
+
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
     session.add_all([f1, f2])
@@ -406,11 +399,8 @@ async def test_resolved_groups_not_shown(session: AsyncSession, client: AsyncCli
         data={"canonical_id": str(f1.id)},
     )
 
-    # Check listing
-    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    assert HASH_A[:12] not in response.text
-    assert "No duplicates found" in response.text
+    groups = await get_dedupe_groups(session)
+    assert not any(g["sha256_hash"] == HASH_A for g in groups)
 
 
 @pytest.mark.asyncio
@@ -943,13 +933,15 @@ async def test_duplicates_history_restore_resolves_to_the_full_shell(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_duplicates_live_htmx_swap_still_returns_the_fragment(client: AsyncClient) -> None:
-    """The other direction: an ordinary htmx pagination swap must still get the fragment."""
-    response = await client.get("/duplicates/", headers={"HX-Request": "true"})
-    assert response.status_code == 200
-    body = response.text
-    assert "<html" not in body.lower(), "a live htmx swap must get a fragment, not a full document"
-    assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry the shell rail"
+async def test_duplicates_redirects_even_with_hx_request_header(client: AsyncClient) -> None:
+    """phaze-y4s6: GET /duplicates/ redirects unconditionally now, even with an HX-Request header.
+
+    The in-page HX group-list/pagination fragment this used to preserve had no live caller left
+    post-v7-cutover and was deleted outright (see test_list_duplicates_redirects_even_with_hx_request_header).
+    """
+    response = await client.get("/duplicates/", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "/s/dedupe"
 
 
 @pytest.mark.asyncio
