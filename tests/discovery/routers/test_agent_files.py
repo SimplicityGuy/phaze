@@ -243,6 +243,37 @@ async def test_file_size_int64_overflow_422s_without_persisting(
 
 
 @pytest.mark.asyncio
+async def test_upsert_populates_repaired_filename_when_mojibake(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """phaze-x4ux: a mojibake filename gets `original_filename_repaired` set at ingest.
+
+    `original_filename` itself stays byte-faithful (untouched) -- only the derived column is
+    populated with the repaired text.
+    """
+    record = _make_record(path="/test/music/timewarp.mp3")
+    record["original_filename"] = "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - LIVE @ Timewarp 2003.mp3"
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [record]})
+    assert response.status_code == 200, response.text
+
+    stored = (await session.execute(select(FileRecord))).scalar_one()
+    assert stored.original_filename == "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - LIVE @ Timewarp 2003.mp3"
+    assert stored.original_filename_repaired == "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven Väth - LIVE @ Timewarp 2003.mp3"
+
+
+@pytest.mark.asyncio
+async def test_upsert_populates_repaired_filename_as_no_op_when_clean(
+    authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession
+) -> None:
+    """A clean filename still gets `original_filename_repaired` set, equal to the original."""
+    response = await authenticated_client.post("/api/internal/agent/files", json={"files": [_make_record()]})
+    assert response.status_code == 200, response.text
+
+    stored = (await session.execute(select(FileRecord))).scalar_one()
+    assert stored.original_filename_repaired == stored.original_filename
+
+
+@pytest.mark.asyncio
 async def test_same_chunk_duplicate_paths_dedup(authenticated_client: AsyncClient, seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
     rec1 = _make_record(path="/test/music/dup.mp3")
     rec2 = {**_make_record(path="/test/music/dup.mp3"), "file_size": 999}

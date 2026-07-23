@@ -730,6 +730,91 @@ async def test_search_tracklist_metadata_fallback(
     mock_scraper.search.assert_awaited_once_with("Metadata Artist")
 
 
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=50)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_repairs_mojibake_filename_before_parsing(
+    mock_auto_link: MagicMock,
+    mock_confidence: MagicMock,
+    mock_scraper_cls: MagicMock,
+) -> None:
+    """phaze-x4ux: the filename signal fed to parse_live_set_filename/the search query is repaired.
+
+    `FileRecord.original_filename` stays byte-faithful (never rewritten); only the local
+    matching/query-building signal is repaired.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record(
+        original_filename="Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - Live @ Timewarp 2003.04.14.mp3",
+    )
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = []
+    mock_scraper_cls.return_value = mock_scraper
+
+    await search_tracklist(ctx, file_id=str(file_record.id))
+
+    # parse_live_set_filename is real here (not patched): it only matches the v1.0 pattern
+    # "{Artist} - Live @ {Event} {YYYY.MM.DD}.{ext}", which requires the correctly-decoded
+    # "Väth", not the mojibake -- so a successful parse proves the repair happened upstream.
+    query = mock_scraper.search.await_args.args[0]
+    assert "Väth" in query
+    assert "Ã" not in query
+    assert file_record.original_filename == "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - Live @ Timewarp 2003.04.14.mp3"
+
+
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=50)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_repairs_mojibake_on_scraped_side(
+    mock_auto_link: MagicMock,
+    mock_confidence: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+) -> None:
+    """phaze-x4ux: scraped.artist/event (1001Tracklists, an external source) get repaired too.
+
+    Repairing happens BEFORE compute_match_confidence is scored AND before the tracklist row
+    would be persisted (_store_scraped_tracklist reads the same, now-repaired, attributes).
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Sven Väth", "Timewarp", date(2003, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    mock_advisory_lock_result = MagicMock()  # unused return value (session.execute(select(pg_advisory_xact_lock(...))))
+    mock_tl_result = MagicMock()
+    mock_tl_result.scalar_one_or_none.return_value = None
+    session.execute.side_effect = [mock_file_result, mock_advisory_lock_result, mock_tl_result]
+
+    search_result = _make_search_result()
+    scraped = _make_scraped_tracklist()
+    scraped.artist = "Sven VÃƒÂ¤th"
+    scraped.event = "TimewarpÃƒÂ©dition"
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper.scrape_tracklist.return_value = scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    await search_tracklist(ctx, file_id=str(file_record.id))
+
+    mock_confidence.assert_called_once()
+    assert mock_confidence.call_args.kwargs["tracklist_artist"] == "Sven Väth"
+    assert mock_confidence.call_args.kwargs["tracklist_event"] == "Timewarpédition"
+    # The scraped object itself was mutated in place, so the eventual
+    # _store_scraped_tracklist persistence sees the repaired attributes too.
+    assert scraped.artist == "Sven Väth"
+    assert scraped.event == "Timewarpédition"
+
+
 async def test_scrape_and_store_tracklist_not_found() -> None:
     """scrape_and_store_tracklist returns not_found for non-existent tracklist."""
     ctx = _make_ctx()

@@ -19,6 +19,7 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.pg_text import sanitize_pg_text
+from phaze.services.text_repair import repair_mojibake
 
 
 if TYPE_CHECKING:
@@ -194,7 +195,13 @@ def build_file_context(
 
     return {
         "index": 0,
-        "original_filename": file_record.original_filename,
+        # phaze-x4ux: repair mojibake before it reaches the LLM prompt. This is the ONE call
+        # site that must never carry garbled text forward -- a rename proposal built on
+        # "VÃƒÂ¤th" would write that corruption to disk permanently under a "cleanup" action.
+        # `original_path` is left raw (it is not proposed as a display name and does not feed
+        # search/matching), and `FileRecord.original_filename` itself is never rewritten --
+        # this repairs only the copy handed to the LLM.
+        "original_filename": repair_mojibake(file_record.original_filename),
         "original_path": file_record.original_path,
         "file_type": file_record.file_type,
         "analysis": analysis_dict,

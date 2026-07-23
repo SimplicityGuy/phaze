@@ -32,6 +32,7 @@ from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_analysis import PresignDownloadMetadata, PresignDownloadResponse
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertResponse
 from phaze.services import s3_staging
+from phaze.services.text_repair import repair_mojibake
 
 
 if TYPE_CHECKING:
@@ -111,6 +112,13 @@ async def upsert_files(
         data["agent_id"] = agent.id  # AUTH-01 -- stamped from auth, NEVER from body
         data["id"] = uuid.uuid4()  # server-generates new id; ON CONFLICT preserves existing id
         data["batch_id"] = resolved_batch_id  # Phase 27 D-09/D-18 -- server resolves; never from body
+        # phaze-x4ux: populate the derived, mojibake-repaired filename ONCE at ingest.
+        # `original_filename` itself is left untouched (byte-faithful record of the on-disk
+        # name); `original_filename_repaired` is what search/matching/rename-proposal code
+        # should read instead. Always set (even when the repair is a no-op, in which case it
+        # equals `original_filename`) so NULL unambiguously means "not yet backfilled" for
+        # pre-phaze-x4ux rows (see services/text_repair_backfill.py).
+        data["original_filename_repaired"] = repair_mojibake(data["original_filename"])
         raw_records.append(data)
 
     # 2. RESEARCH Pitfall 4: same-chunk dedup on (original_path) -- last write wins.

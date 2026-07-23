@@ -55,16 +55,22 @@ async def search(
     """Search across files and tracklists using full-text search with facet filters."""
     ts_query = func.plainto_tsquery("simple", query)
 
-    # File subquery
+    # File subquery. phaze-x4ux: match/display the mojibake-repaired filename when one is on
+    # record (COALESCE falls back to the raw, byte-faithful `original_filename` for files ingested
+    # before this repair shipped and not yet backfilled -- see services/text_repair_backfill.py).
+    # `FileMetadata.artist`/`title`/`genre` need no COALESCE here: they are repaired in place at
+    # tag-extraction ingest (services/metadata.py::_first_str), so the stored column is already
+    # the clean text.
+    file_display_filename = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
     file_tsvector = func.to_tsvector(
         "simple",
-        func.concat_ws(" ", FileRecord.original_filename, FileMetadata.artist, FileMetadata.title, FileMetadata.genre),
+        func.concat_ws(" ", file_display_filename, FileMetadata.artist, FileMetadata.title, FileMetadata.genre),
     )
     file_q = (
         select(
             cast(FileRecord.id, String).label("id"),
             literal_column("'file'").label("result_type"),
-            FileRecord.original_filename.label("title"),
+            file_display_filename.label("title"),
             FileMetadata.artist.label("artist"),
             FileMetadata.genre.label("genre"),
             # Phase 90 (PR-A, D-11): the file branch no longer exposes the file pipeline-status column --

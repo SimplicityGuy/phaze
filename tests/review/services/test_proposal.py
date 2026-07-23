@@ -262,6 +262,30 @@ class TestBuildFileContext:
         assert "tags" in ctx
         assert ctx["tags"] is None
 
+    def test_repairs_mojibake_in_original_filename(self):
+        """phaze-x4ux: the ONE call site that must never carry garble into an LLM rename proposal.
+
+        `FileRecord.original_filename` itself is untouched by this function (it stays the
+        byte-faithful record) -- only the copy handed to the LLM context is repaired.
+        """
+        from phaze.services.proposal import build_file_context
+
+        file_rec = _make_file_record()
+        file_rec.original_filename = "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - LIVE @ Timewarp 2003.mp3"
+
+        ctx = build_file_context(file_rec, None, [])
+
+        assert ctx["original_filename"] == "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven Väth - LIVE @ Timewarp 2003.mp3"
+        # The FileRecord itself is never mutated.
+        assert file_rec.original_filename == "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - LIVE @ Timewarp 2003.mp3"
+
+    def test_no_op_on_already_clean_filename(self):
+        from phaze.services.proposal import build_file_context
+
+        file_rec = _make_file_record()
+        ctx = build_file_context(file_rec, None, [])
+        assert ctx["original_filename"] == "999999999-Live_At_Boiler_Room-WEB-2019.mp3"
+
 
 # ---------------------------------------------------------------------------
 # Settings LLM fields tests

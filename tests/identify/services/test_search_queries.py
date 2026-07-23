@@ -136,6 +136,42 @@ async def test_search_returns_files_matching_query(session: AsyncSession) -> Non
 
 
 @pytest.mark.asyncio
+async def test_search_finds_file_by_repaired_filename_not_raw_mojibake(session: AsyncSession) -> None:
+    """phaze-x4ux: a file whose raw `original_filename` carries mojibake is found by its REAL name.
+
+    The known production case (lux, 2026-07-18): 'Sven VÃƒÂ¤th' repairs to 'Sven Väth'.
+    `original_filename_repaired` is what `agent_files.py::upsert_files` would have populated at
+    ingest; this test seeds it directly to isolate the search-query behavior.
+    """
+    file_record = await create_test_file(
+        session,
+        original_filename="Carl Cox, Umek, Dj Rush, Chris Liebing, Sven VÃƒÂ¤th - LIVE @ Timewarp 2003.mp3",
+    )
+    file_record.original_filename_repaired = "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven Väth - LIVE @ Timewarp 2003.mp3"
+    await session.commit()
+
+    results, pagination = await search(session, "Väth")
+
+    assert pagination.total >= 1
+    assert any(r.result_type == "file" and r.id == str(file_record.id) for r in results)
+    matched = next(r for r in results if r.id == str(file_record.id))
+    assert "Väth" in matched.title
+    assert "Ã" not in matched.title
+
+
+@pytest.mark.asyncio
+async def test_search_falls_back_to_raw_filename_when_not_backfilled(session: AsyncSession) -> None:
+    """A row with `original_filename_repaired` still NULL (not yet backfilled) is unaffected --
+    COALESCE falls back to the raw column, matching pre-phaze-x4ux behavior exactly."""
+    file_record = await create_test_file(session, original_filename="deadmau5_strobe.mp3")
+    assert file_record.original_filename_repaired is None
+
+    results, _pagination = await search(session, "deadmau5")
+
+    assert any(r.result_type == "file" and r.id == str(file_record.id) for r in results)
+
+
+@pytest.mark.asyncio
 async def test_search_returns_tracklists_matching_query(session: AsyncSession) -> None:
     """Search for 'coachella' returns tracklist results with result_type='tracklist'."""
     await create_test_tracklist(session, artist="Disclosure", event="Coachella 2026")
