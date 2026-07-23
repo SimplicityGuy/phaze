@@ -197,3 +197,40 @@ async def test_files_fragment_carries_no_duplicate_id(client: AsyncClient, sessi
 
     live_fragment = await client.get("/pipeline/files", headers={"HX-Request": "true"})
     assert 'id="files-table-view"' not in live_fragment.text, "the live filter/sort/pager fragment must carry no id of its own"
+
+
+@pytest.mark.asyncio
+async def test_over_paged_empty_view_still_shows_previous_control(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-3db8): an over-paged empty render must still carry the Previous control.
+
+    The pagination ``<nav>`` used to sit inside the rows-present branch, so a page N > 1 that
+    returns zero rows (``get_files_page``/``clamp_page``'s documented "a page PAST the end is not
+    clamped -- it simply yields an empty page" contract) rendered only the empty-state copy with no
+    way back to page 1 short of a manual reload. One file with page_size=MIN_PAGE_SIZE (10) makes
+    page 2 genuinely past the end while still being reachable via the normal Prev/Next flow.
+    """
+    session.add(_make_file("onlyfile"))
+    await session.commit()
+
+    resp = await client.get("/pipeline/files?page=2&page_size=10")
+    assert resp.status_code == 200
+    body = resp.text
+
+    # The empty-state copy renders (no rows on this over-paged request)...
+    assert "No files yet" in body
+    # ...but the pager nav -- specifically an ENABLED Previous control back to page 1 -- must too.
+    assert 'aria-label="Files pagination"' in body
+    # HTML-attribute-escaped (Jinja autoescape turns `&` into `&amp;` inside the hx-get value).
+    assert 'hx-get="/pipeline/files?page=1&amp;page_size=10' in body
+    assert ">Previous</button>" in body, "Previous must be an enabled <button>, not the disabled <span>"
+
+
+@pytest.mark.asyncio
+async def test_pager_absent_on_unfiltered_empty_first_page(client: AsyncClient, session: AsyncSession) -> None:
+    """No pager renders on a genuinely empty, unpaged corpus (page 1, no next page) -- unchanged behavior."""
+    resp = await client.get("/pipeline/files")
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert "No files yet" in body
+    assert 'aria-label="Files pagination"' not in body

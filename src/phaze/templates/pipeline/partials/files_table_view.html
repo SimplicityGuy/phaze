@@ -173,6 +173,15 @@
             </tbody>
         </table>
     </div>
+    {% endif %}
+    {# phaze-3db8: the pager lives OUTSIDE the rows-present/empty-state guard above, matching
+       _tracklist_sets.html / execution/partials/pagination.html -- it renders whenever a Previous or
+       Next page genuinely exists, regardless of whether the CURRENT page has rows. Before this hoist
+       the <nav> sat inside the `{% else %}` (rows-present) arm, so an over-paged empty render (e.g.
+       the working set shrinks between a Next click and its re-query, landing the operator on a
+       page > 1 with zero rows) showed the empty-state copy with NO Previous control and no way back
+       to page 1 short of a manual reload -- see get_files_page/clamp_page's documented "a page PAST
+       the end simply yields an empty page" contract. #}
     {% if files_page.page > 1 or files_page.has_next %}
     {# Cursor-style Prev/Next -- no whole-corpus COUNT (the T-87-11 DoS mitigation). #}
     <nav aria-label="Files pagination" class="flex items-center justify-between mt-6 px-6">
@@ -190,5 +199,4 @@
             {% endif %}
         </div>
     </nav>
-    {% endif %}
     {% endif %}
