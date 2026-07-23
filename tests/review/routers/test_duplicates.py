@@ -291,6 +291,62 @@ async def test_bulk_resolve_only_touches_submitted_hashes(session: AsyncSession,
 
 
 @pytest.mark.asyncio
+async def test_bulk_resolve_oob_removes_every_submitted_group_card(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-wgse): bulk resolve used to leave every #dupe-group-{hash} card fully
+    rendered on screen -- the pipeline Dedupe workspace targets #dedupe-bulk-response (a status div
+    ABOVE the card list), not the card list itself, so the primary swap never touched the cards. An
+    operator could then click an already-archived group's keeper radio and re-POST
+    /duplicates/{hash}/resolve. The response must now OOB-delete each SUBMITTED group's card
+    (mirroring the phaze-gwe1 row-removal idiom), so the cards actually disappear.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    f3 = _make_file("/dir/b1.mp3", "mp3", HASH_B, file_size=3000)
+    f4 = _make_file("/dir/b2.mp3", "mp3", HASH_B, file_size=1500)
+    session.add_all([f1, f2, f3, f4])
+    await session.flush()
+
+    response = await client.post(
+        "/duplicates/resolve-all",
+        data={"group_hashes": [HASH_A, HASH_B]},
+    )
+
+    assert response.status_code == 200
+    for group_hash in (HASH_A, HASH_B):
+        assert f'<div id="dupe-group-{group_hash}" hx-swap-oob="delete"></div>' in response.text, (
+            f"expected an OOB delete swap removing the rendered card for group {group_hash}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_bulk_resolve_oob_removes_card_for_a_hash_that_resolved_to_nothing(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-wgse): a submitted hash that resolves to NO group at all (e.g. a group a
+    concurrent request already fully archived, or a stale hash from a page the operator hasn't
+    refreshed) must still be OOB-removed from the operator's rendered card list -- not just the
+    hashes this call actually wrote a marker for. ``bulk_resolve`` only iterates
+    ``find_duplicate_groups_by_hashes``' result, which silently drops a hash with nothing left to
+    resolve, so the OOB removal must be driven by the SUBMITTED hashes, not the resolved subset.
+    """
+    unknown_hash = "c" * 64  # never backed by any FileRecord -- resolves to nothing.
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    response = await client.post(
+        "/duplicates/resolve-all",
+        data={"group_hashes": [HASH_A, unknown_hash]},
+    )
+
+    assert response.status_code == 200
+    assert "Resolved 1 groups" in response.text, "only the real group should count towards resolved_groups"
+    assert f'<div id="dupe-group-{HASH_A}" hx-swap-oob="delete"></div>' in response.text
+    assert f'<div id="dupe-group-{unknown_hash}" hx-swap-oob="delete"></div>' in response.text, (
+        "a submitted hash with nothing left to resolve must still have its stale card removed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_bulk_resolve_no_group_hashes_resolves_nothing(session: AsyncSession, client: AsyncClient) -> None:
     """POST /duplicates/resolve-all with no group_hashes resolves nothing (no implicit re-derivation)."""
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A)

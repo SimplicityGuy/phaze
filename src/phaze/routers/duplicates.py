@@ -264,6 +264,11 @@ async def bulk_resolve(
             "stats": stats,
             "resolved_groups": resolved_groups,
             "all_file_states": json.dumps(all_file_states),
+            # phaze-wgse: the SUBMITTED hashes (not just the ones actually resolved this pass), so the
+            # response can OOB-remove every #dupe-group-{hash} card the operator was shown -- including
+            # one a concurrent request already resolved between render and this POST (the `continue`
+            # branch above), which is stale and must disappear too, not just the ones this call wrote.
+            "group_hashes": group_hashes,
         },
     )
 
