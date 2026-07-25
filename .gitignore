@@ -1,213 +1,105 @@
-# Byte-compiled / optimized / DLL files
+# phaze — .gitignore
+#
+# This is the ONLY hand-maintained .gitignore in the repo. The other .gitignore
+# files on disk (.beads/, .venv/, .mypy_cache/, .pytest_cache/, .ruff_cache/,
+# services/*/.venv/) are written by their own tools and live inside directories
+# that are already ignored here — they are not tracked and must not be edited.
+
+# ---------------------------------------------------------------------------
+# Python bytecode and C extensions
+# ---------------------------------------------------------------------------
 __pycache__/
 *.py[codz]
 *$py.class
-
-# C extensions
 *.so
+cython_debug/
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
+# ---------------------------------------------------------------------------
+# Packaging / build output
+#
+# Anchored to the repo root on purpose. Unanchored `build/`, `lib/`, `var/`,
+# `target/` &c. match a directory of that name at ANY depth and would silently
+# swallow real source (e.g. a future src/phaze/web/static/lib/).
+# ---------------------------------------------------------------------------
+/.Python
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+/share/python-wheels/
+/MANIFEST
+/.installed.cfg
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
+# ---------------------------------------------------------------------------
+# Tests and coverage
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.hypothesis/
 .tox/
 .nox/
+.cache
+htmlcov/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
 coverage.xml
 coverage.json
 *.cover
 *.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
 
-# Translations
-*.mo
-*.pot
+# ---------------------------------------------------------------------------
+# Type checking and linting
+# ---------------------------------------------------------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
-
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
-
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
-
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.envrc
-.venv
+# ---------------------------------------------------------------------------
+# Environments and secrets
+#
+# Note the deliberate narrowness of `.env`: `.env.example` and
+# `.env.example.agent` are tracked, so this must NOT be broadened to `.env.*`.
+# ---------------------------------------------------------------------------
+.venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+.env
+.envrc
+.envrc.*
+.pypirc
+*.log
 
-# Spyder project settings
+# Private key material. The app generates real private keys at runtime (see the
+# certs/ section below), so this is a hard backstop independent of that path —
+# nothing key-shaped is tracked anywhere in this repo today.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ---------------------------------------------------------------------------
+# Editors, tooling, OS
+# ---------------------------------------------------------------------------
+.vscode/
 .spyderproject
 .spyproject
-
-# Rope project settings
 .ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
-
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
-
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer,
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
-
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
-
-# macOS
+*.swp
 .DS_Store
 .AppleDouble
 .LSOverride
@@ -215,58 +107,74 @@ __marimo__/
 .Spotlight-V100
 .Trashes
 
-# ML models (downloaded via scripts/download-models.sh). Ignore the CONTENTS
-# (models/*) rather than the dir itself so the committed models/.gitkeep can be
-# re-included — git cannot re-include a file whose parent DIRECTORY is excluded.
+# ---------------------------------------------------------------------------
+# Generated project artifacts
+# ---------------------------------------------------------------------------
+
+# ML models, downloaded by scripts/download-models.sh into the ./models/ bind
+# mount. Ignore the CONTENTS (models/*) rather than the directory, so the
+# committed models/.gitkeep survives — git cannot re-include a file whose parent
+# DIRECTORY is excluded. phaze-he8m: keeping the mount point tracked means a
+# clone materializes it owned by the operator (uid 1000) instead of letting
+# dockerd auto-create it root:root.
+#
+# `models/*` contains a slash, so it is anchored to the repo root and does NOT
+# touch the src/phaze/models/ source package.
 models/*
-# phaze-he8m: keep the ./models/ mount-point dir tracked (via .gitkeep) so a git
-# clone materializes it owned by the operator (uid 1000) instead of dockerd
-# auto-creating it root:root — the downloaded weights themselves stay ignored.
 !models/.gitkeep
-# ...but the source package src/phaze/models/ is real code, not downloaded artifacts.
-!src/phaze/models/
 
-# Claude Code worktrees
-.claude/
-
-# Update script backups
-.backups/
-
-# graphify cache
-graphify-out/cache/
-
-# graphify HTML viz — unbuildable past graphify's node cap (the graph is too large
-# for the HTML viz), so it can only ever be a stale artifact. The queryable graph.json
-# + GRAPH_REPORT.md are the source of truth; don't track the viz.
-graphify-out/graph.html
-.planning/graphs/graph.html
-
-# Vim
-*.swp
-.superpowers/
-.playwright-mcp/
+# TLS material. phaze.cert_bootstrap generates a self-signed CA + leaf pair
+# (phaze-ca.crt/.key, phaze-server.crt/.key) into the ./certs/ bind mount on
+# first boot — two of those four files are PRIVATE KEYS. Same keep-the-mount-
+# point-tracked reasoning as models/ above; `just up` mkdir -p's this directory.
+certs/*
+!certs/.gitkeep
 
 # Build-time Tailwind: the standalone binary and the generated stylesheet are
-# produced by `just tailwind` (local) / the Dockerfile css-builder stage (image),
-# never committed. Source of truth is assets/src/app.css.
+# produced by `just tailwind` (local) / the Dockerfile css-builder stage
+# (image), never committed. Source of truth is assets/src/app.css.
 /bin/
 src/phaze/static/css/app.css
 
-# Beads / Dolt files (added by bd init)
+# graphify cache and HTML viz. The viz is unbuildable past graphify's node cap
+# (this graph is too large), so it can only ever be a stale artifact — the
+# queryable graph.json + GRAPH_REPORT.md are the source of truth.
+graphify-out/cache/
+graphify-out/graph.html
+.planning/graphs/graph.html
+
+# ---------------------------------------------------------------------------
+# Local agent / tooling state — machine-specific, never shared across clones
+# ---------------------------------------------------------------------------
+
+# Claude Code project-local state (settings, caches, generated CLAUDE.md).
+# The repo-root CLAUDE.md is the tracked one.
+.claude/
+
+# Git worktree checkouts rooted inside the repo (bh `wt/bead/issue/<id>` &c.).
+.worktrees/
+
+# beads issue tracker — local Dolt-backed store. Synced to the Dolt remote via
+# `bd dolt push`, not through git. `.beads/` covers everything underneath it,
+# including the credential key and proxieddb/; the root-level entries are the
+# stray-file backstop.
+.beads/
 .dolt/
 *.db
+*.sqlite3*
 .beads-credential-key
-.beads/proxieddb/
 
 # bv (beads viewer) local config and caches
 .bv/
 
-# beads issue tracker — local Dolt-backed store, not versioned in git
-.beads/
-
-# Local repowise index/tool state -- not project source.
+# repowise index / tool state — derived from source, not project source
 .repowise/
 
-# Claude Code MCP server config (local, machine-specific) + VS Code workspace settings
+# MCP server config (machine-specific paths and credentials)
 .mcp.json
-.vscode/
+
+.playwright-mcp/
+.superpowers/
+
+# Update script backups
+.backups/
