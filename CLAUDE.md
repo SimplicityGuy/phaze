@@ -329,92 +329,145 @@ All work in this repo flows through beadhive. Do not make direct repo edits outs
 <!-- GSD:profile-end -->
 
 <!-- bv-agent-instructions-v3 -->
-
 ---
 
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in a local Dolt database under `.beads/` (git-ignored) and synced to the Dolt remote `origin` (`git+ssh://git@github.com/SimplicityGuy/phaze.git`) via `bd dolt push` / `bd dolt pull`. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
+Work in this repo is tracked as **beads** in a local Dolt database under `.beads/`
+(git-ignored) and synced to the Dolt remote `origin`
+(`git+ssh://git@github.com/SimplicityGuy/phaze.git`). Beads are driven through
+**beadhive** (`bh`); triage and graph analysis come from **beads_viewer**
+(`bv`). See `## Beadhive Workflow Enforcement` above for the process rules — this
+section is the command reference for them.
 
-### Using bv as an AI sidecar
+> **Editing note.** This block sits between two `bv` marker comments. `bv` detects it
+> by marker and version only, never by content, so the prose here is free to diverge
+> from `bv`'s stock text — but **do not touch, reword, or renumber the marker lines**,
+> or `bv` starts prompting to add the section again at startup. Verify with
+> `bv --agents-check`, which should report `blurb v3 — up to date` and exit 0.
+> Be aware that `bv --agents-update` would overwrite everything below with `bv`'s
+> generic boilerplate; don't run it unless you intend to lose this.
 
-bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
+### The toolchain, and what is actually installed
 
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
+| Tool | Status | Use it for |
+|------|--------|------------|
+| `bh` | installed | Everything lifecycle: reading, filing, claiming, validating, submitting, merging |
+| `bv` | installed (v0.18.0) | Triage and graph analysis — *what to work on*, never mutation |
+| `bd` | on `PATH` | Low-level beads CLI. Avoid calling directly (see below); the one sanctioned use is `bd dolt push` |
 
-**CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
+**The `bh bd` passthrough is disabled** (`passthrough.bd_enabled` defaults off), so
+`bh bd <args>` errors out rather than forwarding. Calling `bd` directly is possible but
+discouraged — a `PreToolUse` hook warns that it is not hive-aware and can hit the wrong
+database. Read through `bh work`, file through `bh plan file` or the `bh` MCP tools, and
+reach for `bd` only where this section says to.
 
-#### The Workflow: Start With Triage
-
-**`bv --robot-triage` is your single entry point.** It returns everything you need in one call:
-- `quick_ref`: at-a-glance counts + top 3 picks
-- `recommendations`: ranked actionable items with scores, reasons, unblock info
-- `quick_wins`: low-effort high-impact items
-- `blockers_to_clear`: items that unblock the most downstream work
-- `project_health`: status/type/priority distributions, graph metrics
-- `commands`: copy-paste shell commands for next steps
+### Reading beads
 
 ```bash
-bv --robot-triage        # THE MEGA-COMMAND: start here
-bv --robot-next          # Minimal: just the single top pick + claim command
-
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
+bh work ready                  # unblocked, dependency-ordered work
+bh work list --status open     # filter by state; --json for machine output
+bh work issue <id>             # one bead's fields, labels, model:/harness:
+bh work brief <id>             # requirements + goals + the validation command
+bh work show <id>              # the bead branch's local history before submit
 ```
 
-Before claiming, verify current state with `br show <id> --json` or `br ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
+All are read-only and accept `--json`.
 
-#### Other bv Commands
+### Filing beads
+
+- **Epics / molecules** → the planner. Invoke the `bh:planner` skill (`/bh:plan <idea>`)
+  or `bh plan file`. Never hand-roll an epic: it fails the molecule convention check.
+- **A single bead** → the `bh` MCP tool `bd_create`, which auto-applies the
+  provider/org/repo triplet and validates labels.
+- Ask clarifying questions on scope, priority and acceptance *before* writing the
+  description.
+
+### Driving a bead
+
+The lifecycle is `bh work`; raw `git` is only for the change *inside* the worktree.
+
+```bash
+bh work claim <id>       # provision the wt/bead/issue/<id> worktree + identity, → in_progress
+bh work check <id>       # run the hive validation against the worktree
+bh work submit <id>      # verify clean conventional history, re-validate from a
+                         # pristine checkout, open the review gate
+bh work approve <id>     # resolve the review gate
+bh work merge <id>       # serialize a --no-ff merge onto the integration branch, close the bead
+bh work resume <id>      # re-attach after changes-requested
+bh work abandon <id>     # release the claim; --rm also removes the worktree
+```
+
+`submit` rejects noisy history — more than `max_commits` over base, or non-conventional
+subjects. Use `bh work show <id>` to inspect and `bh work refine <id>` to squash local
+checkpoints before resubmitting. `submit` publishes the branch only when the review gate
+is `gh:run` / `gh:pr`; with the default in-process human gate it does not push, so open
+the PR yourself.
+
+### Triage with bv
+
+`bv` is a graph-aware triage engine: dependency-aware, deterministic output with
+precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector,
+k-core). Use it instead of parsing `.beads/issues.jsonl` or guessing at graph traversal.
+
+**Use only `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks the session.**
+
+```bash
+bv --robot-triage                 # THE MEGA-COMMAND: start here
+bv --robot-next                   # just the single top pick + claim command
+bv --robot-triage --format toon   # token-optimized output for lower context cost
+```
+
+`--robot-triage` returns `quick_ref` (counts + top 3 picks), `recommendations` (ranked,
+with unblock info), `quick_wins`, `blockers_to_clear`, `project_health` and `commands`.
+
+Before claiming, confirm current state with `bh work issue <id>` or `bh work ready` —
+`bv` reads an exported JSONL snapshot, so `bh` is the authority on live state.
+`recommendations` can include graph-important work that is blocked or already assigned;
+only `quick_ref.top_picks` and non-empty `claim_command` fields are actually claimable.
 
 | Command | Returns |
 |---------|---------|
 | `--robot-plan` | Parallel execution tracks with unblocks lists |
 | `--robot-priority` | Priority misalignment detection with confidence |
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
+| `--robot-insights` | PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
 | `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
 | `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
+| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
 
-#### Scoping & Filtering
-
 ```bash
-bv --robot-plan --label backend              # Scope to label's subgraph
-bv --robot-insights --as-of HEAD~30          # Historical point-in-time
-bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blockers)
-bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
+bv --robot-plan --label backend        # scope to a label's subgraph
+bv --robot-insights --as-of HEAD~30    # historical point-in-time
+bv --recipe actionable --robot-plan    # pre-filter: ready to work (no blockers)
+bv --recipe high-impact --robot-triage # pre-filter: top PageRank scores
 ```
 
-### br Commands for Issue Management
+### Key concepts
+
+- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog. Use the numbers
+  `0`–`4`, not words.
+- **Types**: `bug`, `feature`, `task`, `epic`, `chore`, `decision`. Aliases:
+  `enhancement`/`feat` → `feature`, `dec`/`adr` → `decision`. Anything else is rejected
+  with `invalid issue type` unless registered under `types.custom`.
+- **Dependencies**: beads can block other beads; `bh work ready` shows only unblocked
+  work.
+- **Worktrees**: one per bead, `wt/bead/issue/<id>`. Never share a worktree, a test
+  database, or a Redis logical DB between concurrent agents.
+
+### Syncing the Dolt remote
+
+The JSONL export under `.beads/` is maintained for you — there is no flush step to run.
+Periodically push the beads database itself:
 
 ```bash
-br ready --json                       # Show issues ready to work (no blockers)
-br list --status=open --json          # All open issues
-br show <id> --json                   # Full issue details with dependencies
-br create --title="..." --type=task --priority=2 --json
-br update <id> --status=in_progress --json
-br close <id> --reason="Completed" --json
-br close <id1> <id2> --reason="Completed" --json
-br sync --flush-only                  # Export DB to JSONL after Beads mutations
+bd dolt push
 ```
 
-### Workflow Pattern
+### Git policy
 
-1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress --json`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id> --reason="Completed" --json`
-5. **Sync**: Run `br sync --flush-only` after Beads mutations so the JSONL export is current
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready --json` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
-### Git Policy
-
-`br` never commits or pushes. Follow this repository's own git instructions before staging, committing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
+`bh` owns the lifecycle around the change; it does not absolve you of this repo's git
+rules. Follow the repository's own instructions before staging, committing or pushing —
+"commit only when asked" overrides any generic workflow advice, here or elsewhere.
 
 <!-- end-bv-agent-instructions -->
