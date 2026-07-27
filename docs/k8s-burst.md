@@ -711,7 +711,7 @@ cluster. Reachable-endpoint expectations only:
 Apply cluster objects **before** adding the `kind="kueue"` entry to `backends.toml` (the
 LocalQueue must exist before the availability probe runs and before any Job submits). Repeat
 steps 1–3 **in each cluster** the registry targets. The ready-to-paste homelab change request —
-with `datum@nox` / `datum@lux` SSH steps — is
+with the per-host SSH steps for the worker host and the control-plane host — is
 [`56-HOMELAB-CHANGE-PROMPT.md`](../.planning/milestones/v6.0-phases/56-deployment-runbook-config-docs/56-HOMELAB-CHANGE-PROMPT.md).
 
 1. **Cluster (operator), per cluster:** create the namespace, then `kubectl apply` the
@@ -721,7 +721,7 @@ with `datum@nox` / `datum@lux` SSH steps — is
 3. **Control plane, per cluster:** mint the compute-agent token (`phaze agents add --kind
    compute`); paste it into the Secret and `kubectl apply` it (runbook §5). Then `kubectl apply`
    the agent-env ConfigMap and the internal-CA Secret (runbook §6–§7).
-4. **Control plane (`datum@lux`):** add a `[[backends]] kind="kueue"` entry (with its
+4. **Control plane (the control-plane host):** add a `[[backends]] kind="kueue"` entry (with its
    `[backends.kube]` block + `buckets` list) and the referenced `[[buckets]]` entries to
    `backends.toml` (see the [Backend registry](configuration.md#backend-registry-backendstoml)),
    then **restart** the controller worker + api — the registry is a startup-read; the running
