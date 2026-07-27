@@ -27,7 +27,7 @@ readable progress. Watching a live drain, an operator sees only:
 
 Pain points:
 - No human-readable file identity — only a UUID. The operator can't tell it's
-  `Angy Dee - Goliath 10 The Anniversary (2002.05.04).mp3` without a DB lookup.
+  `Artist - Event 10 The Anniversary (2002.05.04).mp3` without a DB lookup.
 - No source **path** / origin (which fileserver, original path, cluster, backend_id, bucket).
 - No progress indicator during analysis — after `verify`, output goes silent for minutes
   (essentia only prints its own INFO banners); the operator can't tell fine/coarse-window
