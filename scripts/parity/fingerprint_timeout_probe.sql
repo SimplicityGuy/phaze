@@ -1,9 +1,10 @@
 -- phaze-qmc2.1 calibration spike -- READ-ONLY probes used to measure the fingerprint
 -- work-time distribution and to establish claimed-but-unrun vs genuinely-running SAQ rows.
 --
--- Rig recipe (psql is NOT on lux.lan's non-interactive PATH):
+-- Rig recipe (psql is NOT on the db host's non-interactive PATH, so the probe must be
+-- piped through `docker exec` rather than run directly over ssh):
 --   B64=$(printf '%s' "<one probe>" | base64)
---   ssh datum@lux.lan "echo $B64 | base64 -d | docker exec -i postgres psql -U phaze -d phaze -tA -F'|'"
+--   ssh <user>@<db-host> "echo $B64 | base64 -d | docker exec -i postgres psql -U phaze -d phaze -tA -F'|'"
 --
 -- Every probe here is READ-ONLY (SELECT). SAQ 0.26.4 stores the job blob as JSON in the
 -- BYTEA `job` column; `convert_from(job,'UTF8')::jsonb` exposes queued/started/touched/
