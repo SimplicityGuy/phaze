@@ -52,7 +52,7 @@ to lux NOT yet authorized; ask before touching).
    the 240-min (4h) timeout. Anything needing >4h is killed.
 
 5. **A confirmed timeout in logs:** job `process_file:72a2d398-...`, file
-   `/data/staging/techno livesets 2004/Eran Saiag - Live at BPM FM (99esc) 08-30-DAB-2004-DF/01-....mp3`
+   `<archive-mount>/<set-01>.mp3` (a multi-hour DJ set under the staging mount)
    ran the full 14400s → `TimeoutError` → "Retrying". Traceback:
    `saq/worker.py:368 asyncio.wait_for(asyncio.shield(task), job.timeout)` → `TimeoutError`.
 
