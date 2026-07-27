@@ -321,8 +321,10 @@ S1's blocker **B1** said pgvector requires a base-image change. `.6` confirmed t
 (`vector` is unavailable in `postgres:18-alpine`, in the harness *and* in production) and
 **corrected the conclusion**: Alpine ships the extension, it just installs to the wrong prefix,
 and a 3-line Dockerfile fixes it for +31 MB. But B1 is **downgraded, not cleared** — it is still
-four coordinated edits: the new Dockerfile, seven `postgres:18-alpine` pins across
-`docker-compose.yml` and `justfile` that must move together or harness and production diverge, a
+four coordinated edits: the new Dockerfile, **nine** `postgres:18-alpine` pins across
+`docker-compose.yml` (1) and `justfile` (8) that must move together or harness and production
+diverge — **four of the justfile eight are `echo` strings**, so a partial bump prints the old tag
+while running the new one — a
 CI workflow change (**GitHub Actions service containers cannot be built, only referenced**, which
 genuinely forces phaze to publish its own Postgres image), and an Alembic migration whose first
 statement is `CREATE EXTENSION`.
@@ -592,7 +594,7 @@ verdicts above, not to a fixed bead list.
 
 | # | Bead | Scope | Depends on |
 | - | ---- | ----- | ---------- |
-| **1** | **pgvector infrastructure** | The 3-line `docker/postgres/Dockerfile` with a pinned `=0.8.1-r0` (or a source build per **S4-O5**); repoint `docker-compose.yml` and the **seven** `postgres:18-alpine` pins in `justfile` together; publish the image to GHCR so the CI service container can reference it; add `shm_size` to the postgres service; one Alembic migration whose first statement is `CREATE EXTENSION IF NOT EXISTS vector`. Carry `.6` E9's build-memory formula into the operational docs | — |
+| **1** | **pgvector infrastructure** | The 3-line `docker/postgres/Dockerfile` with a pinned `=0.8.1-r0` (or a source build per **S4-O5**); repoint `docker-compose.yml` and the **eight** `postgres:18-alpine` pins in `justfile` (lines 234, 241, 414, 420, 424, 430, 777, 780 — **four of them `echo` strings**, which is why a partial bump is invisible in the logs) together, and see `phaze-tcqq`, which fixes the scattered-pin hazard on its own; publish the image to GHCR so the CI service container can reference it; add `shm_size` to the postgres service; one Alembic migration whose first statement is `CREATE EXTENSION IF NOT EXISTS vector`. Carry `.6` E9's build-memory formula into the operational docs | — |
 | **2** | **Embedding extraction + storage** | Second-pass `TensorflowPredictEffnetDiscogs(output="PartitionedCall:1")` on the buffer `_run_model_sets` already holds. Two-level mean-pool: patches → window, windows → track. Persist as **`halfvec(1280)`** on the per-file analysis row and on the **coarse** window rows. Store **raw, unstandardised** vectors — standardisation is corpus-dependent and computing it at query time keeps the stored vector stable as the archive grows. HNSW at `m=16, ef_construction=64`, start `hnsw.ef_search=100`. **No user-visible surface in this bead** | 1 |
 | **3** | **P2 quality gate (measurement bead)** | S1's 20-seed blind A/B with the **mandatory** EFB arm. Bar: mean precision@10 ≥ 0.6 **and** strictly better than EFB. Record the result on the bead. **This bead's outcome decides whether bead 4 is ever filed** | 2 |
 | **4** | **P2 browse surface** — *file this bead as blocked, or do not file it at all until bead 3 passes* | New `STAGE_PARTIALS` rail node + workspace + router for similar-track browsing / clustering / playlists. Bounded and paged — the house rule forbids rendering an unbounded row set inline, so no 200k-point inline scatter | 3, **and only on a pass** |

@@ -266,7 +266,7 @@ documents. For contrast, the upstream `pgvector/pgvector:pg18` image is Debian-b
 | Where | Change | Note |
 | ----- | ------ | ---- |
 | **New file** — e.g. `docker/postgres/Dockerfile` | The 3 lines above | Pin the `=0.8.1-r0` version explicitly; an unpinned `apk add` silently floats |
-| `docker-compose.yml:79` | `image: postgres:18-alpine` → the published phaze image | 6 further `postgres:18-alpine` occurrences in `justfile` (lines 241, 420, 430, 780) must move together or the harness diverges from production |
+| `docker-compose.yml:79` | `image: postgres:18-alpine` → the published phaze image | **8** further `postgres:18-alpine` occurrences in `justfile` (lines 234, 241, 414, 420, 424, 430, 777, 780) must move together or the harness diverges from production. **Only 4 are real `docker run` arguments** (241, 420, 430, 780); the other **4 are `echo` strings** (234, 414, 424, 777) that merely *claim* the version — so a partial bump prints the old tag while running the new one, which is the failure mode that survives casual review |
 | `docker-compose.yml` postgres service | **add `shm_size:` ≥ `maintenance_work_mem`** | Not optional — see below |
 | `.github/workflows/tests.yml:39` | `services.postgres.image` | GitHub Actions **service containers cannot be built**; they can only reference a published image. This forces phaze to publish its own image (it already publishes to GHCR — `just image-push`) or to adopt `pgvector/pgvector:pg18` in CI and diverge from production |
 | Alembic | one migration whose first statement is `CREATE EXTENSION IF NOT EXISTS vector` | Requires superuser or a pre-granted extension; on a managed Postgres this is the step that fails |
@@ -829,8 +829,9 @@ on its conclusion**. Alpine 3.24 community ships `postgresql-pgvector` built for
 installs to the wrong prefix for this image, and a 3-line Dockerfile fixes that for **+31 MB
 (425 → 456 MB)**, staying Alpine and staying `postgres:18`. The real work is not the extension —
 it is publishing that image so CI can reference it (GitHub Actions service containers cannot be
-built), keeping the seven `postgres:18-alpine` pins in `justfile` and `docker-compose.yml` in
-step, and adding a `shm_size`.
+built), keeping the **nine** `postgres:18-alpine` pins in `justfile` (8) and `docker-compose.yml`
+(1) in step — ten repo-wide once `.github/workflows/tests.yml:39` is counted — and adding a
+`shm_size`.
 
 **Does every purpose need ANN?** **No — two of the four do not**, and one of the two that does not
 is P1, the purpose the molecule has been treating as the index's main customer. See the table
