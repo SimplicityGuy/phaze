@@ -48,6 +48,30 @@ tailwind_version := "v4.3.2"
 install: tailwind
     uv sync
 
+# phaze-gfdx: this is the bh worktree-provisioning entry point (global beadhive config's
+# `worktree.init` runs `just setup` whenever a justfile is present), so it MUST be cheap and
+# MUST NOT fail when GitHub is unreachable. Deliberately does NOT depend on `tailwind` (that
+# recipe curls the standalone Tailwind binary from GitHub releases, chmods/verifies it, then
+# compiles app.css -- slow, and a real provisioning failure if GitHub is down) and deliberately
+# does NOT alias `install`. `setup` is the automation path; `install` remains the full human
+# local-dev bootstrap (tailwind + uv sync) and is left unchanged.
+#
+# Does NOT run `pre-commit install`: bh worktrees share the main clone's .git/hooks (no
+# per-worktree core.hooksPath), so installing from inside an ephemeral worktree overwrites the
+# MAIN clone's shared hook and hardcodes THIS worktree's own .venv path into it as
+# INSTALL_PYTHON. Once this worktree is torn down (which bh does routinely after submit) that
+# path is dangling, breaking the hook for the main clone and every other worktree sharing it --
+# and two worktrees provisioning concurrently would race to stomp each other's hook. Verified
+# live in this worktree (phaze-gfdx): `uv run pre-commit install` reported success and wrote
+# .git/hooks/pre-commit in the MAIN clone with INSTALL_PYTHON pointing at this worktree's
+# ephemeral .venv. A `setup` that silently wires a hook this fragile is worse than one that
+# only syncs deps, so it's left out; `just pre-commit` (run-all-files, no install) and manual
+# `uv run pre-commit install` remain available for whoever wants hooks in a durable checkout.
+[doc('Prepare a working copy for bh worktree provisioning: sync deps only (cheap, no network beyond PyPI, safe to re-run)')]
+[group('dev')]
+setup:
+    uv sync
+
 [doc('Start all services in Docker (production topology: base compose only)')]
 [group('dev')]
 up: tailwind
