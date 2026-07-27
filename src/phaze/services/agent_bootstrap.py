@@ -125,7 +125,7 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     # agent-side scan roots env var, set per AgentSettings.scan_roots) over
     # ControlSettings.scan_path. In docker-compose mode SCAN_PATH is the HOST
     # path used by docker-compose's bind mount source (e.g.,
-    # /Users/Robert/phaze-watch-test) while PHAZE_AGENT_SCAN_ROOTS is the
+    # /srv/music-staging) while PHAZE_AGENT_SCAN_ROOTS is the
     # in-container path the agent actually walks (e.g., /data/music). Using
     # settings.scan_path here would write the host path to the agent's
     # scan_roots column, which the watcher then tries to observe inside the
