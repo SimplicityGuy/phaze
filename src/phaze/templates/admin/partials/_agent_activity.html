@@ -28,10 +28,19 @@
     <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">This agent is not registered (it may have been revoked or never existed).</p>
 </div>
 {% else %}
-{# Bucket token table (single-sourced from _stage_pill.html:19-28): (key, glyph, word, classes). #}
+{# Bucket token table (single-sourced from _stage_pill.html:19-28): (key, glyph, word, classes).
+
+   phaze-2u8v.2 / D-01a: ORPHANED sits immediately after in-flight because it is CARVED OUT of it. The
+   in-flight cell used to be bare scheduling-ledger existence -- "scheduled and unresolved" -- which
+   silently folded in every file whose job was lost, and on the live archive that was 2146 of 4963
+   analyze rows, so the cell contradicted SAQ by more than 2x. The six cells still sum to the agent's
+   music/video total: no file is hidden, in-flight now means what its name says, and the carved-out
+   count is the number the DAG's amber rail badge and the Recover button already act on. Amber (not red)
+   is deliberate -- orphaned work is recoverable, not failed. #}
 {% set _bucket_tokens = [
     ('done', '✓', 'done', 'bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400'),
     ('in_flight', '●', 'in flight', 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400'),
+    ('orphaned', '⚠', 'orphaned', 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400'),
     ('not_started', '—', 'not started', 'bg-gray-100 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400'),
     ('failed', '✗', 'failed', 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400'),
     ('skipped', '⊘', 'skipped', 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60'),
@@ -102,9 +111,15 @@
         <p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400" aria-hidden="true">
             <span>✓ done</span>
             <span>● in-flight</span>
+            <span>⚠ orphaned</span>
             <span>— not-started</span>
             <span>✗ failed</span>
             <span>⊘ skipped</span>
+        </p>
+        {# Say what the amber cell MEANS and what clears it -- a count with no remedy is the defect this
+           bead was filed against, one plane over. #}
+        <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+            ⚠ orphaned = scheduled, then lost — nothing is running it and it has no result. Clear it with Recover on the pipeline dashboard.
         </p>
         {% endif %}
     </div>

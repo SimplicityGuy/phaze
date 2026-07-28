@@ -34,6 +34,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.enums.stage import Stage, Status
@@ -44,7 +45,7 @@ from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
-from phaze.services.pipeline import _agent_stage_buckets
+from phaze.services.pipeline import ORPHANED_BUCKET, _agent_stage_buckets
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from tests.db_guard import integration_dsns, require_test_database
 
@@ -71,6 +72,11 @@ _FIVE_BUCKETS = (
     Status.SKIPPED.value,
     Status.FAILED.value,
 )
+# phaze-2u8v.2 / D-01a: the reporting dict carries a SIXTH key, `orphaned`, carved out of `in_flight`.
+# It is NOT a `Status` member (the derived per-file status, eligibility and recovery are unchanged), so
+# it cannot be spelled off the enum -- hence the explicit tuple here. The sum-to-total invariant is
+# unaffected: the split MOVES files between two of these six keys, it never drops one.
+_SIX_BUCKETS = (*_FIVE_BUCKETS, ORPHANED_BUCKET)
 
 
 @pytest_asyncio.fixture
@@ -122,18 +128,38 @@ async def _file(session: AsyncSession, *, agent_id: str, file_type: str = "mp3")
     return rec
 
 
-async def _ledger(session: AsyncSession, stage: Stage, file: FileRecord) -> None:
-    """Seed a scheduling_ledger row on the deterministic ``<function>:<file_id>`` key (in_flight bucket)."""
-    func_name = STAGE_TO_FUNCTION[stage.value]
-    session.add(
-        SchedulingLedger(
-            key=f"{func_name}:{file.id}",
-            function=func_name,
-            routing="agent",
-            payload={"file_id": str(file.id)},
-        )
-    )
+# phaze-2u8v.2 / D-01a: an ``in_flight`` file is now a ledger row PLUS live work -- a ledger row with no
+# live ``saq_jobs`` key and no busy ``cloud_job`` is ORPHANED (scheduled, then lost), reported in its own
+# bucket instead of masquerading as in-flight. So the in-flight seed must write BOTH rows. ``saq_jobs`` is
+# SAQ-owned and absent from ``Base.metadata``, and sibling suites create it with differing schemas, so the
+# table is DROP+CREATEd to pin the shape this module controls (idiom from tests/shared/routers/test_pipeline.py);
+# the drop is undone when the per-test transaction rolls back. Only key/status are read by the code under test.
+_PIN_SAQ_JOBS = (
+    text("DROP TABLE IF EXISTS saq_jobs"),
+    text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"),
+)
+
+
+async def _pin_saq_jobs(session: AsyncSession) -> None:
+    """Pin a module-controlled ``saq_jobs`` table so the in-flight seed can register live work."""
+    for stmt in _PIN_SAQ_JOBS:
+        await session.execute(stmt)
     await session.flush()
+
+
+async def _live_job(session: AsyncSession, key: str) -> None:
+    """Register ``key`` as a LIVE (active) broker row -- the liveness half of an in-flight seed."""
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"), {"key": key})
+    await session.flush()
+
+
+async def _ledger(session: AsyncSession, stage: Stage, file: FileRecord) -> None:
+    """Seed the ledger row + a LIVE broker row on ``<function>:<file_id>`` (the in_flight bucket)."""
+    func_name = STAGE_TO_FUNCTION[stage.value]
+    key = f"{func_name}:{file.id}"
+    session.add(SchedulingLedger(key=key, function=func_name, routing="agent", payload={"file_id": str(file.id)}))
+    await session.flush()
+    await _live_job(session, key)
 
 
 async def _seed_agent_a_corpus(session: AsyncSession) -> int:
@@ -143,6 +169,7 @@ async def _seed_agent_a_corpus(session: AsyncSession) -> int:
     (in_flight > done > skipped > failed > not_started). A single non-music file is added to prove it
     is EXCLUDED from every enrich total (music/video scope).
     """
+    await _pin_saq_jobs(session)
     # 3 bare music files -> not_started for all three enrich stages.
     for _ in range(3):
         await _file(session, agent_id=_AGENT_A)
@@ -256,4 +283,4 @@ async def test_unknown_agent_returns_all_zero(db_session: AsyncSession) -> None:
     """An agent that owns no files yields an all-zero (never raising) bucket dict."""
     await _seed_agent_a_corpus(db_session)
     empty = await _agent_stage_buckets(db_session, "nobody-owns-me", Stage.METADATA)
-    assert empty == dict.fromkeys(_FIVE_BUCKETS, 0)
+    assert empty == dict.fromkeys(_SIX_BUCKETS, 0)
