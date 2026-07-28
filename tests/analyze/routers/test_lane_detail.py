@@ -3,8 +3,15 @@
 Task 1 (this wave, RED-first) locks the two degrade-safe lane-data helpers in ``services/backends.py``:
 
 * ``get_lane_recent_completions(session, backend_id, kind, limit=20)`` -- the last ``LANE_RECENT_N``
-  succeeded ``CloudJob`` rows for a compute/kueue lane, newest-first (D-07); ``[]`` for a ``local`` lane
-  (Open Question 1: a LocalBackend writes no cloud_job row) and ``[]`` on any query error (D-00b degrade);
+  completions for ANY lane kind, newest-first (D-07); ``[]`` on any query error (D-00b degrade). Extended
+  by phaze-2u8v.3 to fix three defects found in the same panel: a ``local`` lane no longer hardcodes
+  ``[]`` (Open Question 1's "omit, don't fabricate" masked the real local-completions defect -- local
+  writes no ``cloud_job`` row, but genuinely completes work and must show it, read straight off
+  ``files``/``analysis``); each row's ``completed_at`` is the TRUE ``AnalysisResult.analysis_completed_at``
+  instant, not a lane-side observation timestamp (the kueue lane's old ``CloudJob.updated_at`` only moves
+  on the next ``*/5 * * * *`` reconcile tick, clustering every completion on a 5-minute boundary); and
+  each row's ``label`` is the file's own name, never the bare ``file_id.hex[:8]`` the panel used to show
+  (confirmed a UUID prefix, not the sha256 it was presumed to be).
 * ``get_lane_queue_depths(app_state, backend_id)`` -- per-lane-tier queue depth, each source degrading
   to 0 on a missing ``app.state`` attr / broker hiccup (never a 500 into the 5s tick).
 
@@ -14,12 +21,13 @@ body assertions (kind-adaptivity, offline empty state, own-tick).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 
+from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 
 
@@ -81,23 +89,102 @@ async def test_recent_completions_bounded_newest_first(session: AsyncSession, ma
 
     rows = await get_lane_recent_completions(session, "compute-x", "compute")
     assert len(rows) == 20
-    ups = [r.updated_at for r in rows]
+    # No AnalysisResult rows seeded here -> completed_at falls back to CloudJob.updated_at (defensive path).
+    ups = [r.completed_at for r in rows]
     assert ups == sorted(ups, reverse=True)  # newest-first
     # The 20 newest of the 25 seeded (i=5..24); the oldest returned is base + 5s.
     assert min(ups) == base + timedelta(seconds=5)
-    assert all(r.status == CloudJobStatus.SUCCEEDED.value for r in rows)
-    assert all(r.backend_id == "compute-x" for r in rows)
+    assert all(r.label == "done.mp3" for r in rows)
 
 
 @pytest.mark.asyncio
-async def test_recent_completions_local_is_empty(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
-    """A local lane yields NO completions even if a succeeded row carries its id (OQ1: local writes none)."""
+async def test_recent_completions_prefers_true_completion_time_over_reconcile_tick(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2u8v.3 (b): a row's completed_at is the TRUE analysis_completed_at, not the lagging cloud_job.updated_at.
+
+    Regression fixture for the confirmed root cause: ``reconcile_cloud_jobs`` is a fixed ``*/5 * * * *``
+    CronJob (``tasks/controller.py``), so a kueue completion's ``cloud_job.updated_at`` is stamped on
+    whichever 5-minute tick happens to notice it -- always LATER than, and unrelated in spacing to, the
+    real completion instant recorded in ``analysis.analysis_completed_at`` by the agent callback. This
+    mirrors the live-archive shape confirmed for phaze-2u8v.3: a completion whose true instant was
+    ``20:05:21`` read back with ``cloud_job.updated_at`` bucketed to the next tick, ``20:10:00``.
+    """
     from phaze.services.backends import get_lane_recent_completions
 
-    file = await make_file(original_filename="local-done.mp3")
-    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value, backend_id="local"))
+    file = await make_file(original_filename="live-set.mp3")
+    true_completed_at = datetime(2026, 7, 27, 20, 5, 21, tzinfo=UTC)
+    tick_observed_at = datetime(2026, 7, 27, 20, 10, 0)  # naive: the next */5 cron tick after the real completion
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=file.id,
+            status=CloudJobStatus.SUCCEEDED.value,
+            backend_id="vox",
+            updated_at=tick_observed_at,
+        )
+    )
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=file.id, analysis_completed_at=true_completed_at))
     await session.commit()
 
+    rows = await get_lane_recent_completions(session, "vox", "kueue")
+    assert len(rows) == 1
+    assert rows[0].completed_at == true_completed_at
+    assert rows[0].completed_at != tick_observed_at
+
+
+@pytest.mark.asyncio
+async def test_recent_completions_label_is_filename_not_bare_hash(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2u8v.3 (c): a row's label is the file's own name, never a bare id/hash."""
+    from phaze.services.backends import get_lane_recent_completions
+
+    file = await make_file(original_filename="concert-set.mp3")
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, status=CloudJobStatus.SUCCEEDED.value, backend_id="vox"))
+    await session.commit()
+
+    rows = await get_lane_recent_completions(session, "vox", "kueue")
+    assert len(rows) == 1
+    assert rows[0].label == "concert-set.mp3"
+    assert file.id.hex[:8] not in rows[0].label
+
+
+@pytest.mark.asyncio
+async def test_recent_completions_local_lane_populates(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2u8v.3 (a): a local lane surfaces its real completions instead of always [].
+
+    A LocalBackend writes no ``cloud_job`` row (unchanged), so a genuinely-local completion is a
+    music/video file with a landed ``analysis_completed_at`` and NO ``cloud_job`` row at all -- exactly
+    the discriminator :meth:`LocalBackend.in_flight_count` already uses for its in-flight slice.
+    """
+    from phaze.services.backends import get_lane_recent_completions
+
+    local_file = await make_file(original_filename="local-done.mp3")
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=local_file.id, analysis_completed_at=datetime(2026, 7, 27, 9, 0, 0, tzinfo=UTC)))
+    await session.commit()
+
+    rows = await get_lane_recent_completions(session, "local", "local")
+    assert len(rows) == 1
+    assert rows[0].label == "local-done.mp3"
+    assert rows[0].completed_at == datetime(2026, 7, 27, 9, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_recent_completions_local_lane_excludes_cloud_routed_files(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A file that carries ANY cloud_job row (even succeeded) is NOT double-counted as a local completion."""
+    from phaze.services.backends import get_lane_recent_completions
+
+    cloud_file = await make_file(original_filename="cloud-done.mp3")
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=cloud_file.id, analysis_completed_at=datetime(2026, 7, 27, 9, 0, 0, tzinfo=UTC)))
+    session.add(CloudJob(id=uuid.uuid4(), file_id=cloud_file.id, status=CloudJobStatus.SUCCEEDED.value, backend_id="vox"))
+    await session.commit()
+
+    assert await get_lane_recent_completions(session, "local", "local") == []
+
+
+@pytest.mark.asyncio
+async def test_recent_completions_local_lane_empty_when_none_completed(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """Genuinely no local completions yet -> [] (the empty state stays honest, not fabricated)."""
+    from phaze.services.backends import get_lane_recent_completions
+
+    await make_file(original_filename="still-analyzing.mp3")  # no AnalysisResult row at all
     assert await get_lane_recent_completions(session, "local", "local") == []
 
 

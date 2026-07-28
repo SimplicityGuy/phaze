@@ -943,10 +943,10 @@ async def lane_detail(
     :func:`get_backend_lane_snapshot` (T-88-03): an unknown/offline id renders the friendly "Lane
     offline" empty fragment (200, HTML -- never a 500/JSON/HTTPException, never a raw-param-driven read),
     so htmx still swaps a body into the pane. For a resolved lane the kind-adaptive body renders the
-    last ``LANE_RECENT_N`` newest-first succeeded completions (compute/kueue only, D-07) and the per-lane
-    queue depths; every read is bounded + degrade-safe (D-00b) and the body carries its own bounded 5s
-    tick (D-03). Read-only -- no commit. Only secret-free snapshot scalars + completion status/timestamps
-    leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
+    last ``LANE_RECENT_N`` newest-first completions -- ALL lane kinds, including local (phaze-2u8v.3;
+    D-07) -- and the per-lane queue depths; every read is bounded + degrade-safe (D-00b) and the body
+    carries its own bounded 5s tick (D-03). Read-only -- no commit. Only secret-free filename/timestamp/id
+    scalars leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
     """
     lanes = await get_backend_lane_snapshot(session)  # degrade-safe -> []
     lane = next((one for one in lanes if one["id"] == backend_id), None)
