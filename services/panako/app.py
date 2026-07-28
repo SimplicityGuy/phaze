@@ -53,7 +53,15 @@ STDERR_LOG_LIMIT = 2000
 # list (no shell on our side) does not help: the shell that matters is Panako's, one hop
 # further down. The fix is to never let a caller-controlled byte reach that substitution
 # at all -- see `_resolve_confined_path` / `_staged_operand` below.
-MEDIA_ROOT = Path(os.environ.get("PANAKO_MEDIA_ROOT", "/data/music"))
+#
+# `PANAKO_MEDIA_ROOTS` mirrors the comma-separated `PHAZE_AGENT_SCAN_ROOTS` shape (a
+# deployment can mount more than one read-only media path into this container). There is
+# DELIBERATELY no built-in default: an unset or empty value yields an EMPTY list, and
+# `_resolve_confined_path` fails CLOSED on an empty list -- every file_path is rejected --
+# rather than falling back to a guessed path that may not match the actual mount(s). The
+# deployment must set this explicitly next to the container's real `volumes:` entries.
+_raw_media_roots = os.environ.get("PANAKO_MEDIA_ROOTS", "")
+MEDIA_ROOTS: list[Path] = [Path(root.strip()) for root in _raw_media_roots.split(",") if root.strip()]
 # Generated-name staging area for the safe argv operand (see `_staged_operand`). Defaults
 # under the system tempdir so no extra volume/mount is required.
 STAGING_DIR = Path(os.environ.get("PANAKO_STAGING_DIR", str(Path(tempfile.gettempdir()) / "panako-stage")))
@@ -68,10 +76,12 @@ class PathValidationError(ValueError):
 
 
 def _resolve_confined_path(file_path: str) -> Path:
-    """Resolve ``file_path`` and confine it under :data:`MEDIA_ROOT`.
+    """Resolve ``file_path`` and confine it under one of :data:`MEDIA_ROOTS`.
 
     Rejects a relative path, an embedded NUL byte, and anything that resolves (after
-    ``..`` traversal / symlink resolution) outside the read-only media root. Existence is
+    ``..`` traversal / symlink resolution) outside every configured media root -- including
+    when ``MEDIA_ROOTS`` is empty, which rejects EVERYTHING (fail closed: an unconfigured
+    sidecar permits no path, rather than silently permitting every path). Existence is
     deliberately NOT required here -- the pipeline renames/moves files out from under
     async fingerprint jobs, and Panako's own "could not read" handling already covers a
     missing file; this function's only job is confinement against a malicious/mistaken
@@ -82,11 +92,15 @@ def _resolve_confined_path(file_path: str) -> Path:
     candidate = Path(file_path)
     if not candidate.is_absolute():
         raise PathValidationError("file_path must be an absolute path")
+    if not MEDIA_ROOTS:
+        raise PathValidationError("no PANAKO_MEDIA_ROOTS configured -- refusing every file_path (fail closed)")
     resolved = candidate.resolve()
-    root = MEDIA_ROOT.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise PathValidationError(f"file_path must resolve under {root}")
-    return resolved
+    for root in MEDIA_ROOTS:
+        resolved_root = root.resolve()
+        if resolved == resolved_root or resolved_root in resolved.parents:
+            return resolved
+    roots_display = ", ".join(str(root) for root in MEDIA_ROOTS)
+    raise PathValidationError(f"file_path must resolve under one of: {roots_display}")
 
 
 @contextlib.contextmanager

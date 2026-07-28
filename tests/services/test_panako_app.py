@@ -69,17 +69,17 @@ async def _post(app_module: ModuleType, route: str, file_path: str = "/audio/smo
 
 @pytest.fixture
 def panako_media(panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Confine the loaded module's MEDIA_ROOT/STAGING_DIR to an isolated tmp_path tree.
+    """Confine the loaded module's MEDIA_ROOTS/STAGING_DIR to an isolated tmp_path tree.
 
-    phaze-64w1: ``_staged_operand`` validates + confines ``file_path`` under ``MEDIA_ROOT``
-    and stages it under ``STAGING_DIR`` before it ever reaches the CLI, so any test that
-    exercises the HTTP layer (rather than calling ``_run_ingest``/``_run_query`` directly)
-    needs a real, MEDIA_ROOT-confined location to point requests at. Returns the media root
-    directory; callers create files under it.
+    phaze-64w1: ``_staged_operand`` validates + confines ``file_path`` under one of
+    ``MEDIA_ROOTS`` and stages it under ``STAGING_DIR`` before it ever reaches the CLI, so
+    any test that exercises the HTTP layer (rather than calling ``_run_ingest``/``_run_query``
+    directly) needs a real, MEDIA_ROOTS-confined location to point requests at. Returns the
+    (single-entry) media root directory; callers create files under it.
     """
     media_root = tmp_path / "media"
     media_root.mkdir()
-    monkeypatch.setattr(panako_app, "MEDIA_ROOT", media_root)
+    monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [media_root])
     monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
     return media_root
 
@@ -255,7 +255,7 @@ class TestPathValidationAndStaging:
     substitutes the operand we hand the CLI into a `/bin/bash -c "... -i \\"%resource%\\" ..."`
     template with only bare double-quoting -- a `"`, a backtick, or `$(...)` in the path
     breaks out of that quoting into arbitrary shell execution. `_staged_operand` confines the
-    caller's path under MEDIA_ROOT and stages the resolved file under a generated uuid name,
+    caller's path under one of MEDIA_ROOTS and stages the resolved file under a generated uuid name,
     so the CLI never sees a caller-controlled byte -- whether from an attacker or from a
     legitimate messy filename like the ones exercised in TestSemicolonPathParsing above.
     """
@@ -364,6 +364,88 @@ class TestPathValidationAndStaging:
         status, _ = await _post(panako_app, "/ingest", file_path="not/absolute.wav")
         assert status == 400
         assert called is False
+
+
+class TestMultiRootConfinement:
+    """phaze-64w1 changes-requested: a single MEDIA_ROOT can't cover a deployment with more
+    than one media mount (mirrors ``PHAZE_AGENT_SCAN_ROOTS``, which is itself comma-separated
+    for exactly this reason). ``MEDIA_ROOTS`` must accept several roots, confining to
+    "resolves under ANY configured root" -- and, critically, an unset/empty config must fail
+    CLOSED (refuse every path) rather than falling back to permitting anything.
+    """
+
+    async def test_file_under_either_configured_root_is_accepted(
+        self, panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root_a = tmp_path / "roots" / "a"
+        root_b = tmp_path / "roots" / "b"
+        root_a.mkdir(parents=True)
+        root_b.mkdir(parents=True)
+        monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [root_a, root_b])
+        monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+        _patch_run(monkeypatch, panako_app, "_run_ingest")
+
+        file_in_a = root_a / "x.wav"
+        file_in_a.write_bytes(b"RIFF")
+        status, _ = await _post(panako_app, "/ingest", file_path=str(file_in_a))
+        assert status == 200
+
+        file_in_b = root_b / "y.wav"
+        file_in_b.write_bytes(b"RIFF")
+        status, _ = await _post(panako_app, "/ingest", file_path=str(file_in_b))
+        assert status == 200
+
+    async def test_file_outside_every_configured_root_is_rejected(
+        self, panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root_a = tmp_path / "roots" / "a"
+        root_b = tmp_path / "roots" / "b"
+        root_a.mkdir(parents=True)
+        root_b.mkdir(parents=True)
+        monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [root_a, root_b])
+        monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+
+        outside = tmp_path / "elsewhere" / "z.wav"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(b"RIFF")
+        status, body = await _post(panako_app, "/ingest", file_path=str(outside))
+        assert status == 400
+        assert "must resolve under one of" in body["detail"]
+        assert str(root_a) in body["detail"]
+        assert str(root_b) in body["detail"]
+
+    async def test_unset_media_roots_rejects_every_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """An unconfigured sidecar (no PANAKO_MEDIA_ROOTS) must refuse everything -- never
+        fall back to a guessed/plausible default that may not match the real mount(s).
+        """
+        monkeypatch.delenv("PANAKO_MEDIA_ROOTS", raising=False)
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_unset")
+        assert mod.MEDIA_ROOTS == []
+
+        media = tmp_path / "media.wav"
+        media.write_bytes(b"RIFF")
+        status, body = await _post(mod, "/ingest", file_path=str(media))
+        assert status == 400
+        assert "no PANAKO_MEDIA_ROOTS configured" in body["detail"]
+        assert "fail closed" in body["detail"]
+
+    async def test_empty_media_roots_env_rejects_every_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """An explicitly empty/whitespace value must behave identically to unset -- fail closed."""
+        monkeypatch.setenv("PANAKO_MEDIA_ROOTS", "  , ,")
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_blank")
+        assert mod.MEDIA_ROOTS == []
+
+        media = tmp_path / "media.wav"
+        media.write_bytes(b"RIFF")
+        status, _ = await _post(mod, "/ingest", file_path=str(media))
+        assert status == 400
+
+    def test_media_roots_env_is_comma_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mirrors ``AgentSettings._split_scan_roots`` -- comma-separated, entries stripped."""
+        monkeypatch.setenv("PANAKO_MEDIA_ROOTS", "/data/downloads , /data/staging ,")
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_split")
+        expected = [mod.Path("/data/downloads"), mod.Path("/data/staging")]
+        assert expected == mod.MEDIA_ROOTS
 
 
 class TestHealthExercisesTheJar:
