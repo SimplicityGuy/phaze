@@ -2518,6 +2518,18 @@ async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_i
             blocked=result.blocked,
             blocked_keys=list(result.blocked_keys),
         )
+    # phaze-rkpi: enqueue_fingerprint_jobs now isolates a per-file broker error instead of raising
+    # out of the loop, so this task no longer dies mid-batch -- but that isolation must not become
+    # its own silent failure mode. The done-callback only discards the task (its result/exception is
+    # never retrieved), so an errored count is surfaced here, at ERROR, or an operator who believes
+    # the whole batch was accepted has no way to learn otherwise. The next /api/v1/fingerprint (or
+    # /pipeline/fingerprint) trigger re-selects these files -- they are not lost, just delayed.
+    if result.errored:
+        logger.error(
+            "fingerprint enqueue: per-file errors isolated -- files NOT enqueued this pass",
+            errored=result.errored,
+            errored_file_ids=list(result.errored_file_ids),
+        )
 
 
 @router.post("/api/v1/fingerprint")
