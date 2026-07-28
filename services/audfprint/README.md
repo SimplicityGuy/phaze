@@ -81,11 +81,12 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 
 ## Configuration
 
-| Constant             | Default                         | Description                        |
-|----------------------|---------------------------------|------------------------------------|
-| `AUDFPRINT_SCRIPT`   | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
-| `FPRINT_DB`          | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
-| `SUBPROCESS_TIMEOUT` | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| Constant                | Default                         | Description                        |
+|-------------------------|---------------------------------|------------------------------------|
+| `AUDFPRINT_SCRIPT`      | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
+| `FPRINT_DB`             | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
+| `SUBPROCESS_TIMEOUT`    | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `AUDFPRINT_MEDIA_ROOTS` | *(unset — fails closed)*        | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-1p5q #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount — `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
 
 ## Volumes
 
@@ -108,3 +109,12 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
   staging copy, which is re-probed and then `os.replace`d over the live path. Readers see the
   whole old database or the whole new one; a killed ingest can only destroy the scratch copy
 - Subprocess timeout of 3600 seconds per operation (env-configurable via `SUBPROCESS_TIMEOUT`; multi-hour concert sets are the primary content)
+- **`file_path` is confined before it becomes argv.** The endpoints are unauthenticated, and
+  upstream parses argv with docopt — so any value starting with `-` is taken as an *option*,
+  not as `<file>`. `--opfile=` alone is a plain `open(path, "w")`, i.e. one unauthenticated
+  request that truncates the fingerprint database. Every `file_path` must therefore be an
+  absolute path resolving under `AUDFPRINT_MEDIA_ROOTS` (`400` otherwise, fail-closed when
+  unset), and both argv lists carry a `--` end-of-options terminator. Unlike the panako
+  sidecar there is no staged-symlink operand: audfprint's decoder shells out with an argv list
+  (no shell template to escape), and the operand is persisted verbatim by `hash_table.store`
+  as the fingerprint's identity — so it must be the real archive path, not a staged name

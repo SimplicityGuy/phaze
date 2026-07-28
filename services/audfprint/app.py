@@ -47,6 +47,78 @@ _PROBE_CHUNK_BYTES = 1 << 20
 # signal, but the head of the trace is what identifies the failure mode. Mirrors panako.
 STDERR_LOG_LIMIT = 2000
 
+# phaze-1p5q #sec: this sidecar is unauthenticated (uvicorn --host 0.0.0.0, no `ports:` but
+# reachable by every container on the agent compose network) and `file_path` arrives verbatim
+# from an agent-registered FileRecord. Upstream audfprint parses its argv with DOCOPT, whose
+# usage is `audfprint (new|add|match|...) [options] [<file>]...` -- so ANY argv element
+# starting with `-` is consumed as an OPTION, never as `<file>`. The one that bites is
+# `-o/--opfile`, honoured by `setup_reporter()` as a plain `open(opfile, "w")`: a request body
+# of `{"file_path": "--opfile=/data/fprint/fprint.pklz"}` truncates the fingerprint database
+# to zero bytes -- the exact artifact that burned 11,180 files in the 2026.7.7 outage
+# (phaze-p3hj.1), reachable here in one unauthenticated request.
+#
+# Two independent defenses, because either alone is a single point of failure:
+#   1. CONFINEMENT (`_resolve_confined_path`) -- the value must be an absolute path that
+#      resolves under a configured media root. An option-shaped string is not absolute, so it
+#      is rejected before any argv is built. This is the load-bearing one.
+#   2. The `--` END-OF-OPTIONS TERMINATOR in both argv lists. Verified against the docopt
+#      pinned in the image: `parse_argv` returns every remaining token as an Argument once it
+#      sees `--` (docopt.py:441), unconditionally. Belt to the confinement's braces.
+#
+# Unlike panako (phaze-64w1) there is deliberately NO staged-symlink operand here. panako
+# needed one because its OWN decode path substitutes the operand into a `/bin/bash -c` ffmpeg
+# template, so a quote or `$(...)` in the path is shell execution one hop down. audfprint's
+# decoder shells out with an argv LIST (`audio_read.py:204 subprocess.Popen([...])`, no
+# shell), so there is no second-hop template to defend and a real path is safe to pass. It is
+# also the RIGHT thing to pass: `hash_table.store` persists the operand verbatim in
+# `self.names` as that fingerprint's permanent identity and echoes it back as the match ref
+# (`track_id`), so staging the operand under a generated name would orphan every stored
+# fingerprint -- precisely panako's third-bounce regression, which it had to solve with a
+# persistent deterministic identity scheme. audfprint needs none of that machinery.
+#
+# `AUDFPRINT_MEDIA_ROOTS` mirrors panako's `PANAKO_MEDIA_ROOTS` (comma-separated,
+# container-side paths). There is DELIBERATELY no built-in default: an unset or empty value
+# yields an EMPTY list and `_resolve_confined_path` fails CLOSED -- every file_path is
+# rejected -- rather than falling back to a guessed mount that may not be the real one.
+_raw_media_roots = os.environ.get("AUDFPRINT_MEDIA_ROOTS", "")
+MEDIA_ROOTS: list[Path] = [Path(root.strip()) for root in _raw_media_roots.split(",") if root.strip()]
+
+
+class PathValidationError(ValueError):
+    """A caller-supplied file_path failed validation. Reported as HTTP 400, never shelled out."""
+
+
+def _resolve_confined_path(file_path: str) -> Path:
+    """Resolve ``file_path`` and confine it under one of :data:`MEDIA_ROOTS`.
+
+    Rejects a relative path (which is what every option-shaped string is), an embedded NUL
+    byte, and anything that resolves -- after ``..`` traversal and symlink resolution --
+    outside every configured media root, INCLUDING when ``MEDIA_ROOTS`` is empty, which
+    rejects everything. Existence is deliberately NOT required: the pipeline renames and
+    moves files out from under async fingerprint jobs, and audfprint's own "could not read"
+    handling already covers a missing file. This function's only job is confinement against a
+    malicious or mistaken path.
+
+    Byte-identical in shape to panako's ``_resolve_confined_path`` (phaze-64w1) on purpose --
+    the root cause of both defects is one unhardened rule ("a string from an HTTP body must
+    never reach an argv operand unchecked") applied point-wise instead of to every sidecar.
+    """
+    if not file_path or "\x00" in file_path:
+        raise PathValidationError("file_path must be a non-empty path with no NUL bytes")
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        raise PathValidationError("file_path must be an absolute path")
+    if not MEDIA_ROOTS:
+        raise PathValidationError("no AUDFPRINT_MEDIA_ROOTS configured -- refusing every file_path (fail closed)")
+    resolved = candidate.resolve()
+    for root in MEDIA_ROOTS:
+        resolved_root = root.resolve()
+        if resolved == resolved_root or resolved_root in resolved.parents:
+            return resolved
+    roots_display = ", ".join(str(root) for root in MEDIA_ROOTS)
+    raise PathValidationError(f"file_path must resolve under one of: {roots_display}")
+
+
 # The four states the on-disk database can be in. They are distinguishable by exception at
 # read time (phaze-p3hj.1 §6): absent -> FileNotFoundError, zero-byte -> `EOFError: Ran out
 # of input`, torn -> `EOFError: Compressed file ended before the end-of-stream marker was
@@ -248,7 +320,9 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
         if command == "add":
             shutil.copyfile(db_path, staging)
         result = subprocess.run(
-            ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging), file_path],
+            # `--` terminates docopt's option scan: everything after it is an operand, so a
+            # path can never be reinterpreted as a flag (phaze-1p5q).
+            ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging), "--", file_path],
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT,
@@ -269,9 +343,15 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
 
 
 def _run_query(file_path: str) -> subprocess.CompletedProcess[str]:
-    """Run audfprint match command synchronously (called via to_thread)."""
+    """Run audfprint match command synchronously (called via to_thread).
+
+    ``file_path`` is the already-resolved, already-confined path from
+    ``_resolve_confined_path`` -- never the caller's raw string (phaze-1p5q).
+    """
     return subprocess.run(
-        ["python", AUDFPRINT_SCRIPT, "match", "--dbase", FPRINT_DB, file_path],
+        # `--`: see the ingest argv above. The match path is equally reachable (via
+        # ScanLiveSetPayload.original_path) and had the identical bare-operand shape.
+        ["python", AUDFPRINT_SCRIPT, "match", "--dbase", FPRINT_DB, "--", file_path],
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT,
@@ -387,9 +467,16 @@ async def health() -> HealthResponse:
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the audfprint fingerprint database."""
+    # Validate BEFORE taking the lock: a rejected path must not queue behind an in-flight
+    # ingest, and a 400 must never be delayed by a 3600s subprocess (phaze-1p5q, phaze-5wz9).
+    try:
+        resolved = _resolve_confined_path(request.file_path)
+    except PathValidationError as exc:
+        logger.warning("audfprint ingest rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     async with _db_lock:
         try:
-            result = await asyncio.to_thread(_run_ingest, request.file_path)
+            result = await asyncio.to_thread(_run_ingest, str(resolved))
         except subprocess.TimeoutExpired:
             # subprocess.run kills the child on timeout, then raises. Left uncaught this
             # was a raw 500 traceback instead of a structured error (phaze-mv1f).
@@ -413,6 +500,11 @@ async def query(request: IngestRequest) -> QueryResponse:
     what ``_post_query`` turns into ``EngineQueryError``. Probed OUTSIDE the lock (the probe
     only reads) so the absent fast path still cannot deadlock behind an in-flight ingest.
     """
+    try:
+        resolved = _resolve_confined_path(request.file_path)
+    except PathValidationError as exc:
+        logger.warning("audfprint query rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     state, detail = _probe_database(Path(FPRINT_DB))
     if state == "absent":
         return QueryResponse(matches=[])
@@ -423,7 +515,7 @@ async def query(request: IngestRequest) -> QueryResponse:
         raise HTTPException(status_code=503, detail=detail)
     async with _db_lock:
         try:
-            result = await asyncio.to_thread(_run_query, request.file_path)
+            result = await asyncio.to_thread(_run_query, str(resolved))
         except subprocess.TimeoutExpired:
             detail = f"audfprint query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
             logger.error(detail)

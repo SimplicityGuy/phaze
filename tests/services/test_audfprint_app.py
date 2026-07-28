@@ -49,6 +49,37 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _confined_media_root(audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a configured media root, since the sidecar fails CLOSED without one.
+
+    phaze-1p5q: ``file_path`` is confined under ``AUDFPRINT_MEDIA_ROOTS`` before it can become
+    argv, and an unset/empty root list rejects EVERYTHING with 400 (deliberately — an
+    unconfigured sidecar must permit no path rather than guess a mount). The fixture paths
+    throughout this module are notional ``/data/...`` paths that never touch the filesystem;
+    confinement checks resolved prefixes, not existence, so one root covers them all.
+    Confinement itself is exercised deliberately in ``TestFilePathConfinement`` below, which
+    overrides this.
+    """
+    monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [Path("/data")])
+
+
+def argv_dbase(args: list[str]) -> str:
+    """The ``--dbase`` value from a recorded audfprint argv.
+
+    Read by NAME, not by position: the argv also carries a ``--`` end-of-options terminator
+    (phaze-1p5q) and gained ``--maxtimebits`` (phaze-5i76), and positional indexing into it
+    made every flag addition a test break rather than a behaviour change.
+    """
+    return args[args.index("--dbase") + 1]
+
+
+def argv_operand(args: list[str]) -> str:
+    """The file operand from a recorded audfprint argv -- always last, always after ``--``."""
+    assert "--" in args, "argv must terminate options before the operand (phaze-1p5q)"
+    return args[-1]
+
+
 def write_loadable_db(path: Path, payload: bytes = b"landmark-hash-table") -> None:
     """Write a database the loadability probe accepts: one complete gzip member.
 
@@ -360,7 +391,7 @@ class _FakeAudfprintCli:
 
     def run(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
-        command, dbase, file_arg = args[2], args[4], args[5]
+        command, dbase, file_arg = args[2], argv_dbase(args), argv_operand(args)
         if command in ("new", "add"):
             write_loadable_db(Path(dbase), payload=f"{command}:{file_arg}".encode())
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
@@ -383,7 +414,7 @@ class TestRunIngestBootstrap:
         assert result.returncode == 0
         assert db_path.exists()
         assert len(cli.calls) == 1
-        command, dbase, file_arg = cli.calls[0][2], cli.calls[0][4], cli.calls[0][5]
+        command, dbase, file_arg = cli.calls[0][2], argv_dbase(cli.calls[0]), argv_operand(cli.calls[0])
         assert command == "new"
         # The engine writes the staging copy, never the live path (phaze-p3hj.2).
         assert dbase == str(audfprint_app._staging_path(db_path))
@@ -482,6 +513,134 @@ class TestIngestEndpointBootstrap:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# file_path confinement + end-of-options terminator (phaze-1p5q #sec)
+#
+# The bug: `file_path` came straight off the unauthenticated HTTP body and was appended to
+# the child argv as a BARE OPERAND. Upstream parses argv with docopt, whose usage is
+# `audfprint (new|add|match|...) [options] [<file>]...`, so any token starting with `-` is
+# consumed as an OPTION -- never as `<file>`. `-o/--opfile` is honoured by `setup_reporter()`
+# as a plain `open(path, "w")`, so {"file_path": "--opfile=/data/fprint/fprint.pklz"} truncates
+# the fingerprint database to zero bytes: exactly the artifact that burned 11,180 files in the
+# 2026.7.7 outage, reachable in one request from anything on the agent compose network.
+#
+# The fix mirrors panako (phaze-64w1): confine to AUDFPRINT_MEDIA_ROOTS, fail CLOSED when
+# unset, and terminate the option scan with `--`. NOT mirrored is panako's staged-operand
+# scheme -- audfprint's decoder uses an argv list (no shell template to escape) and
+# `hash_table.store` persists the operand as the fingerprint's permanent identity, so the real
+# resolved path is both safe and required.
+# ---------------------------------------------------------------------------
+
+
+class TestFilePathConfinement:
+    """A caller-supplied file_path must never reach argv unvalidated."""
+
+    @staticmethod
+    def _no_subprocess(monkeypatch: pytest.MonkeyPatch, app_module: ModuleType) -> None:
+        """Make ANY subprocess launch a hard test failure -- a rejected path must not shell out."""
+
+        def _explode(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(f"a rejected file_path reached the CLI: {args}")
+
+        monkeypatch.setattr(app_module.subprocess, "run", _explode)
+
+    @pytest.mark.parametrize("route", ["/ingest", "/query"])
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "--opfile=/data/fprint/fprint.pklz",  # the database-truncating primitive
+            "-o/data/fprint/fprint.pklz",  # short form
+            "--dbase=/tmp/x.pklz",  # redirect the store
+            "--list",  # treat the operand as a file list
+            "relative/path.mp3",  # not absolute
+            "/etc/passwd",  # absolute but outside the media root
+            "/data/../etc/passwd",  # traversal that RESOLVES outside
+        ],
+    )
+    async def test_hostile_file_path_is_rejected_before_argv(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, route: str, evil: str
+    ) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        self._no_subprocess(monkeypatch, audfprint_app)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post(route, json={"file_path": evil})
+
+        assert resp.status_code == 400
+
+    def test_nul_byte_is_rejected(self, audfprint_app: ModuleType) -> None:
+        with pytest.raises(audfprint_app.PathValidationError):
+            audfprint_app._resolve_confined_path("/data/music/song\x00.mp3")
+
+    @pytest.mark.parametrize("route", ["/ingest", "/query"])
+    async def test_unconfigured_media_roots_fails_closed(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, route: str
+    ) -> None:
+        """An unconfigured sidecar must refuse everything -- never fall back to permitting everything."""
+        monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [])
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        self._no_subprocess(monkeypatch, audfprint_app)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post(route, json={"file_path": "/data/music/song.mp3"})
+
+        assert resp.status_code == 400
+        assert "no AUDFPRINT_MEDIA_ROOTS configured" in resp.json()["detail"]
+
+    def test_media_roots_parses_a_comma_separated_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AUDFPRINT_MEDIA_ROOTS", "/data/downloads , /data/staging ,")
+        mod = load_service_module("audfprint", "phaze_test_audfprint_media_roots")
+        assert [Path("/data/downloads"), Path("/data/staging")] == mod.MEDIA_ROOTS
+        assert mod._resolve_confined_path("/data/staging/set.mp3") == Path("/data/staging/set.mp3")
+
+    def test_media_roots_defaults_to_empty_not_to_a_guessed_mount(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AUDFPRINT_MEDIA_ROOTS", raising=False)
+        mod = load_service_module("audfprint", "phaze_test_audfprint_media_roots_unset")
+        assert mod.MEDIA_ROOTS == []
+
+    def test_argv_terminates_options_before_the_operand(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """`--` is the second, independent defense: docopt cannot reparse an operand as a flag."""
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/song.mp3")
+        audfprint_app._run_query("/data/music/song.mp3")
+
+        for call in cli.calls:
+            assert call[-2] == "--", f"operand is not preceded by the end-of-options terminator: {call}"
+            assert call[-1] == "/data/music/song.mp3"
+
+    async def test_confined_path_is_resolved_before_it_becomes_the_stored_identity(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The operand IS the persistent track identity, so it must be the RESOLVED real path.
+
+        `hash_table.store` keeps the operand verbatim in `self.names` and echoes it back as a
+        match's ref. Unlike panako we therefore pass the real path (resolved, confined), never
+        a staged name -- staging here would orphan every stored fingerprint.
+        """
+        media = tmp_path / "media"
+        (media / "sub").mkdir(parents=True)
+        target = media / "sub" / "song.mp3"
+        target.write_bytes(b"audio")
+        monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [media])
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": str(media / "sub" / ".." / "sub" / "song.mp3")})
+
+        assert resp.status_code == 200
+        assert argv_operand(cli.calls[0]) == str(target.resolve())
+
+
 class TestSubprocessFailureLogging:
     """Both subprocess failure paths must leave the engine's stderr in the sidecar's own log."""
 
@@ -555,7 +714,7 @@ class TestSubprocessTimeoutConfiguration:
         def _capture(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             seen.append(kwargs.get("timeout"))
             if args[2] in ("new", "add"):
-                write_loadable_db(Path(args[4]))
+                write_loadable_db(Path(argv_dbase(args)))
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(audfprint_app.subprocess, "run", _capture)

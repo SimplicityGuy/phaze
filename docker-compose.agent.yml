@@ -171,6 +171,16 @@ services:
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - audfprint_data:/data/fprint
+    environment:
+      # phaze-1p5q #sec: file_path arrives unauthenticated from the hub, so app.py confines
+      # it to AUDFPRINT_MEDIA_ROOTS (comma-separated, container-side paths) before it ever
+      # reaches the audfprint CLI -- and fails CLOSED (rejects every path) when this is unset.
+      # Without it an option-shaped file_path is parsed by docopt as a FLAG: `--opfile=` alone
+      # truncates the fingerprint database to zero bytes. MUST stay in sync with the
+      # container-side target(s) mounted above, i.e. the RIGHT side of each `volumes:` bind
+      # (`/data/music` here), never the host-side source. Override AUDFPRINT_MEDIA_ROOTS in
+      # the environment if this service's mounts diverge from the default below.
+      - AUDFPRINT_MEDIA_ROOTS=${AUDFPRINT_MEDIA_ROOTS:-/data/music}
     restart: unless-stopped
 
   panako:
