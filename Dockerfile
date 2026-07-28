@@ -1,11 +1,20 @@
 # ── CSS build stage ──────────────────────────────────────────────────────────
 # Compiles assets/src/app.css → src/phaze/static/css/app.css with the pinned
 # standalone Tailwind v4 binary (NO Node). Replaces the former in-browser
-# compiler (@tailwindcss/browser). Keep TAILWIND_VERSION in sync with the
-# justfile `tailwind` recipe. The final image copies only the generated CSS.
+# compiler (@tailwindcss/browser). Keep TAILWIND_VERSION *and* the two
+# TAILWIND_SHA256_LINUX_* digests below in sync with the justfile `tailwind`
+# recipe -- the version tag alone is not an integrity guarantee (phaze-hvzd):
+# a git tag can be moved and a release asset can be replaced without the
+# version string changing, so the digest is the thing that actually pins the
+# binary that runs as root during `docker build`. Digests are the
+# `tailwindcss-linux-{x64,arm64}` entries from the upstream release's
+# `sha256sums.txt` for TAILWIND_VERSION. The final image copies only the
+# generated CSS.
 FROM python:3.14-slim AS css-builder
 
 ARG TAILWIND_VERSION=v4.3.2
+ARG TAILWIND_SHA256_LINUX_X64=5036c4fb4328e0bcdbb6065c70d8ac9452e0d4c947113a788a8f94fd390425c1
+ARG TAILWIND_SHA256_LINUX_ARM64=394ddccc2402cfa3abd97dfba56f3587781a3d6e6ce66e65ceada14beb7664b8
 ARG TARGETARCH
 
 WORKDIR /build
@@ -16,15 +25,24 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # TARGETARCH is buildx's amd64/arm64; map to Tailwind's x64/arm64 asset names.
+# Download to a temp path and verify its digest with sha256sum -c BEFORE
+# chmod +x or promoting it to the path we execute -- a mismatch never yields
+# an executable file (phaze-hvzd: no checksum meant a compromised release
+# asset would run as root inside the build with only a `--help` liveness
+# check, which does not fail on a malicious replacement).
+# hadolint ignore=DL4006
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-      "amd64") TW_ARCH="x64" ;; \
-      "arm64") TW_ARCH="arm64" ;; \
+      "amd64") TW_ARCH="x64"; TW_SHA256="${TAILWIND_SHA256_LINUX_X64}" ;; \
+      "arm64") TW_ARCH="arm64"; TW_SHA256="${TAILWIND_SHA256_LINUX_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL --retry 3 --retry-delay 5 \
-        -o /usr/local/bin/tailwindcss \
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 \
+        -o /tmp/tailwindcss \
         "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-${TW_ARCH}"; \
+    echo "${TW_SHA256}  /tmp/tailwindcss" | sha256sum -c - \
+        || { echo "❌ tailwindcss-linux-${TW_ARCH} failed checksum verification" >&2; rm -f /tmp/tailwindcss; exit 1; }; \
+    mv /tmp/tailwindcss /usr/local/bin/tailwindcss; \
     chmod +x /usr/local/bin/tailwindcss; \
     /usr/local/bin/tailwindcss --help >/dev/null
 
