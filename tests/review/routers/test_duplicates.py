@@ -404,8 +404,16 @@ async def test_resolved_groups_not_shown(session: AsyncSession, client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -> None:
-    """Stats response includes correct group count and total files."""
+async def test_duplicates_index_redirects_into_the_dedupe_workspace(session: AsyncSession, client: AsyncClient) -> None:
+    """A seeded corpus does not change the answer: GET /duplicates/ is a bare 302 into the shell.
+
+    phaze-nt8f renamed this from ``test_stats_header_values``. That name (and its "includes correct
+    group count and total files" docstring) survived the Phase-57 rewrite that reduced the body to a
+    redirect assertion, leaving a test that claimed to cover the Groups / Total Files stats header
+    while asserting nothing about it -- which is precisely why the header's orphaning went unnoticed
+    for a phase. There is no stats header any more (``duplicates/partials/stats_header.html`` is
+    deleted); what this test actually pins is the redirect, so it now says so.
+    """
     # Create 2 groups: A (2 files) and B (2 files)
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=1000)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=2000)
@@ -950,3 +958,37 @@ async def test_duplicates_restore_header_alone_does_not_return_a_fragment(client
     response = await client.get("/duplicates/", headers={"HX-History-Restore-Request": "true"})
     assert response.status_code == 302
     assert response.headers["location"] == "/s/dedupe"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_mutations_emit_no_dead_stats_header_oob(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-nt8f): no dedupe mutation ships the orphaned ``#stats-header`` OOB fragment.
+
+    ``resolve_response.html`` / ``undo_response.html`` / ``bulk_resolve_response.html`` each used to
+    emit ``<div id="stats-header" hx-swap-oob="true">{% include stats_header.html %}</div>``. The id's
+    sole host, ``duplicates/list.html``, was deleted in the Phase-62 cutover (the same sweep that
+    retargeted the toast away from ``#duplicates-list``), so htmx 2.0.10 found no match, fired
+    ``htmx:oobErrorNoTarget`` and discarded the fragment -- after the router had paid THREE
+    whole-corpus aggregates per mutation to render it. The included partial also still pointed its
+    "Accept All" form at the equally-dead ``#duplicates-list``.
+
+    Asserted on all three response bodies at once so re-adding the block to any single fork fails.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert resolve.status_code == 200
+    file_states = _extract_server_file_states(resolve.text)
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": file_states})
+    assert undo.status_code == 200
+
+    bulk = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    assert bulk.status_code == 200
+
+    for label, body in (("resolve", resolve.text), ("undo", undo.text), ("resolve-all", bulk.text)):
+        assert "stats-header" not in body, f"{label} response still emits the orphaned #stats-header OOB fragment"
+        assert "duplicates-list" not in body, f"{label} response still references the v7-cutover-deleted #duplicates-list id"

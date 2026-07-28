@@ -4,10 +4,10 @@
     <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the undo toast to reverse, or navigate to the next page.</p>
 </div>
 
-{# OOB: update stats header #}
-<div id="stats-header" hx-swap-oob="true">
-    {% include "duplicates/partials/stats_header.html" %}
-</div>
+{# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see
+   resolve_response.html for the full rationale) -- its target id was deleted with
+   duplicates/list.html in the Phase-62 cutover, so the fragment was rendered, shipped and
+   discarded on every bulk resolve. #}
 
 {# OOB: inject bulk toast #}
 <div hx-swap-oob="beforeend:#toast-container">

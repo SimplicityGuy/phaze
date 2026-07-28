@@ -10,7 +10,7 @@
     <div id="group-{{ group_hash }}" style="display:none;"></div>
 {% endif %}
 
-{# OOB: update stats header #}
-<div id="stats-header" hx-swap-oob="true">
-    {% include "duplicates/partials/stats_header.html" %}
-</div>
+{# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see
+   resolve_response.html for the full rationale) -- its target id was deleted with
+   duplicates/list.html in the Phase-62 cutover, so the fragment was rendered, shipped and
+   discarded on every undo. #}

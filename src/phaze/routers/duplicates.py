@@ -12,10 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.routers.request_guards import parse_json_array_payload
+
+# phaze-nt8f: `get_duplicate_stats` is deliberately NOT imported here any more. Every resolve /
+# undo / bulk-resolve used to call it purely to populate the `#stats-header` OOB fragment, whose
+# target id died with duplicates/list.html in the Phase-62 cutover -- three whole-corpus aggregate
+# scans per mutation (count_duplicate_groups + the total_files/SUM(file_size) HAVING subquery +
+# the SUM(MAX(file_size)) GROUP BY subquery) for a fragment the browser discarded. The service
+# itself is kept (services/dedup.py, covered by tests/discovery/services/test_dedup.py): it is the
+# read a future Dedupe stats surface would use. Re-import it only alongside a LIVE host for it.
 from phaze.services.dedup import (
     find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
-    get_duplicate_stats,
     resolve_group,
     score_group,
     undo_resolve,
@@ -133,14 +140,12 @@ async def resolve_group_endpoint(
     # dual-written state are rolled back on session close and the HTMX partial reports a resolve
     # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
     await session.commit()
-    stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/resolve_response.html",
         context={
             "request": request,
-            "stats": stats,
             "group_hash": group_hash,
             "resolved_count": resolved_count,
             "resolved_file_states": json.dumps(resolved_file_states),
@@ -178,8 +183,6 @@ async def undo_resolve_endpoint(
         # _dupe_group.html card (build_dupe_group_card's shape), not the legacy group_card.html row.
         dupe_group_card = build_dupe_group_card(group)
 
-    stats = await get_duplicate_stats(session)
-
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/undo_response.html",
@@ -187,7 +190,6 @@ async def undo_resolve_endpoint(
             "request": request,
             "group": dupe_group_card,
             "group_hash": group_hash,
-            "stats": stats,
         },
     )
 
@@ -221,14 +223,12 @@ async def bulk_resolve(
         resolved_groups += 1
 
     await session.commit()  # `get_session` does not commit; without this every resolve is rolled back.
-    stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/bulk_resolve_response.html",
         context={
             "request": request,
-            "stats": stats,
             "resolved_groups": resolved_groups,
             "all_file_states": json.dumps(all_file_states),
             # phaze-wgse: the SUBMITTED hashes (not just the ones actually resolved this pass), so the
