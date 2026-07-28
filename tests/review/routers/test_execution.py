@@ -813,3 +813,101 @@ async def test_audit_sha256_not_applicable_for_in_progress_move(client: AsyncCli
     assert response.status_code == 200
     assert 'aria-label="Not applicable"' in response.text
     assert 'aria-label="SHA256 verified"' not in response.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-37i1.3: per-entry audit-log detail (the expanded-row drill-down).
+#
+# "An audit log that lists events you cannot inspect has not solved the operator's problem"
+# (phaze-37i1 epic text) -- these tests pin that GET /audit/{id}/detail renders which file,
+# which proposal it executed, when, outcome, and -- for a failure -- the ACTUAL error text,
+# not a generic label. All fixture paths/hashes below are synthetic (test-fixture data only,
+# per docs/spikes/phaze-37i1.1-audit-log-diagnosis.md -- the real execution_log table is
+# empty until the propose stage runs).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_row_renders_a_details_trigger(client: AsyncClient, session: AsyncSession) -> None:
+    """Every audit row carries a keyboard-reachable Details trigger for its own entry."""
+    log_entry = await create_test_execution_log(session, source_path="/music/old-name.mp3")
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert f'id="audit-details-trigger-{log_entry.id}"' in response.text
+    assert f'hx-get="/audit/{log_entry.id}/detail"' in response.text
+    assert f'hx-target="#audit-detail-{log_entry.id}"' in response.text
+    # A plain <button> is Tab + Enter/Space operable with no extra wiring.
+    assert "<button" in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_shows_file_proposal_and_operation(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /audit/{id}/detail shows which file, which proposal, and the move's from/to paths."""
+    log_entry = await create_test_execution_log(
+        session,
+        operation="move",
+        source_path="/music/old-name.mp3",
+        destination_path="/music/Artist - Event - Title (2024).mp3",
+        status=ExecutionStatus.COMPLETED,
+    )
+    response = await client.get(f"/audit/{log_entry.id}/detail")
+    assert response.status_code == 200
+    body = response.text
+    assert "test.mp3" in body  # original_filename from create_test_execution_log
+    assert "/music/old-name.mp3" in body
+    assert "/music/Artist - Event - Title (2024).mp3" in body
+    assert "new.mp3" in body  # proposed_filename from create_test_execution_log
+    assert "Completed" in body
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_failure_surfaces_actual_error_text(client: AsyncClient, session: AsyncSession) -> None:
+    """A failed entry's detail shows its REAL error message, not a generic label (phaze-37i1 epic)."""
+    log_entry = await create_test_execution_log(
+        session,
+        status=ExecutionStatus.FAILED,
+        error_message="OSError: Errno 28 No space left on device: /music/dest.mp3",
+    )
+    response = await client.get(f"/audit/{log_entry.id}/detail")
+    assert response.status_code == 200
+    assert "OSError: Errno 28 No space left on device: /music/dest.mp3" in response.text
+    assert 'role="alert"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_success_entry_has_no_error_alert(client: AsyncClient, session: AsyncSession) -> None:
+    """A completed entry's detail carries no error section at all -- not even an empty one."""
+    log_entry = await create_test_execution_log(session, status=ExecutionStatus.COMPLETED)
+    response = await client.get(f"/audit/{log_entry.id}/detail")
+    assert response.status_code == 200
+    assert 'role="alert"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_unknown_id_is_404(client: AsyncClient, session: AsyncSession) -> None:
+    """A detail request for a nonexistent audit-log id 404s rather than 500ing."""
+    response = await client.get(f"/audit/{uuid.uuid4()}/detail")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_reveals_hidden_row_and_flips_aria_expanded(client: AsyncClient, session: AsyncSession) -> None:
+    """The detail fragment's reveal script un-hides the host row and marks the trigger expanded."""
+    log_entry = await create_test_execution_log(session)
+    response = await client.get(f"/audit/{log_entry.id}/detail")
+    assert response.status_code == 200
+    body = response.text
+    assert f"document.getElementById('audit-detail-{log_entry.id}')" in body
+    assert "classList.remove('hidden')" in body
+    assert "setAttribute('aria-expanded', 'true')" in body
+
+
+@pytest.mark.asyncio
+async def test_audit_detail_confidence_and_reasoning_shown(client: AsyncClient, session: AsyncSession) -> None:
+    """The executed proposal's confidence and AI reasoning render in the detail panel."""
+    log_entry = await create_test_execution_log(session)
+    response = await client.get(f"/audit/{log_entry.id}/detail")
+    assert response.status_code == 200
+    body = response.text
+    assert "90%" in body  # confidence=0.9 from create_test_execution_log
+    assert "Test" in body  # reason="Test" from create_test_execution_log

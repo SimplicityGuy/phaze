@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -53,7 +53,7 @@ from phaze.services.execution_dispatch import (
     count_revoked_skipped_proposals,
     get_approved_proposals_grouped_by_agent,
 )
-from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
+from phaze.services.execution_queries import get_execution_log_detail, get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pipeline import count_proposal_pending_files
 
@@ -668,3 +668,26 @@ async def audit_log(
         return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
+
+
+@router.get("/audit/{log_id}/detail", response_class=HTMLResponse)
+async def audit_log_detail(
+    request: Request,
+    log_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the expanded per-entry detail row for one audit-log entry (phaze-37i1.3).
+
+    "An audit log that lists events you cannot inspect has not solved the operator's problem"
+    (phaze-37i1 epic) -- this is the drill-down: which file, which proposal it executed, and
+    for a failed entry, its actual error text rather than the bare "Failed" badge the table row
+    already shows.
+    """
+    log_entry = await get_execution_log_detail(session, log_id)
+    if log_entry is None:
+        raise HTTPException(status_code=404, detail="Audit log entry not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/audit_detail_row.html",
+        context={"request": request, "log": log_entry},
+    )
