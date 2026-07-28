@@ -96,7 +96,7 @@ from phaze.services.pipeline import (
 )
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
-from phaze.services.stage_status import failed_clause
+from phaze.services.stage_status import failed_clause, stage_status_sort_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
 
@@ -1034,18 +1034,43 @@ TRACKLIST_SETS_SORT = SortContract(
     default_key="artist",
 )
 
-# phaze-a6hm.3: the Files matrix (:func:`pipeline_files`). Only the two REAL FileRecord columns it
-# renders are whitelisted -- the six stage-matrix cells are per-page DERIVED `stage_status_case` CASE
-# expressions (see :func:`_files_page_stmt`), not stable columns a SQL ORDER BY can address, so they
-# are deliberately absent here rather than faked with a getattr. `key="file"` orders by the SAME
-# column the File cell renders (`FileRecord.current_path`, the full path -- this table has no
-# separate filename-only column), matching the sibling tables' "sort what you show" precedent.
+# The Files matrix (:func:`pipeline_files`) -- ALL EIGHT rendered columns (phaze-cvn6.1).
+#
+# `key="file"` orders by the SAME column the File cell renders (`FileRecord.current_path`, the full
+# path -- this table has no separate filename-only column), matching the sibling tables' "sort what
+# you show" precedent.
+#
+# phaze-cvn6.1 -- WHY THE SIX STAGE COLUMNS ARE HERE NOW. phaze-a6hm ("make every data table
+# sortable") shipped this table with File + Type only; child phaze-a6hm.3 recorded the six stage
+# columns as "per-page DERIVED stage_status_case CASE expressions, not stable columns a SQL ORDER BY
+# can address". That is a GAP, not a regression -- the columns were never sortable and nothing was
+# lost -- but the stated reason does not hold: `_files_page_stmt` has ORDERED nothing by them, yet has
+# FILTERED by the very same expression (`stage_status_case(stage) == bucket`) since Phase 87, so the
+# expression plainly is addressable in SQL. What was really missing was a DEFINED ORDER for an
+# enum-like status; alphabetical would interleave `failed` between `done` and `in_flight` and answer
+# nothing. `stage_status_sort_case` supplies that order -- see STAGE_STATUS_DISPLAY_ORDER in
+# `services/stage_status.py` for the ladder and its cost note.
+#
+# The six labels below MUST stay identical to `_stage_cols` in `files_table_view.html` -- a label is
+# how the template recognises a header as sortable, so a typo degrades the header to plain text
+# rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
+# directions, so the pair cannot drift silently.
+#
+# The 7-stage -> 6-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
+# `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
+# so the URL names the model's vocabulary and no third naming scheme is invented.
 FILES_SORT = SortContract(
     endpoint="/pipeline/files",
     target="#files-table-view",
     columns=(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
+        SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
+        SortableColumn(key="fingerprint", label="FP", expression=stage_status_sort_case(Stage.FINGERPRINT)),
+        SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
+        SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
+        SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
+        SortableColumn(key="apply", label="Exec", expression=stage_status_sort_case(Stage.APPLY)),
     ),
     default_key="file",
 )

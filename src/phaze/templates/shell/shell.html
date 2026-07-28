@@ -147,6 +147,60 @@
                 // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
                 computeLanesActive: 0
             });
+            // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
+            // theme store's localStorage shape above) is what lets a dragged width survive every
+            // htmx sort/filter/pager swap of #files-table-view -- that swap replaces the WHOLE
+            // colgroup/thead/tbody subtree (see files_table_view.html), so anything held in a
+            // per-swap Alpine component's local state would reset on the very next click. The store
+            // is untouched by the swap; the fresh markup's `:style` bindings just re-read it.
+            Alpine.store('colResize', {
+                _key: 'phaze-pipeline-col-widths',
+                // Defaults approximate this table's current un-resized (auto-layout) proportions;
+                // mins are the narrowest a column can go before dragging it further is a no-op --
+                // for the six stage columns that floor is enforced by auto table-layout itself
+                // (their un-truncated pill+Retry content refuses to shrink below its own width, see
+                // the colgroup comment in files_table_view.html), these are just a sane JS-side floor
+                // so a fast drag never reports a negative or zero width mid-gesture.
+                defaults: { File: 320, Type: 88, Meta: 104, FP: 104, Analyze: 132, Prop: 104, Appr: 104, Exec: 104 },
+                mins: { File: 140, Type: 64, Meta: 84, FP: 84, Analyze: 96, Prop: 84, Appr: 84, Exec: 84 },
+                max: 900,
+                widths: (() => {
+                    try {
+                        return JSON.parse(localStorage.getItem('phaze-pipeline-col-widths')) || {};
+                    } catch {
+                        return {};
+                    }
+                })(),
+                width(col) {
+                    return this.widths[col] ?? this.defaults[col] ?? 120;
+                },
+                setWidth(col, px) {
+                    const min = this.mins[col] ?? 64;
+                    const clamped = Math.min(Math.max(Math.round(px), min), this.max);
+                    this.widths = { ...this.widths, [col]: clamped };
+                    localStorage.setItem(this._key, JSON.stringify(this.widths));
+                }
+            });
+            // The drag behavior itself: registered once as a reusable Alpine.data() component (NOT
+            // inlined via a plain `x-data`) so it re-attaches automatically to the fresh
+            // `x-data="colResizer()"` element every htmx swap re-creates -- Alpine's mutation
+            // observer initializes it from this global registration with no extra wiring needed.
+            Alpine.data('colResizer', () => ({
+                startResize(event, col) {
+                    const startX = event.clientX;
+                    const startWidth = this.$store.colResize.width(col);
+                    const onMove = (moveEvent) => {
+                        this.$store.colResize.setWidth(col, startWidth + (moveEvent.clientX - startX));
+                    };
+                    const onUp = () => {
+                        document.removeEventListener('pointermove', onMove);
+                        document.removeEventListener('pointerup', onUp);
+                    };
+                    document.addEventListener('pointermove', onMove);
+                    document.addEventListener('pointerup', onUp);
+                    event.preventDefault();
+                }
+            }));
         });
     </script>
 

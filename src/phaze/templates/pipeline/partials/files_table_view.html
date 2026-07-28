@@ -17,13 +17,17 @@
                        Each row: .file (FileRecord) + .buckets (dict keyed by Stage value).
      * active_stage -- optional current stage filter (Plan 05); carried in pagination links.
      * active_bucket-- optional current bucket filter (Plan 05); carried in pagination links.
-     * sort         -- OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.3), resolved against
-                       the router's FILES_SORT contract. This partial builds its OWN table (see below)
-                       rather than including _file_table.html, so it mirrors that partial's sortable-
-                       header markup by hand for the two REAL FileRecord columns it renders (File,
-                       Type) -- the six stage-matrix cells are per-page DERIVED buckets, not columns
-                       a SQL ORDER BY can address, and stay plain headers. When ABSENT every header
-                       renders exactly as before (Jinja Undefined is falsy).
+     * sort         -- OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.3 / phaze-cvn6.1),
+                       resolved against the router's FILES_SORT contract. This partial builds its OWN
+                       table (see below) rather than including _file_table.html, so it mirrors that
+                       partial's sortable-header markup by hand. phaze-cvn6.1 made ALL EIGHT headers
+                       go through that one markup path: the two real FileRecord columns (File, Type)
+                       plus the six stage-matrix columns, which sort on the DERIVED bucket's display
+                       rank (stage_status_sort_case / STAGE_STATUS_DISPLAY_ORDER -- an operationally
+                       ordered ladder, never alphabetical). The template itself whitelists nothing:
+                       every header asks sort.is_sortable(label), so the contract is the sole
+                       authority. When ABSENT every header renders as plain text (Jinja Undefined is
+                       falsy).
 
    The file path crosses the DB->render trust boundary: it is ALWAYS autoescaped, NEVER `| safe`
    (T-87-13 XSS). file.id is a UUID (safe) used only for the record slide-in hx-get.
@@ -31,7 +35,9 @@
    NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
 #}
 {# The 7-stage -> 6-pill remap LANDMINE, single-sourced here for the header + cell loop:
-   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown. #}
+   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown.
+   The LABELS (element 0) are also the strings FILES_SORT whitelists, so the header row derives them
+   from here rather than restating them -- see the header loop below. #}
 {% set _stage_cols = [
     ('Meta', 'metadata'),
     ('FP', 'fingerprint'),
@@ -106,21 +112,70 @@
         <span id="bulk-retry-result" class="text-sm" aria-live="polite"></span>
     </div>
     {% endif %}
-    <div class="overflow-x-auto" x-data>
+    {# phaze-cvn6.3: user-resizable columns, dependency-free (no JS build step -- Alpine only).
+       A `<colgroup>` is the single point of truth for every column's rendered width: EACH header's
+       resize handle drags `$store.colResize` (registered in base.html/shell.html next to the theme
+       store, same localStorage-persistence shape) and every `<col>` here reads that same store, so a
+       header <th> and its column's cells always share one width with no per-cell duplication.
+
+       Why a store and not component-local state: this whole `<div>` (colgroup + thead + tbody) is
+       exactly what the sort/filter/pager hx-get swaps replace via innerHTML (see the docstring
+       above) -- a fresh Alpine component is created on every swap, so anything held only in that
+       component's local state would reset on the next sort click. The store is a page-level
+       singleton untouched by the swap; the swapped-in `:style` bindings just re-read it, so a chosen
+       width survives sorting, filtering, paging AND (via localStorage) a reload/bookmark.
+
+       table-layout stays the browser default (auto), not `table-fixed`: the FILE cell already
+       carries `truncate` (overflow:hidden + ellipsis + nowrap), and content that is clipped rather
+       than measured is exactly what lets auto-layout honour an explicit `<col>` width instead of
+       growing the column to fit it -- so dragging FILE wider/narrower works precisely because it
+       already truncates. The six stage cells are NOT truncated (cvn6.2's no-wrap contract needs
+       their pill+Retry content fully visible, never clipped) -- auto-layout enforces their natural
+       content width as a floor no matter how far a handle is dragged inward, so shrinking never
+       breaks the no-wrap contract or forces a second line; dragging outward still widens them. #}
+    <div class="overflow-x-auto" x-data="colResizer()">
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
-           the shell root has no x-data (x-data on <html> is inert). #}
+           the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
+           in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
         <table class="w-full text-left text-sm">
+            <colgroup>
+                {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
+                <col data-col="{{ col }}" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
+                {% endfor %}
+            </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
                 <tr>
-                    {# phaze-a6hm.3: File / Type are the only two REAL FileRecord columns this table
-                       renders, so they are the only ones the FILES_SORT contract whitelists. Mirrors
-                       _file_table.html's sortable-header markup by hand (see the module docstring
-                       above for why this partial cannot include that one) -- same is_sortable() gate,
-                       same aria_sort()/url_for()/indicator() calls, same existing #files-table-view
-                       hx-target so this introduces no new swap target or OOB fragment. #}
-                    {% for col in ('File', 'Type') %}
+                    {# phaze-cvn6.1: ONE loop over ALL EIGHT header labels -- the two real FileRecord
+                       columns and the six stage-matrix columns alike. Before this there were two
+                       loops, and the second emitted plain <th>s unconditionally, so the six stage
+                       headers could not be sorted no matter what the contract whitelisted (see the
+                       FILES_SORT comment in routers/pipeline.py for the gap-vs-regression verdict).
+                       Collapsing them means a header's sortability is decided in exactly ONE place --
+                       sort.is_sortable(label) -- so the contract is now the single authority and a
+                       future column cannot be silently un-sortable by landing in the wrong loop.
+
+                       The stage labels come from _stage_cols so the header row and the cell loop
+                       below stay one source; FILES_SORT's labels must match them (a mismatch degrades
+                       the header to plain text rather than erroring, which is why a test asserts the
+                       two agree in both directions).
+
+                       Mirrors _file_table.html's sortable-header markup by hand (see the module
+                       docstring above for why this partial cannot include that one) -- same
+                       is_sortable() gate, same aria_sort()/url_for()/indicator() calls, same existing
+                       #files-table-view hx-target, so this introduces no new swap target and no OOB
+                       fragment. Sorting stays SERVER-SIDE: the click re-requests /pipeline/files
+                       under a new ORDER BY rather than reordering the loaded page.
+
+                       phaze-cvn6.3: the resize handle is added ONCE, after both branches (identical
+                       markup either way -- same "one place" reasoning cvn6.1 used for sortability: a
+                       column's resizability is never decided per-branch, so a future column cannot
+                       land in one arm and silently lose its handle). The handle sits INSIDE the <th>,
+                       AFTER the sort button, so it never lands between `{{ col }}` and the caret
+                       span -- test_stage_header_labels_match_the_stage_matrix_cells anchors on that
+                       exact adjacency. #}
+                    {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                     {% if sort and sort.is_sortable(col) %}
-                    <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                    <th scope="col" class="relative px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
                         <button type="button"
                                 hx-get="{{ sort.url_for(col) }}"
                                 hx-target="{{ sort.contract.target }}"
@@ -128,23 +183,45 @@
                                 class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
                             {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                         </button>
+                        <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
+                              role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
+                              data-col-resize-handle="{{ col }}" title="Drag to resize"
+                              @pointerdown="startResize($event, '{{ col }}')"></span>
                     </th>
                     {% else %}
-                    <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                    <th scope="col" class="relative px-6 py-2.5 font-medium">
+                        {{ col }}
+                        <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
+                              role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
+                              data-col-resize-handle="{{ col }}" title="Drag to resize"
+                              @pointerdown="startResize($event, '{{ col }}')"></span>
+                    </th>
                     {% endif %}
-                    {% endfor %}
-                    {% for stage_label, _key in _stage_cols %}
-                    <th scope="col" class="px-6 py-2.5 font-medium">{{ stage_label }}</th>
                     {% endfor %}
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in files_page.rows %}
                 <tr id="files-row-{{ loop.index }}" class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5" hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })">
-                    <td class="px-6 py-3 max-w-md truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
+                    {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
+                       `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
+                       operator's drag instead of enabling it. `truncate` stays: it is what turns
+                       "narrower than the path" into an ellipsis rather than a wrapped/overflowing
+                       cell, and (per the colgroup comment) is also WHY auto table-layout honours the
+                       dragged width here instead of growing the column to fit the full path. #}
+                    <td class="px-6 py-3 truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
                     <td class="px-6 py-3 text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
-                    <td class="px-6 py-3">
+                    <td class="px-6 py-3 whitespace-nowrap">
+                        {# phaze-cvn6.2: pill + Retry share ONE flex row (items-center, no wrap) so a
+                           failed cell renders on the same single line as a done/in-flight/not-started
+                           cell -- previously the Retry affordance sat in its own block-level `div`
+                           BELOW the pill, forcing a second line and a taller row than its neighbours.
+                           whitespace-nowrap on the `td` (mirrored on the row's container below) plus
+                           the surrounding table's `overflow-x-auto` (see the wrapping `<div>` above)
+                           is what absorbs a genuinely narrow viewport -- the row scrolls horizontally
+                           rather than wrapping, matching the FILE column's own no-wrap contract. #}
+                        <div class="flex flex-nowrap items-center gap-2">
                         {% with stage_label=stage_label, bucket=row.buckets[key] %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
                         {# Per-row Retry (D-04): renders ONLY on a failed cell of a MANUALLY-retried enrich stage
                            (metadata/analyze -- never fingerprint, which self-retries). HTMX POST to the scoped
@@ -160,20 +237,19 @@
                            record slide-in. @keydown.stop / @keyup.stop stop those two bubbling phases at the
                            button, mirroring @click.stop for the pointer path. #}
                         {% if row.buckets[key] == 'failed' and key in _retry_endpoints %}
-                        <div class="mt-1 flex items-center gap-2">
                             <button type="button" @click.stop @keydown.stop @keyup.stop
                                     hx-post="/pipeline/files/{{ row.file.id }}/{{ _retry_endpoints[key] }}/retry"
                                     hx-target="#retry-result-{{ row.file.id }}-{{ key }}" hx-swap="innerHTML"
                                     hx-indicator="#retry-ind-{{ row.file.id }}-{{ key }}"
                                     aria-label="Retry {{ _stage_names[key] }} for this file"
-                                    class="inline-flex items-center gap-1 rounded text-xs font-semibold text-red-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-red-400">
+                                    class="inline-flex shrink-0 items-center gap-1 rounded text-xs font-semibold text-red-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-red-400">
                                 <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
                                 Retry
                             </button>
-                            <span id="retry-ind-{{ row.file.id }}-{{ key }}" class="htmx-indicator text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
-                            <span id="retry-result-{{ row.file.id }}-{{ key }}" aria-live="polite"></span>
-                        </div>
+                            <span id="retry-ind-{{ row.file.id }}-{{ key }}" class="htmx-indicator shrink-0 text-xs text-gray-500 dark:text-gray-400">Enqueuing…</span>
+                            <span id="retry-result-{{ row.file.id }}-{{ key }}" class="shrink-0" aria-live="polite"></span>
                         {% endif %}
+                        </div>
                     </td>
                     {% endfor %}
                 </tr>
