@@ -17,13 +17,17 @@
                        Each row: .file (FileRecord) + .buckets (dict keyed by Stage value).
      * active_stage -- optional current stage filter (Plan 05); carried in pagination links.
      * active_bucket-- optional current bucket filter (Plan 05); carried in pagination links.
-     * sort         -- OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.3), resolved against
-                       the router's FILES_SORT contract. This partial builds its OWN table (see below)
-                       rather than including _file_table.html, so it mirrors that partial's sortable-
-                       header markup by hand for the two REAL FileRecord columns it renders (File,
-                       Type) -- the six stage-matrix cells are per-page DERIVED buckets, not columns
-                       a SQL ORDER BY can address, and stay plain headers. When ABSENT every header
-                       renders exactly as before (Jinja Undefined is falsy).
+     * sort         -- OPTIONAL phaze.routers.column_sort.SortState (phaze-a6hm.3 / phaze-cvn6.1),
+                       resolved against the router's FILES_SORT contract. This partial builds its OWN
+                       table (see below) rather than including _file_table.html, so it mirrors that
+                       partial's sortable-header markup by hand. phaze-cvn6.1 made ALL EIGHT headers
+                       go through that one markup path: the two real FileRecord columns (File, Type)
+                       plus the six stage-matrix columns, which sort on the DERIVED bucket's display
+                       rank (stage_status_sort_case / STAGE_STATUS_DISPLAY_ORDER -- an operationally
+                       ordered ladder, never alphabetical). The template itself whitelists nothing:
+                       every header asks sort.is_sortable(label), so the contract is the sole
+                       authority. When ABSENT every header renders as plain text (Jinja Undefined is
+                       falsy).
 
    The file path crosses the DB->render trust boundary: it is ALWAYS autoescaped, NEVER `| safe`
    (T-87-13 XSS). file.id is a UUID (safe) used only for the record slide-in hx-get.
@@ -31,7 +35,9 @@
    NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
 #}
 {# The 7-stage -> 6-pill remap LANDMINE, single-sourced here for the header + cell loop:
-   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown. #}
+   Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown.
+   The LABELS (element 0) are also the strings FILES_SORT whitelists, so the header row derives them
+   from here rather than restating them -- see the header loop below. #}
 {% set _stage_cols = [
     ('Meta', 'metadata'),
     ('FP', 'fingerprint'),
@@ -112,13 +118,27 @@
         <table class="w-full text-left text-sm">
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
                 <tr>
-                    {# phaze-a6hm.3: File / Type are the only two REAL FileRecord columns this table
-                       renders, so they are the only ones the FILES_SORT contract whitelists. Mirrors
-                       _file_table.html's sortable-header markup by hand (see the module docstring
-                       above for why this partial cannot include that one) -- same is_sortable() gate,
-                       same aria_sort()/url_for()/indicator() calls, same existing #files-table-view
-                       hx-target so this introduces no new swap target or OOB fragment. #}
-                    {% for col in ('File', 'Type') %}
+                    {# phaze-cvn6.1: ONE loop over ALL EIGHT header labels -- the two real FileRecord
+                       columns and the six stage-matrix columns alike. Before this there were two
+                       loops, and the second emitted plain <th>s unconditionally, so the six stage
+                       headers could not be sorted no matter what the contract whitelisted (see the
+                       FILES_SORT comment in routers/pipeline.py for the gap-vs-regression verdict).
+                       Collapsing them means a header's sortability is decided in exactly ONE place --
+                       sort.is_sortable(label) -- so the contract is now the single authority and a
+                       future column cannot be silently un-sortable by landing in the wrong loop.
+
+                       The stage labels come from _stage_cols so the header row and the cell loop
+                       below stay one source; FILES_SORT's labels must match them (a mismatch degrades
+                       the header to plain text rather than erroring, which is why a test asserts the
+                       two agree in both directions).
+
+                       Mirrors _file_table.html's sortable-header markup by hand (see the module
+                       docstring above for why this partial cannot include that one) -- same
+                       is_sortable() gate, same aria_sort()/url_for()/indicator() calls, same existing
+                       #files-table-view hx-target, so this introduces no new swap target and no OOB
+                       fragment. Sorting stays SERVER-SIDE: the click re-requests /pipeline/files
+                       under a new ORDER BY rather than reordering the loaded page. #}
+                    {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                     {% if sort and sort.is_sortable(col) %}
                     <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
                         <button type="button"
@@ -132,9 +152,6 @@
                     {% else %}
                     <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
                     {% endif %}
-                    {% endfor %}
-                    {% for stage_label, _key in _stage_cols %}
-                    <th scope="col" class="px-6 py-2.5 font-medium">{{ stage_label }}</th>
                     {% endfor %}
                 </tr>
             </thead>
