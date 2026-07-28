@@ -76,6 +76,15 @@ class FingerprintEnqueueResult:
     in_flight: int
     blocked: int
     blocked_keys: tuple[str, ...]
+    # phaze-rkpi: a transient broker error (e.g. a PostgresQueue pool exhaustion / PoolTimeout --
+    # queue_factory.py's documented operational risk) on ONE file used to propagate straight out of
+    # the loop, silently abandoning every remaining file in a multi-thousand-file outage-recovery
+    # batch. Each such failure is now isolated (mirroring flush_pending_s3_enqueues' per-item
+    # discipline in cloud_staging.py) and counted here instead, so a caller can tell "recovered
+    # cleanly" from "some files never even got an enqueue attempt" rather than the exception simply
+    # vanishing into a fire-and-forget background task.
+    errored: int = 0
+    errored_file_ids: tuple[str, ...] = ()
 
 
 def _classify_collision(job: Any) -> str:
@@ -124,10 +133,21 @@ async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id
     ``in_flight`` (benign), while a dead ``aborting``/``failed``/``aborted`` row -- or a stuck-past-
     timeout claimed row -- is ``blocked`` (the file is NOT in flight; its zombie key must be reaped
     before it can recover). The blocked keys are returned so the caller can report them loudly.
+
+    phaze-rkpi: neither ``queue.enqueue`` nor the collision lookup is guarded by a bare loop any
+    more. A transient broker error on one file (a psycopg pool blip, a ``PoolTimeout``) is caught,
+    logged with the file id, and counted into ``errored`` / ``errored_file_ids`` -- the loop then
+    moves on to the next file instead of raising out and abandoning the remainder of the batch. A
+    failure in the collision *lookup* is narrower: the enqueue itself already ran (the file is not
+    lost), only its classification is unknown, so it degrades to ``in_flight`` -- the same benign
+    treatment ``_classify_collision`` already gives an unlookupable/unknown-status row -- but is
+    still logged distinctly so an operator can tell "classification failed" apart from "the enqueue
+    itself never happened".
     """
     accepted = 0
     in_flight = 0
     blocked_keys: list[str] = []
+    errored_file_ids: list[str] = []
     job_lookup = getattr(queue, "job", None)
     for f in files:
         payload = FingerprintFilePayload(
@@ -135,14 +155,36 @@ async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id
             original_path=f.original_path,
             agent_id=agent_id,
         )
-        job = await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
+        try:
+            job = await queue.enqueue("fingerprint_file", **payload.model_dump(mode="json"))
+        except Exception:
+            # Never let one failed enqueue abort the rest of the batch (mirrors
+            # flush_pending_s3_enqueues' per-item discipline in cloud_staging.py). An 11k-file
+            # outage-recovery batch must not silently lose everything after file ~3000 because of
+            # one transient broker hiccup.
+            logger.warning(
+                "enqueue_fingerprint_jobs: enqueue failed for file -- isolated, continuing batch",
+                file_id=str(f.id),
+                exc_info=True,
+            )
+            errored_file_ids.append(str(f.id))
+            continue
         if job is not None:
             accepted += 1
             continue
         # Collision: the deterministic key already exists. Inspect the holder to tell a genuine
         # in-flight job from a zombie that permanently blocks this file.
         key = f"fingerprint_file:{f.id}"
-        existing = await job_lookup(key) if callable(job_lookup) else None
+        try:
+            existing = await job_lookup(key) if callable(job_lookup) else None
+        except Exception:
+            logger.warning(
+                "enqueue_fingerprint_jobs: collision lookup failed for file -- degrading to in_flight",
+                file_id=str(f.id),
+                key=key,
+                exc_info=True,
+            )
+            existing = None
         if _classify_collision(existing) == "blocked":
             blocked_keys.append(key)
         else:
@@ -152,6 +194,8 @@ async def enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id
         in_flight=in_flight,
         blocked=len(blocked_keys),
         blocked_keys=tuple(blocked_keys),
+        errored=len(errored_file_ids),
+        errored_file_ids=tuple(errored_file_ids),
     )
 
 
