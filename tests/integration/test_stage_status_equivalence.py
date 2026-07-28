@@ -281,6 +281,22 @@ async def seed_fp_failed_only(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
+async def seed_fp_failed_both_engines(session: AsyncSession) -> uuid.UUID:
+    """phaze-p3hj.3: DERIV-05 aggregation must not report ``done`` when NO engine succeeded,
+    even with BOTH engine rows present and failed -- the systematic-single-dead-engine shape
+    (phaze-p3hj.1) makes every ``audfprint`` row carry the same ``engine_error``, and a second
+    dead sibling must not flip the anti-join to done by sheer row count. ``seed_fp_failed_only``
+    above covers a single row; this closes the two-row (both engines answered, both failed)
+    cell that DERIV-05's rule -- "no engine succeeded AND at least one failed" -- promises to
+    handle identically regardless of how many failed rows exist.
+    """
+    fid = await _new_file(session)
+    session.add(FingerprintResult(file_id=fid, engine="audfprint", status="failed"))
+    session.add(FingerprintResult(file_id=fid, engine="panako", status="failed"))
+    await session.flush()
+    return fid
+
+
 async def seed_fp_inflight(session: AsyncSession) -> uuid.UUID:
     fid = await _new_file(session)
     await _seed_ledger(session, Stage.FINGERPRINT, fid)
@@ -381,6 +397,7 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
     (Stage.FINGERPRINT, seed_fp_success, "done"),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, "done"),  # DERIV-05 aggregation
     (Stage.FINGERPRINT, seed_fp_failed_only, "failed"),  # ELIG-04 not-done
+    (Stage.FINGERPRINT, seed_fp_failed_both_engines, "failed"),  # phaze-p3hj.3: 2 failed rows, still not done
     (Stage.FINGERPRINT, seed_fp_inflight, "in_flight"),
     (Stage.FINGERPRINT, seed_fp_skipped, "skipped"),  # D-08 force-skip marker
     # tracklist (downstream presence)
@@ -561,6 +578,7 @@ DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uui
     (Stage.FINGERPRINT, seed_fp_success, True),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, True),  # DERIV-05: success wins -> done -> complete
     (Stage.FINGERPRINT, seed_fp_failed_only, False),  # FAIL-04: fingerprint failure is NOT terminal
+    (Stage.FINGERPRINT, seed_fp_failed_both_engines, False),  # phaze-p3hj.3: 2 failed rows, still not terminal
     (Stage.FINGERPRINT, seed_fp_skipped, True),  # D-08: skipped is domain-complete even though FP failure is not terminal
 ]
 
@@ -680,6 +698,7 @@ ELIGIBLE_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]]
     (Stage.FINGERPRINT, seed_fp_success, False),
     (Stage.FINGERPRINT, seed_fp_success_and_failed, False),  # DERIV-05 success wins -> done -> ineligible
     (Stage.FINGERPRINT, seed_fp_failed_only, True),  # ELIG-04 failed-only stays eligible
+    (Stage.FINGERPRINT, seed_fp_failed_both_engines, True),  # phaze-p3hj.3: 2 failed rows, still eligible for retry
     (Stage.FINGERPRINT, seed_fp_inflight, False),
     (Stage.FINGERPRINT, seed_fp_skipped, False),  # D-08: a skipped stage leaves the pending set
     # analyze: eligible ONLY when NOT_STARTED -- a FAILED analyze is TERMINAL (ELIG-03, 44.5K guard).
