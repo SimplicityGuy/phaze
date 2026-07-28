@@ -274,3 +274,29 @@ async def test_pipeline_files_history_restore_hosts_record_target(client: AsyncC
     body = resp.text
 
     assert 'id="record-body"' in body, "history-restore must also land on a page with the record host"
+
+
+@pytest.mark.asyncio
+async def test_reload_after_status_filter_push_url_leaves_rows_clickable(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """Regression (phaze-2och): the operator round-trip the bead describes, end to end.
+
+    On /s/files, `_status_filter_bar.html` hx-push-urls `/pipeline/files?stage=...&bucket=...`
+    (D-03's URL-carried lens). A plain reload/bookmark/history-restore of THAT exact pushed URL
+    used to serve pipeline/files.html with no #record-body host, so every row's hx-get="/record/
+    {id}" hx-target="#record-body" bound to a target that did not exist on the page -- a silent
+    htmx:targetError no-op. Assert the row's own hx-get and the page's own hx-target both survive
+    the round trip: the target the row names must actually be present in the same document.
+    """
+    file_record = await make_file()
+
+    resp = await client.get("/pipeline/files?stage=metadata&bucket=failed")
+    assert resp.status_code == 200
+    body = resp.text
+
+    # The row's hx-get is unconditional on any filter match, so a plain unfiltered fetch would
+    # normally carry it too -- refetch without the filter to get this seeded file's own row.
+    resp = await client.get("/pipeline/files")
+    body = resp.text
+    assert f'hx-get="/record/{file_record.id}"' in body, "the seeded file's row must still hx-get its record"
+    assert 'hx-target="#record-body"' in body, "the row's target must be #record-body, unchanged"
+    assert 'id="record-body"' in body, "and #record-body itself must exist in the SAME document the row is in"
