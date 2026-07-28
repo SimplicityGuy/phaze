@@ -136,7 +136,10 @@
                 {# phaze-nebh: render done/total (never a bare numeral -- ambiguous no matter how good
                    the tooltip is) and bind an explicit :title + :aria-label naming the stage and the
                    measure, so the two channels agree and neither is empty. #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                {# phaze-cvn6.2: shrink-0 + whitespace-nowrap keep this "done / total" pair from being
+                   squeezed onto two lines by the flex-1 label + the orphan badge below -- see the
+                   Analyze node's fuller note (the row that actually hit this with a live badge). #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
                       x-text="`${$store.pipeline.metadataDone} / ${$store.pipeline.metadataTotal}`"
                       :title="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'"
                       :aria-label="$store.pipeline.metadataDone + ' of ' + $store.pipeline.metadataTotal + ' metadata files done'">0 / 0</span>
@@ -150,7 +153,7 @@
                       role="status"
                       :title="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.metadataOrphan + ' orphaned metadata file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
                       x-text="$store.pipeline.metadataOrphan">0</span>
             </button>
 
@@ -194,8 +197,9 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a7.464 7.464 0 0 1-1.15 3.993m1.989 3.559A11.209 11.209 0 0 0 8.25 10.5a3.75 3.75 0 1 1 7.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 0 1-3.6 9.75m6.633-4.596a18.666 18.666 0 0 1-2.485 5.33"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Fingerprint</span>
-                {# phaze-nebh: done/total + matching :title/:aria-label (same rationale as Metadata above). #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                {# phaze-nebh: done/total + matching :title/:aria-label (same rationale as Metadata above).
+                   phaze-cvn6.2: shrink-0 + whitespace-nowrap -- see the Analyze node's fuller note. #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
                       x-text="`${$store.pipeline.fingerprintDone} / ${$store.pipeline.fingerprintTotal}`"
                       :title="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'"
                       :aria-label="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'">0 / 0</span>
@@ -205,7 +209,7 @@
                       role="status"
                       :title="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
                       x-text="$store.pipeline.fingerprintOrphan">0</span>
             </button>
 
@@ -255,7 +259,18 @@
                    next to a stage name, and in-flight is still surfaced by the ANALYZE workspace's own
                    sub-count, which analyzeActive continues to drive -- see analyze_workspace.html /
                    phaze-xd8k). done/total + matching :title/:aria-label, same as Metadata/Fingerprint. #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden"
+                {# phaze-cvn6.2: this is the node that actually hit the wrap. The count span is a flex
+                   sibling of the flex-1 label -- by default a flex item can shrink below its content
+                   width, so once the orphan badge below ALSO claims horizontal space (analyze runs
+                   with a live orphan count where Metadata/Fingerprint currently sit at 0), the browser
+                   had room to break "1701 / 11428" at the " / " and stacked it onto a second line,
+                   growing this row taller than its done/in-flight/not-started neighbours. shrink-0
+                   pins the count (and the badge) to their natural width and whitespace-nowrap forbids
+                   the internal break; the flex-1 label absorbs any squeeze instead (a single word, so
+                   it can only overflow its own box, never push a sibling). Applied to all three
+                   enrich-stage nodes (Metadata/Fingerprint above) so a future non-zero orphan count on
+                   THEM doesn't reproduce the same wrap. #}
+                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
                       x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`"
                       :title="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'"
                       :aria-label="$store.pipeline.analyzeDone + ' of ' + $store.pipeline.analyzeTotal + ' analyze files done'">0 / 0</span>
@@ -265,7 +280,7 @@
                       role="status"
                       :title="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
                       :aria-label="$store.pipeline.analyzeOrphan + ' orphaned analyze file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden"
+                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
                       x-text="$store.pipeline.analyzeOrphan">0</span>
             </button>
 

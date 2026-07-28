@@ -423,6 +423,83 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     return case(*branches, else_=Status.NOT_STARTED.value)
 
 
+# ==================================================================================================
+# phaze-cvn6.1 -- the DISPLAY order for a stage-status column.
+#
+# READ THIS BEFORE REORDERING IT. This tuple is NOT the precedence ladder above and the two must
+# never be conflated:
+#
+#   * ``stage_status_case``'s precedence (``in_flight ≻ done ≻ skipped ≻ failed ≻ not_started``)
+#     answers "which ONE bucket does this file land in when several clauses are true at once". It is
+#     locked against the Python twin by the DERIV-04 equivalence test and is not a display concern.
+#   * STAGE_STATUS_DISPLAY_ORDER answers "when the operator sorts a stage COLUMN, which bucket comes
+#     first". Changing it changes only what an operator sees; changing the ladder above changes what
+#     a file IS.
+#
+# The order below is a PROGRESS ladder with the two off-ladder outcomes trailing it:
+#
+#   0 done         -- the stage finished. The most-advanced state, so ascending leads with it.
+#   1 in_flight    -- the stage is running right now: advanced, but not settled.
+#   2 not_started  -- the stage has not begun. Least-advanced point on the ladder.
+#   3 failed       -- attempted and errored. NOT a point on the progress ladder at all, so it sits
+#                     after the ladder rather than inside it; before ``skipped`` because a failure
+#                     still wants an operator (retry) and a skip never will.
+#   4 skipped      -- deliberately bypassed (D-08 force-skip). The one terminal state that is
+#                     nobody's outstanding work, so it sorts last and stays out of the way.
+#
+# Descending therefore surfaces the exceptional rows -- skipped, then failed -- at the top, which is
+# the second click an operator makes when triaging a stage. The first click (ascending) answers the
+# commoner question, "how far has this stage got across the corpus".
+#
+# Note this is deliberately NOT alphabetical: alphabetical would read
+# ``done, failed, in_flight, not_started, skipped`` and interleave a terminal error between two
+# healthy states, so "sort by Analyze" would tell an operator nothing about the stage.
+#
+# The stage/status FILTER lens (``?stage=…&bucket=failed``, ``_status_filter_bar.html``) remains the
+# direct way to ask for failures only; this ordering is for scanning, not for filtering.
+# ==================================================================================================
+STAGE_STATUS_DISPLAY_ORDER: tuple[Status, ...] = (
+    Status.DONE,
+    Status.IN_FLIGHT,
+    Status.NOT_STARTED,
+    Status.FAILED,
+    Status.SKIPPED,
+)
+"""The operator-facing rank of the five derived buckets, best-progressed first (see the block above)."""
+
+
+def stage_status_sort_case(stage: Stage) -> ColumnElement[int]:
+    """Compose the ORDER BY rank for ``stage``'s status column: the derived bucket mapped to its display rank.
+
+    The sortable-column expression behind the six stage headers on the Files matrix (phaze-cvn6.1).
+    It wraps :func:`stage_status_case` VERBATIM rather than re-deriving the buckets (D-04: never a
+    fresh ``CASE`` ladder), so the value this orders by is by construction the SAME value the
+    ``_stage_pill`` cell renders -- an operator can never see one order and read another status.
+
+    The outer ``CASE`` is a pure value mapping over the five status literals, so it introduces no new
+    join, no new predicate, and nothing an untrusted string can reach: the wire only ever selects
+    WHICH stage, via the router's ``SortContract`` whitelist (``column_sort`` rule 2).
+
+    COST, stated plainly because it is the reason phaze-a6hm.3 left these columns out: ordering by a
+    correlated ``CASE`` makes Postgres evaluate it for every candidate row, not just the page, so a
+    stage sort is O(corpus) where a sort on ``current_path`` is index-ordered. That is accepted here
+    on the same ground the ALREADY-SHIPPED filter rests on -- ``_files_page_stmt`` has evaluated
+    ``stage_status_case(stage) == bucket`` corpus-wide since Phase 87 -- and it stays off the hot
+    path because ``files_table_view.html`` carries NO self-poll (T-87-11 is about a poll scanning the
+    corpus; this is a click).
+
+    Args:
+        stage: The stage whose derived status column is being ordered.
+
+    Returns:
+        An integer-valued ``ColumnElement`` ranking each row per :data:`STAGE_STATUS_DISPLAY_ORDER`.
+    """
+    ranks = {status.value: rank for rank, status in enumerate(STAGE_STATUS_DISPLAY_ORDER)}
+    # `else_` is unreachable while STAGE_STATUS_DISPLAY_ORDER covers every Status member (a guard test
+    # asserts it does); it exists so an added status sorts to the END rather than NULL-ordering.
+    return case(ranks, value=stage_status_case(stage), else_=len(STAGE_STATUS_DISPLAY_ORDER))
+
+
 # Corroborating detail ONLY (D-02). Static SQL -- the sole literals are the status allowlist
 # ('queued','active'); no interpolated operand (T-45 read-only-probe discipline). `saq_jobs` has no
 # `function` column and this read never flips `in_flight` (the ledger owns the boolean, D-01).
