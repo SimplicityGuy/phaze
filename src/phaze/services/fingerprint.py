@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import math
 import os
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -280,6 +281,31 @@ class PanakoAdapter:
 # ---------------------------------------------------------------------------
 
 
+def _within_engine_rank(hit: tuple[float, str | None]) -> tuple[float, float]:
+    """Ranking key that picks ONE representative among one engine's repeats for a track (phaze-dxkz).
+
+    The rule, chosen deliberately rather than inherited from dict-assignment order:
+
+    1. **Highest confidence wins.** That value is what feeds the weighted average, the
+       single-engine 70.0 cap, and the confidence-descending sort, and it is the same basis
+       ``combined_query`` already uses for its cross-engine pick -- so the two reductions now
+       agree instead of one being principled and the other accidental.
+    2. **Ties break on the EARLIEST reference offset.** For a track that recurs in a set, the
+       first occurrence is the one a tracklist wants as the track start; picking it also makes
+       the reduction deterministic instead of dependent on the engine's result ordering.
+
+    A missing or unparseable timestamp ranks last within a tie: a hit that cannot say where it
+    matched should not displace one that can. Returned as ``(confidence, -offset)`` so a plain
+    ``>`` comparison implements both clauses.
+    """
+    confidence, timestamp = hit
+    try:
+        offset = float(timestamp) if timestamp is not None else math.inf
+    except ValueError:
+        offset = math.inf
+    return (confidence, -offset)
+
+
 class FingerprintOrchestrator:
     """Combines results from multiple fingerprint engines with weighted scoring (D-11, D-12)."""
 
@@ -331,7 +357,20 @@ class FingerprintOrchestrator:
                 errors_by_engine[engine.name] = str(exc)
                 continue
             for match in engine_matches:
-                matches_by_track[match.track_id][engine.name] = (match.confidence, match.timestamp)
+                # phaze-dxkz: reduce an engine's REPEATS for one track by an explicit rule.
+                # This used to be a plain dict assignment, so the survivor was whichever
+                # occurrence the engine happened to list LAST -- an unwritten, unprincipled
+                # tie-break sitting directly above the deliberate, documented cross-engine
+                # reduction below. Panako genuinely produces this shape: `query` returns one
+                # result per occurrence, so a track played twice in a set (or matched in two
+                # viable time-difference bins) arrives as several results for the same
+                # reference path at different alignments. Both the confidence that feeds the
+                # weighted average / 70-cap and the offset that becomes the tracklist
+                # timestamp were therefore arbitrary for any repeated track.
+                previous = matches_by_track[match.track_id].get(engine.name)
+                candidate = (match.confidence, match.timestamp)
+                if previous is None or _within_engine_rank(candidate) > _within_engine_rank(previous):
+                    matches_by_track[match.track_id][engine.name] = candidate
 
         if self.engines and len(errors_by_engine) == len(self.engines):
             detail = "; ".join(f"{name}: {error}" for name, error in errors_by_engine.items())

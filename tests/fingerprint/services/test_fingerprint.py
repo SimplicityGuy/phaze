@@ -555,6 +555,108 @@ class TestIngestErrorClassification:
         assert results["audfprint"].engine_error is True
 
 
+class TestWithinEngineRepeatReduction:
+    """phaze-dxkz: one engine returning several matches for the SAME track must reduce by rule.
+
+    The accumulation was a plain dict assignment, so the survivor was whichever occurrence the
+    engine listed LAST -- an unwritten tie-break sitting directly above the deliberate,
+    documented cross-engine reduction. Panako genuinely produces this shape: `query` returns
+    one result per occurrence, so a track played twice in a set arrives as several results for
+    the same reference path at different alignments and scores.
+
+    The rule pinned here is: highest confidence wins; ties break on the EARLIEST reference
+    offset; a missing/unparseable offset loses a tie.
+    """
+
+    def _engine(self, name: str, weight: float, matches: list[QueryMatch]):
+        engine = MagicMock()
+        engine.name = name
+        engine.weight = weight
+        engine.query = AsyncMock(return_value=matches)
+        return engine
+
+    async def test_best_confidence_survives_regardless_of_result_order(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=85.0, timestamp="0.0"),
+                QueryMatch(track_id="t", confidence=8.0, timestamp="260.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].engines["panako"] == 85.0
+        assert combined[0].timestamp == "0.0"
+
+    async def test_best_confidence_survives_when_the_weak_repeat_is_first(self):
+        """The mirror case: the old code was only ever right by accident of ordering."""
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=8.0, timestamp="260.0"),
+                QueryMatch(track_id="t", confidence=85.0, timestamp="0.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].engines["panako"] == 85.0
+        assert combined[0].timestamp == "0.0"
+
+    async def test_equal_confidence_breaks_on_the_earliest_reference_offset(self):
+        """A track played twice at the same score: the FIRST occurrence is the track start."""
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=60.0, timestamp="2400.0"),
+                QueryMatch(track_id="t", confidence=60.0, timestamp="180.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].timestamp == "180.0"
+
+    async def test_a_hit_without_an_offset_loses_a_tie(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=60.0, timestamp="180.0"),
+                QueryMatch(track_id="t", confidence=60.0, timestamp=None),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].timestamp == "180.0"
+
+    async def test_repeat_reduction_does_not_disturb_the_cross_engine_reduction(self):
+        """Reducing within an engine must still leave BOTH engines counted for the 2-engine average."""
+        audfprint = self._engine("audfprint", 0.6, [QueryMatch(track_id="t", confidence=90.0, timestamp="5.0")])
+        panako = self._engine(
+            "panako",
+            0.4,
+            [
+                QueryMatch(track_id="t", confidence=20.0, timestamp="700.0"),
+                QueryMatch(track_id="t", confidence=80.0, timestamp="5.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([audfprint, panako]).combined_query("/data/music/set.mp3")
+        assert len(combined) == 1
+        assert combined[0].engines == {"audfprint": 90.0, "panako": 80.0}
+        # 0.6*90 + 0.4*80 == 86.0 -- not capped, because both engines matched.
+        assert combined[0].confidence == pytest.approx(86.0)
+
+    async def test_distinct_tracks_are_still_kept_separately(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="a", confidence=70.0, timestamp="0.0"),
+                QueryMatch(track_id="b", confidence=40.0, timestamp="10.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert {m.track_id for m in combined} == {"a", "b"}
+
+
 class TestQueryErrorClassification:
     """phaze-z7yw: the query path must distinguish an ENGINE outage from a genuine no-match.
 
