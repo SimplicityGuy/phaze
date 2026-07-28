@@ -39,6 +39,7 @@ Secret hygiene (T-68-04): this module logs only ``{id, kind, rank, cap}``-level 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
@@ -1194,48 +1195,127 @@ async def get_lane_recent_completions(session: AsyncSession, backend_id: str, ki
     return rows
 
 
-async def get_lane_queue_depths(app_state: Any, backend_id: str) -> dict[str, int]:
-    """Return per-lane-tier queue depth ``{analyze, fingerprint, meta, io}`` for a lane's backing agent.
+# phaze-2u8v.1: the operator-facing copy for each way a lane can legitimately have NO per-tier SAQ
+# figure. These are rendered INSTEAD of "analyze 0 · fingerprint 0 · meta 0 · io 0" -- a fabricated
+# zero row is indistinguishable from a genuinely idle agent, which is precisely how a saturated lane
+# came to read as idle on every panel. Say WHY there is no number; never invent one.
+KUEUE_NO_SAQ_QUEUE_NOTE = "Not applicable — a Kueue lane runs k8s Jobs, not SAQ agent-queue work."
+NO_FILESERVER_AGENT_NOTE = "Unavailable — no live fileserver agent to read lane queues from."
 
-    Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
-    ``count("queued") + count("active")`` on the ``phaze-agent-<QUEUE_KEY>-<lane>`` Queue. Only the
-    ``queued`` / ``active`` kinds are read (scheduled/cron jobs excluded). Every tier is isolated in its
-    own ``try/except -> 0`` so a missing ``app.state.task_router`` (the test lifespan-skip) or a broker
-    hiccup degrades that tier to 0 and NEVER 500s the 5s tick (D-00b). Bounded: one count pair per tier,
-    no corpus scan. A kueue/unattributed lane whose id names no live agent queue simply reads 0s.
 
-    phaze-tbps: ``AgentTaskRouter.queue_for``'s first param is an AGENT id
-    (``phaze-agent-<agent_id>-<lane>``, ``agent_task_router.py``), NOT a ``ComputeBackend.id`` -- the two
-    are independent fields (``config_backends.py``'s per-variant validator only forbids duplicate
-    ``agent_ref``s, never couples ``id`` to it) and real dispatch keys off ``agent_ref``
-    (``routers/agent_push.py`` enqueues ``process_file`` to ``queue_for(backend.agent_ref, "analyze")``;
-    :meth:`ComputeAgentBackend._agent_ref` is the authoritative binding). Passing the raw ``backend_id``
-    for a registry entry with ``id != agent_ref`` (the documented ``docs/cloud-burst.md`` shape) builds
-    and counts a queue no producer writes and no worker consumes -- SAQ returns 0 (not an error), so a
-    fully saturated lane renders indistinguishable from idle. Resolve THIS backend id through
-    :func:`resolve_compute_backend` first: a ``kind == "compute"`` hit resolves to its bound
-    ``agent_ref`` (the queue key real dispatch actually uses); anything else (local/kueue, or an
-    unresolvable id) falls back to the raw ``backend_id`` unchanged -- current behavior for those lanes
-    is preserved exactly. The resolution itself is guarded the same D-00b way as the per-tier reads: a
-    settings/registry hiccup degrades to the raw ``backend_id`` rather than raising into the 5s tick.
+@dataclasses.dataclass(frozen=True)
+class LaneQueueIdentity:
+    """WHICH agent's SAQ lane queues carry a compute-lane's work -- or WHY the lane has none (phaze-2u8v.1)."""
+
+    agent_id: str | None
+    note: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class LaneQueueDepths:
+    """A lane's per-tier SAQ depths plus the identity they were read from (phaze-2u8v.1).
+
+    ``depths is None`` means the lane has NO SAQ agent queue at all and ``note`` says why; it does NOT
+    mean "zero". Callers must render the note, never a zero row.
     """
+
+    agent_id: str | None
+    depths: dict[str, int] | None
+    note: str | None = None
+
+
+async def resolve_lane_queue_agent(session: AsyncSession, backend_id: str, kind: str) -> LaneQueueIdentity:
+    """Return the AGENT whose ``phaze-agent-<agent_id>-<lane>`` queues carry ``backend_id``'s work (phaze-2u8v.1).
+
+    THE BUG THIS EXISTS TO CLOSE. ``AgentTaskRouter.queue_for``'s first parameter is an AGENT id, and a
+    lane's registry ``id`` is NOT one. phaze-tbps established that for ``kind == "compute"`` (resolve the
+    bound ``agent_ref``) but deliberately left local/kueue passing the raw ``backend_id`` through -- so a
+    registry of ``[local, kueue vox]`` built ``phaze-agent-local-*`` and ``phaze-agent-vox-*``, queues no
+    producer writes and no worker consumes. SAQ's ``count`` returns 0 for a queue that does not exist
+    (not an error), so BOTH lane panels rendered "analyze 0 · fingerprint 0 · meta 0 · io 0" while the
+    agent-detail aggregate over the SAME work read the real figure off ``phaze-agent-<fileserver>-*``.
+    A fully saturated lane was indistinguishable from an idle one.
+
+    The resolution mirrors what each backend's ``dispatch`` ACTUALLY enqueues to -- that is the only
+    definition of "this lane's queue" that cannot drift:
+
+    * **local** -- :meth:`LocalBackend.dispatch` resolves ``select_active_agent(kind="fileserver")`` and
+      enqueues ``process_file`` to ``queue_for(agent.id, ...)``. So a local lane's queues are the LIVE
+      FILESERVER AGENT's queues, and a local lane legitimately reports the same per-tier figures as that
+      agent's own detail pane -- they are the same queues, read twice. With no live fileserver agent
+      there is nothing to read: report :data:`NO_FILESERVER_AGENT_NOTE`, not zeros (a dead fileserver is
+      the one moment "0 queued" would be most dangerously wrong).
+    * **compute** -- :meth:`ComputeAgentBackend` / ``routers/agent_push.py`` enqueue to the bound
+      ``agent_ref``; unchanged from phaze-tbps, including its raw-``backend_id`` fallback when the
+      registry read hiccups or the id names no compute entry.
+    * **kueue** -- a Kueue lane enqueues NOTHING onto a ``phaze-agent-*`` queue. ``dispatch`` stages to
+      S3 and submits a k8s Job; the analysis runs in that Job, which consumes no SAQ queue. Its ONE SAQ
+      job (``s3_upload``) rides the FILESERVER agent's shared ``io`` lane alongside every other kueue
+      lane's, so it is not attributable to one cluster -- keying a kueue lane off the fileserver would
+      double-count it across N clusters AND paste the fileserver's local ``analyze`` backlog onto a
+      cluster that is not running it. ``KueueBackend.agent_ref`` is NOT an escape hatch either: it names
+      a bearer-token callback Agent row for the ``job_runner`` pods (phaze-ifcr) that no producer ever
+      enqueues to, so keying off it would restore the exact silent-zero shape this fixes. The honest
+      answer is :data:`KUEUE_NO_SAQ_QUEUE_NOTE`.
+
+    Degrade-safe (D-00b): the local branch's ``select_active_agent`` read runs inside a SAVEPOINT so an
+    error rolls back the NESTED scope ALONE -- recovering the aborted transaction WITHOUT expiring the
+    caller's already-loaded lane/``CloudJob`` rows (a plain ``session.rollback()`` would) -- and returns
+    a note. This never raises into the lane pane's 5s tick.
+    """
+    if kind == "local":
+        try:
+            # SAVEPOINT degrade (CR-01 / D-00b): a NoActiveAgentError (or any DB hiccup) rolls back the
+            # nested scope alone. The read is read-only, so the rollback discards nothing.
+            async with session.begin_nested():
+                agent = await select_active_agent(session, kind="fileserver")
+        except NoActiveAgentError:
+            return LaneQueueIdentity(agent_id=None, note=NO_FILESERVER_AGENT_NOTE)
+        except Exception:
+            logger.warning("lane_queue_identity_degraded", backend_id=backend_id, kind=kind, exc_info=True)
+            return LaneQueueIdentity(agent_id=None, note=NO_FILESERVER_AGENT_NOTE)
+        return LaneQueueIdentity(agent_id=agent.id)
+
+    if kind == "kueue":
+        return LaneQueueIdentity(agent_id=None, note=KUEUE_NO_SAQ_QUEUE_NOTE)
+
+    # compute (and any future agent-backed kind): phaze-tbps, verbatim.
     queue_key = backend_id
     try:
         cfg = cast("ControlSettings", get_settings())
         compute_backend = resolve_compute_backend(cfg, backend_id)
-        if compute_backend is not None:
-            agent_ref = compute_backend.agent_ref
-            if agent_ref:
-                queue_key = agent_ref
+        if compute_backend is not None and compute_backend.agent_ref:
+            queue_key = compute_backend.agent_ref
     except Exception:
         logger.warning("lane_queue_agent_ref_resolution_degraded", backend_id=backend_id, exc_info=True)
+    return LaneQueueIdentity(agent_id=queue_key)
+
+
+async def get_lane_queue_depths(session: AsyncSession, app_state: Any, backend_id: str, kind: str) -> LaneQueueDepths:
+    """Return per-lane-tier queue depth ``{analyze, fingerprint, meta, io}`` for a lane's backing agent.
+
+    Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
+    ``count("queued") + count("active")`` on the ``phaze-agent-<agent_id>-<lane>`` Queue of the agent
+    :func:`resolve_lane_queue_agent` binds to this lane (read that docstring -- the binding IS the fix).
+    Only the ``queued`` / ``active`` kinds are read (scheduled/cron jobs excluded). Every tier is isolated
+    in its own ``try/except -> 0`` so a missing ``app.state.task_router`` (the test lifespan-skip) or a
+    broker hiccup degrades that tier to 0 and NEVER 500s the 5s tick (D-00b). Bounded: one count pair per
+    tier, no corpus scan.
+
+    A lane with NO SAQ agent queue (kueue; or local with no live fileserver) returns ``depths=None`` and a
+    ``note`` -- NOT a zero row. ``queue_for`` is not called at all in that case, so no phantom queue name
+    is ever constructed.
+    """
+    identity = await resolve_lane_queue_agent(session, backend_id, kind)
+    if identity.agent_id is None:
+        return LaneQueueDepths(agent_id=None, depths=None, note=identity.note)
 
     depths: dict[str, int] = dict.fromkeys(LANES, 0)
     for lane in LANES:
         try:
-            queue = app_state.task_router.queue_for(queue_key, lane)
+            queue = app_state.task_router.queue_for(identity.agent_id, lane)
             depths[lane] = await queue.count("queued") + await queue.count("active")
         except Exception:
             depths[lane] = 0
-            logger.warning("lane_queue_depth_degraded", backend_id=backend_id, lane=lane, exc_info=True)
-    return depths
+            logger.warning("lane_queue_depth_degraded", backend_id=backend_id, agent_id=identity.agent_id, lane=lane, exc_info=True)
+    return LaneQueueDepths(agent_id=identity.agent_id, depths=depths)

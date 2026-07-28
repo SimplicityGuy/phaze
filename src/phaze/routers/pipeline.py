@@ -959,12 +959,17 @@ async def lane_detail(
                 "backend_id": backend_id,
                 "recent_completions": [],
                 "queue_depths": {},
+                "queue_depths_agent": None,
+                "queue_depths_note": None,
                 "refreshed_at": None,
                 "recent_n": LANE_RECENT_N,
             },
         )
     recent_completions = await get_lane_recent_completions(session, backend_id, lane["kind"])
-    queue_depths = await get_lane_queue_depths(request.app.state, backend_id)
+    # phaze-2u8v.1: the depths are read off the AGENT this lane's dispatch actually enqueues to (a local
+    # lane -> the live fileserver agent), never off the registry id. ``depths is None`` is "this lane has
+    # no SAQ queue", carried to the template as a NOTE -- the template must not render it as zeros.
+    queue_depths = await get_lane_queue_depths(session, request.app.state, backend_id, lane["kind"])
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_lane_detail.html",
@@ -972,7 +977,9 @@ async def lane_detail(
             "lane": lane,
             "backend_id": backend_id,
             "recent_completions": recent_completions,
-            "queue_depths": queue_depths,
+            "queue_depths": queue_depths.depths,
+            "queue_depths_agent": queue_depths.agent_id,
+            "queue_depths_note": queue_depths.note,
             "refreshed_at": datetime.now(UTC),
             "recent_n": LANE_RECENT_N,
         },

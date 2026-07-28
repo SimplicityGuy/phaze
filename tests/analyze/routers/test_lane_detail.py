@@ -171,7 +171,7 @@ async def test_recent_completions_degrades_on_error(session: AsyncSession, monke
 
 
 @pytest.mark.asyncio
-async def test_queue_depths_degrade_to_zero_without_app_state() -> None:
+async def test_queue_depths_degrade_to_zero_without_app_state(session: AsyncSession) -> None:
     """A missing ``app.state.task_router`` degrades every lane-tier depth to 0, never raises (D-00b)."""
 
     from phaze.services.backends import get_lane_queue_depths
@@ -179,9 +179,10 @@ async def test_queue_depths_degrade_to_zero_without_app_state() -> None:
     class _BareState:
         pass
 
-    depths = await get_lane_queue_depths(_BareState(), "compute-x")
-    assert set(depths) == {"analyze", "fingerprint", "meta", "io"}
-    assert all(v == 0 for v in depths.values())
+    result = await get_lane_queue_depths(session, _BareState(), "compute-x", "compute")
+    assert result.depths is not None
+    assert set(result.depths) == {"analyze", "fingerprint", "meta", "io"}
+    assert all(v == 0 for v in result.depths.values())
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,7 @@ push_host = "oci-a1.push.example"
 
 
 @pytest.mark.asyncio
-async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
     """phaze-tbps acceptance: id != agent_ref, jobs queued on the agent's lanes -> real depths, not zeros.
 
     Regression fixture for the confirmed defect: a lane-detail read for a compute backend whose
@@ -232,35 +233,174 @@ async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(backends_to
     router.set_counts("compute-agent-01", lane="fingerprint", queued=1, active=0)
     app_state = SimpleNamespace(task_router=router)
 
-    depths = await get_lane_queue_depths(app_state, "oci-a1")
+    result = await get_lane_queue_depths(session, app_state, "oci-a1", "compute")
 
-    assert depths["analyze"] == 5, "a saturated agent_ref lane must not read as idle (all zeros)"
-    assert depths["fingerprint"] == 1
-    assert depths["meta"] == 0
-    assert depths["io"] == 0
+    assert result.depths is not None
+    assert result.depths["analyze"] == 5, "a saturated agent_ref lane must not read as idle (all zeros)"
+    assert result.depths["fingerprint"] == 1
+    assert result.depths["meta"] == 0
+    assert result.depths["io"] == 0
+    assert result.agent_id == "compute-agent-01"
     # The queue lookup must have used agent_ref, never the raw backend id.
     assert "compute-agent-01" in router.queue_for_calls
     assert "oci-a1" not in router.queue_for_calls
 
 
+# ---------------------------------------------------------------------------
+# phaze-2u8v.1: the SAME class of bug that phaze-tbps closed for COMPUTE lanes was left
+# open for the two kinds the operator actually runs. A registry of [local, kueue "vox"]
+# built ``phaze-agent-local-*`` / ``phaze-agent-vox-*`` -- queues no producer writes and
+# no worker consumes -- so both lane panels rendered "analyze 0 · fingerprint 0 · meta 0 ·
+# io 0" while the SAME work read 2075 on the fileserver agent's own detail pane.
+#
+# A local lane's work is enqueued by ``LocalBackend.dispatch`` to the LIVE FILESERVER
+# AGENT's lane queues, so that is what it must count. A kueue lane enqueues onto NO
+# ``phaze-agent-*`` queue at all (its work is a k8s Job) -- so it must say so, not print a
+# zero row that reads as "idle".
+# ---------------------------------------------------------------------------
+
+_LOCAL_AND_KUEUE_TOML = """
+[[backends]]
+kind = "kueue"
+id = "vox"
+rank = 10
+cap = 3
+buckets = ["burst-vox"]
+
+  [backends.kube]
+  api_url = "https://kube.example:6443"
+  namespace = "phaze"
+  local_queue = "phaze-burst"
+
+[[backends]]
+kind = "local"
+id = "local"
+rank = 99
+cap = 1
+
+[[buckets]]
+id = "burst-vox"
+scope = "cluster-specific"
+bucket = "phaze-burst"
+endpoint_url = "https://s3.example"
+"""
+
+
 @pytest.mark.asyncio
-async def test_queue_depths_local_lane_keeps_backend_id_unresolved(backends_toml_env) -> None:  # type: ignore[no-untyped-def]
-    """Regression guard: a local/non-compute id is NOT run through agent_ref resolution -- behavior preserved."""
+async def test_queue_depths_local_lane_reads_the_live_fileserver_agent(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2u8v.1 acceptance: a local lane counts the FILESERVER agent's queues, never ``phaze-agent-local-*``.
+
+    ``LocalBackend.dispatch`` resolves ``select_active_agent(kind="fileserver")`` and enqueues
+    ``process_file`` to ``queue_for(agent.id, ...)``. The lane panel must read the SAME queues, so it
+    reports the same per-tier figures the agent-detail pane does -- they are one queue read twice.
+    Keying off the registry id counted a queue that does not exist, and SAQ returns 0 for that (not an
+    error): the reported shape where a lane holding 2075 jobs rendered as idle.
+    """
     from types import SimpleNamespace
 
     from phaze.services.backends import get_lane_queue_depths
-    from tests._queue_fakes import FakeTaskRouter
+    from tests._queue_fakes import FakeTaskRouter, seed_active_agent
 
-    backends_toml_env(_COMPUTE_ID_NE_AGENT_REF_TOML)
+    backends_toml_env(_LOCAL_AND_KUEUE_TOML)
+    await seed_active_agent(session, "nox", kind="fileserver")
 
     router = FakeTaskRouter()
-    router.set_counts("local", lane="analyze", queued=4, active=1)
+    # The real queues: 942 waiting + 1133 claimed on the fileserver agent's analyze lane.
+    router.set_counts("nox", lane="analyze", queued=942, active=1133)
+    router.set_counts("nox", lane="io", queued=7, active=1)
     app_state = SimpleNamespace(task_router=router)
+    router.queue_for_calls.clear()  # drop the seeding calls -- only the read under test may be asserted
 
-    depths = await get_lane_queue_depths(app_state, "local")
+    result = await get_lane_queue_depths(session, app_state, "local", "local")
 
-    assert depths["analyze"] == 5
-    assert "local" in router.queue_for_calls
+    assert result.agent_id == "nox"
+    assert result.note is None
+    assert result.depths is not None
+    assert result.depths["analyze"] == 2075, "the local lane must report the fileserver agent's real analyze depth"
+    assert result.depths["io"] == 8
+    assert result.depths["fingerprint"] == 0
+    assert result.depths["meta"] == 0
+    assert set(router.queue_for_calls) == {"nox"}, "the registry id must never be used as a queue key"
+
+
+@pytest.mark.asyncio
+async def test_queue_depths_local_lane_without_fileserver_says_so(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """No live fileserver agent -> a NOTE, never a fabricated all-zero row (the most dangerous moment to lie)."""
+    from types import SimpleNamespace
+
+    from phaze.services.backends import NO_FILESERVER_AGENT_NOTE, get_lane_queue_depths
+    from tests._queue_fakes import FakeTaskRouter
+
+    backends_toml_env(_LOCAL_AND_KUEUE_TOML)
+
+    router = FakeTaskRouter()
+    result = await get_lane_queue_depths(session, SimpleNamespace(task_router=router), "local", "local")
+
+    assert result.depths is None
+    assert result.agent_id is None
+    assert result.note == NO_FILESERVER_AGENT_NOTE
+    assert router.queue_for_calls == [], "no phantom queue may be constructed when there is no agent"
+
+
+@pytest.mark.asyncio
+async def test_queue_depths_kueue_lane_reports_not_applicable(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """A kueue lane has NO SAQ agent queue -> a note, and it must NOT borrow the fileserver's figures.
+
+    Two wrong answers are ruled out at once. ``phaze-agent-vox-*`` does not exist (the reported zeros),
+    and the fileserver's queues are not this cluster's either -- its ``analyze`` backlog is LOCAL work,
+    and its ``io`` lane carries the ``s3_upload`` staging jobs of EVERY kueue lane, so attributing them
+    to one cluster would double-count across N clusters.
+    """
+    from types import SimpleNamespace
+
+    from phaze.services.backends import KUEUE_NO_SAQ_QUEUE_NOTE, get_lane_queue_depths
+    from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+
+    backends_toml_env(_LOCAL_AND_KUEUE_TOML)
+    await seed_active_agent(session, "nox", kind="fileserver")
+
+    router = FakeTaskRouter()
+    router.set_counts("nox", lane="analyze", queued=942, active=1133)
+    router.queue_for_calls.clear()  # drop the seeding calls -- only the read under test may be asserted
+    result = await get_lane_queue_depths(session, SimpleNamespace(task_router=router), "vox", "kueue")
+
+    assert result.depths is None, "a kueue lane must not render a zero row that reads as idle"
+    assert result.agent_id is None
+    assert result.note == KUEUE_NO_SAQ_QUEUE_NOTE
+    assert router.queue_for_calls == [], "a kueue lane must name no queue -- not its own id, not the fileserver's"
+
+
+@pytest.mark.asyncio
+async def test_lane_identity_maps_to_the_real_saq_queue_names(session: AsyncSession, backends_toml_env) -> None:  # type: ignore[no-untyped-def]
+    """phaze-2u8v.1 acceptance: pin lane-identity -> SAQ queue NAME against the REAL router.
+
+    The failure mode this closes is a silent one: rename the queue format in
+    ``AgentTaskRouter._queue_for`` (or resolve a lane to the wrong identity) and every per-tier count
+    quietly becomes 0, because SAQ's ``count`` succeeds on a queue nobody writes to. The fakes cannot
+    catch that -- they mint whatever name they are asked for. So assert against the production router
+    that the resolved identity for a local lane composes EXACTLY the queue names the live deployment
+    has (``phaze-agent-nox-analyze``, ...), and that a kueue lane resolves to no identity at all.
+    """
+    from phaze.services.agent_task_router import AgentTaskRouter
+    from phaze.services.backends import resolve_lane_queue_agent
+    from phaze.services.enqueue_router import LANES
+    from tests._queue_fakes import seed_active_agent
+
+    backends_toml_env(_LOCAL_AND_KUEUE_TOML)
+    await seed_active_agent(session, "nox", kind="fileserver")
+
+    local = await resolve_lane_queue_agent(session, "local", "local")
+    assert local.agent_id == "nox"
+
+    # The real router. ``build_pipeline_queue`` opens no connection at construction (it only needs
+    # parseable DSNs), so these hosts deliberately name nothing -- this test reads queue NAMES, never
+    # a broker, and must not touch the worktree's own Postgres/Redis.
+    router = AgentTaskRouter(queue_url="postgresql://never-connected/never-connected", cache_redis_url="redis://never-connected")
+    names = [router.queue_for(local.agent_id, lane).name for lane in LANES]
+    assert names == ["phaze-agent-nox-analyze", "phaze-agent-nox-fingerprint", "phaze-agent-nox-meta", "phaze-agent-nox-io"]
+
+    kueue = await resolve_lane_queue_agent(session, "vox", "kueue")
+    assert kueue.agent_id is None, "a kueue lane must resolve to NO agent queue -- there is none to name"
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +506,84 @@ async def test_lane_detail_no_unsafe_filter(client: AsyncClient, session: AsyncS
     response = await client.get(f"/pipeline/lanes/{lane['id']}")
     assert response.status_code == 200
     assert "|safe" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-2u8v.1: the RENDERED panel. The service can resolve perfectly and the panel can still
+# lie, because "no SAQ queue" and "queue is empty" render identically as a zero row.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_template_renders_real_depths_and_names_the_agent() -> None:
+    """Real depths render per tier, captioned with the agent they were counted from."""
+    lane = {"id": "local", "kind": "local", "rank": 99, "cap": 1, "in_flight": 4, "available": True, "quota_wait": 0, "inadmissible": 0}
+    body = _render_lane_detail(
+        lane=lane,
+        recent_completions=[],
+        queue_depths={"analyze": 2075, "fingerprint": 0, "meta": 0, "io": 8},
+        queue_depths_agent="nox",
+        queue_depths_note=None,
+        refreshed_at=None,
+        recent_n=20,
+    )
+    assert "analyze 2075" in body
+    assert "io 8" in body
+    # Naming the agent is what makes a future zero auditable: the operator can see WHICH queues
+    # were counted instead of guessing why a busy lane reads idle.
+    assert "nox" in body
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_template_renders_the_note_instead_of_a_zero_row() -> None:
+    """``queue_depths is None`` -> the reason, NEVER "analyze 0 · fingerprint 0 · meta 0 · io 0".
+
+    This is the exact string the operator reported on both lane panels. A kueue lane has no SAQ
+    agent queue at all, so printing zeros there is a fabricated measurement, not a degraded one.
+    """
+    from phaze.services.backends import KUEUE_NO_SAQ_QUEUE_NOTE
+
+    lane = {"id": "vox", "kind": "kueue", "rank": 10, "cap": 3, "in_flight": 3, "available": True, "quota_wait": 0, "inadmissible": 0}
+    body = _render_lane_detail(
+        lane=lane,
+        recent_completions=[],
+        queue_depths=None,
+        queue_depths_agent=None,
+        queue_depths_note=KUEUE_NO_SAQ_QUEUE_NOTE,
+        refreshed_at=None,
+        recent_n=20,
+    )
+    assert "Queue depth" in body
+    assert KUEUE_NO_SAQ_QUEUE_NOTE in body
+    assert "analyze 0" not in body
+    assert "fingerprint 0" not in body
+
+
+@pytest.mark.asyncio
+async def test_lane_detail_endpoint_local_lane_reports_the_fileserver_depths(
+    client: AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: GET /pipeline/lanes/local renders the FILESERVER agent's real per-tier depths.
+
+    The reported bug in one request: the panel must not answer "analyze 0" while the agent holding
+    the very jobs this lane dispatched answers 2075.
+    """
+    from tests._queue_fakes import FakeTaskRouter, seed_active_agent
+
+    lane = await _first_lane(session)
+    if lane["kind"] != "local":
+        pytest.skip("default registry did not resolve a local lane first")
+
+    await seed_active_agent(session, "nox", kind="fileserver")
+    router = FakeTaskRouter()
+    router.set_counts("nox", lane="analyze", queued=942, active=1133)
+    # The test client skips the lifespan, so app.state has no task_router -- install the fake.
+    monkeypatch.setattr(client._transport.app.state, "task_router", router, raising=False)  # type: ignore[attr-defined]
+
+    response = await client.get(f"/pipeline/lanes/{lane['id']}")
+
+    assert response.status_code == 200, response.text
+    assert "analyze 2075" in response.text
+    assert "analyze 0" not in response.text
