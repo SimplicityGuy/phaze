@@ -99,13 +99,22 @@ def test_no_auto_advance_cron() -> None:
     safety-net that owns the K8s Job lifecycle (in-flight reconcile + bounded re-drive + terminal
     cleanup). Like ``stage_cloud_window`` it is bounded and idempotent, NOT a general pipeline
     auto-advance, so the ban stays "no */5 cron OTHER than the sanctioned narrow crons".
+
+    phaze-2u8v.2: ``reap_resolved_ledger_rows`` joins the allow-list, and it is the SAFEST possible
+    member -- it is not merely bounded, it is structurally incapable of being an auto-advance, because
+    it enqueues nothing at all. The assertion below proves that from the module source rather than
+    taking the allow-list entry on trust, so widening the list here did not weaken the guard: a future
+    edit that teaches the reaper to enqueue turns this test RED even though it is allow-listed.
     """
-    from phaze.tasks import controller
+    import inspect
+
+    from phaze.tasks import controller, ledger_reaper
+    from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
     from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
     from phaze.tasks.reenqueue import recover_orphaned_work
     from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 
-    sanctioned_narrow_crons = {stage_cloud_window, reconcile_cloud_jobs}
+    sanctioned_narrow_crons = {stage_cloud_window, reconcile_cloud_jobs, reap_resolved_ledger_rows}
     cron_jobs = controller.settings["cron_jobs"]
     # Steady-state produces ZERO GENERAL auto-advance enqueues -- the only */5 crons are the bounded
     # cloud-window top-up and the K8s reconcile safety-net; any OTHER */5 cron is a forbidden
@@ -114,6 +123,11 @@ def test_no_auto_advance_cron() -> None:
     assert offenders == [], "no general */5 auto-advance cron may survive (only the sanctioned narrow crons are allowed)"
     # recover_orphaned_work is startup/manual-only -- it must NEVER be wired as a cron.
     assert all(cj.function is not recover_orphaned_work for cj in cron_jobs), "recover_orphaned_work must not be a CronJob (startup/manual-only)"
+    # The allow-list entry above is EARNED, not asserted: the reaper only ever DELETEs resolved ledger
+    # rows, so no producer verb may appear in its source.
+    reaper_src = inspect.getsource(ledger_reaper)
+    for producer in (".enqueue(", "task_router", "queue_for("):
+        assert producer not in reaper_src, f"the ledger reaper must never produce work (found {producer!r})"
 
 
 def test_cron_does_not_regress_existing_jobs() -> None:

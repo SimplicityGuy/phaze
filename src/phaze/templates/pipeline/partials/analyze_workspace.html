@@ -55,18 +55,14 @@
        is present so the poll's OOB grid-swap lands). The stats poll re-includes the SAME partial with
        oob=True. Degrades to the muted "Lane status unavailable" panel on [].
 
-       Phase 88 (88-01, DRILL-03 / D-01): the shared #detail-pane is hosted here as a SIBLING of
-       #analyze-lanes but OUTSIDE it — a right-side column on lg+ (col-span-1 of 3), stacked BELOW the
-       grid on < lg. The wrapper leaves the OOB-swapped #analyze-lanes element untouched (htmx matches it
-       by id inside the wrapper), so the 5s poll re-renders the grid without ever touching the pane. #}
-    <div class="lg:grid lg:grid-cols-3 lg:items-start lg:gap-4">
-        <div class="lg:col-span-2">
-            {% include "pipeline/partials/_analyze_lanes.html" %}
-        </div>
-        <div class="px-6 pb-6 lg:col-span-1 lg:pl-0">
-            {% with pane_kind = 'lane' %}{% include "pipeline/partials/_detail_pane.html" %}{% endwith %}
-        </div>
-    </div>
+       phaze-2u8v.6: the shared #detail-pane is now a FIXED, non-reflowing overlay (see
+       _detail_pane.html) rather than a right-side grid column — opening a lane's detail used to grow
+       this row's height (the column layout below fed the pane's height into the shared grid row),
+       pushing every section beneath it down the page. The grid no longer reserves a column for it: the
+       lane grid renders at its own full width and the pane floats above the page on open, so nothing
+       here can ever resize or reposition because of it, at any viewport. #}
+    {% include "pipeline/partials/_analyze_lanes.html" %}
+    {% include "pipeline/partials/_detail_pane.html" %}
 
     {# (b1) the two conditionally-empty operator alerts, full-width, ABOVE the count grid, as DIRECT
        siblings -- NOT a space-y-* wrapper, which would impose a margin between them purely from sibling

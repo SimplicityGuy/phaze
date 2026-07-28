@@ -7,9 +7,15 @@
    Context:
      * lane              -- one get_backend_lane_snapshot dict {id,kind,rank,cap,in_flight,available,
                             quota_wait,inadmissible}; None -> the friendly "Lane offline" empty state.
-     * recent_completions -- up to recent_n succeeded CloudJob rows, newest-first (D-07); [] on a local
-                            lane or a degraded read -> the "No completions in the last N" empty state.
+     * recent_completions -- up to recent_n LaneCompletion rows (id,label,completed_at), newest-first
+                            (D-07); ALL lane kinds can be non-empty now (phaze-2u8v.3 -- local completes
+                            too), so [] only means "genuinely none yet" or a degraded read -> the "No
+                            completions in the last N" empty state. label is a filename (never a bare
+                            hash/id -- phaze-2u8v.3); completed_at is the TRUE completion instant.
      * queue_depths      -- per-lane-tier {analyze,fingerprint,meta,io} depth; each degrades to 0 (D-00b).
+                            None (phaze-2u8v.1) when the lane has NO SAQ agent queue -> render the note.
+     * queue_depths_agent -- the agent id whose SAQ lanes those depths were counted from, or None.
+     * queue_depths_note -- why there is no per-tier figure (kueue lane / no live fileserver agent).
      * refreshed_at      -- server render time for the "Updated HH:MM:SS" liveness caption.
      * recent_n          -- the D-07 last-N cap (LANE_RECENT_N).
 
@@ -82,21 +88,39 @@
         </p>
         {% endif %}
 
-        {# Per-lane-tier queue depths (analyze N · io N ...); each degrade-safe to 0. #}
+        {# Per-lane-tier queue depths (analyze N · io N ...); each degrade-safe to 0.
+
+           phaze-2u8v.1: `queue_depths` is None (NOT {}) when the lane has no SAQ agent queue at all --
+           a kueue lane (its work is a k8s Job, which consumes no queue) or a local lane with no live
+           fileserver agent. Render `queue_depths_note` in that case. A fabricated "analyze 0 ·
+           fingerprint 0 · meta 0 · io 0" row is indistinguishable from a genuinely idle agent, which is
+           exactly how a lane holding 2075 queued jobs read as idle on this panel. `queue_depths_agent`
+           names the agent the figures were read from so the panel can never again silently count a
+           queue nobody writes to. #}
         <div>
             <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Queue depth</p>
+            {% if queue_depths %}
             <p class="mt-1 font-mono text-sm text-gray-700 dark:text-gray-200">
-                {% for tier, depth in queue_depths.items() %}{{ tier }} {{ depth }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}
+                {% for tier, depth in queue_depths.items() %}{{ tier }} {{ depth }}{% if not loop.last %} · {% endif %}{% endfor %}
             </p>
+            {% if queue_depths_agent %}
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">SAQ lanes of agent <span class="font-mono">{{ queue_depths_agent }}</span></p>
+            {% endif %}
+            {% else %}
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ queue_depths_note or '—' }}</p>
+            {% endif %}
         </div>
 
-        {# Recent completions: last-N newest-first (D-07), else the empty state (local / degraded read). #}
+        {# Recent completions: last-N newest-first (D-07), else the empty state (genuinely none / degraded
+           read). phaze-2u8v.3: label is the file's own name (never a bare hash/id -- fixed from the old
+           file_id.hex[:8], confirmed a UUID prefix, not the sha256 it was presumed to be); completed_at
+           is the TRUE completion instant, not a lane-side observation timestamp that can lag/round. #}
         <div>
             <p class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Recent completions</p>
             {% if recent_completions %}
             <ul class="mt-1 space-y-1 text-sm text-gray-700 dark:text-gray-200">
                 {% for c in recent_completions %}
-                <li>✓ <span class="font-mono">{{ c.file_id.hex[:8] }}</span> · {{ c.updated_at.strftime('%Y-%m-%d %H:%M:%S') if c.updated_at else '—' }}</li>
+                <li>✓ {{ c.label }} · {{ c.completed_at.strftime('%Y-%m-%d %H:%M:%S') if c.completed_at else '—' }}</li>
                 {% endfor %}
             </ul>
             {% else %}

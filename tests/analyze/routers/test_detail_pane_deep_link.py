@@ -1,12 +1,10 @@
 """phaze-m662: a deep-linked / reloaded detail pane must never render "open" over an empty body.
 
-The Phase-88 shared ``_detail_pane.html`` shell is hosted on BOTH the Analyze workspace
-(``?lane=``) and ``/admin/agents`` (``?agent=``). Its body is innerHTML-swapped into
-``#detail-pane`` by a trigger's ``hx-get`` — so a bookmark / reload / shared deep link of
-``/s/analyze?lane=X`` was a plain full server render with an EMPTY swap target, while the
-shell's ``x-init`` flipped ``open = true`` off the query param alone. That suppressed the
-``x-show="!open"`` resting empty state and showed the ✕ Close over a blank, never-refreshing
-pane.
+The Phase-88 ``_detail_pane.html`` shell is hosted on the Analyze workspace (``?lane=``). Its body
+is innerHTML-swapped into ``#detail-pane`` by a trigger's ``hx-get`` — so a bookmark / reload /
+shared deep link of ``/s/analyze?lane=X`` was a plain full server render with an EMPTY swap target,
+while the shell's ``x-init`` flipped ``open = true`` off the query param alone. That suppressed the
+``x-show="!open"`` resting empty state and showed the ✕ Close over a blank, never-refreshing pane.
 
 The fix moves ownership of ``open`` onto exactly ONE path — ``onLoaded()``, fired by a real
 after-swap — and gives the deep link a body to swap: the route already resolves the ``?param``
@@ -17,6 +15,14 @@ Consequence for a11y (phaze-am7c interaction, asserted below): because ``x-init`
 pre-sets ``open``, the deep-link swap reaches ``onLoaded()`` with ``wasOpen === false``, so the
 heading focus park fires exactly ONCE — identical to the card-click open, and still guarded
 against the 5s own-tick.
+
+phaze-2u8v.6: ``/admin/agents?agent=X`` (the agents-TABLE detail) no longer hosts this shell — that
+surface is an EXPANDED ROW (``admin/partials/_agent_detail_row.html``) with its own independent
+deep-link self-fetch (``hx-trigger="load"`` into ``#agent-activity-{id}``), covered separately below
+without routing through ``#detail-pane``. phaze-2u8v.5 gives the page a SECOND, independent shell
+caller for the compute/burst-lane CARD grid (Section 2, ``?clane=``) — that pane_kind is not exercised
+by the ``?agent=`` tests below (the smoke fixture configures no compute-lane backends), so it does not
+interfere with the invariant under test here: the agents-TABLE row never routes through the shared pane.
 """
 
 from __future__ import annotations
@@ -180,38 +186,52 @@ async def test_unknown_lane_param_emits_no_load_fetch(client: AsyncClient, sessi
     assert "No lane selected" in response.text
 
 
-# --- The same shell, the same defect, on /admin/agents -------------------------------
+# --- phaze-2u8v.6: the agents-table expanded row has its OWN deep link, no shared shell -----
 
 
 @pytest.mark.asyncio
 async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> None:
-    """/admin/agents?agent={known} self-fetches the agent-activity body into #detail-pane on load."""
+    """/admin/agents?agent={known} renders the expanded row, self-fetching the activity body on load.
+
+    Unlike the lane pane, this surface never routes through #detail-pane (phaze-2u8v.6 replaced the
+    shared side panel with an expanded row); the row's own slot self-fetches independently. phaze-2u8v.5
+    later gives the PAGE a second, independent shell caller for the compute/burst-lane card grid
+    (pane_kind='compute-lane', ?clane=) — so the assertion below is scoped to the ROW's own fetch
+    wiring rather than the whole page body, which legitimately carries the shared shell's
+    ``id="detail-pane"`` swap target for that unrelated caller.
+    """
     response = await smoke.get("/admin/agents", params={"agent": AGENT_ID})
     assert response.status_code == 200, response.text
-    tag = _pane_tag(response.text)
+    body = response.text
 
-    assert f'hx-get="/admin/agents/{AGENT_ID}/_activity"' in tag
-    assert 'hx-trigger="load"' in tag
+    assert f'id="agent-detail-row-{AGENT_ID}"' in body
+    assert f'id="agent-activity-{AGENT_ID}"' in body
+    row_fetch = f'hx-get="/admin/agents/{AGENT_ID}/_activity"'
+    assert row_fetch in body
+    assert 'hx-trigger="load"' in body
+    # The row's own fetch has no hx-target of its own (it innerHTML-swaps into its OWN slot by
+    # htmx's default same-element target) — it must never be wired to the shared #detail-pane.
+    row_start = body.index(row_fetch)
+    row_tag_end = body.index(">", row_start)
+    assert "#detail-pane" not in body[row_start:row_tag_end]
 
 
 @pytest.mark.asyncio
-async def test_agent_deep_link_does_not_force_open_without_a_body(smoke: AsyncClient) -> None:
-    """The agent pane variant must also leave `open` to onLoaded()."""
-    response = await smoke.get("/admin/agents", params={"agent": AGENT_ID})
-    assert response.status_code == 200, response.text
-
-    init = re.search(r'x-init="([^"]*)"', response.text)
-    assert init, "expected the detail-pane x-init"
-    assert "open = true" not in init.group(1)
-    assert "No agent selected" in response.text
-
-
-@pytest.mark.asyncio
-async def test_unknown_agent_param_emits_no_load_fetch(smoke: AsyncClient) -> None:
-    """An unknown ?agent highlights nothing and fetches nothing."""
+async def test_unknown_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
+    """An unknown ?agent highlights nothing and renders no expanded row at all."""
     response = await smoke.get("/admin/agents", params={"agent": "no-such-agent"})
     assert response.status_code == 200, response.text
-    assert "hx-get=" not in _pane_tag(response.text)
+    assert "agent-detail-row-" not in response.text
+    assert "agent-activity-" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_no_agent_param_emits_no_expanded_row(smoke: AsyncClient) -> None:
+    """Without ?agent the table renders no expanded row — no fetch, no chrome."""
+    response = await smoke.get("/admin/agents")
+    assert response.status_code == 200, response.text
+    assert "agent-detail-row-" not in response.text
+    assert "agent-activity-" not in response.text
 
 
 # --- phaze-am7c interaction: the deep link must still move focus exactly once ---------

@@ -31,7 +31,7 @@ from phaze.services.agent_liveness import (
     ComputeLane,
     classify,
     derive_compute_lane_identities,
-    non_local_backend_agent_refs,
+    get_compute_lane_running_jobs,
     non_local_backend_kinds,
     sort_key,
 )
@@ -238,13 +238,9 @@ class _RaisingSession:
 # ---------------------------------------------------------------------------
 
 
-def _backend(backend_id: str, kind: str, agent_ref: str | None = None) -> SimpleNamespace:
-    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``.
-
-    ``agent_ref`` defaults to ``None`` (unset) so existing ``non_local_backend_kinds`` callers stay
-    unaffected; ``non_local_backend_agent_refs`` reads it via ``getattr`` (phaze-ifcr).
-    """
-    return SimpleNamespace(id=backend_id, kind=kind, agent_ref=agent_ref)
+def _backend(backend_id: str, kind: str) -> SimpleNamespace:
+    """A minimal registry-entry stand-in — non_local_backend_kinds reads only ``.id`` / ``.kind``."""
+    return SimpleNamespace(id=backend_id, kind=kind)
 
 
 def _settings(*backends: SimpleNamespace) -> SimpleNamespace:
@@ -268,51 +264,6 @@ def test_non_local_backend_kinds_filters_local_preserving_order() -> None:
 def test_non_local_backend_kinds_all_local_is_empty() -> None:
     """An all-local registry projects to an empty map (no cloud lanes)."""
     assert non_local_backend_kinds(_settings(_backend("local", "local"))) == {}  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# non_local_backend_agent_refs(settings) — structural agent-ref binding (phaze-ifcr)
-# ---------------------------------------------------------------------------
-
-
-def test_non_local_backend_agent_refs_keys_by_ref_value_not_backend_id() -> None:
-    """The map is keyed by the bound agent_ref VALUE (not the backend id) → backend id (phaze-ifcr).
-
-    This is the exact structural gap the string-equality dedupe (admin_agents.py COMPUTE-01) misses: a
-    kueue backend id "vox" bound to callback agent "k8s-vox" projects to {"k8s-vox": "vox"}, letting a
-    caller key the shadow-row suppression on the AGENT's id/name rather than the backend's own id.
-    """
-    settings = _settings(
-        _backend("local", "local"),
-        _backend("vox", "kueue", agent_ref="k8s-vox"),
-        _backend("a1", "compute", agent_ref="compute-agent-01"),
-    )
-    result = non_local_backend_agent_refs(settings)  # type: ignore[arg-type]
-    assert result == {"k8s-vox": "vox", "compute-agent-01": "a1"}
-
-
-def test_non_local_backend_agent_refs_excludes_local() -> None:
-    """A local backend never contributes an agent_ref, even if one were somehow set (defense-in-depth)."""
-    settings = _settings(_backend("local", "local", agent_ref="should-never-appear"))
-    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
-
-
-def test_non_local_backend_agent_refs_skips_unset_kueue_ref() -> None:
-    """A kueue backend with NO agent_ref bound (backward-compat, pre-existing [kube] config) contributes nothing.
-
-    ``KueueBackend.agent_ref`` is OPTIONAL (unlike the REQUIRED ``ComputeBackend.agent_ref``) precisely
-    so an already-deployed backends.toml that predates this field keeps booting; such an entry simply
-    falls back to the pre-existing id/name-coincidence dedupe path in admin_agents.py.
-    """
-    settings = _settings(_backend("xenolab", "kueue", agent_ref=None))
-    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
-
-
-def test_non_local_backend_agent_refs_tolerates_missing_attribute() -> None:
-    """A registry entry with NO ``agent_ref`` attribute at all (e.g. LocalBackend) is read via ``getattr`` default."""
-    no_ref_attr = SimpleNamespace(id="local", kind="local")
-    settings = _settings(no_ref_attr)
-    assert non_local_backend_agent_refs(settings) == {}  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -517,3 +468,86 @@ async def test_derive_returns_empty_on_registry_failure(session: AsyncSession, m
 
     monkeypatch.setattr(liveness_mod, "get_settings", _boom)
     assert await derive_compute_lane_identities(session) == []
+
+
+# ---------------------------------------------------------------------------
+# get_compute_lane_running_jobs(session, backend_id) — phaze-2u8v.5 burst-lane workload drill-down
+# ---------------------------------------------------------------------------
+
+
+async def _seed_named_job(session: AsyncSession, *, backend_id: str | None, filename: str, status: str = CloudJobStatus.RUNNING.value) -> FileRecord:
+    """Seed one FileRecord + CloudJob attributed to ``backend_id``, returning the FileRecord."""
+    file = FileRecord(
+        agent_id="test-fileserver",
+        id=uuid.uuid4(),
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path=f"/music/{uuid.uuid4().hex}/{filename}",
+        original_filename=filename,
+        current_path=f"/music/{filename}",
+        file_type="mp3",
+        file_size=1000,
+    )
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, s3_key=f"staging/{file.id}", status=status, backend_id=backend_id))
+    await session.commit()
+    return file
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_lists_running_files_for_backend(session: AsyncSession) -> None:
+    """RUNNING rows attributed to ``backend_id`` come back with their display filename (the drill-down itself)."""
+    await _seed_named_job(session, backend_id="vox", filename="one.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="two.mp3")
+    # Noise that MUST be excluded: a different backend, and a non-RUNNING status on the SAME backend.
+    await _seed_named_job(session, backend_id="xenolab", filename="other-backend.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="succeeded.mp3", status=CloudJobStatus.SUCCEEDED.value)
+
+    jobs = await get_compute_lane_running_jobs(session, "vox")
+
+    filenames = {job["filename"] for job in jobs}
+    assert filenames == {"one.mp3", "two.mp3"}
+    assert len(jobs) == 2
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_uses_repaired_filename_when_present(session: AsyncSession) -> None:
+    """The display filename prefers ``original_filename_repaired`` (COALESCE, the search_queries convention)."""
+    file = await _seed_named_job(session, backend_id="vox", filename="mojibake.mp3")
+    file.original_filename_repaired = "repaired.mp3"
+    await session.commit()
+
+    jobs = await get_compute_lane_running_jobs(session, "vox")
+
+    assert jobs[0]["filename"] == "repaired.mp3"
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_idle_lane_is_empty(session: AsyncSession) -> None:
+    """A backend with no RUNNING rows returns ``[]`` — the drill-down's idle-empty-state acceptance."""
+    await _seed_named_job(session, backend_id="vox", filename="queued.mp3", status=CloudJobStatus.SUBMITTED.value)
+
+    assert await get_compute_lane_running_jobs(session, "vox") == []
+    assert await get_compute_lane_running_jobs(session, "never-configured") == []
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_unattributed_queries_null_backend_id(session: AsyncSession) -> None:
+    """``UNATTRIBUTED_LANE_ID`` queries the NULL-``backend_id`` rows, mirroring the derivation's own collapse."""
+    from phaze.services.agent_liveness import UNATTRIBUTED_LANE_ID
+
+    await _seed_named_job(session, backend_id=None, filename="unattributed.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="attributed.mp3")
+
+    jobs = await get_compute_lane_running_jobs(session, UNATTRIBUTED_LANE_ID)
+
+    assert [job["filename"] for job in jobs] == ["unattributed.mp3"]
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_degrades_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forced query error degrades to ``[]`` with a guarded rollback — never raises (D-00b)."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=SQLAlchemyError("boom")))
+    assert await get_compute_lane_running_jobs(session, "vox") == []

@@ -53,13 +53,72 @@ Consequently ``saq_jobs`` is READ-ONLY here, detail-only, SAVEPOINT-isolated (``
 degrades to a safe default on ANY error; **Alembic NEVER references ``saq_jobs``** (Phase-77 banner
 carried forward -- this plan adds no migration).
 ================================================================================================
+
+================================================================================================
+D-01a AMENDMENT (phaze-2u8v.2) -- a ledger row means SCHEDULED, which is not the same as RUNNING
+================================================================================================
+D-01 above is UNCHANGED and still correct: :func:`inflight_clause` stays ledger-only, ``saq_jobs``
+still never flips it, and the locked ladder / :func:`eligible_clause` / recovery all keep reading
+exactly what they read before. This amendment adds the fact D-01 left unsaid, and the reporting
+predicates that fact requires.
+
+THE MEASUREMENT that forced it (live archive, ``process_file``/analyze lane, 2026-07-28)::
+
+    scheduling_ledger rows for 'process_file'                            4963   <- reported in_flight
+      of which a LIVE (queued/active) saq_jobs row exists                2583   <- SAQ's own truth
+      of which no saq_jobs row but a busy cloud_job (compute dispatch)     58   <- really in flight
+      of which the stage has DOMAIN-COMPLETED (done/skipped/failed)       176   <- resolved, leaked row
+      of which nothing is running and nothing completed                  2146   <- ORPHANED
+
+A ledger row is written at the ``before_enqueue`` chokepoint and deleted ONLY by a terminal-outcome
+callback. It carries no liveness corroboration and no expiry, and until this bead NOTHING anywhere
+reconciled one. So every job that dies without running its terminal clear leaks a ledger row that
+reads ``in_flight`` FOREVER, and the count is monotonically non-decreasing in those leaks. 2145 of
+the 2146 orphans above were enqueued on a single day (2026-06-21, the remediation window of the
+2026-06-18 over-enqueue incident); the 176 resolved rows accrue continuously, and one of their
+producers is ``reap_stuck_aborting_jobs`` itself, which DELETEs the ``saq_jobs`` row to release the
+deterministic key and deliberately leaves the ledger row standing.
+
+RELATION TO CLOSED EPIC phaze-qmc2 -- **NEVER-COVERED, not a regression.** That epic's charter was
+``saq_jobs`` / ``scan_batches`` / ``cloud_job`` status honesty, and all eight of its members touch
+only those three tables. ``scheduling_ledger`` was never brought under its "a row's status must
+describe reality" rule, so its guarantees did not regress here -- they simply stop one table short
+of the table this counter reads.
+
+THE SPLIT. "Scheduled and unresolved" (the ledger) is the union of three populations, and the
+reporting layer must not call all three ``in_flight``:
+
+- RUNNING     -- a live ``saq_jobs`` key, or a busy ``cloud_job`` for compute dispatch that SAQ
+                 cannot see. This, and only this, is in flight.
+- ORPHANED    -- :func:`orphaned_clause`. Previously scheduled, running nowhere, not domain-complete.
+                 Genuinely owed work: the ledger is RIGHT to hold the row (that IS the 2026-06-18
+                 over-enqueue guard) and ``recover_orphaned_work`` is what re-drives it. Already a
+                 first-class concept with its own count (``get_stage_orphan_counts``) and its own
+                 amber rail badge -- so folding it into ``in_flight`` was a DOUBLE-COUNT of an
+                 already-named bucket, not a missing label.
+- RESOLVED    -- :func:`resolved_ledger_clause`. Running nowhere AND domain-complete: the terminal
+                 clear was lost. Pure stale state, safe to reconcile away -- see
+                 :mod:`phaze.tasks.ledger_reaper`.
+
+WHY THIS DOES NOT REOPEN D-01's REJECTED ALTERNATIVE. The rejected design put ``saq_jobs`` inside
+the boolean every reader depends on, which couples the hot poll to broker liveness and re-admits a
+false ``not_started`` on a broker loss. These clauses instead sit OUTSIDE the ``Stage`` dispatch
+ladder (like :func:`dedup_resolved_clause` / :func:`awaiting_candidate_clause`, so the DERIV-04
+equivalence test never picks them up), are consumed ONLY by reporting readers that are already
+SAVEPOINT-isolated and degrade to zero, and are read by NO eligibility or recovery path. On an
+unreadable ``saq_jobs`` the orphan split degrades to 0 and every count reverts to exactly today's
+ledger-only behavior. A broker truncate therefore still leaves those files reading ORPHANED --
+never ``not_started`` -- which is the guarantee D-01's durability rationale actually protects.
+``saq_jobs`` stays READ-ONLY, and it is referenced through a bare :func:`~sqlalchemy.table` clause
+that is NOT attached to ``Base.metadata``, so **Alembic still never sees it**.
+================================================================================================
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, String, and_, case, cast, exists, false, func, not_, or_, select, text
+from sqlalchemy import ColumnElement, String, and_, case, cast, column as sa_column, exists, false, func, not_, or_, select, table as sa_table, text
 import structlog
 
 from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, FAILURE_IS_TERMINAL, Stage, Status
@@ -390,6 +449,117 @@ def awaiting_candidate_clause() -> ColumnElement[bool]:
         ~inflight_clause(Stage.ANALYZE),
         ~domain_completed_clause(Stage.ANALYZE),
     )
+
+
+# D-01a. ``saq_jobs`` is SAQ-owned and deliberately NOT an ORM model: a bare ``table()`` clause keeps
+# it out of ``Base.metadata`` (so Alembic never emits it -- the Phase-77 banner) while still letting the
+# probes below be built from real column objects rather than interpolated SQL. Mirrors the read-only
+# discipline of ``_SAQ_DETAIL_SQL`` / ``pipeline._LIVE_KEYS_SQL``.
+_saq_jobs = sa_table("saq_jobs", sa_column("key"), sa_column("status"))
+
+# The LIVE broker statuses -- spelled identically to ``pipeline._LIVE_KEYS_SQL`` and
+# ``scheduling_ledger._GUARDED_CLEAR_SQL`` so "is this key still live?" has ONE answer everywhere. A
+# parked/paused job keeps ``status='queued'`` and so correctly stays LIVE (it is queued, not lost).
+_LIVE_SAQ_STATUSES: tuple[str, ...] = ("queued", "active")
+
+# D-01a: the ``cloud_job`` statuses that mean "this file is busy on a compute lane". SAQ cannot see
+# compute dispatch at all (there is no controller-side ``saq_jobs`` row for it), so without this
+# disjunct every dispatched file would read ORPHANED. This is ``backends.IN_FLIGHT`` plus AWAITING --
+# a held file is owned by the ``stage_cloud_window`` drain, exactly the fourth exclusion
+# ``_compute_stage_orphan_counts`` applies (phaze-w0yr). Spelled from ``CloudJobStatus`` locally rather
+# than imported from ``services.backends``, which imports ``inflight_clause`` FROM this module (cycle);
+# ``test_stage_status_equivalence`` pins it against ``backends.IN_FLIGHT`` so it cannot drift.
+_CLOUD_BUSY_STATUSES: tuple[str, ...] = (
+    CloudJobStatus.UPLOADING.value,
+    CloudJobStatus.UPLOADED.value,
+    CloudJobStatus.SUBMITTED.value,
+    CloudJobStatus.RUNNING.value,
+    CloudJobStatus.AWAITING.value,
+)
+
+
+def live_job_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return "a LIVE ``saq_jobs`` row exists for this file's ``stage`` key" (D-01a).
+
+    The broker-side corroboration D-01 keeps OUT of :func:`inflight_clause`. Keyed on the SAME
+    deterministic ``"<function>:<file_id>"`` string :func:`inflight_clause` builds, from the SAME
+    :data:`STAGE_TO_FUNCTION` lookup (never a re-spelled prefix), so the two predicates can only ever
+    agree about which key they are talking about. A stage with no per-file ledger key returns
+    ``false()``, matching :func:`inflight_clause`.
+
+    READ-ONLY, and deliberately kept OUT of the ``Stage`` dispatch ladder -- it must never reach
+    :func:`stage_status_case` or :func:`eligible_clause` (D-01a: the rejected alternative). Callers are
+    reporting readers that already own a SAVEPOINT and a zero degrade.
+    """
+    func_name = STAGE_TO_FUNCTION.get(stage.value)
+    if func_name is None:
+        return false()
+    return exists(
+        select(_saq_jobs.c.key).where(
+            _saq_jobs.c.key == func.concat(func_name + ":", cast(FileRecord.id, String)),
+            _saq_jobs.c.status.in_(_LIVE_SAQ_STATUSES),
+        )
+    )
+
+
+def cloud_busy_clause() -> ColumnElement[bool]:
+    """Return "this file is busy on a compute lane" -- a ``cloud_job`` in :data:`_CLOUD_BUSY_STATUSES` (D-01a).
+
+    A FILE-LEVEL predicate (no ``stage`` argument), correlated to :class:`~phaze.models.file.FileRecord`
+    like :func:`dedup_resolved_clause`, and kept out of the ``Stage`` dispatch ladder for the same
+    reason. It exists so :func:`orphaned_clause` never mistakes compute dispatch -- which is invisible to
+    ``saq_jobs`` -- for lost work.
+    """
+    return exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_CLOUD_BUSY_STATUSES)))
+
+
+def running_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return "``stage`` is actually moving somewhere for this file" (D-01a) -- the honest in-flight test.
+
+    ``live_job_clause(stage) OR cloud_busy_clause()``: a live broker row, or a busy compute lane SAQ
+    cannot see. The cloud disjunct is applied ONLY to the cloud-owned stage (analyze / ``process_file``),
+    mirroring the ``_CLOUD_OWNED_FUNCTIONS`` scoping in ``_compute_stage_orphan_counts`` -- applying it to
+    every stage would let a cloud-busy file mask a genuinely lost ``fingerprint_file`` /
+    ``extract_file_metadata`` row that recovery DOES re-drive (phaze-fc2l).
+    """
+    if stage is Stage.ANALYZE:
+        return or_(live_job_clause(stage), cloud_busy_clause())
+    return live_job_clause(stage)
+
+
+def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return the ORPHANED predicate (D-01a): previously scheduled, running nowhere, not domain-complete.
+
+    ``inflight_clause ∧ ¬running_clause ∧ ¬domain_completed_clause`` -- the per-file twin of the
+    ledger-set arithmetic ``_compute_stage_orphan_counts`` performs in Python, and therefore of exactly
+    the set :func:`~phaze.tasks.reenqueue.recover_orphaned_work` would re-enqueue for the stage. Composed
+    ENTIRELY from LOCKED builders plus the one new broker probe, so it can never re-derive a predicate
+    the equivalence test owns.
+
+    This is NOT a sixth :class:`~phaze.enums.stage.Status`. It is a REPORTING refinement carved out of
+    the ``in_flight`` bucket: the derived per-file status, eligibility and recovery are all unchanged, so
+    an orphaned file stays ineligible for auto-enqueue and stays in recovery's work set. Defined only for
+    the three enrich stages (``domain_completed_clause`` raises otherwise), and kept OUT of the ``Stage``
+    dispatch ladder (D-13).
+    """
+    return and_(inflight_clause(stage), not_(running_clause(stage)), not_(domain_completed_clause(stage)))
+
+
+def resolved_ledger_clause(stage: Stage) -> ColumnElement[bool]:
+    """Return the RESOLVED-but-uncleared ledger predicate (D-01a) -- the reaper's target set.
+
+    ``inflight_clause ∧ ¬running_clause ∧ domain_completed_clause``: the stage reached a terminal domain
+    state, nothing is running it, yet the ledger row is still standing -- i.e. its terminal clear was
+    lost (a reaped ``aborting`` row, a crashed callback, ``clear_ledger_entry``'s documented residual
+    window, a broker truncate). Pure stale state: the row is invisible to recovery (which excludes
+    domain-completed rows) while still reporting ``in_flight`` and still blocking the file from
+    :func:`eligible_clause` and :func:`awaiting_candidate_clause` forever.
+
+    The exact complement of :func:`orphaned_clause` on the domain-completion axis -- the two share the
+    ``¬running_clause`` core, so a row can never be BOTH and can never be NEITHER while unresolved.
+    Consumed by :mod:`phaze.tasks.ledger_reaper`. Kept OUT of the ``Stage`` dispatch ladder (D-13).
+    """
+    return and_(inflight_clause(stage), not_(running_clause(stage)), domain_completed_clause(stage))
 
 
 def stage_status_case(stage: Stage) -> ColumnElement[str]:

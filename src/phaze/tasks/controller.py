@@ -41,6 +41,7 @@ from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.discogs import match_tracklist_to_discogs
+from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
@@ -285,6 +286,10 @@ settings = {
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors
         # reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
         reap_stuck_aborting_jobs,
+        # phaze-2u8v.2: the LEDGER-side twin of reap_stuck_aborting_jobs -- clears scheduling_ledger
+        # rows whose stage has finished and which are running nowhere (a lost terminal clear). Cron-only
+        # (mirrors reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
+        reap_resolved_ledger_rows,
         recover_orphaned_work,
         stage_cloud_window,
         # Phase 54 (KSUBMIT-02): the fast kube-submit producer is operator/Phase-55-enqueueable on
@@ -303,6 +308,12 @@ settings = {
         # phaze-e57w: every-minute reaper for zombie 'aborting' SAQ rows (control-only -- needs
         # ctx["async_session"]). Same cadence/shape as reap_stalled_scans.
         CronJob(reap_stuck_aborting_jobs, cron="* * * * *"),  # type: ignore[type-var]
+        # phaze-2u8v.2: every-5-min reconciler for scheduling_ledger rows whose work is FINISHED and
+        # running nowhere -- the clear a lost terminal callback owed. This is emphatically NOT the
+        # forbidden auto-advance cron below: it enqueues NOTHING, and it is structurally incapable of
+        # re-driving work because it only ever touches rows whose stage has already domain-completed.
+        # An ORPHANED row (scheduled, no outcome) is deliberately left alone for the gated Recover path.
+        CronJob(reap_resolved_ledger_rows, cron="*/5 * * * *"),  # type: ignore[type-var]
         # Phase 42 (D-01): the every-5-min ``reenqueue_discovered`` auto-advance cron was REMOVED.
         # With the Phase-36 Postgres broker, queued/active jobs survive a restart, so a steady-state
         # re-enqueue loop would only churn the DB and risk re-doubling work. Recovery is now a SINGLE

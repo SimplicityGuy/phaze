@@ -21,6 +21,12 @@ the two are equivalent once revoked rows are filtered, and
 ``test_default_matches_locked_sort_key`` for the pin that keeps them so.
 ``sort_key`` itself is unchanged and still serves its other callers.
 
+Two panels, one rule about which rows belong where (phaze-2u8v.4): Section 1 is the HEARTBEATING
+table, so it renders only identities a persistent process actually beats for. A ``kind='compute'``
+row that has never checked in belongs to an ephemeral Job-based lane and is represented by Section 2
+instead — see ``_load_agents`` for why that suppression is keyed on the row's KIND rather than on
+registry membership.
+
 Auth posture: NO ``get_authenticated_agent`` dependency — operator pages are
 open on the private LAN (consistent with pipeline.py / pipeline_scans.py
 precedent; CONTEXT.md D-discretion).
@@ -37,7 +43,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import DateTime, Integer, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
-import structlog
 
 from phaze.config import get_settings
 from phaze.database import get_session
@@ -45,7 +50,7 @@ from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import wants_fragment
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds
+from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -54,9 +59,6 @@ from phaze.utils.humanize import relative_time
 # OMITTED (the 7-stage -> 6-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
 # "Exec" in the template. Ordered for the matrix's left-to-right column order.
 _ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
-
-
-logger = structlog.get_logger(__name__)
 
 
 # ``last_seen_at`` with NULL folded to the OLDEST representable instant, so a direction alone decides
@@ -104,13 +106,15 @@ table having re-sorted itself in a direction the operator did not choose. "Actio
 ``resolve()`` is called with NO ``view_state``, which is a deviation from rule 4 worth stating so it is
 not "corrected" later. This table's other view parameter is ``?agent=`` (the drill-in selection), and it
 must NOT ride in ``view_state``, because ``view_state`` feeds :meth:`SortState.poll_url` and the poll is
-exactly where a stale value does damage: a row click swaps only ``#detail-pane``, leaving THIS section's
-server-rendered markup — and therefore its ``poll_url`` — holding the PREVIOUS selection. A baked
-``?agent=`` would re-assert that stale id every 5 seconds and erase the ring the operator just clicked
-(Phase 88 D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search``,
-which htmx inherits to the sort buttons so a header click preserves the open pane too. The two channels
-are kept disjoint because htmx APPENDS ``hx-vals`` onto the ``hx-get`` query string — a key in both
-would be transmitted twice. See ``admin/partials/agents_table.html`` for the same note at the markup.
+exactly where a stale value does damage: the 5s self-poll re-requests THIS handler with no per-row
+knowledge of what the operator last clicked, so a baked ``?agent=`` in ``poll_url()`` would re-assert a
+FROZEN-AT-IMPORT-TIME selection every 5 seconds and erase the ring the operator just clicked (Phase 88
+D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search`` at request
+time, which htmx inherits to the sort buttons so a header click preserves the open row too (phaze-2u8v.6:
+a row click itself overrides this same key with its OWN static ``hx-vals``, naming the row it belongs to
+rather than reading a live value — see ``admin/partials/agents_table.html`` for that override and the
+same disjointness note at the markup). The two channels are kept disjoint because htmx APPENDS
+``hx-vals`` onto the ``hx-get`` query string — a key in both would be transmitted twice.
 """
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -131,6 +135,15 @@ def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | Non
     return agent if agent is not None and any(a.id == agent for a in agents) else None
 
 
+def _resolve_selected_compute_lane(clane: str | None, compute_lanes: list[ComputeLane]) -> str | None:
+    """Resolve the pushed ``?clane=`` id by lookup-in-known-set (mirrors ``_resolve_selected_agent``, phaze-2u8v.5).
+
+    Returns the id only when it names a currently-derived compute lane, so an unknown/absent/hostile
+    id highlights nothing and can never reach a template as a trusted value.
+    """
+    return clane if clane is not None and any(lane.backend_id == clane for lane in compute_lanes) else None
+
+
 async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Agent], datetime]:
     """Load non-revoked Agents, attach transient ``_status``, sort per UI-SPEC LOCKED.
 
@@ -146,22 +159,30 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
     same instant — eliminates a few-microsecond skew that would otherwise
     show up if the template re-evaluated ``datetime.now(UTC)`` separately.
 
-    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row whose id/name matches a
-    non-local registry backend is the SAME cluster now surfaced as a live tile in Section 2. Such a
-    row never heartbeats (it is not a persistent process), so it would otherwise sit ``NEVER`` forever
-    in Section 1 while its lane is live in Section 2 — the "shown twice" defect. We suppress ONLY that
-    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key OR a registry
-    ``agent_ref`` AND ``_status=='never'``. The predicate is deliberately narrow — a genuinely
-    heartbeating compute agent keeps its row, a non-registry NEVER compute row keeps its row, and
-    fileserver rows are untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no
-    schema change. Reading the registry is degrade-safe — a settings failure leaves every row visible
-    rather than raising into the hot poll.
+    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row exists ONLY to authenticate the
+    one-shot ``job_runner`` callbacks of an ephemeral compute lane. Nothing behind it is a persistent
+    process — a Kubernetes Job pod runs, calls back and exits; it never reaches the heartbeat endpoint.
+    So every heartbeat column this table renders for such a row (STATUS / QUEUE / LAST SEEN / SCAN
+    ROOTS) is ``NEVER`` / ``—`` / ``never`` / ``0`` by construction and forever, while the same lane
+    reports ACTIVE with running workloads in Section 2. That contradiction is the "shown twice" defect,
+    and it is what the Section-2 note means by "never as a perpetually-dead agent".
 
-    phaze-ifcr: id/name string equality against the backend's OWN id (``registry_keys``) misses whenever
-    the operator's callback-agent id/name diverges from the backend id it dispatches for — e.g. a kueue
-    backend id ``"vox"`` bound to callback agent ``"k8s-vox"`` (``phaze agents add --kind compute``).
-    ``non_local_backend_agent_refs`` closes that gap with the STRUCTURAL binding (``agent_ref``) instead
-    of name-coincidence, so the shadow row is suppressed regardless of what the operator named it.
+    We therefore suppress exactly that shape — ``kind=='compute'`` AND ``_status=='never'`` — and
+    Section 2 is the sole representation of compute identities. The gate stays on ``_status=='never'``:
+    a compute agent that has EVER heartbeated is a real process and keeps its row in every state,
+    including a genuine ``dead`` after it stops, so a compute node going down is still visible here.
+    Fileserver rows are untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no
+    schema change.
+
+    phaze-2u8v.4: the predicate used to key on REGISTRY MEMBERSHIP — the row was dropped only when its
+    id/name matched a non-local backend id (phaze-zlv) or a backend's bound ``agent_ref`` (phaze-ifcr).
+    That made a display invariant depend on operator configuration, and both keys missed in the deployed
+    registry: the kueue ``agent_ref`` binding was OPTIONAL and left unset there, and a lane that has been
+    disabled (its ``[[backends]]`` block commented out) leaves its callback Agent row behind with NO
+    registry key that can ever match. Both k8s rows leaked into Section 1 as perpetually-dead — the
+    filter that was supposed to catch them had, in production, never once fired. Whether a row can
+    heartbeat is a property of its KIND, not of what the operator happened to name it or of whether its
+    cluster is currently enabled — so the suppression is now structural and reads no config at all.
     """
     # ORDER BY lands in SQL (sort contract rule 1), reached only through a whitelisted expression.
     # Agent.id is the tiebreaker: an operator-chosen key ties heavily (every fileserver agent shares a
@@ -177,22 +198,7 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
         # the DB and is safe even if a future migration adds a real
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
-    try:
-        settings = get_settings()
-        registry_keys = set(non_local_backend_kinds(settings))  # type: ignore[arg-type]
-        registry_agent_refs = set(non_local_backend_agent_refs(settings))  # type: ignore[arg-type]
-    except Exception:
-        # A registry/settings read failure must never break the operator poll: leave every row
-        # visible (the shadow row reappears, but the page still renders) rather than raise.
-        logger.warning("agents_registry_shadow_filter_unavailable", exc_info=True)
-        registry_keys = set()
-        registry_agent_refs = set()
-    shadow_keys = registry_keys | registry_agent_refs
-    rows = [
-        a
-        for a in rows
-        if not (a.kind == "compute" and a._status == "never" and (a.id in shadow_keys or a.name in shadow_keys))  # type: ignore[attr-defined]
-    ]
+    rows = [a for a in rows if not (a.kind == "compute" and a._status == "never")]  # type: ignore[attr-defined]
     # No Python re-sort: the order arrived from SQL above. Filtering never reorders a list, so the
     # shadow-row removal preserves the ORDER BY rather than needing it re-applied.
     return rows, now
@@ -203,6 +209,7 @@ async def page(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    clane: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
@@ -243,6 +250,9 @@ async def page(
             # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
             # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
             "selected_agent": _resolve_selected_agent(agent, agents),
+            # phaze-2u8v.5: same lookup-in-known-set idiom for the ?clane= compute-lane selection, so a
+            # reload re-opens the dedicated #compute-lane-pane on the previously-selected burst lane.
+            "selected_compute_lane": _resolve_selected_compute_lane(clane, compute_lanes),
             "sort": sort_state,
             "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
@@ -254,6 +264,7 @@ async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    clane: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
@@ -294,6 +305,7 @@ async def table_partial(
             "refreshed_at_iso": now.isoformat(),
             "compute_lanes": compute_lanes,
             "selected_agent": _resolve_selected_agent(agent, agents),
+            "selected_compute_lane": _resolve_selected_compute_lane(clane, compute_lanes),
             "sort": sort_state,
         },
     )
@@ -305,12 +317,15 @@ async def agent_activity(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_id: str,
 ) -> HTMLResponse:
-    """Render the agent-activity body fragment swapped into the shared ``#detail-pane`` shell (DRILL-02).
+    """Render the agent-activity body fragment swapped into its expanded-row slot (DRILL-02).
 
-    The wave-2 body for plan 88-01's non-modal detail pane: the agent-row trigger's
-    ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS fragment into ``#detail-pane``, and
-    the fragment carries its OWN bounded ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint
-    returns the body directly, NOT the shell (the 88-01 shell is a static host with no body slot).
+    phaze-2u8v.6: the wave-2 body for the agents-table EXPANDED ROW
+    (``admin/partials/_agent_detail_row.html``), which replaced the shared non-modal ``#detail-pane``
+    side panel for this surface. The agent-row trigger opens the row by re-fetching the whole table
+    (``agents_table.html``); the row's own ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS
+    fragment into its per-agent slot ``#agent-activity-{id}``, and the fragment carries its OWN bounded
+    ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint returns the body directly, NOT the
+    row's chrome (the row is a static host with no body slot of its own).
 
     For a found agent the fragment stacks (D-05): liveness header (``classify`` transient ``_status`` +
     kind badge + last-seen) → a per-agent 6-stage COUNT matrix (one indexed ``GROUP BY stage_status_case``
@@ -319,8 +334,8 @@ async def agent_activity(
     a friendly empty fragment at **200** (mirroring the sibling ``lane_detail`` never-error posture, T-88-07)
     — NEVER an ``HTTPException`` / JSON / 500 — and an agent owning 0 files renders the "owns no files yet"
     empty state. The 200 (not 404) is load-bearing: the ``/admin/agents`` page has no htmx 404 swap opt-in
-    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not ``#detail-pane``), so a 404
-    fragment would be DISCARDED — the pane would keep stale content and the self-poll would 404-loop forever
+    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not this row's slot), so a 404
+    fragment would be DISCARDED — the row would keep stale content and the self-poll would 404-loop forever
     on an agent revoked mid-view (WR-01/WR-02). The not-found fragment carries NO own-tick, so returning it
     at 200 terminates the poll loop cleanly.
 
@@ -357,5 +372,46 @@ async def agent_activity(
             "queue_depths": queue_depths,
             "recent_scans": recent_scans,
             "refreshed_at_iso": now.isoformat(),
+        },
+    )
+
+
+@router.get("/compute-lanes/{backend_id}", response_class=HTMLResponse)
+async def compute_lane_detail(
+    request: Request,
+    backend_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    """Return the burst-lane workload drill-down fragment, innerHTML-swapped into the dedicated ``#compute-lane-pane`` (phaze-2u8v.5).
+
+    The burst-lane panel's "N workloads · N running" tally had no way to see WHAT was running — an
+    operator could see that work existed but not act on it. This mirrors the sibling drill-down
+    endpoints (``lane_detail`` / ``agent_activity``): the compute-lane card's ``hx-get`` swaps THIS
+    fragment into ``admin/partials/_compute_lane_pane.html``'s ``#compute-lane-pane`` (a DEDICATED
+    fixed/slide-in shell, not the Analyze workspace's shared 88-01 ``_detail_pane.html`` — see that
+    partial's docstring for why), and the fragment carries its own bounded ``hx-trigger="every 5s"``
+    self-refresh (D-03).
+
+    ``backend_id`` is resolved by lookup-in-known-set against :func:`derive_compute_lane_identities`
+    (T-88-03 idiom): an unknown/stale id (a backend removed from the registry mid-view) renders the
+    friendly "Compute lane offline" empty fragment at 200 — never a 404/500 — so a poll never breaks
+    on a since-removed backend. A resolved lane lists its RUNNING workloads via
+    :func:`get_compute_lane_running_jobs`, each identified by the file it is processing rather than
+    just a count; an IDLE lane (0 running) renders the plain "No workloads currently running" empty
+    state, satisfying the idle-as-well-as-active acceptance.
+
+    Read-only — no commit.
+    """
+    lanes = await derive_compute_lane_identities(session)
+    lane = next((one for one in lanes if one.backend_id == backend_id), None)
+    running_jobs = await get_compute_lane_running_jobs(session, backend_id) if lane is not None else []
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/partials/_compute_lane_detail.html",
+        context={
+            "lane": lane,
+            "backend_id": backend_id,
+            "running_jobs": running_jobs,
+            "refreshed_at": datetime.now(UTC),
         },
     )

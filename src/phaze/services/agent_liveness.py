@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -51,6 +51,7 @@ import structlog
 from phaze.config import get_settings
 from phaze.constants import AGENT_LIVENESS_ALIVE_SECONDS, AGENT_LIVENESS_STALE_SECONDS
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
+from phaze.models.file import FileRecord
 
 
 if TYPE_CHECKING:
@@ -186,20 +187,6 @@ def non_local_backend_kinds(settings: ControlSettings) -> dict[str, str]:
     return {backend.id: backend.kind for backend in settings.backends if backend.kind != "local"}
 
 
-def non_local_backend_agent_refs(settings: ControlSettings) -> dict[str, str]:
-    """Return ``{agent_ref: backend_id}`` for every non-local registry entry that binds an ``agent_ref`` (phaze-ifcr).
-
-    Structural (not name-coincidence) companion to :func:`non_local_backend_kinds`: a bearer-token
-    ``kind='compute'`` Agent row's id is the operator's free choice at ``phaze agents add --kind
-    compute`` (e.g. backend id ``"vox"`` bound to callback agent ``"k8s-vox"``), so the COMPUTE-01
-    shadow-row filter in ``routers.admin_agents`` cannot rely on id/name string equality against the
-    backend's own id alone. ``ComputeBackend.agent_ref`` is REQUIRED (REG-02); ``KueueBackend.agent_ref``
-    is OPTIONAL (backward-compatible with pre-existing ``[kube]`` config) and simply contributes nothing
-    here when unset. ``getattr`` guards against any future non-local variant that never grows the field.
-    """
-    return {agent_ref: backend.id for backend in settings.backends if backend.kind != "local" and (agent_ref := getattr(backend, "agent_ref", None))}
-
-
 async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeLane]:
     """Return one :class:`ComputeLane` per non-local registry backend + a trailing unattributed lane (COMPUTE-01).
 
@@ -251,8 +238,73 @@ async def derive_compute_lane_identities(session: AsyncSession) -> list[ComputeL
     if null_running or null_waiting:
         lanes.append(
             ComputeLane(
-                backend_id="unattributed", kind="cloud", state=_lane_state(null_running, null_waiting), running=null_running, waiting=null_waiting
+                backend_id=UNATTRIBUTED_LANE_ID,
+                kind="cloud",
+                state=_lane_state(null_running, null_waiting),
+                running=null_running,
+                waiting=null_waiting,
             )
         )
 
     return lanes
+
+
+# --- phaze-2u8v.5: burst-lane workload drill-down --------------------------------------------
+#
+# The compute/burst-lane panel (Section 2 of /admin/agents) used to report only a bare count
+# ("3 workloads · 3 running") with no way to see WHAT was running -- an operator could see that
+# work existed but not act on it. This is the degrade-safe read behind that drill-down.
+
+UNATTRIBUTED_LANE_ID = "unattributed"
+"""The synthetic backend id for in-flight ``CloudJob`` rows with a NULL ``backend_id`` (pre-
+attribution rows, or rows from a since-removed registry backend). Shared by
+:func:`derive_compute_lane_identities` (which emits the trailing lane under this id) and
+:func:`get_compute_lane_running_jobs` (which must query the SAME NULL-``backend_id`` rows when
+asked to drill into it)."""
+
+COMPUTE_LANE_RUNNING_N = 50
+"""Bounded cap on the drill-down's running-workload list (mirrors ``services.backends.LANE_RECENT_N``'s
+shape) -- predictable render cost under any throughput. A lane genuinely running more files than this
+at once is far beyond any single compute backend's configured ``cap`` in practice."""
+
+
+async def get_compute_lane_running_jobs(session: AsyncSession, backend_id: str, limit: int = COMPUTE_LANE_RUNNING_N) -> list[dict[str, Any]]:
+    """Return up to ``limit`` in-flight (RUNNING) workloads for a compute/burst lane, each identifying its file.
+
+    One row per ``RUNNING`` :class:`CloudJob` attributed to ``backend_id``, joined to its
+    :class:`FileRecord` for the display filename (``COALESCE(original_filename_repaired,
+    original_filename)`` -- the same expression :mod:`phaze.services.search_queries` uses). Newest-
+    first by ``updated_at``, with ``CloudJob.id`` as a tiebreaker for a total order (mirrors
+    :func:`phaze.services.backends.get_lane_recent_completions`).
+
+    ``backend_id == UNATTRIBUTED_LANE_ID`` queries ``CloudJob.backend_id IS NULL`` instead of
+    equality -- the same NULL collapse :func:`derive_compute_lane_identities` performs for its
+    trailing lane.
+
+    Degrade-safe (KDEPLOY-04 sibling): any query error rolls back and returns ``[]`` rather than
+    raising into the hot 5s tick -- an operator drilling into a lane during a DB hiccup sees an
+    empty list, never a 500. Secret-free: only the CloudJob/FileRecord scalars needed to identify
+    the file leave here.
+    """
+    try:
+        display_filename = func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename)
+        stmt = (
+            select(CloudJob.file_id, display_filename.label("filename"), CloudJob.kueue_workload, CloudJob.updated_at)
+            .join(FileRecord, FileRecord.id == CloudJob.file_id)
+            .where(CloudJob.status == CloudJobStatus.RUNNING.value)
+            .order_by(CloudJob.updated_at.desc(), CloudJob.id.desc())
+            .limit(limit)
+        )
+        stmt = stmt.where(CloudJob.backend_id.is_(None)) if backend_id == UNATTRIBUTED_LANE_ID else stmt.where(CloudJob.backend_id == backend_id)
+        rows = (await session.execute(stmt)).all()
+    except SQLAlchemyError:
+        logger.warning("compute_lane_running_jobs_degraded", backend_id=backend_id, exc_info=True)
+        try:
+            await session.rollback()
+        except SQLAlchemyError:
+            logger.warning("compute_lane_running_jobs_rollback_failed", backend_id=backend_id, exc_info=True)
+        return []
+    return [
+        {"file_id": file_id, "filename": filename, "kueue_workload": kueue_workload, "updated_at": updated_at}
+        for file_id, filename, kueue_workload, updated_at in rows
+    ]

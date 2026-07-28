@@ -15,18 +15,21 @@
        inside the polled #agents-table-section partial below, so BOTH sections refresh on the
        existing 5s self-poll with no new loop (RESEARCH OQ-1). The prior Phase-56 STATIC k8s
        note is superseded by that LIVE Section 2. #}
-    {# Phase 88 (88-01, DRILL-03 / D-01): the polled #agents-table-section and the shared #detail-pane sit
-       side by side on lg+ (col-span-2 / col-span-1 of 3), stacked on < lg. The pane lives OUTSIDE the
-       #agents-table-section outerHTML poll root (wrapping div only), so the 5s self-poll re-renders the
-       table without touching the pane. Same _detail_pane.html partial as the Analyze host, pane_kind='agent'. #}
-    <div class="lg:grid lg:grid-cols-3 lg:items-start lg:gap-4">
-        <div class="lg:col-span-2">
-            {% include "admin/partials/agents_table.html" %}
-        </div>
-        <div class="lg:col-span-1">
-            {% with pane_kind = 'agent' %}{% include "pipeline/partials/_detail_pane.html" %}{% endwith %}
-        </div>
-    </div>
+    {# phaze-2u8v.6: the agents table's OWN detail is an EXPANDED ROW beneath its selected agent
+       (admin/partials/_agent_detail_row.html, included from agents_table.html) rather than a side
+       panel — it is tabular data, so its detail belongs inline with the row it describes. This used
+       to share the Analyze workspace's _detail_pane.html shell (pane_kind='agent'); that side-by-side
+       column layout is gone along with it, and the table now renders at full width.
+
+       phaze-2u8v.5: Section 2 (the compute/burst-lane CARD grid, compute_lanes.html included from
+       agents_table.html) is a card grid, not a table, so its own drill-down IS a side panel — but it is
+       its OWN dedicated shell (admin/partials/_compute_lane_pane.html), deliberately NOT a reuse of the
+       Analyze workspace's _detail_pane.html/pane_kind mechanism (test_agent_expanded_row.py locks this
+       page to never wire that shared file/variable back in). It follows the SAME fixed, non-reflowing,
+       slide-in-from-the-right pattern .6 established (position: fixed, so it needs no grid column and
+       can never reflow the table above it), just as an independent copy scoped to this one caller. #}
+    {% include "admin/partials/agents_table.html" %}
+    {% include "admin/partials/_compute_lane_pane.html" %}
 </div>
 
 {# CLEAN-01 (D-09/D-10/D-11): discreet flag-gated footer link to the still-mounted /saq SAQ

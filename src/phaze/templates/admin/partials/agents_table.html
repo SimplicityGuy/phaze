@@ -20,6 +20,10 @@
 {# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
    and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
 {% set selected_agent = selected_agent | default(none) %}
+{# phaze-2u8v.5: same lookup-in-known-set idiom for the ?clane= compute-lane selection, threaded through
+   the identical hx-vals channel as ?agent= below so the shared #detail-pane selection survives THIS
+   section's own 5s outerHTML poll (Section 2 lives inside this same swap root). #}
+{% set selected_compute_lane = selected_compute_lane | default(none) %}
 {# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD, via the SHARED spelling.
 
    This section re-swaps ITSELF every 5s with hx-swap="outerHTML" and never halts, so the sort is not
@@ -33,13 +37,15 @@
    recent-scans table on the identical hazard.
 
    ?agent= is deliberately NOT in the contract's view_state, and this is the one place this table
-   differs from its siblings. The selected agent is pushed into the URL by a row click that swaps only
-   #detail-pane — this <section> is NOT re-rendered then, so its server-rendered poll_url still holds
-   the PREVIOUS selection. Baking ?agent= into poll_url would therefore re-assert a stale id every 5s
-   and drop the drill-in ring the operator just clicked (Phase 88 D-02). It stays in hx-vals, read live
-   from location.search at request time. htmx inherits hx-vals to descendants, so the sort buttons
-   below send the live selection too — which is what keeps a header click from closing the open pane
-   (contract rule 4) without either producer hard-coding the parameter.
+   differs from its siblings. The `hx-get="{{ sort.poll_url() }}"` above is emitted ONCE per render
+   and then sits dormant in the DOM until its OWN 5s timer fires — an operator can drill into a
+   DIFFERENT row (or dismiss the open one) any time in that window purely via hx-vals + a pushed URL,
+   with no server round trip re-rendering this attribute. Baking ?agent= into poll_url would freeze
+   whatever selection was true at THIS render and re-assert it every 5s regardless of what happened
+   since, silently reverting the operator's most recent click or dismissal (Phase 88 D-02). It stays
+   in hx-vals, read live from location.search at request time. htmx inherits hx-vals to descendants,
+   so the sort buttons below send the live selection too — which is what keeps a header click from
+   closing the open row (contract rule 4) without either producer hard-coding the parameter.
 
    The two mechanisms must stay disjoint: htmx APPENDS hx-vals to the hx-get query string, so a key
    appearing in BOTH poll_url() and hx-vals would be sent twice and the handler would read whichever
@@ -47,7 +53,7 @@
 <section id="agents-table-section"
          hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
-         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent"), clane: new URLSearchParams(location.search).get("clane")}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
@@ -111,15 +117,30 @@
                 {# Phase 88 (88-01, DRILL-03 / D-09): the row is the keyboard-accessible drill-in trigger.
                    selected_agent is re-derived from ?agent= by the #agents-table-section self-poll (D-02)
                    so the ring survives every 5s outerHTML swap; unknown/absent id highlights nothing.
-                   agent.id/name stay Jinja-autoescaped (never |safe). #}
+                   agent.id/name stay Jinja-autoescaped (never |safe).
+
+                   phaze-2u8v.6: the click re-fetches the WHOLE table (hx-target="#agents-table-section"
+                   hx-swap="outerHTML") rather than innerHTML-swapping just the activity fragment into a
+                   shared side pane — the agents-table detail is now an EXPANDED ROW
+                   (_agent_detail_row.html), and that row's swap target does not exist in the DOM until
+                   selected_agent resolves to this agent, so the click must re-render the section that
+                   decides whether it exists at all. `hx-vals` here is a PLAIN (non-`js:`) object naming
+                   THIS row's own id, overriding (not adding to) the section's ambient
+                   `js:{agent: new URLSearchParams(...)}` below — htmx resolves hx-vals from the closest
+                   ancestor first, so this is the row's chosen NEW selection, never doubled up with the
+                   section's live-but-stale one (see admin_agents.py:AGENTS_SORT docstring on why the two
+                   channels must stay disjoint). `sort.poll_url()` re-states the CURRENT sort/order (a
+                   click is a re-read of the active view plus one new selection, not a re-sort). #}
                 <tr id="agent-trigger-{{ agent.id }}"
                     role="button"
                     tabindex="0"
                     aria-label="Open agent {{ agent.name }} activity"
+                    aria-expanded="{{ 'true' if selected_agent == agent.id else 'false' }}"
                     {% if selected_agent == agent.id %}aria-current="true"{% endif %}
-                    hx-get="/admin/agents/{{ agent.id }}/_activity"
-                    hx-target="#detail-pane"
-                    hx-swap="innerHTML"
+                    hx-get="{{ sort.poll_url() }}"
+                    hx-vals='{"agent": "{{ agent.id }}"}'
+                    hx-target="#agents-table-section"
+                    hx-swap="outerHTML"
                     {# query_state() appends "&sort=..&order=..", the pager-side half of contract rule 4.
                        Without it this push would rewrite the URL to a sort-less "?agent=<id>", so a
                        reload after drilling into a row would drop the operator back into the default
@@ -145,6 +166,9 @@
                     <td class="px-4 py-3">{{ agent.scan_roots | length }}</td>
                     <td class="px-4 py-3"></td>
                 </tr>
+                {% if selected_agent == agent.id %}
+                {% include "admin/partials/_agent_detail_row.html" %}
+                {% endif %}
                 {% endfor %}
             </tbody>
         </table>

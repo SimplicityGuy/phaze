@@ -943,10 +943,10 @@ async def lane_detail(
     :func:`get_backend_lane_snapshot` (T-88-03): an unknown/offline id renders the friendly "Lane
     offline" empty fragment (200, HTML -- never a 500/JSON/HTTPException, never a raw-param-driven read),
     so htmx still swaps a body into the pane. For a resolved lane the kind-adaptive body renders the
-    last ``LANE_RECENT_N`` newest-first succeeded completions (compute/kueue only, D-07) and the per-lane
-    queue depths; every read is bounded + degrade-safe (D-00b) and the body carries its own bounded 5s
-    tick (D-03). Read-only -- no commit. Only secret-free snapshot scalars + completion status/timestamps
-    leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
+    last ``LANE_RECENT_N`` newest-first completions -- ALL lane kinds, including local (phaze-2u8v.3;
+    D-07) -- and the per-lane queue depths; every read is bounded + degrade-safe (D-00b) and the body
+    carries its own bounded 5s tick (D-03). Read-only -- no commit. Only secret-free filename/timestamp/id
+    scalars leave here (T-88-04); ``backend_id``/``kind`` stay Jinja-autoescaped (T-88-05).
     """
     lanes = await get_backend_lane_snapshot(session)  # degrade-safe -> []
     lane = next((one for one in lanes if one["id"] == backend_id), None)
@@ -959,12 +959,17 @@ async def lane_detail(
                 "backend_id": backend_id,
                 "recent_completions": [],
                 "queue_depths": {},
+                "queue_depths_agent": None,
+                "queue_depths_note": None,
                 "refreshed_at": None,
                 "recent_n": LANE_RECENT_N,
             },
         )
     recent_completions = await get_lane_recent_completions(session, backend_id, lane["kind"])
-    queue_depths = await get_lane_queue_depths(request.app.state, backend_id)
+    # phaze-2u8v.1: the depths are read off the AGENT this lane's dispatch actually enqueues to (a local
+    # lane -> the live fileserver agent), never off the registry id. ``depths is None`` is "this lane has
+    # no SAQ queue", carried to the template as a NOTE -- the template must not render it as zeros.
+    queue_depths = await get_lane_queue_depths(session, request.app.state, backend_id, lane["kind"])
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/_lane_detail.html",
@@ -972,7 +977,9 @@ async def lane_detail(
             "lane": lane,
             "backend_id": backend_id,
             "recent_completions": recent_completions,
-            "queue_depths": queue_depths,
+            "queue_depths": queue_depths.depths,
+            "queue_depths_agent": queue_depths.agent_id,
+            "queue_depths_note": queue_depths.note,
             "refreshed_at": datetime.now(UTC),
             "recent_n": LANE_RECENT_N,
         },

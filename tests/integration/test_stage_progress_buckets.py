@@ -38,6 +38,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.enums.stage import Status
@@ -140,18 +141,38 @@ async def _file(session: AsyncSession, *, file_type: str = "mp3") -> FileRecord:
     return rec
 
 
-async def _ledger(session: AsyncSession, stage: str, file: FileRecord) -> None:
-    """Seed a scheduling_ledger row on the deterministic ``<function>:<file_id>`` key (in_flight bucket)."""
-    func_name = STAGE_TO_FUNCTION[stage]
-    session.add(
-        SchedulingLedger(
-            key=f"{func_name}:{file.id}",
-            function=func_name,
-            routing="agent",
-            payload={"file_id": str(file.id)},
-        )
-    )
+# phaze-2u8v.2 / D-01a: an ``in_flight`` file is now a ledger row PLUS live work -- a ledger row with no
+# live ``saq_jobs`` key and no busy ``cloud_job`` is ORPHANED (scheduled, then lost), reported in its own
+# bucket instead of masquerading as in-flight. So the in-flight seed must write BOTH rows. ``saq_jobs`` is
+# SAQ-owned and absent from ``Base.metadata``, and sibling suites create it with differing schemas, so the
+# table is DROP+CREATEd to pin the shape this module controls (idiom from tests/shared/routers/test_pipeline.py);
+# the drop is undone when the per-test transaction rolls back. Only key/status are read by the code under test.
+_PIN_SAQ_JOBS = (
+    text("DROP TABLE IF EXISTS saq_jobs"),
+    text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"),
+)
+
+
+async def _pin_saq_jobs(session: AsyncSession) -> None:
+    """Pin a module-controlled ``saq_jobs`` table so the in-flight seed can register live work."""
+    for stmt in _PIN_SAQ_JOBS:
+        await session.execute(stmt)
     await session.flush()
+
+
+async def _live_job(session: AsyncSession, key: str) -> None:
+    """Register ``key`` as a LIVE (active) broker row -- the liveness half of an in-flight seed."""
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"), {"key": key})
+    await session.flush()
+
+
+async def _ledger(session: AsyncSession, stage: str, file: FileRecord) -> None:
+    """Seed the ledger row + a LIVE broker row on ``<function>:<file_id>`` (the in_flight bucket)."""
+    func_name = STAGE_TO_FUNCTION[stage]
+    key = f"{func_name}:{file.id}"
+    session.add(SchedulingLedger(key=key, function=func_name, routing="agent", payload={"file_id": str(file.id)}))
+    await session.flush()
+    await _live_job(session, key)
 
 
 async def _seed_mixed_corpus(session: AsyncSession) -> dict[str, int]:
@@ -162,6 +183,7 @@ async def _seed_mixed_corpus(session: AsyncSession) -> dict[str, int]:
     caller can assert the four-bucket sum. A single non-music file is added to prove it is EXCLUDED
     from every enrich total (music/video scope, Pitfall 1).
     """
+    await _pin_saq_jobs(session)
     # 3 bare music files -> not_started for all three enrich stages.
     for _ in range(3):
         await _file(session)

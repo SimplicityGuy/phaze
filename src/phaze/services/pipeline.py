@@ -16,7 +16,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
-from phaze.enums.stage import Stage, Status
+from phaze.enums.stage import ELIGIBLE_AFTER_FAILURE, Stage, Status
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
@@ -40,6 +40,7 @@ from phaze.services.stage_status import (
     eligible_clause,
     failed_clause,
     inflight_clause,
+    orphaned_clause,
     stage_status_case,
 )
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
@@ -364,6 +365,67 @@ async def _safe_count(session: AsyncSession, stmt: Select[Any], *, node: str) ->
         return 0
 
 
+# phaze-2u8v.2 / D-01a: the SIXTH reporting bucket, carved out of ``in_flight``. It is deliberately NOT
+# a :class:`~phaze.enums.stage.Status` member -- the derived per-file status, ``eligible_clause`` and
+# recovery are all unchanged; this is a reporting refinement only (see the D-01a record in
+# ``services/stage_status.py``). Keeping it out of ``Status`` is what stops it perturbing the DERIV-04
+# equivalence lock, the per-file pill ladder and the over-enqueue guard.
+ORPHANED_BUCKET = "orphaned"
+
+
+def _empty_buckets() -> dict[str, int]:
+    """Return the zero-filled SIX-key reporting bucket dict (the five ``Status`` values + ``orphaned``)."""
+    out: dict[str, int] = {s.value: 0 for s in Status}
+    out[ORPHANED_BUCKET] = 0
+    return out
+
+
+async def _safe_orphan_split(session: AsyncSession, stage: Stage, buckets: dict[str, int], *, agent_id: str | None = None) -> None:
+    """Move ``stage``'s ORPHANED files out of the ``in_flight`` bucket, in place. Degrade-safe (D-01a).
+
+    ``in_flight`` as derived by :func:`~phaze.services.stage_status.stage_status_case` is bare
+    scheduling-ledger existence, which is "scheduled and unresolved" -- the UNION of work that is really
+    running and work that was scheduled and then lost. On the live archive that second population had
+    grown to 2146 of 4963 analyze rows, so the counter contradicted SAQ by more than a factor of two.
+    This carves the lost half out into :data:`ORPHANED_BUCKET` using
+    :func:`~phaze.services.stage_status.orphaned_clause`, whose set is definitionally the one
+    ``recover_orphaned_work`` re-drives.
+
+    NOT a relabelling and NOT a subtraction that loses files: the six buckets still sum to the same
+    total, ``in_flight`` now means what its name says, and the carved-out count is rendered as its own
+    cell next to it.
+
+    Relationship to :func:`get_stage_orphan_counts` (the amber rail badge): SAME definition, different
+    scope and substrate. That one materializes the whole ledger in Python and counts EVERY row for the
+    stage's function; this one is the SQL twin restricted to the music/video corpus the bucket dict is
+    defined over (and, in :func:`_agent_stage_buckets`, to one agent). The two therefore agree except
+    on ledger rows for files outside that scope -- which is the correct behavior for a per-corpus
+    bucket, not a drift. Both are pinned to recovery's candidate set by their own tests.
+
+    Degrade discipline (the whole point of doing this HERE rather than inside the locked CASE ladder):
+    the count runs in its own SAVEPOINT and ANY error -- most plausibly an unreadable/absent ``saq_jobs``
+    in a pre-migration or test environment -- leaves ``orphaned`` at 0 and ``in_flight`` at exactly
+    today's ledger-only value. Only the three enrich stages have a per-file ledger key; every other stage
+    is a no-op (``orphaned_clause`` raises on them by design).
+    """
+    if stage not in ELIGIBLE_AFTER_FAILURE:  # enrich stages only -- orphaned_clause raises on downstream
+        return
+    stmt = select(func.count()).select_from(FileRecord).where(FileRecord.file_type.in_(MUSIC_VIDEO_TYPES)).where(orphaned_clause(stage))
+    if agent_id is not None:
+        stmt = stmt.where(FileRecord.agent_id == agent_id)
+    try:
+        async with session.begin_nested():
+            orphaned = int((await session.execute(stmt)).scalar() or 0)
+    except Exception:
+        logger.warning("stage_orphan_split_degraded", stage=stage.value, agent_id=agent_id, exc_info=True)
+        return
+    # Clamp: the bucket read and this count are separate statements, so a concurrent enqueue between
+    # them could in principle report more orphans than in-flight. Never publish a negative in_flight.
+    orphaned = min(orphaned, buckets[Status.IN_FLIGHT.value])
+    buckets[ORPHANED_BUCKET] = orphaned
+    buckets[Status.IN_FLIGHT.value] -= orphaned
+
+
 async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, int]:
     """Return the five-way ``{not_started, in_flight, done, skipped, failed}`` count for ``stage``, degrade-safe.
 
@@ -382,7 +444,7 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
     degrade the five buckets intentionally do NOT sum to ``music_video_total``; the sum-to-total
     invariant is a healthy-query property only, NEVER a runtime assertion in the poll path (Pitfall 3).
     """
-    out: dict[str, int] = {s.value: 0 for s in Status}
+    out: dict[str, int] = _empty_buckets()
     # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the label in the
     # outer query. Grouping directly by ``stage_status_case(stage)`` fails on Postgres -- the CASE ladder
     # embeds correlated ``exists(... == FileRecord.id)`` subqueries, and a top-level GROUP BY on that
@@ -401,6 +463,10 @@ async def _safe_bucket_counts(session: AsyncSession, stage: Stage) -> dict[str, 
             await session.rollback()
         except Exception:
             logger.warning("stage_bucket_rollback_failed", stage=stage.value, exc_info=True)
+        return out
+    # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight (own SAVEPOINT, own zero degrade). Skipped on
+    # the degrade path above -- all-zero buckets have nothing to split, and the session may be recovering.
+    await _safe_orphan_split(session, stage, out)
     return out
 
 
@@ -429,7 +495,7 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     render on the next lazy load (CR-01) -- exactly the hazard :func:`get_agent_recent_scans` guards
     against on the same object.
     """
-    out: dict[str, int] = {s.value: 0 for s in Status}
+    out: dict[str, int] = _empty_buckets()
     # Materialize the per-row status label in an inner subquery FIRST, then GROUP BY the scalar label in
     # the outer query -- grouping directly by ``stage_status_case(stage)`` fails on Postgres (the CASE
     # ladder embeds correlated ``exists(... == FileRecord.id)`` subqueries; a top-level GROUP BY re-projects
@@ -454,6 +520,9 @@ async def _agent_stage_buckets(session: AsyncSession, agent_id: str, stage: Stag
     for status_label, n in rows:
         if status_label in out:
             out[status_label] = int(n)
+    # phaze-2u8v.2 / D-01a: carve ORPHANED out of in_flight, scoped to THIS agent's files (the same
+    # single ``agent_id`` conjunct that scopes the bucket read above). Own SAVEPOINT, own zero degrade.
+    await _safe_orphan_split(session, stage, out, agent_id=agent_id)
     return out
 
 
@@ -657,7 +726,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     # The all-zero enrich-bucket default returned when a bucket read's session acquisition times out
     # (never mutated -- only spread via {**bucket, "total": ...}).
-    bucket_default: dict[str, int] = {s.value: 0 for s in Status}
+    bucket_default: dict[str, int] = _empty_buckets()
 
     # ONE semaphore shared across every read in THIS poll so the cap bounds them collectively (fresh
     # per poll, bound to the running loop -- see _stats_fanout).

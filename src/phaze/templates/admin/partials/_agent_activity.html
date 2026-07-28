@@ -1,9 +1,11 @@
 {# Phase 88 (88-03, DRILL-02 / D-04 / D-05 / D-03): the agent-activity BODY fragment.
 
-   The wave-2 body for plan 88-01's shared non-modal #detail-pane shell. The agent-row trigger
-   (agents_table.html) hx-get="/admin/agents/{id}/_activity" innerHTML-swaps THIS fragment into
-   #detail-pane; the shell's #detail-pane hx-on::after-swap re-inits Alpine + fires onLoaded()
-   (open + heading-focus). This fragment therefore renders the body ONLY (never the shell chrome).
+   phaze-2u8v.6: the wave-2 body for the agents-table EXPANDED ROW
+   (admin/partials/_agent_detail_row.html), which replaced the shared non-modal #detail-pane side panel
+   for this surface. The agent-row trigger (agents_table.html) opens the row by re-fetching the whole
+   table; the row's own swap target (hx-get="/admin/agents/{id}/_activity") innerHTML-swaps THIS
+   fragment into #agent-activity-{id}, and the row's hx-on::after-swap re-inits Alpine. This fragment
+   therefore renders the body ONLY (never the row's chrome/close-button).
 
    D-05 stacked section order (everything visible on open, scroll for depth):
      (1) liveness header  — kind badge + status pill + last-seen
@@ -13,8 +15,8 @@
      (4) recent scan batches — newest-first, bounded
 
    D-03 own-tick: the root carries its OWN bounded hx-trigger="every 5s" re-fetching this endpoint
-   into #detail-pane (removed with the pane on dismiss — no orphan loop). "Last refreshed Ns ago"
-   reuses the agents_table.html:82-86 Alpine setInterval countdown.
+   into #agent-activity-{id} (removed with the row on dismiss — no orphan loop). "Last refreshed Ns
+   ago" reuses the agents_table.html:82-86 Alpine setInterval countdown.
 
    THE 7-STAGE -> 6-PILL REMAP LANDMINE (RESEARCH Pitfall 3): tracklist is OMITTED and the last two
    columns are RE-LABELLED — Appr reads buckets.review and Exec reads buckets.apply ON PURPOSE.
@@ -28,10 +30,19 @@
     <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">This agent is not registered (it may have been revoked or never existed).</p>
 </div>
 {% else %}
-{# Bucket token table (single-sourced from _stage_pill.html:19-28): (key, glyph, word, classes). #}
+{# Bucket token table (single-sourced from _stage_pill.html:19-28): (key, glyph, word, classes).
+
+   phaze-2u8v.2 / D-01a: ORPHANED sits immediately after in-flight because it is CARVED OUT of it. The
+   in-flight cell used to be bare scheduling-ledger existence -- "scheduled and unresolved" -- which
+   silently folded in every file whose job was lost, and on the live archive that was 2146 of 4963
+   analyze rows, so the cell contradicted SAQ by more than 2x. The six cells still sum to the agent's
+   music/video total: no file is hidden, in-flight now means what its name says, and the carved-out
+   count is the number the DAG's amber rail badge and the Recover button already act on. Amber (not red)
+   is deliberate -- orphaned work is recoverable, not failed. #}
 {% set _bucket_tokens = [
     ('done', '✓', 'done', 'bg-green-100 dark:bg-green-950 text-green-700 dark:text-green-400'),
     ('in_flight', '●', 'in flight', 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400'),
+    ('orphaned', '⚠', 'orphaned', 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400'),
     ('not_started', '—', 'not started', 'bg-gray-100 dark:bg-gray-800/60 text-gray-500 dark:text-gray-400'),
     ('failed', '✗', 'failed', 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-400'),
     ('skipped', '⊘', 'skipped', 'bg-violet-100 dark:bg-violet-950 text-violet-700 dark:text-violet-300 ring-1 ring-dashed ring-violet-400/60'),
@@ -102,9 +113,15 @@
         <p class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400" aria-hidden="true">
             <span>✓ done</span>
             <span>● in-flight</span>
+            <span>⚠ orphaned</span>
             <span>— not-started</span>
             <span>✗ failed</span>
             <span>⊘ skipped</span>
+        </p>
+        {# Say what the amber cell MEANS and what clears it -- a count with no remedy is the defect this
+           bead was filed against, one plane over. #}
+        <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+            ⚠ orphaned = scheduled, then lost — nothing is running it and it has no result. Clear it with Recover on the pipeline dashboard.
         </p>
         {% endif %}
     </div>
@@ -157,10 +174,15 @@
        on the root re-fires the shell's onLoaded() (open=true) every swap and re-opens a dismissed pane.
        This element removes itself once the pane is dismissed (matches _lane_detail.html:109-115): after
        the pane has opened (armed), if the shell's `open` flips false (✕/Esc) it removes itself so it can
-       never re-open the pane, and the poll loop terminates. `armed` skips the pre-open initTree pass. #}
+       never re-open the pane, and the poll loop terminates. `armed` skips the pre-open initTree pass.
+
+       phaze-2u8v.6: the swap target is now the per-agent expanded-row slot
+       (#agent-activity-{{ agent.id }}, admin/partials/_agent_detail_row.html) rather than the shared
+       #detail-pane side panel -- `open` still resolves via Alpine.$data walking up to that row's
+       enclosing x-data, exactly as it walked up to the old shell's <section x-data>. #}
     <div hx-get="/admin/agents/{{ agent.id }}/_activity"
          hx-trigger="every 5s"
-         hx-target="#detail-pane"
+         hx-target="#agent-activity-{{ agent.id }}"
          hx-swap="innerHTML"
          x-data="{ armed: false }"
          x-init="$nextTick(() => { armed = true })"
