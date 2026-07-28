@@ -532,6 +532,133 @@ class TestIngestEndpointBootstrap:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Landmark time range (phaze-5i76)
+#
+# The bug: the sidecar never passed --maxtimebits, so upstream's docopt default (--maxtime
+# 16384 -> 14 bits) applied silently. audfprint packs each landmark into one np.uint32 as
+# `(id+1) << maxtimebits | (time & (2**maxtimebits - 1))`, so every stored time is MASKED:
+# at N_HOP=256 / target_sr=11025 (0.023220 s per frame) the horizon is 380.4 s -- 6m20s --
+# against an archive whose primary content is multi-hour concert sets. A 3 h self-match
+# measures 2.98 instead of 83.01.
+#
+# What is NOT fixed here, deliberately: the default stays at 14. The 32 bits are shared, so
+# time bits come straight out of track-id capacity (2**(32-bits) - 1 ids). Every width that
+# covers a concert set (>=18 bits) caps the corpus at 16,383 ids or fewer, against 11,180
+# files already attempted and a 200K design target. There is no correct single-database
+# value; the fix is sharded/per-length databases, which is a change to the STORE.
+#
+# What IS fixed: the width is explicit, configurable, published on /health, and a query that
+# outruns the horizon is logged instead of silently returning a plausible deflated score.
+# ---------------------------------------------------------------------------
+
+
+class TestLandmarkTimeRange:
+    """`--maxtimebits` must be explicit, derived correctly, and observable."""
+
+    def test_horizon_and_capacity_match_the_uint32_packing(self, audfprint_app: ModuleType) -> None:
+        # 16384 frames * (256 / 11025) s = 380.4 s; ids = 2**(32-14) - 1.
+        assert audfprint_app.AUDFPRINT_MAXTIMEBITS == 14
+        assert pytest.approx(380.4, abs=0.1) == audfprint_app.LANDMARK_TIME_HORIZON_SEC
+        assert audfprint_app.MAX_TRACK_IDS == 262143
+
+    @pytest.mark.parametrize(
+        ("bits", "horizon_sec", "max_ids"),
+        [(15, 760.9, 131071), (17, 3043.5, 32767), (18, 6087.0, 16383), (19, 12173.9, 8191), (20, 24347.9, 4095)],
+    )
+    def test_widening_buys_time_out_of_track_id_capacity(self, monkeypatch: pytest.MonkeyPatch, bits: int, horizon_sec: float, max_ids: int) -> None:
+        """Pins the tradeoff table in the module comment, so a future widening is a deliberate act."""
+        monkeypatch.setenv("AUDFPRINT_MAXTIMEBITS", str(bits))
+        mod = load_service_module("audfprint", f"phaze_test_audfprint_maxtimebits_{bits}")
+        assert pytest.approx(horizon_sec, abs=0.1) == mod.LANDMARK_TIME_HORIZON_SEC
+        assert max_ids == mod.MAX_TRACK_IDS
+
+    @pytest.mark.parametrize("bad", ["0", "32", "-1"])
+    def test_out_of_range_width_fails_loudly_at_import(self, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+        """A width outside the uint32 packing must not start a service that would corrupt silently."""
+        monkeypatch.setenv("AUDFPRINT_MAXTIMEBITS", bad)
+        with pytest.raises(ValueError, match="AUDFPRINT_MAXTIMEBITS"):
+            load_service_module("audfprint", f"phaze_test_audfprint_maxtimebits_bad_{bad}")
+
+    def test_bootstrap_passes_maxtimebits_explicitly(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/song.mp3")
+
+        argv = cli.calls[0]
+        assert argv[2] == "new"
+        assert argv[argv.index("--maxtimebits") + 1] == str(audfprint_app.AUDFPRINT_MAXTIMEBITS)
+
+    def test_append_does_not_pass_maxtimebits(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The width is PERSISTED in the pickle; upstream honours the flag on `new` only.
+
+        Passing it on `add` would read as a live knob that silently does nothing.
+        """
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/first.mp3")
+        audfprint_app._run_ingest("/data/music/second.mp3")
+
+        assert [call[2] for call in cli.calls] == ["new", "add"]
+        assert "--maxtimebits" not in cli.calls[1]
+
+    def test_query_does_not_pass_maxtimebits(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+
+        audfprint_app._run_query("/data/music/song.mp3")
+
+        assert "--maxtimebits" not in cli.calls[0]
+
+    def test_query_longer_than_the_horizon_is_logged(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        """The whole defect is that a deflated score looks like a weak match. Say so out loud."""
+        # 3 h query against a 380.4 s horizon: upstream reports a plausible-looking low ratio.
+        line = default_line("/data/music/set.mp3", 10800.0, 48310, "/data/music/set.mp3", -8734.2, 1712, 48310, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            matches, failures = audfprint_app._parse_matches(line)
+
+        assert failures == 0
+        assert matches[0].confidence == pytest.approx(3.54, abs=0.01)
+        assert "exceeds the database's" in caplog.text
+        assert "10800.0" in caplog.text
+
+    def test_query_within_the_horizon_is_not_logged(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        line = default_line("/data/music/track.mp3", 240.0, 1234, "/data/music/track.mp3", 12.3, 456, 789, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            audfprint_app._parse_matches(line)
+        assert "landmark time horizon" not in caplog.text
+
+    def test_query_duration_survives_a_path_containing_the_landmark_text(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        """A query path that itself contains ' sec 1 raw hashes as ' must not shadow the real field."""
+        qry = "/data/music/12.0 sec 1 raw hashes as decoy/set.mp3"
+        line = default_line(qry, 10800.0, 48310, "/data/music/ref.mp3", -8734.2, 1712, 48310, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            audfprint_app._parse_matches(line)
+        assert "10800.0" in caplog.text
+
+    async def test_health_publishes_the_horizon(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert "landmark time horizon 380.4s" in detail
+        assert "maxtimebits=14" in detail
+        assert "262143 track ids" in detail
+
+
 class TestFilePathConfinement:
     """A caller-supplied file_path must never reach argv unvalidated."""
 

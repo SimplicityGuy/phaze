@@ -86,7 +86,49 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 | `AUDFPRINT_SCRIPT`      | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
 | `FPRINT_DB`             | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
 | `SUBPROCESS_TIMEOUT`    | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `AUDFPRINT_MAXTIMEBITS` | `14`                            | Width of the stored landmark time field (phaze-5i76). See **Landmark time range** below — this is *not* a free knob: it is baked into the database at bootstrap and trades directly against track-id capacity. |
 | `AUDFPRINT_MEDIA_ROOTS` | *(unset — fails closed)*        | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-1p5q #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount — `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
+
+## Landmark time range (known limitation)
+
+audfprint packs every stored landmark into one `np.uint32` as
+`(track_id + 1) << maxtimebits | (frame_time & (2**maxtimebits - 1))`. Two consequences follow
+directly, and they pull against each other:
+
+* stored times are **masked**, so any reference longer than `2**maxtimebits` frames aliases
+  modulo that horizon; and
+* the 32 bits are **shared**, so time bits are bought out of track-id capacity:
+  `max_track_ids = 2**(32 - maxtimebits) - 1`.
+
+At `N_HOP = 256` / `target_sr = 11025` one frame is `256/11025 = 0.023220 s`:
+
+| maxtimebits | time horizon      | max track ids |
+|-------------|-------------------|---------------|
+| **14**      | **380.4 s (6m20s)** | **262,143** |
+| 15          | 760.9 s (12m41s)  | 131,071       |
+| 16          | 1521.7 s (25m22s) | 65,535        |
+| 17          | 3043.5 s (50m43s) | 32,767        |
+| 18          | 6087.0 s (1h41m)  | 16,383        |
+| 19          | 12173.9 s (3h23m) | 8,191         |
+| 20          | 24347.9 s (6h46m) | 4,095         |
+
+The sidecar previously passed no `--maxtimebits` at all, so upstream's docopt default (14)
+applied silently: every reference longer than 6m20s wrapped, and a 3 h set matching **itself**
+measured 2.98 confidence instead of 83.01, because the true alignment splits across one delta
+bin per 380 s block and only the winning bin is counted. Both the score and the reported offset
+still look plausible, which is why this went unnoticed.
+
+**The default is deliberately still 14.** Every width that covers a concert set (≥18) caps the
+corpus at 16,383 references or fewer, against 11,180 files already attempted and a 200K design
+target — so widening in place trades a confidence bug for a hard ingest ceiling. There is no
+correct single-database value at this scale; the real fix is sharded or per-length databases,
+which is a change to the store and is tracked separately. What changed here is that the value
+is explicit, configurable, published on `/health`, and that a query longer than the horizon is
+logged as the confidence-deflating event it is.
+
+The width is **persisted**: `new` bakes it into `fprint.pklz` and `add`/`match` read it back
+out, so `AUDFPRINT_MAXTIMEBITS` takes effect only on a rebuild — and a rebuild invalidates
+every fingerprint stored under the old width.
 
 ## Volumes
 

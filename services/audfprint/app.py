@@ -43,6 +43,66 @@ SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
 # Chunk size for the streaming loadability probe below. The probe never materializes the
 # database in memory -- it decompresses and discards, so cost is CPU, not RSS.
 _PROBE_CHUNK_BYTES = 1 << 20
+
+# ---------------------------------------------------------------------------
+# Landmark time range (phaze-5i76)
+#
+# audfprint packs each stored landmark into ONE np.uint32 as
+# `(track_id + 1) << maxtimebits | (frame_time & (2**maxtimebits - 1))`
+# (upstream hash_table.py `HashTable.store`). Two consequences, both hard:
+#
+#   * every stored time is MASKED to `maxtimebits`, so a reference longer than
+#     `2**maxtimebits` frames aliases modulo that horizon; and
+#   * the 32 bits are SHARED, so time bits are bought directly out of track-id capacity:
+#     `max_track_ids = 2**(32 - maxtimebits) - 1`.
+#
+# The sidecar never passed `--maxtimebits`, so upstream's docopt default (`--maxtime 16384`
+# -> 14 bits) applied silently. At `N_HOP = 256` / `target_sr = 11025` (audfprint_analyze) one
+# frame is 256/11025 = 0.023220 s, so the horizon is 16384 * 0.023220 = 380.4 s -- SIX MINUTES
+# TWENTY SECONDS. The archive's primary content is multi-hour concert sets. A 3 h set matching
+# ITSELF measures 2.98 confidence instead of 83.01 (~28x collapse), because the true alignment
+# is split across one delta bin per 380 s block and only the winning bin is counted.
+#
+# The full tradeoff, exactly (uint32 packing, 0.023220 s/frame):
+#
+#     bits   time horizon        max track ids
+#     ----   -----------------   -------------
+#       14     380.4 s (6m20s)         262,143   <- default, and the deployed value
+#       15     760.9 s (12m41s)        131,071
+#       16    1521.7 s (25m22s)         65,535
+#       17    3043.5 s (50m43s)         32,767
+#       18    6087.0 s (1h41m)          16,383
+#       19   12173.9 s (3h23m)           8,191
+#       20   24347.9 s (6h46m)           4,095
+#
+# THE DEFAULT IS DELIBERATELY LEFT AT 14, and that is the whole finding: at this project's
+# scale there is no value that is simply correct. 11,180 files were already attempted against
+# this database and the design target is 200K -- so every width that covers a concert set
+# (>=18) caps the corpus one to two orders of magnitude BELOW its current size. Widening in
+# place would trade a confidence bug for a hard ingest ceiling (upstream has no capacity
+# guard; the uint32 assignment simply raises OverflowError once ids run out). The real fix is
+# to sharded or per-length databases, which is a change to the STORE and is deliberately out
+# of scope here.
+#
+# What this bead does change is that the value is now EXPLICIT, CONFIGURABLE, PUBLISHED, and
+# no longer silent: the horizon and the id ceiling are reported by /health and logged at
+# bootstrap, and a query longer than the horizon is logged as the confidence-deflating event
+# it is instead of returning a plausible-looking low score. An operator who shards can raise
+# `AUDFPRINT_MAXTIMEBITS` per shard without patching code.
+#
+# NOTE: the width is PERSISTED. `new` bakes it into fprint.pklz and `add`/`match` read it back
+# from the pickle (upstream audfprint.py:441 applies `--maxtimebits` on `new`/`newmerge` ONLY),
+# so changing this value only takes effect on a rebuild -- and rebuilding invalidates every
+# fingerprint stored under the old width. It is passed on the `new` invocation only, because
+# on `add`/`match` upstream ignores it.
+AUDFPRINT_MAXTIMEBITS = int(os.environ.get("AUDFPRINT_MAXTIMEBITS", "14"))
+if not 1 <= AUDFPRINT_MAXTIMEBITS <= 31:
+    _msg = f"AUDFPRINT_MAXTIMEBITS must be between 1 and 31 (uint32 packing); got {AUDFPRINT_MAXTIMEBITS}"
+    raise ValueError(_msg)
+# audfprint_analyze: N_HOP = 256 frames at target_sr = 11025 Hz.
+_FRAME_SECONDS = 256 / 11025
+LANDMARK_TIME_HORIZON_SEC = (1 << AUDFPRINT_MAXTIMEBITS) * _FRAME_SECONDS
+MAX_TRACK_IDS = (1 << (32 - AUDFPRINT_MAXTIMEBITS)) - 1
 # Truncate captured stderr in logs -- a stack-trace flood per failed file would bury the
 # signal, but the head of the trace is what identifies the failure mode. Mirrors panako.
 STDERR_LOG_LIMIT = 2000
@@ -319,10 +379,24 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
     try:
         if command == "add":
             shutil.copyfile(db_path, staging)
+        argv = ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging)]
+        if command == "new":
+            # phaze-5i76: bake the landmark time range in EXPLICITLY at bootstrap instead of
+            # inheriting upstream's silent 14-bit docopt default. Only `new` honours the flag
+            # (upstream applies it in the `new`/`newmerge` branch; `add`/`match` read the
+            # width back out of the pickle), so this is the single point of control for the
+            # whole database's lifetime.
+            argv += ["--maxtimebits", str(AUDFPRINT_MAXTIMEBITS)]
+            logger.info(
+                "bootstrapping audfprint database with maxtimebits=%d: landmark times wrap at %.1f s, capacity %d track ids",
+                AUDFPRINT_MAXTIMEBITS,
+                LANDMARK_TIME_HORIZON_SEC,
+                MAX_TRACK_IDS,
+            )
         result = subprocess.run(
             # `--` terminates docopt's option scan: everything after it is an operand, so a
             # path can never be reinterpreted as a flag (phaze-1p5q).
-            ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging), "--", file_path],
+            [*argv, "--", file_path],
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT,
@@ -391,6 +465,12 @@ _DEFAULT_REF_RE = re.compile(r"raw hashes as (?P<ref>.+?)\s+at\s+(?P<time>-?\d+(
 # " to time {float} s in " (instead of counting " in " occurrences) is robust to a query path
 # that itself contains " in " -- the second ' in ' the old code chased is not positionally stable.
 _TIMERANGE_REF_RE = re.compile(r"to time\s+(?P<time>-?\d+(?:\.\d+)?)\s+s in (?P<ref>.+)$")
+# phaze-5i76: the default shape's query message carries the decoded QUERY duration
+# ("{qry} {dur:.1f} sec {nhash} raw hashes"). Greedy `.+` on the query path so the fixed
+# " sec {int} raw hashes as " landmark resolves to the LAST (real) occurrence even when the
+# path itself contains that text -- the same reasoning as the ref regexes above. Only the
+# default shape reports it; the -R shape does not, so wrap reporting is default-shape only.
+_QUERY_DURATION_RE = re.compile(r"^Matched .+ (?P<dur>\d+(?:\.\d+)?) sec \d+ raw hashes as ")
 
 
 def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
@@ -404,6 +484,7 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
     """
     matches: list[QueryMatch] = []
     parse_failures = 0
+    longest_query_sec = 0.0
     for line in stdout.strip().splitlines():
         # Only "Matched ... common hashes" lines are match reports. A genuine no-match run emits
         # no such line, so a query with zero candidates is a real empty result, not a failure.
@@ -436,6 +517,27 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
         timestamp = str(round(float(ref_match.group("time")), 1))
         matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2), timestamp=timestamp))
 
+        duration = _QUERY_DURATION_RE.match(line)
+        if duration is not None:
+            longest_query_sec = max(longest_query_sec, float(duration.group("dur")))
+
+    if longest_query_sec > LANDMARK_TIME_HORIZON_SEC:
+        # phaze-5i76: the query outruns the database's landmark time horizon, so the true
+        # alignment is split across one delta bin per horizon-length block and only the
+        # winning bin is counted. The confidence below is deflated by roughly that block
+        # count and the reported offset is not a real position in the reference. Say so:
+        # the defining property of this defect is that both numbers look PLAUSIBLE, so
+        # nothing downstream can tell a deflated score from a weak match.
+        blocks = longest_query_sec / LANDMARK_TIME_HORIZON_SEC
+        logger.warning(
+            "audfprint query of %.1f s exceeds the database's %.1f s landmark time horizon (maxtimebits=%d): "
+            "confidences below are deflated by roughly %.1fx and match offsets are not real reference positions",
+            longest_query_sec,
+            LANDMARK_TIME_HORIZON_SEC,
+            AUDFPRINT_MAXTIMEBITS,
+            blocks,
+        )
+
     return matches, parse_failures
 
 
@@ -461,6 +563,12 @@ async def health() -> HealthResponse:
     if not available:
         logger.error("audfprint health check failed: %s", detail)
         raise HTTPException(status_code=503, detail=detail)
+    # phaze-5i76: publish the landmark time range alongside the database verdict. It is a
+    # PERSISTED property of this database that silently truncates every reference longer than
+    # the horizon, and there was previously no way to observe it short of unpickling the file.
+    detail = (
+        f"{detail}; landmark time horizon {LANDMARK_TIME_HORIZON_SEC:.1f}s (maxtimebits={AUDFPRINT_MAXTIMEBITS}, capacity {MAX_TRACK_IDS} track ids)"
+    )
     return HealthResponse(status="healthy", engine="audfprint", detail=detail)
 
 
