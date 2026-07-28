@@ -112,10 +112,37 @@
         <span id="bulk-retry-result" class="text-sm" aria-live="polite"></span>
     </div>
     {% endif %}
-    <div class="overflow-x-auto" x-data>
+    {# phaze-cvn6.3: user-resizable columns, dependency-free (no JS build step -- Alpine only).
+       A `<colgroup>` is the single point of truth for every column's rendered width: EACH header's
+       resize handle drags `$store.colResize` (registered in base.html/shell.html next to the theme
+       store, same localStorage-persistence shape) and every `<col>` here reads that same store, so a
+       header <th> and its column's cells always share one width with no per-cell duplication.
+
+       Why a store and not component-local state: this whole `<div>` (colgroup + thead + tbody) is
+       exactly what the sort/filter/pager hx-get swaps replace via innerHTML (see the docstring
+       above) -- a fresh Alpine component is created on every swap, so anything held only in that
+       component's local state would reset on the next sort click. The store is a page-level
+       singleton untouched by the swap; the swapped-in `:style` bindings just re-read it, so a chosen
+       width survives sorting, filtering, paging AND (via localStorage) a reload/bookmark.
+
+       table-layout stays the browser default (auto), not `table-fixed`: the FILE cell already
+       carries `truncate` (overflow:hidden + ellipsis + nowrap), and content that is clipped rather
+       than measured is exactly what lets auto-layout honour an explicit `<col>` width instead of
+       growing the column to fit it -- so dragging FILE wider/narrower works precisely because it
+       already truncates. The six stage cells are NOT truncated (cvn6.2's no-wrap contract needs
+       their pill+Retry content fully visible, never clipped) -- auto-layout enforces their natural
+       content width as a floor no matter how far a handle is dragged inward, so shrinking never
+       breaks the no-wrap contract or forces a second line; dragging outward still widens them. #}
+    <div class="overflow-x-auto" x-data="colResizer()">
         {# x-data gives the click-bound rows an Alpine scope so $dispatch('record:open') wires (CR-01);
-           the shell root has no x-data (x-data on <html> is inert). #}
+           the shell root has no x-data (x-data on <html> is inert). colResizer() (registered globally
+           in base.html/shell.html) additionally exposes startResize() for the header drag handles. #}
         <table class="w-full text-left text-sm">
+            <colgroup>
+                {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
+                <col data-col="{{ col }}" :style="{ width: $store.colResize.width('{{ col }}') + 'px' }">
+                {% endfor %}
+            </colgroup>
             <thead class="border-b border-gray-200 bg-gray-50 font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:border-phaze-border dark:bg-phaze-panel dark:text-gray-500">
                 <tr>
                     {# phaze-cvn6.1: ONE loop over ALL EIGHT header labels -- the two real FileRecord
@@ -137,10 +164,18 @@
                        is_sortable() gate, same aria_sort()/url_for()/indicator() calls, same existing
                        #files-table-view hx-target, so this introduces no new swap target and no OOB
                        fragment. Sorting stays SERVER-SIDE: the click re-requests /pipeline/files
-                       under a new ORDER BY rather than reordering the loaded page. #}
+                       under a new ORDER BY rather than reordering the loaded page.
+
+                       phaze-cvn6.3: the resize handle is added ONCE, after both branches (identical
+                       markup either way -- same "one place" reasoning cvn6.1 used for sortability: a
+                       column's resizability is never decided per-branch, so a future column cannot
+                       land in one arm and silently lose its handle). The handle sits INSIDE the <th>,
+                       AFTER the sort button, so it never lands between `{{ col }}` and the caret
+                       span -- test_stage_header_labels_match_the_stage_matrix_cells anchors on that
+                       exact adjacency. #}
                     {% for col in ['File', 'Type'] + _stage_cols | map(attribute=0) | list %}
                     {% if sort and sort.is_sortable(col) %}
-                    <th scope="col" class="px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
+                    <th scope="col" class="relative px-6 py-2.5 font-medium" aria-sort="{{ sort.aria_sort(col) }}">
                         <button type="button"
                                 hx-get="{{ sort.url_for(col) }}"
                                 hx-target="{{ sort.contract.target }}"
@@ -148,9 +183,19 @@
                                 class="inline-flex items-center gap-1 uppercase tracking-[0.2em] hover:text-gray-700 dark:hover:text-gray-300">
                             {{ col }}<span aria-hidden="true">{{ sort.indicator(col) }}</span>
                         </button>
+                        <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
+                              role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
+                              data-col-resize-handle="{{ col }}" title="Drag to resize"
+                              @pointerdown="startResize($event, '{{ col }}')"></span>
                     </th>
                     {% else %}
-                    <th scope="col" class="px-6 py-2.5 font-medium">{{ col }}</th>
+                    <th scope="col" class="relative px-6 py-2.5 font-medium">
+                        {{ col }}
+                        <span class="absolute inset-y-0 right-0 z-10 w-2 shrink-0 cursor-col-resize touch-none border-r-2 border-transparent hover:border-blue-400 dark:hover:border-blue-300"
+                              role="separator" aria-orientation="vertical" aria-label="Resize {{ col }} column"
+                              data-col-resize-handle="{{ col }}" title="Drag to resize"
+                              @pointerdown="startResize($event, '{{ col }}')"></span>
+                    </th>
                     {% endif %}
                     {% endfor %}
                 </tr>
@@ -158,7 +203,13 @@
             <tbody class="divide-y divide-gray-100 dark:divide-phaze-border">
                 {% for row in files_page.rows %}
                 <tr id="files-row-{{ loop.index }}" class="cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5" hx-get="/record/{{ row.file.id }}" hx-target="#record-body" hx-swap="innerHTML" hx-trigger="click, keyup[key=='Enter']" tabindex="0" @click="$dispatch('record:open', { el: $el })" @keydown.enter="$dispatch('record:open', { el: $el })">
-                    <td class="px-6 py-3 max-w-md truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
+                    {# phaze-cvn6.3: `max-w-md` retired -- the FILE column's width now comes from the
+                       `<colgroup>` above (the resizable one), so a fixed Tailwind cap would fight the
+                       operator's drag instead of enabling it. `truncate` stays: it is what turns
+                       "narrower than the path" into an ellipsis rather than a wrapped/overflowing
+                       cell, and (per the colgroup comment) is also WHY auto table-layout honours the
+                       dragged width here instead of growing the column to fit the full path. #}
+                    <td class="px-6 py-3 truncate font-mono text-xs text-gray-900 dark:text-gray-200" title="{{ row.file.current_path }}">{{ row.file.current_path }}</td>
                     <td class="px-6 py-3 text-gray-500 dark:text-gray-400">{{ row.file.file_type }}</td>
                     {% for stage_label, key in _stage_cols %}
                     <td class="px-6 py-3 whitespace-nowrap">
