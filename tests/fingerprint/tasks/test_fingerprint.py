@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
+import httpx
 from pydantic import ValidationError
 import pytest
 
@@ -450,3 +451,68 @@ async def test_engine_success_resets_the_outage_counter() -> None:
     await fingerprint_file(ctx, **_make_payload_kwargs())
 
     assert fp_task._consecutive_engine_outages == 0
+
+
+# ---------------------------------------------------------------------------
+# phaze-p3hj.3: a SYSTEMATIC single-engine outage (real orchestrator, not mocked away)
+# must not be silently absorbed -- end to end through fingerprint_file.
+# ---------------------------------------------------------------------------
+
+
+async def test_systematic_single_engine_outage_completes_but_is_logged_every_time(caplog: pytest.LogCaptureFixture) -> None:
+    """phaze-p3hj.1's exact shape, run through the real SAQ task: audfprint 500s on every one
+    of several files while panako keeps succeeding.
+
+    Every prior test in this module stubs ``orchestrator.ingest_all`` with an ``AsyncMock``,
+    which proves ``fingerprint_file``'s own branching but never exercises the real HTTP
+    classification in ``services/fingerprint.py`` that phaze-p3hj.1 traced the outage through.
+    This one wires a REAL ``FingerprintOrchestrator`` with real adapters over
+    ``httpx.MockTransport`` so a regression in that layer (e.g. a widened except clause that
+    stops logging once the sibling engine "covers" the failure) fails HERE, at the layer SAQ
+    actually calls.
+
+    D-18 is unchanged throughout: the job completes ``status="partial"`` on every file, never
+    stalling the lane behind the dead engine. What must NOT happen is that repeated success
+    erasing every trace of the failure -- so this asserts BOTH old and new signals survive: the
+    per-row ``error_message`` PUT (what an operator had to go looking for, phaze-p3hj.1 SS4)
+    AND a WARNING-level log naming the dead engine on every single file (the signal that makes
+    a sustained pattern visible without opening that table).
+    """
+    from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
+    from phaze.tasks.fingerprint import fingerprint_file
+
+    def dead_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="EOFError: Ran out of input")
+
+    def healthy_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    audfprint = AudfprintAdapter(base_url="http://dead:9999")
+    audfprint._client = httpx.AsyncClient(transport=httpx.MockTransport(dead_handler), base_url="http://dead:9999")
+    panako = PanakoAdapter(base_url="http://healthy:9999")
+    panako._client = httpx.AsyncClient(transport=httpx.MockTransport(healthy_handler), base_url="http://healthy:9999")
+    orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+
+    api = AsyncMock()
+    api.put_fingerprint = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api, orchestrator=orchestrator)
+
+    n_files = 4
+    for _ in range(n_files):
+        result = await fingerprint_file(ctx, **_make_payload_kwargs())
+        # D-18 unchanged: the dead sibling never stalls the lane.
+        assert result["status"] == "partial"
+
+    await audfprint.close()
+    await panako.close()
+
+    # Signal 1 (pre-existing, the one an operator had to go looking for): the per-row PUT still
+    # carries the engine's own failure for every file.
+    audfprint_calls = [call for call in api.put_fingerprint.await_args_list if call.args[1] == "audfprint"]
+    assert len(audfprint_calls) == n_files
+    assert all(call.args[2].status == "failed" for call in audfprint_calls)
+
+    # Signal 2 (the one this bead pins): a WARNING-level log naming the dead engine on EVERY
+    # file -- not just the first -- so the pattern is visible without opening that table.
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING" and "audfprint" in r.getMessage()]
+    assert len(warning_records) == n_files
