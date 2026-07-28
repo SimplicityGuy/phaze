@@ -915,11 +915,18 @@ class TestLoadCompanionContents:
         companion_record = MagicMock()
         companion_record.original_filename = "info.nfo"
         companion_record.current_path = str(companion_path)
+        companion_record.agent_id = "test-agent"
 
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result]
+        # phaze-eycl: containment check now loads the owning Agent's scan_roots.
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(tmp_path)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
 
         result = await load_companion_contents(session, media_id, 3000)
 
@@ -946,11 +953,19 @@ class TestLoadCompanionContents:
         companion_record = MagicMock()
         companion_record.original_filename = "info.nfo"
         companion_record.current_path = "/nonexistent/info.nfo"
+        companion_record.agent_id = "test-agent"
 
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result]
+        # phaze-eycl: scan_roots covers the (nonexistent) path so containment passes and the
+        # OSError from actually opening it is what makes this test's "skip" assertion meaningful.
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = ["/nonexistent"]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
 
         result = await load_companion_contents(session, media_id, 3000)
 
@@ -979,10 +994,16 @@ class TestLoadCompanionContents:
         companion_record = MagicMock()
         companion_record.original_filename = "set\x00info.nfo"
         companion_record.current_path = str(companion_path)
+        companion_record.agent_id = "test-agent"
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result]
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(tmp_path)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
 
         result = await load_companion_contents(session, media_id, 3000)
 
@@ -1015,10 +1036,16 @@ class TestLoadCompanionContents:
         companion_record = MagicMock()
         companion_record.original_filename = "huge.nfo"
         companion_record.current_path = str(huge_path)
+        companion_record.agent_id = "test-agent"
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result]
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(tmp_path)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
 
         result = await load_companion_contents(session, media_id, 100)
 
@@ -1050,10 +1077,16 @@ class TestLoadCompanionContents:
         companion_record = MagicMock()
         companion_record.original_filename = "info.nfo"
         companion_record.current_path = str(companion_path)
+        companion_record.agent_id = "test-agent"
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = companion_record
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result]
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(tmp_path)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
 
         with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
             result = await load_companion_contents(session, media_id, 3000)
@@ -1063,3 +1096,102 @@ class TestLoadCompanionContents:
         assert len(result) == 1
         assert "\x00" not in result[0]["filename"]
         assert "Artist" in result[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_refuses_absolute_path_outside_scan_roots(self, tmp_path):
+        """phaze-eycl regression: an agent-supplied ``current_path`` pointed at an absolute
+        path outside every one of the owning agent's ``scan_roots`` (the ``/proc/self/environ``
+        shape from the bead) is refused -- never opened, never returned as companion content.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services import proposal as proposal_module
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        # A real, readable file OUTSIDE the agent's scan_roots stands in for the
+        # /proc/self/environ-style exfil target -- the point is it is readable but out of bounds.
+        outside_secret = tmp_path / "outside" / "environ"
+        outside_secret.parent.mkdir()
+        outside_secret.write_text("POSTGRES_PASSWORD=hunter2\nREDIS_URL=redis://default:hunter2@redis:6379/0", encoding="utf-8")
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "environ"
+        companion_record.current_path = str(outside_secret)
+        companion_record.agent_id = "test-agent"
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(archive_root)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
+
+        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
+            result = await load_companion_contents(session, media_id, 3000)
+
+        # Refused before the file is ever opened -- and definitely never returned to the caller
+        # (which would embed it in the LLM prompt and persist it to proposals.context_used).
+        mock_to_thread.assert_not_called()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_traversal_escape_via_dotdot(self, tmp_path):
+        """phaze-eycl regression: a ``..``-laden ``current_path`` that RESOLVES outside the
+        agent's scan_roots is refused, even though a naive prefix-string check on the raw
+        (unresolved) string would see it as nested under the root.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import uuid
+
+        from phaze.services import proposal as proposal_module
+        from phaze.services.proposal import load_companion_contents
+
+        session = AsyncMock()
+        media_id = uuid.uuid4()
+
+        companion = MagicMock()
+        companion.companion_id = uuid.uuid4()
+        mock_companions_result = MagicMock()
+        mock_companions_result.scalars.return_value.all.return_value = [companion]
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("LLM_API_KEY=sk-should-not-leak", encoding="utf-8")
+
+        # Looks like it's under archive_root as a raw string; resolves to a sibling of it.
+        traversal_path = str(archive_root / ".." / "secret.txt")
+
+        companion_record = MagicMock()
+        companion_record.original_filename = "secret.txt"
+        companion_record.current_path = traversal_path
+        companion_record.agent_id = "test-agent"
+        mock_file_result = MagicMock()
+        mock_file_result.scalar_one_or_none.return_value = companion_record
+
+        mock_agent = MagicMock()
+        mock_agent.scan_roots = [str(archive_root)]
+        mock_agent_result = MagicMock()
+        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+
+        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
+
+        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
+            result = await load_companion_contents(session, media_id, 3000)
+
+        mock_to_thread.assert_not_called()
+        assert result == []

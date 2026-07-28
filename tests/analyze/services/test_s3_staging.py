@@ -205,6 +205,16 @@ async def test_presign_upload_parts_returns_part_count_urls(bucket: BucketConfig
         assert "uploadid" in url.lower()  # multipart UploadId in the query
 
 
+async def test_presign_upload_parts_rejects_part_count_over_s3_max(bucket: BucketConfig) -> None:
+    """phaze-wz1q: presign_upload_parts is the shared SDK seam every caller funnels through -- it must
+    refuse a part_count over S3's 10,000-part multipart ceiling BEFORE doing any client work, as the
+    last-resort backstop even if a caller's own part-count derivation regresses. No real upload_id is
+    needed: the rejection must happen before the first S3 call.
+    """
+    with pytest.raises(s3_staging.S3StagingError, match=r"10001 parts.*exceeds S3's 10000-part multipart limit"):
+        await s3_staging.presign_upload_parts(uuid.uuid4(), "irrelevant-upload-id", s3_staging.S3_MAX_PART_COUNT + 1, bucket)
+
+
 async def test_multipart_round_trip_assembles_object(bucket: BucketConfig) -> None:
     """create -> presign parts -> PUT bytes -> complete assembles the object; GET returns the bytes."""
     fid = uuid.uuid4()
