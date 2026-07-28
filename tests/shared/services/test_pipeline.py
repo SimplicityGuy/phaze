@@ -25,6 +25,7 @@ from phaze.services.pipeline import (
     count_active_agents,
     count_backfill_candidates,
     count_inflight_jobs,
+    count_proposal_pending_files,
     deduped_count,
     get_agent_recent_scans,
     get_agent_reconciliations,
@@ -964,6 +965,39 @@ async def test_get_proposal_pending_batches_excludes_already_proposed_file(sessi
     flat = [fid for batch in batches for fid in batch]
     assert str(proposed.id) not in flat, "an already-proposed file must NOT be re-batched (Pitfall 4)"
     assert str(unproposed.id) in flat, "a not-yet-proposed converged file MUST still be batched"
+
+
+@pytest.mark.asyncio
+async def test_count_proposal_pending_files_agrees_with_the_batched_set(session: AsyncSession) -> None:
+    """phaze-37i1.2: the counter and the batcher answer the SAME question, over every exclusion.
+
+    ``count_proposal_pending_files`` feeds the Audit Log's "N files ready for proposal generation"
+    affordance, which links straight to the GENERATE ALL trigger built from
+    ``get_proposal_pending_batches``. If the two predicates ever diverged the page would quote a
+    number the button does not honour -- a dishonest count is worse than no count, and is precisely
+    the confusion this bead exists to remove. Seeds one eligible file plus one of EACH exclusion
+    (metadata-only, in-flight analysis, already proposed) and asserts count == batched membership.
+    """
+    eligible = _make_pipeline_file()
+    metadata_only = _make_pipeline_file()
+    inflight_analysis = _make_pipeline_file()
+    already_proposed = _make_pipeline_file()
+    session.add_all([eligible, metadata_only, inflight_analysis, already_proposed])
+    await session.flush()
+
+    for f in (eligible, metadata_only, inflight_analysis, already_proposed):
+        session.add(FileMetadata(file_id=f.id, artist="A", title="T"))
+    session.add(AnalysisResult(file_id=eligible.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    session.add(AnalysisResult(file_id=inflight_analysis.id, bpm=None, analysis_completed_at=None))
+    session.add(AnalysisResult(file_id=already_proposed.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+    session.add(RenameProposal(id=uuid.uuid4(), file_id=already_proposed.id, proposed_filename="x.mp3", status=ProposalStatus.PENDING.value))
+    await session.flush()
+
+    count = await count_proposal_pending_files(session)
+    flat = [fid for batch in await get_proposal_pending_batches(session, 10) for fid in batch]
+
+    assert flat == [str(eligible.id)], "only the converged, unproposed file is batched"
+    assert count == len(flat), "the counter must return exactly the size of the batched set"
 
 
 def _backend(backend_id: str, kind: str) -> SimpleNamespace:

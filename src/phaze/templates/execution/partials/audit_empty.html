@@ -1,0 +1,69 @@
+{# phaze-37i1.2 -- the Audit Log's empty state, split into the TWO states it actually has.
+
+   Scope per the repo owner's decision after the phaze-37i1.1 diagnosis. That spike settled that
+   the read path is CORRECT: `get_execution_stats` and `get_execution_logs_page` read
+   `execution_log` with NO predicate on the All tab, so all-tabs-zero is what a genuinely empty
+   table looks like, not a filter bug. `execution_log` gains a row only when an APPROVED
+   RenameProposal is EXECUTED, and proposals exist only after `generate_proposals` -- a manual,
+   LLM-costing, operator-triggered step that is deliberately NOT in `pipeline_stage_control` and
+   so never auto-advances. The owner kept that manual gate; the defect to fix is that the page
+   said nothing about any of it.
+
+   So: the old single "No operations recorded" line covered two situations that call for opposite
+   operator responses, and read like a bug in both. They are separated here.
+
+   * `stats.total == 0` -- NOTHING has EVER been executed. Not a filter result: the whole table is
+     empty. Say where the archive actually is (nothing proposed yet) and surface the D-02
+     convergence-gate backlog with a route to the existing GENERATE ALL trigger.
+   * `stats.total > 0` -- rows exist, this TAB/filter just matches none of them. A filter result,
+     with a way back to All.
+
+   The affordance LINKS to the Propose workspace (`/s/propose`, the shell stage that hosts the
+   existing GENERATE ALL button posting to POST /pipeline/proposals). It deliberately does NOT
+   post an enqueue from here: this bead adds no new pipeline trigger and auto-invokes nothing, and
+   a bulk litellm enqueue belongs behind the confirm + busy-gate the propose workspace already
+   carries (propose_workspace.html R-4) rather than behind a second, weaker button.
+
+   `proposal_ready_count` is server-computed by `count_proposal_pending_files` (services/pipeline.py)
+   from the SAME clause set the trigger batches on, so the number quoted here is the number the
+   button will act on. The router only computes it on the never-run branch (see routers/execution.py).
+#}
+<div class="text-center py-12">
+    {% if stats and stats.total == 0 %}
+    <p class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No renames have been executed yet</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-2">
+        This log records rename and move operations as they run. Nothing has been proposed for rename yet, so there is
+        nothing to execute and nothing to record &mdash; the log is empty, not broken.
+    </p>
+    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-6">
+        Proposal generation is a deliberate operator action (it calls an LLM per file) and does not advance on its own.
+        Entries appear here only after proposals are generated, approved, and executed.
+    </p>
+    {% if proposal_ready_count %}
+    <p class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
+        {{ proposal_ready_count }} file{{ "" if proposal_ready_count == 1 else "s" }} ready for proposal generation
+        <span class="text-gray-500 dark:text-gray-400">(metadata and analysis both complete)</span>
+    </p>
+    <a href="/s/propose"
+       class="inline-flex items-center justify-center h-9 px-4 rounded-lg border border-blue-600 bg-blue-600 text-white hover:bg-blue-700 text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">Generate Proposals</a>
+    {% else %}
+    <p class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-4">
+        No files are ready for proposal generation yet &mdash; a file needs both metadata extraction and analysis to
+        complete before it can be proposed.
+    </p>
+    <a href="/s/analyze"
+       class="inline-flex items-center justify-center h-9 px-4 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">View pipeline progress</a>
+    {% endif %}
+    {% else %}
+    <p class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No entries match this filter</p>
+    <p class="text-sm text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-6">
+        {{ stats.total }} operation{{ "" if stats.total == 1 else "s" }} {{ "is" if stats.total == 1 else "are" }} recorded,
+        but none of them are in this tab.
+    </p>
+    <button type="button"
+            hx-get="/audit/?status=all{{ sort.query_state() if sort else '' }}"
+            hx-target="#audit-content"
+            hx-push-url="true"
+            class="inline-flex items-center justify-center h-9 px-4 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">Show all operations</button>
+    {% endif %}
+</div>

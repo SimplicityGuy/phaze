@@ -11,8 +11,10 @@ import uuid
 import pytest
 
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
+from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.services.pagination import MIN_PAGE_SIZE
 
@@ -146,12 +148,140 @@ async def test_audit_log_filter(client: AsyncClient, session: AsyncSession) -> N
     assert "/music/failed.mp3" not in response.text
 
 
+# --- phaze-37i1.2: the two DIFFERENT empty states -------------------------------------
+#
+# Scope per the repo owner's decision after the phaze-37i1.1 diagnosis: the audit read path is
+# correct and stays untouched; what was wrong is that a never-run log and a filtered-to-nothing
+# log rendered the SAME "No operations recorded" line, so an archive that had simply never
+# reached the propose stage looked like a broken page. These tests pin the distinction, and the
+# convergence-gate affordance that tells the operator where the archive actually is, so neither
+# can silently collapse back into one generic sentence.
+
+
+async def _seed_proposal_eligible_file(session: AsyncSession) -> uuid.UUID:
+    """Seed ONE file that clears the D-02 convergence gate: metadata + COMPLETED analysis, no proposal.
+
+    Mirrors ``get_proposal_pending_batches``'s clause set exactly -- an ``AnalysisResult`` with
+    ``analysis_completed_at`` NULL is an in-flight analysis and must NOT count (Phase 57.1 D-03).
+    """
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/music/{uuid.uuid4().hex}/ready.mp3",
+            original_filename="ready.mp3",
+            current_path=f"/music/{uuid.uuid4().hex}/ready.mp3",
+            file_type="music",
+            file_size=1_000_000,
+        )
+    )
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, failed_at=None))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id, analysis_completed_at=datetime.now(UTC).replace(tzinfo=None)))
+    await session.commit()
+    return file_id
+
+
 @pytest.mark.asyncio
-async def test_audit_log_empty_state(client: AsyncClient) -> None:
-    """GET /audit/ with no logs returns empty state message."""
+async def test_audit_log_never_run_empty_state_explains_nothing_proposed(client: AsyncClient) -> None:
+    """An audit log that has NEVER recorded anything says so, and says WHY -- not a bare zero table.
+
+    This is the state the whole of epic phaze-37i1 was filed against. ``execution_log`` is empty
+    because ``generate_proposals`` has never been invoked, not because a query dropped rows, and
+    the page must state that rather than leaving a zero table to be read as a defect.
+    """
     response = await client.get("/audit/")
     assert response.status_code == 200
-    assert "No operations recorded" in response.text
+    assert "No renames have been executed yet" in response.text
+    assert "Nothing has been proposed for rename yet" in response.text
+    # The honest framing: manual, operator-triggered, not an auto-advancing stage.
+    assert "deliberate operator action" in response.text
+    # The old generic line must NOT be what a never-run log renders.
+    assert "No operations recorded" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_never_run_surfaces_convergence_gate_count_and_generate_link(client: AsyncClient, session: AsyncSession) -> None:
+    """With files past the D-02 convergence gate, the empty state quotes the count and routes to Propose.
+
+    The count comes from ``count_proposal_pending_files``, which shares its clause set with the
+    batching helper the GENERATE ALL trigger uses -- so the number shown is the number the button
+    would act on. The affordance is a LINK to the existing propose workspace; this page enqueues
+    nothing itself.
+    """
+    await _seed_proposal_eligible_file(session)
+    await _seed_proposal_eligible_file(session)
+
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert "2 files ready for proposal generation" in response.text
+    assert 'href="/s/propose"' in response.text
+    assert "Generate Proposals" in response.text
+    # No new trigger: the audit page must not post an enqueue of its own.
+    assert "/pipeline/proposals" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_never_run_with_nothing_eligible_says_so(client: AsyncClient, session: AsyncSession) -> None:
+    """A file whose analysis is still IN FLIGHT is not eligible, and the empty state must not claim it is."""
+    file_id = uuid.uuid4()
+    session.add(
+        FileRecord(
+            agent_id="test-fileserver",
+            id=file_id,
+            sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            original_path=f"/music/{uuid.uuid4().hex}/inflight.mp3",
+            original_filename="inflight.mp3",
+            current_path=f"/music/{uuid.uuid4().hex}/inflight.mp3",
+            file_type="music",
+            file_size=1_000_000,
+        )
+    )
+    await session.flush()
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, failed_at=None))
+    # analysis_completed_at NULL == analysis started but not finished (D-03 partial row).
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id, analysis_completed_at=None))
+    await session.commit()
+
+    response = await client.get("/audit/")
+    assert response.status_code == 200
+    assert "No files are ready for proposal generation yet" in response.text
+    assert "file ready for proposal generation" not in response.text
+    assert "files ready for proposal generation" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_filtered_empty_state_is_distinct_from_never_run(client: AsyncClient, session: AsyncSession) -> None:
+    """A tab that matches none of the EXISTING rows says "no entries match this filter", not "never run".
+
+    The regression this pins: rows exist, so telling the operator nothing has ever been executed
+    would be a lie -- and telling them nothing matches when the table is genuinely empty hides the
+    real reason. The two branches must not swap or merge.
+    """
+    await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/done.mp3")
+
+    response = await client.get("/audit/?status=failed")
+    assert response.status_code == 200
+    assert "No entries match this filter" in response.text
+    assert "1 operation is recorded" in response.text
+    assert "No renames have been executed yet" not in response.text
+    # The way back to the unfiltered view.
+    assert 'hx-get="/audit/?status=all' in response.text
+
+
+@pytest.mark.asyncio
+async def test_audit_log_empty_state_tab_counts_stay_truthful(client: AsyncClient, session: AsyncSession) -> None:
+    """The empty-state copy never inflates the tab counts -- a filtered-empty tab still reads (0)."""
+    await create_test_execution_log(session, status=ExecutionStatus.COMPLETED, source_path="/music/done.mp3")
+
+    response = await client.get("/audit/?status=failed")
+    assert response.status_code == 200
+    assert "All (1)" in response.text
+    assert "Completed (1)" in response.text
+    assert "Failed (0)" in response.text
+    assert "In Progress (0)" in response.text
 
 
 @pytest.mark.asyncio
