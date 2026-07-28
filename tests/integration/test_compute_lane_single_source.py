@@ -80,9 +80,14 @@ def test_single_derivation_symbol_is_shared_by_all_consumers() -> None:
     """Every consumer references the SAME derivation + registry-projection function objects (no shadow copy).
 
     The stub-once/observe-everywhere proof only holds if there is literally one derivation path. Both
-    routers import ``derive_compute_lane_identities`` and the file-badge service + the Agents router
-    import ``non_local_backend_kinds`` from ``phaze.services.agent_liveness`` -- assert those bound names
-    are the very same objects the service module exposes, so no surface can carry a second derivation.
+    routers import ``derive_compute_lane_identities`` and the file-badge service imports
+    ``non_local_backend_kinds`` from ``phaze.services.agent_liveness`` -- assert those bound names are
+    the very same objects the service module exposes, so no surface can carry a second derivation.
+
+    phaze-2u8v.4: the Agents router no longer reads the registry projection at all. Its Section-1
+    suppression is keyed on the Agent row's KIND, so the two panels can no longer disagree about a lane
+    because of a registry key that failed to match -- one fewer consumer to keep in step, and the
+    consumers that remain are pinned below.
     """
     import phaze.routers.admin_agents as admin_agents_router
     import phaze.routers.pipeline as pipeline_router
@@ -92,9 +97,9 @@ def test_single_derivation_symbol_is_shared_by_all_consumers() -> None:
     # ONE lane-identity source, referenced identically by both HTTP surfaces.
     assert pipeline_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities
     assert admin_agents_router.derive_compute_lane_identities is agent_liveness.derive_compute_lane_identities
-    # ONE registry projection, referenced identically by the file-badge service and the Agents router.
+    # ONE registry projection, referenced identically by the file-badge service and the lane derivation.
     assert pipeline_service.non_local_backend_kinds is agent_liveness.non_local_backend_kinds
-    assert admin_agents_router.non_local_backend_kinds is agent_liveness.non_local_backend_kinds
+    assert not hasattr(admin_agents_router, "non_local_backend_kinds"), "the Agents router must not re-read the registry"
 
 
 @pytest.mark.asyncio

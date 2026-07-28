@@ -156,14 +156,11 @@ id = "kueue-a"
 rank = 10
 cap = 4
 buckets = ["stage-a", "stage-shared"]
-agent_ref = "k8s-kueue-a"   # OPTIONAL (phaze-ifcr) — the kind="compute" Agent.id whose bearer
-                            # token this cluster's one-shot job_runner pods authenticate with.
-                            # A kueue-backend agent row can never heartbeat (job_runner pods never
-                            # call the heartbeat endpoint), so binding it structurally here is what
-                            # lets the admin-agents dedupe filter key on it. Omit it and the dedupe
-                            # falls back to id/name string-coincidence against the backend's own id
-                            # — which silently misses when they differ (e.g. backend "vox" / agent
-                            # "k8s-vox").
+# No agent_ref on a kueue backend. The bearer-token kind="compute" Agent row whose token this
+# cluster's one-shot job_runner pods authenticate with needs no registry binding: that row can never
+# heartbeat (job_runner pods never call the heartbeat endpoint), so /admin/agents keeps it out of the
+# heartbeating table on the strength of its KIND alone and represents the cluster in the "Compute /
+# burst lanes" panel instead (phaze-2u8v.4). A leftover `agent_ref` key here is ignored, not an error.
 
   [backends.kube]
   api_url = "https://kueue-a.mesh:6443"
@@ -183,7 +180,6 @@ id = "kueue-b"
 rank = 20
 cap = 2
 buckets = ["stage-b"]
-agent_ref = "k8s-kueue-b"   # optional; distinct per cluster
 
   [backends.kube]
   api_url = "https://kueue-b.mesh:6443"
