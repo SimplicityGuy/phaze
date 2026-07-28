@@ -666,6 +666,9 @@ async def test_analyze_active_counts_derived_inflight_without_busy_local_agent(s
     truthful source is the SAME stage_status derivation the Files matrix renders: files whose
     stage_status_case(analyze) == 'in_flight' (the scheduling_ledger signal, local AND cloud).
     """
+    import uuid as _uuid
+
+    from phaze.models.cloud_job import CloudJob, CloudJobStatus
     from phaze.models.scheduling_ledger import SchedulingLedger
     from phaze.routers.pipeline import _build_dag_context
     from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
@@ -674,6 +677,7 @@ async def test_analyze_active_counts_derived_inflight_without_busy_local_agent(s
     for _ in range(2):
         file_rec, _meta = _make_file_with_metadata()
         session.add(file_rec)
+        await session.flush()  # the cloud_job FK below needs the file row to exist first
         session.add(
             SchedulingLedger(
                 key=f"{func_name}:{file_rec.id}",
@@ -682,6 +686,13 @@ async def test_analyze_active_counts_derived_inflight_without_busy_local_agent(s
                 payload={"file_id": str(file_rec.id)},
             )
         )
+        # phaze-2u8v.2 / D-01a: a RUNNING cloud_job is what "dispatched to a compute lane" actually
+        # looks like in the database. The ledger row's ``routing`` hint is a replay aid that no
+        # in-flight derivation reads, so on its own it no longer distinguishes cloud-burst work from a
+        # ledger row whose job was LOST -- which is the whole defect this bead fixed (in-flight 4963 vs
+        # SAQ 2583 on the live archive). Seeding the sidecar keeps this fixture testing cloud dispatch
+        # rather than accidentally testing the orphan path.
+        session.add(CloudJob(id=_uuid.uuid4(), file_id=file_rec.id, status=CloudJobStatus.RUNNING.value))
     await session.commit()
 
     app_state = SimpleNamespace()  # no redis → counters degrade (DB-only)
