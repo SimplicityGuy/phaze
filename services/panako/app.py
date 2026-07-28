@@ -1,10 +1,16 @@
 """FastAPI wrapper for Panako audio fingerprinting engine."""
 
 import asyncio
+from collections.abc import Iterator
+import contextlib
+import hashlib
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
+import tempfile
+import uuid
 
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
@@ -38,6 +44,162 @@ HEALTH_TIMEOUT = 30
 # Truncate captured stderr in logs -- a stack-trace flood per failed file would bury
 # the signal, but the head of the trace is what identifies the failure mode.
 STDERR_LOG_LIMIT = 2000
+
+# phaze-64w1 #sec: this sidecar is unauthenticated (uvicorn --host 0.0.0.0) and
+# `file_path` arrives verbatim from an agent-registered FileRecord. Panako's OWN decode
+# path (TarsosDSP's PipeDecoder, reached from every store/query) substitutes the operand
+# we hand the CLI into a `/bin/bash -c "ffmpeg ... -i \"%resource%\" ..."` template with
+# only bare double-quoting -- a `"`, backtick, or `$(...)` in the path breaks out of that
+# quoting into arbitrary shell execution INSIDE the container. Passing our own argv as a
+# list (no shell on our side) does not help: the shell that matters is Panako's, one hop
+# further down. The fix is to never let a caller-controlled byte reach that substitution
+# at all -- see `_resolve_confined_path` / `_staged_query_operand` / `_ingest_identity_path`
+# below.
+#
+# `PANAKO_MEDIA_ROOTS` mirrors the comma-separated `PHAZE_AGENT_SCAN_ROOTS` shape (a
+# deployment can mount more than one read-only media path into this container). There is
+# DELIBERATELY no built-in default: an unset or empty value yields an EMPTY list, and
+# `_resolve_confined_path` fails CLOSED on an empty list -- every file_path is rejected --
+# rather than falling back to a guessed path that may not match the actual mount(s). The
+# deployment must set this explicitly next to the container's real `volumes:` entries.
+_raw_media_roots = os.environ.get("PANAKO_MEDIA_ROOTS", "")
+MEDIA_ROOTS: list[Path] = [Path(root.strip()) for root in _raw_media_roots.split(",") if root.strip()]
+# Ephemeral, per-request staging area for the QUERY-side operand only (see
+# `_staged_query_operand`) -- deleted again once the request finishes. Defaults under the
+# system tempdir so no extra volume/mount is required. Do NOT use this for ingest identity
+# (see `INGEST_IDENTITY_DIR` below): Panako persists whatever operand `store` was given as
+# that fingerprint's permanent identity, so an ingest-side staged name must outlive the
+# request that created it, not be deleted with it.
+STAGING_DIR = Path(os.environ.get("PANAKO_STAGING_DIR", str(Path(tempfile.gettempdir()) / "panako-stage")))
+# phaze-64w1 (third bounce): a per-request uuid4 name for the INGEST side broke fingerprint
+# identity -- Panako's `store` persists the exact operand it's given, and echoes it back
+# verbatim as a `query` match's "match path" (the field `_parse_matches` reads as
+# `track_id`). Deleting that operand after the request (as `_staged_query_operand` does)
+# orphans every stored fingerprint the moment the ingest request finishes: the next query
+# that matches it returns a temp name that no longer exists anywhere. `_ingest_identity_path`
+# instead stages under THIS directory with a name deterministic in the resolved real path
+# (sha256), created idempotently and NEVER deleted -- Panako's LMDB store (`panako_data`,
+# `/data/fprint`) outlives the request, so the identity that maps back to it must too.
+# Defaults alongside that same persistent volume (`$HOME`, which the Dockerfile pins to
+# `/data/fprint`) rather than the ephemeral system tempdir `STAGING_DIR` uses, so identities
+# survive a container restart the same way the LMDB store they describe does.
+INGEST_IDENTITY_DIR = Path(os.environ.get("PANAKO_INGEST_IDENTITY_DIR", str(Path(os.environ.get("HOME", "/data/fprint")) / "panako-identities")))
+# A resolved suffix is only ever used cosmetically (so ffprobe/ffmpeg see a plausible
+# extension); anything not matching this is dropped rather than carried into the staged
+# name, so it can never itself be a vector.
+_SAFE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+
+
+class PathValidationError(ValueError):
+    """A caller-supplied file_path failed validation. Reported as HTTP 400, never shelled out."""
+
+
+def _resolve_confined_path(file_path: str) -> Path:
+    """Resolve ``file_path`` and confine it under one of :data:`MEDIA_ROOTS`.
+
+    Rejects a relative path, an embedded NUL byte, and anything that resolves (after
+    ``..`` traversal / symlink resolution) outside every configured media root -- including
+    when ``MEDIA_ROOTS`` is empty, which rejects EVERYTHING (fail closed: an unconfigured
+    sidecar permits no path, rather than silently permitting every path). Existence is
+    deliberately NOT required here -- the pipeline renames/moves files out from under
+    async fingerprint jobs, and Panako's own "could not read" handling already covers a
+    missing file; this function's only job is confinement against a malicious/mistaken
+    path, not the separate silent-failure defect tracked elsewhere.
+    """
+    if not file_path or "\x00" in file_path:
+        raise PathValidationError("file_path must be a non-empty path with no NUL bytes")
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        raise PathValidationError("file_path must be an absolute path")
+    if not MEDIA_ROOTS:
+        raise PathValidationError("no PANAKO_MEDIA_ROOTS configured -- refusing every file_path (fail closed)")
+    resolved = candidate.resolve()
+    for root in MEDIA_ROOTS:
+        resolved_root = root.resolve()
+        if resolved == resolved_root or resolved_root in resolved.parents:
+            return resolved
+    roots_display = ", ".join(str(root) for root in MEDIA_ROOTS)
+    raise PathValidationError(f"file_path must resolve under one of: {roots_display}")
+
+
+def _safe_suffix(resolved: Path) -> str:
+    """The resolved path's suffix if it looks like a plausible extension, else "".
+
+    Cosmetic only (so ffprobe/ffmpeg see a plausible extension); anything not matching
+    this is dropped rather than carried into a staged name, so it can never itself be a
+    vector.
+    """
+    suffix = resolved.suffix
+    return suffix if _SAFE_SUFFIX_RE.match(suffix) else ""
+
+
+@contextlib.contextmanager
+def _staged_query_operand(file_path: str) -> Iterator[str]:
+    """Validate ``file_path`` and stage it under a generated, collision-proof safe name.
+
+    QUERY-side only -- see the `INGEST_IDENTITY_DIR` module comment for why ingest needs a
+    different (persistent, deterministic) scheme instead of this one. A query's input file
+    is decoded and fingerprinted transiently for comparison; Panako does not persist this
+    operand anywhere a later request could look it up, so an ephemeral uuid4 name -- NO
+    caller-controlled byte -- symlinked to the confined, resolved target is safe here: it's
+    deleted again once this request is done.
+    """
+    resolved = _resolve_confined_path(file_path)
+    suffix = _safe_suffix(resolved)
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    staged = STAGING_DIR / f"pnk-{uuid.uuid4().hex}{suffix}"
+    staged.symlink_to(resolved)
+    try:
+        yield str(staged)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _ingest_identity_path(file_path: str) -> Path:
+    """Resolve + confine ``file_path``, then return its deterministic, persistent staged identity.
+
+    Panako's `store` persists EXACTLY the operand it's given as that fingerprint's identity,
+    and returns it verbatim in every future query match against it (the "match path" field
+    `_parse_matches` reads as `track_id`) -- so the operand can be neither the caller's raw
+    path (the injection this whole module defends against) NOR an ephemeral per-request name
+    (every stored fingerprint would orphan the moment the request that created it finished --
+    phaze-64w1's third bounce, caught by the docker-validate smoke self-match assertion).
+
+    Deterministic + persistent solves both at once: the identity symlink's name is
+    ``sha256(str(resolved_real_path))`` -- content-independent and stable, so re-ingesting the
+    same archive location reuses the same identity instead of fragmenting it -- and, unlike
+    `_staged_query_operand`, it is NEVER deleted: Panako's LMDB store outlives the request, so
+    the identity that maps back to it must too. `_destage_track_id` is this function's inverse.
+    """
+    resolved = _resolve_confined_path(file_path)
+    suffix = _safe_suffix(resolved)
+    digest = hashlib.sha256(str(resolved).encode()).hexdigest()
+    INGEST_IDENTITY_DIR.mkdir(parents=True, exist_ok=True)
+    identity = INGEST_IDENTITY_DIR / f"pnk-{digest}{suffix}"
+    if not (identity.is_symlink() and identity.resolve() == resolved):
+        identity.unlink(missing_ok=True)
+        identity.symlink_to(resolved)
+    return identity
+
+
+def _destage_track_id(track_id: str) -> str:
+    """Translate a Panako-returned match identity back to the real archive path.
+
+    Every stored fingerprint's identity is one of our own `_ingest_identity_path` symlinks
+    (never the caller's raw path -- that's the injection defense), so a query match's "match
+    path" is always a staged identity, not the real path directly. Resolve it back so callers
+    (dedup, tracklist matching) see the archive path, not an internal staging artifact.
+    Anything that isn't one of our identity symlinks -- Panako's "null" sentinel is already
+    filtered out before this runs, but defend anyway against unrecognized data -- is returned
+    unchanged: a destage miss degrades to an unresolved id, it never raises into a 500.
+    """
+    candidate = Path(track_id)
+    try:
+        if candidate.parent.resolve() == INGEST_IDENTITY_DIR.resolve() and candidate.is_symlink():
+            return str(candidate.resolve())
+    except OSError:
+        pass
+    return track_id
 
 
 class IngestRequest(BaseModel):
@@ -259,7 +421,11 @@ async def health(response: Response) -> HealthResponse:
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the Panako fingerprint database."""
     try:
-        result = await asyncio.to_thread(_run_ingest, request.file_path)
+        identity = _ingest_identity_path(request.file_path)
+        result = await asyncio.to_thread(_run_ingest, str(identity))
+    except PathValidationError as exc:
+        logger.warning("Panako ingest rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except subprocess.TimeoutExpired:
         # subprocess.run kills the child on timeout, then raises. Left uncaught this
         # was a raw 500 traceback instead of a structured error (phaze-mv1f).
@@ -276,7 +442,11 @@ async def ingest(request: IngestRequest) -> IngestResponse:
 async def query(request: IngestRequest) -> QueryResponse:
     """Query the Panako database for matches."""
     try:
-        result = await asyncio.to_thread(_run_query, request.file_path)
+        with _staged_query_operand(request.file_path) as safe_path:
+            result = await asyncio.to_thread(_run_query, safe_path)
+    except PathValidationError as exc:
+        logger.warning("Panako query rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except subprocess.TimeoutExpired:
         detail = f"Panako query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
         logger.error(detail)
@@ -285,4 +455,10 @@ async def query(request: IngestRequest) -> QueryResponse:
         _log_subprocess_failure("query", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
     matches = _parse_matches(result.stdout)
+    # phaze-64w1 (third bounce): a match's track_id is Panako's stored identity for
+    # whatever it matched -- one of our own `_ingest_identity_path` staging symlinks, per
+    # the injection defense above -- not the real archive path. Resolve it back before it
+    # ever reaches a caller, or every match is keyed to an internal staging artifact.
+    for match in matches:
+        match.track_id = _destage_track_id(match.track_id)
     return QueryResponse(matches=matches)

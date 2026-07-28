@@ -72,17 +72,20 @@ Confidence scores are 0-100, derived from Panako's match percentage. The output 
 
 ## Configuration
 
-| Constant             | Default           | Description                        |
-|----------------------|-------------------|------------------------------------|
-| `PANAKO_JAR`         | `/app/panako.jar` | Path to Panako shadow JAR          |
-| `SUBPROCESS_TIMEOUT` | `3600`            | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| Constant                     | Default            | Description                        |
+|-------------------------------|--------------------|------------------------------------|
+| `PANAKO_JAR`                  | `/app/panako.jar`  | Path to Panako shadow JAR          |
+| `SUBPROCESS_TIMEOUT`          | `3600`             | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `PANAKO_MEDIA_ROOTS`          | *(unset -- fails closed)* | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-64w1 #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount -- `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
+| `PANAKO_STAGING_DIR`          | `<tempdir>/panako-stage` | Where the QUERY-side safe, generated (uuid4) symlink operand is staged (phaze-64w1 #sec) -- never the caller-supplied path itself, and deleted again once the request finishes: Panako doesn't persist a query's own operand anywhere later. |
+| `PANAKO_INGEST_IDENTITY_DIR`  | `$HOME/panako-identities` (`HOME=/data/fprint` -- the `panako_data` volume) | Where the INGEST-side safe, deterministic (`sha256` of the resolved real path) symlink identity is staged. Unlike `PANAKO_STAGING_DIR`, this is **never deleted**: Panako's `store` persists exactly this operand as a fingerprint's permanent identity and echoes it back verbatim in later `query` matches, so it must outlive the request and survive a container restart the same way the LMDB store (`panako_data`) it describes does (phaze-64w1, third bounce). |
 
 ## Volumes
 
 | Mount         | Mode      | Description                                            |
 |---------------|-----------|--------------------------------------------------------|
 | `/data/music` | read-only | Shared music volume (same as main app)                 |
-| `/data/fprint`| read-write| Persistent fingerprint database via LMDB (named volume `panako_data`) |
+| `/data/fprint`| read-write| Persistent fingerprint database via LMDB (named volume `panako_data`); also holds `panako-identities/`, the ingest identity symlinks `PANAKO_INGEST_IDENTITY_DIR` stages (phaze-64w1) |
 
 ## Architecture Notes
 
