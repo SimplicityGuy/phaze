@@ -24,16 +24,26 @@ The function is idempotent in two distinct senses, and the difference matters:
   the api container does NOT keep generating new tokens.
 - If the only rows present are NOT usable (revoked, or with ``token_hash`` stripped
   to ``NULL``) -- whether that is migration 012's DIFFERENT-id
-  ``legacy-application-server`` marker, or a SAME-id ``dev-agent`` row left behind by
-  the documented token-rotation procedure (``UPDATE agents SET revoked_at = NOW()
-  WHERE id='dev-agent'``, ``routers/agent_auth.py``) -- this (re-)seeds a usable
+  ``legacy-application-server`` marker, or a SAME-id ``dev-agent`` row whose
+  ``token_hash`` was stripped to ``NULL`` without a revoke -- this (re-)seeds a usable
   ``dev-agent`` row. The ``dev-agent`` row and its sentinel ``ScanBatch`` are written
   via ``INSERT ... ON CONFLICT ... DO UPDATE`` / ``DO NOTHING`` (never a blind
-  ``INSERT``), so a pre-existing same-id row -- revoked, token-stripped, or with a
-  live sentinel batch already present -- is un-revoked and re-keyed in place instead
-  of colliding with ``pk_agents`` or ``uq_scan_batches_agent_id_live``. That upsert
-  completes the operator's rotation intent (a fresh usable token) instead of
-  crash-looping the whole api container on every restart (phaze-viwd).
+  ``INSERT``), so a pre-existing same-id row -- token-stripped, or with a live
+  sentinel batch already present -- is re-keyed in place instead of colliding with
+  ``pk_agents`` or ``uq_scan_batches_agent_id_live``.
+
+phaze-gh22: a SAME-id ``dev-agent`` row that was explicitly revoked (``UPDATE agents
+SET revoked_at = NOW() WHERE id='dev-agent'``, the kill switch documented in
+``routers/agent_auth.py``) is the one exception to the re-seed-on-restart behaviour
+above: it is treated as TERMINAL, not as a rotation request. The seeder logs a
+WARNING and returns ``None`` without touching the row. Un-revoking it here --
+particularly when ``settings.dev_agent_token`` is pinned, so the "new" token is
+byte-identical to the one an operator just revoked because it leaked -- would
+silently resurrect a credential the operator deliberately killed on every restart,
+defeating the cache-free immediate-revoke contract documented in
+``routers/agent_auth.py``. Restoring watcher access after a deliberate revoke is now
+an explicit operator action (e.g. the agents management CLI), not an automatic side
+effect of a container restart.
 
 Gated by ``settings.dev_seed_agent`` -- production deployments leave the
 default ``false``.
@@ -88,13 +98,17 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     1. If ``settings.dev_seed_agent`` is ``False``, return ``None`` immediately.
     2. If the ``agents`` table has at least one USABLE row (not revoked, with a
        ``token_hash``), return ``None`` (idempotent).
-    3. Otherwise, generate (or read from ``settings.dev_agent_token``) a wire
-       token and UPSERT its sha256 into the ``id="dev-agent"`` row -- un-revoking
-       and re-keying it in place if it already exists (revoked and/or
-       token_hash=NULL) rather than blindly inserting and colliding with
-       ``pk_agents`` -- plus its sentinel ``ScanBatch`` (skipped if a live one
-       already exists, to avoid colliding with ``uq_scan_batches_agent_id_live``),
-       commit, and return the cleartext token.
+    3. phaze-gh22: if a same-id ``dev-agent`` row already exists AND was explicitly
+       revoked (``revoked_at IS NOT NULL``), that revoke is terminal -- log a
+       WARNING naming the id and return ``None`` without touching the row. A
+       deliberate revoke must not be silently undone by the next restart.
+    4. Otherwise, generate (or read from ``settings.dev_agent_token``) a wire
+       token and UPSERT its sha256 into the ``id="dev-agent"`` row -- re-keying it
+       in place if it already exists (non-revoked with ``token_hash=NULL``) rather
+       than blindly inserting and colliding with ``pk_agents`` -- plus its
+       sentinel ``ScanBatch`` (skipped if a live one already exists, to avoid
+       colliding with ``uq_scan_batches_agent_id_live``), commit, and return the
+       cleartext token.
 
     The seeded agent's ``scan_roots`` defaults to ``[settings.scan_path]`` so
     the watcher's ``/whoami`` response includes a usable filesystem root. The
@@ -113,6 +127,28 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
     ).scalar_one()
     if usable_count > 0:
         logger.debug("ensure_dev_agent: %d usable agent(s) already exist; no-op", usable_count)
+        return None
+
+    # phaze-gh22: a revoked SAME-id `dev-agent` row is terminal, not a rotation
+    # request. Pre-fix, `usable_count == 0` fell through to the upsert below,
+    # which un-revoked the row AND re-installed `settings.dev_agent_token`
+    # unchanged when that setting is pinned -- so revoking a leaked bearer
+    # (routers/agent_auth.py's documented kill switch) was silently undone by
+    # the very next api restart, resurrecting the exact credential an operator
+    # just killed. Checking specifically for `id == dev-agent` here (not any
+    # revoked row) is deliberate: migration 012's revoked `legacy-application-server`
+    # marker has a DIFFERENT id and must keep falling through to seeding below --
+    # only an explicit revoke of THIS row, via the documented procedure, is meant
+    # to be terminal.
+    existing_dev_agent = await session.get(Agent, _DEV_AGENT_ID)
+    if existing_dev_agent is not None and existing_dev_agent.revoked_at is not None:
+        logger.warning(
+            "ensure_dev_agent: id=%s was explicitly revoked at %s; refusing to un-revoke or "
+            "reinstall a token for it. Provision a replacement agent explicitly (e.g. via the "
+            "agents management CLI) to restore watcher access.",
+            _DEV_AGENT_ID,
+            existing_dev_agent.revoked_at.isoformat(),
+        )
         return None
 
     # Token: operator-supplied or freshly generated.
@@ -135,18 +171,20 @@ async def ensure_dev_agent(session: AsyncSession) -> str | None:
 
     # phaze-viwd: UPSERT, not a blind INSERT. `usable_count == 0` above only proves
     # no agent the watcher could authenticate as exists yet -- it does NOT prove no
-    # row with id='dev-agent' exists. The documented rotation procedure is
-    # `UPDATE agents SET revoked_at = NOW() WHERE id='dev-agent'` (routers/agent_auth.py),
-    # which LEAVES the row present with a matching PK; the same gap opens if
-    # token_hash is ever stripped to NULL while the row persists. A bare
-    # `session.add(Agent(id="dev-agent", ...))` then raises IntegrityError on
-    # `pk_agents` at the commit below, and because the DB state never changes,
-    # every subsequent restart re-crashes identically -- a permanent crash loop
-    # (this was the bug). ON CONFLICT (id) DO UPDATE re-keys and un-revokes the
-    # existing row in place instead, which is also what the operator actually
-    # wanted: they revoked the token to ROTATE it, not to permanently disable the
-    # dev agent, so completing that intent (not merely surviving startup) is the
-    # correct fix -- see the module docstring above.
+    # row with id='dev-agent' exists: token_hash can be stripped to NULL (without a
+    # revoke) while the row persists. A bare `session.add(Agent(id="dev-agent", ...))`
+    # then raises IntegrityError on `pk_agents` at the commit below, and because the
+    # DB state never changes, every subsequent restart re-crashes identically -- a
+    # permanent crash loop (this was the bug). ON CONFLICT (id) DO UPDATE re-keys the
+    # existing row in place instead of colliding.
+    #
+    # phaze-gh22: by the time we reach this line, the terminal check above has
+    # already returned `None` for any same-id `dev-agent` row with `revoked_at IS
+    # NOT NULL` -- so the `revoked_at: None` in the `set_` below is not un-revoking
+    # a deliberately-killed credential. It only clears a hypothetical (never
+    # actually set outside of tests) `revoked_at` on a row this UPSERT is also
+    # writing a brand-new `token_hash` into in the same statement, which is not a
+    # state the running application can otherwise produce.
     agent_stmt = pg_insert(Agent).values(
         id=_DEV_AGENT_ID,
         name=_DEV_AGENT_ID,
