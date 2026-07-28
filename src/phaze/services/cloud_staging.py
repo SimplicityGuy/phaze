@@ -173,7 +173,16 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
        :class:`NoActiveAgentError` is allowed to propagate for a clean hold --- nothing is written,
        so the caller (Phase 55 / a re-drive) can retry once an agent appears.
     2. Initiate the multipart upload and presign ``part_count = ceil(file_size / part_size)`` (min
-       1) PUT URLs via ``s3_staging`` (the only S3-SDK home).
+       1) PUT URLs via ``s3_staging`` (the only S3-SDK home). ``file.file_size`` is unvalidated agent
+       wire input (``schemas/agent_files.py`` declines a storage-domain cap on purpose), so BEFORE any
+       of that: fail loud against ``S3StagingError`` when it exceeds S3's max object size
+       (phaze-wz1q), and derive the EFFECTIVE part size as
+       ``max(cfg.s3_multipart_part_size_bytes, ceil(file_size / S3_MAX_PART_COUNT))`` so the resulting
+       ``part_count`` can never exceed S3's 10,000-part multipart ceiling regardless of how large
+       ``file_size`` misreports. The same effective size is what gets recorded on
+       ``UploadFileS3Payload.part_size_bytes`` -- passing the raw config value there while presigning
+       against an adjusted part count would silently corrupt the object (the agent would slice bytes
+       at the wrong boundaries).
     3. Upsert the ``cloud_job`` row (``UPLOADING`` + file_id-scoped key + multipart ``upload_id``)
        ON CONFLICT (file_id) so a re-stage is idempotent against the unique FK (no duplicate row).
     4. PARK exactly one ``s3_upload`` job on the session (phaze-grzo) carrying the presigned part
@@ -208,9 +217,23 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
     # clean hold (NoActiveAgentError propagates) -- no multipart, no cloud_job, no parked enqueue.
     agent = await select_active_agent(session, kind="fileserver")
 
+    # phaze-wz1q: fail loud BEFORE initiating a multipart upload that can never complete. file.file_size
+    # is unvalidated agent wire input (schemas/agent_files.py:36-39 declines a storage-domain cap by
+    # design); this is the point where it stops being a display value and becomes a loop bound, so it
+    # gets re-bounded here rather than trusted as-is.
+    if file.file_size > s3_staging.S3_MAX_OBJECT_SIZE_BYTES:
+        raise s3_staging.S3StagingError(
+            f"file {file.id} reports file_size={file.file_size} bytes, exceeding S3's "
+            f"{s3_staging.S3_MAX_OBJECT_SIZE_BYTES}-byte max object size -- refusing to stage"
+        )
+
     upload_id = await s3_staging.create_multipart_upload(file.id, bucket)
     try:
-        part_count = max(1, math.ceil(file.file_size / cfg.s3_multipart_part_size_bytes))
+        # Derive an EFFECTIVE part size that can never push part_count past S3's 10,000-part ceiling,
+        # regardless of how large (or how badly misreported) file.file_size is -- the configured
+        # s3_multipart_part_size_bytes is a floor, not the final word (phaze-wz1q).
+        part_size = max(cfg.s3_multipart_part_size_bytes, math.ceil(file.file_size / s3_staging.S3_MAX_PART_COUNT))
+        part_count = max(1, math.ceil(file.file_size / part_size))
         part_urls = await s3_staging.presign_upload_parts(file.id, upload_id, part_count, bucket)
 
         # Idempotent upsert against the unique file_id FK: a re-stage refreshes the key/status/upload_id
@@ -254,7 +277,7 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
             file_id=file.id,
             original_path=file.original_path,
             part_urls=part_urls,
-            part_size_bytes=cfg.s3_multipart_part_size_bytes,
+            part_size_bytes=part_size,
             agent_id=agent.id,
         )
         queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
