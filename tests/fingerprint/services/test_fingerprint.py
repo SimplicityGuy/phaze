@@ -1,5 +1,6 @@
 """Tests for fingerprint service layer: Protocol, adapters, orchestrator, progress."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -583,6 +584,38 @@ class TestQueryErrorClassification:
 
         adapter = self._adapter(adapter_cls, raise_error)
         with pytest.raises(EngineQueryError, match="Connection refused"):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_carries_the_response_body_not_just_the_status(self, adapter_cls):
+        """phaze-cf0z: the body IS the engine's stderr -- the only text naming the failure.
+
+        ``_post_ingest`` has always preserved it; ``_post_query`` discarded it, so a
+        query-path engine failure reached the hub log as a bare 'HTTP 500'. Applies to BOTH
+        engines: the discard was in the shared helper, not in either adapter.
+        """
+        detail = "EOFError: Ran out of input"
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, json={"detail": detail}))
+        with pytest.raises(EngineQueryError, match=re.escape(detail)):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_body_is_truncated_not_flooded(self, adapter_cls):
+        """A per-file stack-trace flood in the hub log buries the signal it exists to surface."""
+        # 'Z' appears nowhere in the surrounding "<engine>: query engine failure: HTTP 500: "
+        # envelope, so the count is exactly the carried body length.
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, text="Z" * 10_000))
+        with pytest.raises(EngineQueryError) as excinfo:
+            await adapter.query("/data/music/test.mp3")
+        assert excinfo.value.args[0].count("Z") == 2000
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_with_empty_body_is_reported_as_such(self, adapter_cls):
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, text=""))
+        with pytest.raises(EngineQueryError, match="<no body>"):
             await adapter.query("/data/music/test.mp3")
         await adapter.close()
 

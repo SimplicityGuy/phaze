@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -462,7 +463,61 @@ class TestIngestEndpointBootstrap:
                 resp = await client.post("/ingest", json={"file_path": "/data/real/song.mp3"})
 
         assert resp.status_code == 500
-        assert any("audfprint ingest failed" in record.message and "boom: disk full" in record.message for record in caplog.records)
+        assert any("audfprint ingest FAILED" in record.message and "boom: disk full" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Server-side diagnosability of subprocess failures (phaze-cf0z)
+#
+# The bug: /ingest logged its stderr but /query did not -- it raised HTTPException(500,
+# detail=result.stderr) with no log record. The hub's `_post_query` logs only the status
+# code and never reads the body, so a query-path engine failure left NO error text on
+# either side. panako had already factored the fix into one `_log_subprocess_failure`
+# helper used by both endpoints; audfprint had inlined it into `ingest` only, so there
+# was nothing to reuse when `query` was written.
+#
+# Second, independent gap in the same file: no `logging.basicConfig`, so every record
+# fell through to Python's `lastResort` handler (unformatted ERROR/WARNING, INFO/DEBUG
+# discarded outright) -- degrading even the ingest log the repo had already fixed.
+# ---------------------------------------------------------------------------
+
+
+class TestSubprocessFailureLogging:
+    """Both subprocess failure paths must leave the engine's stderr in the sidecar's own log."""
+
+    async def test_query_failure_logs_stderr(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The exact previously-silent path: match exits nonzero, the caller gets a 500, and
+        # before this fix the reason existed nowhere on the server.
+        _patch_query(monkeypatch, audfprint_app, tmp_path, stdout="", returncode=1)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            status, _ = await _post_query(audfprint_app)
+
+        assert status == 500
+        assert any("audfprint match FAILED" in record.message and "err" in record.message for record in caplog.records)
+
+    def test_log_helper_handles_absent_stderr(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        result = subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="")
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            audfprint_app._log_subprocess_failure("ingest", "/data/real/song.mp3", result)
+        assert "<no stderr>" in caplog.text
+
+    def test_log_helper_truncates_a_stderr_flood(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="x" * 10_000)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            audfprint_app._log_subprocess_failure("match", "/data/real/song.mp3", result)
+        assert "x" * audfprint_app.STDERR_LOG_LIMIT in caplog.text
+        assert "x" * (audfprint_app.STDERR_LOG_LIMIT + 1) not in caplog.text
+
+    def test_root_logging_is_configured(self, audfprint_app: ModuleType) -> None:
+        """Without basicConfig, uvicorn leaves this logger on `lastResort`: no INFO at all.
+
+        Asserted through the effective level rather than the handler list, because that is
+        the property that actually decides whether an INFO record survives.
+        """
+        assert audfprint_app.logger.getEffectiveLevel() <= logging.INFO
+        assert logging.getLogger().handlers, "root logger has no handler -- records fall through to lastResort"
 
 
 # ---------------------------------------------------------------------------

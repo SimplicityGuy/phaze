@@ -14,6 +14,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 
+# phaze-cf0z: uvicorn configures only the `uvicorn*` loggers, never the root logger, so
+# without this call every record emitted below falls through to Python's `lastResort`
+# handler: WARNING/ERROR reach stderr unformatted and untimestamped, and every INFO/DEBUG
+# record is discarded outright. That silently degraded even the ingest-path error log this
+# service already had. panako has configured logging since it was written; audfprint never
+# did, which is half of why the 2026.7.7 outage left nothing usable in `docker logs`.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("audfprint-service")
 
 app = FastAPI(title="audfprint Service", version="0.1.0")
@@ -36,6 +43,9 @@ SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
 # Chunk size for the streaming loadability probe below. The probe never materializes the
 # database in memory -- it decompresses and discards, so cost is CPU, not RSS.
 _PROBE_CHUNK_BYTES = 1 << 20
+# Truncate captured stderr in logs -- a stack-trace flood per failed file would bury the
+# signal, but the head of the trace is what identifies the failure mode. Mirrors panako.
+STDERR_LOG_LIMIT = 2000
 
 # The four states the on-disk database can be in. They are distinguishable by exception at
 # read time (phaze-p3hj.1 §6): absent -> FileNotFoundError, zero-byte -> `EOFError: Ran out
@@ -77,6 +87,30 @@ class HealthResponse(BaseModel):
     status: str
     engine: str
     detail: str = ""
+
+
+def _log_subprocess_failure(operation: str, file_path: str, result: subprocess.CompletedProcess[str]) -> None:
+    """Log a failed audfprint subprocess server-side, including its stderr (phaze-cf0z).
+
+    A SHARED helper rather than a per-site ``logger.error`` on purpose. The ingest path
+    already logged its stderr; ``query`` did not, and raised ``HTTPException(500,
+    detail=result.stderr)`` with no server-side record at all. The failure context was
+    handed to the caller and then dropped: ``_post_query`` in the hub logs only the status
+    code and never reads the body, so a query-path engine failure (the unpickle traceback of
+    a torn ``fprint.pklz``, an EACCES on the media mount, a missing dependency) vanished from
+    BOTH sides. That is the exact shape panako documents from the 2026.7.7 outage -- "every
+    /ingest returned 500 for 40 minutes and left ZERO tracebacks in docker logs" -- which is
+    why panako factored it into one helper used by both endpoints. There was nothing here to
+    reuse, so ``query`` was written without it; now there is.
+    """
+    stderr = (result.stderr or "").strip()
+    logger.error(
+        "audfprint %s FAILED for %s (exit %d): %s",
+        operation,
+        file_path,
+        result.returncode,
+        stderr[:STDERR_LOG_LIMIT] or "<no stderr>",
+    )
 
 
 def _staging_path(db_path: Path) -> Path:
@@ -363,7 +397,7 @@ async def ingest(request: IngestRequest) -> IngestResponse:
             logger.error(detail)
             raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
-        logger.error("audfprint ingest failed for %s: %s", request.file_path, result.stderr)
+        _log_subprocess_failure("ingest", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
     return IngestResponse(status="ingested", file_path=request.file_path)
 
@@ -395,6 +429,7 @@ async def query(request: IngestRequest) -> QueryResponse:
             logger.error(detail)
             raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
+        _log_subprocess_failure("match", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
     matches, parse_failures = _parse_matches(result.stdout)
     if parse_failures and not matches:

@@ -29,6 +29,19 @@ _SIDECAR_HTTP_TIMEOUT = httpx.Timeout(SIDECAR_HTTP_TIMEOUT_SEC, connect=10.0)
 # by its own HEALTH_TIMEOUT) -- a wedged sidecar must surface as unhealthy quickly, not
 # hang health_all for the full ingest budget.
 _SIDECAR_HEALTH_TIMEOUT = httpx.Timeout(35.0, connect=10.0)
+# phaze-cf0z: a sidecar 5xx body is the engine's stderr -- often a multi-frame traceback.
+# Worth carrying (it is the only thing that names the failure mode) but not worth flooding
+# the hub log or an exception message with, once per file. Mirrors the sidecars' own
+# STDERR_LOG_LIMIT so the two ends truncate at the same width.
+_ERROR_BODY_LIMIT = 2000
+
+
+def _truncate_body(body: str) -> str:
+    """Collapse a sidecar error body to a bounded, log-safe single value."""
+    text = (body or "").strip()
+    if not text:
+        return "<no body>"
+    return text[:_ERROR_BODY_LIMIT]
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +186,15 @@ async def _post_query(client: httpx.AsyncClient, engine: str, file_path: str) ->
         logger.warning("fingerprint query transport failure", engine=engine, error=str(exc))
         raise EngineQueryError(engine, f"query transport failure: {exc}") from exc
     if resp.status_code >= 500:
-        logger.warning("fingerprint query engine failure", engine=engine, status_code=resp.status_code)
-        raise EngineQueryError(engine, f"query engine failure: HTTP {resp.status_code}")
+        # phaze-cf0z: carry the BODY, not just the status code. The sidecars put the engine's
+        # stderr in `detail`, which is the only text that identifies WHY the engine failed --
+        # and `_post_ingest` has always preserved it (`f"HTTP {status}: {resp.text}"`, below).
+        # This path used to log the bare status code and raise a bare status code, so the
+        # stderr the sidecar handed us was read by nobody on either side. Truncated because a
+        # per-file stack-trace flood in the hub log buries the signal it exists to surface.
+        detail = _truncate_body(resp.text)
+        logger.warning("fingerprint query engine failure", engine=engine, status_code=resp.status_code, detail=detail)
+        raise EngineQueryError(engine, f"query engine failure: HTTP {resp.status_code}: {detail}")
     if resp.status_code != 200:
         return []
     data = resp.json()
