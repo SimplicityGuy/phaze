@@ -1,6 +1,8 @@
 """FastAPI wrapper for audfprint audio fingerprinting engine."""
 
 import asyncio
+from collections.abc import AsyncIterator
+import contextlib
 import gzip
 import logging
 import os
@@ -8,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -40,6 +43,39 @@ FPRINT_DB = "/data/fprint/fprint.pklz"
 # unfingerprintable. The README always documented SUBPROCESS_TIMEOUT as an env var, but
 # it was never actually wired; now it is.
 SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
+
+# ---------------------------------------------------------------------------
+# Response ceiling (phaze-5wz9)
+#
+# `_db_lock` is held across the WHOLE of an ingest or a match, so a request's server-side wall
+# time is `lock wait + database I/O + subprocess` -- and the lock wait was previously unbounded
+# by anything except queue depth. Up to four callers serialize here (the fingerprint lane's 2
+# slots plus the meta lane's 2, both driving this orchestrator), while the hub sized its client
+# budget against ONE subprocess. A caller that timed out at the transport layer did NOT stop the
+# work: uvicorn does not cancel the handler on client disconnect (`connection_lost` only sets
+# `cycle.disconnected`), and `asyncio.to_thread` cannot interrupt a running `subprocess.run`, so
+# the lock stayed held for a caller that had already left, poisoning whoever queued behind it.
+#
+# Three terms, all now explicit, so the ceiling is a number the hub can derive its own budget
+# from rather than a value nobody computed:
+#
+#   LOCK_WAIT_TIMEOUT   bounded wait for the lock. Exceeded -> 503 immediately, which
+#                       `_post_ingest`/`_post_query` classify as an ENGINE error (SAQ
+#                       retry/backoff, no per-file verdict) -- so failing fast costs a retry,
+#                       never a wrong verdict. Sized well above the (concurrency - 1) real runs
+#                       a healthy deep queue implies -- a real ingest on this archive is minutes,
+#                       not the 3600 s ceiling -- and well below the caller's budget, so the
+#                       queued caller is refused rather than abandoned.
+#   DB_IO_BUDGET_SEC    the phaze-p3hj.2 copy + probe + fsync. NOT enforced, deliberately: this
+#                       term is proportional to database size and aborting a copy mid-way only
+#                       converts a slow ingest into a failed one. It is MEASURED and logged when
+#                       breached, so the ceiling stays honest and the growth is visible. Removing
+#                       the copy is a change to the STORE -- never by reverting to an in-place
+#                       write, which is the outage phaze-p3hj.2 closed.
+#   SUBPROCESS_TIMEOUT  the engine run itself, already enforced by `subprocess.run`.
+LOCK_WAIT_TIMEOUT = int(os.environ.get("LOCK_WAIT_TIMEOUT", "900"))
+DB_IO_BUDGET_SEC = int(os.environ.get("DB_IO_BUDGET_SEC", "300"))
+RESPONSE_CEILING_SEC = LOCK_WAIT_TIMEOUT + DB_IO_BUDGET_SEC + SUBPROCESS_TIMEOUT
 # Chunk size for the streaming loadability probe below. The probe never materializes the
 # database in memory -- it decompresses and discards, so cost is CPU, not RSS.
 _PROBE_CHUNK_BYTES = 1 << 20
@@ -221,6 +257,40 @@ class HealthResponse(BaseModel):
     detail: str = ""
 
 
+@contextlib.asynccontextmanager
+async def _db_lock_held(operation: str, file_path: str) -> AsyncIterator[None]:
+    """Acquire ``_db_lock`` within :data:`LOCK_WAIT_TIMEOUT`, or fail the request fast (phaze-5wz9).
+
+    Returning 503 the moment the wait is hopeless is strictly better than letting the caller's
+    transport time out: a transport timeout leaves the sidecar still working for a caller who
+    has gone (nothing cancels the handler, and the running subprocess cannot be interrupted), so
+    the lock stays held and the NEXT caller inherits the same fate. A 503 releases the queue slot
+    immediately and is classified engine-level by both hub adapters, so it becomes SAQ
+    retry/backoff rather than a per-file verdict.
+
+    The wait is logged whenever it is non-trivial, because "slow because something else held the
+    lock" and "slow because this file is huge" are indistinguishable in the access log, and only
+    the first is a queueing problem.
+    """
+    waited_from = time.monotonic()
+    try:
+        await asyncio.wait_for(_db_lock.acquire(), timeout=LOCK_WAIT_TIMEOUT)
+    except TimeoutError:
+        detail = (
+            f"audfprint {operation} gave up waiting {LOCK_WAIT_TIMEOUT}s for the database lock for {file_path}; "
+            f"the engine is saturated (all access is serialized). Effective response ceiling is {RESPONSE_CEILING_SEC}s."
+        )
+        logger.error(detail)
+        raise HTTPException(status_code=503, detail=detail) from None
+    waited = time.monotonic() - waited_from
+    if waited > 1.0:
+        logger.info("audfprint %s waited %.1fs for the database lock (ceiling %ds)", operation, waited, LOCK_WAIT_TIMEOUT)
+    try:
+        yield
+    finally:
+        _db_lock.release()
+
+
 def _log_subprocess_failure(operation: str, file_path: str, result: subprocess.CompletedProcess[str]) -> None:
     """Log a failed audfprint subprocess server-side, including its stderr (phaze-cf0z).
 
@@ -393,9 +463,12 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
     # A leftover staging file means a previous run was killed outright; it is scratch by
     # construction, so drop it rather than appending to a half-written database.
     staging.unlink(missing_ok=True)
+    db_io_seconds = 0.0
     try:
         if command == "add":
+            started = time.monotonic()
             shutil.copyfile(db_path, staging)
+            db_io_seconds += time.monotonic() - started
         argv = ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging)]
         if command == "new":
             # phaze-5i76: bake the landmark time range in EXPLICITLY at bootstrap instead of
@@ -420,12 +493,29 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
         )
         if result.returncode != 0:
             return result
+        started = time.monotonic()
         written_state, written_detail = _probe_database(staging)
+        db_io_seconds += time.monotonic() - started
         if written_state != "ok":
             logger.error("audfprint exited 0 but wrote an unusable database; refusing to promote it: %s", written_detail)
             failure = f"audfprint reported success but produced an unusable database, so the previous one was kept: {written_detail}"
             return subprocess.CompletedProcess(args=result.args, returncode=1, stdout=result.stdout, stderr=f"{result.stderr}\n{failure}")
+        started = time.monotonic()
         _promote_database(staging, db_path)
+        db_io_seconds += time.monotonic() - started
+        # phaze-5wz9: this is the one term of the response ceiling that nothing bounds -- it is
+        # proportional to the database's SIZE, which grows without limit, and it is spent inside
+        # `_db_lock` where it delays every other caller. Report it whenever it outgrows its
+        # budget so the growth is observable long before it is the reason the lane is stalling.
+        if db_io_seconds > DB_IO_BUDGET_SEC:
+            logger.warning(
+                "audfprint database I/O took %.1fs (budget %ds) for a %d-byte database, all of it holding the global lock; "
+                "the response ceiling of %ds assumes this term stays within budget",
+                db_io_seconds,
+                DB_IO_BUDGET_SEC,
+                db_path.stat().st_size,
+                RESPONSE_CEILING_SEC,
+            )
         return result
     finally:
         # Covers the nonzero-exit, unusable-artifact and TimeoutExpired paths alike: a run
@@ -586,6 +676,10 @@ async def health() -> HealthResponse:
     detail = (
         f"{detail}; landmark time horizon {LANDMARK_TIME_HORIZON_SEC:.1f}s (maxtimebits={AUDFPRINT_MAXTIMEBITS}, capacity {MAX_TRACK_IDS} track ids)"
     )
+    # phaze-5wz9: publish the ceiling a caller must budget against. It is NOT SUBPROCESS_TIMEOUT
+    # -- all access to this engine is serialized, so lock wait and database I/O are part of every
+    # response's wall time and the hub's client timeout has to cover all three terms.
+    detail = f"{detail}; response ceiling {RESPONSE_CEILING_SEC}s (lock wait {LOCK_WAIT_TIMEOUT}s + db i/o budget {DB_IO_BUDGET_SEC}s + subprocess {SUBPROCESS_TIMEOUT}s)"
     return HealthResponse(status="healthy", engine="audfprint", detail=detail)
 
 
@@ -599,7 +693,7 @@ async def ingest(request: IngestRequest) -> IngestResponse:
     except PathValidationError as exc:
         logger.warning("audfprint ingest rejected file_path %r: %s", request.file_path, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    async with _db_lock:
+    async with _db_lock_held("ingest", request.file_path):
         try:
             result = await asyncio.to_thread(_run_ingest, str(resolved))
         except subprocess.TimeoutExpired:
@@ -638,7 +732,7 @@ async def query(request: IngestRequest) -> QueryResponse:
         # dropped on the floor -- _post_query never reads the body (phaze-cf0z). Log it here.
         logger.error("audfprint query cannot run: %s", detail)
         raise HTTPException(status_code=503, detail=detail)
-    async with _db_lock:
+    async with _db_lock_held("match", request.file_path):
         try:
             result = await asyncio.to_thread(_run_query, str(resolved))
         except subprocess.TimeoutExpired:

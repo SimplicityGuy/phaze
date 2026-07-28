@@ -416,6 +416,23 @@ class TestSidecarHttpTimeout:
 
         assert fp.SIDECAR_HTTP_TIMEOUT_SEC > 3600
 
+    def test_default_exceeds_the_audfprint_response_ceiling_not_just_its_subprocess(self):
+        """phaze-5wz9: audfprint serializes ALL access, so its ceiling is not SUBPROCESS_TIMEOUT.
+
+        Server wall time is `lock wait + database I/O + subprocess` with up to four callers
+        queued on one lock. Deriving this budget from the subprocess term alone is what let a
+        queued caller's client give up while the sidecar was still working for it -- and nothing
+        cancels a disconnected handler, so the lock stayed held and the next caller inherited it.
+        Pinned against the sidecar's own published constants so the two cannot drift apart
+        silently.
+        """
+        import phaze.services.fingerprint as fp
+        from tests.services.conftest import load_service_module
+
+        sidecar = load_service_module("audfprint", "phaze_test_audfprint_ceiling_vs_client_budget")
+        assert sidecar.RESPONSE_CEILING_SEC == sidecar.LOCK_WAIT_TIMEOUT + sidecar.DB_IO_BUDGET_SEC + sidecar.SUBPROCESS_TIMEOUT
+        assert fp.SIDECAR_HTTP_TIMEOUT_SEC > sidecar.RESPONSE_CEILING_SEC
+
     def test_adapters_use_the_long_timeout(self):
         import phaze.services.fingerprint as fp
 

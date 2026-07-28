@@ -6,7 +6,7 @@ FastAPI wrapper around [audfprint](https://github.com/dpwe/audfprint) for landma
 
 Audfprint generates spectral landmark fingerprints from audio files. These fingerprints are stored in a serialized database and can be queried to find matching tracks. This enables deduplication of differently-named but acoustically identical files.
 
-The service wraps the audfprint CLI via subprocess calls, with `asyncio.to_thread` to avoid blocking the event loop. Write operations are serialized via `asyncio.Lock` to prevent concurrent database corruption.
+The service wraps the audfprint CLI via subprocess calls, with `asyncio.to_thread` to avoid blocking the event loop. **All** database access is serialized via a single `asyncio.Lock` — reads included, since phaze-orq3: a `match` that opens the pickle mid-rewrite reads a torn gzip-pickle and dies. See **Response ceiling** below for what that serialization costs a caller.
 
 ## Build
 
@@ -86,8 +86,43 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 | `AUDFPRINT_SCRIPT`      | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
 | `FPRINT_DB`             | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
 | `SUBPROCESS_TIMEOUT`    | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `LOCK_WAIT_TIMEOUT`     | `900`                           | Bounded wait for the global database lock (phaze-5wz9). Exceeded → `503`, so a queued caller is refused instead of abandoned. See **Response ceiling**. |
+| `DB_IO_BUDGET_SEC`      | `300`                           | Budget for the staging copy + probe + fsync. Observed and warned on, **not** enforced — see **Response ceiling**. |
 | `AUDFPRINT_MAXTIMEBITS` | `14`                            | Width of the stored landmark time field (phaze-5i76). See **Landmark time range** below — this is *not* a free knob: it is baked into the database at bootstrap and trades directly against track-id capacity. |
 | `AUDFPRINT_MEDIA_ROOTS` | *(unset — fails closed)*        | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-1p5q #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount — `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
+
+## Response ceiling
+
+Because every request holds the one `_db_lock` for its whole duration, a response's server-side
+wall time is **not** `SUBPROCESS_TIMEOUT`. It is:
+
+```
+lock wait (<= LOCK_WAIT_TIMEOUT)  +  database I/O (copy + probe + fsync)  +  subprocess (<= SUBPROCESS_TIMEOUT)
+```
+
+Up to four callers queue on that lock (the fingerprint lane's 2 slots plus the meta lane's 2,
+both driving the same orchestrator). A caller whose own client gives up does **not** stop the
+work — uvicorn does not cancel a handler on client disconnect, and `asyncio.to_thread` cannot
+interrupt a running `subprocess.run` — so the lock stays held for a caller that has already left.
+
+Two things follow, both implemented:
+
+* the lock wait is **bounded**. Exceeding `LOCK_WAIT_TIMEOUT` returns `503` immediately, which
+  the hub classifies as an engine-level failure (SAQ retry/backoff, no per-file verdict). Failing
+  fast costs a retry; being abandoned costs the next caller too.
+* the effective ceiling is **published** — in the `/health` detail and as `RESPONSE_CEILING_SEC` —
+  so `PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC` on the hub is derived from the real number
+  instead of from the subprocess term alone. **Keep the two in step:** raising
+  `LOCK_WAIT_TIMEOUT` or `SUBPROCESS_TIMEOUT` here without raising the hub's budget puts the
+  client timeout back under the server ceiling, which is the defect.
+
+The **database I/O** term is the one nothing bounds. Since phaze-p3hj.2 every `add` copies the
+whole database to a staging file, inside the lock, and re-probes it before promoting — the price
+of an atomic write against a store whose writer truncates in place. It is proportional to database
+size, which grows without limit, so it is measured and logged as a `WARNING` whenever it exceeds
+`DB_IO_BUDGET_SEC`. It is deliberately **not** aborted on breach (killing a copy mid-way only
+converts a slow ingest into a failed one), and it must **not** be removed by reverting to an
+in-place write — that is the outage phaze-p3hj.2 closed. Removing it means changing the store.
 
 ## Landmark time range (known limitation)
 

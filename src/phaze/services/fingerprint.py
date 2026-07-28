@@ -18,13 +18,28 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# phaze-mv1f: must exceed the sidecars' SUBPROCESS_TIMEOUT (default 3600s, sized for
-# multi-hour concert sets) or the app-side call times out first and the sidecar budget is
-# meaningless -- the old 120.0 did exactly that. Read via os.environ rather than
-# phaze.config to keep this module's import chain httpx+structlog only (agent-worker
-# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar
-# still fails fast instead of pinning the lane for an hour.
-SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "3900"))
+# phaze-mv1f: must exceed the sidecars' own budget or the app-side call times out first and the
+# sidecar budget is meaningless -- the old 120.0 did exactly that. Read via os.environ rather
+# than phaze.config to keep this module's import chain httpx+structlog only (agent-worker
+# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar still fails
+# fast instead of pinning the lane for an hour.
+#
+# phaze-5wz9: the sidecar budget is NOT SUBPROCESS_TIMEOUT. audfprint serializes ALL access
+# behind one lock, so its server-side wall time is `lock wait + database I/O + subprocess`, and
+# up to four callers queue on it (the fingerprint lane's 2 slots plus the meta lane's 2). The
+# old 3900 was derived from the subprocess term alone, so a queued caller's client gave up while
+# the sidecar was still working for it -- and nothing cancels a disconnected handler, so the
+# lock stayed held and the next caller inherited the same fate.
+#
+# audfprint now publishes its real ceiling (`RESPONSE_CEILING_SEC`, also in its /health detail)
+# and bounds the lock wait, so a hopeless request is refused with a 503 instead of being
+# abandoned. This default is that ceiling plus a margin:
+#
+#     lock wait 900 + db i/o budget 300 + subprocess 3600 = 4800, + 300 margin = 5100
+#
+# Keep the two in step: raising the sidecar's LOCK_WAIT_TIMEOUT / SUBPROCESS_TIMEOUT without
+# raising this puts the client budget back under the server ceiling, which is the defect.
+SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "5100"))
 _SIDECAR_HTTP_TIMEOUT = httpx.Timeout(SIDECAR_HTTP_TIMEOUT_SEC, connect=10.0)
 # Health probes are cheap (audfprint: filesystem-only; panako: a JVM probe capped at 30s
 # by its own HEALTH_TIMEOUT) -- a wedged sidecar must surface as unhealthy quickly, not

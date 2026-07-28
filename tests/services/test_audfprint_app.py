@@ -553,6 +553,127 @@ class TestIngestEndpointBootstrap:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Bounded lock wait and an honest response ceiling (phaze-5wz9)
+#
+# The bug: `_db_lock` is held across the WHOLE of an ingest or match, so server-side wall time
+# is `lock wait + database I/O + subprocess` -- bounded only by queue depth, while the hub sized
+# its client budget against ONE subprocess. When a caller's transport gave up it did NOT stop
+# the work: uvicorn does not cancel the handler on client disconnect and `asyncio.to_thread`
+# cannot interrupt `subprocess.run`, so the lock stayed held for a caller that had left and the
+# next caller inherited the same fate.
+#
+# The fix is a bounded wait with a fast 503 (classified engine-level by both hub adapters -> SAQ
+# retry/backoff, never a per-file verdict) plus a PUBLISHED ceiling the hub derives its own
+# budget from. The p3hj.2 database copy stays inside the lock -- moving it out would promote a
+# stale copy over a concurrent ingest, and reverting to an in-place write is the outage itself --
+# so its cost is measured and reported instead.
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedLockWait:
+    """A caller that cannot be served must be refused, not left to time out at the transport."""
+
+    async def test_hopeless_lock_wait_returns_503_rather_than_hanging(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        monkeypatch.setattr(audfprint_app, "LOCK_WAIT_TIMEOUT", 0.05)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        await audfprint_app._db_lock.acquire()
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.post("/ingest", json={"file_path": "/data/music/song.mp3"})
+        finally:
+            audfprint_app._db_lock.release()
+
+        assert resp.status_code == 503
+        assert "gave up waiting" in resp.json()["detail"]
+
+    async def test_the_refused_caller_does_not_leave_the_lock_acquired(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cancelled `Lock.acquire` must not silently take the lock the next caller needs."""
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        monkeypatch.setattr(audfprint_app, "LOCK_WAIT_TIMEOUT", 0.05)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        await audfprint_app._db_lock.acquire()
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                await client.post("/query", json={"file_path": "/data/music/song.mp3"})
+        finally:
+            audfprint_app._db_lock.release()
+
+        assert not audfprint_app._db_lock.locked()
+
+    async def test_lock_is_released_after_a_successful_request(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": "/data/music/song.mp3"})
+
+        assert resp.status_code == 200
+        assert not audfprint_app._db_lock.locked()
+
+    def test_response_ceiling_is_the_sum_of_all_three_terms(self, audfprint_app: ModuleType) -> None:
+        """The ceiling must include the lock wait and the DB I/O, not just the subprocess.
+
+        Deriving it from SUBPROCESS_TIMEOUT alone is exactly what made the hub's client budget
+        too small for a queued caller.
+        """
+        assert audfprint_app.RESPONSE_CEILING_SEC == (
+            audfprint_app.LOCK_WAIT_TIMEOUT + audfprint_app.DB_IO_BUDGET_SEC + audfprint_app.SUBPROCESS_TIMEOUT
+        )
+        assert audfprint_app.RESPONSE_CEILING_SEC > audfprint_app.SUBPROCESS_TIMEOUT
+
+    @pytest.mark.parametrize(("env", "attr"), [("LOCK_WAIT_TIMEOUT", "LOCK_WAIT_TIMEOUT"), ("DB_IO_BUDGET_SEC", "DB_IO_BUDGET_SEC")])
+    def test_ceiling_terms_are_env_configurable(self, monkeypatch: pytest.MonkeyPatch, env: str, attr: str) -> None:
+        monkeypatch.setenv(env, "77")
+        mod = load_service_module("audfprint", f"phaze_test_audfprint_{env.lower()}")
+        assert getattr(mod, attr) == 77
+
+    async def test_health_publishes_the_response_ceiling(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        detail = resp.json()["detail"]
+        assert f"response ceiling {audfprint_app.RESPONSE_CEILING_SEC}s" in detail
+        assert "lock wait" in detail
+
+    def test_database_io_over_budget_is_reported(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog) -> None:
+        """The copy+probe term is DB-size-proportional, unbounded by any timeout, and inside the lock.
+
+        It is deliberately not aborted -- killing a copy mid-way only turns a slow ingest into a
+        failed one, and the copy itself cannot be removed without changing the store (reverting
+        to an in-place write is the phaze-p3hj.2 outage). Measured and reported instead.
+        """
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app, "DB_IO_BUDGET_SEC", 0)  # every real copy exceeds 0s
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            result = audfprint_app._run_ingest("/data/music/song.mp3")
+
+        assert result.returncode == 0
+        assert "database I/O took" in caplog.text
+        assert "holding the global lock" in caplog.text
+
+
 class TestHealthObservesDirectoryWritability:
     """phaze-25cc: writability was checked ONLY on the DB-absent branch.
 
