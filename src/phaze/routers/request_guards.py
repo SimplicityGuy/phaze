@@ -36,7 +36,11 @@ THE CONTRACT
    client. Do NOT introduce a parallel 400; a client that must branch on two codes for one meaning
    is a client that will branch wrong.
 
-   :func:`parse_json_array_payload` is the standard shape for a JSON-in-a-form-field envelope.
+   :func:`parse_json_array_payload` is the standard shape for a JSON-in-a-form-field envelope. It
+   also bounds ``len(parsed)`` -- a well-formed array that is simply enormous is still an envelope
+   failure (a DoS bound per ``schemas/wire_bounds.py`` rule 7, not a width cap), because nothing
+   downstream chunks its own expanding-``IN`` statements against the database driver's bind-
+   parameter cap.
 
 2. PARSING SUCCESSFULLY IS NOT RECEIVING THE EXPECTED STRUCTURE.  <-- the crux
    ``json.loads("[1,2]")`` succeeds. ``json.loads("{}")`` succeeds. ``json.loads("null")``
@@ -142,7 +146,7 @@ from typing import Any
 from fastapi import HTTPException
 
 
-__all__ = ["MALFORMED_PAYLOAD_STATUS", "parse_json_array_payload"]
+__all__ = ["MALFORMED_PAYLOAD_STATUS", "MAX_ARRAY_ITEMS", "parse_json_array_payload"]
 
 
 MALFORMED_PAYLOAD_STATUS = 422
@@ -158,13 +162,30 @@ either pins this contract to one side of a rename that does not change the wire 
 """
 
 
-def parse_json_array_payload(raw: str, *, field: str) -> list[Any]:
+MAX_ARRAY_ITEMS = 5000
+"""The envelope-level DoS bound on ``parse_json_array_payload``'s decoded array (phaze-17ut).
+
+This is a DoS bound (``schemas/wire_bounds.py`` rule 7), NOT a domain limit on how many items a
+bulk action could legitimately need -- do not "correct" it to match some observed real-world
+count. It exists because ``services/dedup.undo_resolve`` expands every entry into a 2-column
+``tuple_(...).in_(...)`` DELETE (2 bind parameters per entry), and asyncpg refuses a statement past
+32767 total bind parameters -- so an array anywhere near that size reaches the database driver and
+raises there as an unhandled 500, one module past this guard. 5000 items is comfortably under that
+ceiling (10000 binds) with headroom for other array-shaped payloads this helper may later guard,
+while still rejecting the pathological case at the cheapest possible point: before the array is
+even handed to a service.
+"""
+
+
+def parse_json_array_payload(raw: str, *, field: str, max_items: int = MAX_ARRAY_ITEMS) -> list[Any]:
     """Parse a client-supplied JSON array out of a raw form/query string, or raise ``422``.
 
-    The standard envelope guard for contract rules 1 and 2. Guards BOTH halves of the failure
-    class: ``raw`` may not be valid JSON at all, and valid JSON may not be the array the caller
-    declared. Both are envelope failures, so both reject the whole request with
-    :data:`MALFORMED_PAYLOAD_STATUS` rather than 500ing on the first attribute access downstream.
+    The standard envelope guard for contract rules 1 and 2. Guards ALL of the failure class:
+    ``raw`` may not be valid JSON at all, valid JSON may not be the array the caller declared, and
+    a well-formed array may simply be too large for anything downstream to safely consume. All
+    three are envelope failures, so all three reject the whole request with
+    :data:`MALFORMED_PAYLOAD_STATUS` rather than 500ing on the first attribute access -- or the
+    first bind-parameter-cap violation -- downstream.
 
     This deliberately does NOT validate the ELEMENTS. Per rule 2 an unusable element is skipped by
     the consuming service, not escalated -- one stale id must not void an otherwise valid bulk
@@ -175,13 +196,17 @@ def parse_json_array_payload(raw: str, *, field: str) -> list[Any]:
         raw: The untrusted string exactly as it arrived from the wire.
         field: The request field name, echoed into the error detail so a client can tell which of
             several form fields it got wrong.
+        max_items: The DoS bound on ``len(parsed)`` (see :data:`MAX_ARRAY_ITEMS`). Override only
+            with a call-site-specific DoS rationale, never to accommodate one observed payload.
 
     Returns:
         The decoded list. Elements are ``Any`` and are NOT guaranteed to be dicts.
 
     Raises:
-        HTTPException: ``422`` if ``raw`` is not valid JSON, decodes to anything but an array, or
-            is nested deep enough to blow the interpreter's recursion limit.
+        HTTPException: ``422`` if ``raw`` is not valid JSON, decodes to anything but an array,
+            decodes to an array longer than ``max_items``, contains an integer literal wide enough
+            to trip CPython's integer-string conversion limit, or is nested deep enough to blow
+            the interpreter's recursion limit.
     """
     try:
         parsed = json.loads(raw)
@@ -200,11 +225,29 @@ def parse_json_array_payload(raw: str, *, field: str) -> list[Any]:
             status_code=MALFORMED_PAYLOAD_STATUS,
             detail=f"{field} is nested too deeply to parse",
         ) from exc
+    except ValueError as exc:
+        # phaze-06zm: CPython's integer-string conversion limit (sys.set_int_max_str_digits, a
+        # denial-of-service hardening added in 3.11+) makes the json module's own int() conversion
+        # raise a bare ValueError -- not a JSONDecodeError subclass -- for an integer literal with
+        # enough digits (e.g. `"9" * 5000`). Neither except arm above catches it, so a single huge
+        # integer literal anywhere in the payload previously escaped as an unhandled 500. This arm
+        # is deliberately last and deliberately broad: JSONDecodeError IS a ValueError subclass, so
+        # ordering it after the specific arm keeps that branch's more precise detail message.
+        raise HTTPException(
+            status_code=MALFORMED_PAYLOAD_STATUS,
+            detail=f"{field} contains a number that is too large to parse",
+        ) from exc
 
     if not isinstance(parsed, list):
         raise HTTPException(
             status_code=MALFORMED_PAYLOAD_STATUS,
             detail=f"{field} must be a JSON array, got {type(parsed).__name__}",
+        )
+
+    if len(parsed) > max_items:
+        raise HTTPException(
+            status_code=MALFORMED_PAYLOAD_STATUS,
+            detail=f"{field} has too many items ({len(parsed)}); at most {max_items} are accepted",
         )
 
     return parsed
