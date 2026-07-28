@@ -25,6 +25,10 @@
                     <th scope="col" class="px-4 py-3">{{ label }}</th>
                     {% endif %}
                     {% endfor %}
+                    {# phaze-37i1.3: "Details" is its own unsortable column, appended after "Error" --
+                       it triggers the per-entry drill-down (audit_detail_row.html), not a data field,
+                       so it has no place in the column_sort.py contract's sortable label set above. #}
+                    <th scope="col" class="px-4 py-3"><span class="sr-only">Details</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -36,9 +40,8 @@
     </div>
     {% include "execution/partials/pagination.html" %}
     {% else %}
-    <div class="text-center py-12">
-        <p class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No operations recorded</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400 dark:text-gray-500">Execute approved proposals to begin. Operations will be logged here as they run.</p>
-    </div>
+    {# phaze-37i1.2: "nothing has ever run" and "this tab matches nothing" are different facts and
+       need different copy -- see audit_empty.html for why the old shared line read as a bug. #}
+    {% include "execution/partials/audit_empty.html" %}
     {% endif %}
 </div>

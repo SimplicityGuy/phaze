@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
+    from sqlalchemy.sql.elements import ColumnElement
 
     from phaze.config import ControlSettings
     from phaze.routers.column_sort import SortState
@@ -2414,6 +2415,50 @@ async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
     return list(result.scalars().all())
 
 
+def _proposal_pending_clauses() -> tuple[ColumnElement[bool], ...]:
+    """The D-02 convergence-gate predicate, defined ONCE, over ``FileRecord``.
+
+    phaze-37i1.2: extracted so the batching producer (:func:`get_proposal_pending_batches`)
+    and the read-only counter (:func:`count_proposal_pending_files`) can never drift apart.
+    A counter that answered a slightly different question than the trigger would put a
+    number in front of the operator that the button does not honour -- exactly the class of
+    dishonest UI this bead exists to remove.
+    """
+    return (
+        # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
+        # REPLACED by ``~done_clause(Stage.PROPOSE)`` -- a file with an existing proposal is a done
+        # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two EXISTS
+        # convergence clauses below (metadata present AND a COMPLETED analysis row) still bound the set.
+        ~done_clause(Stage.PROPOSE),
+        exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)),
+        # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
+        # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
+        # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
+        # partial row into generate_proposals with NULL bpm/key/mood. `analysis_completed_at IS NOT
+        # NULL` (stamped only in the put_analysis completion branch) gates it out; in-flight rows have
+        # completed_at NULL.
+        exists(
+            select(AnalysisResult.id).where(
+                AnalysisResult.file_id == FileRecord.id,
+                AnalysisResult.analysis_completed_at.isnot(None),
+            )
+        ),
+    )
+
+
+async def count_proposal_pending_files(session: AsyncSession) -> int:
+    """Return HOW MANY files currently clear the D-02 convergence gate, without loading them.
+
+    phaze-37i1.2. Same predicate as :func:`get_proposal_pending_batches` (shared via
+    :func:`_proposal_pending_clauses`) but a plain ``COUNT(*)``: the Audit Log's empty state
+    needs the size of the eligible set, not its members, and the pending set is corpus-sized
+    -- materialising every ``FileRecord`` to call ``len()`` on it would make an informational
+    banner cost as much as the trigger itself.
+    """
+    stmt = select(func.count()).select_from(FileRecord).where(*_proposal_pending_clauses())
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -> list[list[str]]:
     """Return the ``generate_proposals`` pending set as deterministic, sorted file-id batches.
 
@@ -2430,29 +2475,7 @@ async def get_proposal_pending_batches(session: AsyncSession, batch_size: int) -
     batches -- and therefore their set-hash keys -- are guaranteed to match. Pure ORM / bound
     params, NO f-string SQL (T-42-03).
     """
-    stmt = (
-        select(FileRecord)
-        # Phase 90 (PR-A, Pitfall 4): the ``files.state IN (ANALYZED, METADATA_EXTRACTED)`` gate is
-        # REPLACED by ``~done_clause(Stage.PROPOSE)`` -- a file with an existing proposal is a done
-        # PROPOSE and is EXCLUDED, so no already-proposed file is ever re-proposed. The two EXISTS
-        # convergence clauses below (metadata present AND a COMPLETED analysis row) still bound the set.
-        .where(~done_clause(Stage.PROPOSE))
-        .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        # Phase 57.1 (D-03 KEY RISK): require the COMPLETION discriminator, not bare row-existence.
-        # D-03 upserts a partial `analysis` row at analysis START (NULL aggregates, completed_at NULL)
-        # while the file is still METADATA_EXTRACTED -- bare `exists(AnalysisResult)` would batch that
-        # partial row into generate_proposals with NULL bpm/key/mood. `analysis_completed_at IS NOT
-        # NULL` (stamped only in the put_analysis completion branch) gates it out; in-flight rows have
-        # completed_at NULL.
-        .where(
-            exists(
-                select(AnalysisResult.id).where(
-                    AnalysisResult.file_id == FileRecord.id,
-                    AnalysisResult.analysis_completed_at.isnot(None),
-                )
-            )
-        )
-    )
+    stmt = select(FileRecord).where(*_proposal_pending_clauses())
     result = await session.execute(stmt)
     file_ids = sorted(str(f.id) for f in result.scalars().all())
     return [file_ids[i : i + batch_size] for i in range(0, len(file_ids), batch_size)]
