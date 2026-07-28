@@ -16,10 +16,13 @@ pre-sets ``open``, the deep-link swap reaches ``onLoaded()`` with ``wasOpen === 
 heading focus park fires exactly ONCE — identical to the card-click open, and still guarded
 against the 5s own-tick.
 
-phaze-2u8v.6: ``/admin/agents?agent=X`` no longer hosts this shell at all — the agents-table detail
-is an EXPANDED ROW (``admin/partials/_agent_detail_row.html``) with its own independent deep-link
-self-fetch (``hx-trigger="load"`` into ``#agent-activity-{id}``), covered separately below without
-routing through ``#detail-pane``.
+phaze-2u8v.6: ``/admin/agents?agent=X`` (the agents-TABLE detail) no longer hosts this shell — that
+surface is an EXPANDED ROW (``admin/partials/_agent_detail_row.html``) with its own independent
+deep-link self-fetch (``hx-trigger="load"`` into ``#agent-activity-{id}``), covered separately below
+without routing through ``#detail-pane``. phaze-2u8v.5 gives the page a SECOND, independent shell
+caller for the compute/burst-lane CARD grid (Section 2, ``?clane=``) — that pane_kind is not exercised
+by the ``?agent=`` tests below (the smoke fixture configures no compute-lane backends), so it does not
+interfere with the invariant under test here: the agents-TABLE row never routes through the shared pane.
 """
 
 from __future__ import annotations
@@ -191,7 +194,11 @@ async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> No
     """/admin/agents?agent={known} renders the expanded row, self-fetching the activity body on load.
 
     Unlike the lane pane, this surface never routes through #detail-pane (phaze-2u8v.6 replaced the
-    shared side panel with an expanded row); the row's own slot self-fetches independently.
+    shared side panel with an expanded row); the row's own slot self-fetches independently. phaze-2u8v.5
+    later gives the PAGE a second, independent shell caller for the compute/burst-lane card grid
+    (pane_kind='compute-lane', ?clane=) — so the assertion below is scoped to the ROW's own fetch
+    wiring rather than the whole page body, which legitimately carries the shared shell's
+    ``id="detail-pane"`` swap target for that unrelated caller.
     """
     response = await smoke.get("/admin/agents", params={"agent": AGENT_ID})
     assert response.status_code == 200, response.text
@@ -199,9 +206,14 @@ async def test_agent_deep_link_loads_the_activity_body(smoke: AsyncClient) -> No
 
     assert f'id="agent-detail-row-{AGENT_ID}"' in body
     assert f'id="agent-activity-{AGENT_ID}"' in body
-    assert f'hx-get="/admin/agents/{AGENT_ID}/_activity"' in body
+    row_fetch = f'hx-get="/admin/agents/{AGENT_ID}/_activity"'
+    assert row_fetch in body
     assert 'hx-trigger="load"' in body
-    assert '"#detail-pane"' not in body
+    # The row's own fetch has no hx-target of its own (it innerHTML-swaps into its OWN slot by
+    # htmx's default same-element target) — it must never be wired to the shared #detail-pane.
+    row_start = body.index(row_fetch)
+    row_tag_end = body.index(">", row_start)
+    assert "#detail-pane" not in body[row_start:row_tag_end]
 
 
 @pytest.mark.asyncio

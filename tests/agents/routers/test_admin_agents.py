@@ -1151,8 +1151,142 @@ async def test_sort_click_preserves_the_open_detail_pane(smoke: AsyncClient) -> 
     body = (await smoke.get("/admin/agents/_table", params={"agent": "alive-agent", "sort": "name", "order": "asc"})).text
 
     # The live selection rides in hx-vals on the polled section, inherited by the sort buttons.
-    assert "hx-vals='js:{agent: new URLSearchParams(location.search).get(\"agent\")}'" in body
+    # phaze-2u8v.5 threads the SAME channel for ?clane= (the burst-lane drill-down selection).
+    assert (
+        'hx-vals=\'js:{agent: new URLSearchParams(location.search).get("agent"), clane: new URLSearchParams(location.search).get("clane")}\''
+    ) in body
     # ...and is NOT frozen into the armed poll URL, where it would go stale.
     assert "agent" not in _poll_vals(body), "a stale ?agent= was baked into the poll and will erase the selection"
     # The selection genuinely survived this render.
     assert 'aria-current="true"' in body
+
+
+# ---------------------------------------------------------------------------
+# phaze-2u8v.5 — Section 2 no longer reads as an unconditional alarm; a legend explains the
+# per-lane state colors; each lane is a drill-in trigger into GET /admin/agents/compute-lanes/{id}.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_section2_container_is_no_longer_amber(smoke: AsyncClient) -> None:
+    """The Section 2 CONTAINER/heading no longer carry the unconditional amber styling.
+
+    The amber never varied with data (every lane could be IDLE and the shell was still amber) -- it
+    read as an always-on alarm with no legend. Per-LANE state colors (kept below) are the real signal.
+    """
+    response = await smoke.get("/admin/agents/_table")
+    compute_section = response.text.split('id="compute-lanes"', 1)[1]
+    assert "border-amber-500/25" not in compute_section
+    assert "bg-amber-500/[0.06]" not in compute_section
+    assert "text-amber-700 dark:text-amber-300" not in compute_section  # the old heading color
+
+
+@pytest.mark.asyncio
+async def test_section2_legend_explains_the_state_colors(smoke: AsyncClient) -> None:
+    """A legend spells out what ACTIVE/WAITING/IDLE mean -- the color is no longer opaque."""
+    response = await smoke.get("/admin/agents/_table")
+    compute_section = response.text.split('id="compute-lanes"', 1)[1]
+    assert "workloads running" in compute_section
+    assert "queued behind quota" in compute_section
+    assert "nothing in flight" in compute_section
+
+
+@pytest.mark.asyncio
+async def test_section2_lane_tile_is_a_drill_in_trigger(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """Each real lane tile carries the keyboard-accessible hx-get/hx-push-url drill-in wiring."""
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/_table")
+    compute_section = response.text.split('id="compute-lanes"', 1)[1]
+
+    assert 'id="compute-lane-trigger-vox"' in compute_section
+    assert 'role="button"' in compute_section
+    assert 'hx-get="/admin/agents/compute-lanes/vox"' in compute_section
+    assert 'hx-target="#compute-lane-pane"' in compute_section
+    assert 'hx-push-url="/admin/agents?clane=vox' in compute_section
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_detail_active_lane_lists_running_files(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """The drill-down endpoint identifies the FILE being processed, not just a count (the bead's core ask)."""
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/compute-lanes/vox")
+
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert "vox-run.mp3" in body  # the seeded file's display filename, not a bare count
+    assert "Running workloads" in body
+    assert 'hx-get="/admin/agents/compute-lanes/vox"' in body  # own 5s tick
+    assert 'hx-trigger="every 5s"' in body
+    assert 'hx-target="#compute-lane-pane"' in body
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_detail_idle_lane_renders_empty_state(
+    session: AsyncSession,
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """An IDLE lane (0 running) renders the friendly empty state, never a blank list (idle acceptance)."""
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)  # xenolab has no in-flight rows -> IDLE
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents/compute-lanes/xenolab")
+
+    assert response.status_code == 200, response.text
+    assert "No workloads currently running." in response.text
+    assert "IDLE" in response.text
+
+
+@pytest.mark.asyncio
+async def test_compute_lane_detail_unknown_backend_is_friendly_offline(smoke: AsyncClient) -> None:
+    """An unknown/removed backend_id renders "Compute lane offline" at 200 -- never a 404/500."""
+    response = await smoke.get("/admin/agents/compute-lanes/__nope__")
+    assert response.status_code == 200, response.text
+    assert "Compute lane offline" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+
+
+@pytest.mark.asyncio
+async def test_selected_compute_lane_opens_dedicated_pane(
+    session: AsyncSession,
+    make_file,  # type: ignore[no-untyped-def]
+    backends_toml_env,  # type: ignore[no-untyped-def]
+) -> None:
+    """?clane=<id> on the full page seeds the dedicated #compute-lane-pane open on that lane (deep-link/reload)."""
+    backends_toml_env(_TWO_CLUSTER_REGISTRY)
+    await _seed_cloud_job(session, make_file, backend_id="vox")
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/admin/agents", params={"clane": "vox"})
+
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert 'id="compute-lane-trigger-vox"' in body
+    assert 'aria-current="true"' in body
+    # The dedicated compute-lane pane self-fetches its own body on this deep link.
+    assert 'hx-get="/admin/agents/compute-lanes/vox" hx-trigger="load"' in body
+
+
+@pytest.mark.asyncio
+async def test_unknown_clane_query_param_highlights_nothing(smoke: AsyncClient) -> None:
+    """An unresolvable ?clane= (T-88-01 lookup-in-known-set) highlights no lane and opens nothing."""
+    response = await smoke.get("/admin/agents", params={"clane": "__hostile__"})
+    assert response.status_code == 200, response.text
+    assert 'aria-current="true"' not in response.text
