@@ -58,6 +58,15 @@ tailwind_sha256_linux_x64 := "5036c4fb4328e0bcdbb6065c70d8ac9452e0d4c947113a788a
 tailwind_sha256_linux_arm64 := "394ddccc2402cfa3abd97dfba56f3587781a3d6e6ce66e65ceada14beb7664b8"
 tailwind_sha256_macos_x64 := "cef8f110471e889c3c4409055cf8aff33076f58a081867b0dfc6534b290bfbb0"
 tailwind_sha256_macos_arm64 := "b800b0659dc64b9f03ede5660244d9415d777d5739ae2889280877ca37be742a"
+# Port the api service is published on (docker-compose.yml: "${API_PORT:-8000}:8000"). Keep
+# this in sync with any API_PORT override passed to `just up`/`up-dev`.
+api_port := env_var_or_default("API_PORT", "8000")
+# The production entrypoint (src/phaze/entrypoint.py) unconditionally serves HTTPS with a
+# self-signed internal CA (phaze-a9rr) -- there is no plain-HTTP branch, so operator recipes
+# that curl the API must use https:// and trust this CA, same as docs/quick-start.md and
+# README.md already do.
+api_ca_cert := env_var_or_default("PHAZE_API_CA_CERT", "certs/phaze-ca.crt")
+api_base := "https://localhost:" + api_port
 
 [doc('Install all dependencies')]
 [group('dev')]
@@ -868,12 +877,12 @@ download-models:
 [doc('Trigger fingerprint processing for all eligible files')]
 [group('fingerprint')]
 fingerprint:
-    curl -s -X POST http://localhost:8000/api/v1/fingerprint | python -m json.tool
+    curl -fsS --cacert {{api_ca_cert}} -X POST {{api_base}}/api/v1/fingerprint | uv run python -m json.tool
 
 [doc('Check fingerprint progress')]
 [group('fingerprint')]
 fingerprint-progress:
-    curl -s http://localhost:8000/api/v1/fingerprint/progress | python -m json.tool
+    curl -fsS --cacert {{api_ca_cert}} {{api_base}}/api/v1/fingerprint/progress | uv run python -m json.tool
 
 [doc('Check audfprint container health (execs into the audfprint sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
