@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import hashlib
 import os
+import secrets
 from typing import TYPE_CHECKING
 import uuid
 
@@ -15,6 +17,7 @@ import redis.asyncio as redis_async
 from sqlalchemy import select, update
 
 from phaze.database import get_session
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -26,8 +29,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from phaze.models.agent import Agent
 
 
 _REDIS_URL = os.environ.get("PHAZE_REDIS_URL", "redis://localhost:6380/0")
@@ -87,6 +88,22 @@ async def _seed_file(session: AsyncSession, agent_id: str) -> uuid.UUID:
     session.add(file_record)
     await session.commit()
     return file_id
+
+
+async def _seed_agent(session: AsyncSession, agent_id: str) -> tuple[Agent, str]:
+    """Seed a second, distinct agent + raw bearer token (mirrors test_agent_files_batch_id.py:161-171)."""
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    agent = Agent(
+        id=agent_id,
+        name=agent_id,
+        token_hash=token_hash,
+        scan_roots=["/test/other"],
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return agent, raw_token
 
 
 async def _seed_ledger(session: AsyncSession, file_id: uuid.UUID) -> str:
@@ -764,3 +781,123 @@ async def test_tracklist_position_over_int32_422s_without_taking_the_idempotency
         "the idempotency lock was taken for a payload that failed validation -- the retry is now poisoned"
     )
     assert (await session.execute(select(Tracklist).where(Tracklist.external_id == f"fp-{file_id.hex[:8]}"))).first() is None
+
+
+@pytest.mark.integration
+async def test_tracklist_create_rejects_file_owned_by_another_agent(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """phaze-uu2b: agent B cannot attach a tracklist to agent A's file.
+
+    Regression for the missing ownership check: `create_tracklist` used to trust a
+    body-supplied `file_id` with no authorization beyond the bearer token itself.
+    Agent B (a distinct authenticated agent) POSTs a tracklist naming agent A's file
+    as `file_id` -> 403, and the write is fully atomic: NO Tracklist/Version/Track rows
+    are inserted and the `scan_live_set:<file_id>` ledger row (agent A's recovery
+    handle) is left untouched.
+    """
+    agent_a, _ = seed_test_agent
+    file_a = await _seed_file(session, agent_a.id)
+    ledger_key = await _seed_ledger(session, file_a)
+
+    agent_b, raw_token_b = await _seed_agent(session, "test-agent-b")
+    assert agent_b.id != agent_a.id  # sanity on the fixture, before any expire_all() below
+
+    request_id = uuid.uuid4()
+    payload = {
+        "file_id": str(file_a),
+        "source": "fingerprint",
+        "external_id": f"fp-hijack-{file_a.hex[:8]}",
+        "request_id": str(request_id),
+        "tracks": [{"position": 0, "artist": "x", "title": "y"}],
+    }
+    async with _make_client(session, redis_client, raw_token_b) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r.status_code == 403, r.text
+    assert "does not belong" in r.text.lower()
+
+    # Atomicity: no Tracklist row was forged onto agent A's file.
+    session.expire_all()
+    tracklists = (await session.execute(select(Tracklist).where(Tracklist.external_id == payload["external_id"]))).scalars().all()
+    assert tracklists == []
+
+    # Agent A's scan_live_set recovery ledger row must survive the rejected cross-tenant attempt.
+    assert await _ledger_present(session, ledger_key)
+
+    # The idempotency lock must not be stranded for the rejected request's request_id -- a
+    # legitimately-rejected forged request must not poison a retry with the SAME request_id for
+    # the full 1h TTL (mirrors phaze-btlu/phaze-p9k7's "lock released on rejection" invariant).
+    assert await redis_client.get(f"tracklist_req:{request_id}") is None
+
+
+@pytest.mark.integration
+async def test_tracklist_create_404s_on_unknown_file_id(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """phaze-uu2b: a bogus file_id 404s instead of surfacing an asyncpg FK-violation 500."""
+    _agent, raw_token = seed_test_agent
+    bogus_file_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    payload = {
+        "file_id": str(bogus_file_id),
+        "source": "fingerprint",
+        "external_id": f"fp-missing-{bogus_file_id.hex[:8]}",
+        "request_id": str(request_id),
+        "tracks": [{"position": 0, "artist": "x", "title": "y"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r = await ac.post("/api/internal/agent/tracklists", json=payload)
+
+    assert r.status_code == 404, r.text
+    assert (await session.execute(select(Tracklist).where(Tracklist.external_id == payload["external_id"]))).first() is None
+    assert await redis_client.get(f"tracklist_req:{request_id}") is None
+
+
+@pytest.mark.integration
+async def test_tracklist_create_rejects_external_id_rebind_to_different_file(
+    session: AsyncSession,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """phaze-uu2b (verifier correction #3): the ON CONFLICT(external_id) rebind is scoped.
+
+    external_id is globally unique. Once a Tracklist row exists bound to file_a, a second
+    call reusing the SAME external_id but naming file_b (a different, non-NULL file this
+    agent also owns) must 409 rather than silently REBIND the tracklist onto file_b --
+    that rebind would un-tracklist file_a (re-admitting it to get_untracked_files) and
+    stamp a stale/foreign tracklist onto file_b.
+    """
+    agent, raw_token = seed_test_agent
+    file_a = await _seed_file(session, agent.id)
+    file_b = await _seed_file(session, agent.id)
+    ext = f"fp-rebind-{file_a.hex[:8]}"
+
+    payload_a = {
+        "file_id": str(file_a),
+        "source": "fingerprint",
+        "external_id": ext,
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "A", "title": "T1"}],
+    }
+    payload_b = {
+        **payload_a,
+        "file_id": str(file_b),
+        "request_id": str(uuid.uuid4()),
+        "tracks": [{"position": 1, "artist": "B", "title": "T2"}],
+    }
+    async with _make_client(session, redis_client, raw_token) as ac:
+        r1 = await ac.post("/api/internal/agent/tracklists", json=payload_a)
+        r2 = await ac.post("/api/internal/agent/tracklists", json=payload_b)
+
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 409, r2.text
+
+    # The original tracklist stays bound to file_a -- no rebind occurred.
+    session.expire_all()
+    tracklist_row = (await session.execute(select(Tracklist).where(Tracklist.external_id == ext))).scalar_one()
+    assert tracklist_row.file_id == file_a
