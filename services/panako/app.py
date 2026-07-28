@@ -1,10 +1,15 @@
 """FastAPI wrapper for Panako audio fingerprinting engine."""
 
 import asyncio
+from collections.abc import Iterator
+import contextlib
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
+import tempfile
+import uuid
 
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
@@ -38,6 +43,74 @@ HEALTH_TIMEOUT = 30
 # Truncate captured stderr in logs -- a stack-trace flood per failed file would bury
 # the signal, but the head of the trace is what identifies the failure mode.
 STDERR_LOG_LIMIT = 2000
+
+# phaze-64w1 #sec: this sidecar is unauthenticated (uvicorn --host 0.0.0.0) and
+# `file_path` arrives verbatim from an agent-registered FileRecord. Panako's OWN decode
+# path (TarsosDSP's PipeDecoder, reached from every store/query) substitutes the operand
+# we hand the CLI into a `/bin/bash -c "ffmpeg ... -i \"%resource%\" ..."` template with
+# only bare double-quoting -- a `"`, backtick, or `$(...)` in the path breaks out of that
+# quoting into arbitrary shell execution INSIDE the container. Passing our own argv as a
+# list (no shell on our side) does not help: the shell that matters is Panako's, one hop
+# further down. The fix is to never let a caller-controlled byte reach that substitution
+# at all -- see `_resolve_confined_path` / `_staged_operand` below.
+MEDIA_ROOT = Path(os.environ.get("PANAKO_MEDIA_ROOT", "/data/music"))
+# Generated-name staging area for the safe argv operand (see `_staged_operand`). Defaults
+# under the system tempdir so no extra volume/mount is required.
+STAGING_DIR = Path(os.environ.get("PANAKO_STAGING_DIR", str(Path(tempfile.gettempdir()) / "panako-stage")))
+# A resolved suffix is only ever used cosmetically (so ffprobe/ffmpeg see a plausible
+# extension); anything not matching this is dropped rather than carried into the staged
+# name, so it can never itself be a vector.
+_SAFE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+
+
+class PathValidationError(ValueError):
+    """A caller-supplied file_path failed validation. Reported as HTTP 400, never shelled out."""
+
+
+def _resolve_confined_path(file_path: str) -> Path:
+    """Resolve ``file_path`` and confine it under :data:`MEDIA_ROOT`.
+
+    Rejects a relative path, an embedded NUL byte, and anything that resolves (after
+    ``..`` traversal / symlink resolution) outside the read-only media root. Existence is
+    deliberately NOT required here -- the pipeline renames/moves files out from under
+    async fingerprint jobs, and Panako's own "could not read" handling already covers a
+    missing file; this function's only job is confinement against a malicious/mistaken
+    path, not the separate silent-failure defect tracked elsewhere.
+    """
+    if not file_path or "\x00" in file_path:
+        raise PathValidationError("file_path must be a non-empty path with no NUL bytes")
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        raise PathValidationError("file_path must be an absolute path")
+    resolved = candidate.resolve()
+    root = MEDIA_ROOT.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise PathValidationError(f"file_path must resolve under {root}")
+    return resolved
+
+
+@contextlib.contextmanager
+def _staged_operand(file_path: str) -> Iterator[str]:
+    """Validate ``file_path`` and stage it under a generated, collision-proof safe name.
+
+    Yields a path built entirely from a uuid4 -- NO caller-controlled byte -- symlinked to
+    the confined, resolved target. That staged name is what gets handed to the Panako CLI,
+    so nothing an attacker (or a legitimate filename containing '"', a backtick, or `$(`)
+    supplies can ever reach Panako's `/bin/bash -c` substitution. This is deliberately NOT
+    quote-escaping: escaping only defends against the one template we happened to read: an
+    engine update, or a different decode path, could reintroduce the same class of bug.
+    """
+    resolved = _resolve_confined_path(file_path)
+    suffix = resolved.suffix
+    if not _SAFE_SUFFIX_RE.match(suffix):
+        suffix = ""
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    staged = STAGING_DIR / f"pnk-{uuid.uuid4().hex}{suffix}"
+    staged.symlink_to(resolved)
+    try:
+        yield str(staged)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 class IngestRequest(BaseModel):
@@ -259,7 +332,11 @@ async def health(response: Response) -> HealthResponse:
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the Panako fingerprint database."""
     try:
-        result = await asyncio.to_thread(_run_ingest, request.file_path)
+        with _staged_operand(request.file_path) as safe_path:
+            result = await asyncio.to_thread(_run_ingest, safe_path)
+    except PathValidationError as exc:
+        logger.warning("Panako ingest rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except subprocess.TimeoutExpired:
         # subprocess.run kills the child on timeout, then raises. Left uncaught this
         # was a raw 500 traceback instead of a structured error (phaze-mv1f).
@@ -276,7 +353,11 @@ async def ingest(request: IngestRequest) -> IngestResponse:
 async def query(request: IngestRequest) -> QueryResponse:
     """Query the Panako database for matches."""
     try:
-        result = await asyncio.to_thread(_run_query, request.file_path)
+        with _staged_operand(request.file_path) as safe_path:
+            result = await asyncio.to_thread(_run_query, safe_path)
+    except PathValidationError as exc:
+        logger.warning("Panako query rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except subprocess.TimeoutExpired:
         detail = f"Panako query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
         logger.error(detail)
