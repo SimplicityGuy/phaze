@@ -16,6 +16,9 @@ Covers:
 - A bucket-query degrade (CR-01) rolls back a SAVEPOINT only, so the caller's loaded ``agent`` ORM object
   is NOT expired (a plain rollback would expire it and 500 the render on the next lazy load).
 - The fragment reads ONLY derived stage_status_case counts — never renders FileRecord.state (T-88-10).
+- phaze-2u8v.8: the SKIPPED column renders in full (never truncated to "SKI") with its real seeded
+  count, and its scroll container is a reachable ``overflow-x-auto`` (never a hard, unreachable clip
+  like the old max-w-sm side panel).
 
 Uses the smoke-app fixture from test_admin_agents.py (mounts admin_agents.router on a bare FastAPI app,
 overrides get_session with the project-wide real-PG session fixture). The per-agent GROUP BY runs on
@@ -40,6 +43,7 @@ from phaze.models.file import FileRecord
 from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.stage_skip import StageSkip
 from phaze.routers import admin_agents
 
 
@@ -265,3 +269,65 @@ async def test_stage_bucket_degrade_preserves_outer_transaction(session: AsyncSe
     # CR-01: the outer transaction (and the earlier flush of ``agent``) must survive the degrade. A plain
     # ``session.rollback()`` would unwind the outer txn and this lookup would be None.
     assert await session.get(Agent, "cr01-agent") is not None
+
+
+@pytest.mark.asyncio
+async def test_skipped_bucket_renders_full_word_and_count(session: AsyncSession) -> None:
+    """phaze-2u8v.8: the SKIPPED column must render in full, never abbreviated, with its real count.
+
+    Reported bug: the SKIPPED column header rendered as "SKI" and its value cells were sliced to a
+    sliver, in the OLD max-w-sm side panel (pipeline/partials/_detail_pane.html) phaze-2u8v.6 replaced
+    with this full-width expanded row. This seeds a real ``stage_skip`` marker (D-13) so the metadata
+    bucket carries a non-zero skipped count, then pins that the rendered fragment:
+      * never contains the truncated header text "SKI" standing alone (the historical defect shape),
+      * DOES contain the full word "skipped" (case-insensitive) for the legend, the column header, and
+        the per-stage aria-label,
+      * carries the correct derived count (1) in that aria-label -- the number the operator needs to
+        answer "why does done + failed not add up to the total?" must actually be reachable, not just
+        present in the DOM as an invisible truncated node.
+    """
+    session.add(Agent(id=_AGENT_ID, name="SkippedBox", scan_roots=[], last_seen_at=datetime.now(UTC), kind="fileserver"))
+    await session.flush()
+    f = await _file(session)
+    session.add(StageSkip(file_id=f.id, stage="metadata", reason="corrupt tag block, operator-skipped for pipeline test"))
+    await session.flush()
+
+    app = _make_smoke_app(session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        body = (await ac.get(f"/admin/agents/{_AGENT_ID}/_activity")).text
+
+    # The exact historical clipping defect: header text sliced mid-word to "SKI".
+    assert "SKI<" not in body
+    assert ">SKI " not in body
+    assert "ski<" not in body.lower()
+    # The full word renders in the legend, the column header, and the aria-label -- three independent
+    # sources, none of them abbreviated.
+    assert body.lower().count("skipped") >= 3, "expected the full word 'skipped' in header + legend + aria-label"
+    # The derived count itself is correct and reachable (not just a phantom off-screen node).
+    assert 'aria-label="Meta skipped: 1"' in body
+
+
+@pytest.mark.asyncio
+async def test_owned_files_table_wrapped_in_reachable_overflow_not_hard_clip(smoke: AsyncClient) -> None:
+    """phaze-2u8v.8: the matrix's scroll container must be a REACHABLE overflow, never a hard clip.
+
+    The reported bug's root cause was a fixed ``max-w-sm`` side panel with no horizontal scroll
+    affordance at all -- content past its edge was simply lost, not scrollable-to. phaze-2u8v.6's
+    expanded row put this same matrix inside a genuine ``overflow-x-auto`` scrollport (nested inside the
+    agents table's own pre-existing ``overflow-x-auto``, agents_table.html:69), so on a narrow viewport
+    the SKIPPED column is reachable by scrolling rather than permanently clipped. Pin the markup shape
+    that keeps it reachable: the wrapping div around the "Owned files by stage" table must carry
+    ``overflow-x-auto`` (scrollable) and must NOT carry ``overflow-hidden`` / a fixed narrow ``max-w-``
+    utility -- either of which would silently reintroduce the un-reachable clip.
+    """
+    body = (await smoke.get(f"/admin/agents/{_AGENT_ID}/_activity")).text
+    assert "Owned files by stage" in body
+    heading_at = body.find("Owned files by stage")
+    table_at = body.find("<table", heading_at)
+    assert table_at != -1, "expected the owned-files-by-stage <table> to follow its heading"
+    # The nearest preceding <div ...> is the table's direct scroll wrapper.
+    wrapper_start = body.rfind("<div", heading_at, table_at)
+    wrapper_tag = body[wrapper_start : body.find(">", wrapper_start) + 1]
+    assert "overflow-x-auto" in wrapper_tag, f"expected a reachable overflow-x-auto scrollport, got {wrapper_tag!r}"
+    assert "overflow-hidden" not in wrapper_tag
+    assert "max-w-" not in wrapper_tag, "a fixed narrow max-width here is exactly the old panel's clipping shape"
