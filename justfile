@@ -1,6 +1,13 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
+# Host bind IP for every ephemeral/test-harness Postgres + Redis container this justfile
+# publishes (test-db, integration-test's pinned-port branches, perf-db-up). Defaults to
+# loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
+# (dual-stack, so also `::`), publishing the shared test Postgres (superuser phaze/phaze)
+# and a passwordless test Redis to every host on the LAN. Mirrors the loopback pattern the
+# `integration-test` dynamic-port branches already use (`-p 127.0.0.1::5432`).
+test_db_bind_ip := env_var_or_default("PHAZE_TEST_DB_BIND_IP", "127.0.0.1")
 # Host port for the SHARED test-harness Postgres (5433 avoids the dev DB on 5432). This
 # container is deliberately reused across every concurrent worktree/session (via `test-db`,
 # `test-db-for`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
@@ -286,7 +293,7 @@ test-db:
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
                 -e POSTGRES_DB=phaze_test \
-                -p "${port}:5432" \
+                -p "{{test_db_bind_ip}}:${port}:5432" \
                 postgres:18-alpine
         fi
     fi
@@ -312,14 +319,14 @@ test-db:
             echo "    'just test-db-for <name>' in each active worktree afterwards."
             docker rm -f "$redis_container" >/dev/null 2>&1 || true
             run_or_yield "$redis_container" "recreated" \
-                -p "${redis_port}:6379" \
+                -p "{{test_db_bind_ip}}:${redis_port}:6379" \
                 redis:7-alpine redis-server --databases "$redis_databases"
         fi
     else
         # Neither running nor startable (no container of this name existed) -- create fresh,
         # tolerating a racing sibling's concurrent create as described above.
         run_or_yield "$redis_container" "created" \
-            -p "${redis_port}:6379" \
+            -p "{{test_db_bind_ip}}:${redis_port}:6379" \
             redis:7-alpine redis-server --databases "$redis_databases"
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
@@ -475,7 +482,7 @@ integration-test:
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
-            -p "${port}:5432" \
+            -p "{{test_db_bind_ip}}:${port}:5432" \
             postgres:18-alpine >/dev/null
     fi
     if [ "$fixed_redis_port" = "0" ]; then
@@ -488,7 +495,7 @@ integration-test:
         redis_port="$fixed_redis_port"
         echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port} (pinned via PHAZE_INTEGRATION_TEST_REDIS_PORT)..."
         docker run -d --name "$redis_container" \
-            -p "${redis_port}:6379" \
+            -p "{{test_db_bind_ip}}:${redis_port}:6379" \
             redis:7-alpine >/dev/null
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
@@ -826,7 +833,7 @@ perf-db-up:
         echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            -p "${port}:5432" postgres:18-alpine >/dev/null
+            -p "{{test_db_bind_ip}}:${port}:5432" postgres:18-alpine >/dev/null
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
