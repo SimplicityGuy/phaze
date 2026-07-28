@@ -95,26 +95,22 @@ def test_kueue_backend_parses() -> None:
     assert be.buckets == ["b1"]
 
 
-def test_kueue_backend_agent_ref_optional_defaults_none() -> None:
-    """A kueue entry with no agent_ref boots cleanly (backward-compat with pre-existing [kube] config, phaze-ifcr).
+def test_kueue_backend_has_no_agent_ref_and_ignores_a_leftover_one() -> None:
+    """A kueue entry carries no agent_ref, and an already-deployed file still holding one keeps parsing.
 
-    Unlike ``ComputeBackend.agent_ref`` (REQUIRED, REG-02), ``KueueBackend.agent_ref`` must stay OPTIONAL
-    so a deployed backends.toml written before this field existed keeps parsing without edits.
+    phaze-ifcr added an OPTIONAL kueue ``agent_ref`` purely so the Agents-page shadow-row dedupe had a
+    key; phaze-2u8v.4 made that dedupe structural (kind + never, no config read at all) and dropped the
+    field. Removal must not turn an operator's existing backends.toml into a boot failure — this model
+    does not set ``extra='forbid'``, so the stale key is ignored rather than rejected.
     """
     be = KueueBackend(kind="kueue", id="kueue-noref", rank=5, cap=4, kube=KubeConfig(api_url="https://kube.example.com"))
-    assert be.agent_ref is None
+    assert not hasattr(be, "agent_ref")
 
-
-def test_kueue_backend_agent_ref_parses() -> None:
-    """A kueue entry may bind an agent_ref naming its callback compute agent (mirrors ComputeBackend REG-02, phaze-ifcr).
-
-    This is the structural binding COMPUTE-01's dedupe filter keys on: the backend id ("vox") and its
-    callback agent id ("k8s-vox") are legitimately DIFFERENT strings — the operator's free choice at
-    ``phaze agents add --kind compute``.
-    """
-    be = KueueBackend(kind="kueue", id="vox", rank=10, cap=4, agent_ref="k8s-vox", kube=KubeConfig(api_url="https://kube.example.com"))
-    assert be.agent_ref == "k8s-vox"
-    assert be.id != be.agent_ref
+    leftover = KueueBackend.model_validate(
+        {"kind": "kueue", "id": "vox", "rank": 10, "cap": 4, "agent_ref": "k8s-vox", "kube": {"api_url": "https://kube.example.com"}}
+    )
+    assert leftover.id == "vox"
+    assert not hasattr(leftover, "agent_ref")
 
 
 def test_kueue_backend_missing_kube_fails_fast_with_id() -> None:

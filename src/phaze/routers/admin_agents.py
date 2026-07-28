@@ -21,6 +21,12 @@ the two are equivalent once revoked rows are filtered, and
 ``test_default_matches_locked_sort_key`` for the pin that keeps them so.
 ``sort_key`` itself is unchanged and still serves its other callers.
 
+Two panels, one rule about which rows belong where (phaze-2u8v.4): Section 1 is the HEARTBEATING
+table, so it renders only identities a persistent process actually beats for. A ``kind='compute'``
+row that has never checked in belongs to an ephemeral Job-based lane and is represented by Section 2
+instead — see ``_load_agents`` for why that suppression is keyed on the row's KIND rather than on
+registry membership.
+
 Auth posture: NO ``get_authenticated_agent`` dependency — operator pages are
 open on the private LAN (consistent with pipeline.py / pipeline_scans.py
 precedent; CONTEXT.md D-discretion).
@@ -37,7 +43,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import DateTime, Integer, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
-import structlog
 
 from phaze.config import get_settings
 from phaze.database import get_session
@@ -45,7 +50,7 @@ from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import wants_fragment
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities, non_local_backend_agent_refs, non_local_backend_kinds
+from phaze.services.agent_liveness import classify, derive_compute_lane_identities
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -54,9 +59,6 @@ from phaze.utils.humanize import relative_time
 # OMITTED (the 7-stage -> 6-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
 # "Exec" in the template. Ordered for the matrix's left-to-right column order.
 _ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
-
-
-logger = structlog.get_logger(__name__)
 
 
 # ``last_seen_at`` with NULL folded to the OLDEST representable instant, so a direction alone decides
@@ -146,22 +148,30 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
     same instant — eliminates a few-microsecond skew that would otherwise
     show up if the template re-evaluated ``datetime.now(UTC)`` separately.
 
-    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row whose id/name matches a
-    non-local registry backend is the SAME cluster now surfaced as a live tile in Section 2. Such a
-    row never heartbeats (it is not a persistent process), so it would otherwise sit ``NEVER`` forever
-    in Section 1 while its lane is live in Section 2 — the "shown twice" defect. We suppress ONLY that
-    exact shadow: ``kind=='compute'`` AND (``id`` or ``name``) is a registry backend key OR a registry
-    ``agent_ref`` AND ``_status=='never'``. The predicate is deliberately narrow — a genuinely
-    heartbeating compute agent keeps its row, a non-registry NEVER compute row keeps its row, and
-    fileserver rows are untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no
-    schema change. Reading the registry is degrade-safe — a settings failure leaves every row visible
-    rather than raising into the hot poll.
+    COMPUTE-01 (dedupe): a bearer-token ``kind='compute'`` Agent row exists ONLY to authenticate the
+    one-shot ``job_runner`` callbacks of an ephemeral compute lane. Nothing behind it is a persistent
+    process — a Kubernetes Job pod runs, calls back and exits; it never reaches the heartbeat endpoint.
+    So every heartbeat column this table renders for such a row (STATUS / QUEUE / LAST SEEN / SCAN
+    ROOTS) is ``NEVER`` / ``—`` / ``never`` / ``0`` by construction and forever, while the same lane
+    reports ACTIVE with running workloads in Section 2. That contradiction is the "shown twice" defect,
+    and it is what the Section-2 note means by "never as a perpetually-dead agent".
 
-    phaze-ifcr: id/name string equality against the backend's OWN id (``registry_keys``) misses whenever
-    the operator's callback-agent id/name diverges from the backend id it dispatches for — e.g. a kueue
-    backend id ``"vox"`` bound to callback agent ``"k8s-vox"`` (``phaze agents add --kind compute``).
-    ``non_local_backend_agent_refs`` closes that gap with the STRUCTURAL binding (``agent_ref``) instead
-    of name-coincidence, so the shadow row is suppressed regardless of what the operator named it.
+    We therefore suppress exactly that shape — ``kind=='compute'`` AND ``_status=='never'`` — and
+    Section 2 is the sole representation of compute identities. The gate stays on ``_status=='never'``:
+    a compute agent that has EVER heartbeated is a real process and keeps its row in every state,
+    including a genuine ``dead`` after it stops, so a compute node going down is still visible here.
+    Fileserver rows are untouched. Display-only (mirrors the revoked-row filter): no DB mutation, no
+    schema change.
+
+    phaze-2u8v.4: the predicate used to key on REGISTRY MEMBERSHIP — the row was dropped only when its
+    id/name matched a non-local backend id (phaze-zlv) or a backend's bound ``agent_ref`` (phaze-ifcr).
+    That made a display invariant depend on operator configuration, and both keys missed in the deployed
+    registry: the kueue ``agent_ref`` binding was OPTIONAL and left unset there, and a lane that has been
+    disabled (its ``[[backends]]`` block commented out) leaves its callback Agent row behind with NO
+    registry key that can ever match. Both k8s rows leaked into Section 1 as perpetually-dead — the
+    filter that was supposed to catch them had, in production, never once fired. Whether a row can
+    heartbeat is a property of its KIND, not of what the operator happened to name it or of whether its
+    cluster is currently enabled — so the suppression is now structural and reads no config at all.
     """
     # ORDER BY lands in SQL (sort contract rule 1), reached only through a whitelisted expression.
     # Agent.id is the tiebreaker: an operator-chosen key ties heavily (every fileserver agent shares a
@@ -177,22 +187,7 @@ async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Age
         # the DB and is safe even if a future migration adds a real
         # ``_status`` column (Python's leading-underscore convention).
         a._status = classify(a, now)  # type: ignore[attr-defined]  # Phase 27 transient-attr pattern
-    try:
-        settings = get_settings()
-        registry_keys = set(non_local_backend_kinds(settings))  # type: ignore[arg-type]
-        registry_agent_refs = set(non_local_backend_agent_refs(settings))  # type: ignore[arg-type]
-    except Exception:
-        # A registry/settings read failure must never break the operator poll: leave every row
-        # visible (the shadow row reappears, but the page still renders) rather than raise.
-        logger.warning("agents_registry_shadow_filter_unavailable", exc_info=True)
-        registry_keys = set()
-        registry_agent_refs = set()
-    shadow_keys = registry_keys | registry_agent_refs
-    rows = [
-        a
-        for a in rows
-        if not (a.kind == "compute" and a._status == "never" and (a.id in shadow_keys or a.name in shadow_keys))  # type: ignore[attr-defined]
-    ]
+    rows = [a for a in rows if not (a.kind == "compute" and a._status == "never")]  # type: ignore[attr-defined]
     # No Python re-sort: the order arrived from SQL above. Filtering never reorders a list, so the
     # shadow-row removal preserves the ORDER BY rather than needing it re-applied.
     return rows, now
