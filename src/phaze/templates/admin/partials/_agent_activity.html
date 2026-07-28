@@ -1,9 +1,11 @@
 {# Phase 88 (88-03, DRILL-02 / D-04 / D-05 / D-03): the agent-activity BODY fragment.
 
-   The wave-2 body for plan 88-01's shared non-modal #detail-pane shell. The agent-row trigger
-   (agents_table.html) hx-get="/admin/agents/{id}/_activity" innerHTML-swaps THIS fragment into
-   #detail-pane; the shell's #detail-pane hx-on::after-swap re-inits Alpine + fires onLoaded()
-   (open + heading-focus). This fragment therefore renders the body ONLY (never the shell chrome).
+   phaze-2u8v.6: the wave-2 body for the agents-table EXPANDED ROW
+   (admin/partials/_agent_detail_row.html), which replaced the shared non-modal #detail-pane side panel
+   for this surface. The agent-row trigger (agents_table.html) opens the row by re-fetching the whole
+   table; the row's own swap target (hx-get="/admin/agents/{id}/_activity") innerHTML-swaps THIS
+   fragment into #agent-activity-{id}, and the row's hx-on::after-swap re-inits Alpine. This fragment
+   therefore renders the body ONLY (never the row's chrome/close-button).
 
    D-05 stacked section order (everything visible on open, scroll for depth):
      (1) liveness header  — kind badge + status pill + last-seen
@@ -13,8 +15,8 @@
      (4) recent scan batches — newest-first, bounded
 
    D-03 own-tick: the root carries its OWN bounded hx-trigger="every 5s" re-fetching this endpoint
-   into #detail-pane (removed with the pane on dismiss — no orphan loop). "Last refreshed Ns ago"
-   reuses the agents_table.html:82-86 Alpine setInterval countdown.
+   into #agent-activity-{id} (removed with the row on dismiss — no orphan loop). "Last refreshed Ns
+   ago" reuses the agents_table.html:82-86 Alpine setInterval countdown.
 
    THE 7-STAGE -> 6-PILL REMAP LANDMINE (RESEARCH Pitfall 3): tracklist is OMITTED and the last two
    columns are RE-LABELLED — Appr reads buckets.review and Exec reads buckets.apply ON PURPOSE.
@@ -157,10 +159,15 @@
        on the root re-fires the shell's onLoaded() (open=true) every swap and re-opens a dismissed pane.
        This element removes itself once the pane is dismissed (matches _lane_detail.html:109-115): after
        the pane has opened (armed), if the shell's `open` flips false (✕/Esc) it removes itself so it can
-       never re-open the pane, and the poll loop terminates. `armed` skips the pre-open initTree pass. #}
+       never re-open the pane, and the poll loop terminates. `armed` skips the pre-open initTree pass.
+
+       phaze-2u8v.6: the swap target is now the per-agent expanded-row slot
+       (#agent-activity-{{ agent.id }}, admin/partials/_agent_detail_row.html) rather than the shared
+       #detail-pane side panel -- `open` still resolves via Alpine.$data walking up to that row's
+       enclosing x-data, exactly as it walked up to the old shell's <section x-data>. #}
     <div hx-get="/admin/agents/{{ agent.id }}/_activity"
          hx-trigger="every 5s"
-         hx-target="#detail-pane"
+         hx-target="#agent-activity-{{ agent.id }}"
          hx-swap="innerHTML"
          x-data="{ armed: false }"
          x-init="$nextTick(() => { armed = true })"

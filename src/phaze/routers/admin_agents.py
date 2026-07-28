@@ -104,13 +104,15 @@ table having re-sorted itself in a direction the operator did not choose. "Actio
 ``resolve()`` is called with NO ``view_state``, which is a deviation from rule 4 worth stating so it is
 not "corrected" later. This table's other view parameter is ``?agent=`` (the drill-in selection), and it
 must NOT ride in ``view_state``, because ``view_state`` feeds :meth:`SortState.poll_url` and the poll is
-exactly where a stale value does damage: a row click swaps only ``#detail-pane``, leaving THIS section's
-server-rendered markup — and therefore its ``poll_url`` — holding the PREVIOUS selection. A baked
-``?agent=`` would re-assert that stale id every 5 seconds and erase the ring the operator just clicked
-(Phase 88 D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search``,
-which htmx inherits to the sort buttons so a header click preserves the open pane too. The two channels
-are kept disjoint because htmx APPENDS ``hx-vals`` onto the ``hx-get`` query string — a key in both
-would be transmitted twice. See ``admin/partials/agents_table.html`` for the same note at the markup.
+exactly where a stale value does damage: the 5s self-poll re-requests THIS handler with no per-row
+knowledge of what the operator last clicked, so a baked ``?agent=`` in ``poll_url()`` would re-assert a
+FROZEN-AT-IMPORT-TIME selection every 5 seconds and erase the ring the operator just clicked (Phase 88
+D-02). It travels in the section's ``hx-vals`` instead, read live from ``location.search`` at request
+time, which htmx inherits to the sort buttons so a header click preserves the open row too (phaze-2u8v.6:
+a row click itself overrides this same key with its OWN static ``hx-vals``, naming the row it belongs to
+rather than reading a live value — see ``admin/partials/agents_table.html`` for that override and the
+same disjointness note at the markup). The two channels are kept disjoint because htmx APPENDS
+``hx-vals`` onto the ``hx-get`` query string — a key in both would be transmitted twice.
 """
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -305,12 +307,15 @@ async def agent_activity(
     session: Annotated[AsyncSession, Depends(get_session)],
     agent_id: str,
 ) -> HTMLResponse:
-    """Render the agent-activity body fragment swapped into the shared ``#detail-pane`` shell (DRILL-02).
+    """Render the agent-activity body fragment swapped into its expanded-row slot (DRILL-02).
 
-    The wave-2 body for plan 88-01's non-modal detail pane: the agent-row trigger's
-    ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS fragment into ``#detail-pane``, and
-    the fragment carries its OWN bounded ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint
-    returns the body directly, NOT the shell (the 88-01 shell is a static host with no body slot).
+    phaze-2u8v.6: the wave-2 body for the agents-table EXPANDED ROW
+    (``admin/partials/_agent_detail_row.html``), which replaced the shared non-modal ``#detail-pane``
+    side panel for this surface. The agent-row trigger opens the row by re-fetching the whole table
+    (``agents_table.html``); the row's own ``hx-get="/admin/agents/{id}/_activity"`` innerHTML-swaps THIS
+    fragment into its per-agent slot ``#agent-activity-{id}``, and the fragment carries its OWN bounded
+    ``hx-trigger="every 5s"`` self-refresh (D-03) — so the endpoint returns the body directly, NOT the
+    row's chrome (the row is a static host with no body slot of its own).
 
     For a found agent the fragment stacks (D-05): liveness header (``classify`` transient ``_status`` +
     kind badge + last-seen) → a per-agent 6-stage COUNT matrix (one indexed ``GROUP BY stage_status_case``
@@ -319,8 +324,8 @@ async def agent_activity(
     a friendly empty fragment at **200** (mirroring the sibling ``lane_detail`` never-error posture, T-88-07)
     — NEVER an ``HTTPException`` / JSON / 500 — and an agent owning 0 files renders the "owns no files yet"
     empty state. The 200 (not 404) is load-bearing: the ``/admin/agents`` page has no htmx 404 swap opt-in
-    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not ``#detail-pane``), so a 404
-    fragment would be DISCARDED — the pane would keep stale content and the self-poll would 404-loop forever
+    (its ``htmx:responseError`` handler targets ``#agents-table-section``, not this row's slot), so a 404
+    fragment would be DISCARDED — the row would keep stale content and the self-poll would 404-loop forever
     on an agent revoked mid-view (WR-01/WR-02). The not-found fragment carries NO own-tick, so returning it
     at 200 terminates the poll loop cleanly.
 

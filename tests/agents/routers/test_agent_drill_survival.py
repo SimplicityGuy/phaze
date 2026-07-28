@@ -1,17 +1,16 @@
-"""Phase 88 (88-01, DRILL-03 / D-02 / D-09): agent-row drill-in trigger + poll-survival contract.
+"""Phase 88 (88-01, DRILL-03 / D-02 / D-09) + phaze-2u8v.6: agent-row drill-in trigger + poll-survival.
 
-Locks the wave-1 agent surface against the shared _detail_pane.html shell:
+Locks the agent surface's expanded-row contract (replacing the shared _detail_pane.html side panel):
 
 * the `agents_table.html` `<tr>` is a keyboard-accessible `role="button"` drill-in trigger with a
   STABLE `id="agent-trigger-{id}"`, `tabindex="0"`, an `aria-label`, the `onkeydown` Space handler, and
-  the HTMX wiring (`hx-get="/admin/agents/{id}/_activity"`, `hx-target="#detail-pane"`, `hx-push-url`
-  `?agent=`);
+  the HTMX wiring (`hx-get` re-requesting the WHOLE table under the current sort, `hx-vals` naming this
+  row's own id, `hx-target="#agents-table-section"`, `hx-swap="outerHTML"`, `hx-push-url` `?agent=`) --
+  a click re-renders the table so the row's own expanded-row slot (which does not exist in the DOM
+  until `selected_agent` resolves to it) gets created;
 * the `#agents-table-section` self-poll re-emits the selected-highlight (`aria-current="true"` + the
   `ring-2 ring-blue-500` ring) on the row whose id matches `?agent=` (D-02), so the ring survives every
   5s `outerHTML` swap; an unknown/absent `?agent=` highlights nothing and NEVER 500s.
-
-The markup assertions are satisfied by Task 2 (trigger wiring); the poll-highlight assertions by Task 3
-(`?agent=` threaded into the table). RED until then; collectable from Task 1.
 
 Uses the self-contained smoke-app fixture from test_admin_agents.py (bare FastAPI app mounting only
 admin_agents.router, get_session overridden to the shared test session).
@@ -73,12 +72,20 @@ async def test_agent_row_trigger_markup(smoke: AsyncClient) -> None:
     assert 'role="button"' in body
     assert 'tabindex="0"' in body
     assert "aria-label=" in body
-    # HTMX drill-in wiring points at the shared #detail-pane swap target.
-    assert f'hx-get="/admin/agents/{AGENT_ID}/_activity"' in body
-    assert 'hx-target="#detail-pane"' in body
+    assert 'aria-expanded="false"' in body
+    # phaze-2u8v.6: the click re-fetches the WHOLE table under the CURRENT sort/order (a re-read, like
+    # a poll), naming its own id via a plain (non-`js:`) hx-vals override, and swaps #agents-table-section
+    # -- not the old shared #detail-pane -- because the expanded row's slot does not exist until this
+    # agent is the one selected_agent resolves to.
+    assert 'hx-get="/admin/agents/_table?sort=last_seen&amp;order=desc"' in body
+    assert f'hx-vals=\'{{"agent": "{AGENT_ID}"}}\'' in body
+    assert 'hx-target="#agents-table-section"' in body
+    assert 'hx-swap="outerHTML"' in body
     assert f"/admin/agents?agent={AGENT_ID}" in body  # hx-push-url carries the ?agent= selection
     # Space activation for a role=button row is not native — the inline onkeydown handler is REQUIRED.
     assert "onkeydown" in body
+    # The old side-panel target must be gone from this surface entirely.
+    assert '"#detail-pane"' not in body
 
 
 @pytest.mark.asyncio
@@ -89,6 +96,9 @@ async def test_agents_table_reemits_selected_ring(smoke: AsyncClient) -> None:
     body = response.text
     assert 'aria-current="true"' in body
     assert "ring-2 ring-blue-500" in body
+    assert 'aria-expanded="true"' in body
+    # The expanded row exists now that this agent is selected.
+    assert f'id="agent-detail-row-{AGENT_ID}"' in body
 
 
 @pytest.mark.asyncio
@@ -97,3 +107,4 @@ async def test_agents_table_unknown_agent_highlights_nothing(smoke: AsyncClient)
     response = await smoke.get("/admin/agents/_table", params={"agent": "__nonexistent__"})
     assert response.status_code == 200, response.text
     assert 'aria-current="true"' not in response.text
+    assert "agent-detail-row-" not in response.text

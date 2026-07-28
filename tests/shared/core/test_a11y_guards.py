@@ -285,15 +285,20 @@ def test_rail_root_carries_alpine_x_data() -> None:
 
 # --- phaze-am7c: detail-pane own-tick must not steal focus every 5s ------------------
 
-# The wave-2 bodies swapped into #detail-pane carry a bounded self-refresh own-tick
-# (`hx-trigger="every 5s" hx-target="#detail-pane" hx-swap="innerHTML"` —
-# _lane_detail.html and _agent_activity.html both do it). htmx fires htmx:afterSwap on the
-# swap TARGET for every swap into it, including the poll, so the shell's
+# The wave-2 body swapped into #detail-pane (_lane_detail.html) carries a bounded self-refresh
+# own-tick (`hx-trigger="every 5s" hx-target="#detail-pane" hx-swap="innerHTML"`). htmx fires
+# htmx:afterSwap on the swap TARGET for every swap into it, including the poll, so the shell's
 # `hx-on::after-swap -> Alpine.$data(this).onLoaded()` runs every 5 seconds for as long as
 # the pane is open. onLoaded() parks focus on the pane <h2 tabindex="-1"> — correct exactly
 # ONCE, on the closed->open transition, and an a11y defect on every tick after that: the
 # operator cannot tab to ✕ Close, read the recent-completions list, or type in the ⌘K
 # palette / status filter without focus being yanked back every 5s.
+#
+# phaze-2u8v.6: _agent_activity.html carries the SAME own-tick shape but no longer targets
+# #detail-pane — the agents-table detail is an expanded row now (admin/partials/
+# _agent_detail_row.html), with the equivalent focus-once guard living on that row's own
+# x-init (Alpine only initializes a component once, and hx-preserve keeps that same node —
+# and its already-initialized component — alive across the table's unrelated 5s poll).
 #
 # The invariant below is behavioural, not textual: the focus call must still EXIST (initial
 # open must keep moving focus), but it must be reachable only through a conditional whose
