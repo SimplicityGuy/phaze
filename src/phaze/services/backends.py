@@ -39,6 +39,7 @@ Secret hygiene (T-68-04): this module logs only ``{id, kind, rank, cap}``-level 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 import uuid
@@ -49,6 +50,7 @@ import structlog
 
 from phaze.config import get_settings
 from phaze.enums.stage import Stage
+from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import PushFilePayload
@@ -1155,35 +1157,122 @@ async def derive_cloud_hold_reason(session: AsyncSession) -> str:
 LANE_RECENT_N = 20
 
 
-async def get_lane_recent_completions(session: AsyncSession, backend_id: str, kind: str, limit: int = LANE_RECENT_N) -> list[CloudJob]:
-    """Return up to ``limit`` most-recent succeeded ``CloudJob`` rows for a compute/kueue lane (D-07).
+@dataclasses.dataclass(frozen=True)
+class LaneCompletion:
+    """One recent-completion row for a lane's recent-completions panel (phaze-2u8v.3).
 
-    For a ``local`` lane returns ``[]`` unconditionally: a :class:`LocalBackend` writes NO ``cloud_job``
-    row (``in_flight_count`` is always 0, the dispatch short-circuit), so it has no cloud completions to
-    show -- the template renders the "No completions in the last N" empty state instead (Open Question 1
-    resolution: omit, don't fabricate). For compute/kueue lanes the query is bounded by ``updated_at``
-    DESC + ``LIMIT limit`` (D-07); any query error degrades to ``[]`` with a guarded rollback so it can
-    never raise into the hot 5s tick (D-00b). Secret-free: only the CloudJob row scalars leave here.
+    Fixes three defects found in the same panel:
 
-    ``updated_at`` carries no uniqueness constraint, so two jobs can share a value; with a partial
-    ORDER BY, rows tied at the ``LIMIT`` boundary would come back in ANY order (heap order, which
-    shifts with page layout, vacuum, and plan choice). Appending the unique ``CloudJob.id`` makes the
-    order TOTAL, so the LIMIT boundary is deterministic across repeated calls. Same rationale as the
-    paging contract's mandatory unique tiebreaker (rule 4, see :mod:`phaze.services.pagination`).
+    * ``label`` is the file's own name (``COALESCE(original_filename_repaired, original_filename)``),
+      never a bare identifier. The panel previously rendered ``CloudJob.file_id.hex[:8]`` unlabelled and
+      Robert could not tell what it was -- confirmed (ground truth query against the live archive) that
+      it is a PREFIX OF THE FILE's UUID PRIMARY KEY (``files.id``), NOT a sha256 prefix as presumed --
+      ``files.sha256_hash`` is a wholly separate column this code never touched. ``id`` is kept below so
+      a caller/template can still compose an explicitly-labelled id fallback (never a bare hash/hex).
+    * ``completed_at`` is the TRUE analysis completion time -- ``AnalysisResult.analysis_completed_at``,
+      stamped synchronously by the ``/api/internal/agent/analysis/{file_id}`` callback at the instant
+      analysis actually finished. For a kueue lane this is NOT the same instant as the previous
+      ``CloudJob.updated_at`` this code used to render: ``cloud_job.status`` only flips to ``succeeded``
+      the NEXT time ``reconcile_cloud_jobs`` runs, and that cron is registered
+      ``CronJob(reconcile_cloud_jobs, cron="*/5 * * * *")`` (``tasks/controller.py``) -- a fixed-minute
+      schedule, not an interval since the triggering event. So every kueue completion's ``updated_at``
+      lands on the tick that happened to notice it, which is always exactly :00/:05/:10/.../:55 past the
+      hour (confirmed against the live archive: rows read e.g. completed_at 20:05:21 but
+      cloud_job.updated_at 20:10:00.03 -- the very next 5-minute tick) -- explaining the reported
+      clustering. ``completed_at`` falls back to ``CloudJob.updated_at`` only in the defensive case where
+      no ``AnalysisResult`` row is found (should not happen for a row this code selects as succeeded).
     """
-    if kind == "local":
-        return []
+
+    id: uuid.UUID
+    label: str
+    completed_at: datetime | None
+
+
+def _completion_label(filename: str | None, file_id: uuid.UUID) -> str:
+    """Return the human-legible completion label: the filename, or an explicitly-labelled id fallback.
+
+    ``FileRecord.original_filename`` is a NOT NULL column, so the fallback below is defense-in-depth
+    (an empty string, or a row this helper reaches through some future join this docstring doesn't
+    anticipate) rather than the expected path. It is spelled ``file <hex> (id, not a hash)`` -- never a
+    bare hex string -- so a fallback can never be mistaken for the sha256 the original bug presumed.
+    """
+    if filename:
+        return filename
+    return f"file {file_id.hex[:8]} (id, not a hash)"
+
+
+# Two separately-typed base queries (kept apart, not a shared variably-shaped `stmt`, so each stays a
+# single concrete `Select[...]` type -- mypy flags an in-place reassignment across an if/else with
+# different column tuples). Both are `.limit()`-completed at the call site (the local one takes no
+# extra WHERE; the cloud one is additionally scoped by backend_id/status there).
+_LOCAL_RECENT_COMPLETIONS_SQL = (
+    select(
+        FileRecord.id,
+        func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename).label("label"),
+        AnalysisResult.analysis_completed_at,
+    )
+    .select_from(FileRecord)
+    .join(AnalysisResult, AnalysisResult.file_id == FileRecord.id)
+    .where(
+        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
+        AnalysisResult.analysis_completed_at.isnot(None),
+        ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id)),
+    )
+    .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
+)
+
+_CLOUD_RECENT_COMPLETIONS_SQL = (
+    select(
+        CloudJob.id,
+        CloudJob.file_id,
+        func.coalesce(FileRecord.original_filename_repaired, FileRecord.original_filename).label("label"),
+        AnalysisResult.analysis_completed_at,
+        CloudJob.updated_at,
+    )
+    .select_from(CloudJob)
+    .join(FileRecord, FileRecord.id == CloudJob.file_id)
+    .outerjoin(AnalysisResult, AnalysisResult.file_id == CloudJob.file_id)
+    .order_by(CloudJob.updated_at.desc(), CloudJob.id.desc())
+)
+
+
+async def get_lane_recent_completions(session: AsyncSession, backend_id: str, kind: str, limit: int = LANE_RECENT_N) -> list[LaneCompletion]:
+    """Return up to ``limit`` most-recent completions for ANY lane kind, newest-first (D-07, phaze-2u8v.3).
+
+    A ``local`` lane no longer returns ``[]`` unconditionally (Open Question 1's "omit, don't fabricate"
+    resolution masked a real defect: the archive genuinely completes local work continuously -- 1501
+    locally-completed files with no ``cloud_job`` row confirmed live -- and the panel showed "No
+    completions" throughout). A :class:`LocalBackend` still writes NO ``cloud_job`` row (synchronous,
+    no cron read), so local completions are read straight off ``files`` + ``analysis`` instead: a music/
+    video file whose analysis has landed (``analysis_completed_at IS NOT NULL``) AND that carries no
+    ``cloud_job`` row at all (mirrors the same local/cloud discriminator :meth:`LocalBackend.in_flight_count`
+    already established -- the one documented gap there, a compute file's brief post-push window, is
+    equally out of scope here). For compute/kueue lanes the query is unchanged in shape (``backend_id`` +
+    ``status='succeeded'``, D-07 LIMIT) but now outer-joins ``analysis`` for the TRUE completion instant
+    (see :class:`LaneCompletion`) and joins ``files`` for the display name. Any query error degrades to
+    ``[]`` with a guarded rollback so it can never raise into the hot 5s tick (D-00b). Secret-free: only
+    filename/timestamp/id scalars leave here.
+
+    Ordering keeps its existing, already-regression-tested tiebreaker shape: local orders by
+    ``analysis_completed_at`` DESC + ``FileRecord.id`` DESC; compute/kueue orders by ``CloudJob.updated_at``
+    DESC + ``CloudJob.id`` DESC (unchanged from before this fix -- a monotonic-enough proxy for recency
+    since reconcile ticks themselves run in increasing chronological order). Either way a partial ORDER BY
+    alone would leave boundary ties in ANY order (heap order, which shifts with page layout, vacuum, and
+    plan choice); appending the unique id makes the order TOTAL, so the LIMIT boundary is deterministic
+    across repeated calls (mirrors the paging contract's mandatory unique tiebreaker).
+    """
     try:
-        stmt = (
-            select(CloudJob)
-            .where(
-                CloudJob.backend_id == backend_id,
-                CloudJob.status == CloudJobStatus.SUCCEEDED.value,
-            )
-            .order_by(CloudJob.updated_at.desc(), CloudJob.id.desc())
-            .limit(limit)
-        )
-        rows = list((await session.execute(stmt)).scalars().all())
+        if kind == "local":
+            local_rows = (await session.execute(_LOCAL_RECENT_COMPLETIONS_SQL.limit(limit))).all()
+        else:
+            cloud_rows = (
+                await session.execute(
+                    _CLOUD_RECENT_COMPLETIONS_SQL.where(
+                        CloudJob.backend_id == backend_id,
+                        CloudJob.status == CloudJobStatus.SUCCEEDED.value,
+                    ).limit(limit)
+                )
+            ).all()
     except Exception:
         logger.warning("lane_recent_completions_degraded", backend_id=backend_id, exc_info=True)
         try:
@@ -1191,7 +1280,15 @@ async def get_lane_recent_completions(session: AsyncSession, backend_id: str, ki
         except Exception:
             logger.warning("lane_recent_completions_rollback_failed", backend_id=backend_id, exc_info=True)
         return []
-    return rows
+
+    if kind == "local":
+        return [
+            LaneCompletion(id=row_id, label=_completion_label(label, row_id), completed_at=completed_at) for row_id, label, completed_at in local_rows
+        ]
+    return [
+        LaneCompletion(id=cloud_job_id, label=_completion_label(label, file_id), completed_at=(analysis_completed_at or cloud_job_updated_at))
+        for cloud_job_id, file_id, label, analysis_completed_at, cloud_job_updated_at in cloud_rows
+    ]
 
 
 async def get_lane_queue_depths(app_state: Any, backend_id: str) -> dict[str, int]:
