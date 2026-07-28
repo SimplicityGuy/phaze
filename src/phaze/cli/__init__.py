@@ -227,6 +227,15 @@ def _main_fingerprint(args: argparse.Namespace) -> int:
         print("           the affected deterministic keys are:")
         for key in result.blocked_keys:
             print(f"             {key}")
+    # phaze-rkpi: a per-file broker error is now isolated rather than aborting the whole batch, so a
+    # transient hiccup no longer costs the operator every remaining file -- but it must still be
+    # reported, not folded silently into "re-queued". Re-running the SAME window re-selects these
+    # files (the window filter is idempotent), so this is recoverable, unlike a lost batch.
+    if result.errored:
+        print(f"  WARNING: {result.errored} file(s) FAILED to enqueue (broker error) and were skipped this pass --")
+        print("           re-run this command with the same --since/--until to retry just these files:")
+        for file_id in result.errored_file_ids:
+            print(f"             {file_id}")
     print("")
     print("  NOTE: if the fingerprint stage is paused, these jobs are PARKED, not running.")
     print("  Release them only once both engines are proven healthy:")
