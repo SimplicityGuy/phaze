@@ -62,21 +62,41 @@ class _FakeQueue:
 
     ``existing`` maps a deterministic key to the :class:`_FakeJob` that ``queue.job(key)`` returns,
     so a collision can be classified as genuinely-in-flight vs BLOCKED-by-a-zombie (phaze-e57w).
+
+    ``raise_on_enqueue``/``raise_on_lookup`` name file ids whose ``enqueue``/``job`` call should
+    raise a transient broker error instead of returning normally (phaze-rkpi: proving per-file
+    isolation requires a fake that can fail ONE file without touching the others).
     """
 
-    def __init__(self, dedup: set[str] | None = None, existing: dict[str, _FakeJob] | None = None) -> None:
+    def __init__(
+        self,
+        dedup: set[str] | None = None,
+        existing: dict[str, _FakeJob] | None = None,
+        raise_on_enqueue: set[str] | None = None,
+        raise_on_lookup: set[str] | None = None,
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._dedup = dedup or set()
         self._existing = existing or {}
+        self._raise_on_enqueue = raise_on_enqueue or set()
+        self._raise_on_lookup = raise_on_lookup or set()
 
     async def connect(self) -> None:
         return None
 
     async def enqueue(self, function: str, **kwargs: Any) -> object | None:
+        file_id = str(kwargs.get("file_id"))
+        if file_id in self._raise_on_enqueue:
+            msg = f"simulated transient broker error enqueueing {file_id}"
+            raise ConnectionError(msg)
         self.calls.append({"function": function, **kwargs})
-        return None if str(kwargs.get("file_id")) in self._dedup else object()
+        return None if file_id in self._dedup else object()
 
     async def job(self, key: str) -> _FakeJob | None:
+        for file_id in self._raise_on_lookup:
+            if key == f"fingerprint_file:{file_id}":
+                msg = f"simulated transient broker error looking up {key}"
+                raise ConnectionError(msg)
         return self._existing.get(key)
 
 
@@ -245,6 +265,47 @@ async def test_enqueue_treats_unlookupable_collision_as_in_flight(session: Async
     assert (result.accepted, result.in_flight, result.blocked) == (0, 1, 0)
 
 
+async def test_enqueue_isolates_one_failing_file_and_continues_the_batch(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """phaze-rkpi REGRESSION: one transient broker error mid-batch must not abandon the rest.
+
+    Pre-fix, `queue.enqueue` had no try/except: a raise on file #2 of a 3-file batch propagated
+    straight out of `enqueue_fingerprint_jobs`, so files #1's job was the only one ever enqueued
+    (already committed to the broker) and file #3 was NEVER EVEN ATTEMPTED -- silently dropped from
+    the fire-and-forget background task with no observable trace beyond a GC-time asyncio warning.
+    """
+    before = await make_file()
+    failing = await make_file()
+    after = await make_file()
+    queue = _FakeQueue(raise_on_enqueue={str(failing.id)})
+
+    result = await enqueue_fingerprint_jobs(queue, [before, failing, after], "test-fileserver")
+
+    # The failure is isolated: it does not raise out of the funnel.
+    assert result.errored == 1
+    assert result.errored_file_ids == (str(failing.id),)
+    # Crucially, the file AFTER the failing one was still attempted -- the loop did not abort.
+    assert result.accepted == 2
+    enqueued_ids = {call["file_id"] for call in queue.calls}
+    assert enqueued_ids == {str(before.id), str(after.id)}
+    assert str(failing.id) not in enqueued_ids
+
+
+async def test_enqueue_isolates_a_failing_collision_lookup(session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """A broker error during the collision lookup degrades to in_flight (the enqueue itself already
+    ran; only its classification is unknown) instead of aborting the batch -- same isolation
+    discipline, applied to the second unguarded await."""
+    collides = await make_file()
+    after = await make_file()
+    queue = _FakeQueue(dedup={str(collides.id)}, raise_on_lookup={str(collides.id)})
+
+    result = await enqueue_fingerprint_jobs(queue, [collides, after], "test-fileserver")
+
+    assert result.blocked == 0
+    assert result.in_flight == 1  # degraded, not crashed
+    assert result.accepted == 1  # `after` was still attempted and accepted
+    assert result.errored == 0  # the enqueue itself succeeded for both files
+
+
 def test_cli_reports_blocked_files_loudly(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """phaze-e57w REGRESSION: the CLI must print BLOCKED files loudly, not as benign "in flight".
 
@@ -264,6 +325,32 @@ def test_cli_reports_blocked_files_loudly(monkeypatch: pytest.MonkeyPatch, capsy
     assert "1 skipped -- already in flight" in out  # the benign in-flight count stays quiet
     assert "WARNING: 1 file(s) BLOCKED by a dead job row" in out  # the zombie is loud + distinct
     assert "fingerprint_file:dead-1" in out
+
+
+def test_cli_reports_errored_files_loudly(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """phaze-rkpi REGRESSION: isolating per-file broker errors must not make them invisible.
+
+    Pre-fix, a broker error aborted `_run_requeue` entirely and the CLI's own uncaught-exception
+    traceback WAS the (accidental) observability. Now that the funnel isolates the failure instead
+    of raising, the CLI must surface the errored count itself or the operator would see a clean
+    "Re-queued N of M" with the dropped files' fate never mentioned.
+    """
+
+    async def _fake(*_a: object, **_k: object) -> tuple[int, FingerprintEnqueueResult, str | None]:
+        return (
+            5,
+            FingerprintEnqueueResult(accepted=4, in_flight=0, blocked=0, blocked_keys=(), errored=1, errored_file_ids=("file-err-1",)),
+            "nox",
+        )
+
+    monkeypatch.setattr(cli, "_run_requeue", _fake)
+    rc = cli.main(["fingerprint", "requeue", "--since", "2026-07-18T05:00:00", "--until", "2026-07-18T13:39:00"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Re-queued 4 of 5" in out
+    assert "WARNING: 1 file(s) FAILED to enqueue" in out
+    assert "file-err-1" in out
 
 
 # ---------------------------------------------------------------------------
