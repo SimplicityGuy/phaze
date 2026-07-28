@@ -255,6 +255,39 @@ def _log_subprocess_failure(operation: str, file_path: str, result: subprocess.C
     )
 
 
+def _probe_store_home() -> str | None:
+    """Verify the LMDB store directory is present and writable (phaze-25cc).
+
+    Returns None when healthy, or a human-readable reason string when not.
+
+    ``HOME`` (pinned to ``/data/fprint`` by the Dockerfile, mounted there as the ``panako_data``
+    named volume) is where lmdbjava creates ``~/.panako/dbs``. It is as much a core dependency
+    of this engine as the jar is: if it is not writable, EVERY ``store`` and ``query`` exits
+    nonzero and the sidecar 500s on every request -- while ``/health`` used to return 200
+    throughout, because ``_probe_jar`` only ever looked at the jar. That is precisely the
+    failure this endpoint's own docstring says it exists to prevent.
+
+    A named volume is the reason this is not hypothetical: Docker seeds a volume's ownership
+    from the image directory only when the volume is EMPTY at first mount, so the image-layer
+    ``chown panako:panako /data/fprint`` cannot reach a volume that a pre-uid-pin image already
+    created. A read-only remount or a full filesystem produces the same symptom.
+
+    Checked by attempting the real operation (create + remove a probe directory) rather than by
+    ``os.access``, which reports the DAC bits and can disagree with the filesystem -- a
+    read-only mount being the obvious case.
+    """
+    home = Path(os.environ.get("HOME", "/data/fprint"))
+    if not home.is_dir():
+        return f"Panako store directory missing at {home}"
+    probe = home / ".panako-healthprobe"
+    try:
+        probe.mkdir(exist_ok=True)
+        probe.rmdir()
+    except OSError as exc:
+        return f"Panako store directory {home} is not writable ({type(exc).__name__}: {exc}) -- every store/query will fail"
+    return None
+
+
 def _probe_jar() -> str | None:
     """Verify the Panako jar exists and the CLI actually runs.
 
@@ -408,8 +441,15 @@ async def health(response: Response) -> HealthResponse:
     {"status": "healthy"}, every healthcheck and dashboard reported a healthy engine
     through a total 100%-failure outage. A health check that cannot observe the
     engine's core dependency is worse than no health check at all.
+
+    phaze-25cc applies that same sentence to the engine's OTHER core dependency: the LMDB
+    store under ``HOME``. The jar being loadable says nothing about whether Panako can write
+    a fingerprint, so an unwritable ``/data/fprint`` produced a 100%-failure engine reporting
+    healthy -- the identical shape, one dependency over.
     """
-    detail = await asyncio.to_thread(_probe_jar)
+    detail = await asyncio.to_thread(_probe_store_home)
+    if detail is None:
+        detail = await asyncio.to_thread(_probe_jar)
     if detail is not None:
         logger.error("Panako health check FAILED: %s", detail)
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

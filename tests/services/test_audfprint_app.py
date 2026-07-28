@@ -553,6 +553,56 @@ class TestIngestEndpointBootstrap:
 # ---------------------------------------------------------------------------
 
 
+class TestHealthObservesDirectoryWritability:
+    """phaze-25cc: writability was checked ONLY on the DB-absent branch.
+
+    A present, loadable database short-circuited before the check, so any permission or mount
+    problem under /data/fprint reported healthy right up until the next ingest 500'd. The
+    named-volume ownership hazard that surfaced this (Docker seeds a volume's ownership from
+    the image only when the volume is EMPTY at first mount, so the image-layer chown cannot
+    reach a volume created by a pre-uid-pin image) is one way in; a read-only remount or a
+    full filesystem is another.
+    """
+
+    async def test_present_database_in_an_unwritable_directory_is_unhealthy(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        fprint_dir = tmp_path / "fprint"
+        fprint_dir.mkdir()
+        db_path = fprint_dir / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        fprint_dir.chmod(0o500)  # r-x: exactly the stale-uid volume symptom
+
+        transport = ASGITransport(app=audfprint_app.app)
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.get("/health")
+        finally:
+            fprint_dir.chmod(0o700)
+
+        assert resp.status_code == 503
+        assert "not writable" in resp.json()["detail"]
+
+    def test_a_read_only_database_file_is_still_healthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Assert the requirement is DIRECTORY writability, not `os.access(db, W_OK)`.
+
+        Since phaze-p3hj.2 an ingest never opens the live database for writing -- it stages a
+        copy in the same directory and renames it over the live path, and rename(2) needs
+        write+execute on the DIRECTORY, not on the target file. Requiring file writability here
+        would report a perfectly functional database unhealthy.
+        """
+        fprint_dir = tmp_path / "fprint"
+        fprint_dir.mkdir()
+        db_path = fprint_dir / "fprint.pklz"
+        write_loadable_db(db_path)
+        db_path.chmod(0o444)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        available, _detail = audfprint_app._database_bootstrap_status()
+        assert available
+
+
 class TestLandmarkTimeRange:
     """`--maxtimebits` must be explicit, derived correctly, and observable."""
 

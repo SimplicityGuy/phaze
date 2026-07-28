@@ -331,13 +331,30 @@ def _database_bootstrap_status() -> tuple[bool, str]:
     """
     db_path = Path(FPRINT_DB)
     state, detail = _probe_database(db_path)
-    if state != "absent":
-        return state == "ok", detail
+    if state not in ("absent", "ok"):
+        return False, detail
+
+    # phaze-25cc: the writability check used to run ONLY on the DB-absent branch -- a present,
+    # loadable database short-circuited before it, so ANY permission or mount problem under
+    # /data/fprint reported healthy right up until the next ingest 500'd. The named-volume
+    # ownership hazard that surfaced this (a volume seeded by a pre-uid-pin image stays owned
+    # by the old uid; the image-layer chown cannot reach it) is only one way to reach that
+    # state -- a read-only remount or a full filesystem reaches it too. Probe the requirement
+    # directly on BOTH branches instead of inferring it from the database's existence.
+    #
+    # The requirement is PARENT writability, not `os.access(db_path, os.W_OK)`. Since
+    # phaze-p3hj.2 an ingest never opens the live database for writing: it copies to a
+    # same-directory staging file and `os.replace`s it over the live path, and rename(2)
+    # needs write+execute on the DIRECTORY, not on the target file. Asserting file
+    # writability here would report a perfectly functional database unhealthy.
     parent = db_path.parent
     if not parent.is_dir():
         return False, f"database directory missing: {parent}"
-    if not os.access(parent, os.W_OK):
-        return False, f"database directory not writable: {parent}"
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return (
+            False,
+            f"database directory not writable: {parent} (ingest stages and renames within it, so this is fatal even when the database loads)",
+        )
     return True, detail
 
 
