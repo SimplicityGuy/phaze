@@ -272,6 +272,87 @@ async def test_stage_file_to_s3_holds_cleanly_with_no_fileserver_agent(
     assert task_router.queues == {}  # nothing enqueued
 
 
+async def test_stage_file_to_s3_rejects_file_size_exceeding_s3_max_object_size(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-wz1q: an absurd agent-supplied ``file_size`` (unvalidated wire input --
+    ``schemas/agent_files.py`` accepts up to ``int64`` and declines a storage-domain cap on purpose)
+    is rejected BEFORE a multipart upload is even initiated, instead of driving the unbounded
+    presigned-part loop the original defect let through. Spies on ``create_multipart_upload`` to prove
+    it is never called: the fail-loud check must run before ANY S3 work, not just before the presign
+    loop, else a fresh multipart is orphaned for every rejected file.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=s3_staging.S3_MAX_OBJECT_SIZE_BYTES + 1)
+    file_id = file.id
+
+    create_calls: list[uuid.UUID] = []
+
+    async def _spy_create(file_id_arg: uuid.UUID, *_a: object, **_kw: object) -> str:
+        create_calls.append(file_id_arg)
+        return "should-not-be-reached"
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+
+    task_router = FakeTaskRouter()
+    with pytest.raises(s3_staging.S3StagingError, match="exceeding S3's"):
+        await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert create_calls == []  # no multipart upload was ever initiated
+    assert await _cloud_job(session, file_id) is None  # nothing committed
+    assert task_router.queues == {}  # nothing enqueued
+
+
+async def test_stage_file_to_s3_caps_effective_part_size_for_huge_file_size(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-wz1q: a ``file_size`` that would blow past S3's 10,000-part multipart ceiling under the
+    CONFIGURED part size instead grows the EFFECTIVE part size so ``part_count`` never exceeds the
+    cap -- and the same adjusted size is what gets recorded in the ``s3_upload`` payload, never the
+    raw config floor (recording the raw value while presigning against the adjusted count would
+    silently corrupt the object: the agent would slice bytes at the wrong boundaries).
+
+    Stubs ``s3_staging.presign_upload_parts`` with a fast fake (real SigV4 signing for ~10k parts
+    would make this test slow and it is not what is under test here -- the arithmetic under test lives
+    entirely in ``cloud_staging._stage_file_to_s3``, not in the S3 SDK call).
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    # Naively (at the configured 5 MiB floor) this needs ceil(file_size / _PART_SIZE) ~= 15,000
+    # parts -- comfortably over S3's 10,000-part ceiling.
+    file_size = _PART_SIZE * (s3_staging.S3_MAX_PART_COUNT + 5000)
+    file = await _seed_file(session, fileserver_id, file_size=file_size)
+
+    expected_part_size = max(_PART_SIZE, math.ceil(file_size / s3_staging.S3_MAX_PART_COUNT))
+    expected_part_count = max(1, math.ceil(file_size / expected_part_size))
+    assert expected_part_size > _PART_SIZE  # sanity: the cap actually had to widen the floor
+    assert expected_part_count <= s3_staging.S3_MAX_PART_COUNT  # sanity: the widened size respects it
+
+    captured: dict[str, object] = {}
+
+    async def _fake_presign(file_id: uuid.UUID, upload_id: str, part_count: int, bucket_arg: object) -> list[str]:
+        captured["part_count"] = part_count
+        return [f"https://example.invalid/{file_id}/{upload_id}/{n}" for n in range(part_count)]
+
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _fake_presign)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert captured["part_count"] == expected_part_count
+
+    queue = task_router.queues[f"{fileserver_id}-io"]
+    _, payload = queue.captured[0]
+    assert payload["part_size_bytes"] == expected_part_size  # the ADJUSTED size, never the raw config floor
+    assert len(payload["part_urls"]) == expected_part_count
+
+
 async def test_stage_file_to_s3_aborts_orphaned_multipart_when_presign_fails(
     s3_env: str,
     session: AsyncSession,
