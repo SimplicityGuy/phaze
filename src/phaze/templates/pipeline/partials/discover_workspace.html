@@ -21,8 +21,18 @@
 {% set _btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button" @click="scanOpen = !scanOpen" :aria-expanded="scanOpen" aria-controls="discover-scan-form" class="{{ _btn }}">SCAN</button>
-    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't force recovery while agents churn). #}
-    <span id="discover-recover-response" class="inline-flex items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
+    {# R-4 bulk-enqueue guard: hx-confirm + :disabled busy-gate (don't force recovery while agents churn).
+
+       phaze-thd6: this wrapper carries NO id and is NOT the swap target. It used to BE
+       `#discover-recover-response`, so the success swap (innerHTML into the wrapper) destroyed the
+       RECOVER button, its `#discover-recover-spinner` indicator and the x-show error hint — every
+       one of them a descendant of the element the response replaced. POST /pipeline/recover returns
+       200 unconditionally (it fire-and-forgets the background task), so that was the NORMAL path,
+       not an edge case, and the control only survived when the request FAILED (htmx 2 does not swap
+       non-2xx). The response now lands in a sibling sink in the body, matching the
+       `#<stage>-trigger-response` pattern every other workspace uses (metadata, fingerprint,
+       propose, rename, tagwrite, dedupe). #}
+    <span class="inline-flex items-center gap-2" x-data="{ error: false }" @htmx:after-request="error = !$event.detail.successful">
         <button type="button"
                 hx-post="/pipeline/recover" hx-target="#discover-recover-response" hx-swap="innerHTML"
                 hx-confirm="Re-enqueue orphaned work across all pipeline stages?"
@@ -36,6 +46,10 @@
     </span>
 {% endset %}
 {% call ws.workspace(title="DISCOVER", subcount=subcount, actions=actions, x_data="{ scanOpen: false }") %}
+    {# RECOVER's response sink (phaze-thd6). Deliberately a SIBLING of the button, never an ancestor
+       of it — recover_response.html is swapped in here with innerHTML, so anything inside this div
+       is disposable and the control in the header survives every recovery. #}
+    <div id="discover-recover-response" class="px-6 pt-4 text-sm empty:hidden" aria-live="polite"></div>
     {# Reused Trigger Scan form (POST /pipeline/scans), revealed by SCAN. Hidden by default. #}
     <div id="discover-scan-form" x-show="scanOpen" x-cloak class="border-b border-gray-200 p-6 dark:border-phaze-border">
         {% include "pipeline/partials/trigger_scan_card.html" %}
