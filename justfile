@@ -1,6 +1,13 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
+# Host bind IP for every ephemeral/test-harness Postgres + Redis container this justfile
+# publishes (test-db, integration-test's pinned-port branches, perf-db-up). Defaults to
+# loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
+# (dual-stack, so also `::`), publishing the shared test Postgres (superuser phaze/phaze)
+# and a passwordless test Redis to every host on the LAN. Mirrors the loopback pattern the
+# `integration-test` dynamic-port branches already use (`-p 127.0.0.1::5432`).
+test_db_bind_ip := env_var_or_default("PHAZE_TEST_DB_BIND_IP", "127.0.0.1")
 # Host port for the SHARED test-harness Postgres (5433 avoids the dev DB on 5432). This
 # container is deliberately reused across every concurrent worktree/session (via `test-db`,
 # `test-db-for`, and `check`) -- see phaze-20vd/phaze-pik6 for the concurrency invariants that
@@ -42,6 +49,24 @@ perf_db_sa_dsn := "postgresql+asyncpg://phaze:phaze@localhost:" + perf_db_port +
 # Standalone Tailwind CSS binary version. Keep in sync with the Dockerfile
 # css-build stage. NO Node — the standalone binary compiles assets/src/app.css.
 tailwind_version := "v4.3.2"
+# Per-platform sha256 digests for the {{ tailwind_version }} standalone binary, taken from
+# upstream's own `sha256sums.txt` release asset. The `tailwind` recipe verifies the download
+# against these BEFORE chmod +x/promoting it (phaze-hvzd) -- without this, a compromised
+# release asset would be downloaded once, cached at ./bin/tailwindcss, and reused indefinitely
+# on an operator machine with no re-check. Keep in sync with the Dockerfile css-builder ARGs.
+tailwind_sha256_linux_x64 := "5036c4fb4328e0bcdbb6065c70d8ac9452e0d4c947113a788a8f94fd390425c1"
+tailwind_sha256_linux_arm64 := "394ddccc2402cfa3abd97dfba56f3587781a3d6e6ce66e65ceada14beb7664b8"
+tailwind_sha256_macos_x64 := "cef8f110471e889c3c4409055cf8aff33076f58a081867b0dfc6534b290bfbb0"
+tailwind_sha256_macos_arm64 := "b800b0659dc64b9f03ede5660244d9415d777d5739ae2889280877ca37be742a"
+# Port the api service is published on (docker-compose.yml: "${API_PORT:-8000}:8000"). Keep
+# this in sync with any API_PORT override passed to `just up`/`up-dev`.
+api_port := env_var_or_default("API_PORT", "8000")
+# The production entrypoint (src/phaze/entrypoint.py) unconditionally serves HTTPS with a
+# self-signed internal CA (phaze-a9rr) -- there is no plain-HTTP branch, so operator recipes
+# that curl the API must use https:// and trust this CA, same as docs/quick-start.md and
+# README.md already do.
+api_ca_cert := env_var_or_default("PHAZE_API_CA_CERT", "certs/phaze-ca.crt")
+api_base := "https://localhost:" + api_port
 
 [doc('Install all dependencies')]
 [group('dev')]
@@ -151,9 +176,25 @@ tailwind:
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
+        case "${OS}-${ARCH}" in \
+            "linux-x64") TW_SHA256="{{ tailwind_sha256_linux_x64 }}" ;; \
+            "linux-arm64") TW_SHA256="{{ tailwind_sha256_linux_arm64 }}" ;; \
+            "macos-x64") TW_SHA256="{{ tailwind_sha256_macos_x64 }}" ;; \
+            "macos-arm64") TW_SHA256="{{ tailwind_sha256_macos_arm64 }}" ;; \
+            *) echo "❌ no pinned sha256 for ${OS}-${ARCH}; refusing to download unverified" >&2; exit 1 ;; \
+        esac; \
         rm -f ./bin/tailwindcss.tmp; \
-        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
             "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
+        && { \
+            if command -v sha256sum >/dev/null 2>&1; then \
+                echo "${TW_SHA256}  ./bin/tailwindcss.tmp" | sha256sum -c -; \
+            elif command -v shasum >/dev/null 2>&1; then \
+                echo "${TW_SHA256}  ./bin/tailwindcss.tmp" | shasum -a 256 -c -; \
+            else \
+                echo "❌ neither sha256sum nor shasum available to verify download" >&2; exit 1; \
+            fi; \
+        } \
         && chmod +x ./bin/tailwindcss.tmp \
         && ./bin/tailwindcss.tmp --help >/dev/null \
         && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
@@ -261,7 +302,7 @@ test-db:
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
                 -e POSTGRES_DB=phaze_test \
-                -p "${port}:5432" \
+                -p "{{test_db_bind_ip}}:${port}:5432" \
                 postgres:18-alpine
         fi
     fi
@@ -287,14 +328,14 @@ test-db:
             echo "    'just test-db-for <name>' in each active worktree afterwards."
             docker rm -f "$redis_container" >/dev/null 2>&1 || true
             run_or_yield "$redis_container" "recreated" \
-                -p "${redis_port}:6379" \
+                -p "{{test_db_bind_ip}}:${redis_port}:6379" \
                 redis:7-alpine redis-server --databases "$redis_databases"
         fi
     else
         # Neither running nor startable (no container of this name existed) -- create fresh,
         # tolerating a racing sibling's concurrent create as described above.
         run_or_yield "$redis_container" "created" \
-            -p "${redis_port}:6379" \
+            -p "{{test_db_bind_ip}}:${redis_port}:6379" \
             redis:7-alpine redis-server --databases "$redis_databases"
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
@@ -450,7 +491,7 @@ integration-test:
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
-            -p "${port}:5432" \
+            -p "{{test_db_bind_ip}}:${port}:5432" \
             postgres:18-alpine >/dev/null
     fi
     if [ "$fixed_redis_port" = "0" ]; then
@@ -463,7 +504,7 @@ integration-test:
         redis_port="$fixed_redis_port"
         echo "🟥 Starting ${redis_container} (redis:7-alpine) on host port ${redis_port} (pinned via PHAZE_INTEGRATION_TEST_REDIS_PORT)..."
         docker run -d --name "$redis_container" \
-            -p "${redis_port}:6379" \
+            -p "{{test_db_bind_ip}}:${redis_port}:6379" \
             redis:7-alpine >/dev/null
     fi
     echo "⏳ Waiting for Postgres to accept connections..."
@@ -801,7 +842,7 @@ perf-db-up:
         echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            -p "${port}:5432" postgres:18-alpine >/dev/null
+            -p "{{test_db_bind_ip}}:${port}:5432" postgres:18-alpine >/dev/null
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
@@ -836,12 +877,12 @@ download-models:
 [doc('Trigger fingerprint processing for all eligible files')]
 [group('fingerprint')]
 fingerprint:
-    curl -s -X POST http://localhost:8000/api/v1/fingerprint | python -m json.tool
+    curl -fsS --cacert {{api_ca_cert}} -X POST {{api_base}}/api/v1/fingerprint | uv run python -m json.tool
 
 [doc('Check fingerprint progress')]
 [group('fingerprint')]
 fingerprint-progress:
-    curl -s http://localhost:8000/api/v1/fingerprint/progress | python -m json.tool
+    curl -fsS --cacert {{api_ca_cert}} {{api_base}}/api/v1/fingerprint/progress | uv run python -m json.tool
 
 [doc('Check audfprint container health (execs into the audfprint sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
 [group('fingerprint')]
