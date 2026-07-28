@@ -42,6 +42,15 @@ perf_db_sa_dsn := "postgresql+asyncpg://phaze:phaze@localhost:" + perf_db_port +
 # Standalone Tailwind CSS binary version. Keep in sync with the Dockerfile
 # css-build stage. NO Node — the standalone binary compiles assets/src/app.css.
 tailwind_version := "v4.3.2"
+# Per-platform sha256 digests for the {{ tailwind_version }} standalone binary, taken from
+# upstream's own `sha256sums.txt` release asset. The `tailwind` recipe verifies the download
+# against these BEFORE chmod +x/promoting it (phaze-hvzd) -- without this, a compromised
+# release asset would be downloaded once, cached at ./bin/tailwindcss, and reused indefinitely
+# on an operator machine with no re-check. Keep in sync with the Dockerfile css-builder ARGs.
+tailwind_sha256_linux_x64 := "5036c4fb4328e0bcdbb6065c70d8ac9452e0d4c947113a788a8f94fd390425c1"
+tailwind_sha256_linux_arm64 := "394ddccc2402cfa3abd97dfba56f3587781a3d6e6ce66e65ceada14beb7664b8"
+tailwind_sha256_macos_x64 := "cef8f110471e889c3c4409055cf8aff33076f58a081867b0dfc6534b290bfbb0"
+tailwind_sha256_macos_arm64 := "b800b0659dc64b9f03ede5660244d9415d777d5739ae2889280877ca37be742a"
 
 [doc('Install all dependencies')]
 [group('dev')]
@@ -151,9 +160,25 @@ tailwind:
         echo "⬇️  Downloading standalone Tailwind binary ({{ tailwind_version }})..."; \
         OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/'); \
         ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/'); \
+        case "${OS}-${ARCH}" in \
+            "linux-x64") TW_SHA256="{{ tailwind_sha256_linux_x64 }}" ;; \
+            "linux-arm64") TW_SHA256="{{ tailwind_sha256_linux_arm64 }}" ;; \
+            "macos-x64") TW_SHA256="{{ tailwind_sha256_macos_x64 }}" ;; \
+            "macos-arm64") TW_SHA256="{{ tailwind_sha256_macos_arm64 }}" ;; \
+            *) echo "❌ no pinned sha256 for ${OS}-${ARCH}; refusing to download unverified" >&2; exit 1 ;; \
+        esac; \
         rm -f ./bin/tailwindcss.tmp; \
-        curl -fsSL --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 -o ./bin/tailwindcss.tmp \
             "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ tailwind_version }}/tailwindcss-${OS}-${ARCH}" \
+        && { \
+            if command -v sha256sum >/dev/null 2>&1; then \
+                echo "${TW_SHA256}  ./bin/tailwindcss.tmp" | sha256sum -c -; \
+            elif command -v shasum >/dev/null 2>&1; then \
+                echo "${TW_SHA256}  ./bin/tailwindcss.tmp" | shasum -a 256 -c -; \
+            else \
+                echo "❌ neither sha256sum nor shasum available to verify download" >&2; exit 1; \
+            fi; \
+        } \
         && chmod +x ./bin/tailwindcss.tmp \
         && ./bin/tailwindcss.tmp --help >/dev/null \
         && mv ./bin/tailwindcss.tmp ./bin/tailwindcss \
