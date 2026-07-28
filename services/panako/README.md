@@ -72,10 +72,12 @@ Confidence scores are 0-100, derived from Panako's match percentage. The output 
 
 ## Configuration
 
-| Constant             | Default           | Description                        |
-|----------------------|-------------------|------------------------------------|
-| `PANAKO_JAR`         | `/app/panako.jar` | Path to Panako shadow JAR          |
-| `SUBPROCESS_TIMEOUT` | `3600`            | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| Constant              | Default            | Description                        |
+|------------------------|--------------------|------------------------------------|
+| `PANAKO_JAR`           | `/app/panako.jar`  | Path to Panako shadow JAR          |
+| `SUBPROCESS_TIMEOUT`   | `3600`             | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `PANAKO_MEDIA_ROOTS`   | *(unset -- fails closed)* | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-64w1 #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount -- `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
+| `PANAKO_STAGING_DIR`   | `<tempdir>/panako-stage` | Where the safe, generated-name symlink operand handed to the CLI is staged (phaze-64w1 #sec) -- never the caller-supplied path itself. |
 
 ## Volumes
 
