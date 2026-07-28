@@ -636,3 +636,166 @@ class TestQueryErrorClassification:
         orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
         with pytest.raises(FingerprintQueryUnavailableError):
             await orchestrator.combined_query("/data/music/test.mp3")
+
+
+class TestSystematicSingleEngineOutageIsDetected:
+    """phaze-p3hj.3: a dead engine must fail LOUDLY, not silently degrade matching.
+
+    phaze-p3hj.1 diagnosed the shape this class pins: audfprint's ``/query`` and ``/ingest``
+    500'd on EVERY call for ~10 days (a zero-byte ``fprint.pklz``) while panako kept
+    succeeding. ``combined_query`` weights both engines, so the outage never surfaced as an
+    error -- it surfaced only as worse match quality, and the ONLY trace was the per-row
+    ``fingerprint_results.error_message`` column an operator had to go looking for
+    (phaze-p3hj.1 SS4). ``_post_query``/``_post_ingest``/``combined_query`` already emit a
+    log at WARNING/ERROR on every single engine-level failure -- not merely the first one, and
+    not merely when the whole request ultimately fails. These tests use the REAL
+    ``AudfprintAdapter``/``PanakoAdapter`` HTTP classification path (not mocked-away engines)
+    so a regression that widens an except clause, downgrades the log level, or stops logging
+    once the sibling engine "covers" the failure would turn a test here RED.
+
+    This is deliberately about DETECTION, not about changing the graceful-degradation
+    behavior itself: a single dead engine correctly must NOT stall the pipeline (D-18), so the
+    combined result keeps succeeding throughout. What must NOT happen is that success silently
+    absorbing the failure erases every trace of it.
+    """
+
+    def _systematically_dead_adapter(
+        self, adapter_cls: type[AudfprintAdapter] | type[PanakoAdapter], calls: list[str]
+    ) -> AudfprintAdapter | PanakoAdapter:
+        """A real adapter whose sidecar 500s on EVERY request -- the exact zero-byte-pklz shape."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return httpx.Response(500, text="EOFError: Ran out of input")
+
+        adapter = adapter_cls(base_url="http://dead:9999")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://dead:9999")
+        return adapter
+
+    def _healthy_adapter(
+        self, adapter_cls: type[AudfprintAdapter] | type[PanakoAdapter], track_id: str, confidence: float
+    ) -> AudfprintAdapter | PanakoAdapter:
+        """A real adapter whose sidecar answers every request normally."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/query":
+                return httpx.Response(200, json={"matches": [{"track_id": track_id, "confidence": confidence}]})
+            return httpx.Response(200, json={"status": "ok"})
+
+        adapter = adapter_cls(base_url="http://healthy:9999")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://healthy:9999")
+        return adapter
+
+    async def test_systematic_query_failure_is_logged_on_every_call(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A dead engine must NOT be silently absorbed into a degraded-but-successful result.
+
+        Regression shape: audfprint 500s on every one of N files while panako answers every
+        one. The combined result keeps succeeding (graceful degradation, unchanged), but that
+        success must not erase the failure -- an ERROR-level log naming the dead engine fires
+        on EVERY call, not just the first, so an operator tailing logs (or an alert rule
+        counting ERROR-level fingerprint log lines) sees a sustained pattern rather than a
+        single blip indistinguishable from a transient hiccup.
+        """
+        dead_calls: list[str] = []
+        audfprint = self._systematically_dead_adapter(AudfprintAdapter, dead_calls)
+        panako = self._healthy_adapter(PanakoAdapter, track_id="track-1", confidence=95.0)
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+
+        n_files = 5
+        for i in range(n_files):
+            matches = await orchestrator.combined_query(f"/data/music/track-{i}.mp3")
+            # D-18 unchanged: the dead sibling never stalls the lane -- panako alone answers.
+            assert len(matches) == 1
+            # The dead engine must never be silently credited into full two-engine agreement:
+            # a single-engine match stays capped at 70.0 (D-12), never inflated as if BOTH
+            # engines had agreed.
+            assert matches[0].confidence == 70.0
+            assert matches[0].engines == {"panako": 95.0}
+
+        await audfprint.close()
+        await panako.close()
+
+        assert len(dead_calls) == n_files  # sanity: audfprint really was queried every time
+        error_records = [r for r in caplog.records if r.levelname == "ERROR" and "audfprint" in r.getMessage()]
+        # DETECTION, not merely correct output: if a future change stopped logging once the
+        # sibling engine started "covering" the failure (e.g. de-duplicating repeat errors),
+        # this count would drop below n_files while every assertion above still passed.
+        assert len(error_records) == n_files
+
+    async def test_systematic_ingest_failure_is_logged_on_every_call(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The ingest-path twin: a systematically 500ing engine logs every single attempt.
+
+        Mirrors the query-path test above for ``ingest_all`` / ``_post_ingest``, the path
+        phaze-p3hj.1 actually traced the outage through (the ingest response body is what
+        carried the ``EOFError`` traceback into ``fingerprint_results.error_message``).
+        """
+        dead_calls: list[str] = []
+        audfprint = self._systematically_dead_adapter(AudfprintAdapter, dead_calls)
+        panako = self._healthy_adapter(PanakoAdapter, track_id="track-1", confidence=95.0)
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+
+        n_files = 5
+        for i in range(n_files):
+            results = await orchestrator.ingest_all(f"/data/music/track-{i}.mp3")
+            assert results["audfprint"].status == "failed"
+            assert results["audfprint"].engine_error is True
+            assert results["panako"].status == "success"
+
+        await audfprint.close()
+        await panako.close()
+
+        assert len(dead_calls) == n_files
+        warning_records = [r for r in caplog.records if r.levelname == "WARNING" and "audfprint" in r.getMessage()]
+        assert len(warning_records) == n_files
+
+    async def test_genuine_no_match_never_logs_at_error_level(self, caplog: pytest.LogCaptureFixture) -> None:
+        """phaze-z7yw contrast case: a HEALTHY engine's genuine no-match logs NOTHING.
+
+        Pins the outage-vs-no-match distinction as an observable signal, not just a return
+        value: a 200 with an empty match list is silent (nothing to alert on), so a future
+        regression that started logging every no-match at ERROR would make outage alerts
+        meaningless noise, and a regression that stopped logging every real 500 would make the
+        two tests in this class collapse into the same (silent) behavior. Contrast this
+        against ``test_systematic_query_failure_is_logged_on_every_call`` above, which is
+        identical except for the sidecar's response code.
+        """
+
+        def empty_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"matches": []})
+
+        audfprint = AudfprintAdapter(base_url="http://healthy:9999")
+        audfprint._client = httpx.AsyncClient(transport=httpx.MockTransport(empty_handler), base_url="http://healthy:9999")
+        panako = self._healthy_adapter(PanakoAdapter, track_id="track-1", confidence=95.0)
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+
+        matches = await orchestrator.combined_query("/data/music/track.mp3")
+
+        await audfprint.close()
+        await panako.close()
+
+        # Both engines answered; this is a genuine two-engine agreement, not a degraded result.
+        assert len(matches) == 1
+        assert matches[0].engines == {"panako": 95.0}
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    async def test_health_all_distinguishes_the_systematically_dead_engine(self) -> None:
+        """The health signal bullet: ``health_all`` correctly reports the dead engine unhealthy.
+
+        phaze-p3hj.1 SS3 found the audfprint health signal was not merely wrong but ABSENT --
+        no production caller, no Docker healthcheck. phaze-p3hj.2 fixed the sidecar's own
+        ``/health`` to key off loadability rather than existence; this pins the ORCHESTRATOR
+        side of that signal against a systematically-dead engine (real adapter, real HTTP
+        classification), so a future change that made ``AudfprintAdapter.health()`` swallow a
+        5xx into ``True`` -- exactly the shape that made the outage invisible -- fails here.
+        """
+        dead_calls: list[str] = []
+        audfprint = self._systematically_dead_adapter(AudfprintAdapter, dead_calls)
+        panako = self._healthy_adapter(PanakoAdapter, track_id="track-1", confidence=95.0)
+        orchestrator = FingerprintOrchestrator(engines=[audfprint, panako])
+
+        for _ in range(3):
+            result = await orchestrator.health_all()
+            assert result == {"audfprint": False, "panako": True}
+
+        await audfprint.close()
+        await panako.close()

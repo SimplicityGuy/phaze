@@ -1,11 +1,14 @@
 """FastAPI wrapper for audfprint audio fingerprinting engine."""
 
 import asyncio
+import gzip
 import logging
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -30,6 +33,15 @@ FPRINT_DB = "/data/fprint/fprint.pklz"
 # unfingerprintable. The README always documented SUBPROCESS_TIMEOUT as an env var, but
 # it was never actually wired; now it is.
 SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
+# Chunk size for the streaming loadability probe below. The probe never materializes the
+# database in memory -- it decompresses and discards, so cost is CPU, not RSS.
+_PROBE_CHUNK_BYTES = 1 << 20
+
+# The four states the on-disk database can be in. They are distinguishable by exception at
+# read time (phaze-p3hj.1 §6): absent -> FileNotFoundError, zero-byte -> `EOFError: Ran out
+# of input`, torn -> `EOFError: Compressed file ended before the end-of-stream marker was
+# reached` / gzip.BadGzipFile, loadable -> clean read to EOF.
+DatabaseState = Literal["ok", "absent", "empty", "unreadable"]
 
 
 class IngestRequest(BaseModel):
@@ -67,30 +79,106 @@ class HealthResponse(BaseModel):
     detail: str = ""
 
 
-def _database_bootstrap_status() -> tuple[bool, str]:
-    """Report whether the fingerprint DB is present or creatable, without mutating anything.
+def _staging_path(db_path: Path) -> Path:
+    """The same-directory scratch path an ingest writes before it is promoted.
 
-    Deliberately filesystem-only (no audfprint subprocess invocation): running audfprint's
-    ``new`` here with no input file would reintroduce the exact ZeroDivisionError bootstrap
-    bug this function exists to detect (phaze-6kw0). A missing DB is healthy as long as its
-    directory exists and is writable -- the first real ``POST /ingest`` bootstraps it via
-    ``_run_ingest``.
+    Same directory => same filesystem => ``os.replace`` is an atomic rename rather than a
+    copy. A FIXED name (not ``mkstemp``) so a hard kill cannot leak an unbounded pile of
+    half-written ~100s-of-MB databases onto the volume: the next ingest reuses and truncates
+    this one path. Safe because every write is already serialized by ``_db_lock`` and the
+    sidecar runs a single uvicorn worker (see the lock's own rationale above).
+    """
+    return db_path.with_name(f".{db_path.name}.tmp")
+
+
+def _probe_database(db_path: Path) -> tuple[DatabaseState, str]:
+    """Classify the on-disk database by actually READING it -- never by ``exists()``.
+
+    This is the phaze-p3hj.2 fix for the total outage diagnosed in phaze-p3hj.1: a zero-byte
+    ``fprint.pklz`` satisfies ``Path.exists()``, so an existence-keyed predicate reports a
+    healthy database, always picks ``add`` over ``new``, and every ``add``/``match`` then dies
+    in upstream's ``pickle.load`` with ``EOFError: Ran out of input``. 11,180 files were burned
+    that way. Existence is not loadability, and only loadability is worth reporting.
+
+    The probe streams the whole gzip member and discards it, which validates the header, the
+    deflate stream, and the trailing CRC32/ISIZE -- so it rejects a torn database as well as an
+    empty one (the diagnosis' §5 correction: what was actually on disk was ZERO bytes, a
+    narrower window than "truncated", and a probe that only rejects malformed pickles would
+    have passed it). It deliberately does NOT unpickle: unpickling requires upstream's
+    ``hash_table`` module in THIS process and executes the payload, and gzip integrity already
+    separates every state the writer can produce.
+
+    Read-only and side-effect-free, so it is safe on the ``/health`` and ``/query`` paths.
+    """
+    try:
+        size = db_path.stat().st_size
+    except FileNotFoundError:
+        return "absent", "database absent, will bootstrap on first ingest"
+    if size == 0:
+        return "empty", f"database at {db_path} is zero bytes: an interrupted write left no data to load"
+    try:
+        with gzip.open(db_path, "rb") as handle:
+            while handle.read(_PROBE_CHUNK_BYTES):
+                pass
+    except (OSError, EOFError) as exc:
+        # gzip.BadGzipFile and zlib.error surface as OSError; a truncated member raises
+        # EOFError. Classified as unusable and reported as such -- NOT swallowed.
+        return "unreadable", f"database at {db_path} is unreadable ({size} bytes): {type(exc).__name__}: {exc}"
+    return "ok", f"database present and loadable ({size} bytes)"
+
+
+def _promote_database(staging: Path, db_path: Path) -> None:
+    """Publish a freshly written database over the live path atomically.
+
+    ``os.replace`` is a rename: readers see either the whole old database or the whole new
+    one, never a zero-length or half-written file. That closes the window upstream's
+    ``HashTable.save`` opens -- a plain ``gzip.open(name, "wb")`` on the LIVE path, which
+    truncates it to zero bytes before a single byte of output is flushed (phaze-6xqg, folded
+    into this bead). A kill anywhere in that window used to leave the database permanently
+    unloadable; now it can only destroy the scratch copy.
+
+    Both fsyncs matter: the file's, so the rename cannot be made durable ahead of the data it
+    points at; the directory's, so the rename itself survives a power loss.
+    """
+    fd = os.open(staging, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    staging.replace(db_path)  # Path.replace IS os.replace: one atomic rename(2), same volume.
+    dir_fd = os.open(db_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _database_bootstrap_status() -> tuple[bool, str]:
+    """Report whether the fingerprint DB is loadable or creatable, without mutating anything.
+
+    Deliberately no audfprint subprocess invocation: running audfprint's ``new`` here with no
+    input file would reintroduce the exact ZeroDivisionError bootstrap bug this function exists
+    to detect (phaze-6kw0). A missing DB is healthy as long as its directory exists and is
+    writable -- the first real ``POST /ingest`` bootstraps it via ``_run_ingest``. A DB that is
+    present but NOT loadable is unhealthy: that is the outage state, and reporting it healthy
+    is what made the outage permanent and invisible (phaze-p3hj.1 §3).
     """
     db_path = Path(FPRINT_DB)
-    if db_path.exists():
-        return True, "database present"
+    state, detail = _probe_database(db_path)
+    if state != "absent":
+        return state == "ok", detail
     parent = db_path.parent
     if not parent.is_dir():
         return False, f"database directory missing: {parent}"
     if not os.access(parent, os.W_OK):
         return False, f"database directory not writable: {parent}"
-    return True, "database absent, will bootstrap on first ingest"
+    return True, detail
 
 
 def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
-    """Run audfprint synchronously (called via to_thread).
+    """Run audfprint synchronously (called via to_thread), writing the database atomically.
 
-    When the database doesn't exist yet, bootstrap it together with THIS (real) file via
+    When the database isn't LOADABLE yet, bootstrap it together with THIS (real) file via
     ``new`` -- audfprint's ``new`` subcommand creates the database AND ingests the given
     file in one step, so the ingested duration is nonzero and upstream's unconditional
     summary division (``tothashes / soundfiletotaldur``) never divides by zero. Once the
@@ -98,14 +186,52 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
     empty-file ``new`` bootstrap (formerly ``_ensure_database``), which could never
     succeed -- upstream ``audfprint`` unconditionally divides by total ingested duration
     when printing its summary, and an empty ingest run means dividing by zero (phaze-6kw0).
+
+    phaze-p3hj.2 changes two things about that, both from the phaze-p3hj.1 diagnosis:
+
+    1. **The bootstrap predicate is loadability, not existence.** A present-but-unloadable
+       database used to pin the choice at ``add`` forever, making ``new`` -- the only path
+       that could rebuild -- unreachable, so the outage could never self-heal. An unusable
+       database is now rebuilt, loudly (ERROR, with the byte size and the exact read error).
+    2. **audfprint never writes the live path.** It writes the same-directory staging copy
+       and we ``os.replace`` that over the live database only after re-probing it. Upstream's
+       in-place ``gzip.open(..., "wb")`` therefore truncates the SCRATCH file, not the one
+       every subsequent ``add``/``match`` has to load. The engine exiting 0 while leaving an
+       unloadable artifact is a failed ingest (nonzero return, 500) -- it is not promoted, and
+       the previous database survives untouched.
     """
-    command = "add" if Path(FPRINT_DB).exists() else "new"
-    return subprocess.run(
-        ["python", AUDFPRINT_SCRIPT, command, "--dbase", FPRINT_DB, file_path],
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT,
-    )
+    db_path = Path(FPRINT_DB)
+    staging = _staging_path(db_path)
+    state, detail = _probe_database(db_path)
+    command = "add" if state == "ok" else "new"
+    if state in ("empty", "unreadable"):
+        logger.error("audfprint database is unusable and will be rebuilt from this file (previous fingerprints are lost): %s", detail)
+
+    # A leftover staging file means a previous run was killed outright; it is scratch by
+    # construction, so drop it rather than appending to a half-written database.
+    staging.unlink(missing_ok=True)
+    try:
+        if command == "add":
+            shutil.copyfile(db_path, staging)
+        result = subprocess.run(
+            ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging), file_path],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return result
+        written_state, written_detail = _probe_database(staging)
+        if written_state != "ok":
+            logger.error("audfprint exited 0 but wrote an unusable database; refusing to promote it: %s", written_detail)
+            failure = f"audfprint reported success but produced an unusable database, so the previous one was kept: {written_detail}"
+            return subprocess.CompletedProcess(args=result.args, returncode=1, stdout=result.stdout, stderr=f"{result.stderr}\n{failure}")
+        _promote_database(staging, db_path)
+        return result
+    finally:
+        # Covers the nonzero-exit, unusable-artifact and TimeoutExpired paths alike: a run
+        # that did not earn promotion leaves no scratch behind and no mark on the live DB.
+        staging.unlink(missing_ok=True)
 
 
 def _run_query(file_path: str) -> subprocess.CompletedProcess[str]:
@@ -205,8 +331,17 @@ async def health() -> HealthResponse:
 
     Reflects real database availability instead of a hardcoded "healthy" -- a missing-but-
     creatable DB (fresh volume, nothing ingested yet) is healthy; a DB whose directory is
-    missing or unwritable is not. Callers (``AudfprintAdapter.health()``) only look at the
-    HTTP status code, so an unhealthy DB is surfaced as a non-2xx response.
+    missing or unwritable is not, and neither is one that is present but cannot be loaded.
+    Callers (``AudfprintAdapter.health()``) only look at the HTTP status code, so an unhealthy
+    DB is surfaced as a non-2xx response.
+
+    phaze-p3hj.1 §3 found that a correct verdict here was not enough on its own: nothing read
+    this endpoint at all. There was no Docker healthcheck on the sidecar
+    (``State.Health=none``) and no production call site for ``AudfprintAdapter.health()``, so
+    the signal was absent rather than merely wrong. ``Dockerfile.audfprint`` now declares a
+    ``HEALTHCHECK`` against this endpoint, which is what makes the verdict observable
+    (``docker ps`` reports the sidecar unhealthy) without waiting on the deeper application-
+    side wiring tracked separately.
     """
     available, detail = _database_bootstrap_status()
     if not available:
@@ -235,9 +370,23 @@ async def ingest(request: IngestRequest) -> IngestResponse:
 
 @app.post("/query", response_model=QueryResponse)
 async def query(request: IngestRequest) -> QueryResponse:
-    """Query the audfprint database for matches."""
-    if not Path(FPRINT_DB).exists():
+    """Query the audfprint database for matches.
+
+    The absent/unusable split is the phaze-z7yw distinction applied to the database itself: a
+    database that does not exist yet holds nothing to match against, so an empty result is a
+    genuine no-match; a database that exists but cannot be loaded is an OUTAGE, and answering
+    "no matches" to it would launder the outage into a terminal per-file verdict. The 5xx is
+    what ``_post_query`` turns into ``EngineQueryError``. Probed OUTSIDE the lock (the probe
+    only reads) so the absent fast path still cannot deadlock behind an in-flight ingest.
+    """
+    state, detail = _probe_database(Path(FPRINT_DB))
+    if state == "absent":
         return QueryResponse(matches=[])
+    if state != "ok":
+        # Without this the match subprocess dies on the same unloadable file and the reason is
+        # dropped on the floor -- _post_query never reads the body (phaze-cf0z). Log it here.
+        logger.error("audfprint query cannot run: %s", detail)
+        raise HTTPException(status_code=503, detail=detail)
     async with _db_lock:
         try:
             result = await asyncio.to_thread(_run_query, request.file_path)
