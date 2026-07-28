@@ -28,11 +28,22 @@ The Dockerfile clones the audfprint repository, installs FFmpeg for audio decodi
 
 ### GET /health
 
-Returns service status and engine name.
+Returns service status and engine name. The verdict is based on whether the fingerprint
+database can actually be **loaded**, not on whether the file exists — a zero-byte or torn
+`fprint.pklz` exists, and reporting it "present" is what kept a total engine outage invisible
+for 10 days (see the phaze-p3hj.1 diagnosis). A database that has not been created yet is
+healthy; one that cannot be read is a `503`.
 
 ```json
-{"status": "healthy", "engine": "audfprint"}
+{"status": "healthy", "engine": "audfprint", "detail": "database present and loadable (428604 bytes)"}
 ```
+
+```json
+503 {"detail": "database at /data/fprint/fprint.pklz is zero bytes: an interrupted write left no data to load"}
+```
+
+The image declares a `HEALTHCHECK` against this endpoint, so an unusable database shows up as
+an unhealthy container in `docker ps` rather than only in a log nobody reads.
 
 ### POST /ingest
 
@@ -50,7 +61,7 @@ Add an audio file to the fingerprint database. Write operations are serialized t
 
 ### POST /query
 
-Query the fingerprint database for tracks matching the given audio file. Returns an empty list if the database does not yet exist.
+Query the fingerprint database for tracks matching the given audio file. Returns an empty list if the database does not yet exist — nothing has been ingested, so "no matches" is the true answer. A database that exists but cannot be loaded is an **outage**, not a no-match, and returns `503` so the caller records no verdict for the file.
 
 **Request:**
 ```json
@@ -88,6 +99,12 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 - Runs as a separate Docker container on the internal network (not exposed to host)
 - Non-root user (`audfprint`) for security
 - The Phaze worker communicates with this service via HTTP at `http://audfprint:8001`
-- Database is auto-created on first ingest if it does not exist
+- Database is auto-created on first ingest if it does not exist, and rebuilt (loudly, at `ERROR`) if it exists but cannot be loaded
 - audfprint uses its native `.pklz` serialized format for fingerprint storage
+- **Ingest writes the database atomically.** Upstream's `HashTable.save` rewrites its `--dbase`
+  in place with a plain `gzip.open(name, "wb")` + `pickle.dump` — no temp file, no rename — so
+  the file is truncated to zero bytes before any output is flushed and any kill in that window
+  leaves a permanently unloadable database. The engine is therefore pointed at a same-directory
+  staging copy, which is re-probed and then `os.replace`d over the live path. Readers see the
+  whole old database or the whole new one; a killed ingest can only destroy the scratch copy
 - Subprocess timeout of 3600 seconds per operation (env-configurable via `SUBPROCESS_TIMEOUT`; multi-hour concert sets are the primary content)

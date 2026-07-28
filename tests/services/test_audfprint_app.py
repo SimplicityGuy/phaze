@@ -20,6 +20,7 @@ returned ``[]`` for every real query.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import os
 from pathlib import Path
 import subprocess
@@ -34,6 +35,35 @@ from tests.services.conftest import load_service_module
 
 if TYPE_CHECKING:
     from types import ModuleType
+
+
+# ---------------------------------------------------------------------------
+# Database fixtures for the loadability probe (phaze-p3hj.2)
+#
+# NOTE for anyone reading a diff against the old revision: tests here used to seed the
+# database with a bare `db_path.touch()`. That produces a ZERO-BYTE file -- precisely the
+# artifact that took audfprint down for 11,180 files (phaze-p3hj.1) -- and the old assertions
+# declared it healthy. Seeding with `write_loadable_db` instead is not cosmetic: a touched
+# file is now, correctly, an outage.
+# ---------------------------------------------------------------------------
+
+
+def write_loadable_db(path: Path, payload: bytes = b"landmark-hash-table") -> None:
+    """Write a database the loadability probe accepts: one complete gzip member.
+
+    The probe validates gzip framing (header, deflate stream, trailing CRC32/ISIZE) and
+    deliberately does not unpickle, so the payload's content is irrelevant -- only that the
+    member is whole.
+    """
+    with gzip.open(path, "wb") as handle:
+        handle.write(payload)
+
+
+def write_torn_db(path: Path) -> None:
+    """Write a database truncated mid-gzip-member -- a valid header over a cut-off stream."""
+    write_loadable_db(path, payload=b"landmark-hash-table" * 4096)
+    whole = path.read_bytes()
+    path.write_bytes(whole[: len(whole) // 2])
 
 
 # ---------------------------------------------------------------------------
@@ -172,14 +202,11 @@ class TestParseMatchesFailureAccounting:
 # ---------------------------------------------------------------------------
 
 
-def _patch_query(monkeypatch: pytest.MonkeyPatch, app_module: ModuleType, stdout: str, returncode: int = 0) -> None:
-    """Force FPRINT_DB to 'exist' and stub the subprocess call with fixed stdout."""
-
-    class _AlwaysExists:
-        def exists(self) -> bool:
-            return True
-
-    monkeypatch.setattr(app_module, "Path", lambda *_a, **_k: _AlwaysExists())
+def _patch_query(monkeypatch: pytest.MonkeyPatch, app_module: ModuleType, tmp_path: Path, stdout: str, returncode: int = 0) -> None:
+    """Point FPRINT_DB at a LOADABLE database and stub the subprocess call with fixed stdout."""
+    db_path = tmp_path / "fprint.pklz"
+    write_loadable_db(db_path)
+    monkeypatch.setattr(app_module, "FPRINT_DB", str(db_path))
 
     def _fake_run_query(_file_path: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="err")
@@ -197,32 +224,34 @@ async def _post_query(app_module: ModuleType) -> tuple[int, dict]:
 class TestQueryEndpointEscalation:
     """The /query endpoint surfaces parse failures instead of silently returning []."""
 
-    async def test_known_match_returns_non_empty(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_known_match_returns_non_empty(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         stdout = default_line("/data/query/song.wav", 8.4, 1234, "/data/ref/track01.mp3", 12.3, 456, 789, 0)
-        _patch_query(monkeypatch, audfprint_app, stdout)
+        _patch_query(monkeypatch, audfprint_app, tmp_path, stdout)
         status, body = await _post_query(audfprint_app)
         assert status == 200
         assert body["matches"]
         assert body["matches"][0]["track_id"] == "/data/ref/track01.mp3"
 
-    async def test_total_parse_failure_returns_502(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_total_parse_failure_returns_502(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # Candidate report lines present, but NONE parse -> must not silently 200 with [].
         stdout = "Matched utterly broken output with common hashes\n"
-        _patch_query(monkeypatch, audfprint_app, stdout)
+        _patch_query(monkeypatch, audfprint_app, tmp_path, stdout)
         status, body = await _post_query(audfprint_app)
         assert status == 502
         assert "unparseable" in body["detail"]
 
-    async def test_genuine_no_match_returns_200_empty(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_query(monkeypatch, audfprint_app, "NOMATCH /data/query/song.wav 8.4 sec 1234 raw hashes\n")
+    async def test_genuine_no_match_returns_200_empty(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _patch_query(monkeypatch, audfprint_app, tmp_path, "NOMATCH /data/query/song.wav 8.4 sec 1234 raw hashes\n")
         status, body = await _post_query(audfprint_app)
         assert status == 200
         assert body["matches"] == []
 
-    async def test_partial_parse_failure_returns_good_matches(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_partial_parse_failure_returns_good_matches(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         good = default_line("/data/query/song.wav", 8.4, 1234, "/data/ref/track01.mp3", 12.3, 456, 789, 0)
         stdout = good + "\nMatched broken tail with common hashes\n"
-        _patch_query(monkeypatch, audfprint_app, stdout)
+        _patch_query(monkeypatch, audfprint_app, tmp_path, stdout)
         status, body = await _post_query(audfprint_app)
         assert status == 200
         assert len(body["matches"]) == 1
@@ -243,7 +272,7 @@ class TestQuerySerializesAgainstIngest:
 
     async def test_query_blocks_while_db_lock_is_held(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
         monkeypatch.setattr(
             audfprint_app,
@@ -266,7 +295,7 @@ class TestQuerySerializesAgainstIngest:
     async def test_ingest_blocks_while_db_lock_is_held(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # The pre-existing writer-vs-writer guarantee must survive the lock's rename/rescope.
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
         monkeypatch.setattr(
             audfprint_app,
@@ -317,10 +346,12 @@ class TestQuerySerializesAgainstIngest:
 class _FakeAudfprintCli:
     """Stand-in for the real audfprint CLI's ``new``/``add`` side effects.
 
-    Records every invocation and -- like the real CLI -- creates/updates the dbase file
-    on both ``new`` and ``add``. This lets tests assert which command was chosen (the
-    actual bug/fix distinction) purely from the recorded call, without shelling out to a
-    real audfprint install.
+    Records every invocation and -- like the real CLI -- creates/updates the dbase file on both
+    ``new`` and ``add``. This lets tests assert which command was chosen (the actual bug/fix
+    distinction) purely from the recorded call, without shelling out to a real audfprint install.
+
+    It writes a LOADABLE database, because the real one does: an ingest that exits 0 having left
+    an unloadable artifact is a failed ingest under phaze-p3hj.2 and is never promoted.
     """
 
     def __init__(self) -> None:
@@ -328,9 +359,9 @@ class _FakeAudfprintCli:
 
     def run(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
-        command, dbase = args[2], args[4]
+        command, dbase, file_arg = args[2], args[4], args[5]
         if command in ("new", "add"):
-            Path(dbase).touch()
+            write_loadable_db(Path(dbase), payload=f"{command}:{file_arg}".encode())
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
 
@@ -353,8 +384,11 @@ class TestRunIngestBootstrap:
         assert len(cli.calls) == 1
         command, dbase, file_arg = cli.calls[0][2], cli.calls[0][4], cli.calls[0][5]
         assert command == "new"
-        assert dbase == str(db_path)
+        # The engine writes the staging copy, never the live path (phaze-p3hj.2).
+        assert dbase == str(audfprint_app._staging_path(db_path))
         assert file_arg == "/data/real/song.mp3"
+        # ...and the staging copy is promoted, then cleaned up.
+        assert not audfprint_app._staging_path(db_path).exists()
 
     def test_second_ingest_appends_via_add(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
@@ -458,13 +492,15 @@ class TestSubprocessTimeoutConfiguration:
 
     def test_run_commands_pass_configured_timeout(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
         monkeypatch.setattr(audfprint_app, "SUBPROCESS_TIMEOUT", 1234)
         seen: list[object] = []
 
         def _capture(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             seen.append(kwargs.get("timeout"))
+            if args[2] in ("new", "add"):
+                write_loadable_db(Path(args[4]))
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(audfprint_app.subprocess, "run", _capture)
@@ -497,7 +533,7 @@ class TestTimeoutExpiredHandling:
 
     async def test_query_timeout_returns_structured_504(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
         monkeypatch.setattr(audfprint_app, "_run_query", self._raise_timeout)
 
@@ -542,7 +578,7 @@ class TestDatabaseBootstrapStatus:
 
     def test_existing_db_is_available(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
 
         available, detail = audfprint_app._database_bootstrap_status()
@@ -595,7 +631,7 @@ class TestHealthEndpoint:
 
     async def test_existing_db_reports_healthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         db_path = tmp_path / "fprint.pklz"
-        db_path.touch()
+        write_loadable_db(db_path)
         monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
 
         status, body = await self._get_health(audfprint_app)
@@ -635,3 +671,333 @@ class TestHealthEndpoint:
             await self._get_health(audfprint_app)
 
         assert any("audfprint health check failed" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# The total audfprint outage: zero-byte fprint.pklz (phaze-p3hj.2, folding phaze-6xqg)
+#
+# The bug, established live in docs/spikes/phaze-p3hj.1-audfprint-total-outage-diagnosis.md:
+# /data/fprint/fprint.pklz on the deployed volume was ZERO BYTES. Upstream's HashTable.save
+# writes the live path in place -- `gzip.open(name, "wb")` truncates to 0 before a single byte
+# of output is flushed, with no temp file and no rename -- so any kill in that window leaves
+# exactly that artifact. Every later `add`/`match` loads it first and dies with
+# `EOFError: Ran out of input` before it ever opens the audio: 11,180 files failed with ONE
+# byte-identical error, and 0 bytes of fingerprint data were ever persisted.
+#
+# It was permanent because both the bootstrap decision (`command = "add" if
+# Path(FPRINT_DB).exists()`) and the health check (`if db_path.exists(): return True`) accepted
+# a zero-byte file as a working database. `new` -- the only path that could rebuild -- was
+# unreachable, and /health answered 200 "database present" over a dead engine.
+#
+# The fix has three parts, and each is pinned below: write atomically (so the window cannot
+# reopen), decide on LOADABILITY rather than existence (so an unusable DB is rebuilt, not
+# ridden forever), and report it (ERROR logs + a Docker HEALTHCHECK).
+# ---------------------------------------------------------------------------
+
+
+class TestProbeDatabaseClassifiesOnDiskStates:
+    """``_probe_database`` separates the four states by reading, not by ``exists()``."""
+
+    def test_absent_database_is_absent(self, audfprint_app: ModuleType, tmp_path: Path) -> None:
+        state, detail = audfprint_app._probe_database(tmp_path / "fprint.pklz")
+        assert state == "absent"
+        assert "bootstrap" in detail
+
+    def test_zero_byte_database_is_empty_not_present(self, audfprint_app: ModuleType, tmp_path: Path) -> None:
+        # THE production artifact: exists() is True, size is 0, every load dies.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        assert db_path.exists(), "precondition: the outage state satisfies exists()"
+
+        state, detail = audfprint_app._probe_database(db_path)
+
+        assert state == "empty"
+        assert "zero bytes" in detail
+
+    def test_torn_database_is_unreadable(self, audfprint_app: ModuleType, tmp_path: Path) -> None:
+        # The wider window phaze-6xqg predicted (truncated mid-stream) must be rejected too --
+        # a probe that only rejected malformed pickles would have passed the zero-byte file.
+        db_path = tmp_path / "fprint.pklz"
+        write_torn_db(db_path)
+
+        state, detail = audfprint_app._probe_database(db_path)
+
+        assert state == "unreadable"
+        assert "unreadable" in detail
+
+    def test_loadable_database_is_ok(self, audfprint_app: ModuleType, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+
+        state, detail = audfprint_app._probe_database(db_path)
+
+        assert state == "ok"
+        assert "loadable" in detail
+
+    def test_probe_does_not_mutate_the_database(self, audfprint_app: ModuleType, tmp_path: Path) -> None:
+        # Safe to call from /health and /query: it must never write, truncate or delete.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        before = db_path.read_bytes()
+
+        audfprint_app._probe_database(db_path)
+
+        assert db_path.read_bytes() == before
+
+
+class TestUnusableDatabaseIsRebuiltNotRiddenForever:
+    """A present-but-unloadable DB must take the ``new`` branch -- the outage must self-heal."""
+
+    def test_zero_byte_database_bootstraps_via_new(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        result = audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert result.returncode == 0
+        assert [call[2] for call in cli.calls] == ["new"], "an unloadable DB must be REBUILT, not appended to forever"
+        assert audfprint_app._probe_database(db_path)[0] == "ok"
+
+    def test_torn_database_bootstraps_via_new(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_torn_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert [call[2] for call in cli.calls] == ["new"]
+
+    def test_rebuild_is_logged_as_error(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Discarding a database is data loss; it is reported at ERROR, not quietly absorbed.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert any("unusable" in record.message and record.levelname == "ERROR" for record in caplog.records)
+
+    def test_healthy_database_still_appends_via_add(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The rebuild must be reserved for genuinely unusable databases -- a loadable one is
+        # appended to, or every ingest would silently discard the whole corpus.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert [call[2] for call in cli.calls] == ["add"]
+
+
+class TestIngestWritesTheDatabaseAtomically:
+    """A kill during the engine's save must not be able to destroy the live database."""
+
+    def test_engine_never_receives_the_live_database_path(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The root cause in one assertion: upstream truncates whatever --dbase points at.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert cli.calls[0][4] != str(db_path)
+        assert Path(cli.calls[0][4]).parent == db_path.parent, "staging must share the volume, or os.replace is not atomic"
+
+    def test_kill_during_save_leaves_the_previous_database_intact(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Reproduces the precipitating event: the engine truncates its dbase to zero bytes (what
+        # `gzip.open(name, "wb")` does first) and is then killed before any output is flushed.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path, payload=b"the-corpus-we-must-not-lose")
+        before = db_path.read_bytes()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        def _truncate_then_die(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            Path(args[4]).write_bytes(b"")
+            raise subprocess.TimeoutExpired(cmd=args, timeout=1)
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _truncate_then_die)
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            audfprint_app._run_ingest("/data/real/twohourset.mp3")
+
+        assert db_path.read_bytes() == before, "the live database was destroyed by a killed ingest -- phaze-6xqg has regressed"
+        assert audfprint_app._probe_database(db_path)[0] == "ok"
+        assert not audfprint_app._staging_path(db_path).exists(), "scratch must not accumulate on the volume"
+
+    def test_failed_ingest_leaves_the_previous_database_intact(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path, payload=b"the-corpus-we-must-not-lose")
+        before = db_path.read_bytes()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        def _fail(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            Path(args[4]).write_bytes(b"")
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="OSError: wavfile2peaks")
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _fail)
+
+        result = audfprint_app._run_ingest("/data/real/undecodable.mp3")
+
+        assert result.returncode == 1
+        assert db_path.read_bytes() == before
+
+    def test_unusable_artifact_is_not_promoted_even_when_the_engine_exits_zero(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Promotion is gated on re-probing what was actually written; a "successful" run that
+        # produced a zero-byte file would otherwise recreate the outage in one step.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path, payload=b"the-corpus-we-must-not-lose")
+        before = db_path.read_bytes()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        def _lies(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            Path(args[4]).write_bytes(b"")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _lies)
+
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            result = audfprint_app._run_ingest("/data/real/song.mp3")
+
+        assert result.returncode != 0, "an unloadable artifact is a FAILED ingest, not a success"
+        assert db_path.read_bytes() == before
+        assert any("refusing to promote" in record.message for record in caplog.records)
+
+    def test_stale_staging_file_is_discarded_not_appended_to(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A hard kill leaves scratch behind; the next ingest must start from the LIVE database.
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path, payload=b"live")
+        live_before = db_path.read_bytes()
+        staging = audfprint_app._staging_path(db_path)
+        staging.write_bytes(b"")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        seen: list[bytes] = []
+
+        def _record_input(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen.append(Path(args[4]).read_bytes())
+            write_loadable_db(Path(args[4]))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _record_input)
+
+        audfprint_app._run_ingest("/data/real/song.mp3")
+
+        # The engine was handed a copy of the LIVE database, not the abandoned scratch file.
+        assert seen == [live_before]
+
+    async def test_ingest_after_the_outage_returns_200_and_leaves_a_loadable_database(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # End-to-end recovery: the exact production state in, a working engine out.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": "/data/real/song.mp3"})
+
+        assert resp.status_code == 200
+        assert audfprint_app._probe_database(db_path)[0] == "ok"
+
+
+class TestOutageIsReported:
+    """The outage state must be loud on every surface: /health, /query and the logs."""
+
+    async def test_zero_byte_database_reports_unhealthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The live sidecar answered 200 {"status":"healthy","detail":"database present"} over a
+        # dead engine for 10 days. That is the assertion this bead exists to invert.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        assert resp.status_code == 503
+        assert "zero bytes" in resp.json()["detail"]
+
+    async def test_torn_database_reports_unhealthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_torn_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        assert resp.status_code == 503
+
+    async def test_query_on_unusable_database_is_an_outage_not_a_no_match(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # phaze-z7yw: 200 {"matches": []} is a terminal no-match verdict. An unloadable database
+        # has matched nothing because it cannot run, which _post_query must see as 5xx.
+        db_path = tmp_path / "fprint.pklz"
+        db_path.touch()
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.post("/query", json={"file_path": "/data/query/song.wav"})
+
+        assert resp.status_code == 503
+        assert resp.status_code >= 500, "must classify as an engine outage, not a per-file no-match"
+        # phaze-cf0z: the query path drops engine stderr, so the sidecar's own log is the only
+        # place this can ever be seen.
+        assert any("audfprint query cannot run" in record.message for record in caplog.records)
+
+    async def test_query_on_absent_database_is_still_a_clean_no_match(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The other half of the z7yw distinction must survive: nothing ingested yet is not an
+        # outage, and must not be escalated into one.
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/query", json={"file_path": "/data/query/song.wav"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"matches": []}
+
+
+class TestSidecarHealthcheckIsWired:
+    """A correct /health verdict is worthless if nothing reads it (phaze-p3hj.1 §3).
+
+    The live sidecars ran with ``State.Health=none`` -- no Docker healthcheck, and no production
+    call site for ``AudfprintAdapter.health()`` either -- so the health signal was not merely
+    wrong, it was ABSENT. Baking the check into the image is what makes the fix observable.
+    """
+
+    DOCKERFILE = Path(__file__).resolve().parents[2] / "services" / "audfprint" / "Dockerfile.audfprint"
+
+    def test_image_declares_a_healthcheck_against_the_health_endpoint(self) -> None:
+        text = self.DOCKERFILE.read_text()
+        assert "HEALTHCHECK" in text, "the sidecar image must declare a HEALTHCHECK or /health reaches nobody -- phaze-p3hj.2"
+        healthcheck = text[text.index("HEALTHCHECK") :]
+        assert "/health" in healthcheck
+        assert "8001" in healthcheck
