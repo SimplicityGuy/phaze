@@ -51,6 +51,19 @@ _ABORT_ABSENT_CODES = frozenset({"NoSuchUpload", "404"})
 # ensure_bucket_lifecycle_ttl works on a bucket that never had one configured.
 _NO_LIFECYCLE_CODES = frozenset({"NoSuchLifecycleConfiguration", "404"})
 
+# phaze-wz1q: S3's hard multipart-upload ceiling (PartNumber 1..10000). Public (no leading
+# underscore) so callers that derive part_count -- ``cloud_staging._stage_file_to_s3`` -- can size
+# their effective part size against the SAME bound this module enforces defensively below, instead
+# of re-declaring the literal. See ``presign_upload_parts`` for the enforcement point.
+S3_MAX_PART_COUNT = 10_000
+
+# phaze-wz1q: S3's max single-object size (5 TiB). Callers that derive a multipart plan from an
+# agent-supplied ``file_size`` (an unvalidated wire value, ``schemas/agent_files.py``) must fail
+# loud against this BEFORE calling ``create_multipart_upload`` -- initiating an upload that can
+# never complete wastes a create + presign round-trip and leaves an orphaned multipart for the
+# lifecycle backstop to clean up.
+S3_MAX_OBJECT_SIZE_BYTES = 5 * 1024**4
+
 
 class S3StagingError(RuntimeError):
     """Raised when the S3 staging substrate is unconfigured or a control-side S3 call fails.
@@ -169,7 +182,14 @@ async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: i
 
     WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
     error surface (see :func:`create_multipart_upload`).
+
+    phaze-wz1q: defensively reject ``part_count > S3_MAX_PART_COUNT`` before signing a single URL.
+    This is the shared SDK seam every caller (``cloud_staging._stage_file_to_s3`` for both the
+    ``stage_cloud_window`` drain and ``redrive_upload``) funnels through, so it is the last-resort
+    backstop against an unbounded loop even if a caller's own part-count derivation regresses.
     """
+    if part_count > S3_MAX_PART_COUNT:
+        raise S3StagingError(f"refusing to presign {part_count} parts for {file_id}: exceeds S3's {S3_MAX_PART_COUNT}-part multipart limit")
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
     key = staged_object_key(file_id)
     urls: list[str] = []

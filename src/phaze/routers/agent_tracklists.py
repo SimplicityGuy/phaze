@@ -30,6 +30,7 @@ import structlog
 
 from phaze.database import get_session
 from phaze.models.agent import Agent
+from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.agent_auth import get_authenticated_agent
 from phaze.schemas.agent_tracklists import (
@@ -79,10 +80,21 @@ async def create_tracklist(
     Raises:
         HTTPException(409): concurrent writer for this ``request_id`` is in flight
         and has not yet cached its response after a bounded 500ms wait.
+        HTTPException(404): ``body.file_id`` does not name an existing FileRecord.
+        HTTPException(403): ``body.file_id`` names a FileRecord owned by a
+        different agent (phaze-uu2b).
+        HTTPException(409): ``body.external_id`` already resolves to a Tracklist
+        bound to a *different*, non-NULL ``file_id`` (phaze-uu2b: the ON CONFLICT
+        rebind below would otherwise silently steal that tracklist onto
+        ``body.file_id``).
 
     Security:
         - ``agent`` is bound from the auth dep, NEVER from the body (AUTH-01).
         - ``body.tracks`` is schema-capped at ``max_length=2000`` (T-26-07-DoS).
+        - ``body.file_id`` ownership is verified against the authenticated agent
+          before any row is written (phaze-uu2b) -- matches the cross-tenant guard
+          shape in ``agent_files.upsert_files`` (T-27-02) and ``agent_proposals``
+          (W1/T-26-08-S2), which this endpoint previously lacked.
 
     Trust model (T-26-07-T, accepted):
         If a caller reuses the same ``request_id`` with a different payload,
@@ -142,6 +154,40 @@ async def _run_owner_path(
     agent: Agent,
 ) -> TracklistCreateResponse:
     """Owner-path DB transaction + response cache. Raises on any failure so the caller releases the lock."""
+    # Step 0: verify ownership of body.file_id BEFORE any row is written (phaze-uu2b).
+    # ``body.file_id`` arrives in the request body, not the path, so unlike ``agent`` it is NOT
+    # trustworthy on its own (AUTH-01 only binds identity, not authorization over an arbitrary
+    # body-supplied resource id). Placed here (inside the owner path, ahead of Step A) rather than
+    # between the SET NX at :103 and this call so an HTTPException raised here is still caught by
+    # create_tracklist's `except BaseException` wrapper and releases the owner lock -- placing it
+    # after the SET NX but outside that try/except would strand the 1h idempotency key on every
+    # rejected forged request (verifier correction #5). 404 replaces the previous FK-violation
+    # asyncpg 500 on a bogus id; 403 matches the cross-tenant guard shape already established by
+    # `agent_files.upsert_files` (T-27-02) and `agent_proposals` (W1/T-26-08-S2).
+    file_record = await session.get(FileRecord, body.file_id)
+    if file_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file not found")
+    if file_record.agent_id != agent.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="file does not belong to authenticated agent",
+        )
+
+    # Step 0b: guard the ON CONFLICT(external_id) rebind (verifier correction #3). external_id is
+    # globally unique (models/tracklist.py:30) and the upsert below moves file_id unconditionally
+    # on conflict. Without this guard, a caller who already knows (or brute-forces) an EXISTING
+    # external_id -- including a 1001tracklists-sourced one written by tasks/tracklist.py -- could
+    # rebind that tracklist onto a file it owns, simultaneously un-tracklisting the original file
+    # and stamping a stale/fabricated tracklist onto the target. Reject the rebind when the
+    # existing row already points at a DIFFERENT, non-NULL file_id; a NULL file_id (tracklist not
+    # yet matched to any file) or a match to the SAME file_id is a legitimate replay/attach.
+    existing_file_id = (await session.execute(select(Tracklist.file_id).where(Tracklist.external_id == body.external_id))).scalar_one_or_none()
+    if existing_file_id is not None and existing_file_id != body.file_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="external_id is already bound to a different file",
+        )
+
     # Step A: UPSERT Tracklist by external_id. ON CONFLICT preserves the existing
     # row (so its id stays stable across replays with new request_ids); we update
     # only file_id + source for last-write-wins on those mutable fields. The
@@ -203,8 +249,9 @@ async def _run_owner_path(
     # transaction as the tracklist write -- the MATCH terminal outcome for scan_live_set. The
     # fast-path/cached return above does NO DB work and so does NO clear: a replayed match
     # callback already cleared on its first delivery (and an absent-key clear is a no-op anyway).
-    # Key from body.file_id (the trusted tracklist target) + the fixed function name (AUTH-01 /
-    # T-45-05: agent identity is bound from the auth dep, never a redirect field).
+    # Key from body.file_id (verified above at Step 0 to belong to the authenticated agent,
+    # phaze-uu2b) + the fixed function name (AUTH-01 / T-45-05: agent identity is bound from
+    # the auth dep, never a redirect field).
     await clear_ledger_entry(session, f"scan_live_set:{body.file_id}")
 
     await session.commit()

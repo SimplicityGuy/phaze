@@ -141,18 +141,19 @@ async def test_ensure_dev_agent_seeds_past_revoked_legacy_marker(
 
 
 @pytest.mark.asyncio
-async def test_ensure_dev_agent_reseeds_past_revoked_same_id_row(
+async def test_ensure_dev_agent_revoked_same_id_row_stays_revoked(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phaze-viwd: a REVOKED same-id ``dev-agent`` row must not crash-loop startup.
+    """phaze-gh22: a REVOKED same-id ``dev-agent`` row must stay revoked across a restart.
 
-    Pre-fix, a blind ``session.add(Agent(id="dev-agent", ...))`` collided with
-    ``pk_agents`` on the still-present revoked row and raised ``IntegrityError`` at
-    commit -- an unhandled exception in the FastAPI lifespan that aborted startup on
-    every restart, since the DB state never changed. The fix must not merely survive
-    the call: it must complete the operator's rotation intent by leaving a USABLE
-    (non-revoked, token_hash set) ``dev-agent`` row behind.
+    Pre-phaze-gh22, ``usable_count == 0`` fell through to the upsert, which
+    un-revoked the row and reinstalled a token unconditionally -- so revoking a
+    leaked bearer via the documented kill switch (``routers/agent_auth.py``) was
+    silently undone by the very next ``ensure_dev_agent`` call (i.e. the next api
+    restart). The fix must treat an explicit revoke of this row as terminal: no
+    token is (re)installed, ``revoked_at`` is left untouched, and the call must
+    still not raise (phaze-viwd's original crash-loop fix must hold).
     """
     from datetime import UTC, datetime
 
@@ -162,12 +163,13 @@ async def test_ensure_dev_agent_reseeds_past_revoked_same_id_row(
         await session.commit()
 
     stale_hash = hashlib.sha256(b"stale-revoked-token").hexdigest()
+    revoked_at = datetime.now(UTC)
     session.add(
         Agent(
             id="dev-agent",
             name="dev-agent",
             token_hash=stale_hash,
-            revoked_at=datetime.now(UTC),
+            revoked_at=revoked_at,
             scan_roots=["/data/music"],
         )
     )
@@ -178,18 +180,63 @@ async def test_ensure_dev_agent_reseeds_past_revoked_same_id_row(
 
     raw_token = await ensure_dev_agent(session)  # must not raise IntegrityError
 
-    assert raw_token is not None, "must (re-)seed a usable token past a revoked same-id row"
+    assert raw_token is None, "a revoked dev-agent row must not be silently re-seeded"
 
-    # Exactly one dev-agent row -- upserted in place, not duplicated.
+    # Exactly one dev-agent row -- untouched, not duplicated.
     count = (await session.execute(select(func.count()).select_from(Agent).where(Agent.id == "dev-agent"))).scalar_one()
-    assert count == 1, f"expected the row to be upserted in place, got {count} rows"
+    assert count == 1, f"expected the row to be left alone, got {count} rows"
 
     dev = await session.get(Agent, "dev-agent")
     assert dev is not None
-    assert dev.revoked_at is None, "un-revoking the row is the operator's actual rotation intent"
-    assert dev.token_hash is not None
-    assert dev.token_hash != stale_hash, "token must actually be rotated, not left stale"
-    assert dev.token_hash == hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    assert dev.revoked_at is not None, "the revoke must stick across the bootstrap call"
+    assert dev.token_hash == stale_hash, "the stale token hash must not be replaced"
+
+
+@pytest.mark.asyncio
+async def test_ensure_dev_agent_refuses_to_reinstall_pinned_token_on_revoked_row(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-gh22 regression: a pinned ``PHAZE_DEV_AGENT_TOKEN`` must not resurrect a revoked row.
+
+    This is the exact failure scenario from the bead: ``PHAZE_DEV_SEED_AGENT=true``
+    with a fixed ``PHAZE_DEV_AGENT_TOKEN`` baked into the watcher's ``.env``, an
+    operator revokes the leaked bearer (``UPDATE agents SET revoked_at = NOW() WHERE
+    id='dev-agent'``), then the api container restarts. Pre-fix, the upsert wrote
+    back the SAME sha256 of the SAME cleartext token and cleared ``revoked_at``,
+    silently reinstating the leaked credential. Post-fix, the revoke must stick.
+    """
+    from datetime import UTC, datetime
+
+    seeded = await session.get(Agent, "test-fileserver")
+    if seeded is not None:
+        await session.delete(seeded)
+        await session.commit()
+
+    pinned_token = "phaze_agent_leaked-and-revoked-token"
+    pinned_hash = hashlib.sha256(pinned_token.encode("utf-8")).hexdigest()
+    session.add(
+        Agent(
+            id="dev-agent",
+            name="dev-agent",
+            token_hash=pinned_hash,
+            revoked_at=datetime.now(UTC),
+            scan_roots=["/data/music"],
+        )
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "dev_seed_agent", True)
+    monkeypatch.setattr(settings, "dev_agent_token", SecretStr(pinned_token))
+
+    raw_token = await ensure_dev_agent(session)
+
+    assert raw_token is None, "the pinned leaked token must not be reinstalled after a revoke"
+
+    dev = await session.get(Agent, "dev-agent")
+    assert dev is not None
+    assert dev.revoked_at is not None, "revocation must survive a bootstrap call even with a pinned token"
+    assert dev.token_hash == pinned_hash, "the token hash must remain exactly what it was -- untouched"
 
 
 @pytest.mark.asyncio
@@ -199,15 +246,16 @@ async def test_ensure_dev_agent_skips_duplicate_live_sentinel(
 ) -> None:
     """phaze-viwd: a pre-existing LIVE sentinel ``ScanBatch`` must not crash-loop startup.
 
-    Revoking the dev-agent does not touch its ``scan_batches`` rows, so a LIVE
-    sentinel batch from before the revoke can still be present. Pre-fix, the
-    unconditional second ``INSERT ... status='live'`` violated the partial unique
-    index ``uq_scan_batches_agent_id_live`` and raised ``IntegrityError`` at commit
-    -- independently of the Agent PK collision, so a fix that only handles the
-    Agent side still crash-loops here.
+    A same-id ``dev-agent`` row with ``token_hash`` stripped to ``NULL`` (but NOT
+    revoked -- see ``test_ensure_dev_agent_revoked_same_id_row_stays_revoked`` for
+    the now-terminal revoked case) still falls through to re-seeding. Its
+    ``scan_batches`` rows are untouched by that token-stripping, so a LIVE sentinel
+    batch can still be present. Pre-fix, the unconditional second
+    ``INSERT ... status='live'`` violated the partial unique index
+    ``uq_scan_batches_agent_id_live`` and raised ``IntegrityError`` at commit --
+    independently of the Agent PK collision, so a fix that only handles the Agent
+    side still crash-loops here.
     """
-    from datetime import UTC, datetime
-
     seeded = await session.get(Agent, "test-fileserver")
     if seeded is not None:
         await session.delete(seeded)
@@ -218,7 +266,7 @@ async def test_ensure_dev_agent_skips_duplicate_live_sentinel(
             id="dev-agent",
             name="dev-agent",
             token_hash=None,
-            revoked_at=datetime.now(UTC),
+            revoked_at=None,
             scan_roots=["/data/music"],
         )
     )
