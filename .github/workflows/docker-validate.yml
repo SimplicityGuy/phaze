@@ -104,7 +104,12 @@ jobs:
             || { echo "::error::/app/panako.jar is missing or implausibly small (${jar_bytes} bytes)"; exit 1; }
 
           echo "🚀 Starting the panako sidecar..."
-          docker run -d --name panako-smoke -p 18002:8002 phaze-validate-panako:ci
+          # PANAKO_MEDIA_ROOTS (phaze-64w1 #sec) confines file_path and fails CLOSED when
+          # unset -- every /ingest and /query below would 400 without it. /audio is where
+          # this step generates its fixture (below), matching docker-compose.agent.yml's
+          # convention of pointing the var at wherever this launch site actually mounts
+          # media.
+          docker run -d --name panako-smoke -e PANAKO_MEDIA_ROOTS=/audio -p 18002:8002 phaze-validate-panako:ci
 
           echo "⏳ Waiting for the service to answer..."
           for _ in $(seq 1 60); do
@@ -143,6 +148,19 @@ jobs:
           # here means the store genuinely did not persist any fingerprints.
           echo "${query}" | grep -q '/audio/smoke.wav' \
             || { echo "::error::/query returned no self-match — store did not persist fingerprints"; docker logs panako-smoke; exit 1; }
+
+          # phaze-64w1 #sec: /ingest must reject a file_path outside PANAKO_MEDIA_ROOTS
+          # with 400, never shell out to the CLI with it. /etc/passwd always exists in
+          # the runtime image and is unambiguously outside /audio, so this exercises the
+          # real confinement guard (not just a syntactically-invalid path) on purpose --
+          # turning the earlier regression (this same guard rejecting an UNCONFIGURED
+          # container) into a check this step catches deliberately, not by accident.
+          echo "🔒 POST /ingest with a file_path outside PANAKO_MEDIA_ROOTS must 400..."
+          confine_code="$(curl -s -o /tmp/confine.json -w '%{http_code}' -X POST http://localhost:18002/ingest \
+            -H 'Content-Type: application/json' -d '{"file_path":"/etc/passwd"}')"
+          echo "   HTTP ${confine_code} $(cat /tmp/confine.json)"
+          test "${confine_code}" = "400" \
+            || { echo "::error::/ingest did not reject a file_path outside PANAKO_MEDIA_ROOTS"; docker logs panako-smoke; exit 1; }
 
           echo "🧪 /health must go UNHEALTHY when the jar is removed (the outage scenario)..."
           docker exec -u root panako-smoke rm -f /app/panako.jar

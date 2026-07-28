@@ -23,6 +23,7 @@ import subprocess
 from typing import TYPE_CHECKING
 
 from httpx import ASGITransport, AsyncClient
+import pytest
 
 from tests.services.conftest import load_service_module
 
@@ -30,8 +31,6 @@ from tests.services.conftest import load_service_module
 if TYPE_CHECKING:
     from pathlib import Path
     from types import ModuleType
-
-    import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +60,39 @@ def _patch_run(
     monkeypatch.setattr(app_module, attr, _fake)
 
 
-async def _post(app_module: ModuleType, route: str) -> tuple[int, dict]:
+async def _post(app_module: ModuleType, route: str, file_path: str = "/audio/smoke.wav") -> tuple[int, dict]:
     transport = ASGITransport(app=app_module.app)
     async with AsyncClient(transport=transport, base_url="http://panako") as client:
-        resp = await client.post(route, json={"file_path": "/audio/smoke.wav"})
+        resp = await client.post(route, json={"file_path": file_path})
     return resp.status_code, resp.json()
+
+
+@pytest.fixture
+def panako_media(panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Confine the loaded module's MEDIA_ROOTS/STAGING_DIR/INGEST_IDENTITY_DIR to an isolated tree.
+
+    phaze-64w1: the query path (``_staged_query_operand``, ephemeral) and the ingest path
+    (``_ingest_identity_path``, persistent) each validate + confine ``file_path`` under one of
+    ``MEDIA_ROOTS`` and stage it under their own directory before it ever reaches the CLI, so
+    any test that exercises the HTTP layer (rather than calling ``_run_ingest``/``_run_query``
+    directly) needs a real, MEDIA_ROOTS-confined location to point requests at, plus isolated
+    staging directories so tests never share state. Returns the (single-entry) media root
+    directory; callers create files under it.
+    """
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [media_root])
+    monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+    monkeypatch.setattr(panako_app, "INGEST_IDENTITY_DIR", tmp_path / "identities")
+    return media_root
+
+
+@pytest.fixture
+def smoke_file(panako_media: Path) -> Path:
+    """A real file confined under ``panako_media``, standing in for the old literal path."""
+    smoke = panako_media / "smoke.wav"
+    smoke.write_bytes(b"RIFF")
+    return smoke
 
 
 async def _get_health(app_module: ModuleType) -> tuple[int, dict]:
@@ -217,11 +244,296 @@ class TestSubprocessWrappers:
         panako_app._run_query("/audio/x.wav")
         assert seen["cmd"] == [*panako_app.JAVA_BASE_CMD, "query", "/audio/x.wav"]
 
-    async def test_query_success_returns_parsed_matches(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_query_success_returns_parsed_matches(self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_run(monkeypatch, panako_app, "_run_query", stdout=f"{HEADER}\n{REAL_MATCH_ROW}\n")
-        status, body = await _post(panako_app, "/query")
+        status, body = await _post(panako_app, "/query", file_path=str(smoke_file))
         assert status == 200
         assert body["matches"][0]["track_id"] == "/audio/smoke.wav"
+
+
+class TestPathValidationAndStaging:
+    """phaze-64w1: file_path must never reach the Panako CLI verbatim.
+
+    Panako's own decode path (TarsosDSP's PipeDecoder, reached from every store/query)
+    substitutes the operand we hand the CLI into a `/bin/bash -c "... -i \\"%resource%\\" ..."`
+    template with only bare double-quoting -- a `"`, a backtick, or `$(...)` in the path
+    breaks out of that quoting into arbitrary shell execution. `_ingest_identity_path`
+    (ingest) and `_staged_query_operand` (query) both confine the caller's path under one of
+    MEDIA_ROOTS and stage the resolved file under a generated safe name, so the CLI never
+    sees a caller-controlled byte -- whether from an attacker or from a legitimate messy
+    filename like the ones exercised in TestSemicolonPathParsing above.
+    """
+
+    async def test_shell_metacharacter_filename_is_staged_safely(
+        self, panako_app: ModuleType, panako_media: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `$(...)`-shaped filename must reach the CLI as a safe staged name, never verbatim."""
+        evil = panako_media / "$(touch pwned).wav"
+        evil.write_bytes(b"RIFF")
+        seen: dict[str, object] = {}
+
+        def _capture(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _capture)
+        status, body = await _post(panako_app, "/ingest", file_path=str(evil))
+        assert status == 200
+        operand = seen["cmd"][-1]
+        assert "$(" not in operand
+        assert "touch" not in operand
+        assert operand.startswith(str(panako_app.INGEST_IDENTITY_DIR))
+        # The response still echoes the caller's ORIGINAL path -- never the internal staged name.
+        assert body["file_path"] == str(evil)
+
+    async def test_double_quote_filename_is_staged_safely(self, panako_app: ModuleType, panako_media: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A literal `"` used to close Panako's `-i "%resource%"` quoting early; it must never reach it."""
+        evil = panako_media / 'Artist - "Live" Version.wav'
+        evil.write_bytes(b"RIFF")
+        seen: dict[str, object] = {}
+
+        def _capture(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            seen["cmd"] = cmd
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _capture)
+        status, _ = await _post(panako_app, "/query", file_path=str(evil))
+        assert status == 200
+        operand = seen["cmd"][-1]
+        assert '"' not in operand
+
+    async def test_staged_operand_is_a_real_readable_handle_on_the_file(
+        self, panako_app: ModuleType, panako_media: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The staged operand must actually decode to the caller's file, not just have a safe name."""
+        evil = panako_media / "$(id).wav"
+        evil.write_bytes(b"payload-bytes")
+
+        def _capture(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            operand = panako_app.Path(cmd[-1])
+            assert operand.is_symlink()
+            assert operand.resolve() == evil.resolve()
+            assert operand.read_bytes() == b"payload-bytes"
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _capture)
+        status, _ = await _post(panako_app, "/ingest", file_path=str(evil))
+        assert status == 200
+
+    async def test_ingest_identity_symlink_persists_after_the_request(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """phaze-64w1 third bounce: unlike the query-side operand, an ingest identity must NOT
+        be cleaned up -- Panako's `store` persists it as the fingerprint's permanent identity,
+        so deleting it after the request orphans every match against it forever.
+        """
+        _patch_run(monkeypatch, panako_app, "_run_ingest")
+        status, _ = await _post(panako_app, "/ingest", file_path=str(smoke_file))
+        assert status == 200
+        staged = list(panako_app.INGEST_IDENTITY_DIR.iterdir())
+        assert len(staged) == 1
+        assert staged[0].is_symlink()
+        assert staged[0].resolve() == smoke_file.resolve()
+
+    async def test_query_staged_symlink_is_cleaned_up_after_the_request(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The query-side operand IS ephemeral -- Panako never persists it anywhere a later
+        request could look it up, so it's safe (and correct) to delete once the request ends.
+        """
+        _patch_run(monkeypatch, panako_app, "_run_query")
+        status, _ = await _post(panako_app, "/query", file_path=str(smoke_file))
+        assert status == 200
+        assert list(panako_app.STAGING_DIR.iterdir()) == []
+
+    async def test_relative_path_rejected(self, panako_app: ModuleType) -> None:
+        status, body = await _post(panako_app, "/ingest", file_path="relative/path.wav")
+        assert status == 400
+        assert "absolute" in body["detail"]
+
+    async def test_nul_byte_in_path_rejected(self, panako_app: ModuleType, panako_media: Path) -> None:
+        status, body = await _post(panako_app, "/ingest", file_path=str(panako_media / "evil\x00.wav"))
+        assert status == 400
+        assert "NUL" in body["detail"]
+
+    async def test_path_traversal_outside_media_root_rejected(self, panako_app: ModuleType, panako_media: Path, tmp_path: Path) -> None:
+        outside = tmp_path / "outside.wav"
+        outside.write_bytes(b"RIFF")
+        traversal = str(panako_media / ".." / "outside.wav")
+        status, body = await _post(panako_app, "/ingest", file_path=traversal)
+        assert status == 400
+        assert "must resolve under" in body["detail"]
+
+    async def test_symlink_escape_outside_media_root_rejected(self, panako_app: ModuleType, panako_media: Path, tmp_path: Path) -> None:
+        """A symlink INSIDE media root pointing OUTSIDE it must not launder a path through confinement."""
+        outside = tmp_path / "outside.wav"
+        outside.write_bytes(b"RIFF")
+        escape = panako_media / "escape.wav"
+        escape.symlink_to(outside)
+        status, body = await _post(panako_app, "/ingest", file_path=str(escape))
+        assert status == 400
+        assert "must resolve under" in body["detail"]
+
+    async def test_rejected_path_never_reaches_the_cli(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = False
+
+        def _fail_if_called(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+            nonlocal called
+            called = True
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _fail_if_called)
+        status, _ = await _post(panako_app, "/ingest", file_path="not/absolute.wav")
+        assert status == 400
+        assert called is False
+
+
+class TestMultiRootConfinement:
+    """phaze-64w1 changes-requested: a single MEDIA_ROOT can't cover a deployment with more
+    than one media mount (mirrors ``PHAZE_AGENT_SCAN_ROOTS``, which is itself comma-separated
+    for exactly this reason). ``MEDIA_ROOTS`` must accept several roots, confining to
+    "resolves under ANY configured root" -- and, critically, an unset/empty config must fail
+    CLOSED (refuse every path) rather than falling back to permitting anything.
+    """
+
+    async def test_file_under_either_configured_root_is_accepted(
+        self, panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root_a = tmp_path / "roots" / "a"
+        root_b = tmp_path / "roots" / "b"
+        root_a.mkdir(parents=True)
+        root_b.mkdir(parents=True)
+        monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [root_a, root_b])
+        monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+        monkeypatch.setattr(panako_app, "INGEST_IDENTITY_DIR", tmp_path / "identities")
+        _patch_run(monkeypatch, panako_app, "_run_ingest")
+
+        file_in_a = root_a / "x.wav"
+        file_in_a.write_bytes(b"RIFF")
+        status, _ = await _post(panako_app, "/ingest", file_path=str(file_in_a))
+        assert status == 200
+
+        file_in_b = root_b / "y.wav"
+        file_in_b.write_bytes(b"RIFF")
+        status, _ = await _post(panako_app, "/ingest", file_path=str(file_in_b))
+        assert status == 200
+
+    async def test_file_outside_every_configured_root_is_rejected(
+        self, panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root_a = tmp_path / "roots" / "a"
+        root_b = tmp_path / "roots" / "b"
+        root_a.mkdir(parents=True)
+        root_b.mkdir(parents=True)
+        monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [root_a, root_b])
+        monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+
+        outside = tmp_path / "elsewhere" / "z.wav"
+        outside.parent.mkdir(parents=True)
+        outside.write_bytes(b"RIFF")
+        status, body = await _post(panako_app, "/ingest", file_path=str(outside))
+        assert status == 400
+        assert "must resolve under one of" in body["detail"]
+        assert str(root_a) in body["detail"]
+        assert str(root_b) in body["detail"]
+
+    async def test_unset_media_roots_rejects_every_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """An unconfigured sidecar (no PANAKO_MEDIA_ROOTS) must refuse everything -- never
+        fall back to a guessed/plausible default that may not match the real mount(s).
+        """
+        monkeypatch.delenv("PANAKO_MEDIA_ROOTS", raising=False)
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_unset")
+        assert mod.MEDIA_ROOTS == []
+
+        media = tmp_path / "media.wav"
+        media.write_bytes(b"RIFF")
+        status, body = await _post(mod, "/ingest", file_path=str(media))
+        assert status == 400
+        assert "no PANAKO_MEDIA_ROOTS configured" in body["detail"]
+        assert "fail closed" in body["detail"]
+
+    async def test_empty_media_roots_env_rejects_every_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """An explicitly empty/whitespace value must behave identically to unset -- fail closed."""
+        monkeypatch.setenv("PANAKO_MEDIA_ROOTS", "  , ,")
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_blank")
+        assert mod.MEDIA_ROOTS == []
+
+        media = tmp_path / "media.wav"
+        media.write_bytes(b"RIFF")
+        status, _ = await _post(mod, "/ingest", file_path=str(media))
+        assert status == 400
+
+    def test_media_roots_env_is_comma_split(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mirrors ``AgentSettings._split_scan_roots`` -- comma-separated, entries stripped."""
+        monkeypatch.setenv("PANAKO_MEDIA_ROOTS", "/data/downloads , /data/staging ,")
+        mod = load_service_module("panako", "phaze_test_panako_media_roots_split")
+        expected = [mod.Path("/data/downloads"), mod.Path("/data/staging")]
+        assert expected == mod.MEDIA_ROOTS
+
+
+class TestIngestQueryIdentityRoundTrip:
+    """phaze-64w1 third bounce: a stored fingerprint's identity must survive past the request
+    that created it and resolve back to the REAL archive path on query -- not an ephemeral
+    per-request staging name already deleted by the time a later query needs to look it up.
+
+    The uuid4-per-request staging scheme (second bounce's fix) broke exactly this: Panako's
+    `store` persists the operand it was given verbatim, and echoes it back as a `query`
+    match's "match path" -- but that operand had already been unlinked in the ingest
+    request's `finally`, so every match resolved to a temp name nothing on disk still
+    answers to. Caught by the docker-validate smoke self-match assertion, not by any
+    app-level test -- these exist so it can't regress silently outside CI again.
+    """
+
+    async def test_query_after_ingest_returns_the_real_path_as_track_id(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stored_operand: dict[str, str] = {}
+
+        def _fake_cli(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            verb, operand = cmd[-2], cmd[-1]
+            if verb == "store":
+                stored_operand["path"] = operand
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            # verb == "query": Panako echoes back EXACTLY the operand it was given at store
+            # time as the match record's "match path" field -- the real behavior this test
+            # pins down, captured via the same fixed-arity shape as REAL_MATCH_ROW above.
+            row = f"1 ; 1 ; {operand} ; 1.376 ; 24.432 ; {stored_operand['path']} ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{HEADER}\n{row}\n", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _fake_cli)
+
+        ingest_status, _ = await _post(panako_app, "/ingest", file_path=str(smoke_file))
+        assert ingest_status == 200
+        # The identity handed to the CLI must NOT be the caller-controlled path itself (the
+        # injection defense) -- but it must have been recorded regardless.
+        assert stored_operand["path"] != str(smoke_file)
+        assert stored_operand["path"].startswith(str(panako_app.INGEST_IDENTITY_DIR))
+
+        query_status, query_body = await _post(panako_app, "/query", file_path=str(smoke_file))
+        assert query_status == 200
+        assert len(query_body["matches"]) == 1
+        # The critical assertion: the app must resolve the staged identity BACK to the real
+        # archive path before it ever reaches a caller -- an unresolved staging name here
+        # means every stored fingerprint is orphaned.
+        assert query_body["matches"][0]["track_id"] == str(smoke_file)
+
+    def test_reingesting_the_same_path_reuses_the_same_identity(self, panako_app: ModuleType, smoke_file: Path) -> None:
+        """Re-ingesting the same archive location must not fragment its identity across
+        multiple staged names -- each ingest of the SAME resolved path must stage to the
+        SAME identity symlink (deterministic per phaze-64w1 third bounce).
+        """
+        first = panako_app._ingest_identity_path(str(smoke_file))
+        second = panako_app._ingest_identity_path(str(smoke_file))
+        assert first == second
+        assert first.is_symlink()
+        assert first.resolve() == smoke_file.resolve()
+
+    def test_destage_of_an_unrecognized_path_is_a_no_op(self, panako_app: ModuleType) -> None:
+        """A path that isn't one of our identity symlinks (legacy data, or a bug elsewhere)
+        must degrade to "return it unchanged", never raise into a 500.
+        """
+        assert panako_app._destage_track_id("/some/other/path.wav") == "/some/other/path.wav"
+        assert panako_app._destage_track_id("null") == "null"
 
 
 class TestHealthExercisesTheJar:
@@ -303,25 +615,27 @@ class TestFailuresAreLoggedServerSide:
     """40 minutes of 500s left ZERO tracebacks in docker logs. Never again."""
 
     async def test_ingest_failure_logs_stderr(
-        self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         _patch_run(monkeypatch, panako_app, "_run_ingest", stderr="Error: Unable to access jarfile /app/panako.jar", returncode=1)
         with caplog.at_level("ERROR"):
-            status, _ = await _post(panako_app, "/ingest")
+            status, _ = await _post(panako_app, "/ingest", file_path=str(smoke_file))
         assert status == 500
         assert "Unable to access jarfile" in caplog.text
         assert "ingest FAILED" in caplog.text
 
-    async def test_query_failure_logs_stderr(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_query_failure_logs_stderr(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         _patch_run(monkeypatch, panako_app, "_run_query", stderr="boom", returncode=1)
         with caplog.at_level("ERROR"):
-            status, _ = await _post(panako_app, "/query")
+            status, _ = await _post(panako_app, "/query", file_path=str(smoke_file))
         assert status == 500
         assert "query FAILED" in caplog.text
 
-    async def test_successful_ingest_returns_200(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_successful_ingest_returns_200(self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_run(monkeypatch, panako_app, "_run_ingest", stdout="1; 1; smoke.wav; 00:00:25; 433.00 ms; 56.70")
-        status, body = await _post(panako_app, "/ingest")
+        status, body = await _post(panako_app, "/ingest", file_path=str(smoke_file))
         assert status == 200
         assert body["status"] == "ingested"
 
@@ -369,19 +683,19 @@ class TestSubprocessTimeout:
         raise subprocess.TimeoutExpired(cmd="java", timeout=1234)
 
     async def test_ingest_timeout_returns_structured_504(
-        self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         monkeypatch.setattr(panako_app, "_run_ingest", self._raise_timeout)
         with caplog.at_level("ERROR"):
-            status, body = await _post(panako_app, "/ingest")
+            status, body = await _post(panako_app, "/ingest", file_path=str(smoke_file))
         assert status == 504
         assert "timed out after" in body["detail"]
-        assert "/audio/smoke.wav" in body["detail"]
+        assert str(smoke_file) in body["detail"]
         assert "timed out" in caplog.text
 
-    async def test_query_timeout_returns_structured_504(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_query_timeout_returns_structured_504(self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(panako_app, "_run_query", self._raise_timeout)
-        status, body = await _post(panako_app, "/query")
+        status, body = await _post(panako_app, "/query", file_path=str(smoke_file))
         assert status == 504
         assert "timed out after" in body["detail"]
 
