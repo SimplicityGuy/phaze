@@ -536,8 +536,75 @@ class TestIngestQueryIdentityRoundTrip:
         assert panako_app._destage_track_id("null") == "null"
 
 
+class TestHealthObservesTheStoreDirectory:
+    """phaze-25cc: the LMDB store under HOME is a core dependency too, and /health was blind to it.
+
+    ``_probe_jar`` only ever looked at ``/app/panako.jar``. HOME (pinned to ``/data/fprint``,
+    the ``panako_data`` named volume) is where lmdbjava creates ``~/.panako/dbs``; if it is not
+    writable, EVERY store and query exits nonzero and the sidecar 500s on every request -- while
+    /health returned 200 throughout. That is the identical shape as the 2026.7.7 hardcoded-healthy
+    outage this endpoint was rewritten to prevent, one dependency over.
+
+    Docker seeds a named volume's ownership from the image only when the volume is EMPTY at first
+    mount, so the image-layer `chown panako:panako /data/fprint` cannot reach a volume created by
+    a pre-uid-pin image. A read-only remount or a full filesystem produces the same symptom, which
+    is why the probe attempts the real operation rather than reading permission bits.
+    """
+
+    async def test_unwritable_store_home_reports_unhealthy(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        home = tmp_path / "fprint"
+        home.mkdir()
+        home.chmod(0o500)  # r-x: the uid-999-owned-volume symptom, reproduced by mode
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(panako_app, "_probe_jar", lambda: None)
+        try:
+            status, body = await _get_health(panako_app)
+        finally:
+            home.chmod(0o700)
+
+        assert status == 503
+        assert body["status"] == "unhealthy"
+        assert "not writable" in body["detail"]
+
+    async def test_missing_store_home_reports_unhealthy(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path / "never-mounted"))
+        monkeypatch.setattr(panako_app, "_probe_jar", lambda: None)
+        status, body = await _get_health(panako_app)
+        assert status == 503
+        assert "store directory missing" in body["detail"]
+
+    async def test_writable_store_home_is_healthy_and_leaves_nothing_behind(
+        self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "fprint"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(panako_app, "_probe_jar", lambda: None)
+        status, body = await _get_health(panako_app)
+        assert status == 200
+        assert body["status"] == "healthy"
+        assert list(home.iterdir()) == [], "the writability probe must not leave an artifact in the store"
+
+    def test_probe_is_read_only_with_respect_to_the_real_store(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A pre-existing .panako store must survive the probe untouched."""
+        home = tmp_path / "fprint"
+        (home / ".panako" / "dbs").mkdir(parents=True)
+        (home / ".panako" / "dbs" / "data.mdb").write_bytes(b"lmdb")
+        monkeypatch.setenv("HOME", str(home))
+
+        assert panako_app._probe_store_home() is None
+        assert (home / ".panako" / "dbs" / "data.mdb").read_bytes() == b"lmdb"
+
+
 class TestHealthExercisesTheJar:
     """/health must observe the engine, not assert wellness unconditionally."""
+
+    @pytest.fixture(autouse=True)
+    def _writable_store_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Isolate HOME so these jar-focused tests never depend on the runner's own home dir."""
+        home = tmp_path / "fprint"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
 
     async def test_healthy_when_jar_runs(self, panako_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(panako_app, "_probe_jar", lambda: None)

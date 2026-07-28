@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -46,6 +47,37 @@ if TYPE_CHECKING:
 # declared it healthy. Seeding with `write_loadable_db` instead is not cosmetic: a touched
 # file is now, correctly, an outage.
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _confined_media_root(audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a configured media root, since the sidecar fails CLOSED without one.
+
+    phaze-1p5q: ``file_path`` is confined under ``AUDFPRINT_MEDIA_ROOTS`` before it can become
+    argv, and an unset/empty root list rejects EVERYTHING with 400 (deliberately — an
+    unconfigured sidecar must permit no path rather than guess a mount). The fixture paths
+    throughout this module are notional ``/data/...`` paths that never touch the filesystem;
+    confinement checks resolved prefixes, not existence, so one root covers them all.
+    Confinement itself is exercised deliberately in ``TestFilePathConfinement`` below, which
+    overrides this.
+    """
+    monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [Path("/data")])
+
+
+def argv_dbase(args: list[str]) -> str:
+    """The ``--dbase`` value from a recorded audfprint argv.
+
+    Read by NAME, not by position: the argv also carries a ``--`` end-of-options terminator
+    (phaze-1p5q) and gained ``--maxtimebits`` (phaze-5i76), and positional indexing into it
+    made every flag addition a test break rather than a behaviour change.
+    """
+    return args[args.index("--dbase") + 1]
+
+
+def argv_operand(args: list[str]) -> str:
+    """The file operand from a recorded audfprint argv -- always last, always after ``--``."""
+    assert "--" in args, "argv must terminate options before the operand (phaze-1p5q)"
+    return args[-1]
 
 
 def write_loadable_db(path: Path, payload: bytes = b"landmark-hash-table") -> None:
@@ -359,7 +391,7 @@ class _FakeAudfprintCli:
 
     def run(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
-        command, dbase, file_arg = args[2], args[4], args[5]
+        command, dbase, file_arg = args[2], argv_dbase(args), argv_operand(args)
         if command in ("new", "add"):
             write_loadable_db(Path(dbase), payload=f"{command}:{file_arg}".encode())
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
@@ -382,7 +414,7 @@ class TestRunIngestBootstrap:
         assert result.returncode == 0
         assert db_path.exists()
         assert len(cli.calls) == 1
-        command, dbase, file_arg = cli.calls[0][2], cli.calls[0][4], cli.calls[0][5]
+        command, dbase, file_arg = cli.calls[0][2], argv_dbase(cli.calls[0]), argv_operand(cli.calls[0])
         assert command == "new"
         # The engine writes the staging copy, never the live path (phaze-p3hj.2).
         assert dbase == str(audfprint_app._staging_path(db_path))
@@ -462,7 +494,487 @@ class TestIngestEndpointBootstrap:
                 resp = await client.post("/ingest", json={"file_path": "/data/real/song.mp3"})
 
         assert resp.status_code == 500
-        assert any("audfprint ingest failed" in record.message and "boom: disk full" in record.message for record in caplog.records)
+        assert any("audfprint ingest FAILED" in record.message and "boom: disk full" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Server-side diagnosability of subprocess failures (phaze-cf0z)
+#
+# The bug: /ingest logged its stderr but /query did not -- it raised HTTPException(500,
+# detail=result.stderr) with no log record. The hub's `_post_query` logs only the status
+# code and never reads the body, so a query-path engine failure left NO error text on
+# either side. panako had already factored the fix into one `_log_subprocess_failure`
+# helper used by both endpoints; audfprint had inlined it into `ingest` only, so there
+# was nothing to reuse when `query` was written.
+#
+# Second, independent gap in the same file: no `logging.basicConfig`, so every record
+# fell through to Python's `lastResort` handler (unformatted ERROR/WARNING, INFO/DEBUG
+# discarded outright) -- degrading even the ingest log the repo had already fixed.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# file_path confinement + end-of-options terminator (phaze-1p5q #sec)
+#
+# The bug: `file_path` came straight off the unauthenticated HTTP body and was appended to
+# the child argv as a BARE OPERAND. Upstream parses argv with docopt, whose usage is
+# `audfprint (new|add|match|...) [options] [<file>]...`, so any token starting with `-` is
+# consumed as an OPTION -- never as `<file>`. `-o/--opfile` is honoured by `setup_reporter()`
+# as a plain `open(path, "w")`, so {"file_path": "--opfile=/data/fprint/fprint.pklz"} truncates
+# the fingerprint database to zero bytes: exactly the artifact that burned 11,180 files in the
+# 2026.7.7 outage, reachable in one request from anything on the agent compose network.
+#
+# The fix mirrors panako (phaze-64w1): confine to AUDFPRINT_MEDIA_ROOTS, fail CLOSED when
+# unset, and terminate the option scan with `--`. NOT mirrored is panako's staged-operand
+# scheme -- audfprint's decoder uses an argv list (no shell template to escape) and
+# `hash_table.store` persists the operand as the fingerprint's permanent identity, so the real
+# resolved path is both safe and required.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Landmark time range (phaze-5i76)
+#
+# The bug: the sidecar never passed --maxtimebits, so upstream's docopt default (--maxtime
+# 16384 -> 14 bits) applied silently. audfprint packs each landmark into one np.uint32 as
+# `(id+1) << maxtimebits | (time & (2**maxtimebits - 1))`, so every stored time is MASKED:
+# at N_HOP=256 / target_sr=11025 (0.023220 s per frame) the horizon is 380.4 s -- 6m20s --
+# against an archive whose primary content is multi-hour concert sets. A 3 h self-match
+# measures 2.98 instead of 83.01.
+#
+# What is NOT fixed here, deliberately: the default stays at 14. The 32 bits are shared, so
+# time bits come straight out of track-id capacity (2**(32-bits) - 1 ids). Every width that
+# covers a concert set (>=18 bits) caps the corpus at 16,383 ids or fewer, against 11,180
+# files already attempted and a 200K design target. There is no correct single-database
+# value; the fix is sharded/per-length databases, which is a change to the STORE.
+#
+# What IS fixed: the width is explicit, configurable, published on /health, and a query that
+# outruns the horizon is logged instead of silently returning a plausible deflated score.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Bounded lock wait and an honest response ceiling (phaze-5wz9)
+#
+# The bug: `_db_lock` is held across the WHOLE of an ingest or match, so server-side wall time
+# is `lock wait + database I/O + subprocess` -- bounded only by queue depth, while the hub sized
+# its client budget against ONE subprocess. When a caller's transport gave up it did NOT stop
+# the work: uvicorn does not cancel the handler on client disconnect and `asyncio.to_thread`
+# cannot interrupt `subprocess.run`, so the lock stayed held for a caller that had left and the
+# next caller inherited the same fate.
+#
+# The fix is a bounded wait with a fast 503 (classified engine-level by both hub adapters -> SAQ
+# retry/backoff, never a per-file verdict) plus a PUBLISHED ceiling the hub derives its own
+# budget from. The p3hj.2 database copy stays inside the lock -- moving it out would promote a
+# stale copy over a concurrent ingest, and reverting to an in-place write is the outage itself --
+# so its cost is measured and reported instead.
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedLockWait:
+    """A caller that cannot be served must be refused, not left to time out at the transport."""
+
+    async def test_hopeless_lock_wait_returns_503_rather_than_hanging(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        monkeypatch.setattr(audfprint_app, "LOCK_WAIT_TIMEOUT", 0.05)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        await audfprint_app._db_lock.acquire()
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.post("/ingest", json={"file_path": "/data/music/song.mp3"})
+        finally:
+            audfprint_app._db_lock.release()
+
+        assert resp.status_code == 503
+        assert "gave up waiting" in resp.json()["detail"]
+
+    async def test_the_refused_caller_does_not_leave_the_lock_acquired(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cancelled `Lock.acquire` must not silently take the lock the next caller needs."""
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        monkeypatch.setattr(audfprint_app, "LOCK_WAIT_TIMEOUT", 0.05)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        await audfprint_app._db_lock.acquire()
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                await client.post("/query", json={"file_path": "/data/music/song.mp3"})
+        finally:
+            audfprint_app._db_lock.release()
+
+        assert not audfprint_app._db_lock.locked()
+
+    async def test_lock_is_released_after_a_successful_request(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": "/data/music/song.mp3"})
+
+        assert resp.status_code == 200
+        assert not audfprint_app._db_lock.locked()
+
+    def test_response_ceiling_is_the_sum_of_all_three_terms(self, audfprint_app: ModuleType) -> None:
+        """The ceiling must include the lock wait and the DB I/O, not just the subprocess.
+
+        Deriving it from SUBPROCESS_TIMEOUT alone is exactly what made the hub's client budget
+        too small for a queued caller.
+        """
+        assert audfprint_app.RESPONSE_CEILING_SEC == (
+            audfprint_app.LOCK_WAIT_TIMEOUT + audfprint_app.DB_IO_BUDGET_SEC + audfprint_app.SUBPROCESS_TIMEOUT
+        )
+        assert audfprint_app.RESPONSE_CEILING_SEC > audfprint_app.SUBPROCESS_TIMEOUT
+
+    @pytest.mark.parametrize(("env", "attr"), [("LOCK_WAIT_TIMEOUT", "LOCK_WAIT_TIMEOUT"), ("DB_IO_BUDGET_SEC", "DB_IO_BUDGET_SEC")])
+    def test_ceiling_terms_are_env_configurable(self, monkeypatch: pytest.MonkeyPatch, env: str, attr: str) -> None:
+        monkeypatch.setenv(env, "77")
+        mod = load_service_module("audfprint", f"phaze_test_audfprint_{env.lower()}")
+        assert getattr(mod, attr) == 77
+
+    async def test_health_publishes_the_response_ceiling(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        detail = resp.json()["detail"]
+        assert f"response ceiling {audfprint_app.RESPONSE_CEILING_SEC}s" in detail
+        assert "lock wait" in detail
+
+    def test_database_io_over_budget_is_reported(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog) -> None:
+        """The copy+probe term is DB-size-proportional, unbounded by any timeout, and inside the lock.
+
+        It is deliberately not aborted -- killing a copy mid-way only turns a slow ingest into a
+        failed one, and the copy itself cannot be removed without changing the store (reverting
+        to an in-place write is the phaze-p3hj.2 outage). Measured and reported instead.
+        """
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        monkeypatch.setattr(audfprint_app, "DB_IO_BUDGET_SEC", 0)  # every real copy exceeds 0s
+        monkeypatch.setattr(audfprint_app.subprocess, "run", _FakeAudfprintCli().run)
+
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            result = audfprint_app._run_ingest("/data/music/song.mp3")
+
+        assert result.returncode == 0
+        assert "database I/O took" in caplog.text
+        assert "holding the global lock" in caplog.text
+
+
+class TestHealthObservesDirectoryWritability:
+    """phaze-25cc: writability was checked ONLY on the DB-absent branch.
+
+    A present, loadable database short-circuited before the check, so any permission or mount
+    problem under /data/fprint reported healthy right up until the next ingest 500'd. The
+    named-volume ownership hazard that surfaced this (Docker seeds a volume's ownership from
+    the image only when the volume is EMPTY at first mount, so the image-layer chown cannot
+    reach a volume created by a pre-uid-pin image) is one way in; a read-only remount or a
+    full filesystem is another.
+    """
+
+    async def test_present_database_in_an_unwritable_directory_is_unhealthy(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        fprint_dir = tmp_path / "fprint"
+        fprint_dir.mkdir()
+        db_path = fprint_dir / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        fprint_dir.chmod(0o500)  # r-x: exactly the stale-uid volume symptom
+
+        transport = ASGITransport(app=audfprint_app.app)
+        try:
+            async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+                resp = await client.get("/health")
+        finally:
+            fprint_dir.chmod(0o700)
+
+        assert resp.status_code == 503
+        assert "not writable" in resp.json()["detail"]
+
+    def test_a_read_only_database_file_is_still_healthy(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Assert the requirement is DIRECTORY writability, not `os.access(db, W_OK)`.
+
+        Since phaze-p3hj.2 an ingest never opens the live database for writing -- it stages a
+        copy in the same directory and renames it over the live path, and rename(2) needs
+        write+execute on the DIRECTORY, not on the target file. Requiring file writability here
+        would report a perfectly functional database unhealthy.
+        """
+        fprint_dir = tmp_path / "fprint"
+        fprint_dir.mkdir()
+        db_path = fprint_dir / "fprint.pklz"
+        write_loadable_db(db_path)
+        db_path.chmod(0o444)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        available, _detail = audfprint_app._database_bootstrap_status()
+        assert available
+
+
+class TestLandmarkTimeRange:
+    """`--maxtimebits` must be explicit, derived correctly, and observable."""
+
+    def test_horizon_and_capacity_match_the_uint32_packing(self, audfprint_app: ModuleType) -> None:
+        # 16384 frames * (256 / 11025) s = 380.4 s; ids = 2**(32-14) - 1.
+        assert audfprint_app.AUDFPRINT_MAXTIMEBITS == 14
+        assert pytest.approx(380.4, abs=0.1) == audfprint_app.LANDMARK_TIME_HORIZON_SEC
+        assert audfprint_app.MAX_TRACK_IDS == 262143
+
+    @pytest.mark.parametrize(
+        ("bits", "horizon_sec", "max_ids"),
+        [(15, 760.9, 131071), (17, 3043.5, 32767), (18, 6087.0, 16383), (19, 12173.9, 8191), (20, 24347.9, 4095)],
+    )
+    def test_widening_buys_time_out_of_track_id_capacity(self, monkeypatch: pytest.MonkeyPatch, bits: int, horizon_sec: float, max_ids: int) -> None:
+        """Pins the tradeoff table in the module comment, so a future widening is a deliberate act."""
+        monkeypatch.setenv("AUDFPRINT_MAXTIMEBITS", str(bits))
+        mod = load_service_module("audfprint", f"phaze_test_audfprint_maxtimebits_{bits}")
+        assert pytest.approx(horizon_sec, abs=0.1) == mod.LANDMARK_TIME_HORIZON_SEC
+        assert max_ids == mod.MAX_TRACK_IDS
+
+    @pytest.mark.parametrize("bad", ["0", "32", "-1"])
+    def test_out_of_range_width_fails_loudly_at_import(self, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+        """A width outside the uint32 packing must not start a service that would corrupt silently."""
+        monkeypatch.setenv("AUDFPRINT_MAXTIMEBITS", bad)
+        with pytest.raises(ValueError, match="AUDFPRINT_MAXTIMEBITS"):
+            load_service_module("audfprint", f"phaze_test_audfprint_maxtimebits_bad_{bad}")
+
+    def test_bootstrap_passes_maxtimebits_explicitly(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/song.mp3")
+
+        argv = cli.calls[0]
+        assert argv[2] == "new"
+        assert argv[argv.index("--maxtimebits") + 1] == str(audfprint_app.AUDFPRINT_MAXTIMEBITS)
+
+    def test_append_does_not_pass_maxtimebits(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The width is PERSISTED in the pickle; upstream honours the flag on `new` only.
+
+        Passing it on `add` would read as a live knob that silently does nothing.
+        """
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/first.mp3")
+        audfprint_app._run_ingest("/data/music/second.mp3")
+
+        assert [call[2] for call in cli.calls] == ["new", "add"]
+        assert "--maxtimebits" not in cli.calls[1]
+
+    def test_query_does_not_pass_maxtimebits(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+
+        audfprint_app._run_query("/data/music/song.mp3")
+
+        assert "--maxtimebits" not in cli.calls[0]
+
+    def test_query_longer_than_the_horizon_is_logged(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        """The whole defect is that a deflated score looks like a weak match. Say so out loud."""
+        # 3 h query against a 380.4 s horizon: upstream reports a plausible-looking low ratio.
+        line = default_line("/data/music/set.mp3", 10800.0, 48310, "/data/music/set.mp3", -8734.2, 1712, 48310, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            matches, failures = audfprint_app._parse_matches(line)
+
+        assert failures == 0
+        assert matches[0].confidence == pytest.approx(3.54, abs=0.01)
+        assert "exceeds the database's" in caplog.text
+        assert "10800.0" in caplog.text
+
+    def test_query_within_the_horizon_is_not_logged(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        line = default_line("/data/music/track.mp3", 240.0, 1234, "/data/music/track.mp3", 12.3, 456, 789, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            audfprint_app._parse_matches(line)
+        assert "landmark time horizon" not in caplog.text
+
+    def test_query_duration_survives_a_path_containing_the_landmark_text(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        """A query path that itself contains ' sec 1 raw hashes as ' must not shadow the real field."""
+        qry = "/data/music/12.0 sec 1 raw hashes as decoy/set.mp3"
+        line = default_line(qry, 10800.0, 48310, "/data/music/ref.mp3", -8734.2, 1712, 48310, 0)
+        with caplog.at_level("WARNING", logger="audfprint-service"):
+            audfprint_app._parse_matches(line)
+        assert "10800.0" in caplog.text
+
+    async def test_health_publishes_the_horizon(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        db_path = tmp_path / "fprint.pklz"
+        write_loadable_db(db_path)
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.get("/health")
+
+        assert resp.status_code == 200
+        detail = resp.json()["detail"]
+        assert "landmark time horizon 380.4s" in detail
+        assert "maxtimebits=14" in detail
+        assert "262143 track ids" in detail
+
+
+class TestFilePathConfinement:
+    """A caller-supplied file_path must never reach argv unvalidated."""
+
+    @staticmethod
+    def _no_subprocess(monkeypatch: pytest.MonkeyPatch, app_module: ModuleType) -> None:
+        """Make ANY subprocess launch a hard test failure -- a rejected path must not shell out."""
+
+        def _explode(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(f"a rejected file_path reached the CLI: {args}")
+
+        monkeypatch.setattr(app_module.subprocess, "run", _explode)
+
+    @pytest.mark.parametrize("route", ["/ingest", "/query"])
+    @pytest.mark.parametrize(
+        "evil",
+        [
+            "--opfile=/data/fprint/fprint.pklz",  # the database-truncating primitive
+            "-o/data/fprint/fprint.pklz",  # short form
+            "--dbase=/tmp/x.pklz",  # redirect the store
+            "--list",  # treat the operand as a file list
+            "relative/path.mp3",  # not absolute
+            "/etc/passwd",  # absolute but outside the media root
+            "/data/../etc/passwd",  # traversal that RESOLVES outside
+        ],
+    )
+    async def test_hostile_file_path_is_rejected_before_argv(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, route: str, evil: str
+    ) -> None:
+        write_loadable_db(tmp_path / "fprint.pklz")
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        self._no_subprocess(monkeypatch, audfprint_app)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post(route, json={"file_path": evil})
+
+        assert resp.status_code == 400
+
+    def test_nul_byte_is_rejected(self, audfprint_app: ModuleType) -> None:
+        with pytest.raises(audfprint_app.PathValidationError):
+            audfprint_app._resolve_confined_path("/data/music/song\x00.mp3")
+
+    @pytest.mark.parametrize("route", ["/ingest", "/query"])
+    async def test_unconfigured_media_roots_fails_closed(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, route: str
+    ) -> None:
+        """An unconfigured sidecar must refuse everything -- never fall back to permitting everything."""
+        monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [])
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        self._no_subprocess(monkeypatch, audfprint_app)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post(route, json={"file_path": "/data/music/song.mp3"})
+
+        assert resp.status_code == 400
+        assert "no AUDFPRINT_MEDIA_ROOTS configured" in resp.json()["detail"]
+
+    def test_media_roots_parses_a_comma_separated_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AUDFPRINT_MEDIA_ROOTS", "/data/downloads , /data/staging ,")
+        mod = load_service_module("audfprint", "phaze_test_audfprint_media_roots")
+        assert [Path("/data/downloads"), Path("/data/staging")] == mod.MEDIA_ROOTS
+        assert mod._resolve_confined_path("/data/staging/set.mp3") == Path("/data/staging/set.mp3")
+
+    def test_media_roots_defaults_to_empty_not_to_a_guessed_mount(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AUDFPRINT_MEDIA_ROOTS", raising=False)
+        mod = load_service_module("audfprint", "phaze_test_audfprint_media_roots_unset")
+        assert mod.MEDIA_ROOTS == []
+
+    def test_argv_terminates_options_before_the_operand(self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """`--` is the second, independent defense: docopt cannot reparse an operand as a flag."""
+        db_path = tmp_path / "fprint.pklz"
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(db_path))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        audfprint_app._run_ingest("/data/music/song.mp3")
+        audfprint_app._run_query("/data/music/song.mp3")
+
+        for call in cli.calls:
+            assert call[-2] == "--", f"operand is not preceded by the end-of-options terminator: {call}"
+            assert call[-1] == "/data/music/song.mp3"
+
+    async def test_confined_path_is_resolved_before_it_becomes_the_stored_identity(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The operand IS the persistent track identity, so it must be the RESOLVED real path.
+
+        `hash_table.store` keeps the operand verbatim in `self.names` and echoes it back as a
+        match's ref. Unlike panako we therefore pass the real path (resolved, confined), never
+        a staged name -- staging here would orphan every stored fingerprint.
+        """
+        media = tmp_path / "media"
+        (media / "sub").mkdir(parents=True)
+        target = media / "sub" / "song.mp3"
+        target.write_bytes(b"audio")
+        monkeypatch.setattr(audfprint_app, "MEDIA_ROOTS", [media])
+        monkeypatch.setattr(audfprint_app, "FPRINT_DB", str(tmp_path / "fprint.pklz"))
+        cli = _FakeAudfprintCli()
+        monkeypatch.setattr(audfprint_app.subprocess, "run", cli.run)
+
+        transport = ASGITransport(app=audfprint_app.app)
+        async with AsyncClient(transport=transport, base_url="http://audfprint") as client:
+            resp = await client.post("/ingest", json={"file_path": str(media / "sub" / ".." / "sub" / "song.mp3")})
+
+        assert resp.status_code == 200
+        assert argv_operand(cli.calls[0]) == str(target.resolve())
+
+
+class TestSubprocessFailureLogging:
+    """Both subprocess failure paths must leave the engine's stderr in the sidecar's own log."""
+
+    async def test_query_failure_logs_stderr(
+        self, audfprint_app: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The exact previously-silent path: match exits nonzero, the caller gets a 500, and
+        # before this fix the reason existed nowhere on the server.
+        _patch_query(monkeypatch, audfprint_app, tmp_path, stdout="", returncode=1)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            status, _ = await _post_query(audfprint_app)
+
+        assert status == 500
+        assert any("audfprint match FAILED" in record.message and "err" in record.message for record in caplog.records)
+
+    def test_log_helper_handles_absent_stderr(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        result = subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="")
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            audfprint_app._log_subprocess_failure("ingest", "/data/real/song.mp3", result)
+        assert "<no stderr>" in caplog.text
+
+    def test_log_helper_truncates_a_stderr_flood(self, audfprint_app: ModuleType, caplog: pytest.LogCaptureFixture) -> None:
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="x" * 10_000)
+        with caplog.at_level("ERROR", logger="audfprint-service"):
+            audfprint_app._log_subprocess_failure("match", "/data/real/song.mp3", result)
+        assert "x" * audfprint_app.STDERR_LOG_LIMIT in caplog.text
+        assert "x" * (audfprint_app.STDERR_LOG_LIMIT + 1) not in caplog.text
+
+    def test_root_logging_is_configured(self, audfprint_app: ModuleType) -> None:
+        """Without basicConfig, uvicorn leaves this logger on `lastResort`: no INFO at all.
+
+        Asserted through the effective level rather than the handler list, because that is
+        the property that actually decides whether an INFO record survives.
+        """
+        assert audfprint_app.logger.getEffectiveLevel() <= logging.INFO
+        assert logging.getLogger().handlers, "root logger has no handler -- records fall through to lastResort"
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +1012,7 @@ class TestSubprocessTimeoutConfiguration:
         def _capture(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             seen.append(kwargs.get("timeout"))
             if args[2] in ("new", "add"):
-                write_loadable_db(Path(args[4]))
+                write_loadable_db(Path(argv_dbase(args)))
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(audfprint_app.subprocess, "run", _capture)

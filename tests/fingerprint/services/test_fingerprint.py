@@ -1,5 +1,6 @@
 """Tests for fingerprint service layer: Protocol, adapters, orchestrator, progress."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -415,6 +416,23 @@ class TestSidecarHttpTimeout:
 
         assert fp.SIDECAR_HTTP_TIMEOUT_SEC > 3600
 
+    def test_default_exceeds_the_audfprint_response_ceiling_not_just_its_subprocess(self):
+        """phaze-5wz9: audfprint serializes ALL access, so its ceiling is not SUBPROCESS_TIMEOUT.
+
+        Server wall time is `lock wait + database I/O + subprocess` with up to four callers
+        queued on one lock. Deriving this budget from the subprocess term alone is what let a
+        queued caller's client give up while the sidecar was still working for it -- and nothing
+        cancels a disconnected handler, so the lock stayed held and the next caller inherited it.
+        Pinned against the sidecar's own published constants so the two cannot drift apart
+        silently.
+        """
+        import phaze.services.fingerprint as fp
+        from tests.services.conftest import load_service_module
+
+        sidecar = load_service_module("audfprint", "phaze_test_audfprint_ceiling_vs_client_budget")
+        assert sidecar.RESPONSE_CEILING_SEC == sidecar.LOCK_WAIT_TIMEOUT + sidecar.DB_IO_BUDGET_SEC + sidecar.SUBPROCESS_TIMEOUT
+        assert fp.SIDECAR_HTTP_TIMEOUT_SEC > sidecar.RESPONSE_CEILING_SEC
+
     def test_adapters_use_the_long_timeout(self):
         import phaze.services.fingerprint as fp
 
@@ -554,6 +572,108 @@ class TestIngestErrorClassification:
         assert results["audfprint"].engine_error is True
 
 
+class TestWithinEngineRepeatReduction:
+    """phaze-dxkz: one engine returning several matches for the SAME track must reduce by rule.
+
+    The accumulation was a plain dict assignment, so the survivor was whichever occurrence the
+    engine listed LAST -- an unwritten tie-break sitting directly above the deliberate,
+    documented cross-engine reduction. Panako genuinely produces this shape: `query` returns
+    one result per occurrence, so a track played twice in a set arrives as several results for
+    the same reference path at different alignments and scores.
+
+    The rule pinned here is: highest confidence wins; ties break on the EARLIEST reference
+    offset; a missing/unparseable offset loses a tie.
+    """
+
+    def _engine(self, name: str, weight: float, matches: list[QueryMatch]):
+        engine = MagicMock()
+        engine.name = name
+        engine.weight = weight
+        engine.query = AsyncMock(return_value=matches)
+        return engine
+
+    async def test_best_confidence_survives_regardless_of_result_order(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=85.0, timestamp="0.0"),
+                QueryMatch(track_id="t", confidence=8.0, timestamp="260.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].engines["panako"] == 85.0
+        assert combined[0].timestamp == "0.0"
+
+    async def test_best_confidence_survives_when_the_weak_repeat_is_first(self):
+        """The mirror case: the old code was only ever right by accident of ordering."""
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=8.0, timestamp="260.0"),
+                QueryMatch(track_id="t", confidence=85.0, timestamp="0.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].engines["panako"] == 85.0
+        assert combined[0].timestamp == "0.0"
+
+    async def test_equal_confidence_breaks_on_the_earliest_reference_offset(self):
+        """A track played twice at the same score: the FIRST occurrence is the track start."""
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=60.0, timestamp="2400.0"),
+                QueryMatch(track_id="t", confidence=60.0, timestamp="180.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].timestamp == "180.0"
+
+    async def test_a_hit_without_an_offset_loses_a_tie(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="t", confidence=60.0, timestamp="180.0"),
+                QueryMatch(track_id="t", confidence=60.0, timestamp=None),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert combined[0].timestamp == "180.0"
+
+    async def test_repeat_reduction_does_not_disturb_the_cross_engine_reduction(self):
+        """Reducing within an engine must still leave BOTH engines counted for the 2-engine average."""
+        audfprint = self._engine("audfprint", 0.6, [QueryMatch(track_id="t", confidence=90.0, timestamp="5.0")])
+        panako = self._engine(
+            "panako",
+            0.4,
+            [
+                QueryMatch(track_id="t", confidence=20.0, timestamp="700.0"),
+                QueryMatch(track_id="t", confidence=80.0, timestamp="5.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([audfprint, panako]).combined_query("/data/music/set.mp3")
+        assert len(combined) == 1
+        assert combined[0].engines == {"audfprint": 90.0, "panako": 80.0}
+        # 0.6*90 + 0.4*80 == 86.0 -- not capped, because both engines matched.
+        assert combined[0].confidence == pytest.approx(86.0)
+
+    async def test_distinct_tracks_are_still_kept_separately(self):
+        engine = self._engine(
+            "panako",
+            1.0,
+            [
+                QueryMatch(track_id="a", confidence=70.0, timestamp="0.0"),
+                QueryMatch(track_id="b", confidence=40.0, timestamp="10.0"),
+            ],
+        )
+        combined = await FingerprintOrchestrator([engine]).combined_query("/data/music/set.mp3")
+        assert {m.track_id for m in combined} == {"a", "b"}
+
+
 class TestQueryErrorClassification:
     """phaze-z7yw: the query path must distinguish an ENGINE outage from a genuine no-match.
 
@@ -583,6 +703,38 @@ class TestQueryErrorClassification:
 
         adapter = self._adapter(adapter_cls, raise_error)
         with pytest.raises(EngineQueryError, match="Connection refused"):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_carries_the_response_body_not_just_the_status(self, adapter_cls):
+        """phaze-cf0z: the body IS the engine's stderr -- the only text naming the failure.
+
+        ``_post_ingest`` has always preserved it; ``_post_query`` discarded it, so a
+        query-path engine failure reached the hub log as a bare 'HTTP 500'. Applies to BOTH
+        engines: the discard was in the shared helper, not in either adapter.
+        """
+        detail = "EOFError: Ran out of input"
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, json={"detail": detail}))
+        with pytest.raises(EngineQueryError, match=re.escape(detail)):
+            await adapter.query("/data/music/test.mp3")
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_body_is_truncated_not_flooded(self, adapter_cls):
+        """A per-file stack-trace flood in the hub log buries the signal it exists to surface."""
+        # 'Z' appears nowhere in the surrounding "<engine>: query engine failure: HTTP 500: "
+        # envelope, so the count is exactly the carried body length.
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, text="Z" * 10_000))
+        with pytest.raises(EngineQueryError) as excinfo:
+            await adapter.query("/data/music/test.mp3")
+        assert excinfo.value.args[0].count("Z") == 2000
+        await adapter.close()
+
+    @pytest.mark.parametrize("adapter_cls", [AudfprintAdapter, PanakoAdapter])
+    async def test_5xx_with_empty_body_is_reported_as_such(self, adapter_cls):
+        adapter = self._adapter(adapter_cls, lambda _request: httpx.Response(500, text=""))
+        with pytest.raises(EngineQueryError, match="<no body>"):
             await adapter.query("/data/music/test.mp3")
         await adapter.close()
 

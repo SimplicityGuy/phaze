@@ -564,6 +564,28 @@ DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
 
 It is harmless if the row is already absent (e.g. on a fresh broker or after a `saq_jobs` truncate). This mirrors the prior Redis orphaned-cron-purge runbook, adapted to the Postgres broker.
 
+## One-time volume chown after the sidecar uid pin (pre-`7b9adec` hosts only)
+
+The `audfprint`/`panako` sidecars previously created their runtime account with `useradd -m -r`, which auto-assigns a system uid (~999); they now pin uid/gid **1000** so they can read uid-1000-owned media. Each Dockerfile `chown`s `/data/fprint` — but that only affects the **image layer**. `docker-compose.agent.yml` mounts a **named volume** (`audfprint_data`, `panako_data`) over that path, and Docker seeds a volume's ownership from the image directory only when the volume is **empty at first mount**. A host that ever started a pre-`7b9adec` sidecar therefore has a volume root owned by the old uid, and pulling the new tag reuses it verbatim — nothing re-chowns it.
+
+The symptom is a total fingerprint-stage stall: every `/ingest` and `/query` fails on a permission error while the files merely stay `pending`. Check first — this is **not** the case on every host, and a fresh host or one that has run `docker compose down -v` is unaffected:
+
+```bash
+docker compose -f docker-compose.agent.yml exec audfprint ls -lna /data/fprint
+docker compose -f docker-compose.agent.yml exec panako ls -lna /data/fprint
+```
+
+If the numeric owner is anything other than `1000`, stop the sidecars and repair each volume once:
+
+```bash
+docker compose -f docker-compose.agent.yml stop audfprint panako
+docker run --rm -v phaze_audfprint_data:/d alpine chown -R 1000:1000 /d
+docker run --rm -v phaze_panako_data:/d alpine chown -R 1000:1000 /d
+docker compose -f docker-compose.agent.yml start audfprint panako
+```
+
+Both sidecars' `/health` endpoints now observe the mounted directory directly (audfprint checks that `/data/fprint` is writable on **every** branch, not only when the database is absent; panako probes its LMDB `HOME`), so an unrepaired volume reports `503` instead of a green engine over a 100%-failure stage.
+
 ## Monitoring & Health
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.

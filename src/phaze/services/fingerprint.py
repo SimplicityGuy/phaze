@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import math
 import os
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -17,18 +18,46 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# phaze-mv1f: must exceed the sidecars' SUBPROCESS_TIMEOUT (default 3600s, sized for
-# multi-hour concert sets) or the app-side call times out first and the sidecar budget is
-# meaningless -- the old 120.0 did exactly that. Read via os.environ rather than
-# phaze.config to keep this module's import chain httpx+structlog only (agent-worker
-# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar
-# still fails fast instead of pinning the lane for an hour.
-SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "3900"))
+# phaze-mv1f: must exceed the sidecars' own budget or the app-side call times out first and the
+# sidecar budget is meaningless -- the old 120.0 did exactly that. Read via os.environ rather
+# than phaze.config to keep this module's import chain httpx+structlog only (agent-worker
+# import boundary, see tasks/agent_worker.py). Connect stays short so a down sidecar still fails
+# fast instead of pinning the lane for an hour.
+#
+# phaze-5wz9: the sidecar budget is NOT SUBPROCESS_TIMEOUT. audfprint serializes ALL access
+# behind one lock, so its server-side wall time is `lock wait + database I/O + subprocess`, and
+# up to four callers queue on it (the fingerprint lane's 2 slots plus the meta lane's 2). The
+# old 3900 was derived from the subprocess term alone, so a queued caller's client gave up while
+# the sidecar was still working for it -- and nothing cancels a disconnected handler, so the
+# lock stayed held and the next caller inherited the same fate.
+#
+# audfprint now publishes its real ceiling (`RESPONSE_CEILING_SEC`, also in its /health detail)
+# and bounds the lock wait, so a hopeless request is refused with a 503 instead of being
+# abandoned. This default is that ceiling plus a margin:
+#
+#     lock wait 900 + db i/o budget 300 + subprocess 3600 = 4800, + 300 margin = 5100
+#
+# Keep the two in step: raising the sidecar's LOCK_WAIT_TIMEOUT / SUBPROCESS_TIMEOUT without
+# raising this puts the client budget back under the server ceiling, which is the defect.
+SIDECAR_HTTP_TIMEOUT_SEC = float(os.environ.get("PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC", "5100"))
 _SIDECAR_HTTP_TIMEOUT = httpx.Timeout(SIDECAR_HTTP_TIMEOUT_SEC, connect=10.0)
 # Health probes are cheap (audfprint: filesystem-only; panako: a JVM probe capped at 30s
 # by its own HEALTH_TIMEOUT) -- a wedged sidecar must surface as unhealthy quickly, not
 # hang health_all for the full ingest budget.
 _SIDECAR_HEALTH_TIMEOUT = httpx.Timeout(35.0, connect=10.0)
+# phaze-cf0z: a sidecar 5xx body is the engine's stderr -- often a multi-frame traceback.
+# Worth carrying (it is the only thing that names the failure mode) but not worth flooding
+# the hub log or an exception message with, once per file. Mirrors the sidecars' own
+# STDERR_LOG_LIMIT so the two ends truncate at the same width.
+_ERROR_BODY_LIMIT = 2000
+
+
+def _truncate_body(body: str) -> str:
+    """Collapse a sidecar error body to a bounded, log-safe single value."""
+    text = (body or "").strip()
+    if not text:
+        return "<no body>"
+    return text[:_ERROR_BODY_LIMIT]
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +202,15 @@ async def _post_query(client: httpx.AsyncClient, engine: str, file_path: str) ->
         logger.warning("fingerprint query transport failure", engine=engine, error=str(exc))
         raise EngineQueryError(engine, f"query transport failure: {exc}") from exc
     if resp.status_code >= 500:
-        logger.warning("fingerprint query engine failure", engine=engine, status_code=resp.status_code)
-        raise EngineQueryError(engine, f"query engine failure: HTTP {resp.status_code}")
+        # phaze-cf0z: carry the BODY, not just the status code. The sidecars put the engine's
+        # stderr in `detail`, which is the only text that identifies WHY the engine failed --
+        # and `_post_ingest` has always preserved it (`f"HTTP {status}: {resp.text}"`, below).
+        # This path used to log the bare status code and raise a bare status code, so the
+        # stderr the sidecar handed us was read by nobody on either side. Truncated because a
+        # per-file stack-trace flood in the hub log buries the signal it exists to surface.
+        detail = _truncate_body(resp.text)
+        logger.warning("fingerprint query engine failure", engine=engine, status_code=resp.status_code, detail=detail)
+        raise EngineQueryError(engine, f"query engine failure: HTTP {resp.status_code}: {detail}")
     if resp.status_code != 200:
         return []
     data = resp.json()
@@ -260,6 +296,31 @@ class PanakoAdapter:
 # ---------------------------------------------------------------------------
 
 
+def _within_engine_rank(hit: tuple[float, str | None]) -> tuple[float, float]:
+    """Ranking key that picks ONE representative among one engine's repeats for a track (phaze-dxkz).
+
+    The rule, chosen deliberately rather than inherited from dict-assignment order:
+
+    1. **Highest confidence wins.** That value is what feeds the weighted average, the
+       single-engine 70.0 cap, and the confidence-descending sort, and it is the same basis
+       ``combined_query`` already uses for its cross-engine pick -- so the two reductions now
+       agree instead of one being principled and the other accidental.
+    2. **Ties break on the EARLIEST reference offset.** For a track that recurs in a set, the
+       first occurrence is the one a tracklist wants as the track start; picking it also makes
+       the reduction deterministic instead of dependent on the engine's result ordering.
+
+    A missing or unparseable timestamp ranks last within a tie: a hit that cannot say where it
+    matched should not displace one that can. Returned as ``(confidence, -offset)`` so a plain
+    ``>`` comparison implements both clauses.
+    """
+    confidence, timestamp = hit
+    try:
+        offset = float(timestamp) if timestamp is not None else math.inf
+    except ValueError:
+        offset = math.inf
+    return (confidence, -offset)
+
+
 class FingerprintOrchestrator:
     """Combines results from multiple fingerprint engines with weighted scoring (D-11, D-12)."""
 
@@ -311,7 +372,20 @@ class FingerprintOrchestrator:
                 errors_by_engine[engine.name] = str(exc)
                 continue
             for match in engine_matches:
-                matches_by_track[match.track_id][engine.name] = (match.confidence, match.timestamp)
+                # phaze-dxkz: reduce an engine's REPEATS for one track by an explicit rule.
+                # This used to be a plain dict assignment, so the survivor was whichever
+                # occurrence the engine happened to list LAST -- an unwritten, unprincipled
+                # tie-break sitting directly above the deliberate, documented cross-engine
+                # reduction below. Panako genuinely produces this shape: `query` returns one
+                # result per occurrence, so a track played twice in a set (or matched in two
+                # viable time-difference bins) arrives as several results for the same
+                # reference path at different alignments. Both the confidence that feeds the
+                # weighted average / 70-cap and the offset that becomes the tracklist
+                # timestamp were therefore arbitrary for any repeated track.
+                previous = matches_by_track[match.track_id].get(engine.name)
+                candidate = (match.confidence, match.timestamp)
+                if previous is None or _within_engine_rank(candidate) > _within_engine_rank(previous):
+                    matches_by_track[match.track_id][engine.name] = candidate
 
         if self.engines and len(errors_by_engine) == len(self.engines):
             detail = "; ".join(f"{name}: {error}" for name, error in errors_by_engine.items())

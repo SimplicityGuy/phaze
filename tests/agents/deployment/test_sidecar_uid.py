@@ -52,8 +52,22 @@ def test_panako_sidecar_pins_uid_1000() -> None:
     _assert_pins_uid_1000(PANAKO_DOCKERFILE, "panako")
 
 
-def test_panako_home_is_owned_by_pinned_uid() -> None:
-    """Panako sets HOME=/data/fprint for LMDB; the chown must keep it writable by the pinned uid."""
+def test_panako_dockerfile_chowns_its_lmdb_home() -> None:
+    """Panako sets HOME=/data/fprint for LMDB; the Dockerfile must chown it to the pinned uid.
+
+    Named for what it actually checks. It was previously called
+    ``test_panako_home_is_owned_by_pinned_uid``, which claimed a guarantee this cannot give
+    (phaze-25cc): the ``chown`` affects the IMAGE LAYER only, and ``docker-compose.agent.yml``
+    mounts the ``panako_data`` NAMED VOLUME over that path. Docker seeds a volume's ownership
+    from the image directory only when the volume is EMPTY at first mount, so a volume created
+    by a pre-uid-pin image keeps its old uid and nothing re-chowns it. This grep can never
+    observe that, and reading it as coverage of runtime ownership is exactly the false
+    confidence worth removing.
+
+    Runtime ownership is covered instead by the ``/health`` store-writability probe
+    (``services/panako/app.py::_probe_store_home``), which observes the mounted directory, and
+    by the one-shot volume migration documented in ``docs/deployment.md``.
+    """
     text = PANAKO_DOCKERFILE.read_text()
     assert "ENV HOME=/data/fprint" in text, "panako must set HOME=/data/fprint for LMDB."
     assert re.search(r"chown\s+panako:panako\s+/data/fprint", text), (

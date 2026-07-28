@@ -1,6 +1,8 @@
 """FastAPI wrapper for audfprint audio fingerprinting engine."""
 
 import asyncio
+from collections.abc import AsyncIterator
+import contextlib
 import gzip
 import logging
 import os
@@ -8,12 +10,20 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 
+# phaze-cf0z: uvicorn configures only the `uvicorn*` loggers, never the root logger, so
+# without this call every record emitted below falls through to Python's `lastResort`
+# handler: WARNING/ERROR reach stderr unformatted and untimestamped, and every INFO/DEBUG
+# record is discarded outright. That silently degraded even the ingest-path error log this
+# service already had. panako has configured logging since it was written; audfprint never
+# did, which is half of why the 2026.7.7 outage left nothing usable in `docker logs`.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("audfprint-service")
 
 app = FastAPI(title="audfprint Service", version="0.1.0")
@@ -33,9 +43,177 @@ FPRINT_DB = "/data/fprint/fprint.pklz"
 # unfingerprintable. The README always documented SUBPROCESS_TIMEOUT as an env var, but
 # it was never actually wired; now it is.
 SUBPROCESS_TIMEOUT = int(os.environ.get("SUBPROCESS_TIMEOUT", "3600"))
+
+# ---------------------------------------------------------------------------
+# Response ceiling (phaze-5wz9)
+#
+# `_db_lock` is held across the WHOLE of an ingest or a match, so a request's server-side wall
+# time is `lock wait + database I/O + subprocess` -- and the lock wait was previously unbounded
+# by anything except queue depth. Up to four callers serialize here (the fingerprint lane's 2
+# slots plus the meta lane's 2, both driving this orchestrator), while the hub sized its client
+# budget against ONE subprocess. A caller that timed out at the transport layer did NOT stop the
+# work: uvicorn does not cancel the handler on client disconnect (`connection_lost` only sets
+# `cycle.disconnected`), and `asyncio.to_thread` cannot interrupt a running `subprocess.run`, so
+# the lock stayed held for a caller that had already left, poisoning whoever queued behind it.
+#
+# Three terms, all now explicit, so the ceiling is a number the hub can derive its own budget
+# from rather than a value nobody computed:
+#
+#   LOCK_WAIT_TIMEOUT   bounded wait for the lock. Exceeded -> 503 immediately, which
+#                       `_post_ingest`/`_post_query` classify as an ENGINE error (SAQ
+#                       retry/backoff, no per-file verdict) -- so failing fast costs a retry,
+#                       never a wrong verdict. Sized well above the (concurrency - 1) real runs
+#                       a healthy deep queue implies -- a real ingest on this archive is minutes,
+#                       not the 3600 s ceiling -- and well below the caller's budget, so the
+#                       queued caller is refused rather than abandoned.
+#   DB_IO_BUDGET_SEC    the phaze-p3hj.2 copy + probe + fsync. NOT enforced, deliberately: this
+#                       term is proportional to database size and aborting a copy mid-way only
+#                       converts a slow ingest into a failed one. It is MEASURED and logged when
+#                       breached, so the ceiling stays honest and the growth is visible. Removing
+#                       the copy is a change to the STORE -- never by reverting to an in-place
+#                       write, which is the outage phaze-p3hj.2 closed.
+#   SUBPROCESS_TIMEOUT  the engine run itself, already enforced by `subprocess.run`.
+LOCK_WAIT_TIMEOUT = int(os.environ.get("LOCK_WAIT_TIMEOUT", "900"))
+DB_IO_BUDGET_SEC = int(os.environ.get("DB_IO_BUDGET_SEC", "300"))
+RESPONSE_CEILING_SEC = LOCK_WAIT_TIMEOUT + DB_IO_BUDGET_SEC + SUBPROCESS_TIMEOUT
 # Chunk size for the streaming loadability probe below. The probe never materializes the
 # database in memory -- it decompresses and discards, so cost is CPU, not RSS.
 _PROBE_CHUNK_BYTES = 1 << 20
+
+# ---------------------------------------------------------------------------
+# Landmark time range (phaze-5i76)
+#
+# audfprint packs each stored landmark into ONE np.uint32 as
+# `(track_id + 1) << maxtimebits | (frame_time & (2**maxtimebits - 1))`
+# (upstream hash_table.py `HashTable.store`). Two consequences, both hard:
+#
+#   * every stored time is MASKED to `maxtimebits`, so a reference longer than
+#     `2**maxtimebits` frames aliases modulo that horizon; and
+#   * the 32 bits are SHARED, so time bits are bought directly out of track-id capacity:
+#     `max_track_ids = 2**(32 - maxtimebits) - 1`.
+#
+# The sidecar never passed `--maxtimebits`, so upstream's docopt default (`--maxtime 16384`
+# -> 14 bits) applied silently. At `N_HOP = 256` / `target_sr = 11025` (audfprint_analyze) one
+# frame is 256/11025 = 0.023220 s, so the horizon is 16384 * 0.023220 = 380.4 s -- SIX MINUTES
+# TWENTY SECONDS. The archive's primary content is multi-hour concert sets. A 3 h set matching
+# ITSELF measures 2.98 confidence instead of 83.01 (~28x collapse), because the true alignment
+# is split across one delta bin per 380 s block and only the winning bin is counted.
+#
+# The full tradeoff, exactly (uint32 packing, 0.023220 s/frame):
+#
+#     bits   time horizon        max track ids
+#     ----   -----------------   -------------
+#       14     380.4 s (6m20s)         262,143   <- default, and the deployed value
+#       15     760.9 s (12m41s)        131,071
+#       16    1521.7 s (25m22s)         65,535
+#       17    3043.5 s (50m43s)         32,767
+#       18    6087.0 s (1h41m)          16,383
+#       19   12173.9 s (3h23m)           8,191
+#       20   24347.9 s (6h46m)           4,095
+#
+# THE DEFAULT IS DELIBERATELY LEFT AT 14, and that is the whole finding: at this project's
+# scale there is no value that is simply correct. 11,180 files were already attempted against
+# this database and the design target is 200K -- so every width that covers a concert set
+# (>=18) caps the corpus one to two orders of magnitude BELOW its current size. Widening in
+# place would trade a confidence bug for a hard ingest ceiling (upstream has no capacity
+# guard; the uint32 assignment simply raises OverflowError once ids run out). The real fix is
+# to sharded or per-length databases, which is a change to the STORE and is deliberately out
+# of scope here.
+#
+# What this bead does change is that the value is now EXPLICIT, CONFIGURABLE, PUBLISHED, and
+# no longer silent: the horizon and the id ceiling are reported by /health and logged at
+# bootstrap, and a query longer than the horizon is logged as the confidence-deflating event
+# it is instead of returning a plausible-looking low score. An operator who shards can raise
+# `AUDFPRINT_MAXTIMEBITS` per shard without patching code.
+#
+# NOTE: the width is PERSISTED. `new` bakes it into fprint.pklz and `add`/`match` read it back
+# from the pickle (upstream audfprint.py:441 applies `--maxtimebits` on `new`/`newmerge` ONLY),
+# so changing this value only takes effect on a rebuild -- and rebuilding invalidates every
+# fingerprint stored under the old width. It is passed on the `new` invocation only, because
+# on `add`/`match` upstream ignores it.
+AUDFPRINT_MAXTIMEBITS = int(os.environ.get("AUDFPRINT_MAXTIMEBITS", "14"))
+if not 1 <= AUDFPRINT_MAXTIMEBITS <= 31:
+    _msg = f"AUDFPRINT_MAXTIMEBITS must be between 1 and 31 (uint32 packing); got {AUDFPRINT_MAXTIMEBITS}"
+    raise ValueError(_msg)
+# audfprint_analyze: N_HOP = 256 frames at target_sr = 11025 Hz.
+_FRAME_SECONDS = 256 / 11025
+LANDMARK_TIME_HORIZON_SEC = (1 << AUDFPRINT_MAXTIMEBITS) * _FRAME_SECONDS
+MAX_TRACK_IDS = (1 << (32 - AUDFPRINT_MAXTIMEBITS)) - 1
+# Truncate captured stderr in logs -- a stack-trace flood per failed file would bury the
+# signal, but the head of the trace is what identifies the failure mode. Mirrors panako.
+STDERR_LOG_LIMIT = 2000
+
+# phaze-1p5q #sec: this sidecar is unauthenticated (uvicorn --host 0.0.0.0, no `ports:` but
+# reachable by every container on the agent compose network) and `file_path` arrives verbatim
+# from an agent-registered FileRecord. Upstream audfprint parses its argv with DOCOPT, whose
+# usage is `audfprint (new|add|match|...) [options] [<file>]...` -- so ANY argv element
+# starting with `-` is consumed as an OPTION, never as `<file>`. The one that bites is
+# `-o/--opfile`, honoured by `setup_reporter()` as a plain `open(opfile, "w")`: a request body
+# of `{"file_path": "--opfile=/data/fprint/fprint.pklz"}` truncates the fingerprint database
+# to zero bytes -- the exact artifact that burned 11,180 files in the 2026.7.7 outage
+# (phaze-p3hj.1), reachable here in one unauthenticated request.
+#
+# Two independent defenses, because either alone is a single point of failure:
+#   1. CONFINEMENT (`_resolve_confined_path`) -- the value must be an absolute path that
+#      resolves under a configured media root. An option-shaped string is not absolute, so it
+#      is rejected before any argv is built. This is the load-bearing one.
+#   2. The `--` END-OF-OPTIONS TERMINATOR in both argv lists. Verified against the docopt
+#      pinned in the image: `parse_argv` returns every remaining token as an Argument once it
+#      sees `--` (docopt.py:441), unconditionally. Belt to the confinement's braces.
+#
+# Unlike panako (phaze-64w1) there is deliberately NO staged-symlink operand here. panako
+# needed one because its OWN decode path substitutes the operand into a `/bin/bash -c` ffmpeg
+# template, so a quote or `$(...)` in the path is shell execution one hop down. audfprint's
+# decoder shells out with an argv LIST (`audio_read.py:204 subprocess.Popen([...])`, no
+# shell), so there is no second-hop template to defend and a real path is safe to pass. It is
+# also the RIGHT thing to pass: `hash_table.store` persists the operand verbatim in
+# `self.names` as that fingerprint's permanent identity and echoes it back as the match ref
+# (`track_id`), so staging the operand under a generated name would orphan every stored
+# fingerprint -- precisely panako's third-bounce regression, which it had to solve with a
+# persistent deterministic identity scheme. audfprint needs none of that machinery.
+#
+# `AUDFPRINT_MEDIA_ROOTS` mirrors panako's `PANAKO_MEDIA_ROOTS` (comma-separated,
+# container-side paths). There is DELIBERATELY no built-in default: an unset or empty value
+# yields an EMPTY list and `_resolve_confined_path` fails CLOSED -- every file_path is
+# rejected -- rather than falling back to a guessed mount that may not be the real one.
+_raw_media_roots = os.environ.get("AUDFPRINT_MEDIA_ROOTS", "")
+MEDIA_ROOTS: list[Path] = [Path(root.strip()) for root in _raw_media_roots.split(",") if root.strip()]
+
+
+class PathValidationError(ValueError):
+    """A caller-supplied file_path failed validation. Reported as HTTP 400, never shelled out."""
+
+
+def _resolve_confined_path(file_path: str) -> Path:
+    """Resolve ``file_path`` and confine it under one of :data:`MEDIA_ROOTS`.
+
+    Rejects a relative path (which is what every option-shaped string is), an embedded NUL
+    byte, and anything that resolves -- after ``..`` traversal and symlink resolution --
+    outside every configured media root, INCLUDING when ``MEDIA_ROOTS`` is empty, which
+    rejects everything. Existence is deliberately NOT required: the pipeline renames and
+    moves files out from under async fingerprint jobs, and audfprint's own "could not read"
+    handling already covers a missing file. This function's only job is confinement against a
+    malicious or mistaken path.
+
+    Byte-identical in shape to panako's ``_resolve_confined_path`` (phaze-64w1) on purpose --
+    the root cause of both defects is one unhardened rule ("a string from an HTTP body must
+    never reach an argv operand unchecked") applied point-wise instead of to every sidecar.
+    """
+    if not file_path or "\x00" in file_path:
+        raise PathValidationError("file_path must be a non-empty path with no NUL bytes")
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        raise PathValidationError("file_path must be an absolute path")
+    if not MEDIA_ROOTS:
+        raise PathValidationError("no AUDFPRINT_MEDIA_ROOTS configured -- refusing every file_path (fail closed)")
+    resolved = candidate.resolve()
+    for root in MEDIA_ROOTS:
+        resolved_root = root.resolve()
+        if resolved == resolved_root or resolved_root in resolved.parents:
+            return resolved
+    roots_display = ", ".join(str(root) for root in MEDIA_ROOTS)
+    raise PathValidationError(f"file_path must resolve under one of: {roots_display}")
+
 
 # The four states the on-disk database can be in. They are distinguishable by exception at
 # read time (phaze-p3hj.1 §6): absent -> FileNotFoundError, zero-byte -> `EOFError: Ran out
@@ -77,6 +255,64 @@ class HealthResponse(BaseModel):
     status: str
     engine: str
     detail: str = ""
+
+
+@contextlib.asynccontextmanager
+async def _db_lock_held(operation: str, file_path: str) -> AsyncIterator[None]:
+    """Acquire ``_db_lock`` within :data:`LOCK_WAIT_TIMEOUT`, or fail the request fast (phaze-5wz9).
+
+    Returning 503 the moment the wait is hopeless is strictly better than letting the caller's
+    transport time out: a transport timeout leaves the sidecar still working for a caller who
+    has gone (nothing cancels the handler, and the running subprocess cannot be interrupted), so
+    the lock stays held and the NEXT caller inherits the same fate. A 503 releases the queue slot
+    immediately and is classified engine-level by both hub adapters, so it becomes SAQ
+    retry/backoff rather than a per-file verdict.
+
+    The wait is logged whenever it is non-trivial, because "slow because something else held the
+    lock" and "slow because this file is huge" are indistinguishable in the access log, and only
+    the first is a queueing problem.
+    """
+    waited_from = time.monotonic()
+    try:
+        await asyncio.wait_for(_db_lock.acquire(), timeout=LOCK_WAIT_TIMEOUT)
+    except TimeoutError:
+        detail = (
+            f"audfprint {operation} gave up waiting {LOCK_WAIT_TIMEOUT}s for the database lock for {file_path}; "
+            f"the engine is saturated (all access is serialized). Effective response ceiling is {RESPONSE_CEILING_SEC}s."
+        )
+        logger.error(detail)
+        raise HTTPException(status_code=503, detail=detail) from None
+    waited = time.monotonic() - waited_from
+    if waited > 1.0:
+        logger.info("audfprint %s waited %.1fs for the database lock (ceiling %ds)", operation, waited, LOCK_WAIT_TIMEOUT)
+    try:
+        yield
+    finally:
+        _db_lock.release()
+
+
+def _log_subprocess_failure(operation: str, file_path: str, result: subprocess.CompletedProcess[str]) -> None:
+    """Log a failed audfprint subprocess server-side, including its stderr (phaze-cf0z).
+
+    A SHARED helper rather than a per-site ``logger.error`` on purpose. The ingest path
+    already logged its stderr; ``query`` did not, and raised ``HTTPException(500,
+    detail=result.stderr)`` with no server-side record at all. The failure context was
+    handed to the caller and then dropped: ``_post_query`` in the hub logs only the status
+    code and never reads the body, so a query-path engine failure (the unpickle traceback of
+    a torn ``fprint.pklz``, an EACCES on the media mount, a missing dependency) vanished from
+    BOTH sides. That is the exact shape panako documents from the 2026.7.7 outage -- "every
+    /ingest returned 500 for 40 minutes and left ZERO tracebacks in docker logs" -- which is
+    why panako factored it into one helper used by both endpoints. There was nothing here to
+    reuse, so ``query`` was written without it; now there is.
+    """
+    stderr = (result.stderr or "").strip()
+    logger.error(
+        "audfprint %s FAILED for %s (exit %d): %s",
+        operation,
+        file_path,
+        result.returncode,
+        stderr[:STDERR_LOG_LIMIT] or "<no stderr>",
+    )
 
 
 def _staging_path(db_path: Path) -> Path:
@@ -165,13 +401,30 @@ def _database_bootstrap_status() -> tuple[bool, str]:
     """
     db_path = Path(FPRINT_DB)
     state, detail = _probe_database(db_path)
-    if state != "absent":
-        return state == "ok", detail
+    if state not in ("absent", "ok"):
+        return False, detail
+
+    # phaze-25cc: the writability check used to run ONLY on the DB-absent branch -- a present,
+    # loadable database short-circuited before it, so ANY permission or mount problem under
+    # /data/fprint reported healthy right up until the next ingest 500'd. The named-volume
+    # ownership hazard that surfaced this (a volume seeded by a pre-uid-pin image stays owned
+    # by the old uid; the image-layer chown cannot reach it) is only one way to reach that
+    # state -- a read-only remount or a full filesystem reaches it too. Probe the requirement
+    # directly on BOTH branches instead of inferring it from the database's existence.
+    #
+    # The requirement is PARENT writability, not `os.access(db_path, os.W_OK)`. Since
+    # phaze-p3hj.2 an ingest never opens the live database for writing: it copies to a
+    # same-directory staging file and `os.replace`s it over the live path, and rename(2)
+    # needs write+execute on the DIRECTORY, not on the target file. Asserting file
+    # writability here would report a perfectly functional database unhealthy.
     parent = db_path.parent
     if not parent.is_dir():
         return False, f"database directory missing: {parent}"
-    if not os.access(parent, os.W_OK):
-        return False, f"database directory not writable: {parent}"
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return (
+            False,
+            f"database directory not writable: {parent} (ingest stages and renames within it, so this is fatal even when the database loads)",
+        )
     return True, detail
 
 
@@ -210,23 +463,59 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
     # A leftover staging file means a previous run was killed outright; it is scratch by
     # construction, so drop it rather than appending to a half-written database.
     staging.unlink(missing_ok=True)
+    db_io_seconds = 0.0
     try:
         if command == "add":
+            started = time.monotonic()
             shutil.copyfile(db_path, staging)
+            db_io_seconds += time.monotonic() - started
+        argv = ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging)]
+        if command == "new":
+            # phaze-5i76: bake the landmark time range in EXPLICITLY at bootstrap instead of
+            # inheriting upstream's silent 14-bit docopt default. Only `new` honours the flag
+            # (upstream applies it in the `new`/`newmerge` branch; `add`/`match` read the
+            # width back out of the pickle), so this is the single point of control for the
+            # whole database's lifetime.
+            argv += ["--maxtimebits", str(AUDFPRINT_MAXTIMEBITS)]
+            logger.info(
+                "bootstrapping audfprint database with maxtimebits=%d: landmark times wrap at %.1f s, capacity %d track ids",
+                AUDFPRINT_MAXTIMEBITS,
+                LANDMARK_TIME_HORIZON_SEC,
+                MAX_TRACK_IDS,
+            )
         result = subprocess.run(
-            ["python", AUDFPRINT_SCRIPT, command, "--dbase", str(staging), file_path],
+            # `--` terminates docopt's option scan: everything after it is an operand, so a
+            # path can never be reinterpreted as a flag (phaze-1p5q).
+            [*argv, "--", file_path],
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT,
         )
         if result.returncode != 0:
             return result
+        started = time.monotonic()
         written_state, written_detail = _probe_database(staging)
+        db_io_seconds += time.monotonic() - started
         if written_state != "ok":
             logger.error("audfprint exited 0 but wrote an unusable database; refusing to promote it: %s", written_detail)
             failure = f"audfprint reported success but produced an unusable database, so the previous one was kept: {written_detail}"
             return subprocess.CompletedProcess(args=result.args, returncode=1, stdout=result.stdout, stderr=f"{result.stderr}\n{failure}")
+        started = time.monotonic()
         _promote_database(staging, db_path)
+        db_io_seconds += time.monotonic() - started
+        # phaze-5wz9: this is the one term of the response ceiling that nothing bounds -- it is
+        # proportional to the database's SIZE, which grows without limit, and it is spent inside
+        # `_db_lock` where it delays every other caller. Report it whenever it outgrows its
+        # budget so the growth is observable long before it is the reason the lane is stalling.
+        if db_io_seconds > DB_IO_BUDGET_SEC:
+            logger.warning(
+                "audfprint database I/O took %.1fs (budget %ds) for a %d-byte database, all of it holding the global lock; "
+                "the response ceiling of %ds assumes this term stays within budget",
+                db_io_seconds,
+                DB_IO_BUDGET_SEC,
+                db_path.stat().st_size,
+                RESPONSE_CEILING_SEC,
+            )
         return result
     finally:
         # Covers the nonzero-exit, unusable-artifact and TimeoutExpired paths alike: a run
@@ -235,9 +524,15 @@ def _run_ingest(file_path: str) -> subprocess.CompletedProcess[str]:
 
 
 def _run_query(file_path: str) -> subprocess.CompletedProcess[str]:
-    """Run audfprint match command synchronously (called via to_thread)."""
+    """Run audfprint match command synchronously (called via to_thread).
+
+    ``file_path`` is the already-resolved, already-confined path from
+    ``_resolve_confined_path`` -- never the caller's raw string (phaze-1p5q).
+    """
     return subprocess.run(
-        ["python", AUDFPRINT_SCRIPT, "match", "--dbase", FPRINT_DB, file_path],
+        # `--`: see the ingest argv above. The match path is equally reachable (via
+        # ScanLiveSetPayload.original_path) and had the identical bare-operand shape.
+        ["python", AUDFPRINT_SCRIPT, "match", "--dbase", FPRINT_DB, "--", file_path],
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT,
@@ -277,6 +572,12 @@ _DEFAULT_REF_RE = re.compile(r"raw hashes as (?P<ref>.+?)\s+at\s+(?P<time>-?\d+(
 # " to time {float} s in " (instead of counting " in " occurrences) is robust to a query path
 # that itself contains " in " -- the second ' in ' the old code chased is not positionally stable.
 _TIMERANGE_REF_RE = re.compile(r"to time\s+(?P<time>-?\d+(?:\.\d+)?)\s+s in (?P<ref>.+)$")
+# phaze-5i76: the default shape's query message carries the decoded QUERY duration
+# ("{qry} {dur:.1f} sec {nhash} raw hashes"). Greedy `.+` on the query path so the fixed
+# " sec {int} raw hashes as " landmark resolves to the LAST (real) occurrence even when the
+# path itself contains that text -- the same reasoning as the ref regexes above. Only the
+# default shape reports it; the -R shape does not, so wrap reporting is default-shape only.
+_QUERY_DURATION_RE = re.compile(r"^Matched .+ (?P<dur>\d+(?:\.\d+)?) sec \d+ raw hashes as ")
 
 
 def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
@@ -290,6 +591,7 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
     """
     matches: list[QueryMatch] = []
     parse_failures = 0
+    longest_query_sec = 0.0
     for line in stdout.strip().splitlines():
         # Only "Matched ... common hashes" lines are match reports. A genuine no-match run emits
         # no such line, so a query with zero candidates is a real empty result, not a failure.
@@ -322,6 +624,27 @@ def _parse_matches(stdout: str) -> tuple[list[QueryMatch], int]:
         timestamp = str(round(float(ref_match.group("time")), 1))
         matches.append(QueryMatch(track_id=track_id, confidence=round(confidence, 2), timestamp=timestamp))
 
+        duration = _QUERY_DURATION_RE.match(line)
+        if duration is not None:
+            longest_query_sec = max(longest_query_sec, float(duration.group("dur")))
+
+    if longest_query_sec > LANDMARK_TIME_HORIZON_SEC:
+        # phaze-5i76: the query outruns the database's landmark time horizon, so the true
+        # alignment is split across one delta bin per horizon-length block and only the
+        # winning bin is counted. The confidence below is deflated by roughly that block
+        # count and the reported offset is not a real position in the reference. Say so:
+        # the defining property of this defect is that both numbers look PLAUSIBLE, so
+        # nothing downstream can tell a deflated score from a weak match.
+        blocks = longest_query_sec / LANDMARK_TIME_HORIZON_SEC
+        logger.warning(
+            "audfprint query of %.1f s exceeds the database's %.1f s landmark time horizon (maxtimebits=%d): "
+            "confidences below are deflated by roughly %.1fx and match offsets are not real reference positions",
+            longest_query_sec,
+            LANDMARK_TIME_HORIZON_SEC,
+            AUDFPRINT_MAXTIMEBITS,
+            blocks,
+        )
+
     return matches, parse_failures
 
 
@@ -347,15 +670,32 @@ async def health() -> HealthResponse:
     if not available:
         logger.error("audfprint health check failed: %s", detail)
         raise HTTPException(status_code=503, detail=detail)
+    # phaze-5i76: publish the landmark time range alongside the database verdict. It is a
+    # PERSISTED property of this database that silently truncates every reference longer than
+    # the horizon, and there was previously no way to observe it short of unpickling the file.
+    detail = (
+        f"{detail}; landmark time horizon {LANDMARK_TIME_HORIZON_SEC:.1f}s (maxtimebits={AUDFPRINT_MAXTIMEBITS}, capacity {MAX_TRACK_IDS} track ids)"
+    )
+    # phaze-5wz9: publish the ceiling a caller must budget against. It is NOT SUBPROCESS_TIMEOUT
+    # -- all access to this engine is serialized, so lock wait and database I/O are part of every
+    # response's wall time and the hub's client timeout has to cover all three terms.
+    detail = f"{detail}; response ceiling {RESPONSE_CEILING_SEC}s (lock wait {LOCK_WAIT_TIMEOUT}s + db i/o budget {DB_IO_BUDGET_SEC}s + subprocess {SUBPROCESS_TIMEOUT}s)"
     return HealthResponse(status="healthy", engine="audfprint", detail=detail)
 
 
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: IngestRequest) -> IngestResponse:
     """Ingest a file into the audfprint fingerprint database."""
-    async with _db_lock:
+    # Validate BEFORE taking the lock: a rejected path must not queue behind an in-flight
+    # ingest, and a 400 must never be delayed by a 3600s subprocess (phaze-1p5q, phaze-5wz9).
+    try:
+        resolved = _resolve_confined_path(request.file_path)
+    except PathValidationError as exc:
+        logger.warning("audfprint ingest rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    async with _db_lock_held("ingest", request.file_path):
         try:
-            result = await asyncio.to_thread(_run_ingest, request.file_path)
+            result = await asyncio.to_thread(_run_ingest, str(resolved))
         except subprocess.TimeoutExpired:
             # subprocess.run kills the child on timeout, then raises. Left uncaught this
             # was a raw 500 traceback instead of a structured error (phaze-mv1f).
@@ -363,7 +703,7 @@ async def ingest(request: IngestRequest) -> IngestResponse:
             logger.error(detail)
             raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
-        logger.error("audfprint ingest failed for %s: %s", request.file_path, result.stderr)
+        _log_subprocess_failure("ingest", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
     return IngestResponse(status="ingested", file_path=request.file_path)
 
@@ -379,6 +719,11 @@ async def query(request: IngestRequest) -> QueryResponse:
     what ``_post_query`` turns into ``EngineQueryError``. Probed OUTSIDE the lock (the probe
     only reads) so the absent fast path still cannot deadlock behind an in-flight ingest.
     """
+    try:
+        resolved = _resolve_confined_path(request.file_path)
+    except PathValidationError as exc:
+        logger.warning("audfprint query rejected file_path %r: %s", request.file_path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     state, detail = _probe_database(Path(FPRINT_DB))
     if state == "absent":
         return QueryResponse(matches=[])
@@ -387,14 +732,15 @@ async def query(request: IngestRequest) -> QueryResponse:
         # dropped on the floor -- _post_query never reads the body (phaze-cf0z). Log it here.
         logger.error("audfprint query cannot run: %s", detail)
         raise HTTPException(status_code=503, detail=detail)
-    async with _db_lock:
+    async with _db_lock_held("match", request.file_path):
         try:
-            result = await asyncio.to_thread(_run_query, request.file_path)
+            result = await asyncio.to_thread(_run_query, str(resolved))
         except subprocess.TimeoutExpired:
             detail = f"audfprint query timed out after {SUBPROCESS_TIMEOUT}s for {request.file_path}"
             logger.error(detail)
             raise HTTPException(status_code=504, detail=detail) from None
     if result.returncode != 0:
+        _log_subprocess_failure("match", request.file_path, result)
         raise HTTPException(status_code=500, detail=result.stderr)
     matches, parse_failures = _parse_matches(result.stdout)
     if parse_failures and not matches:

@@ -6,7 +6,7 @@ FastAPI wrapper around [audfprint](https://github.com/dpwe/audfprint) for landma
 
 Audfprint generates spectral landmark fingerprints from audio files. These fingerprints are stored in a serialized database and can be queried to find matching tracks. This enables deduplication of differently-named but acoustically identical files.
 
-The service wraps the audfprint CLI via subprocess calls, with `asyncio.to_thread` to avoid blocking the event loop. Write operations are serialized via `asyncio.Lock` to prevent concurrent database corruption.
+The service wraps the audfprint CLI via subprocess calls, with `asyncio.to_thread` to avoid blocking the event loop. **All** database access is serialized via a single `asyncio.Lock` — reads included, since phaze-orq3: a `match` that opens the pickle mid-rewrite reads a torn gzip-pickle and dies. See **Response ceiling** below for what that serialization costs a caller.
 
 ## Build
 
@@ -81,11 +81,89 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
 
 ## Configuration
 
-| Constant             | Default                         | Description                        |
-|----------------------|---------------------------------|------------------------------------|
-| `AUDFPRINT_SCRIPT`   | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
-| `FPRINT_DB`          | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
-| `SUBPROCESS_TIMEOUT` | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| Constant                | Default                         | Description                        |
+|-------------------------|---------------------------------|------------------------------------|
+| `AUDFPRINT_SCRIPT`      | `/app/audfprint/audfprint.py`   | Path to audfprint CLI              |
+| `FPRINT_DB`             | `/data/fprint/fprint.pklz`      | Fingerprint database path          |
+| `SUBPROCESS_TIMEOUT`    | `3600`                          | Subprocess timeout (seconds, env-configurable; sized for multi-hour sets) |
+| `LOCK_WAIT_TIMEOUT`     | `900`                           | Bounded wait for the global database lock (phaze-5wz9). Exceeded → `503`, so a queued caller is refused instead of abandoned. See **Response ceiling**. |
+| `DB_IO_BUDGET_SEC`      | `300`                           | Budget for the staging copy + probe + fsync. Observed and warned on, **not** enforced — see **Response ceiling**. |
+| `AUDFPRINT_MAXTIMEBITS` | `14`                            | Width of the stored landmark time field (phaze-5i76). See **Landmark time range** below — this is *not* a free knob: it is baked into the database at bootstrap and trades directly against track-id capacity. |
+| `AUDFPRINT_MEDIA_ROOTS` | *(unset — fails closed)*        | Comma-separated container-side path(s) an incoming `file_path` must resolve under (phaze-1p5q #sec). **No default**: unset or empty rejects EVERY `file_path` with `400`, rather than silently permitting an unconfined path. MUST match whatever this container's own `volumes:` actually mount — `docker-compose.agent.yml` sets it explicitly next to that service's mount declarations. Any OTHER site that launches this image (a CI smoke test, a manual `docker run`, a different compose file) must set it too, or every `/ingest`/`/query` there will 400. |
+
+## Response ceiling
+
+Because every request holds the one `_db_lock` for its whole duration, a response's server-side
+wall time is **not** `SUBPROCESS_TIMEOUT`. It is:
+
+```
+lock wait (<= LOCK_WAIT_TIMEOUT)  +  database I/O (copy + probe + fsync)  +  subprocess (<= SUBPROCESS_TIMEOUT)
+```
+
+Up to four callers queue on that lock (the fingerprint lane's 2 slots plus the meta lane's 2,
+both driving the same orchestrator). A caller whose own client gives up does **not** stop the
+work — uvicorn does not cancel a handler on client disconnect, and `asyncio.to_thread` cannot
+interrupt a running `subprocess.run` — so the lock stays held for a caller that has already left.
+
+Two things follow, both implemented:
+
+* the lock wait is **bounded**. Exceeding `LOCK_WAIT_TIMEOUT` returns `503` immediately, which
+  the hub classifies as an engine-level failure (SAQ retry/backoff, no per-file verdict). Failing
+  fast costs a retry; being abandoned costs the next caller too.
+* the effective ceiling is **published** — in the `/health` detail and as `RESPONSE_CEILING_SEC` —
+  so `PHAZE_FINGERPRINT_SIDECAR_HTTP_TIMEOUT_SEC` on the hub is derived from the real number
+  instead of from the subprocess term alone. **Keep the two in step:** raising
+  `LOCK_WAIT_TIMEOUT` or `SUBPROCESS_TIMEOUT` here without raising the hub's budget puts the
+  client timeout back under the server ceiling, which is the defect.
+
+The **database I/O** term is the one nothing bounds. Since phaze-p3hj.2 every `add` copies the
+whole database to a staging file, inside the lock, and re-probes it before promoting — the price
+of an atomic write against a store whose writer truncates in place. It is proportional to database
+size, which grows without limit, so it is measured and logged as a `WARNING` whenever it exceeds
+`DB_IO_BUDGET_SEC`. It is deliberately **not** aborted on breach (killing a copy mid-way only
+converts a slow ingest into a failed one), and it must **not** be removed by reverting to an
+in-place write — that is the outage phaze-p3hj.2 closed. Removing it means changing the store.
+
+## Landmark time range (known limitation)
+
+audfprint packs every stored landmark into one `np.uint32` as
+`(track_id + 1) << maxtimebits | (frame_time & (2**maxtimebits - 1))`. Two consequences follow
+directly, and they pull against each other:
+
+* stored times are **masked**, so any reference longer than `2**maxtimebits` frames aliases
+  modulo that horizon; and
+* the 32 bits are **shared**, so time bits are bought out of track-id capacity:
+  `max_track_ids = 2**(32 - maxtimebits) - 1`.
+
+At `N_HOP = 256` / `target_sr = 11025` one frame is `256/11025 = 0.023220 s`:
+
+| maxtimebits | time horizon      | max track ids |
+|-------------|-------------------|---------------|
+| **14**      | **380.4 s (6m20s)** | **262,143** |
+| 15          | 760.9 s (12m41s)  | 131,071       |
+| 16          | 1521.7 s (25m22s) | 65,535        |
+| 17          | 3043.5 s (50m43s) | 32,767        |
+| 18          | 6087.0 s (1h41m)  | 16,383        |
+| 19          | 12173.9 s (3h23m) | 8,191         |
+| 20          | 24347.9 s (6h46m) | 4,095         |
+
+The sidecar previously passed no `--maxtimebits` at all, so upstream's docopt default (14)
+applied silently: every reference longer than 6m20s wrapped, and a 3 h set matching **itself**
+measured 2.98 confidence instead of 83.01, because the true alignment splits across one delta
+bin per 380 s block and only the winning bin is counted. Both the score and the reported offset
+still look plausible, which is why this went unnoticed.
+
+**The default is deliberately still 14.** Every width that covers a concert set (≥18) caps the
+corpus at 16,383 references or fewer, against 11,180 files already attempted and a 200K design
+target — so widening in place trades a confidence bug for a hard ingest ceiling. There is no
+correct single-database value at this scale; the real fix is sharded or per-length databases,
+which is a change to the store and is tracked separately. What changed here is that the value
+is explicit, configurable, published on `/health`, and that a query longer than the horizon is
+logged as the confidence-deflating event it is.
+
+The width is **persisted**: `new` bakes it into `fprint.pklz` and `add`/`match` read it back
+out, so `AUDFPRINT_MAXTIMEBITS` takes effect only on a rebuild — and a rebuild invalidates
+every fingerprint stored under the old width.
 
 ## Volumes
 
@@ -108,3 +186,12 @@ Confidence scores are 0-100, computed from the ratio of matched to total spectra
   staging copy, which is re-probed and then `os.replace`d over the live path. Readers see the
   whole old database or the whole new one; a killed ingest can only destroy the scratch copy
 - Subprocess timeout of 3600 seconds per operation (env-configurable via `SUBPROCESS_TIMEOUT`; multi-hour concert sets are the primary content)
+- **`file_path` is confined before it becomes argv.** The endpoints are unauthenticated, and
+  upstream parses argv with docopt — so any value starting with `-` is taken as an *option*,
+  not as `<file>`. `--opfile=` alone is a plain `open(path, "w")`, i.e. one unauthenticated
+  request that truncates the fingerprint database. Every `file_path` must therefore be an
+  absolute path resolving under `AUDFPRINT_MEDIA_ROOTS` (`400` otherwise, fail-closed when
+  unset), and both argv lists carry a `--` end-of-options terminator. Unlike the panako
+  sidecar there is no staged-symlink operand: audfprint's decoder shells out with an argv list
+  (no shell template to escape), and the operand is persisted verbatim by `hash_table.store`
+  as the fingerprint's identity — so it must be the real archive path, not a staged name
