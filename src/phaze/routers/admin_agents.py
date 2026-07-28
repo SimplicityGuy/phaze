@@ -50,7 +50,7 @@ from phaze.enums.stage import Stage
 from phaze.models.agent import Agent
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import wants_fragment
-from phaze.services.agent_liveness import classify, derive_compute_lane_identities
+from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -135,6 +135,15 @@ def _resolve_selected_agent(agent: str | None, agents: list[Agent]) -> str | Non
     return agent if agent is not None and any(a.id == agent for a in agents) else None
 
 
+def _resolve_selected_compute_lane(clane: str | None, compute_lanes: list[ComputeLane]) -> str | None:
+    """Resolve the pushed ``?clane=`` id by lookup-in-known-set (mirrors ``_resolve_selected_agent``, phaze-2u8v.5).
+
+    Returns the id only when it names a currently-derived compute lane, so an unknown/absent/hostile
+    id highlights nothing and can never reach a template as a trusted value.
+    """
+    return clane if clane is not None and any(lane.backend_id == clane for lane in compute_lanes) else None
+
+
 async def _load_agents(session: AsyncSession, sort: SortState) -> tuple[list[Agent], datetime]:
     """Load non-revoked Agents, attach transient ``_status``, sort per UI-SPEC LOCKED.
 
@@ -200,6 +209,7 @@ async def page(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    clane: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
@@ -240,6 +250,9 @@ async def page(
             # reload re-opens the row selection; the self-poll re-applies it thereafter. Lookup-in-
             # known-set (T-88-01) — unknown/absent id highlights nothing, never errors.
             "selected_agent": _resolve_selected_agent(agent, agents),
+            # phaze-2u8v.5: same lookup-in-known-set idiom for the ?clane= compute-lane selection, so a
+            # reload re-opens the dedicated #compute-lane-pane on the previously-selected burst lane.
+            "selected_compute_lane": _resolve_selected_compute_lane(clane, compute_lanes),
             "sort": sort_state,
             "enable_saq_ui": get_settings().enable_saq_ui,  # CLEAN-01: gate the discreet /saq footer link (presentation-only)
         },
@@ -251,6 +264,7 @@ async def table_partial(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     agent: Annotated[str | None, Query()] = None,
+    clane: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
@@ -291,6 +305,7 @@ async def table_partial(
             "refreshed_at_iso": now.isoformat(),
             "compute_lanes": compute_lanes,
             "selected_agent": _resolve_selected_agent(agent, agents),
+            "selected_compute_lane": _resolve_selected_compute_lane(clane, compute_lanes),
             "sort": sort_state,
         },
     )
@@ -357,5 +372,46 @@ async def agent_activity(
             "queue_depths": queue_depths,
             "recent_scans": recent_scans,
             "refreshed_at_iso": now.isoformat(),
+        },
+    )
+
+
+@router.get("/compute-lanes/{backend_id}", response_class=HTMLResponse)
+async def compute_lane_detail(
+    request: Request,
+    backend_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    """Return the burst-lane workload drill-down fragment, innerHTML-swapped into the dedicated ``#compute-lane-pane`` (phaze-2u8v.5).
+
+    The burst-lane panel's "N workloads · N running" tally had no way to see WHAT was running — an
+    operator could see that work existed but not act on it. This mirrors the sibling drill-down
+    endpoints (``lane_detail`` / ``agent_activity``): the compute-lane card's ``hx-get`` swaps THIS
+    fragment into ``admin/partials/_compute_lane_pane.html``'s ``#compute-lane-pane`` (a DEDICATED
+    fixed/slide-in shell, not the Analyze workspace's shared 88-01 ``_detail_pane.html`` — see that
+    partial's docstring for why), and the fragment carries its own bounded ``hx-trigger="every 5s"``
+    self-refresh (D-03).
+
+    ``backend_id`` is resolved by lookup-in-known-set against :func:`derive_compute_lane_identities`
+    (T-88-03 idiom): an unknown/stale id (a backend removed from the registry mid-view) renders the
+    friendly "Compute lane offline" empty fragment at 200 — never a 404/500 — so a poll never breaks
+    on a since-removed backend. A resolved lane lists its RUNNING workloads via
+    :func:`get_compute_lane_running_jobs`, each identified by the file it is processing rather than
+    just a count; an IDLE lane (0 running) renders the plain "No workloads currently running" empty
+    state, satisfying the idle-as-well-as-active acceptance.
+
+    Read-only — no commit.
+    """
+    lanes = await derive_compute_lane_identities(session)
+    lane = next((one for one in lanes if one.backend_id == backend_id), None)
+    running_jobs = await get_compute_lane_running_jobs(session, backend_id) if lane is not None else []
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/partials/_compute_lane_detail.html",
+        context={
+            "lane": lane,
+            "backend_id": backend_id,
+            "running_jobs": running_jobs,
+            "refreshed_at": datetime.now(UTC),
         },
     )

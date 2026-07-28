@@ -31,6 +31,7 @@ from phaze.services.agent_liveness import (
     ComputeLane,
     classify,
     derive_compute_lane_identities,
+    get_compute_lane_running_jobs,
     non_local_backend_kinds,
     sort_key,
 )
@@ -467,3 +468,86 @@ async def test_derive_returns_empty_on_registry_failure(session: AsyncSession, m
 
     monkeypatch.setattr(liveness_mod, "get_settings", _boom)
     assert await derive_compute_lane_identities(session) == []
+
+
+# ---------------------------------------------------------------------------
+# get_compute_lane_running_jobs(session, backend_id) — phaze-2u8v.5 burst-lane workload drill-down
+# ---------------------------------------------------------------------------
+
+
+async def _seed_named_job(session: AsyncSession, *, backend_id: str | None, filename: str, status: str = CloudJobStatus.RUNNING.value) -> FileRecord:
+    """Seed one FileRecord + CloudJob attributed to ``backend_id``, returning the FileRecord."""
+    file = FileRecord(
+        agent_id="test-fileserver",
+        id=uuid.uuid4(),
+        sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+        original_path=f"/music/{uuid.uuid4().hex}/{filename}",
+        original_filename=filename,
+        current_path=f"/music/{filename}",
+        file_type="mp3",
+        file_size=1000,
+    )
+    session.add(file)
+    await session.flush()
+    session.add(CloudJob(id=uuid.uuid4(), file_id=file.id, s3_key=f"staging/{file.id}", status=status, backend_id=backend_id))
+    await session.commit()
+    return file
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_lists_running_files_for_backend(session: AsyncSession) -> None:
+    """RUNNING rows attributed to ``backend_id`` come back with their display filename (the drill-down itself)."""
+    await _seed_named_job(session, backend_id="vox", filename="one.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="two.mp3")
+    # Noise that MUST be excluded: a different backend, and a non-RUNNING status on the SAME backend.
+    await _seed_named_job(session, backend_id="xenolab", filename="other-backend.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="succeeded.mp3", status=CloudJobStatus.SUCCEEDED.value)
+
+    jobs = await get_compute_lane_running_jobs(session, "vox")
+
+    filenames = {job["filename"] for job in jobs}
+    assert filenames == {"one.mp3", "two.mp3"}
+    assert len(jobs) == 2
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_uses_repaired_filename_when_present(session: AsyncSession) -> None:
+    """The display filename prefers ``original_filename_repaired`` (COALESCE, the search_queries convention)."""
+    file = await _seed_named_job(session, backend_id="vox", filename="mojibake.mp3")
+    file.original_filename_repaired = "repaired.mp3"
+    await session.commit()
+
+    jobs = await get_compute_lane_running_jobs(session, "vox")
+
+    assert jobs[0]["filename"] == "repaired.mp3"
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_idle_lane_is_empty(session: AsyncSession) -> None:
+    """A backend with no RUNNING rows returns ``[]`` — the drill-down's idle-empty-state acceptance."""
+    await _seed_named_job(session, backend_id="vox", filename="queued.mp3", status=CloudJobStatus.SUBMITTED.value)
+
+    assert await get_compute_lane_running_jobs(session, "vox") == []
+    assert await get_compute_lane_running_jobs(session, "never-configured") == []
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_unattributed_queries_null_backend_id(session: AsyncSession) -> None:
+    """``UNATTRIBUTED_LANE_ID`` queries the NULL-``backend_id`` rows, mirroring the derivation's own collapse."""
+    from phaze.services.agent_liveness import UNATTRIBUTED_LANE_ID
+
+    await _seed_named_job(session, backend_id=None, filename="unattributed.mp3")
+    await _seed_named_job(session, backend_id="vox", filename="attributed.mp3")
+
+    jobs = await get_compute_lane_running_jobs(session, UNATTRIBUTED_LANE_ID)
+
+    assert [job["filename"] for job in jobs] == ["unattributed.mp3"]
+
+
+@pytest.mark.asyncio
+async def test_running_jobs_degrades_on_error(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forced query error degrades to ``[]`` with a guarded rollback — never raises (D-00b)."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(session, "execute", AsyncMock(side_effect=SQLAlchemyError("boom")))
+    assert await get_compute_lane_running_jobs(session, "vox") == []

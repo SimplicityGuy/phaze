@@ -235,6 +235,12 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/admin/agents", "agent"): "selector resolved against the loaded agent list, not stored",
     ("/admin/agents/_table", "agent"): "selector resolved against the loaded agent list, not stored",
     ("/admin/agents/{agent_id}/_activity", "agent_id"): "lookup key only; a miss renders the empty state",
+    # phaze-2u8v.5: the burst-lane workload drill-down's ?clane= selector, resolved by
+    # lookup-in-known-set against derive_compute_lane_identities() the same way ?agent= is resolved
+    # against the loaded agent list above -- never stored raw.
+    ("/admin/agents", "clane"): "selector resolved against the derived compute-lane list, not stored",
+    ("/admin/agents/_table", "clane"): "selector resolved against the derived compute-lane list, not stored",
+    ("/admin/agents/compute-lanes/{backend_id}", "backend_id"): "lookup key only; an unknown id renders the offline empty state",
 }
 
 

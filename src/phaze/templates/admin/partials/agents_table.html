@@ -20,6 +20,10 @@
 {# Phase 88 (88-01, DRILL-03 / D-02): the ?agent= selected-row highlight id, threaded by page/table_partial
    and re-read every poll so it survives the outerHTML swap. Defaults to none (unknown/absent = no highlight). #}
 {% set selected_agent = selected_agent | default(none) %}
+{# phaze-2u8v.5: same lookup-in-known-set idiom for the ?clane= compute-lane selection, threaded through
+   the identical hx-vals channel as ?agent= below so the shared #detail-pane selection survives THIS
+   section's own 5s outerHTML poll (Section 2 lives inside this same swap root). #}
+{% set selected_compute_lane = selected_compute_lane | default(none) %}
 {# phaze-a6hm.4: the self-poll carries the operator's chosen sort FORWARD, via the SHARED spelling.
 
    This section re-swaps ITSELF every 5s with hx-swap="outerHTML" and never halts, so the sort is not
@@ -49,7 +53,7 @@
 <section id="agents-table-section"
          hx-get="{{ sort.poll_url() }}"
          hx-trigger="every 5s"
-         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent")}'
+         hx-vals='js:{agent: new URLSearchParams(location.search).get("agent"), clane: new URLSearchParams(location.search).get("clane")}'
          hx-swap="outerHTML"
          data-refreshed-at="{{ refreshed_at_iso }}"
          aria-labelledby="agents-table-heading"
