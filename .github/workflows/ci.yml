@@ -83,7 +83,7 @@ jobs:
           echo "${CODE_CHANGED}" >> "${GITHUB_OUTPUT}"
 
           if [[ "${CODE_CHANGED}" == "code-changed=false" ]]; then
-            echo "📄 Only documentation/planning files changed — skipping tests, security, and docker jobs"
+            echo "📄 Only documentation/planning files changed — skipping tests and docker jobs (secret scanning still runs)"
           else
             echo "💻 Code changes detected — running full pipeline"
           fi
@@ -101,10 +101,17 @@ jobs:
     # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit -- in-repo reusable workflow; inherit is intentional.
     secrets: inherit
 
+  # No `if:` gate (phaze-84ca): security.yml's secret-scanning job must run
+  # on every push/PR, including docs-only ones, since prose files are the
+  # highest-probability carrier of a pasted credential. The code-focused
+  # scanners (bandit/pip-audit/osv-scanner, semgrep, trivy) still skip on
+  # docs-only changes, but internally to security.yml via the code-changed
+  # input below, not by skipping the whole reusable workflow.
   security:
     needs: [detect-changes]
-    if: needs.detect-changes.outputs.code-changed == 'true'
     uses: ./.github/workflows/security.yml
+    with:
+      code-changed: ${{ needs.detect-changes.outputs.code-changed == 'true' }}
     permissions:
       contents: read
       security-events: write
@@ -164,10 +171,22 @@ jobs:
             exit 1
           fi
 
-          # Docs-only change: test/security/docker are intentionally skipped.
+          # Security always runs and must always succeed (phaze-84ca): the
+          # security job itself is no longer gated by code-changed, so it
+          # never legitimately reports 'skipped' at the job level. Its
+          # secret-scanning sub-job runs unconditionally on docs-only
+          # changes too; the code-focused sub-jobs (bandit/pip-audit/
+          # osv-scanner, semgrep, trivy) skip internally without failing the
+          # reusable workflow's overall result.
+          if [[ "${SECURITY_RESULT}" != "success" ]]; then
+            echo "❌ Security scanning did not succeed (${SECURITY_RESULT})"
+            exit 1
+          fi
+
+          # Docs-only change: test/docker are intentionally skipped.
           # Accept 'skipped' (skip-with-success) but reject failure/cancelled.
           if [[ "${CODE_CHANGED}" == "false" ]]; then
-            for result in "${TEST_RESULT}" "${SECURITY_RESULT}" "${DOCKER_RESULT}"; do
+            for result in "${TEST_RESULT}" "${DOCKER_RESULT}"; do
               if [[ "${result}" != "skipped" && "${result}" != "success" ]]; then
                 echo "❌ Docs-only change but a gated job ended '${result}' (expected skipped)"
                 exit 1
@@ -179,7 +198,7 @@ jobs:
           fi
 
           # Code change: every gated job must have explicitly succeeded.
-          for pair in "Tests:${TEST_RESULT}" "Security:${SECURITY_RESULT}" "Docker:${DOCKER_RESULT}"; do
+          for pair in "Tests:${TEST_RESULT}" "Docker:${DOCKER_RESULT}"; do
             name="${pair%%:*}"
             result="${pair##*:}"
             if [[ "${result}" != "success" ]]; then
