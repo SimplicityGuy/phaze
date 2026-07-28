@@ -69,18 +69,21 @@ async def _post(app_module: ModuleType, route: str, file_path: str = "/audio/smo
 
 @pytest.fixture
 def panako_media(panako_app: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Confine the loaded module's MEDIA_ROOTS/STAGING_DIR to an isolated tmp_path tree.
+    """Confine the loaded module's MEDIA_ROOTS/STAGING_DIR/INGEST_IDENTITY_DIR to an isolated tree.
 
-    phaze-64w1: ``_staged_operand`` validates + confines ``file_path`` under one of
-    ``MEDIA_ROOTS`` and stages it under ``STAGING_DIR`` before it ever reaches the CLI, so
+    phaze-64w1: the query path (``_staged_query_operand``, ephemeral) and the ingest path
+    (``_ingest_identity_path``, persistent) each validate + confine ``file_path`` under one of
+    ``MEDIA_ROOTS`` and stage it under their own directory before it ever reaches the CLI, so
     any test that exercises the HTTP layer (rather than calling ``_run_ingest``/``_run_query``
-    directly) needs a real, MEDIA_ROOTS-confined location to point requests at. Returns the
-    (single-entry) media root directory; callers create files under it.
+    directly) needs a real, MEDIA_ROOTS-confined location to point requests at, plus isolated
+    staging directories so tests never share state. Returns the (single-entry) media root
+    directory; callers create files under it.
     """
     media_root = tmp_path / "media"
     media_root.mkdir()
     monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [media_root])
     monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+    monkeypatch.setattr(panako_app, "INGEST_IDENTITY_DIR", tmp_path / "identities")
     return media_root
 
 
@@ -254,10 +257,11 @@ class TestPathValidationAndStaging:
     Panako's own decode path (TarsosDSP's PipeDecoder, reached from every store/query)
     substitutes the operand we hand the CLI into a `/bin/bash -c "... -i \\"%resource%\\" ..."`
     template with only bare double-quoting -- a `"`, a backtick, or `$(...)` in the path
-    breaks out of that quoting into arbitrary shell execution. `_staged_operand` confines the
-    caller's path under one of MEDIA_ROOTS and stages the resolved file under a generated uuid name,
-    so the CLI never sees a caller-controlled byte -- whether from an attacker or from a
-    legitimate messy filename like the ones exercised in TestSemicolonPathParsing above.
+    breaks out of that quoting into arbitrary shell execution. `_ingest_identity_path`
+    (ingest) and `_staged_query_operand` (query) both confine the caller's path under one of
+    MEDIA_ROOTS and stage the resolved file under a generated safe name, so the CLI never
+    sees a caller-controlled byte -- whether from an attacker or from a legitimate messy
+    filename like the ones exercised in TestSemicolonPathParsing above.
     """
 
     async def test_shell_metacharacter_filename_is_staged_safely(
@@ -278,7 +282,7 @@ class TestPathValidationAndStaging:
         operand = seen["cmd"][-1]
         assert "$(" not in operand
         assert "touch" not in operand
-        assert operand.startswith(str(panako_app.STAGING_DIR))
+        assert operand.startswith(str(panako_app.INGEST_IDENTITY_DIR))
         # The response still echoes the caller's ORIGINAL path -- never the internal staged name.
         assert body["file_path"] == str(evil)
 
@@ -316,11 +320,29 @@ class TestPathValidationAndStaging:
         status, _ = await _post(panako_app, "/ingest", file_path=str(evil))
         assert status == 200
 
-    async def test_staged_symlink_is_cleaned_up_after_the_request(
+    async def test_ingest_identity_symlink_persists_after_the_request(
         self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """phaze-64w1 third bounce: unlike the query-side operand, an ingest identity must NOT
+        be cleaned up -- Panako's `store` persists it as the fingerprint's permanent identity,
+        so deleting it after the request orphans every match against it forever.
+        """
         _patch_run(monkeypatch, panako_app, "_run_ingest")
         status, _ = await _post(panako_app, "/ingest", file_path=str(smoke_file))
+        assert status == 200
+        staged = list(panako_app.INGEST_IDENTITY_DIR.iterdir())
+        assert len(staged) == 1
+        assert staged[0].is_symlink()
+        assert staged[0].resolve() == smoke_file.resolve()
+
+    async def test_query_staged_symlink_is_cleaned_up_after_the_request(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The query-side operand IS ephemeral -- Panako never persists it anywhere a later
+        request could look it up, so it's safe (and correct) to delete once the request ends.
+        """
+        _patch_run(monkeypatch, panako_app, "_run_query")
+        status, _ = await _post(panako_app, "/query", file_path=str(smoke_file))
         assert status == 200
         assert list(panako_app.STAGING_DIR.iterdir()) == []
 
@@ -383,6 +405,7 @@ class TestMultiRootConfinement:
         root_b.mkdir(parents=True)
         monkeypatch.setattr(panako_app, "MEDIA_ROOTS", [root_a, root_b])
         monkeypatch.setattr(panako_app, "STAGING_DIR", tmp_path / "stage")
+        monkeypatch.setattr(panako_app, "INGEST_IDENTITY_DIR", tmp_path / "identities")
         _patch_run(monkeypatch, panako_app, "_run_ingest")
 
         file_in_a = root_a / "x.wav"
@@ -446,6 +469,71 @@ class TestMultiRootConfinement:
         mod = load_service_module("panako", "phaze_test_panako_media_roots_split")
         expected = [mod.Path("/data/downloads"), mod.Path("/data/staging")]
         assert expected == mod.MEDIA_ROOTS
+
+
+class TestIngestQueryIdentityRoundTrip:
+    """phaze-64w1 third bounce: a stored fingerprint's identity must survive past the request
+    that created it and resolve back to the REAL archive path on query -- not an ephemeral
+    per-request staging name already deleted by the time a later query needs to look it up.
+
+    The uuid4-per-request staging scheme (second bounce's fix) broke exactly this: Panako's
+    `store` persists the operand it was given verbatim, and echoes it back as a `query`
+    match's "match path" -- but that operand had already been unlinked in the ingest
+    request's `finally`, so every match resolved to a temp name nothing on disk still
+    answers to. Caught by the docker-validate smoke self-match assertion, not by any
+    app-level test -- these exist so it can't regress silently outside CI again.
+    """
+
+    async def test_query_after_ingest_returns_the_real_path_as_track_id(
+        self, panako_app: ModuleType, smoke_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stored_operand: dict[str, str] = {}
+
+        def _fake_cli(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            verb, operand = cmd[-2], cmd[-1]
+            if verb == "store":
+                stored_operand["path"] = operand
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            # verb == "query": Panako echoes back EXACTLY the operand it was given at store
+            # time as the match record's "match path" field -- the real behavior this test
+            # pins down, captured via the same fixed-arity shape as REAL_MATCH_ROW above.
+            row = f"1 ; 1 ; {operand} ; 1.376 ; 24.432 ; {stored_operand['path']} ; 19515506 ; 1.376 ; 24.432 ; 36 ; 1.000 % ; 1.000 %; 0.75"
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{HEADER}\n{row}\n", stderr="")
+
+        monkeypatch.setattr(panako_app.subprocess, "run", _fake_cli)
+
+        ingest_status, _ = await _post(panako_app, "/ingest", file_path=str(smoke_file))
+        assert ingest_status == 200
+        # The identity handed to the CLI must NOT be the caller-controlled path itself (the
+        # injection defense) -- but it must have been recorded regardless.
+        assert stored_operand["path"] != str(smoke_file)
+        assert stored_operand["path"].startswith(str(panako_app.INGEST_IDENTITY_DIR))
+
+        query_status, query_body = await _post(panako_app, "/query", file_path=str(smoke_file))
+        assert query_status == 200
+        assert len(query_body["matches"]) == 1
+        # The critical assertion: the app must resolve the staged identity BACK to the real
+        # archive path before it ever reaches a caller -- an unresolved staging name here
+        # means every stored fingerprint is orphaned.
+        assert query_body["matches"][0]["track_id"] == str(smoke_file)
+
+    def test_reingesting_the_same_path_reuses_the_same_identity(self, panako_app: ModuleType, smoke_file: Path) -> None:
+        """Re-ingesting the same archive location must not fragment its identity across
+        multiple staged names -- each ingest of the SAME resolved path must stage to the
+        SAME identity symlink (deterministic per phaze-64w1 third bounce).
+        """
+        first = panako_app._ingest_identity_path(str(smoke_file))
+        second = panako_app._ingest_identity_path(str(smoke_file))
+        assert first == second
+        assert first.is_symlink()
+        assert first.resolve() == smoke_file.resolve()
+
+    def test_destage_of_an_unrecognized_path_is_a_no_op(self, panako_app: ModuleType) -> None:
+        """A path that isn't one of our identity symlinks (legacy data, or a bug elsewhere)
+        must degrade to "return it unchanged", never raise into a 500.
+        """
+        assert panako_app._destage_track_id("/some/other/path.wav") == "/some/other/path.wav"
+        assert panako_app._destage_track_id("null") == "null"
 
 
 class TestHealthExercisesTheJar:
