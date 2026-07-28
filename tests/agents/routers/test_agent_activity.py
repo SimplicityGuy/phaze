@@ -3,7 +3,8 @@
 Covers:
 - Known agent -> 200 HTML fragment: liveness header (kind badge + status pill + last-seen), the 6-stage
   COUNT matrix (Meta/FP/Analyze/Prop/Appr/Exec), per-lane queue depths, recent scan batches, and the
-  D-03 own-tick (hx-trigger="every 5s" re-fetching into #detail-pane).
+  D-03 own-tick (hx-trigger="every 5s" re-fetching into the per-agent expanded-row slot,
+  phaze-2u8v.6's #agent-activity-{id}).
 - Appr=Stage.REVIEW / Exec=Stage.APPLY remap (RESEARCH Pitfall 3): a proposal-only file reads DONE in
   the Appr column and NOT DONE in the Exec column.
 - Unknown agent_id -> friendly empty fragment at 200 (WR-01), never a 500 / JSON / HTTPException; the
@@ -129,10 +130,10 @@ async def test_known_agent_returns_activity_fragment(smoke: AsyncClient) -> None
     assert "Queue depth by lane" in body
     # (4) Recent scan batches section.
     assert "Recent scan batches" in body
-    # D-03 own-tick: the body re-fetches this endpoint into #detail-pane every 5s.
+    # D-03 own-tick: the body re-fetches this endpoint into its per-agent expanded-row slot every 5s.
     assert 'hx-get="/admin/agents/activity-agent/_activity"' in body
     assert 'hx-trigger="every 5s"' in body
-    assert 'hx-target="#detail-pane"' in body
+    assert 'hx-target="#agent-activity-activity-agent"' in body
     # CR-02 regression: the own-tick must be a SELF-REMOVING dedicated element (matches _lane_detail.html),
     # NOT the body root. A poll on the root re-fires the shell's onLoaded() (open=true) each swap and
     # re-opens a dismissed pane. The x-effect removes the tick once the shell's `open` flips false.

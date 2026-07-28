@@ -1,11 +1,21 @@
-{# Phase 88 (88-01, DRILL-03 / D-08 / D-09 / D-03): the shared NON-modal detail-pane shell.
+{# Phase 88 (88-01, DRILL-03 / D-08 / D-09 / D-03) + phaze-2u8v.6: the LANE detail-pane shell.
 
-   ONE reusable swap-target container hosted on BOTH the Analyze workspace (lane detail) and the
-   /admin/agents page (agent activity). It owns the pane chrome, the header + visible ✕ Close, the
-   D-09 keyboard/focus/dismiss contract, the ?param clear + focus-return-by-STABLE-ID wiring, the
-   D-03 own-tick "Last refreshed" + degrade/refresh-error captions, and the resting empty state.
-   Wave-2 bodies (_lane_detail.html / _agent_activity.html) are innerHTML-swapped into #detail-pane
-   by the trigger hx-get; they are parameterized content slots, NOT re-litigated here (interface-first).
+   ONE reusable swap-target overlay, hosted on the Analyze workspace (lane detail) ONLY. It owns the
+   pane chrome, the header + visible ✕ Close, the D-09 keyboard/focus/dismiss contract, the ?lane clear
+   + focus-return-by-STABLE-ID wiring, the D-03 own-tick "Last refreshed" + degrade/refresh-error
+   captions, and the resting empty state. The wave-2 body (_lane_detail.html) is innerHTML-swapped into
+   #detail-pane by the trigger hx-get; it is a parameterized content slot, NOT re-litigated here
+   (interface-first).
+
+   phaze-2u8v.6: this shell used to also serve /admin/agents (pane_kind='agent'). That surface's detail
+   is now an EXPANDED ROW instead (admin/partials/_agent_detail_row.html) — a table's detail reads as
+   "this row, expanded", not a side panel, so the pane_kind branch is gone and this file serves exactly
+   one caller. The same bead fixes THIS surface's own reported bug: opening the pane used to occupy a
+   grid column (`lg:col-span-1` of analyze_workspace.html's 3-column row), so its height fed into that
+   row's height and pushed every section below it down the page. The pane is now `position: fixed` —
+   OUT OF DOCUMENT FLOW — so opening or closing it can never move or resize anything else on the page,
+   at any viewport. It slides in from the right edge (`translate-x-full` <-> `translate-x-0`) rather
+   than reserving a column.
 
    NON-MODAL (D-01): borrows the record_host.html / cmdk_modal.html Esc + heading-focus discipline but
    DROPS the modal trap — role="region" (NOT role="dialog"), NO aria-modal, NO x-trap, NO backdrop, so
@@ -14,32 +24,18 @@
 
    Pitfall 1 (poll-doomed trigger): the 5s outerHTML poll REPLACES the trigger node, so a captured
    element handle would be detached. On open we park focus on the pane <h2 tabindex="-1"> (off the
-   trigger); on dismiss we return focus by STABLE id (document.getElementById('lane-trigger-'+id) /
-   'agent-trigger-'+id) — the re-rendered trigger keeps the same id.
+   trigger); on dismiss we return focus by STABLE id (document.getElementById('lane-trigger-'+id)) —
+   the re-rendered trigger keeps the same id.
 
-   Context (all optional; the include site sets pane_kind):
-     * pane_kind      -- 'lane' (default) | 'agent'. Drives the trigger-id prefix, base path, ?param
-                         name, and the resting empty-state copy.
-     * selected_lane  -- when pane_kind='lane', the ?lane= id (server-seeded on a reload).
-     * selected_agent -- when pane_kind='agent', the ?agent= id. #}
-{% set pane_kind = pane_kind | default('lane') %}
-{% if pane_kind == 'agent' %}
-    {% set _trigger_prefix = 'agent-trigger-' %}
-    {% set _base_path = '/admin/agents' %}
-    {% set _param = 'agent' %}
-    {% set _selected = selected_agent | default(none) %}
-    {% set _detail_url = '/admin/agents/' ~ _selected ~ '/_activity' if _selected else none %}
-    {% set _empty_head = 'No agent selected' %}
-    {% set _empty_body = 'Select an agent to see its stage activity, queue depths, and liveness.' %}
-{% else %}
-    {% set _trigger_prefix = 'lane-trigger-' %}
-    {% set _base_path = '/s/analyze' %}
-    {% set _param = 'lane' %}
-    {% set _selected = selected_lane | default(none) %}
-    {% set _detail_url = '/pipeline/lanes/' ~ _selected if _selected else none %}
-    {% set _empty_head = 'No lane selected' %}
-    {% set _empty_body = 'Select a lane to see its queues, in-flight work, and recent completions.' %}
-{% endif %}
+   Context (all optional):
+     * selected_lane  -- the ?lane= id (server-seeded on a reload). #}
+{% set _trigger_prefix = 'lane-trigger-' %}
+{% set _base_path = '/s/analyze' %}
+{% set _param = 'lane' %}
+{% set _selected = selected_lane | default(none) %}
+{% set _detail_url = '/pipeline/lanes/' ~ _selected if _selected else none %}
+{% set _empty_head = 'No lane selected' %}
+{% set _empty_body = 'Select a lane to see its queues, in-flight work, and recent completions.' %}
 <section x-data="{
              open: false,
              selectedId: null,
@@ -105,7 +101,15 @@
          role="region"
          aria-labelledby="detail-pane-heading"
          aria-live="polite"
-         class="rounded-xl border border-gray-200 bg-white p-6 dark:border-phaze-border dark:bg-phaze-panel">
+         {# x-cloak: the closed<->open translate is entirely an Alpine `:class` binding (no static
+            translate-x-* class), so before Alpine hydrates the browser would otherwise paint this
+            fixed, right-anchored panel at its untranslated (i.e. open) position for one frame. Every
+            other x-cloak in this shell (the ✕ button, the degrade/error captions) already accepts
+            this same hidden-until-hydrated window; base.html supplies the global
+            `[x-cloak] { display: none !important; }` rule. #}
+         x-cloak
+         :class="open ? 'translate-x-0' : 'translate-x-full'"
+         class="fixed inset-y-0 right-0 z-40 w-full max-w-sm overflow-y-auto border-l border-gray-200 bg-white p-6 shadow-xl transition-transform duration-200 ease-in-out dark:border-phaze-border dark:bg-phaze-panel">
     <div class="flex items-center justify-between gap-2">
         <h2 id="detail-pane-heading" tabindex="-1"
             class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Detail</h2>
@@ -130,11 +134,10 @@
        `this`. Guarded on window.Alpine so a pre-hydration swap degrades to the innerHTML render.
 
        phaze-m662 (deep link / reload): the body used to be loadable ONLY by a trigger click, so a
-       bookmarked /s/analyze?lane=X (or /admin/agents?agent=X) rendered this target EMPTY. The route
-       already resolves the ?param against the known set for the selection ring (shell.py
-       `selected_lane` / admin_agents `_resolve_selected_agent`); we now spend that same resolved id
-       on a one-shot hx-trigger="load" self-fetch of the wave-2 body. Emitted ONLY when the id
-       resolved, so an absent/unknown ?param fetches nothing and the resting empty state stands.
+       bookmarked /s/analyze?lane=X rendered this target EMPTY. The route already resolves the ?param
+       against the known set for the selection ring (shell.py `selected_lane`); we now spend that same
+       resolved id on a one-shot hx-trigger="load" self-fetch of the wave-2 body. Emitted ONLY when the
+       id resolved, so an absent/unknown ?param fetches nothing and the resting empty state stands.
 
        This fires EXACTLY ONCE and cannot race the body's 5s own-tick: htmx evaluates `load` when it
        processes this node (initial page render only), and the own-tick swaps innerHTML *into* this
