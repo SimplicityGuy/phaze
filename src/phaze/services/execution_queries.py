@@ -5,13 +5,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import case, func, select
+from sqlalchemy.orm import selectinload
 import structlog
 
 from phaze.models.execution import ExecutionLog, ExecutionStatus
+from phaze.models.proposal import RenameProposal
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, Page, clamp_page, clamp_page_size, paged_stmt, split_sentinel
 
 
 if TYPE_CHECKING:
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.routers.column_sort import SortState
@@ -96,3 +100,18 @@ async def get_execution_logs_page(
 
     rows, has_next = split_sentinel(raw, page_size)
     return Page(rows=rows, page=page, page_size=page_size, has_next=has_next)
+
+
+async def get_execution_log_detail(session: AsyncSession, log_id: uuid.UUID) -> ExecutionLog | None:
+    """Get a single audit-log entry with its executed proposal and that proposal's file eager-loaded.
+
+    phaze-37i1.3: the per-entry detail view needs the proposal an entry executed (proposed
+    filename, confidence, AI reasoning) and that proposal's file identity (original path,
+    sha256, agent) -- neither of which the list/paginate path above touches. Both relationships
+    are declared ``lazy="raise"`` (``RenameProposal.file``, ``ExecutionLog.proposal``), so this
+    is the one dedicated read path that eager-loads them; every other read stays as cheap as it
+    was before this bead.
+    """
+    stmt = select(ExecutionLog).options(selectinload(ExecutionLog.proposal).selectinload(RenameProposal.file)).where(ExecutionLog.id == log_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()

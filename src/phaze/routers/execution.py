@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -53,8 +53,9 @@ from phaze.services.execution_dispatch import (
     count_revoked_skipped_proposals,
     get_approved_proposals_grouped_by_agent,
 )
-from phaze.services.execution_queries import get_execution_logs_page, get_execution_stats
+from phaze.services.execution_queries import get_execution_log_detail, get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
+from phaze.services.pipeline import count_proposal_pending_files
 
 
 if TYPE_CHECKING:
@@ -639,6 +640,16 @@ async def audit_log(
     audit_page = await get_execution_logs_page(session, status=status, page=page, page_size=page_size, sort=sort_state)
     stats = await get_execution_stats(session)
 
+    # phaze-37i1.2 (scope per owner decision after the phaze-37i1.1 diagnosis): an audit log that
+    # has NEVER recorded anything is not the same page as one filtered down to nothing, and the
+    # old shared "No operations recorded" copy read as a bug in both cases. ``execution_log`` is
+    # written only for an EXECUTED proposal, and proposal generation is a deliberate,
+    # LLM-costing, operator-triggered step -- so a zero here usually means "the archive has not
+    # reached the propose stage yet", not "the query is broken". The never-run branch says so and
+    # points at the convergence-gate backlog; ``count_proposal_pending_files`` is awaited ONLY on
+    # that branch so the normal, populated page pays no extra query.
+    proposal_ready_count = await count_proposal_pending_files(session) if stats["total"] == 0 else 0
+
     context = {
         "request": request,
         "logs": audit_page.rows,
@@ -647,6 +658,7 @@ async def audit_log(
         "current_status": status or "all",
         "current_page": "audit",
         "sort": sort_state,
+        "proposal_ready_count": proposal_ready_count,
     }
 
     # Tabs + table fragment for a live htmx swap only (so tab active state updates). A history
@@ -656,3 +668,26 @@ async def audit_log(
         return templates.TemplateResponse(request=request, name="execution/partials/audit_content.html", context=context)
 
     return templates.TemplateResponse(request=request, name="execution/audit_log.html", context=context)
+
+
+@router.get("/audit/{log_id}/detail", response_class=HTMLResponse)
+async def audit_log_detail(
+    request: Request,
+    log_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """Return the expanded per-entry detail row for one audit-log entry (phaze-37i1.3).
+
+    "An audit log that lists events you cannot inspect has not solved the operator's problem"
+    (phaze-37i1 epic) -- this is the drill-down: which file, which proposal it executed, and
+    for a failed entry, its actual error text rather than the bare "Failed" badge the table row
+    already shows.
+    """
+    log_entry = await get_execution_log_detail(session, log_id)
+    if log_entry is None:
+        raise HTTPException(status_code=404, detail="Audit log entry not found")
+    return templates.TemplateResponse(
+        request=request,
+        name="execution/partials/audit_detail_row.html",
+        context={"request": request, "log": log_entry},
+    )
