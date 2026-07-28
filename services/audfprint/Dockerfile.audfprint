@@ -42,4 +42,16 @@ RUN groupadd -g 1000 audfprint && \
 USER audfprint
 
 EXPOSE 8001
+
+# phaze-p3hj.2: the sidecar ran with State.Health=none, so /health's verdict reached nobody --
+# a total fingerprint outage (11,180 files) stayed invisible for 10 days. Declared HERE rather
+# than in docker-compose.agent.yml because the deployed compose has already diverged from the
+# tracked one; baking it into the image means every deployment inherits it. /health now probes
+# the database's LOADABILITY, so an unloadable fprint.pklz marks the container unhealthy in
+# `docker ps` instead of reporting "database present". urlopen raises on the 503, which is the
+# nonzero exit Docker reads as a failed check. Interval is deliberately unaggressive: the probe
+# streams the whole database and shares a CPU with active fingerprinting.
+HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=25).read()"]
+
 CMD ["uv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]
