@@ -25,6 +25,10 @@
                     <th scope="col" class="px-4 py-3">{{ label }}</th>
                     {% endif %}
                     {% endfor %}
+                    {# phaze-37i1.3: "Details" is its own unsortable column, appended after "Error" --
+                       it triggers the per-entry drill-down (audit_detail_row.html), not a data field,
+                       so it has no place in the column_sort.py contract's sortable label set above. #}
+                    <th scope="col" class="px-4 py-3"><span class="sr-only">Details</span></th>
                 </tr>
             </thead>
             <tbody>
