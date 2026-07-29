@@ -35,6 +35,7 @@ connection that never held the lock.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from fastapi import FastAPI
@@ -225,10 +226,21 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
                 seed_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
                 await seed_session.commit()
             for i in range(4):
-                file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename=f"bulk-lock-{i}.mp3"))
+                # "Artist - Title.mp3" so parse_filename actually produces a change against the
+                # seeded (artist=None, title=None) metadata -- a plain "bulk-lock-N.mp3" name parses
+                # to no artist/title at all, so every candidate fell out as a zero-change NO_OP and
+                # never reached the dispatch this test exists to exercise.
+                file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename=f"Bulk Artist {i} - Bulk Title.mp3"))
 
         app = FastAPI(title="smoke", version="test")
         app.include_router(tags_router)
+        # phaze-6bkk: bulk_write_no_discrepancies dispatches each qualifying file via
+        # ``request.app.state.task_router`` -- wire a fake one so the loop actually reaches
+        # enqueue_tag_write (and its advisory-lock acquire/release) instead of every file being
+        # silently swallowed as a per-file ``failed`` by a missing ``app.state.task_router``.
+        fake_router = MagicMock()
+        fake_router.enqueue_for_agent = AsyncMock()
+        app.state.task_router = fake_router
 
         async def _get_session():  # type: ignore[no-untyped-def]
             async with session_factory() as s:
@@ -239,6 +251,7 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/tags/bulk-write-no-discrepancies")
         assert resp.status_code == 200
+        assert fake_router.enqueue_for_agent.await_count == len(file_ids), "every qualifying file must reach the dispatch"
 
         async with engine.connect() as verify_conn:
             count = (await verify_conn.execute(_ADVISORY_LOCK_COUNT_SQL, {"classid": _LOCK_CLASSID, "objid": _LOCK_OBJID})).scalar()

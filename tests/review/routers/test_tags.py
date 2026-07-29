@@ -439,7 +439,7 @@ async def test_write_tags_dispatch_failure_toast_points_at_the_agent_not_file_pe
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
 
     assert response.status_code == 200
@@ -526,7 +526,7 @@ async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: Async
     )
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(
             f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
@@ -909,16 +909,11 @@ async def test_undo_picks_original_write_not_a_later_successful_retry(client: As
         written_at=base + timedelta(seconds=30),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
-    mock_write.assert_called_once()
-    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}, "undo must restore the TRUE original, not the later retry's shadow"
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}, "undo must restore the TRUE original, not the later retry's shadow"
 
 
 @pytest.mark.asyncio
@@ -950,16 +945,11 @@ async def test_undo_chain_resets_after_a_prior_successful_undo(client: AsyncClie
         written_at=base + timedelta(seconds=60),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
-    mock_write.assert_called_once()
-    assert mock_write.call_args.args[1] == {"artist": "Modern Artist"}, "undo must target the new chain's write, not the pre-undo ancient one"
+    assert _dispatched_tags(router) == {"artist": "Modern Artist"}, "undo must target the new chain's write, not the pre-undo ancient one"
 
 
 async def _count_write_logs(session: AsyncSession, file_id: uuid.UUID, *, source: str) -> int:
@@ -1092,7 +1082,7 @@ async def test_undo_failed_reversal_toasts_failure_not_success(client: AsyncClie
     # failure. The rule from phaze-26t7 is unchanged and is what this asserts: never toast a revert
     # that did not happen.
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
@@ -1116,7 +1106,7 @@ async def test_undo_failed_reversal_v7_keeps_approved_row_with_failure_toast(cli
     )
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("boom")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("boom")):
         response = await client.post(
             f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},

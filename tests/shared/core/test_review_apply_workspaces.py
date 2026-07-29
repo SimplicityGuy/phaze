@@ -382,22 +382,22 @@ async def test_tag_bulk_rollback_does_not_expire_later_candidates(
     bad_id = bad.id
     good_id = good.id
 
-    async def _fake_execute(sess: AsyncSession, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
         if fr.id == bad_id:
             msg = "Only executed files can have tags written"
             raise ValueError(msg)
-        entry = TagWriteLog(file_id=fr.id, before_tags={"album": "Keep Album"}, after_tags=tags, source=source, status=TagWriteStatus.COMPLETED.value)
+        entry = TagWriteLog(file_id=fr.id, before_tags={}, after_tags=tags, source=source, status=TagWriteStatus.QUEUED.value)
         sess.add(entry)
         await sess.flush()
         return entry
 
-    with patch("phaze.routers.tags.execute_tag_write", new=AsyncMock(side_effect=_fake_execute)):
+    with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
         resp = await client.post("/tags/bulk-write-no-discrepancies")
 
     assert resp.status_code == 200
-    assert await _tagwrite_log_count(session, bad_id) == 0, "execute_tag_write raised before any write -- no audit row for the bad file"
-    assert await _tagwrite_log_count(session, good_id, status="completed") == 1, (
-        "the file behind the rollback must be written normally, not miscounted as failed due to an expired ORM attribute"
+    assert await _tagwrite_log_count(session, bad_id) == 0, "enqueue_tag_write raised before any row -- no audit row for the bad file"
+    assert await _tagwrite_log_count(session, good_id, status="queued") == 1, (
+        "the file behind the rollback must be dispatched normally, not miscounted as failed due to an expired ORM attribute"
     )
 
 
@@ -416,7 +416,7 @@ async def test_tag_bulk_reports_failures_truthfully(
     await seed_executed_file_with_metadata(original_filename="zzz - New Title.mp3", artist=None, title=None, album="Keep Album")
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         resp = await client.post("/tags/bulk-write-no-discrepancies")
 
     assert resp.status_code == 200
@@ -518,7 +518,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
     # Dispatch-failure path: nothing was handed to any agent, so nothing was written.
     failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         resp2 = await client.post("/tags/bulk-write-no-discrepancies")
 
     assert resp2.status_code == 200
