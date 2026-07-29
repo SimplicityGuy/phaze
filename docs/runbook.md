@@ -186,6 +186,38 @@ flowchart TD
 While **force-local** is engaged, none of this runs — the drain no-ops and new long files route
 straight to local (see [Force-local incident revert](#force-local-incident-revert)).
 
+## "The cloud lane is not draining" warning
+
+A held file is deliberately silent: the drain must not touch the parked row, because its `updated_at`
+**is** the staleness clock the spill gate above reads. That silence once hid a full day of starvation —
+a lane logging `staged: 0, skipped: 3` every 5 min while a cloud backend sat idle with free capacity.
+
+So the drain now escalates. When **three consecutive ticks** (~15 min) hold **100%** of every candidate
+they examined, it logs at WARNING:
+
+```
+stage_cloud_window: every candidate held on consecutive ticks -- the cloud lane is not draining
+    consecutive_all_held_ticks=3 hold_reasons={'cloud_attempts_exhausted': 14}
+    candidates_scanned=14 free_slots=3
+```
+
+`hold_reasons` is the actionable part — each names which selection filter rejected the candidates:
+
+| Reason | Means | What to do |
+|---|---|---|
+| `cloud_attempts_exhausted` | These files spent their cloud budget (`cloud_submit_max_attempts`), so they can only route **local** — and local has no free slot. | **Act.** An attempt counter only grows, so this never clears on its own. Give the local backend headroom (raise its `cap`, or let its in-flight work finish), or investigate why those files kept failing their cloud submits. |
+| `local_spill_not_reached` | Cloud is online but full, and the files have not yet waited out `cloud_spill_to_local_after_seconds`. | **Wait.** This is the staleness gate working; it clears itself when the clock elapses. |
+| `no_free_slots` | Every backend is offline or at cap. | Check the lane grid and the offline probes — this is fleet-wide saturation, not a per-file problem. |
+
+The routine per-tick INFO line carries the same `hold_reasons` plus `candidates_scanned`, so you can read
+the same breakdown without waiting for the warning.
+
+**Note that holds no longer block the queue.** The drain walks *past* unroutable candidates (paging up to
+500 rows per tick) and stages routable work from behind them in the same tick, so a run of permanently
+held files slows the lane but does not stop it. A lane that is genuinely stuck — the warning firing tick
+after tick — means the unroutable run is longer than the per-tick scan budget, and the table above is how
+you clear it.
+
 ## Per-backend `_FILE` secrets
 
 Backend credentials follow the same **`_FILE` secret convention** used elsewhere in Phaze — the

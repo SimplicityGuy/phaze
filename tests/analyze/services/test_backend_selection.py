@@ -18,7 +18,14 @@ import inspect
 from typing import Any
 
 from phaze.config import ControlSettings
-from phaze.services.backend_selection import BackendSlot, select_backend
+from phaze.services.backend_selection import (
+    HOLD_CLOUD_ATTEMPTS_EXHAUSTED,
+    HOLD_LOCAL_SPILL_NOT_REACHED,
+    HOLD_NO_FREE_SLOTS,
+    BackendSlot,
+    select_backend,
+    select_backend_with_reason,
+)
 from phaze.services.backends import ComputeAgentBackend, KueueBackend, LocalBackend
 
 
@@ -241,3 +248,62 @@ def test_hold_returns_none_when_no_backend_eligible() -> None:
 def test_hold_when_empty_snapshot() -> None:
     """An empty snapshot -> None (hold), never raises / never divides by zero."""
     assert select_backend(NOW, 0, {}, NOW, _cfg()) is None
+
+
+# --- phaze-9sqa: the labelled hold reason -------------------------------------------------
+#
+# A bare `None` says "held" but not "held WHY", and the three whys are operationally different: one is
+# self-clearing capacity pressure, one is a clock that has not run out yet, and one is permanent until an
+# operator intervenes. The drain bins these per tick and alarms on a sustained run of the permanent kind.
+
+
+def test_hold_reason_no_free_slots_when_every_backend_is_full_or_down() -> None:
+    """Registry-wide saturation is labelled `no_free_slots` -- a property of the fleet, not of the file."""
+    compute = _compute(id="compute-a1", rank=10, cap=2)
+    kueue = _kueue(id="kueue-x64", rank=20, cap=5)
+    snap = _snapshot(_slot(compute, available=False, remaining=0), _slot(kueue, remaining=0))
+    assert select_backend_with_reason(NOW, 0, snap, NOW, _cfg()) == (None, HOLD_NO_FREE_SLOTS)
+
+
+def test_hold_reason_attempts_exhausted_when_cloud_is_capped_and_local_is_full() -> None:
+    """THE phaze-9sqa poison: D-04-capped (cloud-ineligible) with no local slot -> `cloud_attempts_exhausted`.
+
+    Permanent while local stays full -- `cloud_attempts` only grows, so waiting cannot make this file
+    cloud-eligible again. A run of these at the head of the FIFO is what starved the whole lane.
+    """
+    compute = _compute(id="compute-a1", rank=10, cap=2)
+    local = _local(cap=1)
+    snap = _snapshot(_slot(compute, remaining=2), _slot(local, remaining=0, cap=1))
+    backend, reason = select_backend_with_reason(NOW, 3, snap, NOW, _cfg(max_attempts=3))
+    assert backend is None
+    assert reason == HOLD_CLOUD_ATTEMPTS_EXHAUSTED
+
+
+def test_hold_reason_local_spill_not_reached_while_the_wait_clock_runs() -> None:
+    """Cloud online-but-full + only local free + a fresh file -> `local_spill_not_reached` (self-clearing)."""
+    compute = _compute(id="compute-a1", rank=10, cap=2)
+    local = _local()
+    snap = _snapshot(_slot(compute, remaining=0), _slot(local, remaining=10))
+    backend, reason = select_backend_with_reason(NOW, 0, snap, NOW, _cfg(spill_after=900))
+    assert backend is None
+    assert reason == HOLD_LOCAL_SPILL_NOT_REACHED
+    # ...and it really is only the clock: the same file past the threshold spills to local.
+    assert select_backend_with_reason(NOW - timedelta(seconds=901), 0, snap, NOW, _cfg(spill_after=900)) == (local, "")
+
+
+def test_select_backend_is_the_reason_variant_with_the_label_dropped() -> None:
+    """The two entry points can never drift: `select_backend` IS `select_backend_with_reason()[0]`.
+
+    Exercised across a dispatch and all three hold shapes, so a future edit to one path that forgets the
+    other fails here rather than in production.
+    """
+    compute = _compute(id="compute-a1", rank=10, cap=2)
+    local = _local()
+    cases = [
+        (0, _snapshot(_slot(compute, remaining=2), _slot(local, remaining=10))),  # dispatch
+        (0, _snapshot(_slot(compute, remaining=0), _slot(local, remaining=0))),  # no_free_slots
+        (3, _snapshot(_slot(compute, remaining=2), _slot(local, remaining=0))),  # attempts exhausted
+        (0, _snapshot(_slot(compute, remaining=0), _slot(local, remaining=10))),  # spill gated
+    ]
+    for attempts, snap in cases:
+        assert select_backend(NOW, attempts, snap, NOW, _cfg()) is select_backend_with_reason(NOW, attempts, snap, NOW, _cfg())[0]
