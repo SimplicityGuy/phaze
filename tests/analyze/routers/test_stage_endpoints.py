@@ -136,3 +136,33 @@ async def test_pause_then_resume_flip_and_persist_paused(client: AsyncClient, se
     resumed_row = await session.get(PipelineStageControl, "analyze")
     assert resumed_row is not None
     assert resumed_row.paused is False
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_each_clear_the_stage_control_cache(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-uqyn: both endpoints invalidate the before-enqueue hook's TTL cache on commit.
+
+    Without this, a job enqueued in THIS SAME process right after resume (a bulk trigger racing
+    the operator's click, or the recovery producer) would still read the stale cached
+    ``paused=True`` for up to 5s and re-park itself at SENTINEL AFTER the one-shot un-park
+    already ran -- wedged with no automatic path to un-park it again.
+    """
+    from phaze.tasks._shared import stage_control as stage_control_module
+
+    await _seed_stages(session)
+
+    # Poison the cache as if a prior enqueue in this process had just read (and cached) a value.
+    stage_control_module._cache["analyze"] = (False, 999)
+    stage_control_module._cache_expires_at = stage_control_module.time.monotonic() + 60
+
+    pause_response = await client.post("/pipeline/stages/analyze/pause")
+    assert pause_response.status_code == 200
+    assert stage_control_module._cache == {}
+
+    # Poison it again to prove resume ALSO clears it, independently of pause.
+    stage_control_module._cache["analyze"] = (True, 999)
+    stage_control_module._cache_expires_at = stage_control_module.time.monotonic() + 60
+
+    resume_response = await client.post("/pipeline/stages/analyze/resume")
+    assert resume_response.status_code == 200
+    assert stage_control_module._cache == {}

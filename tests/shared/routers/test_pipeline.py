@@ -241,6 +241,54 @@ async def test_analyze_enqueues_complete_process_file_payload(client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_enqueue_analysis_jobs_logs_a_blocked_collision(caplog: pytest.LogCaptureFixture) -> None:
+    """phaze-ewen: a bulk-run file whose key is held by a DEAD job is logged, not silently omitted.
+
+    Pre-fix, ``_enqueue_analysis_jobs`` discarded every ``None`` return uniformly -- a file
+    blocked by a zombie 'aborting'/'failed'/stuck row vanished from a run the dashboard reports
+    as "N enqueued" with nothing distinguishing it from a benign already-in-flight dedup.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import phaze.routers.pipeline as pipeline_mod
+
+    file_rec = _make_file()
+    key = f"process_file:{file_rec.id}"
+    queue = DedupFakeQueue("phaze-agent-test-fileserver-analyze")
+    queue._live_keys.add(key)  # pre-register the key as already "in flight" so enqueue dedups to None
+    queue.job = AsyncMock(return_value=SimpleNamespace(status="aborting", stuck=False))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", settings.models_path)
+
+    assert queue.captured == []  # nothing enqueued -- collision, not a fresh job
+    assert "deterministic key held by a dead job" in caplog.text
+    assert str(file_rec.id) in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_enqueue_analysis_jobs_does_not_log_a_live_collision(caplog: pytest.LogCaptureFixture) -> None:
+    """A collision against a genuinely LIVE job stays quiet -- only a BLOCKED collision is loud."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import phaze.routers.pipeline as pipeline_mod
+
+    file_rec = _make_file()
+    key = f"process_file:{file_rec.id}"
+    queue = DedupFakeQueue("phaze-agent-test-fileserver-analyze")
+    queue._live_keys.add(key)
+    queue.job = AsyncMock(return_value=SimpleNamespace(status="queued", stuck=False))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        await pipeline_mod._enqueue_analysis_jobs(queue, [file_rec], "test-fileserver", settings.models_path)
+
+    assert queue.captured == []
+    assert "deterministic key held by a dead job" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_extract_metadata_enqueues_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
     """Regression (35-REVIEW CR-01): /api/v1/extract-metadata must enqueue a COMPLETE ExtractMetadataPayload.
 
@@ -1595,6 +1643,88 @@ async def test_deepen_uses_deterministic_key_and_dedups_in_flight(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_deepen_collision_with_a_live_job_reports_already_in_flight_and_still_polls(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-ewen: a collision against a genuinely LIVE job renders an honest fragment, poller included.
+
+    Pre-fix, EVERY None return rendered the unconditional "Queued — starting deepen…" as if a
+    fresh full-caps job had been created, even though the collision means the caps this click
+    requested were silently discarded. The poller must still start (D-05: the live job's own
+    progress will complete/fail normally) -- only the CLAIM that this click queued something is
+    wrong, not the wait itself.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.commit()
+    expected_key = f"process_file:{file_rec.id}"
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r1.status_code == 200
+    queue = router.queues["test-fileserver-analyze"]
+    assert len(queue.captured) == 1
+
+    # Model the live collision: queue.job(key) now resolves to a genuinely in-flight (queued) row.
+    queue.job = AsyncMock(return_value=SimpleNamespace(status="queued", stuck=False))
+
+    r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r2.status_code == 200
+    assert len(queue.captured) == 1  # still deduped -- no second enqueue
+    assert "already analyzing" in r2.text.lower()
+    assert 'hx-get="/pipeline/files/' in r2.text  # the poller still starts (D-05)
+    assert expected_key.split(":", 1)[1] in r2.text
+
+
+@pytest.mark.asyncio
+async def test_deepen_collision_with_a_dead_job_reports_blocked_and_does_not_poll(
+    client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """phaze-ewen: a collision against a DEAD job (aborting/failed/stuck) is terminal, not queued.
+
+    SAQ's dedup upsert never overwrites an 'aborting' row, so this deepen was silently dropped
+    pre-fix while the UI polled 'Queued — starting deepen…' forever (nothing will ever satisfy
+    deepen_progress's non-terminal branches for a job that does not exist). The fix renders a
+    terminal fragment with NO poller and logs the drop.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.commit()
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r1.status_code == 200
+    queue = router.queues["test-fileserver-analyze"]
+    assert len(queue.captured) == 1
+
+    # Model the zombie collision: the key is held by a dead 'aborting' row.
+    queue.job = AsyncMock(return_value=SimpleNamespace(status="aborting", stuck=False))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+
+    assert r2.status_code == 200
+    assert len(queue.captured) == 1  # nothing new enqueued
+    assert "stuck" in r2.text.lower()
+    assert "hx-get" not in r2.text  # terminal -- no poller, unlike the in-flight branch
+    assert "deterministic key held by a dead job" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, session: AsyncSession) -> None:
     """When no agent is online the deepen endpoint surfaces a fragment and does NOT enqueue (Phase-30 guard).
 
@@ -2278,6 +2408,52 @@ async def test_recover_returns_200_when_producer_raises_is_isolated(client: Asyn
     assert "Recovery started" in response.text
 
     await _drain_background()
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_logs_producer_exception_instead_of_letting_it_vanish(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_run_recovery logs a failing producer instead of leaving it an unretrieved task exception (phaze-o1xx).
+
+    Pre-fix, ``_run_recovery`` awaited ``recover_orphaned_work`` with no try/except, and the
+    fire-and-forget ``asyncio.create_task``'s only done-callback discarded it from
+    ``_background_tasks`` -- so a genuine forced-recovery failure (as opposed to the isolated
+    per-row failures ``recover_orphaned_work`` itself now tallies) surfaced nowhere the operator or
+    an on-call engineer could see except asyncio's default "Task exception was never retrieved" at
+    GC. This pins that ``_run_recovery`` itself never raises and DOES log.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        raise RuntimeError("recovery boom")
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", boom)
+
+    with caplog.at_level("ERROR", logger="phaze.routers.pipeline"):
+        await pipeline_mod._run_recovery({})  # never raises -- the whole point of the fix
+
+    assert "manual recovery trigger failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_logs_the_final_tally_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_run_recovery logs the producer's return value on the happy path (visibility parity with startup)."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0}}}
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+
+    with caplog.at_level("INFO", logger="phaze.routers.pipeline"):
+        await pipeline_mod._run_recovery({})
+
+    assert "manual recovery trigger complete" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -492,6 +492,17 @@ async def trigger_scan(
             status_code=RENDERABLE_ALERT_STATUS,
         )
 
+    # phaze-0wme: collapse to a canonical form AFTER the ".." rejection above, never before --
+    # PurePosixPath would silently resolve ".." components if it ran first, making traversal
+    # invisible. `str(PurePosixPath(joined))` drops a trailing slash, duplicate internal
+    # slashes, and "." components, so every spelling of the same directory
+    # (`"2026"`, `"2026/"`, `"/2026//"`, `"./2026"`) collapses to one string. This value --
+    # not `joined_raw` -- is what feeds the prefix check below, `ScanBatch.scan_path`, and
+    # therefore `uq_scan_batches_agent_id_scan_path_running` (migration 044, phaze-1a71): all
+    # three must agree on one canonical string or the partial-unique duplicate-dispatch guard
+    # can be bypassed by a differently-spelled resubmit of the same path.
+    joined = str(PurePosixPath(joined))
+
     # Lookup agent; reject unknown/revoked. Server-side authoritative gate even
     # though the dropdown filters revoked agents client-side (defensive per
     # threat model "Revoked agent attempting to be selected via direct POST").
@@ -513,8 +524,12 @@ async def trigger_scan(
     # configured, un-traversed scan. Normalize every `r` (and the membership check's left side) to
     # NFC so the membership gate, the prefix gate, and the persisted `scan_path` (`joined`, already
     # NFC) all agree on one normalization form.
-    scan_root_nfc = unicodedata.normalize("NFC", form.scan_root)
-    scan_roots_nfc = [unicodedata.normalize("NFC", r) for r in agent.scan_roots]
+    # phaze-0wme: canonicalize `agent.scan_roots` (and the submitted `scan_root`) the same way
+    # `joined` was collapsed above, so a root stored with a trailing slash (e.g. "/archive/")
+    # byte-agrees with its own collapsed self instead of spuriously failing the membership /
+    # prefix checks below -- the same normalization-axis bug phaze-g0if already fixed for NFC.
+    scan_root_nfc = str(PurePosixPath(unicodedata.normalize("NFC", form.scan_root)))
+    scan_roots_nfc = [str(PurePosixPath(unicodedata.normalize("NFC", r))) for r in agent.scan_roots]
 
     # WR-05: the form-submitted ``scan_root`` MUST itself be one of the agent's
     # configured ``scan_roots``. Previously only the joined ``scan_root + '/' +

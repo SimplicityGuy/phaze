@@ -217,7 +217,7 @@ async def test_never_scheduled_files_are_left_alone(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["detected_loss"] is True
-    assert all(t == {"reenqueued": 0, "skipped": 0} for t in result["stages"].values())
+    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0} for t in result["stages"].values())
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -278,7 +278,7 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
     agent_queue = router.queues["nox-analyze"]
     assert [t for t, _ in agent_queue.captured] == ["process_file"]
     # The deterministic key matches the ledger key (re-stamped, so dedup works in production).
@@ -360,7 +360,7 @@ async def test_orphaned_controller_row_replays_on_controller_queue(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
     assert [t for t, _ in controller_queue.captured] == ["scrape_and_store_tracklist"]
     assert router.queue_for_calls == []  # never asked for an agent queue
 
@@ -388,7 +388,7 @@ async def test_live_key_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -424,7 +424,7 @@ async def test_analyze_done_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -453,7 +453,7 @@ async def test_metadata_done_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
 
 
 @pytest.mark.asyncio
@@ -476,7 +476,7 @@ async def test_metadata_pending_row_replays(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
 
 
 # --- CR-02 regression: the terminal-failure clear (not the predicate) closes the loop -------
@@ -512,7 +512,7 @@ async def test_cleared_metadata_row_is_not_reenqueued(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -554,7 +554,7 @@ async def test_skipped_analyze_row_is_excluded_from_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -585,7 +585,7 @@ async def test_skipped_analyze_row_is_excluded_on_manual_force(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue), force=True)
 
     assert result["forced"] is True
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -616,7 +616,7 @@ async def test_skipped_metadata_row_is_excluded_from_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -659,7 +659,7 @@ async def test_force_skipped_metadata_with_stale_failed_at_is_excluded_from_reco
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -690,7 +690,7 @@ async def test_controller_row_is_live_keys_only(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
 
 
 # --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
@@ -941,7 +941,7 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
 
     # No fileserver -> the row is skipped (no queue touched), never routed to the compute agent.
     assert router.queues == {}
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
 
 
 # --- phaze-fjii: recovery routes EACH agent row to its OWNING fileserver (not one shared pick) --------
@@ -1134,7 +1134,7 @@ async def test_dedup_skip_backstop_for_a_slipped_live_item(
 
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1, "errored": 0}
 
 
 # --- force bypasses ONLY the gate ------------------------------------------------------
@@ -1162,7 +1162,7 @@ async def test_force_bypasses_gate_not_dedup(
 
     assert result["detected_loss"] is False
     assert result["forced"] is True
-    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
 
 
 # --- No active agent: agent rows skip, controller rows replay --------------------------
@@ -1193,8 +1193,8 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
         result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # Agent-routed row skipped (zero), controller-routed row replayed.
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
     assert router.queue_for_calls == []
     # phaze-fjii: the owning fileserver ("nox") is offline -> its rows skip with a WARNING, never rerouted.
     assert "offline -- rows skipped, not rerouted" in caplog.text.lower()
@@ -1450,7 +1450,7 @@ async def test_single_owner_in_flight_cloud_job_skips_ledger_recovery(
 
     # The in-flight cloud_job file must NOT be recovered by the ledger -- its callback/reconcile owns it.
     assert "cloud" not in router.queues
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
 
 
 @pytest.mark.asyncio
@@ -1656,7 +1656,7 @@ async def test_sc2_never_scheduled_discovered_file_with_no_ledger_row_is_not_rec
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert all(t == {"reenqueued": 0, "skipped": 0} for t in result["stages"].values())
+    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0} for t in result["stages"].values())
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -1689,7 +1689,7 @@ async def test_sc3_failed_analyze_with_surviving_ledger_row_is_terminal_never_re
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
     assert router.queues == {}
 
 
@@ -1851,3 +1851,109 @@ async def test_d11_inflight_clause_is_not_in_domain_completed_clause(session: As
 
     # Despite the inflight ledger row, the terminal cell still resolves domain-complete (D-11 trap avoided).
     assert is_domain_completed(row, done_sets) is True
+
+
+# --- Per-row error isolation (phaze-o1xx) -----------------------------------------------
+#
+# Pre-fix, a single row's replay failure propagated straight out of recover_orphaned_work and
+# killed the entire run after an arbitrary prefix had already been enqueued. These tests pin the
+# fix: one row raising is tallied under "errored" and logged, while every OTHER orphaned row in
+# the same run still replays.
+
+
+class _FlakyOnceQueue(DedupFakeQueue):
+    """A :class:`DedupFakeQueue` whose ``enqueue`` raises for exactly one deterministic ``key``.
+
+    Models a transient ``queue.enqueue``/Postgres round-trip failure for one row in an otherwise
+    healthy replay batch (phaze-o1xx's failure scenario), while every other key enqueues normally.
+    """
+
+    def __init__(self, name: str, *, fail_key: str) -> None:
+        super().__init__(name)
+        self._fail_key = fail_key
+        self.enqueue_attempts: list[str | None] = []
+
+    async def enqueue(self, task_name: str, **kwargs: Any) -> Any:
+        key = kwargs.get("key")
+        self.enqueue_attempts.append(key)
+        if key == self._fail_key:
+            raise RuntimeError("transient postgres error during enqueue round-trip")
+        return await super().enqueue(task_name, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_controller_row_replay_failure_is_isolated_and_other_rows_still_replay(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One controller row's enqueue raising is tallied as ``errored``; the run does not abort.
+
+    Pre-fix, the second row (a genuinely orphaned, healthy row) would NEVER be reached because the
+    unguarded loop propagated the first row's exception straight out of ``recover_orphaned_work``.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+
+    failing_tl_id = uuid.uuid4()
+    failing_key = await _seed_ledger(
+        session, function="scrape_and_store_tracklist", file_id=failing_tl_id, payload={"tracklist_id": str(failing_tl_id)}
+    )
+
+    healthy_tl_id = uuid.uuid4()
+    healthy_key = await _seed_ledger(
+        session, function="match_tracklist_to_discogs", file_id=healthy_tl_id, payload={"tracklist_id": str(healthy_tl_id)}
+    )
+
+    router = DedupFakeTaskRouter()
+    controller_queue = _FlakyOnceQueue("controller", fail_key=failing_key)
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 0, "skipped": 0, "errored": 1}
+    assert result["stages"]["match_tracklist_to_discogs"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    # BOTH rows were attempted -- the failure of the first did not short-circuit the second.
+    assert set(controller_queue.enqueue_attempts) == {failing_key, healthy_key}
+    assert [t for t, _ in controller_queue.captured] == ["match_tracklist_to_discogs"]
+
+
+@pytest.mark.asyncio
+async def test_agent_row_lane_routing_failure_is_isolated(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy agent-routed row whose function has no lane mapping is tallied ``errored``, not fatal.
+
+    Models the verifier-flagged latent shape: a future function rename/removal leaves a ledger row
+    behind whose ``function`` no longer resolves via ``lane_for_task`` (currently unreachable through
+    the public API -- ``upsert_ledger_entry`` validates via ``routing_for_function`` -- so the row is
+    inserted directly, the same way an old row would survive a rename in production). The row's
+    routing failure must not abort recovery for any other row.
+    """
+    _patch_settings(monkeypatch)
+    _patch_inflight(monkeypatch, 0)
+    _patch_live_keys(monkeypatch, set())
+    await seed_active_agent(session, agent_id="nox")
+
+    fid = uuid.uuid4()
+    session.add(
+        SchedulingLedger(
+            key=f"legacy_removed_task:{fid}",
+            function="legacy_removed_task",
+            routing="agent",
+            payload={"file_id": str(fid), "agent_id": "nox"},
+        )
+    )
+    # A second, healthy orphaned row in the SAME run must still replay.
+    other_fid = uuid.uuid4()
+    await _seed_ledger(session, function="search_tracklist", file_id=other_fid, payload=_agent_payload("search_tracklist", other_fid))
+    await session.commit()
+
+    router = DedupFakeTaskRouter()
+    controller_queue = DedupFakeQueue("controller")
+    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
+
+    assert result["stages"]["legacy_removed_task"] == {"reenqueued": 0, "skipped": 0, "errored": 1}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}

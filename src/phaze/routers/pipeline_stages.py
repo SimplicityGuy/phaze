@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from phaze.database import get_session
 from phaze.models import PipelineStageControl
 from phaze.services.stage_control import pause_stage, resume_stage, set_stage_priority
-from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
+from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION, clear_stage_control_cache
 
 
 if TYPE_CHECKING:
@@ -120,6 +120,10 @@ async def pause(
     row.paused = True
     await pause_stage(session, stage)
     await session.commit()
+    # phaze-uqyn: drop THIS process's TTL-cached paused read so a job enqueued in this same
+    # process right after the pause commit (e.g. a bulk trigger racing the operator's click)
+    # sees the fresh paused=true immediately instead of an up-to-5s-stale paused=false.
+    clear_stage_control_cache()
     return _response(row)
 
 
@@ -136,4 +140,11 @@ async def resume(
     row.paused = False
     await resume_stage(session, stage)
     await session.commit()
+    # phaze-uqyn: the one-shot un-park above does not invalidate the before-enqueue hook's
+    # TTL cache. Without this, a job enqueued in THIS process within the remaining TTL window
+    # still reads the stale cached paused=True and re-parks itself at SENTINEL AFTER the
+    # one-shot un-park already ran -- wedged until something else un-parks it (the periodic
+    # phaze.tasks.stage_park_reconcile sweep is the cross-process backstop for every OTHER
+    # process's independent cache).
+    clear_stage_control_cache()
     return _response(row)

@@ -288,18 +288,30 @@ class BaseSettings(PydanticBaseSettings):
     worker_process_pool_size: int = 4
     worker_health_check_interval: int = 60
     worker_keep_result: int = 3600
-    # phaze-e57w: age bound (seconds since the job's frozen `started`) past which a SAQ row
-    # stuck in status='aborting' is reaped -- deleted so its deterministic key
-    # (e.g. process_file:<file_id>) is released and the file becomes re-queueable. A legitimate
-    # abort completes in seconds (the worker calls finish(ABORTED)), so a row still 'aborting'
-    # this far past `started` is a zombie the owning worker will never finalize. The bound is on
-    # `started` (frozen), NOT `touched` -- SAQ's sweeper bumps `touched` on every abort->ABORTING
-    # pass (Queue.update), so a touched-based bound would never trigger (spike phaze-qmc2.1).
-    # Default 900 == worker_job_timeout(600) + 300s slack; MUST exceed worker_job_timeout.
-    aborting_reap_seconds: int = Field(
-        default=900,
-        validation_alias=AliasChoices("PHAZE_ABORTING_REAP_SECONDS", "aborting_reap_seconds"),
-        description="Seconds past a job's frozen `started` before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). Default 900 = 600s timeout + 300s slack.",
+    # phaze-e57w: age bound past which a SAQ row stuck in status='aborting' is reaped -- deleted
+    # so its deterministic key (e.g. process_file:<file_id>) is released and the file becomes
+    # re-queueable. A legitimate abort completes in seconds (the worker calls finish(ABORTED)), so
+    # a row still 'aborting' well past its OWN job's timeout is a zombie the owning worker will
+    # never finalize. The bound is on `started` (frozen), NOT `touched` -- SAQ's sweeper bumps
+    # `touched` on every abort->ABORTING pass (Queue.update), so a touched-based bound would never
+    # trigger (spike phaze-qmc2.1).
+    #
+    # phaze-lqkz: this used to be a single ABSOLUTE bound (900s) compared directly against a row's
+    # age. That is correct for the common case (jobs falling back to worker_job_timeout=600) but
+    # wrong for any job enqueued with a LONGER explicit timeout (process_file: 7200s,
+    # services/analysis_enqueue.py) -- a timed-out process_file enters 'aborting' at age 7200s,
+    # already ~8x past a 900s absolute bound, so the reaper's every-minute cron could steal the row
+    # from a worker still mid-finalization (a live worker calling finish(ABORTED) needs up to
+    # ~1-5s, not a full cron tick, but the OLD bound gave it a negative safety margin, not a small
+    # positive one). The reaper now derives its bound PER ROW from that row's own serialized
+    # `timeout` field (SAQ's `Job.to_dict` always includes it once a job's timeout differs from the
+    # SAQ dataclass default -- true for every phaze producer via `apply_project_job_defaults`) plus
+    # this SLACK, so a 7200s job gets a 7200s+slack grace window and a 600s job keeps the original
+    # 900s-equivalent window when this stays at its default.
+    aborting_reap_slack_seconds: int = Field(
+        default=300,
+        validation_alias=AliasChoices("PHAZE_ABORTING_REAP_SLACK_SECONDS", "aborting_reap_slack_seconds"),
+        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack.",
     )
 
     # DB connection footprint / pool hygiene (quick-260707-ryn). These live on BaseSettings

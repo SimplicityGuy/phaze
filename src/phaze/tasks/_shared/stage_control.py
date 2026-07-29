@@ -137,6 +137,28 @@ _cache: dict[str, tuple[bool, int]] = {}
 _cache_expires_at: float = 0.0
 
 
+def clear_stage_control_cache() -> None:
+    """Drop the whole in-process TTL cache immediately (phaze-uqyn, partial mitigation).
+
+    ``resume_stage`` (``phaze.services.stage_control``) is a one-shot un-park of the EXISTING
+    ``saq_jobs`` backlog; it never touches this module's cache. A stage job enqueued or
+    dequeued in THIS process within the remaining TTL window still reads the stale cached
+    ``paused=True`` and re-parks itself at ``SENTINEL`` *after* the one-shot un-park already
+    ran -- and nothing else in this process would ever un-park it again. Calling this from the
+    pause/resume endpoints right after their commit forces the NEXT read in the API process to
+    hit the database, closing the window for enqueues/dequeues handled by this process.
+
+    This is deliberately NOT sufficient by itself: a worker process, the fingerprint-requeue
+    CLI, or any other OS process holds its OWN independent cache that this call cannot reach.
+    The periodic reconciliation sweep (:func:`phaze.tasks.stage_park_reconcile.reconcile_stale_stage_parks`)
+    is the cross-process backstop that retro-heals whatever this same-process invalidation
+    cannot -- see that module's docstring for the full picture.
+    """
+    global _cache_expires_at
+    _cache.clear()
+    _cache_expires_at = 0.0
+
+
 async def _read_stage_control(queue: Any, stage: str) -> tuple[bool, int]:
     """Return ``(paused, priority)`` for ``stage`` via the queue's psycopg3 pool (TTL-cached).
 
@@ -277,6 +299,7 @@ __all__ = [
     "STAGE_TO_FUNCTION",
     "StagePausedRetry",
     "apply_stage_control",
+    "clear_stage_control_cache",
     "enforce_stage_pause_on_process",
     "repark_if_stage_paused",
 ]

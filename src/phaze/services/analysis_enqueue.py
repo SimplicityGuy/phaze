@@ -40,6 +40,44 @@ def process_file_job_key(file_id: uuid.UUID) -> str:
     return f"process_file:{file_id}"
 
 
+# phaze-ewen: SAQ statuses that mean the deterministic key is held by a job that is NOT genuinely
+# in flight -- it is dead or dying and will never process the file, yet its surviving key blocks
+# re-enqueue (SAQ's _enqueue upsert only overwrites keys in aborted/complete/failed, never
+# 'aborting'). A collision against one of these is BLOCKED, not "already in flight". Mirrors the
+# classification the (now-removed, phaze-0jpe) fingerprint-requeue funnel applied to its own
+# collisions (phaze-e57w) -- lifted here as the shared home for every ``process_file`` producer.
+_BLOCKED_STATUS_VALUES = frozenset({"aborting", "failed", "aborted"})
+# Non-terminal statuses: genuinely in flight ONLY if the row is not also stale/stuck.
+_LIVE_STATUS_VALUES = frozenset({"new", "deferred", "queued", "active"})
+
+
+def classify_process_file_collision(job: Any) -> str:
+    """Classify a ``process_file`` deterministic-key collision as ``"in_flight"`` or ``"blocked"``.
+
+    Every ``enqueue_process_file`` caller that DISCARDS a ``None`` return treats a collision as
+    "already in flight" unconditionally -- but SAQ's ``_enqueue`` upsert only overwrites a
+    conflicting key whose status is in ``('aborted', 'complete', 'failed')``; ``'aborting'`` is
+    NOT in that allowlist, and neither is a claimed-but-worker-dead ``active`` row past its
+    timeout/heartbeat. Both hold the key forever without ever processing the file.
+
+    ``job`` is the existing row looked up via ``queue.job(key)`` (or ``None`` if it could not be
+    found). A dead/dying status (``aborting``/``failed``/``aborted``) is BLOCKED; a live status
+    (``queued``/``active``/...) is BLOCKED only when the row is also :attr:`saq.Job.stuck` (past
+    its timeout/heartbeat -- a stale claimed row that will never make progress on its own),
+    otherwise it is genuinely ``in_flight``. An unlookupable / unknown-status row degrades to
+    ``in_flight`` (benign) rather than crying wolf.
+    """
+    if job is None:
+        return "in_flight"
+    status = getattr(job, "status", None)
+    sval = getattr(status, "value", status)
+    if sval in _BLOCKED_STATUS_VALUES:
+        return "blocked"
+    if sval in _LIVE_STATUS_VALUES and bool(getattr(job, "stuck", False)):
+        return "blocked"
+    return "in_flight"
+
+
 async def enqueue_process_file(
     queue: Any,
     file: FileRecord,
