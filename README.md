@@ -254,13 +254,17 @@ An unknown stage returns **422** (validated against the metadata/analyze allowli
 ```bash
 git clone https://github.com/SimplicityGuy/phaze.git
 cd phaze
-uv sync
+just install                   # uv sync PLUS the Tailwind CSS build (bare `uv sync` skips the CSS)
 cp .env.example .env          # Edit to configure paths and API keys
 just download-models           # Required for audio analysis
-just up-all                    # Start all services (core + agent stacks)
+just up                        # Start the core stack (api, worker, postgres, redis)
 just db-upgrade                # Run database migrations
 curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"status": "ok"}
 ```
+
+> To bring up the agent stack too (`just up-all`), **register an agent first** — see
+> [deployment.md Step 3](docs/deployment.md). Started without a registered agent and token, the
+> agent workers cannot authenticate and will crash-loop.
 
 | Service          | URL                     | Default Credentials         |
 | ---------------- | ----------------------- | --------------------------- |

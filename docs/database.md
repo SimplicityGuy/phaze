@@ -170,3 +170,38 @@ just db-history              # Show migration history (alembic history)
 `db-revision` autogenerates from model changes — all models are imported in
 `src/phaze/models/__init__.py` so Alembic can discover them. New migrations now build on top
 of the `039` baseline rather than the retired `001`-`039` chain.
+
+### Post-baseline chain (040-048)
+
+`alembic/versions/` holds **10** files: the `039` baseline plus a linear chain to the current
+head, **`048`**.
+
+| Rev | Change |
+|-----|--------|
+| `040` | `tag_write_log` timestamps to `timestamptz` |
+| `041` | `tracklist_version` unique constraint |
+| `042` | `scheduling_ledger.redrive_attempt` |
+| `043` | Discogs link: one accepted per track |
+| `044` | `scan_batches` no-duplicate-running |
+| `045` | `files.original_filename_repaired` |
+| `046` | Drop the fingerprint schema (phaze-0jpe.4) |
+| `047` | Drop `analysis.fingerprint` |
+| `048` | `files (original_filename, id)` btree — **head** |
+
+**Head `048` is not an ordinary migration; three things about it are load-bearing:**
+
+- **`CREATE INDEX CONCURRENTLY` on an autocommit connection.** `files` is the largest table in
+  the deployment, and a plain `CREATE INDEX` would hold a write lock across the whole build.
+  `CONCURRENTLY` cannot run inside a transaction block and Alembic wraps every migration in
+  one, so the statements run inside `op.get_context().autocommit_block()`.
+- **Self-healing against an INVALID leftover.** An interrupted `CONCURRENTLY` build leaves an
+  index that exists but is unusable, and `IF NOT EXISTS` would then skip it forever. `upgrade()`
+  checks `pg_index.indisvalid` (resolved by name via `to_regclass`, so a first-ever run is
+  correctly falsy rather than erroring) and drops the invalid remnant before rebuilding.
+- **DDL held as static module-level literals.** The statements are constants, not f-strings —
+  interpolating even a module-level constant trips semgrep's formatted-SQL-query rule.
+
+**Production position: `045` as of 2026-07-29.** `046`-`048` are pending; the upgrade is gated
+and tracked as its own operations bead, so a fresh CI or test database (which builds straight to
+`048`) is ahead of production by three revisions. Check the live position with `just db-current`
+before assuming either end of that gap.

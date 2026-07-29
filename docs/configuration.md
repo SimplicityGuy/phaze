@@ -111,7 +111,7 @@ Only the agent lane worker (started with `PHAZE_AGENT_LANE` set) reads these; th
 | `PHAZE_LANE_ANALYZE_CONCURRENCY` (or `lane_analyze_concurrency`) | No | `4` | Concurrency of the analyze lane worker (`process_file`; in-process essentia, CPU-bound). |
 | `PHAZE_LANE_META_CONCURRENCY` (or `lane_meta_concurrency`) | No | `2` | Concurrency of the meta lane worker (extract/scan/execute; light/fast). |
 | `PHAZE_LANE_IO_CONCURRENCY` (or `lane_io_concurrency`) | No | `4` | Concurrency of the io lane worker (`s3_upload`/`push_file`; network-bound, off CPU budget). |
-| `PHAZE_AGENT_HEARTBEAT` (or `agent_heartbeat_enabled`) | No | `true` | Whether this agent worker launches the liveness heartbeat background task. Compose sets this `true` on exactly one lane worker (analyze) and `false` on the other two, so an agent reports one authoritative `last_seen`, never N duplicate heartbeats. |
+| `PHAZE_AGENT_HEARTBEAT` (or `agent_heartbeat_enabled`) | No | `true` | Whether this agent worker launches the liveness heartbeat background task. **Compose sets this `true` on all three lane workers** (`analyze`, `meta`, `io` — `docker-compose.agent.yml:72,91,109`), each beat tagged with its own lane, so a dead lane is visible instead of being masked by a live sibling. It is `false` only on the unlaned transitional worker-drain service (`:135`), whose beat would carry no lane tag. **Do not reintroduce the former "exactly one heartbeat per agent, on worker-analyze" rule** — it was reverted by phaze-30fo because it pinned the agent's whole liveness signal (and its work-routing rank, via `select_active_agent`'s `ORDER BY last_seen_at DESC`) to one process, so a single stalled analyze worker marked the entire agent DEAD and cost it routing while its other lanes were busy. The control plane keeps `max(last_seen)` plus a per-lane depth breakdown. |
 
 ### Database connection pool tuning (all roles)
 
@@ -413,8 +413,9 @@ These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.a
 | Variable           | Required | Default       | Description                                                                 |
 |--------------------|----------|---------------|-----------------------------------------------------------------------------|
 | `POSTGRES_USER`    | No       | `phaze`       | PostgreSQL superuser for the `postgres` service.                            |
-| `POSTGRES_PASSWORD`| No       | `phaze`       | PostgreSQL password for the `postgres` service.                            |
+| `POSTGRES_PASSWORD`| **Yes**  | (none)        | PostgreSQL password for the `postgres` service. Compose fails at parse time if unset (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}`, `docker-compose.yml:99`) — there is **no** default. |
 | `POSTGRES_DB`      | No       | `phaze`       | PostgreSQL database name created on first boot.                            |
+| `POSTGRES_BIND_IP` | No       | `127.0.0.1`   | Host interface to bind Postgres `:5432` on (`docker-compose.yml:134`). Production overrides to the app-server's LAN IP so off-host agents can connect. **Never set this to `0.0.0.0`** — that exposes the database on every interface. Mirrors `REDIS_BIND_IP`. |
 | `REDIS_PASSWORD`   | **Yes**  | (none)        | Password for `redis-server --requirepass`. Compose fails at parse time if unset (`${REDIS_PASSWORD:?...}`). `.env.example` ships a `changeme` placeholder for dev. |
 | `REDIS_BIND_IP`    | No       | `127.0.0.1`   | Host interface to bind Redis `:6379` on. Production overrides to a LAN IP so off-host agents can connect. |
 | `UID`              | No       | `1000`        | Host user ID for volume permissions.                                       |
@@ -452,6 +453,10 @@ Almost every field has a safe default so a fresh clone runs with `docker compose
 
 - **Agent role (`PHAZE_ROLE=agent`)** — `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, and `PHAZE_AGENT_SCAN_ROOTS` are all required. The `_enforce_required_agent_fields` model validator raises `ValueError` at construction if any is empty.
 - **Redis password (Compose)** — `REDIS_PASSWORD` must be set or `docker compose` aborts at parse time (`${REDIS_PASSWORD:?REDIS_PASSWORD required}`).
+- **Postgres password (Compose)** — `POSTGRES_PASSWORD` must be set or `docker compose` aborts at parse time (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}`, `docker-compose.yml:99`).
+- **Scan path (agent Compose)** — `SCAN_PATH` must be set or `docker compose -f docker-compose.agent.yml` aborts at parse time. It is enforced on **all five** agent services (`${SCAN_PATH:?SCAN_PATH required}` at `docker-compose.agent.yml:78,96,112,143,155`), mounted `rw` on the meta and drain workers and `ro` everywhere else (phaze-6bkk).
+
+These three are *parse-time* failures — Compose refuses to render the file at all, before any container starts — as distinct from the agent-role fields above, which fail at application startup inside a container that did launch.
 
 ## Defaults
 

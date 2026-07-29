@@ -134,7 +134,7 @@ If you get a connection error, the containers may still be starting — check
 | ------- | ------------- | ----- | ----- |
 | 🖥️ **Web UI / API** | https://localhost:8000 | core (`just up`) | FastAPI app + HTMX admin UI. HTTPS with a self-signed internal CA — browsers warn until you trust `certs/phaze-ca.crt`; curl needs `--cacert ./certs/phaze-ca.crt`. Plain HTTP only under `just up-dev`. |
 | 🐘 **PostgreSQL** | `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | core (`just up`) | user `POSTGRES_USER` (default `phaze`); `POSTGRES_PASSWORD` is **required** — compose fails to parse without it |
-| 🔴 **Redis** | `localhost:6379` | core (`just up`) | bound to `127.0.0.1` in dev; password from `REDIS_PASSWORD` |
+| 🔴 **Redis** | `${REDIS_BIND_IP:-127.0.0.1}:6379` | core (`just up`) | bound to `127.0.0.1` in dev; override `REDIS_BIND_IP` to a LAN IP so off-host agents can connect. Password from `REDIS_PASSWORD` (**required** — compose fails to parse without it) |
 
 ## 🔄 Your First Workflow
 
