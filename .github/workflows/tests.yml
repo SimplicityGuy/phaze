@@ -35,6 +35,15 @@ jobs:
       matrix:
         bucket: ${{ fromJSON(needs.setup.outputs.buckets) }}
     services:
+      # phaze-tcqq: GitHub Actions service containers can only REFERENCE a published
+      # image -- they have no `build:` equivalent, unlike docker-compose.yml's postgres
+      # service. This pin must therefore always resolve to a publicly pullable tag. If
+      # production's Postgres ever becomes a custom build (e.g. the pgvector adoption
+      # gated on the phaze-ytgo verdict matrix), this pin cannot follow it in place; it
+      # would first need the custom image published to GHCR (phaze already does this for
+      # the app image via `just image-push`) and repointed here. Kept in step with the
+      # justfile's `postgres_image` variable and docker-compose.yml's `image:` by
+      # tests/agents/deployment/test_postgres_image_pin.py -- bump all three together.
       postgres:
         image: postgres:18-alpine
         env:
