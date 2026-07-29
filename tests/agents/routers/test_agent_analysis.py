@@ -1211,3 +1211,90 @@ async def test_analysis_failed_leaves_running_cloud_job(seed_test_agent: tuple[A
 
     assert r.status_code == 200, r.text
     assert await _cloud_job_present(session, file_id), "the status='awaiting' filter must leave a RUNNING cloud_job row in place"
+
+
+# ---------------------------------------------------------------------------
+# phaze-wn1l: a concurrently-deleted FileRecord (a scan deletion racing an in-flight
+# analysis) must hold with a clean 200, not FK-violate into an unhandled 500. Each
+# callback is exercised against a `file_id` that was NEVER seeded -- the exact shape a
+# vanished FileRecord leaves behind, since `services.scan_deletion.delete_scan_cascade`
+# removes the row entirely rather than leaving a tombstone.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_analysis_put_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """PUT against a file_id with no FileRecord holds with a clean 200 (phaze-wn1l), not a 500."""
+    agent, raw_token = seed_test_agent
+    # Capture id BEFORE any expire_all() below -- attribute access on an expired instance
+    # would trigger a synchronous lazy-load (illegal under the async greenlet).
+    agent_id = agent.id
+    vanished_file_id = uuid.uuid4()  # never seeded -- mirrors a scan-deleted FileRecord
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.put(f"/api/internal/agent/analysis/{vanished_file_id}", json={"bpm": 128.5})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent_id
+    assert body["file_id"] == str(vanished_file_id)
+
+    # No row was (or could be) written for the vanished file.
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
+
+    # The session survives the caught IntegrityError -- a SUBSEQUENT PUT against a real
+    # file_id on the SAME session still works (the SAVEPOINT unwound only its own scope).
+    real_file_id = await _seed_file(session, agent_id)
+    async with _make_client(session, raw_token) as ac:
+        response2 = await ac.put(f"/api/internal/agent/analysis/{real_file_id}", json={"bpm": 100.0})
+    assert response2.status_code == 200, response2.text
+    session.expire_all()
+    real_row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == real_file_id))).scalar_one()
+    assert real_row.bpm == 100.0
+
+
+@pytest.mark.asyncio
+async def test_progress_post_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST .../progress against a file_id with no FileRecord holds with a clean 200 (phaze-wn1l)."""
+    agent, raw_token = seed_test_agent
+    vanished_file_id = uuid.uuid4()
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(
+            f"/api/internal/agent/analysis/{vanished_file_id}/progress",
+            json={"fine_windows_analyzed": 3, "fine_windows_total": 10},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(vanished_file_id)
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_analysis_failed_vanished_file_holds_200_not_500(seed_test_agent: tuple[Agent, str], session: AsyncSession) -> None:
+    """POST .../failed against a file_id with no FileRecord holds with a clean 200 (phaze-wn1l).
+
+    This is the TERMINAL ack -- the worker's non-retryable last attempt. Before the fix, this
+    FK-violated identically to `put_analysis`, so the worker's outcome was lost entirely.
+    """
+    agent, raw_token = seed_test_agent
+    vanished_file_id = uuid.uuid4()
+
+    async with _make_client(session, raw_token) as ac:
+        response = await ac.post(f"/api/internal/agent/analysis/{vanished_file_id}/failed", json={"reason": "timeout"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["agent_id"] == agent.id
+    assert body["file_id"] == str(vanished_file_id)
+
+    session.expire_all()
+    row = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == vanished_file_id))).scalar_one_or_none()
+    assert row is None
