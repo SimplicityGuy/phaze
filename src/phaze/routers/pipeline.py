@@ -369,8 +369,10 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["pipeline"])
 
-# Hold references to background enqueue tasks to prevent GC (same pattern as scan.py)
-_background_tasks: set[asyncio.Task[None]] = set()
+# Hold references to background enqueue tasks to prevent GC (same pattern as scan.py). Typed
+# `Task[Any]` (not `Task[None]`) because `_enqueue_analysis_jobs` returns `list[uuid.UUID]`
+# (phaze-4ter) while every other producer here returns `None`.
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
@@ -391,7 +393,7 @@ def _ledger_keys_scope(keys: list[str], name: str) -> Any:
     return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
 
 
-async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> None:
+async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> list[uuid.UUID]:
     """Background coroutine to enqueue process_file jobs for a list of files.
 
     Delegates each enqueue to the FastAPI-free shared producer
@@ -409,9 +411,73 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     All process_file trigger endpoints (``/api/v1/analyze`` + the HTMX
     ``/pipeline/analyze``) funnel through this one helper, so the key + policy are
     applied identically at every enqueue site.
+
+    phaze-4ter: each file's enqueue is now individually contained -- a raised exception
+    (e.g. a transient queue-pool error) is logged and the file's id is collected into the
+    returned list instead of propagating, so ONE failure can no longer abort every
+    remaining enqueue in the group. Returns the ids that failed to enqueue (empty when every
+    file succeeded) so a caller that already cleared a durable failure marker BEFORE
+    backgrounding this call (:func:`retry_analysis_failed`) can restore it for exactly the
+    files that never got a replacement job, instead of the marker and the job both vanishing.
     """
+    failed_ids: list[uuid.UUID] = []
     for f in files:
-        await enqueue_process_file(queue, f, agent_id, models_path)
+        try:
+            await enqueue_process_file(queue, f, agent_id, models_path)
+        except Exception:
+            logger.exception("enqueue_analysis_jobs: failed to enqueue process_file job", file_id=str(f.id))
+            failed_ids.append(f.id)
+    return failed_ids
+
+
+async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: str, models_path: str) -> None:
+    """Background: enqueue one routed group's ``process_file`` jobs for the bulk retry (phaze-4ter).
+
+    :func:`retry_analysis_failed` clears + commits ``analysis.failed_at`` for the WHOLE routed set
+    BEFORE backgrounding this call (RESEARCH Pitfall 3 -- the red count must drop regardless of the
+    enqueue outcome). That is safe only if a per-file enqueue failure can never be lost: previously
+    the background task's done-callback was a bare ``_background_tasks.discard`` that never called
+    ``task.result()``, so the FIRST raised enqueue both aborted every remaining file in the group
+    (``_enqueue_analysis_jobs`` had no per-file containment) and vanished without a log correlated to
+    this request -- the marker was gone, no job was ever enqueued, and nothing recorded that the file
+    had ever failed.
+
+    ``_enqueue_analysis_jobs`` now contains each enqueue individually and returns the ids that
+    failed; this wrapper re-stamps ``failed_at`` for exactly those ids (a fresh ``async_session`` --
+    the request session that cleared the marker is closed by the time this background task runs), so
+    a transient enqueue error degrades to "still shows failed, retryable" instead of a silent,
+    permanent loss of both the job and the failure record. Any exception this coroutine itself raises
+    (e.g. the restore write failing too) is caught and logged here rather than left for a bare
+    discard callback to swallow.
+    """
+    try:
+        failed_ids = await _enqueue_analysis_jobs(queue, group, agent_id, models_path)
+        if not failed_ids:
+            return
+        # Deferred import (services/pipeline.py::_read_in_own_session precedent): re-reads
+        # `phaze.database.async_session` at CALL time rather than binding this module's
+        # import-time reference, so a test that monkeypatches the source attribute onto a
+        # per-test connection (`tests/conftest.py::_route_stats_fanout`) is honored here too.
+        from phaze.database import async_session  # noqa: PLC0415
+
+        async with async_session() as restore_session:
+            await restore_session.execute(
+                update(AnalysisResult)
+                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"))
+                .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
+            )
+            await restore_session.commit()
+        logger.error(
+            "retry_analysis_failed: restored failed_at marker after enqueue error",
+            count=len(failed_ids),
+            file_ids=[str(fid) for fid in failed_ids],
+        )
+    except Exception:
+        # phaze-4ter: this coroutine runs detached (asyncio.create_task + a `_background_tasks.discard`
+        # done-callback, which never calls `task.result()`) -- an exception escaping here would
+        # otherwise surface only via asyncio's uncorrelated "Task exception was never retrieved" GC-time
+        # log, never structlog, never tied to this request. Contain and log explicitly instead.
+        logger.exception("retry_analysis_failed: background retry group failed")
 
 
 async def _route_discovered_by_duration(
@@ -1567,6 +1633,9 @@ async def retry_analysis_failed(
       one bind parameter per id and exceeds asyncpg's 32767-parameter cap at the ~44.5K-file incident
       scale this docstring cites -- that used to make the bulk retry itself deterministically 500 at
       the exact scale it exists for.
+    - phaze-4ter: :func:`_retry_analysis_group` contains each background enqueue individually and
+      restores the marker for any file whose enqueue failed, so a transient queue error can no longer
+      silently drop a file off the red bucket with no job and no trace that it ever failed.
     """
     files = await get_analysis_failed_files(session)
     if not files:
@@ -1627,9 +1696,11 @@ async def retry_analysis_failed(
     #
     # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a deepen.
     # The single funnel (_enqueue_analysis_jobs -> enqueue_process_file) guarantees the full payload
-    # + deterministic dedup key.
+    # + deterministic dedup key. phaze-4ter: routed through `_retry_analysis_group`, which contains
+    # per-file enqueue failures and restores `failed_at` for any file that never got a replacement
+    # job, instead of the marker cleared above and the job both silently vanishing.
     for routed, group in routed_groups:
-        task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, group, cast("str", routed.agent_id), settings.models_path))
+        task = asyncio.create_task(_retry_analysis_group(routed.queue, group, cast("str", routed.agent_id), settings.models_path))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
