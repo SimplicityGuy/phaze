@@ -1330,6 +1330,38 @@ async def test_stale_admitted_row_with_landed_callback_is_not_terminalized(sessi
     assert tally["running"] == 1
 
 
+@pytest.mark.asyncio
+async def test_first_admission_after_long_healthy_quota_wait_is_not_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-uui9: a Job admitted after a long healthy Pending quota wait must NOT be killed on sight.
+
+    D-07 designs a healthy Pending quota wait as indefinite, and the Pending branch issues no UPDATE
+    while waiting, so ``updated_at`` (and thus ``_row_age_seconds``) reflects the QUEUE wait, not any
+    run time -- exactly the frozen-clock shape a long-but-healthy quota wait produces. Pre-fix, the
+    line-507 bound evaluated that frozen clock on the very first admitted tick (status is still
+    SUBMITTED, never having been RUNNING) and terminalized a just-admitted, healthily-running pod
+    outright, burning a cloud attempt for nothing. Post-fix the bound is gated on the row having
+    already been observed RUNNING on a PRIOR tick, so this first admitted tick only stamps RUNNING
+    (restarting the clock) instead of re-driving.
+    """
+    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    fid, name = await _seed(session, status=CloudJobStatus.SUBMITTED.value)  # never yet observed RUNNING
+    # Backdate past the deadline+slack bound -- simulating a healthy quota wait far longer than the cutoff.
+    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.RUNNING.value  # admitted and stamped RUNNING, not re-driven
+    assert cj.attempts == 0  # no cloud attempt burned
+    assert dj.calls == []  # the freshly admitted Job was NOT deleted
+    assert s3.calls == []
+    assert queue.captured == []
+    assert tally["running"] == 1
+    assert tally["redriven"] == 0
+
+
 # --- phaze-1b39: the permanent-phantom row (kueue_workload IS NULL) --------------------------------
 
 

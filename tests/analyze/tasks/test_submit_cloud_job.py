@@ -323,6 +323,61 @@ async def test_late_submit_does_not_resurrect_non_advanceable_row(
 
 
 @pytest.mark.asyncio
+async def test_late_submit_against_a_running_row_leaves_the_live_job_alone(
+    async_engine: AsyncEngine,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-exxt: a SAQ retry racing a row reconcile already advanced to RUNNING must NOT delete the
+    live Job.
+
+    Unlike ``AWAITING``/``SUCCEEDED``/``FAILED`` (phaze-kzto, no live owner), a ``RUNNING`` row proves a
+    live owner already exists for the deterministic Job name -- e.g. this exact scenario: a worker
+    crashes after ``submit_cloud_job``'s first attempt commits, SAQ's stuck-job sweep retries, and in
+    the interim reconcile advances the row SUBMITTED -> RUNNING. The retry's CAS correctly refuses (not
+    in {uploaded, submitted}), but pre-fix the rowcount==0 arm unconditionally deleted the Job it just
+    POSTed (409-refreshed onto the live one) -- killing an in-flight analysis and burning a cloud
+    attempt on the next reconcile tick's no-callback terminal.
+    """
+    file = _make_file()
+    session.add(file)
+    await session.commit()
+    fid = file.id
+    # Seed a row reconcile already advanced to RUNNING -- a live owner exists for the deterministic name.
+    session.add(
+        CloudJob(
+            id=uuid.uuid4(),
+            file_id=fid,
+            backend_id=_KUEUE_BACKEND_ID,
+            s3_key=f"phaze-staging/{fid}",
+            status=CloudJobStatus.RUNNING.value,
+            kueue_workload=f"phaze-analyze-{fid}",
+        )
+    )
+    await session.commit()
+    _patch_settings(monkeypatch)
+
+    spy = _SubmitSpy(name=f"phaze-analyze-{fid}")
+    monkeypatch.setattr("phaze.services.kube_staging.submit_job", spy)
+    deleted: list[str] = []
+
+    async def _fake_delete(name: str, kube: Any) -> None:
+        deleted.append(name)
+
+    monkeypatch.setattr("phaze.services.kube_staging.delete_job", _fake_delete)
+
+    result = await submit_cloud_job(_make_ctx(async_engine), fid)
+
+    session.expire_all()
+    rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == CloudJobStatus.RUNNING.value  # untouched
+    # The live, in-flight Job is NOT deleted.
+    assert deleted == []
+    assert result.get("status") == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_submit_seeds_no_scheduling_ledger_row(
     async_engine: AsyncEngine,
     session: AsyncSession,
