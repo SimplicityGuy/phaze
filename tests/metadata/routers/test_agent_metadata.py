@@ -295,7 +295,7 @@ async def test_metadata_extra_field_422(seed_test_agent: tuple[Agent, str], sess
         ("track_number", -1),
         ("track_number", 10000),
         ("bitrate", -1),
-        ("bitrate", 1_000_001),
+        ("bitrate", 50_000_001),
         ("bitrate", 5_000_000_000),
     ],
 )
@@ -333,7 +333,7 @@ async def test_metadata_put_rejects_out_of_domain_integer_tag_and_persists_no_ro
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("year", 0), ("year", 9999), ("track_number", 0), ("track_number", 9999), ("bitrate", 0), ("bitrate", 1_000_000)],
+    [("year", 0), ("year", 9999), ("track_number", 0), ("track_number", 9999), ("bitrate", 0), ("bitrate", 50_000_000)],
 )
 async def test_metadata_put_accepts_integer_tag_at_the_domain_boundary(
     seed_test_agent: tuple[Agent, str],

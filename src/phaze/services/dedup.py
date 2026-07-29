@@ -36,7 +36,10 @@ def tag_completeness(file_dict: dict[str, Any]) -> tuple[str, int, int]:
 def score_group(group: dict[str, Any]) -> None:
     """Select canonical file and generate rationale string.
 
-    Ranking: highest bitrate -> most complete tags -> shortest path.
+    Ranking: highest bitrate -> most complete tags -> shortest path. ``bitrate`` is stored in
+    BITS per second (phaze-iw2k); the ranking itself is unaffected by unit (every stored value
+    shares the same unit, so ordering is preserved) but the rationale string divides by 1000 to
+    render kbps for display.
     Mutates group in-place, setting canonical_id and rationale.
     """
     files = group["files"]
@@ -62,7 +65,7 @@ def score_group(group: dict[str, Any]) -> None:
     runner_tags = (runner_up.get("tag_filled", 0)) if runner_up else 0
 
     if winner_bitrate > 0 and winner_bitrate > runner_bitrate:
-        group["rationale"] = f"highest bitrate ({winner_bitrate}kbps)"
+        group["rationale"] = f"highest bitrate ({winner_bitrate // 1000}kbps)"
     elif winner_tags > 0 and winner_tags > runner_tags:
         group["rationale"] = f"most complete tags ({winner_tags}/{winner_tag_total})"
     else:

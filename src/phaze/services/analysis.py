@@ -30,15 +30,23 @@ log = logging.getLogger(__name__)
 class AnalysisDecodeError(RuntimeError):
     """EVERY analysis window failed to decode -- the file's audio stream is unusable (phaze-zibn).
 
-    Raised by :func:`analyze_file` when the duration probe succeeded (the container header is
-    readable, so the natural window count is non-zero) but the per-window ``EasyLoader`` decode
-    failed on every fine AND every coarse window -- e.g. a truncated download whose valid ID3
-    header reports a long duration over no decodable frames. Without this floor the per-window
-    failure isolation returned a success dict with all-``None`` aggregates and zero analyzed
-    windows, the completion PUT stamped ``analysis_completed_at``, and the undecodable file was
-    permanently recorded as successfully analyzed. Raising instead routes the file to the
-    callers' existing terminal failure handling (``report_analysis_failed`` /
-    ``ANALYSIS_FAILED``), consistent with the timeout/crash paths.
+    Raised by :func:`analyze_file` when the natural window count was non-zero (the duration
+    probe read a positive length) but the per-window ``EasyLoader`` decode failed on every fine
+    AND every coarse window -- e.g. a truncated download whose valid ID3 header reports a long
+    duration over no decodable frames. Without this floor the per-window failure isolation
+    returned a success dict with all-``None`` aggregates and zero analyzed windows, the
+    completion PUT stamped ``analysis_completed_at``, and the undecodable file was permanently
+    recorded as successfully analyzed. Raising instead routes the file to the callers' existing
+    terminal failure handling (``report_analysis_failed`` / ``ANALYSIS_FAILED``), consistent
+    with the timeout/crash paths.
+
+    NOTE (phaze-by30): "the duration probe succeeded" does NOT imply "the natural window count
+    is non-zero" -- a duration probe can itself read 0 seconds (a container whose readable
+    header nonetheless yields zero-length audio properties, or a genuinely sub-1-second file
+    truncating to 0). That produces ``fine_total == coarse_total == 0``, which this class's own
+    guard deliberately does NOT raise on (0/0 is exempted so a probe-level non-decode isn't
+    double-reported here) -- callers that need a floor on THAT case check the coverage fields
+    directly instead of relying on this exception (see ``tasks/functions.py::process_file``).
     """
 
 

@@ -336,11 +336,15 @@ def _format_size(num_bytes: int | None) -> str:
 
 
 def _format_quality(file_dict: dict[str, Any]) -> str:
-    """Render a duplicate file's quality summary (``"320 kbps · 22.4 MB"``), omitting an absent bitrate."""
+    """Render a duplicate file's quality summary (``"320 kbps · 22.4 MB"``), omitting an absent bitrate.
+
+    ``bitrate`` is stored in BITS per second (phaze-iw2k -- matching what mutagen actually
+    reports); divide by 1000 here to render kbps.
+    """
     size = _format_size(file_dict.get("file_size"))
     bitrate = file_dict.get("bitrate")
     if bitrate:
-        return f"{bitrate} kbps · {size}"
+        return f"{bitrate // 1000} kbps · {size}"
     return size
 
 
