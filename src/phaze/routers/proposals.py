@@ -37,6 +37,13 @@ from phaze.services.proposal_queries import (
 _APPROVE_REJECT_FROM = APPROVE_REJECT_FROM
 _UNDO_FROM = UNDO_FROM
 
+# phaze-3yop: the two literal bulk actions bulk_action() whitelists (line ~580), each spelled with
+# its own real past tense. `f"{action}d"` happened to be correct for "approve" and wrong for
+# "reject" ("rejectd") -- a suffix rule applied to a two-member set where it is only valid for one
+# member. Keyed off the SAME literal pair `status_map` there already spells out, so a third action
+# can never silently fall through a shared suffix rule again.
+_PAST_TENSE = {"approve": "approved", "reject": "rejected"}
+
 
 def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
     """Phrase the bulk result so it reports REAL transitions, never selection size (phaze-uu17).
@@ -51,7 +58,7 @@ def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
     The zero case gets its own sentence because "0 approved" alone invites the operator to conclude
     the button is broken and click it harder, when in fact the answer is complete and stable.
     """
-    verb = f"{action}d"
+    verb = _PAST_TENSE[action]
     if applied == requested:
         return f"{applied} proposal{'' if applied == 1 else 's'} {verb}."
     skipped = requested - applied

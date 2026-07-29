@@ -440,3 +440,29 @@ async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncCli
     assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
     assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry a second rail"
     assert 'id="stage-workspace"' not in body, "the fragment swaps INTO #stage-workspace, not around it"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_poll_resume_uses_htmx_trigger_not_source_less_ajax(client: AsyncClient) -> None:
+    """phaze-ircc -- the foreground-resume refresh must go through the poll element's own trigger.
+
+    ``htmx.ajax('GET', ..., { target: ... })`` with no ``source`` element substitutes
+    ``document.body`` as the attribute-inheritance root (htmx 2.0.10 ``issueAjaxRequest``), so the
+    poll element's ``hx-vals`` (the selected ``lane``) was silently dropped on every
+    ``visibilitychange`` foreground-resume refresh. The fix routes the resume through
+    ``window.htmx.trigger(pollEl, 'refresh')`` and adds a matching ``refresh`` entry to the
+    element's own ``hx-trigger``, so exactly one place (the element itself) knows what the poll
+    needs to send.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    # The single persistent poll element now also listens for a same-element 'refresh' trigger.
+    assert re.search(
+        r'id="pipeline-stats"[^>]*hx-trigger="every 5s \[document\.visibilityState === \'visible\'\], refresh"',
+        body,
+    ), "the #pipeline-stats poll must accept a same-element 'refresh' trigger"
+    # The visibilitychange handler must fire that trigger on the element itself, not a source-less
+    # htmx.ajax() call (which would silently drop the element's hx-vals lane).
+    assert "window.htmx.trigger(pollEl, 'refresh')" in body
+    assert "window.htmx.ajax('GET', '/pipeline/stats', { target: '#pipeline-stats', swap: 'innerHTML' })" not in body
