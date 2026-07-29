@@ -429,6 +429,90 @@ async def test_process_file_subprocess_crash_is_terminal(mock_pool: AsyncMock) -
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_zero_natural_windows_is_terminal(mock_pool: AsyncMock) -> None:
+    """phaze-by30: a SUCCESSFUL analyze_file return with 0 natural windows in BOTH passes is
+    still a terminal failure, not a completed analysis.
+
+    phaze-zibn's floor inside analyze_file (services/analysis.py) only raises when at least
+    one natural window existed; it is a no-op when the duration probe itself reads 0 seconds
+    (an undecodable file, or a container whose header nonetheless yields zero-length audio
+    properties). Without this guard, that 0/0 result would reach ``put_analysis`` and be
+    recorded as a completed analysis (``sampled=False``, ``windows=[]``, all-None aggregates).
+    """
+    file_id = uuid.uuid4()
+    mock_pool.return_value = {
+        **MOCK_ANALYSIS,
+        "bpm": None,
+        "musical_key": None,
+        "mood": None,
+        "style": None,
+        "danceability": None,
+        "features": {},
+        "windows": [],
+        "fine_windows_analyzed": 0,
+        "fine_windows_total": 0,
+        "coarse_windows_analyzed": 0,
+        "coarse_windows_total": 0,
+        "sampled": False,
+    }
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(return_value=MagicMock())
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs(file_id=file_id))
+
+    assert result == {"file_id": str(file_id), "status": "analysis_failed"}
+    api.report_analysis_failed.assert_awaited_once()
+    failure = api.report_analysis_failed.await_args.args[1]
+    assert failure.reason == "crashed"
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_partial_windows_still_completes(mock_pool: AsyncMock) -> None:
+    """A genuine partial result (>=1 natural window in either pass) is NOT the zero-window
+    failure -- it still completes normally, matching analyze_file's own "partial success" rule.
+    """
+    mock_pool.return_value = {
+        **MOCK_ANALYSIS,
+        "fine_windows_analyzed": 1,
+        "fine_windows_total": 1,
+        "coarse_windows_analyzed": 0,
+        "coarse_windows_total": 0,
+        "sampled": False,
+    }
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "analyzed"
+    api.put_analysis.assert_awaited_once()
+    api.report_analysis_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_missing_coverage_fields_not_treated_as_zero(mock_pool: AsyncMock) -> None:
+    """Absent coverage fields (older/mocked analyzers) mean "unknown", not "zero" -- must NOT
+    trip the zero-window terminal-failure guard (regression guard for the phaze-by30 fix).
+    """
+    mock_pool.return_value = MOCK_ANALYSIS  # no coverage keys at all
+    api = AsyncMock()
+    api.put_analysis = AsyncMock(return_value=MagicMock())
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+
+    result = await process_file(ctx, **_make_payload_kwargs())
+
+    assert result["status"] == "analyzed"
+    api.put_analysis.assert_awaited_once()
+    api.report_analysis_failed.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_timeout_report_post_failure_stays_terminal(mock_pool: AsyncMock) -> None:
     """A failed terminal-failure report POST must NOT convert the timeout outcome into a retry.
 
