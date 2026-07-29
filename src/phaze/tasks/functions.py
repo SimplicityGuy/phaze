@@ -29,6 +29,7 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any
 
+from saq import Status
 import structlog
 
 from phaze.config import AgentSettings, get_settings
@@ -337,6 +338,22 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             ),
         )
         return {"file_id": str(payload.file_id), "status": "analyzed"}
+    except asyncio.CancelledError:
+        # phaze-2cqx: SAQ cancellation (job-net timeout OR -- the routine case, since the
+        # agent worker is started without shutdown_grace_period_s and saq defaults that to a
+        # ZERO-second grace -- every worker shutdown/restart) raises CancelledError, a
+        # BaseException that the ``except Exception`` below never sees. Left unguarded, the
+        # outer ``finally`` still ran with ``cleanup_scratch`` at its default True and deleted
+        # the pushed scratch copy out from under a job SAQ is about to retry in place, turning
+        # a free retry into a wasted push-mismatch round-trip (CR-01). Preserve the copy only
+        # when the job is actually coming back: a job already ``ABORTING`` (Worker.abort()) is
+        # terminal with no retry, and preserving there would leak scratch disk (T-50-scratch-dos).
+        # ``ctx["job"]`` is always present under a real worker; absent only in a bare test ctx,
+        # where the default-True cleanup is correct (nothing will retry it).
+        job = ctx.get("job")
+        if job is not None and job.retryable and job.status is not Status.ABORTING:
+            cleanup_scratch = False
+        raise
     except Exception as exc:
         # Generic / possibly-transient error from the analysis pool OR the put_analysis callback
         # (the latter sits OUTSIDE the inner pool try, so it MUST be handled here too -- a put_analysis

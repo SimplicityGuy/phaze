@@ -9,6 +9,7 @@ import uuid
 
 from pydantic import ValidationError
 import pytest
+from saq import Status
 
 from phaze.tasks.functions import (
     _features_to_mood_dict,
@@ -518,6 +519,88 @@ async def test_process_file_retryable_generic_error_raises_without_reporting(moc
 
     api.report_analysis_failed.assert_not_awaited()
     api.put_analysis.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# phaze-2cqx: SAQ cancellation (job-net timeout / worker shutdown) must not bypass
+# the retryable-preserve guard and delete the pushed scratch copy a retry needs.
+# ---------------------------------------------------------------------------
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_cancelled_retryable_job_preserves_scratch_copy(mock_pool: AsyncMock, tmp_path: Any) -> None:
+    """CancelledError on a retryable job must preserve the pushed scratch copy.
+
+    ``asyncio.CancelledError`` is a ``BaseException`` and is never caught by the generic
+    ``except Exception`` that normally flips ``cleanup_scratch`` False for a retryable
+    attempt. Without a dedicated guard the outer ``finally`` still unlinks the scratch
+    copy, stranding the SAQ in-place retry with a FileNotFoundError -> push-mismatch
+    round-trip (CR-01).
+    """
+    scratch_file = tmp_path / "scratch-copy.mp3"
+    scratch_file.write_bytes(b"synthetic-audio-bytes")
+    mock_pool.side_effect = asyncio.CancelledError()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True, status=Status.ACTIVE)
+
+    kwargs = _make_payload_kwargs()
+    kwargs["scratch_path"] = str(scratch_file)
+
+    with pytest.raises(asyncio.CancelledError):
+        await process_file(ctx, **kwargs)
+
+    assert scratch_file.exists(), "scratch copy must survive so the in-place SAQ retry can re-verify and analyze it"
+    api.report_analysis_failed.assert_not_awaited()
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_cancelled_aborting_job_cleans_scratch_copy(mock_pool: AsyncMock, tmp_path: Any) -> None:
+    """CancelledError on an ABORTING job (saq Worker.abort(), terminal) still cleans up.
+
+    ``Worker.abort()`` cancels the job task too, but the outcome is terminal (``finish_abort``,
+    no retry) -- preserving the scratch copy there would leak disk (T-50-scratch-dos), the
+    threat the ``finally`` cleanup exists to bound.
+    """
+    scratch_file = tmp_path / "scratch-copy.mp3"
+    scratch_file.write_bytes(b"synthetic-audio-bytes")
+    mock_pool.side_effect = asyncio.CancelledError()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=True, status=Status.ABORTING)
+
+    kwargs = _make_payload_kwargs()
+    kwargs["scratch_path"] = str(scratch_file)
+
+    with pytest.raises(asyncio.CancelledError):
+        await process_file(ctx, **kwargs)
+
+    assert not scratch_file.exists(), "an aborting (terminal) job must still reclaim scratch disk"
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_cancelled_no_job_in_ctx_cleans_scratch_copy(mock_pool: AsyncMock, tmp_path: Any) -> None:
+    """CancelledError with no ``ctx['job']`` (bare test ctx) defaults to cleanup — nothing will retry it."""
+    scratch_file = tmp_path / "scratch-copy.mp3"
+    scratch_file.write_bytes(b"synthetic-audio-bytes")
+    mock_pool.side_effect = asyncio.CancelledError()
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock()
+    ctx = _make_ctx(api_client=api)  # no "job" key
+
+    kwargs = _make_payload_kwargs()
+    kwargs["scratch_path"] = str(scratch_file)
+
+    with pytest.raises(asyncio.CancelledError):
+        await process_file(ctx, **kwargs)
+
+    assert not scratch_file.exists()
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
