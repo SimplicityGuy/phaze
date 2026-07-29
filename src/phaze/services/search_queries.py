@@ -16,7 +16,6 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist
 from phaze.services.like_escape import LIKE_ESCAPE_CHAR, like_wildcard
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, paged_stmt, split_sentinel
-from phaze.services.proposal_queries import Pagination
 
 
 if TYPE_CHECKING:
@@ -37,6 +36,21 @@ class SearchResult:
     rank: float
 
 
+@dataclass
+class SearchPagination:
+    """Pagination metadata for a page of ``search()`` results.
+
+    phaze-ezic: deliberately has NO ``total`` / ``total_pages`` field, mirroring
+    ``phaze.services.pagination.Page`` (contract rule 2) -- ``search()`` is the hot ⌘K
+    per-keystroke path, and the pagination contract forbids a whole-corpus COUNT on every render.
+    ``has_next`` comes from the ``page_size + 1`` sentinel (``split_sentinel``), never a COUNT.
+    """
+
+    page: int
+    page_size: int
+    has_next: bool
+
+
 async def search(
     session: AsyncSession,
     query: str,
@@ -49,7 +63,7 @@ async def search(
     bpm_max: float | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
-) -> tuple[list[SearchResult], Pagination]:
+) -> tuple[list[SearchResult], SearchPagination]:
     """Search across files and tracklists using full-text search with facet filters."""
     ts_query = func.plainto_tsquery("simple", query)
 
@@ -161,10 +175,11 @@ async def search(
     # Phase 90 (PR-A, D-11): the pipeline-status facet is gone, so files / tracklists / discogs ALWAYS union.
     combined = union_all(file_q, tracklist_q, discogs_q).subquery()
 
-    # Count total
-    count_q = select(func.count()).select_from(combined)
-    total_result = await session.execute(count_q)
-    total = total_result.scalar() or 0
+    # phaze-ezic: a whole-corpus COUNT used to run here on every call (`select(func.count())
+    # .select_from(combined)`), i.e. on every ⌘K keystroke -- exactly the per-render full scan
+    # the T-87-11 DoS mitigation (pagination contract rule 2) forbids. Its only consumer was
+    # `Pagination.total`, which the sole caller (routers/search.py) discards entirely. Deleted;
+    # `has_next` below already comes from the page_size+1 sentinel, never a COUNT.
 
     # Fetch page -- ts_rank ties are common (the discogs/tracklist branches score only two
     # concat_ws fields and single-term matches all land on the same default weight), so `rank`
@@ -183,7 +198,7 @@ async def search(
         tiebreaker=(combined.c.result_type.asc(), combined.c.id.asc()),
     )
     raw_rows = (await session.execute(results_q)).all()
-    rows, _has_next = split_sentinel(raw_rows, page_size)
+    rows, has_next = split_sentinel(raw_rows, page_size)
 
     results = [
         SearchResult(
@@ -199,7 +214,7 @@ async def search(
         for row in rows
     ]
 
-    pagination = Pagination(page=page, page_size=page_size, total=total)
+    pagination = SearchPagination(page=page, page_size=page_size, has_next=has_next)
     return results, pagination
 
 

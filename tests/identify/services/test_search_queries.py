@@ -129,10 +129,9 @@ class TestSearchResult:
 async def test_search_returns_files_matching_query(session: AsyncSession) -> None:
     """Search for 'deadmau5' returns file results with result_type='file'."""
     await create_test_file(session, original_filename="deadmau5_strobe.mp3", artist="deadmau5", title="Strobe")
-    results, pagination = await search(session, "deadmau5")
+    results, _pagination = await search(session, "deadmau5")
     assert len(results) >= 1
     assert all(r.result_type == "file" for r in results)
-    assert pagination.total >= 1
 
 
 @pytest.mark.asyncio
@@ -150,9 +149,8 @@ async def test_search_finds_file_by_repaired_filename_not_raw_mojibake(session: 
     file_record.original_filename_repaired = "Carl Cox, Umek, Dj Rush, Chris Liebing, Sven Väth - LIVE @ Timewarp 2003.mp3"
     await session.commit()
 
-    results, pagination = await search(session, "Väth")
+    results, _pagination = await search(session, "Väth")
 
-    assert pagination.total >= 1
     assert any(r.result_type == "file" and r.id == str(file_record.id) for r in results)
     matched = next(r for r in results if r.id == str(file_record.id))
     assert "Väth" in matched.title
@@ -175,10 +173,9 @@ async def test_search_falls_back_to_raw_filename_when_not_backfilled(session: As
 async def test_search_returns_tracklists_matching_query(session: AsyncSession) -> None:
     """Search for 'coachella' returns tracklist results with result_type='tracklist'."""
     await create_test_tracklist(session, artist="Disclosure", event="Coachella 2026")
-    results, pagination = await search(session, "coachella")
+    results, _pagination = await search(session, "coachella")
     assert len(results) >= 1
     assert all(r.result_type == "tracklist" for r in results)
-    assert pagination.total >= 1
 
 
 @pytest.mark.asyncio
@@ -386,7 +383,9 @@ async def test_search_date_to_at_date_max_does_not_overflow(session: AsyncSessio
 
 @pytest.mark.asyncio
 async def test_search_pagination(session: AsyncSession) -> None:
-    """Results paginated correctly, Pagination object has correct total.
+    """Results paginated correctly; ``SearchPagination.has_next`` reflects the sentinel row,
+    never a COUNT (phaze-ezic -- the paging contract's rule 2 forbids a whole-corpus COUNT on
+    this per-keystroke path, so there is deliberately no ``total``/``total_pages`` field).
 
     ``page_size`` must satisfy the paging contract's ``MIN_PAGE_SIZE`` floor
     (phaze.services.pagination) -- ``paged_stmt`` clamps anything smaller, so this exercises a
@@ -394,11 +393,15 @@ async def test_search_pagination(session: AsyncSession) -> None:
     """
     for i in range(25):
         await create_test_file(session, original_filename=f"searchable_track_{i}.mp3", artist="Searchable")
+
     results, pagination = await search(session, "searchable", page=2, page_size=MIN_PAGE_SIZE)
     assert len(results) == MIN_PAGE_SIZE
-    assert pagination.total == 25
     assert pagination.page == 2
-    assert pagination.total_pages == 3
+    assert pagination.has_next is True, "25 rows, page_size 10: page 2 (rows 11-20) must still have a page 3"
+
+    results, pagination = await search(session, "searchable", page=3, page_size=MIN_PAGE_SIZE)
+    assert len(results) == 5, "25 rows, page_size 10: page 3 holds the remaining 5"
+    assert pagination.has_next is False, "page 3 is the last page"
 
 
 @pytest.mark.asyncio
@@ -445,7 +448,7 @@ async def test_search_empty_query_returns_empty(session: AsyncSession) -> None:
     await create_test_file(session, original_filename="some_track.mp3", artist="Some Artist")
     results, pagination = await search(session, "")
     assert results == []
-    assert pagination.total == 0
+    assert pagination.has_next is False
 
 
 # ---------------------------------------------------------------------------
@@ -552,11 +555,10 @@ async def create_test_discogs_link(
 async def test_search_returns_discogs_release(session: AsyncSession) -> None:
     """Search matching a Discogs release returns result_type='discogs_release'."""
     await create_test_discogs_link(session, discogs_artist="Daft Punk", discogs_title="Random Access Memories")
-    results, pagination = await search(session, "daft punk")
+    results, _pagination = await search(session, "daft punk")
     assert len(results) >= 1
     discogs_results = [r for r in results if r.result_type == "discogs_release"]
     assert len(discogs_results) >= 1
-    assert pagination.total >= 1
 
 
 @pytest.mark.asyncio
