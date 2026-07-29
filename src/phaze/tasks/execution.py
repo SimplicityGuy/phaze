@@ -6,8 +6,10 @@ Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposa
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
 2. POST /execution-log with status='in_progress' (per-proposal audit row).
 3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
-4. Move `original_path` -> destination (os.replace when same-fs, else a bounded
-   streamed copy -- never load the whole file into RAM; concert videos are multi-GB).
+4. Move `original_path` -> destination (an atomic no-clobber os.link claim when same-fs, else a
+   bounded streamed copy published by the same claim -- never load the whole file into RAM;
+   concert videos are multi-GB). phaze-s0wu: the claim, not the caller's earlier exists-check, is
+   what actually guarantees no destination is ever overwritten.
 5. Delete the original (only needed on the cross-filesystem copy path).
 6. PATCH /execution-log/{id} with status='completed' (or 'failed').
 7. PATCH /proposals/{id}/state with proposal_state=executed, file_state=moved, current_path=proposed_path.
@@ -98,6 +100,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import shutil
@@ -287,12 +290,44 @@ def _streamed_copy(src: Path, dst: Path) -> None:
     shutil.copystat(src, dst)
 
 
+# phaze-s0wu: errnos meaning "this filesystem cannot make a hard link", as opposed to "the link
+# was refused for a reason that matters". Hard links are unavailable on FAT/exFAT, on some SMB and
+# FUSE mounts, and across a mount boundary; on those, the no-clobber claim degrades to the old
+# unconditional rename rather than failing an otherwise-valid move.
+_LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
+
+
+def _claim_destination_by_link(src: Path, dst: Path) -> bool:
+    """Atomically claim `dst` as a hard link to `src`. True if the claim landed, False if links are unsupported.
+
+    phaze-s0wu: this is the primitive that makes the no-clobber guard REAL. ``os.link`` fails with
+    EEXIST if anything already occupies `dst`, and it does that check and the create in ONE kernel
+    operation -- so unlike ``proposed.exists()`` followed later by a rename, there is no window in
+    which another actor can slip a file in between the test and the act. ``os.rename`` /
+    ``Path.replace`` cannot be used for this: POSIX rename is unconditionally clobbering, and
+    Python exposes no portable ``RENAME_NOREPLACE``.
+
+    Raises:
+        FileExistsError: `dst` is already occupied -- the caller must refuse the move, NOT overwrite.
+        OSError: any other link failure (permissions on the directory, ENOSPC, ...).
+    """
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+            return False
+        raise
+    return True
+
+
 def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
-    """Copy `src` -> `dst` across filesystems so `dst` appears atomically.
+    """Copy `src` -> `dst` across filesystems so `dst` appears atomically, without clobbering it.
 
     Streams `src` into a sibling temp file (``<dst><_COPY_TMP_SUFFIX>``), fsyncs
-    it durably, then ``os.replace``s the temp onto `dst` -- an atomic rename
-    within the destination filesystem. Because bytes never land at the final
+    it durably, then publishes the temp at `dst` -- within the destination
+    filesystem, so the publish is atomic. Because bytes never land at the final
     path incrementally, a mid-copy abort (ENOSPC on a multi-GB concert video, an
     I/O error on the destination mount, or a flush/fsync failure) can never leave
     a truncated/corrupt fragment at `dst`. On ANY failure the temp file is
@@ -302,18 +337,63 @@ def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
     ``dst.open("wb")`` and, on a raise partway through, left a partial file at the
     real destination that misled 'already moved' checks and consumed disk.
 
+    phaze-s0wu: the publish is a no-clobber ``os.link`` claim, NOT the unconditional
+    ``tmp.replace(dst)`` it used to be. That rename destroyed whatever sat at `dst`, and the
+    caller's ``proposed.exists()`` check is minutes stale by the time we get here -- this copy runs
+    for as long as a multi-GB concert video takes. Anything that appeared at `dst` during that
+    window was silently overwritten: a colliding proposal in a concurrent sub-batch (the meta lane
+    runs 2), whose own move was already committed and whose source was already deleted by its
+    rename, so its bytes were unrecoverable while BOTH proposals reported success -- or simply a
+    file the operator's own tooling wrote into the archive mid-copy, which needs no dispatch-time
+    gate miss at all. EEXIST now surfaces as the phaze-yu2e refusal instead: `src` is untouched, so
+    the move fails loudly and losslessly.
+
     The caller unlinks `src` only after this returns, so a crash between a
     successful copy and that unlink leaves BOTH a complete `dst` and `src` -- a
     recoverable state the executor's replay logic completes forward
     (phaze-q2lg / phaze-qx8z), never data loss.
+
+    Raises:
+        FileExistsError: `dst` was occupied by the time the copy completed.
     """
     tmp = dst.with_name(dst.name + _COPY_TMP_SUFFIX)
     try:
         _streamed_copy(src, tmp)
-        tmp.replace(dst)  # atomic within the destination filesystem
+        if _claim_destination_by_link(tmp, dst):
+            # The link IS the publish: dst and tmp now name one inode, so dropping tmp leaves the
+            # full, fsynced copy at dst and nothing orphaned.
+            tmp.unlink()
+        else:
+            # No hard links on this filesystem. Fall back to the original unconditional rename,
+            # which is still atomic -- it just cannot detect a late occupant. Documented, narrow,
+            # and strictly better than refusing to move files on such a mount at all.
+            tmp.replace(dst)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _atomic_same_fs_move(src: Path, dst: Path) -> None:
+    """Move `src` -> `dst` within one filesystem, refusing an occupant that appeared after the check.
+
+    phaze-s0wu: ``src.replace(dst)`` alone is unconditionally clobbering. In-process the same-fs
+    path is narrow -- there is no ``await`` between the caller's ``proposed.exists()`` check and
+    here, so two ``_execute_one`` coroutines cannot interleave through it -- but an EXTERNAL writer
+    (the operator's own tooling, another tool touching the archive) has no such constraint, and
+    neither does a cross-filesystem actor that publishes to this same destination. Claim the
+    destination with a link instead, so the create is the check.
+
+    A crash between the successful link and the source unlink leaves both paths on ONE inode. That
+    is recoverable and is handled by the caller: ``_is_same_file`` matches, and the extra link is
+    what tells a replay to complete forward rather than re-doing the move.
+
+    Raises:
+        FileExistsError: `dst` is occupied by a different file.
+    """
+    if _claim_destination_by_link(src, dst):
+        src.unlink()
+    else:
+        src.replace(dst)
 
 
 def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
@@ -494,13 +574,24 @@ async def _execute_one(
             current_step = "copy"
             proposed.parent.mkdir(parents=True, exist_ok=True)
             same_fs = _same_filesystem(original, proposed.parent)
-            # phaze-yu2e: refuse to clobber a pre-existing destination. Both move
-            # branches below silently destroy whatever sits at `proposed` -- os.replace
-            # atomically replaces it and the streamed copy truncates it. The
-            # dispatch-time collision gate cannot catch every case (NULL-path in-place
-            # renames, a destination already occupied by an earlier executed proposal, or
-            # an untracked on-disk file), so fail the copy step loudly rather than
-            # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
+            # phaze-yu2e: refuse to clobber a pre-existing destination. The
+            # dispatch-time collision gate cannot catch every case -- a destination already
+            # occupied by an earlier executed proposal, or an untracked on-disk file -- so fail
+            # the copy step loudly rather than overwrite. ``_is_same_file`` exempts the no-op /
+            # case-only rename.
+            #
+            # phaze-s0wu correction: this comment used to also list "NULL-path in-place renames"
+            # as a gate miss. That is FALSE and was itself the misleading evidence -- collision.py's
+            # ``_dest_key_columns`` was fixed for exactly that case (phaze-7czn) and for the
+            # mixed-namespace key (phaze-dqx8).
+            #
+            # phaze-s0wu: this check is necessary but NOT sufficient on its own, and must not be
+            # mistaken for the guarantee. It is a check-then-act whose "act" can be minutes later
+            # (a multi-GB cross-fs copy), so it cannot see an occupant that arrives during the
+            # move. The real no-clobber guarantee is the atomic ``os.link`` claim inside
+            # ``_atomic_cross_fs_copy`` / ``_atomic_same_fs_move``; this check survives because it
+            # fails fast and, crucially, because it is where the phaze-i7jo/qx8z resumable-residue
+            # detection lives.
             if proposed.exists() and not _is_same_file(original, proposed):
                 # phaze-qx8z: a distinct-inode `proposed` alongside a still-present
                 # `original` is ALSO the exact residue of this move's own prior
@@ -538,9 +629,24 @@ async def _execute_one(
                     msg = f"destination already exists, refusing to overwrite: {proposed}"
                     raise FileExistsError(msg)
             elif same_fs:
-                # Atomic rename also removes the original in one syscall -- the move
-                # IS the delete, so there is no separate delete step to fail.
-                original.replace(proposed)
+                if _is_same_file(original, proposed):
+                    # The destination IS the source: a no-op or case-only rename on a
+                    # case-insensitive filesystem. A link claim would (correctly) fail EEXIST here,
+                    # so this case keeps the plain rename -- there is nothing to clobber.
+                    # phaze-s0wu: unless the shared inode is this move's OWN crashed link claim
+                    # (an extra link exists at a genuinely different path). Renaming a link onto a
+                    # sibling link of the same inode is a POSIX no-op, so that residue would
+                    # otherwise survive forever with the source never removed. Complete forward.
+                    if original != proposed and original.stat().st_nlink > 1:
+                        current_step = "delete"
+                        original.unlink()
+                    else:
+                        original.replace(proposed)
+                else:
+                    # phaze-s0wu: a no-clobber claim, not a bare rename -- the exists-check above is
+                    # already stale by the time we act on it. The claim also removes the original in
+                    # the same primitive, so there is no separate delete step to fail.
+                    _atomic_same_fs_move(original, proposed)
             else:
                 # phaze-k23z: copy through a temp sibling + os.replace so the
                 # destination materializes atomically. A copy that aborts
