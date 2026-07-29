@@ -46,11 +46,13 @@ natural window count exceeds a cap is **strided evenly across the whole file**
 instead of analyzed window-by-window, so cost is O(constant), not O(duration)
 (the root-cause fix for the 4h-timeout incident).
 
-> **Out of scope:** audio **fingerprinting** is *not* essentia — it is handled entirely by
-> the `audfprint` and `panako` HTTP sidecars, which the app calls over httpx
-> (`services/fingerprint.py`). There is no `pyacoustid` dependency and nothing imports it;
-> `libchromaprint` / `fpcalc` survives in the images only as an `essentia-tensorflow`
-> runtime dependency. This page is only about the `essentia-tensorflow` analysis stage.
+> **Removed, not essentia's concern:** audio **fingerprinting** was never part of essentia — it was
+> handled entirely by the `audfprint` and `panako` HTTP sidecars, which the app called over httpx.
+> Both engines and every integration point were removed (phaze-0jpe, 2026-07-28; see
+> `docs/design/0002-fingerprint-removal.md`). There is no `pyacoustid` dependency and nothing
+> imports it; `libchromaprint` / `fpcalc` survive in the images as an `essentia-tensorflow`
+> runtime dependency, independent of the removed fingerprinting engines. This page is only about
+> the `essentia-tensorflow` analysis stage.
 
 ______________________________________________________________________
 

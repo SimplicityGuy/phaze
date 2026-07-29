@@ -20,15 +20,18 @@ end-to-end flow is:
 1. **Ingest** — a directory scan (or the always-on watcher) discovers files, SHA-256
    hashes them, classifies them by extension, and upserts `FileRecord` rows.
 2. **Metadata** — `mutagen` extracts audio tags into a `FileMetadata` row.
-3. **Fingerprint** — two engines (audfprint landmark + Panako tempo-robust) compute
-   fingerprints for identification and deduplication.
-4. **Analyze** — `essentia-tensorflow` derives BPM, key, mood, and style.
-5. **Propose** — an LLM (via `litellm`) generates a structured filename + destination-path
+3. **Analyze** — `essentia-tensorflow` derives BPM, key, mood, and style.
+4. **Propose** — an LLM (via `litellm`) generates a structured filename + destination-path
    proposal, validated by Pydantic and stored as a `RenameProposal`.
-6. **Review** — every proposal is queued for human review in the web UI; nothing proceeds
+5. **Review** — every proposal is queued for human review in the web UI; nothing proceeds
    without an explicit approve/reject.
-7. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
+6. **Execute** — approved proposals run through a **copy → verify (SHA-256) → delete**
    protocol with a write-ahead audit log.
+
+> Audio fingerprinting (two engines: audfprint landmark + Panako tempo-robust) was a stage
+> between Metadata and Analyze through 2026-07-27. It was removed in full — engines, sidecars,
+> and every integration point — on 2026-07-28 (epic phaze-0jpe); see
+> [docs/design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) for why.
 
 Each per-file stage after ingest is **operator-triggered** from its stage workspace in the
 DAG-centric shell (Phase 35 removed the implicit auto-chaining), and every stage is idempotent by
@@ -44,8 +47,8 @@ the application server only over an authenticated HTTP boundary.
 
 Two deployment shapes share one container image. The **application server** stack
 (`docker-compose.yml`) runs the API, the control-role worker, Postgres, and Redis. Each
-remote **file-server agent** stack (`docker-compose.agent.yml`) runs an agent-role worker,
-a filesystem watcher, and the two fingerprint sidecars — with **no database of its own**.
+remote **file-server agent** stack (`docker-compose.agent.yml`) runs an agent-role worker and
+a filesystem watcher — with **no database of its own**.
 
 ```mermaid
 graph TD
@@ -54,9 +57,7 @@ graph TD
     CTRL["🎛️ Control Worker<br/>SAQ queue: controller<br/>proposals · tracklists · discogs"]
     PG[("🐘 PostgreSQL 18<br/>:5432 — DB + SAQ broker")]
     REDIS[("🔴 Redis 8<br/>:6379 — cache")]
-    AGENT["🤖 Agent Worker + Watcher<br/>SAQ queue: phaze-agent-&lt;id&gt;<br/>scan · metadata · fingerprint · analyze · execute"]
-    AUD["🎯 audfprint :8001"]
-    PAN["🎼 Panako :8002"]
+    AGENT["🤖 Agent Worker + Watcher<br/>SAQ queue: phaze-agent-&lt;id&gt;<br/>scan · metadata · analyze · execute"]
 
     UI --> API
     API --> PG
@@ -66,8 +67,6 @@ graph TD
     CTRL --> PG
     AGENT -->|enqueue per-agent jobs| PG
     AGENT -->|cache / progress| REDIS
-    AGENT --> AUD
-    AGENT --> PAN
 
     style UI fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
     style API fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
@@ -75,20 +74,16 @@ graph TD
     style AGENT fill:#fff8e1,stroke:#f57f17,stroke-width:2px
     style PG fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
-    style AUD fill:#e0f2f1,stroke:#004d40,stroke-width:2px
-    style PAN fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
 | Service | Port | Role | Reaches DB? | Entry point |
 | ------- | ---- | ---- | ----------- | ----------- |
 | **API** | 8000 | FastAPI app + UI + internal-agent API | Yes (direct) | `phaze.main:app` |
 | **Control Worker** | -- | Fileless SAQ jobs (LLM, tracklists, Discogs) | Yes (direct) | `saq phaze.tasks.controller.settings` |
-| **Agent Worker** | -- | File-bound SAQ jobs (scan, fingerprint, analyze, execute) | No (HTTP only) | `saq phaze.tasks.agent_worker.settings` |
+| **Agent Worker** | -- | File-bound SAQ jobs (scan, metadata, analyze, execute) | No (HTTP only) | `saq phaze.tasks.agent_worker.settings` |
 | **Watcher** | -- | Filesystem observer that POSTs settled files | No (HTTP only) | `python -m phaze.agent_watcher` |
 | **Postgres** | 5432 | Primary database + SAQ `PostgresQueue` broker (Phase 36) | -- | `docker-compose.yml` |
 | **Redis** | 6379 | LLM rate-limit cache, exec-progress hash, pipeline counters | -- | `docker-compose.yml` |
-| **audfprint** | 8001 | Landmark fingerprint sidecar | No | `services/audfprint/` |
-| **Panako** | 8002 | Tempo-robust fingerprint sidecar | No | `services/panako/` |
 
 The **control / agent split is a hard import boundary**: `phaze.tasks.agent_worker`,
 `phaze.tasks.heartbeat`, and `phaze.agent_watcher` must not transitively import
@@ -102,7 +97,7 @@ There is **no single `state` column** on `files` and **no file-level state enum*
 dropped in Phase 90 (migration `039_drop_files_state_column` in the pre-flatten chain, now
 folded into the single `039` baseline schema, [Database → Migrations](database.md#migrations)).
 Instead a file's per-stage
-status is **DERIVED on read** from its output tables (`metadata`, `fingerprint_results`,
+status is **DERIVED on read** from its output tables (`metadata`,
 `analysis`, `proposals`, `execution_log`), the `cloud_job` sidecar, and the
 `dedup_resolution` marker. Two twin resolvers own that derivation and are locked 1:1 by an
 equivalence test so they can never drift: the DB-free `phaze.enums.stage.resolve_status`
@@ -110,20 +105,18 @@ equivalence test so they can never drift: the DB-free `phaze.enums.stage.resolve
 `services/stage_status.py` (`stage_status_case`), the single place every later reader drops a
 per-stage predicate into a `.where(...)`.
 
-A file moves conceptually through seven **stages** (`Stage` StrEnum): `metadata`,
-`fingerprint`, `analyze`, `tracklist`, `propose`, `review`, `apply`. Each stage resolves to
+A file moves conceptually through six **stages** (`Stage` StrEnum): `metadata`,
+`analyze`, `tracklist`, `propose`, `review`, `apply` (audio fingerprinting was removed as a
+stage, phaze-0jpe). Each stage resolves to
 one of five **statuses** (`Status` StrEnum) under the precedence ladder
 `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started` — the durable `SchedulingLedger` is the
-authoritative `in_flight` source (guarding the 2026-06-18 over-enqueue class). Because status
-is derived **per stage**, a file that is BOTH fingerprinted and analyzed reads `done` for
-both stages at once — something the retired single-valued state column could never express.
+authoritative `in_flight` source (guarding the 2026-06-18 over-enqueue class).
 
 ```mermaid
 flowchart TD
     DISC[discovered] --> META[metadata: mutagen]
-    META --> FP[fingerprint: audfprint + Panako]
-    FP --> AN[analyze: essentia]
-    FP -.long file, cloud/compute routed.-> CLOUD[(cloud_job sidecar)]
+    META --> AN[analyze: essentia]
+    META -.long file, cloud/compute routed.-> CLOUD[(cloud_job sidecar)]
     CLOUD --> AN
     AN --> PROP[propose: LLM via litellm]
     PROP --> REV[review: human approve / reject]
@@ -157,11 +150,10 @@ Tracing one music file from disk to a finished move:
    `processed_files` after each chunk and a terminal status at the end. Discovery persists
    rows **only** — Phase 35 (D-06) removed the per-discovery auto-enqueue of metadata
    extraction.
-3. **Operator-triggered stages.** Metadata, fingerprint, and analyze are each enqueued
+3. **Operator-triggered stages.** Metadata and analyze are each enqueued
    independently by the operator from their DAG-rail stage workspaces (no auto-chaining). The SAQ tasks
-   in `src/phaze/tasks/` are: `extract_file_metadata` (mutagen, `metadata_extraction.py`),
-   `fingerprint_file` (audfprint + Panako via the `FingerprintOrchestrator`), and
-   `process_file` (essentia analysis run in a real per-file child process via
+   in `src/phaze/tasks/` are: `extract_file_metadata` (mutagen, `metadata_extraction.py`)
+   and `process_file` (essentia analysis run in a real per-file child process via
    `services/analysis_exec.py` + `phaze.analysis_child`, bounded by an `asyncio.Semaphore`
    sized from `worker_process_pool_size` — Phase 101 retired the earlier pebble
    `ProcessPoolExecutor`, `functions.py`). On a distributed agent, `process_file` reads the
@@ -222,8 +214,8 @@ A single `before_enqueue` chokepoint, `apply_deterministic_key`
 (`tasks/_shared/deterministic_key.py`), assigns `job.key = "<function>:<natural_id>"` for
 every registered pipeline task — overriding any caller-supplied key so no call site can
 drift back to a random UUID (anti-drift, threat T-35-01). The registry (`_KEY_BUILDERS`,
-11 functions) maps each task's payload to its natural id: `process_file`,
-`extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `search_tracklist`, `push_file`,
+9 functions) maps each task's payload to its natural id: `process_file`,
+`extract_file_metadata`, `search_tracklist`, `push_file`,
 `s3_upload`, and `submit_cloud_job` key on `<file_id>`; `scrape_and_store_tracklist` and
 `match_tracklist_to_discogs` key on `<tracklist_id>`; and the batch task
 `generate_proposals` keys on an order-independent
@@ -238,7 +230,7 @@ analyze path stays no-op-equivalent.
 ### Maintained counters
 
 `services/pipeline_counters.py` keeps two durable Redis counters per function in a bounded,
-9-name namespace (`PIPELINE_FUNCTIONS`): `phaze:pipeline:enqueued:<fn>` (bumped best-effort inside the same
+7-name namespace (`PIPELINE_FUNCTIONS`): `phaze:pipeline:enqueued:<fn>` (bumped best-effort inside the same
 `before_enqueue` hook, one INCR per enqueue attempt) and `phaze:pipeline:completed:<fn>`
 (bumped by the `increment_completed` `after_process` hook — registered as a Worker
 constructor kwarg in both settings dicts — only on a `Status.COMPLETE` outcome). These are
@@ -264,9 +256,9 @@ neither is reachable from a proposal re-run. `store_proposals` also rejects an o
 
 `get_stage_progress` (`services/pipeline.py`) is the authoritative per-DAG-node source. It
 counts `COUNT(DISTINCT file_id / tracklist_id)` against each stage's OUTPUT table
-(`metadata`, `fingerprint_results` with `status='completed'`, `analysis`, `tracklists`,
+(`metadata`, `analysis`, `tracklists`,
 `tracklist_versions`, `discogs_links`, `proposals`, and completed `execution_log`), so a
-file that is BOTH fingerprinted and analyzed contributes to both node counts — impossible
+file that is BOTH metadata-extracted and analyzed contributes to both node counts — impossible
 to express through a single-valued per-file state column (the retired `state` column /
 file-state enum, dropped in Phase 90) that only one status could occupy at a time. Each stage
 is wrapped in `_safe_count` (degrade-to-0 + session rollback) so one
@@ -298,8 +290,8 @@ underlying stage-progress services (`get_stage_progress`, `get_queue_activity`,
 `/pipeline/` is a pure 302 redirect into the shell root `/` — which since SQ3-02
 (quick-260707-sq3) lands on the static, DB-free **Summary** placeholder, with Analyze one rail
 click away at `/s/analyze`. The stage graph itself is
-unchanged: only Metadata and Analyze converge into Proposals; fingerprint and the tracklist
-subgraph have no edge into Proposals.
+unchanged: only Metadata and Analyze converge into Proposals; the tracklist
+subgraph has no edge into Proposals.
 
 ## 🤖 Distributed Execution Architecture (Phases 26-29)
 
@@ -330,19 +322,19 @@ lifespan as `app.state.task_router`.
   phaze-e57w — deleting them releases the deterministic key so the blocked file is
   re-queueable), and `recover_orphaned_work` (the gated boot-time queue-loss recovery pass).
   It connects to Postgres directly.
-- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **8**
-  file-bound functions: `process_file`, `extract_file_metadata`, `fingerprint_file`,
-  `scan_live_set`, `scan_directory`, `execute_approved_batch`, `push_file` (Phase 50 —
+- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **6**
+  file-bound functions: `process_file`, `extract_file_metadata`,
+  `scan_directory`, `execute_approved_batch`, `push_file` (Phase 50 —
   the fileserver rsync-over-SSH push of a long file to the compute agent's scratch dir), and
   `s3_upload` (Phase 53 — the multipart-PUT upload to presigned S3 URLs; registered under an
   explicit `(name, func)` tuple so its SAQ name stays `s3_upload`). With `PHAZE_AGENT_LANE`
-  set, the worker registers **only that lane's subset** — `analyze` / `fingerprint` / `meta` /
+  set, the worker registers **only that lane's subset** — `analyze` / `meta` /
   `io` per `LANE_TASKS` (`services/enqueue_router.py`, the single source of truth for
-  task→lane membership); all-mode registers all 8, and the union of the four lanes equals
+  task→lane membership); all-mode registers all 6, and the union of the three lanes equals
   `AGENT_TASKS` (quick-260707-dh1, asserted in `tests/shared/core/test_task_split.py`).
   Its startup hook
-  authenticates against the application server, downloads essentia weights if missing, builds
-  the `FingerprintOrchestrator` (audfprint + Panako adapters), sizes the per-file analysis
+  authenticates against the application server, downloads essentia weights if missing, sizes
+  the per-file analysis
   concurrency semaphore (`analysis_semaphore`, from `worker_process_pool_size` — Phase 101
   retired the earlier pebble process pool), and launches the liveness heartbeat as an
   asyncio background task (Phase 46).
@@ -420,9 +412,9 @@ controller fans out approved proposals across agents:
 
 ### Internal-agent HTTP API
 
-All agent → server communication funnels through **13** routers under
-`/api/internal/agent/*` (registered in `main.py`): `files`, `metadata`, `fingerprint`,
-`execution`, `heartbeat`, `identity`, `analysis`, `push`, `s3`, `tracklists`, `proposals`,
+All agent → server communication funnels through **11** routers under
+`/api/internal/agent/*` (registered in `main.py`): `files`, `metadata`,
+`execution`, `heartbeat`, `identity`, `analysis`, `push`, `s3`, `proposals`,
 `scan-batches`, and `exec-batches`. (`routers/agent_auth.py` is **not** a router — it exports
 the `get_authenticated_agent` dependency the handlers depend on.) The `agent_id` is always
 taken from the authenticated
@@ -587,7 +579,7 @@ stmt = paged_stmt(
 rows, has_next = split_sentinel((await session.execute(stmt)).all(), page_size)
 ```
 
-All three enrich workspaces (metadata / fingerprint / analyze) ship an empty host `div` that
+Both enrich workspaces (metadata / analyze) ship an empty host `div` that
 `hx-get`s a bounded fragment on load; none server-renders a file row inline.
 
 ## 🧮 Wire Bounds Contract
@@ -677,14 +669,13 @@ restored = await undo_resolve(session, parsed_states)                       # dr
 | `execution_dispatch` helpers | `execution_dispatch.py` | Group / revoked-filter / chunk approved proposals |
 | `PhazeAgentClient` | `agent_client.py` | Agent → server HTTP wrapper (tenacity, no-4xx-retry) |
 | `classify` / `sort_key` | `agent_liveness.py` | Agent liveness classification for admin UI |
-| `FingerprintOrchestrator` | `fingerprint.py` | Multi-engine fingerprint coordination |
 | `enqueue_process_file` / `process_file_job_key` | `analysis_enqueue.py` | FastAPI-free shared seam: builds the complete `ProcessFilePayload` + job policy (`timeout=7200` / `retries=2`); the central `before_enqueue` hook stamps the deterministic key `process_file:<file_id>` and records the effective `timeout`/`retries` in the scheduling ledger so recovery replays the same policy. Used by both the dashboard analyze path and the reboot re-enqueue task so in-flight files dedup |
 
 ### Tasks (`src/phaze/tasks/`)
 
 | Abstraction | File | Role |
 | ----------- | ---- | ---- |
-| `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (11-task registry) + `after_process` completed-counter hook |
+| `apply_deterministic_key` / `increment_completed` | `_shared/deterministic_key.py` | Central `before_enqueue` deterministic-key hook (9-task registry) + `after_process` completed-counter hook |
 | Control settings | `controller.py` | SAQ entry for fileless jobs; on boot runs the gated `recover_orphaned_work` (queue-loss recovery, no-op on a durable restart) — no steady-state auto-advance cron (Phase 42) |
 | Agent-worker settings | `agent_worker.py` | SAQ entry for file-bound jobs; the liveness heartbeat runs as a startup asyncio background task (Phase 46), not a cron |
 | `process_file` | `functions.py` | essentia analysis → PUT via HTTP |

@@ -11,7 +11,7 @@
 
 [![CI](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml/badge.svg)](https://github.com/SimplicityGuy/phaze/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/SimplicityGuy/phaze/branch/main/graph/badge.svg)](https://codecov.io/gh/SimplicityGuy/phaze) ![License: MIT](https://img.shields.io/github/license/SimplicityGuy/phaze) ![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)
 
-**A music collection organizer that ingests music and concert files, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
+**A music collection organizer that ingests music and concert files, analyzes them, uses AI to propose better filenames and destination paths, and provides a web UI to review and approve renames. All file operations use a safe copy-verify-delete protocol with full audit trails.**
 
 </div>
 
@@ -26,7 +26,6 @@
 Phaze is a music collection organizer for managing a large personal archive of music and live concert recordings. It provides:
 
 - **🎵 Audio Analysis**: BPM, key, mood, and style detection via essentia-tensorflow
-- **🔍 Audio Fingerprinting**: Dual-engine deduplication with audfprint (landmark) and Panako (tempo-robust)
 - **🤖 AI-Powered Renaming**: LLM-generated filename and path proposals via litellm
 - **🎧 Tracklist Matching**: Concert set identification from 1001Tracklists
 - **👀 Human-in-the-Loop**: Web UI to review, approve, or reject every proposed change
@@ -45,8 +44,8 @@ over HTMX (`GET /s/<stage>`, no full-page reload and no tab bar). The right colu
 per-file pane. `/` renders the shell on the static, DB-free **Summary** landing placeholder
 (SQ3-02); **Analyze** is one rail click away at `/s/analyze`.
 
-- **DAG rail = navigation.** Discover → Enrich (Metadata · Fingerprint · Analyze) →
-  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
+- **DAG rail = navigation.** Discover → Enrich (Metadata · Analyze) →
+  Identify (Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
   Dedupe · Cue), with Audit log and the Agents/Compute page below the line. Live per-stage
   counts ride the single `/pipeline/stats` 5-second poll.
 - **⌘K command palette.** A Cmd-K command palette unifies search across files, tracklists,
@@ -97,8 +96,6 @@ Deep detail lives in [Architecture Overview](docs/architecture.md) and the
 | **Worker**   | --   | SAQ async background task processor| `SAQ`, `PostgreSQL`, `essentia`, `mutagen`|
 | **Postgres** | 5432 | Primary database + SAQ queue broker| `PostgreSQL 18`, `Alembic`, `psycopg`    |
 | **Redis**    | 6379 | Cache, rate-limit, counters        | `Redis 8`                                |
-| **Audfprint**| 8001 | Landmark-based audio fingerprinting| `audfprint`                              |
-| **Panako**   | 8002 | Tempo-robust audio fingerprinting  | `Panako`                                 |
 
 ### 📐 System Architecture
 
@@ -118,11 +115,6 @@ graph TD
         REDIS[("🔴 Redis 8<br/>:6379<br/>cache only")]
     end
 
-    subgraph Fingerprint ["🎵 Fingerprinting"]
-        AUD["🎯 Audfprint :8001<br/>landmark"]
-        PAN["🎼 Panako :8002<br/>tempo-robust"]
-    end
-
     subgraph Backends ["☁️ Analysis Backends — rank-tiered drain"]
         LOCAL["🖥️ Local<br/>essentia · rank 99"]
         COMPUTE["☁️ Compute agent<br/>OCI A1 · rsync/Tailscale · ≤1"]
@@ -134,8 +126,6 @@ graph TD
     API --> PG
     API --> REDIS
     API --> WORKER
-    WORKER --> AUD
-    WORKER --> PAN
     WORKER --> PG
 
     API -->|dispatch by rank| LOCAL
@@ -149,8 +139,6 @@ graph TD
     style WORKER fill:#fff3e0,stroke:#e65100,stroke-width:2px
     style PG fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     style REDIS fill:#ffebee,stroke:#b71c1c,stroke-width:2px
-    style AUD fill:#e0f2f1,stroke:#004d40,stroke-width:2px
-    style PAN fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     style LOCAL fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style COMPUTE fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
     style KUEUE fill:#fff8e1,stroke:#ff8f00,stroke-width:2px
@@ -161,20 +149,21 @@ See [Architecture Overview](docs/architecture.md) for detailed diagrams covering
 
 ### 🔄 File Processing Pipeline
 
-After discovery, metadata extraction, fingerprinting, and analysis run as independent
+After discovery, metadata extraction and analysis run as independent
 per-file stages (each reads only the file on disk). Metadata extraction is
 **operator-triggered** from its stage workspace in the DAG-centric console — it is no
 longer auto-enqueued at discovery. Proposal generation joins on analysis **and** metadata only.
+Duplicate detection groups files by their discovery-time SHA-256 hash — it is independent of
+both enrich stages.
 
 ```mermaid
 stateDiagram-v2
     [*] --> DISCOVERED
     DISCOVERED --> METADATA_EXTRACTED : mutagen (operator‑triggered)
-    DISCOVERED --> FINGERPRINTED : audfprint + panako
     DISCOVERED --> ANALYZED : essentia
+    DISCOVERED --> DUPLICATE_RESOLVED : SHA‑256 hash match
     METADATA_EXTRACTED --> PROPOSAL_GENERATED : LLM via litellm
     ANALYZED --> PROPOSAL_GENERATED : LLM via litellm
-    FINGERPRINTED --> DUPLICATE_RESOLVED
     PROPOSAL_GENERATED --> APPROVED : human review
     PROPOSAL_GENERATED --> REJECTED : human review
     APPROVED --> EXECUTED : copy‑verify‑delete
@@ -186,7 +175,7 @@ spine — where each stage is a node with a live count; clicking a node swaps it
 into the center pane over HTMX (`/s/<stage>`), and that workspace carries the stage's
 trigger (gated by its upstream dependencies and by agent/controller availability). DB-truth
 stage counts drive every rendered count; the rail is seeded once and kept live by a 5s
-`/pipeline/stats` poll. The three agent stages (**Metadata**, **Analyze**, **Fingerprint**)
+`/pipeline/stats` poll. The two agent stages (**Metadata**, **Analyze**)
 additionally have **per-stage Pause/Resume + priority control endpoints** (▲ Higher / ▼
 Lower, "lower number runs first"; see below); their live pause/priority state is seeded into
 `$store.pipeline` and rides the same 5s poll. Discovery is display-only — scanning is
@@ -208,9 +197,9 @@ net); its deterministic-key dedup means a forced reconcile can never double the 
 Every control-plane enqueue (API endpoint or admin-UI action) routes to a **named** SAQ queue that a worker actually consumes — the control plane never produces onto an unnamed `default` queue (which has no consumer). A single chokepoint, `resolve_queue_for_task` in `src/phaze/services/enqueue_router.py`, maps each task name to its destination:
 
 - **Controller-bound tasks** — `generate_proposals`, `search_tracklist`, `scrape_and_store_tracklist`, `match_tracklist_to_discogs`, `refresh_tracklists` — route to the `controller` queue, consumed by the application-server `phaze-worker`.
-- **Per-agent tasks** — `process_file`, `extract_file_metadata`, `fingerprint_file`, `scan_live_set`, `scan_directory`, `execute_approved_batch`, `s3_upload`, `push_file` — route via the `AgentTaskRouter` to a **per-lane** `phaze-agent-<id>-<lane>` queue, consumed by the matching file-server lane worker. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
+- **Per-agent tasks** — `process_file`, `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `s3_upload`, `push_file` — route via the `AgentTaskRouter` to a **per-lane** `phaze-agent-<id>-<lane>` queue, consumed by the matching file-server lane worker. The target agent is chosen by **active-agent selection** (the most-recently-seen, non-revoked agent). When **no active agent** is available, the operation surfaces a clear error / empty-state instead of silently enqueuing nothing.
 
-**Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **four lane workers from one image** — `analyze` (`process_file`), `fingerprint` (`fingerprint_file`), `meta` (`extract_file_metadata` / `scan_directory` / `scan_live_set` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). CPU-bound lanes (`analyze` 4 + `fingerprint` 2) sum within nox's 8 cores with essentia/TF pinned single-threaded; `io` is off the CPU budget. **Every** lane worker heartbeats (`PHAZE_AGENT_HEARTBEAT=true` on all four), each beat tagged with its own lane and carrying that lane's `queue_depth` — the control plane keeps the per-lane breakdown, sums an honest all-lane depth, and takes `max(last_seen)` for liveness (phaze-30fo). This replaced the former "exactly one heartbeat per agent, on `analyze`" rule: pinning the whole liveness signal to one process meant a stalled `analyze` worker marked the agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other three lanes were busy. Only the transitional `worker-drain` consumer sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, so its untagged beat would wipe the per-lane breakdown. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
+**Per-lane agent workers (quick-260707-dh1):** the file-server agent runs **three lane workers from one image** — `analyze` (`process_file`), `meta` (`extract_file_metadata` / `scan_directory` / `execute_approved_batch`), and `io` (`s3_upload` / `push_file`) — so I/O offload and cheap analysis are never head-of-line-blocked behind CPU-bound essentia backlog. The task→lane map is the single source of truth `LANE_TASKS` in `enqueue_router.py` (with `AGENT_TASKS` its derived union); `queue_for(agent_id, lane)` requires an explicit lane (no silent default). The CPU-bound `analyze` lane (4) sums within nox's 8 cores with essentia/TF pinned single-threaded; `io` is off the CPU budget. **Every** lane worker heartbeats (`PHAZE_AGENT_HEARTBEAT=true` on all three), each beat tagged with its own lane and carrying that lane's `queue_depth` — the control plane keeps the per-lane breakdown, sums an honest all-lane depth, and takes `max(last_seen)` for liveness (phaze-30fo). This replaced the former "exactly one heartbeat per agent, on `analyze`" rule: pinning the whole liveness signal to one process meant a stalled `analyze` worker marked the agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` consumer sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, so its untagged beat would wipe the per-lane breakdown. The compute (cloud/x86) agent consumes the **single** `analyze` lane (its only task is `process_file`). See [`docs/agent-queue-lanes.md`](docs/agent-queue-lanes.md) for the topology table, concurrency knobs, and the legacy-queue drain runbook.
 
 Unknown task names fail loud (`ValueError`) — they are never silently sent to any queue. A static guard test (`tests/shared/core/test_no_default_queue_producers.py`) scans the router and service trees on every CI run and fails if anyone reintroduces a default-queue producer (a `*.state.queue` reference or an unnamed `Queue.from_url(...)`), so this bug class cannot regress unnoticed.
 
@@ -220,7 +209,7 @@ Unknown task names fail loud (`ValueError`) — they are never silently sent to 
 
 ### 🎚️ Per-Stage Pause & Priority
 
-Each of the three agent pipeline stages — **metadata** (`extract_file_metadata`), **analyze** (`process_file`), and **fingerprint** (`fingerprint_file`) — can be paused, resumed, and reprioritized at runtime. The durable operator intent lives in the `pipeline_stage_control` table; a `before_enqueue` hook stamps every NEW stage job from that table, while the control endpoints additionally mutate the EXISTING queued backlog (raw `saq_jobs` UPDATEs) so an action takes effect immediately. The control-table read is cached for **5s** (TTL), so a just-changed priority reaches newly-enqueued jobs within that bounded window.
+Each of the two agent pipeline stages — **metadata** (`extract_file_metadata`) and **analyze** (`process_file`) — can be paused, resumed, and reprioritized at runtime. The durable operator intent lives in the `pipeline_stage_control` table; a `before_enqueue` hook stamps every NEW stage job from that table, while the control endpoints additionally mutate the EXISTING queued backlog (raw `saq_jobs` UPDATEs) so an action takes effect immediately. The control-table read is cached for **5s** (TTL), so a just-changed priority reaches newly-enqueued jobs within that bounded window.
 
 Each endpoint mutates the control row and the live backlog in a **single transaction** and returns `{stage, priority, paused}` sourced from the control row (the durable intent — a raw `saq_jobs` priority UPDATE reorders the dequeue column but does not rewrite a job's serialized priority, so the control row is the source of truth for the response):
 
@@ -234,14 +223,13 @@ Each endpoint mutates the control row and the live backlog in a **single transac
 
 **Adopted defaults (locked):** control-state cache TTL = **5s**; **pause persists across reboots** and re-applies to re-enqueued jobs (the hook stamps the parked state onto restarts — Phase 32 resilience); **resume un-parks only** (it never restores a pre-pause priority); priority is a **delta** op with a default UI step of **±10**.
 
-An unknown stage returns **422** (validated against the metadata/analyze/fingerprint allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN.
+An unknown stage returns **422** (validated against the metadata/analyze allowlist before any backlog filter is built). These endpoints add **no app-layer auth** — like the rest of `/pipeline/*` and the `/saq` UI, they sit behind the reverse proxy's internal-realm auth on the private LAN.
 
 **Per-stage controls (Phase 38):** each control (Pause/Resume, plus a ▲ Higher / ▼ Lower priority step — the UI steps by ±10; ▲ decrements the number, lower runs sooner) POSTs to the endpoints above with `hx-swap="none"`; an Alpine `@htmx:after-request` handler writes the authoritative `{priority, paused}` from the JSON response into `$store.pipeline`, and the 5s `/pipeline/stats` poll re-pushes the live per-stage state so every refresh reconciles. The control read is degrade-safe: if `pipeline_stage_control` is unreadable, the store falls back to the defaults (running, priority 50) and the poll still returns 200 — it never 500s. The interactive control surface that lived on the removed v6.x DAG canvas is gone with the standalone dashboard page (CUT-02); the endpoints, durable intent, and live poll state are unchanged. Scanning is initiated solely from the Discover workspace's Trigger Scan card (the redundant "Rescan Files" anchor was removed in Phase 38).
 
 ## 🌟 Key Features
 
 - **🎵 Broad Format Support**: mp3, m4a, ogg, flac, wav, aiff, wma, aac, opus, plus video (mp4, mkv, avi, webm, mov) and companion files (cue, nfo, m3u)
-- **🔄 Dual Fingerprinting**: Landmark-based (audfprint) and tempo-robust (Panako) engines for comprehensive deduplication
 - **🤖 AI Rename Proposals**: LLM-generated filenames and paths with structured validation via Pydantic
 - **🎧 Tracklist Integration**: Automatic concert set identification from 1001Tracklists with fuzzy matching
 - **👀 Approval Workflow**: Every rename requires human review through the web UI
@@ -279,8 +267,6 @@ curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"s
 | 🌐 **Web UI**    | https://localhost:8000  | None                        |
 | 🐘 **PostgreSQL**| `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | `${POSTGRES_USER:-phaze}` / `POSTGRES_PASSWORD` (**required** — no default) |
 | 🔴 **Redis**     | `localhost:6379`        | `REDIS_PASSWORD` (default `changeme`) |
-| 🎵 **Audfprint** | `audfprint:8001` (agent stack) | None                   |
-| 🎧 **Panako**    | `panako:8002` (agent stack)    | None                   |
 
 > **TLS:** the container entrypoint bootstraps a self-signed internal CA and execs `uvicorn`
 > with `--ssl-keyfile`/`--ssl-certfile`, so the server speaks **HTTPS** on 8000. Pass the CA to
@@ -292,8 +278,6 @@ curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"s
 > — `docker compose` errors at parse time without it. The port publishes as
 > `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432`: loopback-only by default; set `POSTGRES_BIND_IP` to the
 > app-server LAN IP when agents on other hosts must reach the queue broker.
-
-> **Fingerprint sidecars:** `audfprint` and `panako` run in the agent stack (`docker-compose.agent.yml`) with no published host ports. Reach them on the Docker network at `audfprint:8001` / `panako:8002`; start them with `just up-agent` (agent stack only) or `just up-all` (both stacks on one host).
 
 > **Logging:** all processes log through one structlog pipeline (JSON when not a TTY, console otherwise). Tune with `PHAZE_LOG_LEVEL` (`DEBUG`\|`INFO`\|`WARNING`\|`ERROR`, default `INFO`) and `PHAZE_LOG_JSON` (`true`\|`false`, default auto); set `PHAZE_LOG_LEVEL=DEBUG` to watch a running scan or model download in detail. See [Configuration → Logging / observability](docs/configuration.md#logging--observability-all-roles).
 
@@ -407,7 +391,6 @@ GitHub Actions runs on every push and PR:
 | **Cache**      | Redis                                   | LLM rate-limiting + pipeline counters |
 | **Audio Tags** | mutagen                                 | Read/write audio metadata            |
 | **Analysis**   | essentia-tensorflow                     | BPM, key, mood, style detection      |
-| **Fingerprint**| audfprint + Panako                      | Audio deduplication + identification |
 | **AI/LLM**     | litellm (pinned `>=1.85.7,<1.86.0`)    | Unified LLM API for rename proposals (capped after the 1.82.7/1.82.8 supply-chain incident) |
 | **Scraping**   | BeautifulSoup4 + lxml                   | 1001Tracklists integration           |
 | **Matching**   | rapidfuzz                               | Fuzzy string matching                |

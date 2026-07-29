@@ -32,7 +32,6 @@ phaze/
 │   │   ├── scan_batch.py       #   ScanBatch progress tracking
 │   │   ├── metadata.py         #   FileMetadata (audio tags)
 │   │   ├── analysis.py         #   AnalysisResult (BPM, key, mood, style) + AnalysisWindow (per-window rows)
-│   │   ├── fingerprint.py      #   FingerprintResult (per-engine)
 │   │   ├── proposal.py         #   RenameProposal + ProposalStatus
 │   │   ├── execution.py        #   ExecutionLog (audit trail)
 │   │   ├── tracklist.py        #   Tracklist + TracklistVersion + TracklistTrack
@@ -70,18 +69,18 @@ phaze/
 │   │   ├── response_shape.py   #   THE htmx response-shape contract: what document shape + status a handler owes
 │   │   ├── view_state.py       #   THE list-view state carrier (filter/search/page/sort) for htmx-swapped tables
 │   │   ├── agent_auth.py       #   NOT a router: exports the get_authenticated_agent bearer-token dependency
-│   │   └── agent_*.py          #   Distributed-agent internal API (13 routers under /api/internal/agent):
-│   │       │                   #     files, metadata, fingerprint, execution, heartbeat, identity,
-│   │       │                   #     analysis, push, s3, tracklists, proposals,
+│   │   └── agent_*.py          #   Distributed-agent internal API (11 routers under /api/internal/agent):
+│   │       │                   #     files, metadata, execution, heartbeat, identity,
+│   │       │                   #     analysis, push, s3, proposals,
 │   │       │                   #     scan_batches, exec_batches
 │   ├── schemas/                # Pydantic request/response models
 │   │   ├── companion.py        #   Companion/duplicate schemas
 │   │   ├── pipeline_scans.py   #   Pipeline scan-trigger schemas
 │   │   ├── agent_tasks.py      #   Agent task-routing payload schemas
 │   │   ├── wire_bounds.py      #   THE Wire Bounds Contract: every inbound value bounded to fit its column
-│   │   └── agent_*.py          #   Distributed-agent contract schemas (13, DB-free, loaded in agent worker):
-│   │       │                   #     identity, heartbeat, files, metadata, fingerprint, analysis,
-│   │       │                   #     proposals, execution, exec_batches, scan_batches, tracklists,
+│   │   └── agent_*.py          #   Distributed-agent contract schemas (11, DB-free, loaded in agent worker):
+│   │       │                   #     identity, heartbeat, files, metadata, analysis,
+│   │       │                   #     proposals, execution, exec_batches, scan_batches,
 │   │       │                   #     push, s3
 │   ├── services/               # Business logic
 │   │   ├── hashing.py          #   Shared hashing utilities
@@ -90,14 +89,12 @@ phaze/
 │   │   ├── bulk_insert.py      #   Split a multi-row INSERT to fit PostgreSQL's bind-parameter limit
 │   │   ├── like_escape.py      #   Escape LIKE/ILIKE metacharacters so operator-typed search text matches literally
 │   │   ├── queue_introspection.py # Operator-facing SAQ `active` breakdown: RUNNING vs CLAIMED-but-buffered
-│   │   ├── fingerprint_requeue.py # Outage recovery: re-queue files whose fingerprint stage burned during an engine outage
 │   │   ├── text_repair.py      #   Repair double-encoded UTF-8 ("mojibake") in already-decoded str values
 │   │   ├── text_repair_backfill.py # Idempotent backfill of files.original_filename_repaired for pre-045 rows
 │   │   ├── pg_text.py          #   Sanitize free text for PostgreSQL UTF8 storage (NUL/surrogate stripping)
 │   │   ├── analysis.py         #   BPM/key/mood via essentia
 │   │   ├── analysis_enqueue.py #   FastAPI-free producer for process_file jobs (deterministic key + payload)
 │   │   ├── analysis_exec.py    #   Shared async subprocess driver for essentia analysis (analysis_child)
-│   │   ├── fingerprint.py      #   Multi-engine fingerprint orchestrator
 │   │   ├── proposal.py         #   LLM calling + context building
 │   │   ├── proposal_queries.py #   Proposal queries + pagination
 │   │   ├── execution_queries.py#   Execution log queries + pagination
@@ -136,10 +133,9 @@ phaze/
 │   │   ├── agent_worker.py     #   SAQ agent_worker settings (agent process entry point)
 │   │   ├── functions.py        #   process_file (full pipeline per file)
 │   │   ├── metadata_extraction.py # extract_file_metadata
-│   │   ├── fingerprint.py      #   fingerprint_file (multi-engine)
 │   │   ├── proposal.py         #   generate_proposals (batch LLM)
 │   │   ├── execution.py        #   execute_approved_batch
-│   │   ├── scan.py             #   scan_directory (agent-side chunked file discovery) + scan_live_set (fingerprint matching)
+│   │   ├── scan.py             #   scan_directory (agent-side chunked file discovery)
 │   │   ├── reenqueue.py        #   Control-side recover_orphaned_work: gated all-stages queue-loss recovery (Phase 42)
 │   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
 │   │   ├── aborting_reaper.py  #   Control-side every-minute cron: reap SAQ rows stuck in status='aborting' (phaze-e57w)
@@ -184,21 +180,17 @@ phaze/
 │       ├── search/             #   Cross-entity search UI
 │       ├── tags/               #   Tag review UI
 │       └── admin/              #   Admin agents UI
-├── services/                   # Fingerprint microservices
-│   ├── audfprint/              #   Landmark-based fingerprinting
-│   └── panako/                 #   Tempo-robust fingerprinting
-├── tests/                      # Test suite (95%+ coverage), reorganized into 10 CI-parallel
-│   │                           # buckets (Phase 63-02, +`services` in phaze-uciu.1); see tests/BUCKETS.md for the mapping
+├── tests/                      # Test suite (95%+ coverage), reorganized into 8 CI-parallel
+│   │                           # buckets (Phase 63-02; the fingerprint and services buckets were
+│   │                           # removed with the engines, phaze-0jpe); see tests/BUCKETS.md for the mapping
 │   ├── conftest.py             #   Fixtures + test DB setup
-│   ├── buckets.json            #   Source of truth for the 10 bucket names + file->bucket map
+│   ├── buckets.json            #   Source of truth for the 8 bucket names + file->bucket map
 │   ├── discovery/               #   File-discovery, agent_watcher, and core routing tests
 │   ├── metadata/                #   Tag-extraction (mutagen) tests
-│   ├── fingerprint/              #   Multi-engine fingerprint tests
 │   ├── analyze/                  #   Essentia analysis (BPM/key/mood) tests
 │   ├── identify/                 #   Proposal/LLM-naming tests
 │   ├── review/                   #   Execution + review-workflow tests
 │   ├── agents/                   #   Distributed-agent (file-server/compute) tests
-│   ├── services/                  #   Regression tests for the top-level services/ FastAPI sidecars (audfprint, panako)
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)
@@ -264,8 +256,8 @@ stage's workspace fragment to swap into the `#stage-workspace` target:
 | `/s/summary` | `shell/partials/summary_placeholder.html` — the DB-free `/` landing (SQ3-01/SQ3-02); no context branch in `_render_stage` |
 | `/s/files` | `pipeline/partials/files_workspace.html` — the Phase-87 per-file stage-matrix workspace (host wrapper for the `files_table_view.html` swap fragment) |
 | `/s/discover` | `pipeline/partials/discover_workspace.html` |
-| `/s/metadata` · `/s/fingerprint` · `/s/analyze` | `pipeline/partials/{metadata,fingerprint,analyze}_workspace.html` |
-| `/s/trackid` · `/s/tracklist` | `pipeline/partials/{trackid,tracklist}_workspace.html` |
+| `/s/metadata` · `/s/analyze` | `pipeline/partials/{metadata,analyze}_workspace.html` |
+| `/s/tracklist` | `pipeline/partials/tracklist_workspace.html` |
 | `/s/propose` | `pipeline/partials/propose_workspace.html` |
 | `/s/rename` · `/s/tagwrite` · `/s/move` · `/s/dedupe` · `/s/cue` | `pipeline/partials/{rename,tagwrite,move,dedupe,cue}_workspace.html` |
 
