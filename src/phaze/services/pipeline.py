@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast as type_cast
 import weakref
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, text
+from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
 from sqlalchemy.orm import aliased
 import structlog
 
@@ -139,7 +139,12 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
 
     Re-scan-safe: a re-scan creates a NEW completed batch for the same agent, so summing ALL
     completed batches would double-count. Instead a window function ranks each agent's completed
-    batches by ``created_at`` DESC and only ``rn == 1`` (the most recent) is summed.
+    batches by ``created_at`` DESC, ``ScanBatch.id`` DESC and only ``rn == 1`` (the most recent) is
+    summed. The ``id`` tiebreaker (phaze-imih) matters because ``ScanBatch.created_at`` carries no
+    uniqueness constraint (``TimestampMixin``'s ``server_default=func.now()`` is transaction-time
+    constant): two completed batches for one agent can share ``created_at``, and without the
+    tiebreaker the ``rn == 1`` pick on a tie is executor-arbitrary -- matching the corrected window
+    in :func:`get_agent_reconciliations` (phaze-n2d2) so the two sums can never disagree.
 
     Returns None (NOT 0) both when there are no completed batches and on any DB error: None is the
     "hide the reconciliation" sentinel, distinct from a genuine scanned total of 0. Mirrors the
@@ -156,7 +161,7 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
             ranked = (
                 select(
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc())).label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
@@ -703,8 +708,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
     - ``scrape``      -- done = DISTINCT tracklist_id in ``tracklist_versions``; total = COUNT(tracklists)
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
-    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with BOTH
-      ``metadata`` AND ``analysis``, mirroring routers/pipeline.py:116-128)
+    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with a
+      ``metadata`` row present AND analysis DONE, mirroring ``get_proposal_pending_batches``'s
+      ``_proposal_pending_clauses`` ready-set gate below -- phaze-nuyn)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
 
     Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
@@ -727,11 +733,21 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     tracklist_total_stmt = select(func.count(Tracklist.id))
     discovery_stmt = select(func.count(FileRecord.id))
     # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
-    # (mirrors routers/pipeline.py:116-128, the generate_proposals ready-set).
+    # (mirrors get_proposal_pending_batches's ready-set, ``_proposal_pending_clauses`` below). The
+    # metadata conjunct intentionally stays a bare row-existence check (matching
+    # ``_proposal_pending_clauses`` exactly -- neither predicate applies ``failed_at IS NULL`` yet;
+    # that is a separate, adjacent gap, not this one). The analysis conjunct uses
+    # ``done_clause(Stage.ANALYZE)`` -- the same completion-discriminated predicate
+    # ``_proposal_pending_clauses`` hand-rolls (DERIV-03: ``analysis_completed_at IS NOT NULL``) --
+    # instead of bare existence, so this no longer counts a mid-flight partial analysis row
+    # (upserted at analysis START, NULL aggregates) or a terminally-failed analyze row (``failed_at``
+    # set, ``analysis_completed_at`` NULL) neither of which get_proposal_pending_batches will ever
+    # batch. Phase 57.1 added that discriminator to the ready-set only; this fixes the drift
+    # (phaze-nuyn) by composing from the shared ``done_clause`` builder so the two cannot drift again.
     convergence_stmt = (
         select(func.count(FileRecord.id))
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+        .where(done_clause(Stage.ANALYZE))
     )
     scan_search_stmt = select(func.count(distinct(Tracklist.file_id)))
     scrape_stmt = select(func.count(distinct(TracklistVersion.tracklist_id)))
@@ -1016,6 +1032,17 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
     / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
     preserve the control-only agent-worker boundary (``tests/shared/core/test_task_split.py``); do NOT hoist.
+
+    phaze-xwaj: the live-broker-keys read below executes :data:`_LIVE_KEYS_SQL` DIRECTLY rather than
+    going through the degrade-safe :func:`get_live_job_keys` wrapper. That wrapper SWALLOWS any DB
+    error into an empty set via its own nested SAVEPOINT -- which un-aborts the enclosing transaction,
+    so the rest of THIS function's raising reads would go on to succeed with ``live == set()``, i.e.
+    every genuinely live/in-flight ledger row misclassifies as orphaned. That is exactly the "RAISES
+    on ANY DB error" contract this function promises breaking silently: mixing one swallowing read
+    into an otherwise-raising core lets a live-keys failure masquerade as a real (inflated) success,
+    which :func:`refresh_stage_orphan_counts` would then rebind as the new cache value instead of
+    keeping the last-good one (D-03). ``get_live_job_keys`` itself is UNCHANGED and stays the right
+    call for its degrade-tolerant consumers (the recovery producer).
     """
     out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
     async with session.begin_nested():
@@ -1033,7 +1060,8 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         )
 
         rows = await get_ledger_rows(session)
-        live = await get_live_job_keys(session)
+        # RAISING read (phaze-xwaj) -- deliberately NOT get_live_job_keys, see docstring above.
+        live = {row[0] for row in (await session.execute(_LIVE_KEYS_SQL)).all()}
         done_sets = await _build_done_sets(session, _ledger_fids(rows))
         in_flight = await _in_flight_cloud_job_ids(session)
         # phaze-w0yr: mirror recover_orphaned_work's FOUR-way filter. Since 83-06 recovery ALSO
@@ -1568,6 +1596,21 @@ async def get_analyze_working_set(
                     await session.execute(
                         _analyze_files_select()
                         .where(AnalysisResult.analysis_completed_at.is_not(None))
+                        # phaze-wiz1: exclude anything the active section would also claim -- a
+                        # deepen-in-flight completed file (analysis_completed_at stays set through a
+                        # re-run per the migration-033 XOR check, while the re-run's enqueue recreates
+                        # the scheduling_ledger row / an active cloud_job) or an orphaned, never-cleared
+                        # ledger row on an already-completed file. The Python `seen` dedup below only
+                        # ever covered the FINAL page's active rows, which structurally cannot exclude
+                        # an overlapping file that sorted onto an earlier page -- excluding at the
+                        # query level (mirroring how _analyze_active_where already excludes completed
+                        # rows from the active section) is correct regardless of which page it landed on.
+                        # NULL-safe: _analyze_active_where()'s CloudJob.status disjunct is NULL (not
+                        # False) for the common case of no cloud_job row at all (a LEFT JOIN miss), so
+                        # a bare `~_analyze_active_where()` would evaluate to NULL -- and therefore
+                        # WHERE-exclude -- every ordinary completed local file. coalesce(..., false())
+                        # forces that NULL to False before negating.
+                        .where(~func.coalesce(_analyze_active_where(), false()))
                         .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
                         .limit(completions_limit)
                     )

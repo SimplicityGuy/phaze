@@ -1496,6 +1496,38 @@ async def test_get_scanned_total_rescan_counts_latest_only(session: AsyncSession
 
 
 @pytest.mark.asyncio
+async def test_get_scanned_total_tiebreaks_tied_created_at_by_id_desc(session: AsyncSession) -> None:
+    """phaze-imih regression: a ``created_at`` tie must resolve via ``ScanBatch.id.desc()``, not
+    executor-arbitrary heap/plan order -- mirroring
+    ``test_get_agent_reconciliations_tiebreaks_tied_created_at_by_id_desc`` (phaze-n2d2), whose
+    fix was applied to :func:`get_agent_reconciliations` only and left this sibling window behind.
+
+    Seeds several completed batches for ONE agent sharing an EXPLICIT ``created_at`` with ids
+    assigned in a SCRAMBLED order relative to insertion, each ``total_files`` derived from its id
+    index so the row actually selected as ``rn == 1`` is identifiable precisely.
+    """
+    await seed_active_agent(session, "nox")
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive: test schema's created_at is TIMESTAMP WITHOUT TZ
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{i:02d}") for i in range(5)]
+    scrambled_indices = [2, 0, 4, 1, 3]
+    for i in scrambled_indices:
+        batch = ScanBatch(
+            id=ids[i],
+            agent_id="nox",
+            scan_path="/music",
+            status=ScanStatus.COMPLETED.value,
+            total_files=(i + 1) * 10,
+            processed_files=(i + 1) * 10,
+        )
+        batch.created_at = tied_at  # type: ignore[assignment]
+        session.add(batch)
+    await session.commit()
+
+    # id DESC as the tiebreak -> ids[4] (the LARGEST id) must win -> total_files=(4+1)*10=50.
+    assert await get_scanned_total(session) == 50
+
+
+@pytest.mark.asyncio
 async def test_get_scanned_total_sums_across_agents(session: AsyncSession) -> None:
     """scanned sums each agent's latest completed batch: 100 (nox) + 50 (lux) → 150."""
     await seed_active_agent(session, "nox")

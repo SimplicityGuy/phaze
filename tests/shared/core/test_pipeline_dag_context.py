@@ -306,25 +306,28 @@ async def test_dag_done_comes_from_db_truth(session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_completed_counter_degrade_fallback(session: AsyncSession) -> None:
-    """When a node's DB done is 0 AND its mapped completed counter > 0, the counter renders
-    -- capped at the node's ``total`` (WR-03).
+    """When a node's DB done is 0 AND its mapped completed counter is genuine, boundable
+    partial progress (``0 < fallback < stage_total``), the counter renders as-is (phaze-89tw).
 
     This exercises the maintained ``completed`` counter as a DOCUMENTED degrade-fallback
-    (D-02): the corpus has ONE music/video file with no metadata row yet (metadata.done == 0,
-    metadata.total == 1), and the maintained ``completed`` counter for ``extract_file_metadata``
-    is 3, so metadataDone falls back to the counter capped at total: ``min(3, 1) == 1``.
+    (D-02): the corpus has FIVE music/video files with no metadata rows yet (metadata.done == 0,
+    metadata.total == 5), and the maintained ``completed`` counter for ``extract_file_metadata``
+    is 3 (< 5, a genuine partial-progress signal), so metadataDone falls back to the counter
+    verbatim: 3.
     """
-    file_rec = FileRecord(
-        agent_id="test-fileserver",
-        id=uuid.uuid4(),
-        sha256_hash="a" * 64,
-        original_path="/music/a.mp3",
-        original_filename="a.mp3",
-        current_path="/music/a.mp3",
-        file_type="mp3",
-        file_size=1000,
-    )
-    session.add(file_rec)
+    for i in range(5):
+        session.add(
+            FileRecord(
+                agent_id="test-fileserver",
+                id=uuid.uuid4(),
+                sha256_hash=f"{i}" * 64,
+                original_path=f"/music/{i}.mp3",
+                original_filename=f"{i}.mp3",
+                current_path=f"/music/{i}.mp3",
+                file_type="mp3",
+                file_size=1000,
+            )
+        )
     await session.flush()
 
     fake = _FallbackRedis({"phaze:pipeline:completed:extract_file_metadata": 3})
@@ -332,7 +335,7 @@ async def test_completed_counter_degrade_fallback(session: AsyncSession) -> None
     from phaze.routers.pipeline import _build_dag_context
 
     ctx = await _build_dag_context(app_state, session, _idle_activity())
-    assert ctx["dag"]["metadataDone"] == 1
+    assert ctx["dag"]["metadataDone"] == 3
 
 
 @pytest.mark.asyncio
@@ -359,8 +362,8 @@ def test_reconciled_done_caps_unconditionally_at_stage_total_zero() -> None:
     """phaze-y0wz unit-level regression on ``_reconciled_done`` directly.
 
     ``scan_search``'s ``total`` is documented as ALWAYS ``None`` -> 0 (get_stage_progress), so
-    prior to this fix its fallback was PERMANENTLY uncapped (the ``stage_total > 0`` gate never
-    held) and double-counted two summed counters. The cap must now degrade the fallback to
+    prior to the y0wz fix its fallback was PERMANENTLY uncapped (the ``stage_total > 0`` gate
+    never held) and double-counted two summed counters. The fallback must degrade to
     ``stage_done`` (0, from the guard above) whenever ``stage_total == 0`` -- never the raw
     (here doubly-summed) counter value.
     """
@@ -368,10 +371,32 @@ def test_reconciled_done_caps_unconditionally_at_stage_total_zero() -> None:
 
     counters = {"scan_live_set": {"completed": 40}, "search_tracklist": {"completed": 60}}
     assert _reconciled_done("scan_search", stage_done=0, stage_total=0, counters=counters) == 0
-    # Sanity: with a known nonzero denominator the cap still applies as before.
-    assert _reconciled_done("scan_search", stage_done=0, stage_total=50, counters=counters) == 50
     # DB-truth still wins outright whenever stage_done > 0, unaffected by this fix.
     assert _reconciled_done("scan_search", stage_done=7, stage_total=0, counters=counters) == 7
+
+
+def test_reconciled_done_never_renders_stage_total_as_the_fallback_value() -> None:
+    """phaze-89tw unit-level regression on ``_reconciled_done`` directly.
+
+    A durable, never-reset Redis ``completed`` counter routinely OUTGROWS a node's current
+    ``total`` (a degraded DB read or a post-delete-scan re-scan). Previously
+    ``min(fallback, stage_total)`` collapsed that case to exactly ``stage_total`` -- rendering
+    the node 100% done precisely when the DB says nothing is done. The fallback must now
+    degrade to ``stage_done`` (0) whenever it is not STRICTLY less than ``stage_total``.
+    """
+    from phaze.routers.pipeline import _reconciled_done
+
+    counters = {"extract_file_metadata": {"completed": 140_000}}
+    # Scenario A: degraded read -- DB total (92,335) still stands, lifetime counter dwarfs it.
+    assert _reconciled_done("metadata", stage_done=0, stage_total=92_335, counters=counters) == 0
+    # Scenario B: corpus re-scan -- fresh total (10,000) is far smaller than the surviving counter.
+    assert _reconciled_done("metadata", stage_done=0, stage_total=10_000, counters=counters) == 0
+    # Genuine boundable partial progress (fallback < total) still renders as-is.
+    small_counters = {"extract_file_metadata": {"completed": 3}}
+    assert _reconciled_done("metadata", stage_done=0, stage_total=5, counters=small_counters) == 3
+    # A fallback exactly equal to the total must not render either -- that is still the
+    # misleading "100% done" ceiling value the fix exists to suppress.
+    assert _reconciled_done("metadata", stage_done=0, stage_total=3, counters=small_counters) == 0
 
 
 @pytest.mark.asyncio
