@@ -724,6 +724,67 @@ async def test_failed_under_cap_redrive_keeps_fresh_part_urls(
     assert row.redrive_attempt == 1
 
 
+async def test_failed_under_cap_noop_on_advanced_cloud_job(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-0deg: a late/duplicate UNDER-cap /failed on an ADVANCED cloud_job must NOT re-drive.
+
+    Pre-fix the under-cap branch called ``redrive_upload`` unconditionally, and
+    ``redrive_upload -> _stage_file_to_s3`` upserts the row back to UPLOADING with a fresh upload_id
+    with no status predicate. A late/duplicate /failed that lands after the row has already advanced
+    (UPLOADED/SUBMITTED/RUNNING) would clobber it back to UPLOADING, re-consuming a kueue cap slot and
+    409ing the live pod's presign download. Mirrors the over-cap branch's CAS guard: an advanced row
+    is an idempotent 200 no-op (cleared=False), no redrive, no ledger stamp.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    for advanced in (CloudJobStatus.UPLOADED, CloudJobStatus.SUBMITTED, CloudJobStatus.RUNNING, CloudJobStatus.AWAITING):
+        file_id = await _seed_file(session, agent.id)
+        await _seed_cloud_job(session, file_id, status=advanced)
+        await _seed_ledger(session, file_id, attempt=0)  # next attempt (1) is under push_max_attempts=3
+        redrive = AsyncMock()
+        monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+        async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+            r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "late/duplicate"})
+
+        assert r.status_code == 200, r.text
+        assert r.json()["cleared"] is False
+        redrive.assert_not_awaited()
+        job = await _cloud_job(session, file_id)
+        assert job is not None
+        assert job.status == advanced.value, "the advanced cloud_job must be UNCHANGED"
+        row = await _ledger_row(session, f"s3_upload:{file_id}")
+        assert row is not None
+        assert row.redrive_attempt == 0, "no-op must not stamp the attempt counter"
+
+
+async def test_failed_under_cap_noop_when_cloud_job_absent(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-0deg: an under-cap /failed with NO cloud_job row (already terminalized/cleaned up) is a no-op."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    # No cloud_job seeded at all.
+    await _seed_ledger(session, file_id, attempt=0)
+    redrive = AsyncMock()
+    monkeypatch.setattr(cloud_staging, "redrive_upload", redrive)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/failed", json={"detail": "no cloud_job"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False
+    redrive.assert_not_awaited()
+
+
 async def test_upload_failed_at_cap_spills_to_awaiting_cloud_and_cleans_up(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

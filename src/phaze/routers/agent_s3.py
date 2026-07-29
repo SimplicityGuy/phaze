@@ -327,6 +327,24 @@ async def report_upload_failed(
     if file is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown file_id")
 
+    # phaze-0deg: guard the under-cap re-drive on cloud_job.status == UPLOADING, mirroring the over-cap
+    # branch's CAS a few lines up (and report_uploaded's "absent or not UPLOADING" no-op). Without this a
+    # late/duplicate /failed -- including one that lands after the reaper (phaze-ul2v) already spilled this
+    # row to 'awaiting' and cleared its ledger entry, resetting next_attempt back to 1 -- would unconditionally
+    # clobber an ADVANCED row (UPLOADED / SUBMITTED / RUNNING / already-spilled 'awaiting') back to UPLOADING
+    # via redrive_upload's unconditional upsert (cloud_staging's on_conflict_do_update has no ``where=``
+    # predicate), re-consuming a kueue cap slot with a fresh multipart, 409ing the live pod's presign download,
+    # and burning a redundant re-drive attempt from the bounded budget.
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value:
+        await session.commit()
+        logger.info(
+            "report_upload_failed: idempotent no-op (cloud_job absent or not UPLOADING, under-cap re-drive skipped)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return UploadFailedResponse(file_id=file_id, cleared=False)
+
     try:
         await cloud_staging.redrive_upload(session, file, request.app.state.task_router)
     except NoActiveAgentError:
