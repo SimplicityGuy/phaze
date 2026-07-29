@@ -483,18 +483,27 @@ def _ddl_statements() -> list[str]:
 
 
 def upgrade() -> None:
-    """Build the full schema, then seed the two control tables (020 + 031 seeds)."""
+    """Build the full schema, then seed the two control tables (020 + 031 seeds).
+
+    phaze-0r9a: the seeds go through ``op.execute(sa.text(...).bindparams(...))`` rather
+    than a raw ``bind.execute(text, params)`` call. In OFFLINE mode (``alembic upgrade
+    head --sql``), ``op.get_bind()`` returns Alembic's ``MockConnection``, whose
+    ``execute`` compiles with ``literal_binds=True`` and silently drops a *separate*
+    parameters argument -- an unbound ``:stage``/``:id`` then renders as SQL ``NULL``,
+    a NOT NULL violation on both tables' primary keys, with no warning at generation
+    time. A ``bindparams(...)`` call attaches the value to the construct itself, so the
+    same ``literal_binds`` compile renders it correctly in both online and offline mode.
+    """
     for statement in _ddl_statements():
         op.execute(statement)
-    bind = op.get_bind()
     for stage in _SEED_STAGES:
-        bind.execute(
-            sa.text("INSERT INTO pipeline_stage_control (stage, paused, priority, created_at, updated_at) VALUES (:stage, false, 50, NOW(), NOW())"),
-            {"stage": stage},
+        op.execute(
+            sa.text(
+                "INSERT INTO pipeline_stage_control (stage, paused, priority, created_at, updated_at) VALUES (:stage, false, 50, NOW(), NOW())"
+            ).bindparams(stage=stage)
         )
-    bind.execute(
-        sa.text("INSERT INTO route_control (id, force_local, created_at, updated_at) VALUES (:id, false, NOW(), NOW())"),
-        {"id": "global"},
+    op.execute(
+        sa.text("INSERT INTO route_control (id, force_local, created_at, updated_at) VALUES (:id, false, NOW(), NOW())").bindparams(id="global")
     )
 
 
