@@ -255,6 +255,12 @@ async def test_bulk_reject(client: AsyncClient, session: AsyncSession) -> None:
         data={"action": "reject", "proposal_ids": [str(p1.id), str(p2.id)]},
     )
     assert response.status_code == 200
+    # phaze-3yop: _bulk_toast's old `f"{action}d"` concatenation misspelled the reject toast as
+    # "2 proposals rejectd." -- this response-text assertion is what test_bulk_reject was missing;
+    # without it, a regression to the concatenation shape would pass every status-column check here
+    # and still ship a misspelled verb on the operator's only confirmation of a bulk reject.
+    assert "2 proposals rejected." in response.text
+    assert "rejectd" not in response.text
 
     updated1 = await session.get(RenameProposal, p1.id)
     updated2 = await session.get(RenameProposal, p2.id)
