@@ -41,7 +41,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import DateTime, Integer, cast, func, literal, select
+from sqlalchemy import BigInteger, DateTime, cast, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI needs runtime import to resolve Annotated[AsyncSession, Depends(...)]
 
 from phaze.config import get_settings
@@ -51,6 +51,7 @@ from phaze.models.agent import Agent
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract, SortState
 from phaze.routers.response_shape import wants_fragment
 from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_lane_identities, get_compute_lane_running_jobs
+from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
 
@@ -73,7 +74,15 @@ _LAST_SEEN_ORDER = func.coalesce(Agent.last_seen_at, cast(literal("-infinity"), 
 # Queue depth lives in the ``last_status`` JSONB blob and is absent for agents that never reported one
 # (the template renders those as "—"). Folded to -1 so they sort BELOW every real depth under ASC and
 # above nothing under DESC, rather than scattering on NULL ordering rules.
-_QUEUE_DEPTH_ORDER = func.coalesce(cast(Agent.last_status["queue_depth"].astext, Integer), -1)
+#
+# phaze-5yyh: cast to BigInteger (int8), NOT Integer (int4). ``queue_depth`` is committed as an int8
+# domain on both the write side (schemas/agent_heartbeat.py's ``QUEUE_DEPTH_MAX = 10**12``) and the
+# storage side (``_LANE_MERGE_SQL``'s ``SUM(... ::bigint)``), so a heartbeat above INT32_MAX (a valid
+# value on that domain) is a legitimate JSONB value this ORDER BY must be able to sort, not an error.
+# An int4 cast made Postgres raise DataError ("value ... out of range for type integer") on the whole
+# statement -- 500ing this table (and, once queue-sorted, its own never-halting 5s self-poll) for
+# every operator until the offending row was deleted.
+_QUEUE_DEPTH_ORDER = func.coalesce(cast(Agent.last_status["queue_depth"].astext, BigInteger), -1)
 
 AGENTS_SORT = SortContract(
     endpoint="/admin/agents/_table",
@@ -343,7 +352,12 @@ async def agent_activity(
     the derived ``stage_status_case``, never ``FileRecord.state``).
     """
     now = datetime.now(UTC)
-    agent = await session.get(Agent, agent_id)
+    # phaze-oldp: PostgreSQL cannot bind a NUL (U+0000) or lone surrogate in a UTF8 text
+    # comparison at all -- session.get() would raise asyncpg CharacterNotInRepertoireError
+    # before it could ever match a row, which is indistinguishable in outcome from "no such
+    # agent". Route it through the same friendly-empty-fragment branch this docstring already
+    # promises for "unknown/hostile id" rather than letting the DB reject the bind.
+    agent = None if contains_pg_invalid_chars(agent_id) else await session.get(Agent, agent_id)
     if agent is None:
         # Friendly empty fragment (T-88-07 IDOR guard): a raw/unknown/hostile id renders a benign body,
         # never a raw-param-driven 500. Returned at 200 (WR-01) — the /admin/agents page has no htmx 404

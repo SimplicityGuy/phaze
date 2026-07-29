@@ -29,10 +29,12 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.schemas.wire_bounds import INT64_MAX
 from phaze.services import pipeline as pipeline_mod
 from phaze.services.execution_queries import get_execution_logs_page
 from phaze.services.pagination import (
     DEFAULT_PAGE_SIZE,
+    MAX_PAGE,
     MAX_PAGE_SIZE,
     MIN_PAGE_SIZE,
     Page,
@@ -73,6 +75,20 @@ def test_clamp_page_never_raises(given: int, expected: int) -> None:
     it must apply -- pinned here so that bead has something to align to.
     """
     assert clamp_page(given) == expected
+
+
+def test_clamp_page_bounds_an_int8_offset_overflowing_page_number() -> None:
+    """phaze-u2c4: an absurdly large ``page`` must clamp too, not just a negative one.
+
+    ``paged_stmt`` computes ``OFFSET (page - 1) * page_size``, and asyncpg cannot encode an int8
+    bind past ``INT64_MAX`` -- a hand-crafted page number that large used to reach the driver
+    unfiltered and raise, rather than degrading to an empty page the way a merely-large one
+    already does (contract rule 5: out-of-range inputs clamp, they never raise).
+    """
+    absurd_page = 10**19
+    assert clamp_page(absurd_page) == MAX_PAGE
+    # The OFFSET the clamped page produces at the largest allowed page_size must stay representable.
+    assert (MAX_PAGE - 1) * MAX_PAGE_SIZE <= INT64_MAX
 
 
 @pytest.mark.parametrize(

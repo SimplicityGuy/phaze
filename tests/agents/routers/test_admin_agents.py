@@ -1008,6 +1008,25 @@ async def test_never_seen_agents_sort_last_by_default(smoke: AsyncClient, sessio
 
 
 @pytest.mark.asyncio
+async def test_queue_sort_survives_a_heartbeat_above_int32_max(smoke: AsyncClient, session: AsyncSession) -> None:
+    """phaze-5yyh: an agent-reported ``queue_depth`` above INT32_MAX must not 500 the queue-sorted
+    view. ``queue_depth`` is committed as an int8 domain on both the heartbeat writer
+    (``schemas/agent_heartbeat.py``'s ``QUEUE_DEPTH_MAX = 10**12``) and the storage side
+    (``_LANE_MERGE_SQL``'s ``::bigint`` SUM) -- casting the ORDER BY expression to int4 made
+    Postgres raise ``DataError`` on the whole statement for any real value above 2147483647, and
+    because the never-halting 5s self-poll re-sends ``sort=queue``, the break was permanent for
+    every operator once a single agent reported one.
+    """
+    agent = (await session.execute(select(Agent).where(Agent.id == "alive-agent"))).scalar_one()
+    agent.last_status = {"queue_depth": 3_000_000_000}  # > INT32_MAX (2147483647), valid int8
+    await session.commit()
+
+    response = await smoke.get("/admin/agents/_table", params={"sort": "queue", "order": "asc"})
+    assert response.status_code == 200, response.text
+    assert "alive-agent" in _row_order(response.text)
+
+
+@pytest.mark.asyncio
 async def test_poll_tick_preserves_operator_sort(sort_smoke: AsyncClient) -> None:
     """THE bead: the 5s self-poll carries the chosen sort forward instead of resetting it.
 

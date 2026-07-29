@@ -506,6 +506,36 @@ async def test_post_scans_subpath_rejects_nul_via_direct_handler_invocation(
 
 
 @pytest.mark.asyncio
+async def test_post_scans_agent_id_rejects_nul_byte_as_422(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """phaze-oldp: a NUL byte in ``agent_id`` used to bypass the ``joined``-only NUL guard
+    entirely and reach ``session.get(Agent, form.agent_id)`` unfiltered, where PostgreSQL cannot
+    bind a NUL in a UTF8 text comparison at all -- asyncpg raised CharacterNotInRepertoireError
+    and the request escaped as a raw 500, violating the handler's documented contract that EVERY
+    failure branch renders ``scan_submit_error.html``.
+
+    The fix mirrors the sibling ``agent_roots_swap`` endpoint's ``pattern=`` bound (itself the
+    wire mirror of ``Agent.id``'s DB ``CheckConstraint``): an id that can never denote a real
+    agent is a genuinely unintelligible envelope per this handler's own carve-out, so the correct
+    outcome is FastAPI's own 422 at the boundary -- never a DB round trip at all.
+    """
+    ac, mock_router = smoke
+    pre_count = await _count_batches(session)
+
+    response = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "\x00abc", "scan_root": "/data/music", "subpath": ""},
+    )
+    assert response.status_code == 422
+
+    post_count = await _count_batches(session)
+    assert post_count == pre_count
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_post_scans_subpath_allows_triple_dot_filename(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,

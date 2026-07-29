@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 import uuid
 
 from fastapi import FastAPI
@@ -197,6 +198,24 @@ async def test_unknown_agent_friendly_empty_fragment(smoke: AsyncClient) -> None
     # (nothing re-fetches /_activity once the not-found body is swapped in).
     assert 'hx-trigger="every 5s"' not in body
     assert "/_activity" not in body
+
+
+@pytest.mark.asyncio
+async def test_nul_byte_agent_id_is_also_a_friendly_empty_fragment(smoke: AsyncClient) -> None:
+    """phaze-oldp: a NUL (U+0000) in ``agent_id`` must degrade the same way an unknown id does.
+
+    PostgreSQL cannot bind a NUL in a UTF8 text comparison at all -- ``session.get(Agent,
+    agent_id)`` would raise asyncpg CharacterNotInRepertoireError before it could ever match a
+    row, which this handler's own docstring says must NEVER happen ("a raw/unknown/hostile id
+    renders a benign body, never a raw-param-driven 500"). A NUL id can never match a real row
+    (the DB CheckConstraint on ``Agent.id`` forbids it), so the correct outcome is exactly the
+    same friendly empty fragment the unknown-id case already renders.
+    """
+    response = await smoke.get(f"/admin/agents/{quote('\x00abc')}/_activity")
+    assert response.status_code == 200, response.text
+    body = response.text
+    assert "Agent not found" in body
+    assert '{"detail"' not in body
 
 
 @pytest.mark.asyncio

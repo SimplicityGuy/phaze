@@ -236,6 +236,88 @@ async def test_search_pagination(client: AsyncClient, session: AsyncSession) -> 
 
 
 @pytest.mark.asyncio
+async def test_search_nul_query_degrades_instead_of_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-qiwc: a NUL-only `q` (percent-encoded `%00`) must degrade to the empty-palette
+    branch, not 500. PostgreSQL cannot bind a NUL in a UTF8 text value at all -- before the fix
+    this reached `plainto_tsquery`'s bind unsanitized and asyncpg raised
+    CharacterNotInRepertoireError.
+    """
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "\x00"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "<!DOCTYPE html>" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_query_with_embedded_nul_is_sanitized_not_rejected(client: AsyncClient, session: AsyncSession) -> None:
+    """A NUL embedded in an otherwise-real query is stripped, not rejected wholesale -- the
+    surviving text still matches (phaze-qiwc: q/artist/genre are predicate operands, not a
+    stored path, so silently stripping the unstorable char is the correct degrade)."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "dead\x00mau5"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "deadmau5" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_nul_artist_and_genre_do_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-qiwc: NUL in `artist`/`genre` reaches an ILIKE bind the same way `q` reaches
+    plainto_tsquery -- both must degrade (sanitize to no facet), never 500."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "deadmau5", "artist": "\x00", "genre": "\x00"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "deadmau5" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_nul_query_does_not_500_the_artists_group(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-qiwc: `distinct_artists` is reachable independently via `?q=%00%00` (the
+    `len(q) >= 2` gate at search.py counts NULs before sanitization would have run)."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "\x00\x00"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_search_date_to_at_date_max_does_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-u2c4: `date_to=9999-12-31` used to raise OverflowError (`date.max + timedelta(days=1)`)
+    deep in the inclusive-bound arithmetic, escaping as an unhandled 500. It must now render the
+    palette fragment normally."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "deadmau5", "date_to": "9999-12-31"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "deadmau5" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_date_to_at_date_max_still_excludes_nothing_incorrectly(client: AsyncClient, session: AsyncSession) -> None:
+    """The date.max clamp in the fix must stay a genuinely inclusive upper bound -- a file created
+    today must still match when date_to is the maximum representable date, not just avoid crashing."""
+    today = date.today()
+    await create_searchable_tracklist(session, artist="DJ Today", event="Today Fest", tracklist_date=today)
+    response = await client.get(
+        "/search/",
+        params={"q": "fest", "date_to": "9999-12-31"},
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    assert "Today Fest" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_huge_page_number_does_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-u2c4 (merged finding): a hand-crafted `page` overflowing the int8 OFFSET bind used to
+    reach asyncpg unencoded and 500 with no rendered fragment. clamp_page() must bound it instead."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get(
+        "/search/",
+        params={"q": "deadmau5", "page": "10000000000000000000"},
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_search_nav_tab_first(client: AsyncClient) -> None:
     """Phase 57 (SHELL-03/05): the legacy search/pipeline nav tabs are gone (DAG rail).
 

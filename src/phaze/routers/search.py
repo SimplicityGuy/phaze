@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.database import get_session
 from phaze.routers.response_shape import wants_fragment
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
+from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.search_queries import SearchResult, distinct_artists, search
 
 
@@ -51,6 +52,16 @@ async def search_page(
     # palette later cannot silently re-introduce the defect.
     if not wants_fragment(request):
         return RedirectResponse(url="/?palette=1", status_code=302)
+
+    # phaze-qiwc: q/artist/genre are predicate operands (tsquery text, ILIKE pattern), never
+    # persisted, so silently stripping an unstorable char changes neither meaning nor a stored
+    # value the way it would for a filesystem path. PostgreSQL cannot bind a NUL (U+0000) or a
+    # lone surrogate at all -- asyncpg raises CharacterNotInRepertoireError -- so sanitize before
+    # any of these reach search()/distinct_artists(), and re-test truthiness so a NUL-only ``q``
+    # degrades to the empty-palette branch below rather than searching for "".
+    q = sanitize_pg_text(q) or None if q else q
+    artist = sanitize_pg_text(artist) or None if artist else artist
+    genre = sanitize_pg_text(genre) or None if genre else genre
 
     # v7.0 (RECORD-02, D-03/D-05): the /search HX branch IS the ⌘K grouped command palette.
     # The unified search() results are split into Files / Tracklists / Discogs groups; the
