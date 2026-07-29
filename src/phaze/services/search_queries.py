@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import String, func, literal_column, select, union_all
@@ -20,8 +20,6 @@ from phaze.services.proposal_queries import Pagination
 
 
 if TYPE_CHECKING:
-    from datetime import date
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -102,7 +100,13 @@ async def search(
         # created_at <= date_to promotes date_to to midnight, silently excluding every file created
         # later that same day. Use the exclusive next-day bound so date_to is fully inclusive, matching
         # the tracklist branch below (Tracklist.date is a true Date column, so <= is already inclusive).
-        file_q = file_q.where(FileRecord.created_at < date_to + timedelta(days=1))
+        #
+        # phaze-u2c4: `date_to + timedelta(days=1)` is a PARTIAL function -- it raises OverflowError
+        # at `date_to == date.max` (9999-12-31), which a plain `date | None` router param happily
+        # accepts and forwards. Clamp the addend's input so the expression stays total for every
+        # value `date` can represent: `date.max` and `date.max - timedelta(days=1)` (9999-12-30)
+        # both correctly resolve to the exclusive bound `date.max` (there is no later day to exclude).
+        file_q = file_q.where(FileRecord.created_at < min(date_to, date.max - timedelta(days=1)) + timedelta(days=1))
     if bpm_min is not None:
         file_q = file_q.where(AnalysisResult.bpm >= bpm_min)
     if bpm_max is not None:

@@ -279,6 +279,45 @@ async def test_search_nul_query_does_not_500_the_artists_group(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_search_date_to_at_date_max_does_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-u2c4: `date_to=9999-12-31` used to raise OverflowError (`date.max + timedelta(days=1)`)
+    deep in the inclusive-bound arithmetic, escaping as an unhandled 500. It must now render the
+    palette fragment normally."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get("/search/", params={"q": "deadmau5", "date_to": "9999-12-31"}, headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "deadmau5" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_date_to_at_date_max_still_excludes_nothing_incorrectly(client: AsyncClient, session: AsyncSession) -> None:
+    """The date.max clamp in the fix must stay a genuinely inclusive upper bound -- a file created
+    today must still match when date_to is the maximum representable date, not just avoid crashing."""
+    today = date.today()
+    await create_searchable_tracklist(session, artist="DJ Today", event="Today Fest", tracklist_date=today)
+    response = await client.get(
+        "/search/",
+        params={"q": "fest", "date_to": "9999-12-31"},
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+    assert "Today Fest" in response.text
+
+
+@pytest.mark.asyncio
+async def test_search_huge_page_number_does_not_500(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-u2c4 (merged finding): a hand-crafted `page` overflowing the int8 OFFSET bind used to
+    reach asyncpg unencoded and 500 with no rendered fragment. clamp_page() must bound it instead."""
+    await create_searchable_file(session, original_filename="deadmau5 - Strobe.mp3", artist="deadmau5")
+    response = await client.get(
+        "/search/",
+        params={"q": "deadmau5", "page": "10000000000000000000"},
+        headers={"HX-Request": "true"},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_search_nav_tab_first(client: AsyncClient) -> None:
     """Phase 57 (SHELL-03/05): the legacy search/pipeline nav tabs are gone (DAG rail).
 

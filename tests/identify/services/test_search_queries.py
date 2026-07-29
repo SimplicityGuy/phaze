@@ -365,6 +365,20 @@ async def test_search_date_to_still_excludes_files_created_the_next_day(session:
     assert not any("nextdayfest" in r.title.lower() for r in file_results), "a file created after midnight the day AFTER date_to must remain excluded"
 
 
+@pytest.mark.asyncio
+async def test_search_date_to_at_date_max_does_not_overflow(session: AsyncSession) -> None:
+    """phaze-u2c4: ``date_to == date.max`` (9999-12-31) used to raise ``OverflowError`` at
+    ``date_to + timedelta(days=1)``, escaping `search()` before any SQL was even emitted. The
+    clamp must keep the arithmetic total AND stay a genuinely inclusive bound -- a file created
+    today must still match when `date_to` is the largest representable date.
+    """
+    file_record = await create_test_file(session, original_filename="farfuture.mp3", artist="DJ Far Future Fest")
+
+    results, _pagination = await search(session, "fest", date_to=date.max)
+    file_results = [r for r in results if r.result_type == "file"]
+    assert any(r.id == str(file_record.id) for r in file_results), "date_to=date.max must be an inclusive upper bound, not just non-crashing"
+
+
 # ---------------------------------------------------------------------------
 # search() — pagination
 # ---------------------------------------------------------------------------

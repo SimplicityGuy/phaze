@@ -96,6 +96,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from phaze.schemas.wire_bounds import INT64_MAX
+
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -113,15 +115,27 @@ DEFAULT_PAGE_SIZE = 50
 MIN_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 100
 
+# phaze-u2c4: an upper bound on `page` isn't a business cap (rule 5 says a page past the end must
+# clamp, never raise) -- it exists purely so ``(page - 1) * page_size`` in paged_stmt() can never
+# exceed what an int8 OFFSET bind can hold. asyncpg fails to encode an OFFSET past INT64_MAX, which
+# reaches this same "clamp, don't raise" contract from the opposite direction: an absurdly large
+# page must degrade to the same empty-page-past-the-end behavior a merely-large one already gets,
+# not 500 the render. Divide by the largest page_size a caller can ask for so the product is safe
+# regardless of which page_size accompanies it.
+MAX_PAGE = INT64_MAX // MAX_PAGE_SIZE
+
 
 def clamp_page(page: int) -> int:
-    """Clamp a 1-based page number to ``>= 1`` (contract rule 5).
+    """Clamp a 1-based page number to ``[1, MAX_PAGE]`` (contract rule 5).
 
     Zero, negative and nonsense values collapse to page 1 rather than raising -- these reads ride
-    hot render paths where a 422 would blank the whole workspace. A page PAST the end is NOT clamped
-    (the row count is deliberately unknown -- rule 2); it simply yields an empty page.
+    hot render paths where a 422 would blank the whole workspace. A page PAST the end is not an
+    error EITHER (the row count is deliberately unknown -- rule 2): moderately-large values simply
+    yield an empty page, and absurdly large ones (an int8-OFFSET-overflowing page number) clamp to
+    ``MAX_PAGE`` so the OFFSET arithmetic in :func:`paged_stmt` stays representable instead of
+    raising when asyncpg encodes the bind.
     """
-    return max(page, 1)
+    return min(max(page, 1), MAX_PAGE)
 
 
 def clamp_page_size(page_size: int) -> int:
