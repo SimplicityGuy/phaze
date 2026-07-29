@@ -37,11 +37,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
+from phaze.services import kube_staging
 import phaze.tasks.reconcile_cloud_jobs as reconcile_mod
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.submit_cloud_job import submit_cloud_job_key
 from tests._queue_fakes import DedupFakeQueue, DedupFakeTaskRouter
-from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, QUOTA_RESERVED, fake_job
+from tests.kube_fakes import ADMITTED, EVICTED, INADMISSIBLE, PENDING, QUOTA_RESERVED, fake_job, fake_pod
 
 
 if TYPE_CHECKING:
@@ -109,6 +110,23 @@ class DeleteJobSpy:
                 self.snapshots.append(snap)
 
 
+class ListPodsSpy:
+    """Monkeypatch stand-in for ``kube_staging.list_pods_for_job`` returning a fixed canned pod list.
+
+    phaze-202e: the pod list is the ONLY input to the wedge verdict. The default (``[]``) is the
+    "unknown" shape -- the classifier reads it as STARTING, so every pre-existing test that does not
+    opt in keeps its row HELD, exactly as an unreadable pod list should.
+    """
+
+    def __init__(self, *pods: Any) -> None:
+        self.pods = list(pods)
+        self.calls: list[str] = []
+
+    async def __call__(self, name: str, kube: Any = None) -> list[Any]:  # noqa: ARG002 -- MKUE-01 seam signature
+        self.calls.append(name)
+        return self.pods
+
+
 class S3DeleteSpy:
     """Monkeypatch stand-in for ``s3_staging.delete_staged_object`` -- records call order + file ids.
 
@@ -138,7 +156,7 @@ _KUEUE_BACKEND_ID = "kueue-x64"
 _STAGING_BUCKET_ID = "staging-a"
 
 
-def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, deadline: int = 10800) -> None:
+def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
     """Pin ``get_settings()`` for BOTH the cron and ``KueueBackend.reconcile`` so cap + registry are deterministic.
 
     The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
@@ -156,10 +174,10 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, deadline: int = 10
                 rank=20,
                 cap=cap,
                 # MKUE-01/D-04: KueueBackend.reconcile threads self.config.kube into the seam; the
-                # get_job/delete_job spies are monkeypatched, so a minimal stand-in kube suffices.
-                # phaze-1b39: ``active_deadline_seconds`` feeds the in-flight staleness cutoff
-                # (deadline + RUNNING_STALENESS_SLACK_SECONDS); mirrors the KubeConfig default.
-                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=deadline),
+                # get_job/delete_job/list_pods spies are monkeypatched, so a minimal stand-in kube suffices.
+                # phaze-202e: ``active_deadline_seconds=None`` mirrors the KubeConfig default -- reconcile
+                # no longer reads it at all (liveness comes from pod state, not from any wall clock).
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=None),
             )
         ],
         buckets=[SimpleNamespace(id=_STAGING_BUCKET_ID)],
@@ -175,14 +193,16 @@ def _patch_seam(
     get_workload: GetWorkloadSpy | None = None,
     delete_job: DeleteJobSpy | None = None,
     s3_delete: S3DeleteSpy | None = None,
+    list_pods: ListPodsSpy | None = None,
 ) -> tuple[GetJobSpy, GetWorkloadSpy, DeleteJobSpy, S3DeleteSpy]:
-    """Monkeypatch the four kube/S3 seam functions reconcile calls; return the spies for assertions."""
+    """Monkeypatch the five kube/S3 seam functions reconcile calls; return the spies for assertions."""
     gw = get_workload or GetWorkloadSpy()
     dj = delete_job or DeleteJobSpy([])
     s3 = s3_delete or S3DeleteSpy([])
     monkeypatch.setattr("phaze.services.kube_staging.get_job", get_job)
     monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", gw)
     monkeypatch.setattr("phaze.services.kube_staging.delete_job", dj)
+    monkeypatch.setattr("phaze.services.kube_staging.list_pods_for_job", list_pods or ListPodsSpy())
     monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
     return get_job, gw, dj, s3
 
@@ -327,6 +347,8 @@ async def test_admission_to_success_sequence(session: AsyncSession, monkeypatch:
     s3 = S3DeleteSpy(events)
     monkeypatch.setattr("phaze.services.kube_staging.delete_job", dj)
     monkeypatch.setattr("phaze.services.s3_staging.delete_staged_object", s3)
+    # phaze-202e: the admitted branch probes pod state; a Running pod is the healthy shape here.
+    monkeypatch.setattr("phaze.services.kube_staging.list_pods_for_job", ListPodsSpy(fake_pod("Running")))
 
     # Tick 1: Pending -> silent, stays SUBMITTED.
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
@@ -439,9 +461,8 @@ async def test_cap_safe_reconcile_decrement_never_overshoots_drain_snapshot(sess
                 id=_KUEUE_BACKEND_ID,
                 rank=20,
                 cap=cap,
-                # phaze-1b39: ``active_deadline_seconds`` feeds the in-flight staleness cutoff
-                # (deadline + RUNNING_STALENESS_SLACK_SECONDS); mirrors the KubeConfig default.
-                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=10800),
+                # phaze-202e: the deadline is off by default and reconcile never reads it.
+                kube=SimpleNamespace(api_url="https://kube.example.com", namespace="phaze", local_queue="phaze-lq", active_deadline_seconds=None),
             )
         ],
     )
@@ -781,6 +802,8 @@ async def test_inadmissible_clears_on_admission(session: AsyncSession, monkeypat
     fid, name = await _seed(session)
     ctx = _make_ctx()
     monkeypatch.setattr("phaze.services.kube_staging.get_job", GetJobSpy(fake_job(name=name)))
+    # phaze-202e: the admitted branch probes pod state; a Running pod is the healthy shape here.
+    monkeypatch.setattr("phaze.services.kube_staging.list_pods_for_job", ListPodsSpy(fake_pod("Running")))
 
     # Tick 1: Inadmissible -> flag set.
     monkeypatch.setattr("phaze.services.kube_staging.get_workload_for", GetWorkloadSpy(INADMISSIBLE))
@@ -1208,23 +1231,25 @@ async def test_clean_before_flip_delete_is_best_effort(session: AsyncSession, mo
     assert tally["failed"] == 1
 
 
-# --- phaze-1b39: in-flight staleness bound (deadline + slack) --------------------------------------
+# --- phaze-202e: pod-state wedge detection (NO wall clock anywhere) --------------------------------
 #
-# The PRIMARY fix is the Job's own ``activeDeadlineSeconds`` (pinned in test_kube_staging.py): k8s
-# SIGTERMs a hung pod and marks the Job Failed, which the existing terminal path already handles.
-# These tests cover the defense-in-depth backstop for when that signal never reaches reconcile: an
-# admitted Workload whose Job stays non-terminal forever, and a phantom row with NO Job at all.
-# Pre-fix, BOTH re-affirmed in-flight state every tick forever, permanently holding a burst-lane cap
-# slot while the lane card rendered a healthy "N/N".
+# phaze-1b39 answered "is this row wedged?" with ``activeDeadlineSeconds + slack`` on the row's
+# ``updated_at``. In production that killed every 2-6 h concert-set analyze at exactly 3h, burned
+# ``cloud_submit_max_attempts`` per file and barred 14 files from Kueue outright (incident 2026-07-28).
+# The bound is GONE. The wedge it protected against -- an admitted Workload whose pod can never run,
+# holding a burst-lane cap slot forever -- is now detected from POD STATE, which cannot confuse a slow
+# analyze with a hang.
+#
+# ``_backdate`` survives only for the pending-submit (no ``kueue_workload``) bound below, which governs
+# bookkeeping, not work: a row with no Job name has no pod anywhere to kill.
 
 
 async def _backdate(session: AsyncSession, file_id: uuid.UUID, seconds: int) -> None:
-    """Push the row's ``updated_at`` staleness clock ``seconds`` into the past.
+    """Push the row's ``updated_at`` clock ``seconds`` into the past.
 
     ``updated_at`` carries ``onupdate=func.now()``, but an UPDATE that names the column explicitly
-    uses the supplied value -- so this simulates a row that entered RUNNING long ago and has had no
-    real transition since (exactly what a hung pod produces: reconcile's RUNNING branch only mutates
-    when a field actually changes, so no UPDATE fires and the timestamp stays put).
+    uses the supplied value. Post-phaze-202e this only matters to the pending-submit bound; a
+    Job-backed row's age is not an input to ANY decision in reconcile.
     """
     cj = await _read_cloud_job(session, file_id)
     now = datetime.now(UTC)
@@ -1235,21 +1260,60 @@ async def _backdate(session: AsyncSession, file_id: uuid.UUID, seconds: int) -> 
     await session.commit()
 
 
+@pytest.mark.parametrize("age_seconds", [3600, 10800, 4 * 3600, 6 * 3600, 30 * 86400])
 @pytest.mark.asyncio
-async def test_stale_admitted_row_terminalizes_instead_of_reaffirming_running(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """phaze-1b39: an Admitted Workload with a non-terminal Job past deadline+slack terminalizes.
+async def test_running_pod_is_never_terminalized_regardless_of_age(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, age_seconds: int) -> None:
+    """phaze-202e ACCEPTANCE / THE INVARIANT: a Running pod survives any age.
 
-    THE REGRESSION TEST. Pre-fix this exact shape (Job succeeded=0/failed=0, Workload Admitted=True)
-    fell into the admission branch and was re-stamped RUNNING every tick forever, so the row NEVER
-    left the in-flight set and its burst-lane cap slot was consumed permanently. Post-fix it routes to
-    the no-callback terminal -> bounded re-drive, returning the slot without operator kubectl surgery.
+    THE REGRESSION TEST for the 2026-07-28 incident, at the reconcile layer. The parametrization walks
+    a 3h row (the old ``activeDeadlineSeconds``), a 4-6 h concert set (the real work that was being
+    killed) and a month. Every one of them must come out RUNNING with ``attempts == 0``: no Job delete,
+    no S3 delete, no re-drive enqueue. Restoring ANY age-based terminal for a Job-backed row turns the
+    later parametrizations red.
     """
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    await _backdate(session, fid, age_seconds)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Running")),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.RUNNING.value
+    assert cj.attempts == 0  # no cloud attempt burned on a healthy long analyze
+    assert dj.calls == []
+    assert s3.calls == []
+    assert queue.captured == []
+    assert tally["running"] == 1
+    assert tally["redriven"] == 0
+    assert tally["failed"] == 0
+
+
+@pytest.mark.parametrize("reason", ["ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "InvalidImageName"])
+@pytest.mark.asyncio
+async def test_dead_before_start_pod_terminalizes_immediately(session: AsyncSession, monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    """phaze-202e ACCEPTANCE: a pod that can never start is a no-callback terminal -> bounded re-drive.
+
+    This is the phaze-1b39 wedge shape (a bad image, or the missing operator ConfigMap/Secret the pod's
+    ``envFrom`` needs) preserved WITHOUT a wall clock. Note the row is deliberately FRESH -- age is not
+    consulted at all, so the verdict lands on the very first tick instead of hours later.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
     queue = DedupFakeQueue("controller")
     # Non-terminal Job on the first read, gone on the confirm-gone read (the re-drive race guard).
-    _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name), None), get_workload=GetWorkloadSpy(ADMITTED))
+    _, _, dj, _ = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", waiting_reason=reason)),
+    )
 
     tally = await reconcile_cloud_jobs(_make_ctx(queue))
 
@@ -1263,17 +1327,21 @@ async def test_stale_admitted_row_terminalizes_instead_of_reaffirming_running(se
 
 
 @pytest.mark.asyncio
-async def test_stale_admitted_row_at_cap_spills_and_frees_the_lane_slot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """phaze-1b39 acceptance: at cap the wedged row spills to 'awaiting' -- out of the in-flight set.
+async def test_dead_before_start_pod_at_cap_spills_and_frees_the_lane_slot(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-202e ACCEPTANCE: at cap the wedged row spills to 'awaiting' -- the cap SLOT IS RECOVERED.
 
-    ``'awaiting'`` is NOT an in-flight status, so ``in_flight_count`` drops and the burst-lane cap slot
-    the hung pod was squatting on is returned. This is the "lane returns to 0 without kubectl surgery"
-    half of the acceptance criteria.
+    ``'awaiting'`` is NOT an in-flight status, so ``in_flight_count`` drops and the burst-lane slot the
+    un-startable pod was squatting on is returned -- the "lane returns to 0 without kubectl surgery"
+    half of the phaze-1b39 acceptance, carried forward intact.
     """
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value, attempts=3)  # at cap
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
-    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", waiting_reason="CreateContainerConfigError")),
+    )
 
     tally = await reconcile_cloud_jobs(_make_ctx())
 
@@ -1286,19 +1354,43 @@ async def test_stale_admitted_row_at_cap_spills_and_frees_the_lane_slot(session:
 
 
 @pytest.mark.asyncio
-async def test_fresh_admitted_row_is_never_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A healthy, recently-admitted row is untouched: the bound must not steal live work (false-positive guard)."""
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
-    fid, name = await _seed(session, status=CloudJobStatus.SUBMITTED.value)
-    await _backdate(session, fid, 60)  # well inside deadline + slack
+async def test_persistently_unschedulable_pod_terminalizes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pod unschedulable past the scheduling probe is a wedge; the clock is the POD CONDITION's."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    stamp = (datetime.now(UTC) - timedelta(seconds=kube_staging.UNSCHEDULABLE_PROBE_SECONDS + 60)).isoformat().replace("+00:00", "Z")
     queue = DedupFakeQueue("controller")
-    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+    _, _, dj, _ = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", unschedulable_since=stamp)),
+    )
 
     tally = await reconcile_cloud_jobs(_make_ctx(queue))
 
-    cj = await _read_cloud_job(session, fid)
-    assert cj.status == CloudJobStatus.RUNNING.value
-    assert cj.attempts == 0
+    assert (await _read_cloud_job(session, fid)).attempts == 1
+    assert dj.calls == [name]
+    assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_briefly_unschedulable_pod_is_held(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside the scheduling probe the row is held -- a normal autoscaler scale-up must not burn an attempt."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    stamp = (datetime.now(UTC) - timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", unschedulable_since=stamp)),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    assert (await _read_cloud_job(session, fid)).attempts == 0
     assert dj.calls == []
     assert s3.calls == []
     assert queue.captured == []
@@ -1306,20 +1398,120 @@ async def test_fresh_admitted_row_is_never_terminalized(session: AsyncSession, m
 
 
 @pytest.mark.asyncio
-async def test_stale_admitted_row_with_landed_callback_is_not_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stale-looking row whose analysis result ALREADY landed must never be re-driven (would redo work).
+async def test_empty_pod_list_alone_never_terminalizes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty pod list is UNKNOWN, not dead -- a pod-label drift must not mass-kill the burst lane.
+
+    ``list_pods_for_job`` returns ``[]`` both for a genuinely pod-less Job AND for a cluster whose pod
+    labels this code does not recognise. Here the Job independently reports ``active=1`` (a pod DOES
+    exist), so the zero-pod probe is refused outright and the row is simply re-affirmed RUNNING, no
+    matter how old it is.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    await _backdate(session, fid, 30 * 86400)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(),  # empty
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    assert (await _read_cloud_job(session, fid)).attempts == 0
+    assert dj.calls == []
+    assert s3.calls == []
+    assert queue.captured == []
+    assert tally["running"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unsuspended_job_with_no_pod_past_the_probe_terminalizes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 'Workload wedged Admitted with no pod' shape: un-suspended, zero active pods, past the probe.
+
+    Safe without a run clock precisely because nothing is running: the Job itself reports
+    ``status.active == 0`` AND the pod list is empty AND ``spec.suspend`` is false AND
+    ``status.startTime`` is older than the probe. All four must agree before the row is terminalized.
+    """
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    started = (datetime.now(UTC) - timedelta(seconds=reconcile_mod.NO_POD_PROBE_SECONDS + 60)).isoformat().replace("+00:00", "Z")
+    queue = DedupFakeQueue("controller")
+    _, _, dj, _ = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=0, start_time=started), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    assert (await _read_cloud_job(session, fid)).attempts == 1
+    assert dj.calls == [name]
+    assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unsuspended_job_with_no_pod_inside_the_probe_is_held(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Job un-suspended seconds ago has not had time to create its pod -- hold, do not kill."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    started = (datetime.now(UTC) - timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=0, start_time=started)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    assert (await _read_cloud_job(session, fid)).attempts == 0
+    assert dj.calls == []
+    assert s3.calls == []
+    assert tally["running"] == 1
+
+
+@pytest.mark.asyncio
+async def test_suspended_job_with_no_pod_is_never_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A still-Kueue-gated Job has no pod BY DESIGN -- the zero-pod probe must never fire on it."""
+    _patch_cap(monkeypatch, cap=3)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    started = (datetime.now(UTC) - timedelta(days=7)).isoformat().replace("+00:00", "Z")
+    _, _, dj, _ = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, suspend=True, active=0, start_time=started)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx())
+
+    assert (await _read_cloud_job(session, fid)).attempts == 0
+    assert dj.calls == []
+    assert tally["running"] == 1
+
+
+@pytest.mark.asyncio
+async def test_wedged_pod_with_landed_callback_is_not_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wedge-looking row whose analysis result ALREADY landed must never be re-driven (would redo work).
 
     The callback (KSUBMIT-03) is the authoritative result writer and keys off ``file_id``; if
-    ``analysis_completed_at`` is set the burst genuinely finished, so the staleness bound must stand down
-    and leave the row to the normal terminal paths.
+    ``analysis_completed_at`` is set the burst genuinely finished, so the wedge verdict stands down and
+    leaves the row to the normal terminal paths.
     """
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
     session.add(AnalysisResult(file_id=fid, analysis_completed_at=datetime.now(UTC).replace(tzinfo=None)))
     await session.commit()
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
     queue = DedupFakeQueue("controller")
-    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Pending", waiting_reason="ImagePullBackOff")),
+    )
 
     tally = await reconcile_cloud_jobs(_make_ctx(queue))
 
@@ -1332,23 +1524,25 @@ async def test_stale_admitted_row_with_landed_callback_is_not_terminalized(sessi
 
 @pytest.mark.asyncio
 async def test_first_admission_after_long_healthy_quota_wait_is_not_terminalized(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """phaze-uui9: a Job admitted after a long healthy Pending quota wait must NOT be killed on sight.
+    """phaze-uui9, carried forward: a Job admitted after a long healthy Pending quota wait is not killed.
 
     D-07 designs a healthy Pending quota wait as indefinite, and the Pending branch issues no UPDATE
-    while waiting, so ``updated_at`` (and thus ``_row_age_seconds``) reflects the QUEUE wait, not any
-    run time -- exactly the frozen-clock shape a long-but-healthy quota wait produces. Pre-fix, the
-    line-507 bound evaluated that frozen clock on the very first admitted tick (status is still
-    SUBMITTED, never having been RUNNING) and terminalized a just-admitted, healthily-running pod
-    outright, burning a cloud attempt for nothing. Post-fix the bound is gated on the row having
-    already been observed RUNNING on a PRIOR tick, so this first admitted tick only stamps RUNNING
-    (restarting the clock) instead of re-driving.
+    while waiting, so ``updated_at`` reflects the QUEUE wait rather than any run time. phaze-uui9 had to
+    bolt a "only if already observed RUNNING" gate onto the 1b39 wall clock to stop that frozen clock
+    from killing a just-admitted pod. phaze-202e deleted the gate along with the clock -- pod state is
+    equally valid on the first admitted tick and the thousandth -- so this now passes structurally
+    rather than by special case.
     """
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid, name = await _seed(session, status=CloudJobStatus.SUBMITTED.value)  # never yet observed RUNNING
-    # Backdate past the deadline+slack bound -- simulating a healthy quota wait far longer than the cutoff.
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    await _backdate(session, fid, 30 * 86400)  # a very long healthy quota wait
     queue = DedupFakeQueue("controller")
-    _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(name=name)), get_workload=GetWorkloadSpy(ADMITTED))
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1)),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Running")),
+    )
 
     tally = await reconcile_cloud_jobs(_make_ctx(queue))
 
@@ -1362,7 +1556,29 @@ async def test_first_admission_after_long_healthy_quota_wait_is_not_terminalized
     assert tally["redriven"] == 0
 
 
-# --- phaze-1b39: the permanent-phantom row (kueue_workload IS NULL) --------------------------------
+def test_reconcile_carries_no_wall_clock_deadline_reference() -> None:
+    """phaze-202e guard: reconcile must not re-acquire a run deadline by reading the kube config.
+
+    A source-level assertion because the failure mode is a silent reintroduction: any future
+    ``kube.active_deadline_seconds`` read here would rebuild exactly the bound that caused the
+    2026-07-28 incident. The pending-submit bound is the one permitted age rule, and it is named
+    explicitly so this guard cannot be satisfied by renaming the old one back in.
+    """
+    source = pathlib.Path(reconcile_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "active_deadline_seconds"]
+
+    assert reads == []
+    assert "_staleness_cutoff_seconds" not in source
+    assert reconcile_mod.PENDING_SUBMIT_CONFIRMATION_SECONDS > 0
+
+
+# --- phaze-1b39 / phaze-202e: the permanent-phantom row (kueue_workload IS NULL) -------------------
+#
+# The ONE surviving age rule, and the only one that may survive: a row with no ``kueue_workload`` has
+# no Job and therefore no pod anywhere, so ``PENDING_SUBMIT_CONFIRMATION_SECONDS`` can only reclaim
+# bookkeeping -- it can never kill a running analyze. It bounds the SUBMIT machinery (a submit that
+# crashed before stamping the workload name, or a re-drive whose enqueue never executed).
 
 
 async def _seed_phantom(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED.value, attempts: int = 0) -> uuid.UUID:
@@ -1388,16 +1604,16 @@ async def _seed_phantom(session: AsyncSession, *, status: str = CloudJobStatus.S
 
 @pytest.mark.asyncio
 async def test_stale_phantom_row_without_workload_terminalizes(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """phaze-1b39: a NULL-``kueue_workload`` row past the staleness bound is terminalized, not skipped forever.
+    """phaze-1b39: a NULL-``kueue_workload`` row past the pending-submit bound is terminalized, not skipped forever.
 
     Pre-fix this row logged 'missing kueue_workload; skipping' on EVERY tick and stayed in-flight
     permanently -- an unrecoverable phantom holding a cap slot, since no terminal signal can ever exist
     for a Job that was never recorded. Post-fix it re-drives (under cap) with NO delete_job call (there
     is no Job to delete).
     """
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid = await _seed_phantom(session)
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    await _backdate(session, fid, reconcile_mod.PENDING_SUBMIT_CONFIRMATION_SECONDS + 60)
     queue = DedupFakeQueue("controller")
     _, _, dj, _ = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
 
@@ -1414,7 +1630,7 @@ async def test_stale_phantom_row_without_workload_terminalizes(session: AsyncSes
 @pytest.mark.asyncio
 async def test_fresh_phantom_row_without_workload_is_still_held(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A just-inserted row whose submit is still mid-flight is held (unchanged behaviour) -- never stolen."""
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid = await _seed_phantom(session)
     queue = DedupFakeQueue("controller")
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
@@ -1432,9 +1648,9 @@ async def test_fresh_phantom_row_without_workload_is_still_held(session: AsyncSe
 @pytest.mark.asyncio
 async def test_stale_phantom_row_at_cap_spills_to_awaiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """At cap the phantom spills to 'awaiting' (out of the in-flight set) with no Job delete attempted."""
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid = await _seed_phantom(session, status=CloudJobStatus.RUNNING.value, attempts=3)
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    await _backdate(session, fid, reconcile_mod.PENDING_SUBMIT_CONFIRMATION_SECONDS + 60)
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
 
     tally = await reconcile_cloud_jobs(_make_ctx())
@@ -1449,11 +1665,11 @@ async def test_stale_phantom_row_at_cap_spills_to_awaiting(session: AsyncSession
 @pytest.mark.asyncio
 async def test_stale_phantom_row_with_landed_callback_records_success(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """A phantom whose callback landed anyway (it keys off file_id, not the Job) finalizes as SUCCEEDED."""
-    _patch_cap(monkeypatch, cap=3, deadline=3600)
+    _patch_cap(monkeypatch, cap=3)
     fid = await _seed_phantom(session, status=CloudJobStatus.RUNNING.value)
     session.add(AnalysisResult(file_id=fid, analysis_completed_at=datetime.now(UTC).replace(tzinfo=None)))
     await session.commit()
-    await _backdate(session, fid, 3600 + reconcile_mod.RUNNING_STALENESS_SLACK_SECONDS + 60)
+    await _backdate(session, fid, reconcile_mod.PENDING_SUBMIT_CONFIRMATION_SECONDS + 60)
     _, _, dj, s3 = _patch_seam(monkeypatch, get_job=GetJobSpy(None))
 
     tally = await reconcile_cloud_jobs(_make_ctx())
