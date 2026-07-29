@@ -31,6 +31,7 @@ from sqlalchemy import select, text
 
 from phaze.models import PipelineStageControl
 from phaze.routers import pipeline_stages
+from tests.db_guard import BLOCKED_WAITER_SQL
 
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 
 async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend is genuinely queued waiting on a lock.
+    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
 
     Mirrors ``test_scan_reaper_concurrency.py``'s helper: proves the racing call has reached
     Postgres and is blocked behind the lock holder -- deterministic, not a guessed sleep.
@@ -51,7 +52,7 @@ async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSess
     async def _poll() -> None:
         while True:
             async with session_factory() as probe:
-                waiting = (await probe.execute(text("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted)"))).scalar()
+                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
             if waiting:
                 return
             await asyncio.sleep(0.02)

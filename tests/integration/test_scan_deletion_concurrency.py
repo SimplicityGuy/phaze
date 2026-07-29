@@ -49,6 +49,7 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.scan_deletion import delete_scan_cascade
+from tests.db_guard import BLOCKED_WAITER_SQL
 
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ async def _seed_batch_with_one_file(session: AsyncSession) -> tuple[uuid.UUID, u
 
 
 async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend is genuinely queued waiting on a lock.
+    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
 
     Mirrors ``test_scan_reaper_concurrency.py``'s helper: proves the cascade's own lock acquisition has
     reached Postgres and is blocked behind the worker's held ``FOR KEY SHARE`` -- deterministic, not a
@@ -107,7 +108,7 @@ async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSess
     async def _poll() -> None:
         while True:
             async with session_factory() as probe:
-                waiting = (await probe.execute(text("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted)"))).scalar()
+                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
             if waiting:
                 return
             await asyncio.sleep(0.02)

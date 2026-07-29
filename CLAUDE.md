@@ -100,6 +100,24 @@ DB bucket serial for the same reason).
 Two suites in two worktrees with their own `test-db-for` databases are unaffected — that is the
 supported way to run concurrently, and it is verified green.
 
+### `pg_locks` and `pg_stat_activity` are cluster-wide — always scope them
+
+A per-worktree database isolates table data completely and the system catalogues not at all. Any
+test that reads `pg_locks` or `pg_stat_activity` sees **every** seat's backends. Two concurrent
+suites, each correctly isolated, both went red on
+`tests/integration/test_tag_bulk_write_advisory_lock.py` with `assert 2 == 1` — an advisory-lock
+count that had picked up the other seat's copy of the same application key. The three
+`_wait_for_blocked_waiter` barriers had the nastier version: `SELECT EXISTS (SELECT 1 FROM pg_locks
+WHERE NOT granted)` is satisfied by any blocked backend in the cluster, so the barrier returned
+before the test's own waiter had queued and everything after it raced.
+
+Scope every such query with `current_database()`. For an advisory-lock count use
+`and database = (select oid from pg_database where datname = current_database())`; for a
+"somebody is blocked" barrier join the waiting backend instead
+(`pg_locks.database` is NULL for `transactionid` locks, so the column filter never matches there) —
+`tests/db_guard.BLOCKED_WAITER_SQL` is the shared correct form.
+`tests/shared/test_cluster_wide_catalog_scoping.py` fails the build on an unscoped query.
+
 ### Never `just test-db-down` while another seat is running
 
 `phaze-test-db` and `phaze-test-redis` are **one shared pair of containers**; `test-db-for` carves

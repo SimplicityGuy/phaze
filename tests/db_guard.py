@@ -104,6 +104,25 @@ TEST_DB_SESSION_LOCK_KEY = 0x7048415A_45544553  # 'pHAZETES' -- 8 bytes, fits in
 # to refuse (see .github/workflows/tests.yml, which keeps every DB bucket serial for that reason).
 ALLOW_SHARED_ENV_VAR = "PHAZE_TEST_DB_ALLOW_SHARED"
 
+# "Some OTHER backend IN THIS DATABASE is queued waiting on a lock" -- the deterministic barrier
+# three concurrency modules use instead of guessing a sleep duration.
+#
+# phaze-ieqg: ``pg_locks`` is CLUSTER-wide. The three modules each carried the unqualified
+# ``SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted)``, which on the shared harness is
+# satisfied by ANY concurrent worktree's blocked backend. The barrier then returns before this
+# test's own waiter has queued, and the assertions that follow race -- a false red in a module the
+# branch under test never touched, green on isolated re-run. Measured during the phaze-ieqg
+# two-concurrent-suite proof.
+#
+# Filtered via ``pg_stat_activity.datname`` rather than ``pg_locks.database`` deliberately: the
+# waiter these modules create blocks on a ``transactionid`` lock (a row-level ``FOR UPDATE``
+# behind another transaction), and ``pg_locks.database`` is NULL for transaction-ID locks. A
+# ``l.database = ...`` predicate would therefore never match and the barrier would always time
+# out. The WAITING BACKEND's database is always populated, so join to it instead.
+BLOCKED_WAITER_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database())"
+)
+
 
 class NonTestDatabaseError(RuntimeError):
     """Raised when a destructive test fixture is pointed at a database that is not a test database.
