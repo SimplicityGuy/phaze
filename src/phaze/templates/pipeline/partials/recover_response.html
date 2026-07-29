@@ -1,5 +1,9 @@
-{# Recovery HTMX response fragment (Phase 42, D-02/D-05). Swapped into the global "Recover" button's
-   slot in the DAG header after POST /pipeline/recover. Recovery runs fire-and-forget in a background
+{# Recovery HTMX response fragment (Phase 42, D-02/D-05). Swapped into `#discover-recover-response`
+   -- the Discover workspace's dedicated body sink -- after POST /pipeline/recover. (phaze-thd6: this
+   used to say "the global Recover button's slot in the DAG header"; that header was removed in the
+   Phase-62 cutover, and the ported wiring aimed the swap at the element WRAPPING the button, which
+   deleted the control on every success. The sink is now a sibling of the button, never its ancestor.)
+   Recovery runs fire-and-forget in a background
    task, so this confirms it STARTED (not the final per-stage counts). Carries the LOCKED idempotency
    reassurance copy: a forced reconcile dedups every still-in-flight item via its deterministic key, so
    nothing double-enqueues. NO no_active_agent branch — agent stages skip with zero counts on a cold

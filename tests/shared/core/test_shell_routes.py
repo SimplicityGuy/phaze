@@ -207,6 +207,26 @@ async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncClient) -> None:
+    """Regression (phaze-t0b8) -- every STAGE_PARTIALS value renders exactly one <h1 tabindex="-1">.
+
+    The shell's htmx:afterSwap / htmx:historyRestore handler (``shell.html``'s
+    ``_focusStageHeading``) moves keyboard focus to ``#stage-workspace``'s first ``<h1>`` after
+    every rail swap; with none present the handler silently no-ops, stranding keyboard/screen-
+    reader operators on the rail. files_workspace.html (the /s/files host) was the ONE stage that
+    skipped this: it hand-rolled its own body instead of composing ``_workspace_scaffold.html``
+    like every sibling, so it carried no heading at all. This guards the whole class, not just
+    that one stage, the way the bead's own fix hint asked: every navigable rail node must have
+    exactly one focus-landing heading, not zero and not two.
+    """
+    for stage in _RAIL_STAGES:
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200, f"/s/{stage} must render"
+        count = len(re.findall(r'<h1\b[^>]*\btabindex="-1"', frag.text))
+        assert count == 1, f'/s/{stage} must carry exactly one <h1 tabindex="-1"> focus target (found {count})'
+
+
+@pytest.mark.asyncio
 async def test_unknown_stage_404(client: AsyncClient) -> None:
     """SHELL-02 (negative) -- an unknown stage 404s (D-02 whitelist; `stage` is never a template path)."""
     response = await client.get("/s/does-not-exist")
@@ -418,3 +438,29 @@ async def test_stage_live_htmx_swap_still_returns_bare_fragment(client: AsyncCli
     assert "<html" not in body.lower(), "a live rail swap must get a fragment, not a full document"
     assert 'aria-label="Pipeline navigation"' not in body, "the fragment must not carry a second rail"
     assert 'id="stage-workspace"' not in body, "the fragment swaps INTO #stage-workspace, not around it"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stats_poll_resume_uses_htmx_trigger_not_source_less_ajax(client: AsyncClient) -> None:
+    """phaze-ircc -- the foreground-resume refresh must go through the poll element's own trigger.
+
+    ``htmx.ajax('GET', ..., { target: ... })`` with no ``source`` element substitutes
+    ``document.body`` as the attribute-inheritance root (htmx 2.0.10 ``issueAjaxRequest``), so the
+    poll element's ``hx-vals`` (the selected ``lane``) was silently dropped on every
+    ``visibilitychange`` foreground-resume refresh. The fix routes the resume through
+    ``window.htmx.trigger(pollEl, 'refresh')`` and adds a matching ``refresh`` entry to the
+    element's own ``hx-trigger``, so exactly one place (the element itself) knows what the poll
+    needs to send.
+    """
+    response = await client.get("/")
+    assert response.status_code == 200
+    body = response.text
+    # The single persistent poll element now also listens for a same-element 'refresh' trigger.
+    assert re.search(
+        r'id="pipeline-stats"[^>]*hx-trigger="every 5s \[document\.visibilityState === \'visible\'\], refresh"',
+        body,
+    ), "the #pipeline-stats poll must accept a same-element 'refresh' trigger"
+    # The visibilitychange handler must fire that trigger on the element itself, not a source-less
+    # htmx.ajax() call (which would silently drop the element's hx-vals lane).
+    assert "window.htmx.trigger(pollEl, 'refresh')" in body
+    assert "window.htmx.ajax('GET', '/pipeline/stats', { target: '#pipeline-stats', swap: 'innerHTML' })" not in body

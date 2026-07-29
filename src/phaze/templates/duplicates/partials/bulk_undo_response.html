@@ -1,6 +1,29 @@
 {# phaze-be1j: swapped (innerHTML) into dedupe_workspace.html's persistent #dedupe-bulk-response
-   status div -- the toast's "Undo All" hx-target. Bulk resolve never OOB-touches the individual
-   _dupe_group.html cards (R-2), so there's no per-card DOM state to restore here; this just
-   confirms the undo landed. #}
+   status div -- the toast's "Undo All" hx-target.
+
+   phaze-dpc5: this file used to say "bulk resolve never OOB-touches the individual _dupe_group.html
+   cards (R-2), so there's no per-card DOM state to restore here". That stopped being true when
+   phaze-wgse taught bulk_resolve_response.html to OOB-delete every #dupe-group-{hash} it was shown.
+   The database side of undo was always correct (undo_resolve deletes the markers and commits), so a
+   successful Undo All truthfully reported "N files restored" into a workspace whose group cards had
+   all been removed and were never coming back -- no keeper radios to re-pick with, and no way to tell
+   whether the undo had worked short of navigating away and back.
+
+   The restore is now symmetric with the delete: the status text below is the primary swap, and the
+   restored cards are OOB-APPENDED into #dedupe-group-list (dedupe_workspace.html). Append rather than
+   innerHTML so a group resolved SINGLY before the bulk keeps the hidden #group-{hash} placeholder its
+   own undo toast targets. Guarded on restored_count so a replayed Undo All (which restores nothing)
+   cannot inject a second copy of a card that is already on screen. #}
 <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Undo All complete</p>
 <p class="text-sm text-gray-500 dark:text-gray-400">{{ restored_count }} file{{ "" if restored_count == 1 else "s" }} restored to their previous duplicate state.</p>
+
+{% if restored_count and dedupe_groups %}
+{# OOB: put back the cards bulk resolve deleted, in the SAME _dupe_group.html shape the workspace
+   renders (id="dupe-group-{hash}", live keeper radios) -- the single-group path's undo_response.html
+   contract, applied to the bulk path. #}
+<div hx-swap-oob="beforeend:#dedupe-group-list">
+    {% for group in dedupe_groups %}
+        {% include "pipeline/partials/_dupe_group.html" %}
+    {% endfor %}
+</div>
+{% endif %}

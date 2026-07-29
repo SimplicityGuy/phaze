@@ -264,6 +264,62 @@ async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> No
         assert count == 1, f"{stage} fragment must have exactly one #analyze-lanes target (found {count})"
 
 
+@pytest.mark.asyncio
+async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-tyt3): the Analyze workspace mounts a VISIBLE #straggler-failed-card host.
+
+    Before the fix, EVERY stage (including Analyze) sank this OOB-emitted card into a `hidden
+    aria-hidden` div, so the aggregate straggler + terminal analysis-failed counts were invisible
+    everywhere. With at least one file seeded (so Analyze renders the real workspace, not the
+    empty-state guide), the card must render for real: not hidden, carrying its live counts and
+    heading, exactly once, and the bulk Retry control gated on a non-zero failed count.
+    """
+    file = await _seed_file(session)
+    await _seed_analysis(session, file.id, None, None, completed=False)
+    failed = await _seed_file(session, original_filename="terminal.mp3")
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom", analysis_completed_at=None))
+    await session.commit()
+
+    frag = await client.get("/s/analyze", headers={"HX-Request": "true"})
+    assert frag.status_code == 200
+    body = frag.text
+
+    assert body.count('id="straggler-failed-card"') == 1, "exactly one Analysis Health card"
+    card = body.split('id="straggler-failed-card"')[1].split("</section>")[0]
+    assert "Analysis Health" in body
+    assert "Analysis failed" in body
+    assert "1" in card, "the seeded terminal failure must be counted"
+    # The bulk retry control is gated on analysis_failed_count > 0 -- it must render for real here.
+    assert 'hx-post="/pipeline/analysis-failed/retry"' in card
+    assert "Retry failed" in card
+
+    # And the card must NOT sit inside the hidden OOB-sink wrapper -- that wrapper is skipped
+    # entirely on Analyze (cloud_cards=true), so nothing in the fragment carries this id hidden.
+    hidden_wrapper_ids = []
+    for chunk in body.split('<div class="hidden" aria-hidden="true">')[1:]:
+        hidden_wrapper_ids.append(chunk.split("</div>")[0])
+    assert not any("straggler-failed-card" in chunk for chunk in hidden_wrapper_ids), (
+        "the real card must not also be sunk into a hidden wrapper on Analyze"
+    )
+
+
+@pytest.mark.asyncio
+async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(client: AsyncClient) -> None:
+    """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
+
+    Only Analyze renders the real card; Discover/Metadata/Fingerprint must still carry the
+    hidden `#straggler-failed-card` sink (gated the same way as the six cloud cards) or the
+    shared 5s poll's OOB re-push logs `htmx:oobErrorNoTarget`.
+    """
+    for stage in ("discover", "metadata", "fingerprint"):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        body = frag.text
+        assert body.count('id="straggler-failed-card"') == 1, f"{stage} fragment must have exactly one sink"
+        # It must be the hidden sink, not a visible card: no "Analysis Health" heading text.
+        assert "Analysis Health" not in body, f"{stage} must not render the real (visible) card"
+
+
 # ---------------------------------------------------------------------------
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 58-VALIDATION.md Per-Task Verification Map)

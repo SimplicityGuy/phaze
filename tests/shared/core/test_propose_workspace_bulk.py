@@ -181,6 +181,24 @@ async def test_bulk_response_does_not_re_emit_its_own_container(
 
 
 @pytest.mark.asyncio
+async def test_bulk_response_refreshes_the_tab_badge_counts(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Bonus of phaze-xxp2: the tabs now live inside the container the bulk response re-renders, so
+    their corpus-wide count badges refresh with it -- for free, since ``build_propose_list_context``
+    (the bulk endpoint's own context builder) recomputes ``propose_stats`` AFTER the UPDATE.
+    """
+    proposal = await seed_pending_proposal(0.9, original_filename="badge.mp3", proposed_filename="Badge.mp3")
+
+    body = (await client.patch("/proposals/bulk", data={"action": "approve", "proposal_ids": [str(proposal.id)]}, headers=_BULK_TARGET)).text
+
+    tabs_markup = body.split("</nav>")[0]
+    badges = [chunk.split("<")[0].strip() for chunk in tabs_markup.split('rounded-full px-2 py-0.5 ml-1">')[1:]]
+    assert badges == ["1", "0", "1", "0"], f"badges must reflect the post-approve counts (total/pending/approved/rejected), got {badges}"
+
+
+@pytest.mark.asyncio
 async def test_bulk_returns_on_the_same_filter_search_and_page_it_was_issued_from(
     client: AsyncClient,
     session: AsyncSession,

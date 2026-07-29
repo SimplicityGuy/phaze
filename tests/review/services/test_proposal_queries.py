@@ -12,10 +12,12 @@ from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.services.proposal_queries import (
     Pagination,
+    ProposalEditRefusedError,
     ProposalStats,
     ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
+    count_pending_above_confidence,
     get_proposal_stats,
     get_proposal_with_file,
     get_proposals_page,
@@ -458,8 +460,8 @@ async def test_approve_pending_above_confidence_leaves_non_pending_untouched(ses
     pending = await _create_proposal(session, original_filename="hc_pending.mp3", confidence=0.95)
     rejected = await _create_proposal(session, original_filename="hc_rejected.mp3", confidence=0.95, status=ProposalStatus.REJECTED)
 
-    count = await approve_pending_above_confidence(session, threshold=0.9)
-    assert count == 1
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == [pending.id]
 
     approved_row = await session.get(RenameProposal, pending.id)
     assert approved_row is not None
@@ -468,6 +470,65 @@ async def test_approve_pending_above_confidence_leaves_non_pending_untouched(ses
     rejected_row = await session.get(RenameProposal, rejected.id)
     assert rejected_row is not None
     assert rejected_row.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_no_matches_returns_empty_list(session: AsyncSession) -> None:
+    """No PENDING row meets the threshold: an empty list, not a stray query error."""
+    await _create_proposal(session, original_filename="low_conf.mp3", confidence=0.3)
+
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == []
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_reads_latest_confidence(session: AsyncSession) -> None:
+    """phaze-p35v: the confidence predicate is evaluated INSIDE the same UPDATE that flips
+    ``status``, so a PENDING row whose confidence was lowered (mirroring a concurrent re-propose
+    upsert that keeps the id and PENDING status but replaces ``confidence``) is judged against its
+    CURRENT value, never a value read by an earlier, separate SELECT.
+    """
+    proposal = await _create_proposal(session, original_filename="reproposed.mp3", confidence=0.95)
+    # Mirrors store_proposals' upsert lowering confidence on a re-propose while the row stays PENDING.
+    proposal.confidence = 0.3
+    await session.commit()
+
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == []
+
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# count_pending_above_confidence (phaze-rw14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_pending_above_confidence_matches_approve_predicate(session: AsyncSession) -> None:
+    """The count mirrors EXACTLY what approve_pending_above_confidence would approve right now --
+    PENDING only, confidence >= threshold, NULL confidence excluded.
+    """
+    await _create_proposal(session, original_filename="hc1.mp3", confidence=0.95)
+    await _create_proposal(session, original_filename="hc2.mp3", confidence=0.91)
+    await _create_proposal(session, original_filename="lc.mp3", confidence=0.5)
+    await _create_proposal(session, original_filename="null_conf.mp3", confidence=None)
+    await _create_proposal(session, original_filename="hc_approved.mp3", confidence=0.99, status=ProposalStatus.APPROVED)
+
+    count = await count_pending_above_confidence(session, threshold=0.9)
+    assert count == 2
+
+    # And it agrees with what actually gets approved for the same threshold.
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert len(approved_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_count_pending_above_confidence_zero_when_nothing_matches(session: AsyncSession) -> None:
+    await _create_proposal(session, original_filename="lc.mp3", confidence=0.2)
+    assert await count_pending_above_confidence(session, threshold=0.9) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +560,12 @@ async def test_get_proposal_with_file_not_found(session: AsyncSession) -> None:
 async def test_update_proposal_fields_refuses_non_pending_row(session: AsyncSession) -> None:
     """An edit against an APPROVED row is refused and does NOT rewrite the reviewed proposed_path."""
     proposal = await _create_proposal(session, status=ProposalStatus.APPROVED)
-    with pytest.raises(ProposalTransitionError):
+    with pytest.raises(ProposalEditRefusedError) as exc_info:
         await update_proposal_fields(session, proposal.id, proposed_path="Some/Other/Dir", allowed_from=APPROVE_REJECT_FROM)
+    # phaze-3mru: the message names the row's real (single) status, not a nonsensical
+    # "approved -> approved" transition invented by echoing the same value into both slots.
+    assert str(exc_info.value) == "edit refused: proposal is approved, only PENDING rows are editable"
+    assert exc_info.value.current_status == ProposalStatus.APPROVED
     refetched = await session.get(RenameProposal, proposal.id)
     assert refetched is not None
     assert refetched.status == ProposalStatus.APPROVED

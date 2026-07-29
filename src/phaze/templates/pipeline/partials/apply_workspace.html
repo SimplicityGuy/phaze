@@ -1,0 +1,88 @@
+{# phaze-vvmh: the Apply (Execute) workspace -- the v7 shell's host for the terminal step of the
+   product's stated core workflow, "nothing moves without review, then execute".
+
+   It had none. `POST /execution/start` had exactly ONE caller in the whole template tree,
+   `proposals/partials/execute_button.html`, which was emitted only from
+   `proposals/partials/stats_bar.html`, which in turn was included only from two OOB wrappers
+   addressed to `#stats-bar` -- an id whose sole host (the legacy proposals list page) the Phase-62
+   cutover deleted. So no rendered document ever contained the Execute button or its
+   `#execution-progress` sink: an operator could approve five hundred proposals and had no control
+   anywhere in the UI to dispatch them. `execute_approved_batch` was never enqueued, no file was
+   ever copy-verify-deleted to its proposed path, and /audit/ stayed empty because ExecutionLog rows
+   are only written by the dispatch path. The backend was never broken -- POST /execution/start is
+   fully functional and well covered; this was purely a missing affordance.
+
+   Why a stage of its own rather than a button on Move (the original fix hint): a RenameProposal
+   carries both facets, and `execute_approved_batch` dispatches EVERY approved proposal regardless
+   of which workspace approved it. Hanging the trigger off Move would file rename-only executions
+   under a Move heading, and adding a second copy to Rename later would give one global action two
+   buttons. One terminal node, one trigger.
+
+   The counters below are the useful half of the deleted `proposals/partials/stats_bar.html`
+   (services/proposal_queries.get_proposal_stats), re-hosted where they can actually be seen.
+
+   Response sink: `#apply-execute-response` is a SIBLING of the trigger, never its ancestor
+   (phaze-thd6) -- POST /execution/start answers with progress.html, collision_block.html or
+   dispatch_in_progress.html, none of which re-renders the button. NO second poll (R-2): the
+   progress card that lands here opens its own SSE stream, which is how execution has always
+   reported, and the workspace itself starts no timer. #}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% set subcount = "'" ~ stats.approved ~ " approved · " ~ stats.pending ~ " still pending review'" %}
+{% set _apply_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
+{% set actions %}
+    {# R-4 mass-action guard: hx-confirm naming the count + hx-disabled-elt + the controllerBusy
+       busy-gate. Disabled outright at zero approved -- the same two-branch shape the deleted
+       execute_button.html used, minus its dead host. #}
+    <button type="button"
+            {% if stats.approved > 0 %}
+            hx-post="/execution/start" hx-target="#apply-execute-response" hx-swap="innerHTML"
+            hx-confirm="Apply {{ stats.approved }} approved proposal{{ '' if stats.approved == 1 else 's' }} using copy-verify-delete? Originals are preserved until verification succeeds, and every apply is written to the audit log."
+            hx-disabled-elt="this"
+            :disabled="$store.pipeline.controllerBusy > 0"
+            {% else %}
+            disabled
+            title="No approved proposals to apply"
+            {% endif %}
+            aria-label="Execute all approved proposals"
+            class="{{ _apply_btn }}">EXECUTE APPROVED</button>
+{% endset %}
+{% call ws.workspace(title="Review & Apply · Execute", subcount=subcount, actions=actions) %}
+    {# Dispatch response lands here (progress.html · collision_block.html · dispatch_in_progress.html);
+       empty:hidden until it fires. #}
+    <div id="apply-execute-response" class="px-6 pt-4 empty:hidden"></div>
+    <div class="grid grid-cols-2 gap-4 p-6 lg:grid-cols-5">
+        <div>
+            <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Total</span>
+            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ stats.total }}</p>
+        </div>
+        <div>
+            <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Pending</span>
+            <p class="text-xl font-semibold text-amber-600 dark:text-amber-400">{{ stats.pending }}</p>
+        </div>
+        <div>
+            <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Approved</span>
+            <p class="text-xl font-semibold text-emerald-600 dark:text-emerald-300">{{ stats.approved }}</p>
+        </div>
+        <div>
+            <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Rejected</span>
+            <p class="text-xl font-semibold text-rose-600 dark:text-rose-400">{{ stats.rejected }}</p>
+        </div>
+        <div>
+            <span class="font-jura text-[11px] uppercase tracking-[0.2em] text-gray-500 dark:text-gray-500">Avg confidence</span>
+            <p class="text-xl font-semibold text-gray-900 dark:text-gray-100">{{ "%.0f"|format((stats.avg_confidence or 0) * 100) }}%</p>
+        </div>
+    </div>
+    <div class="border-t border-gray-200 px-6 py-4 dark:border-phaze-border">
+        {% if stats.approved > 0 %}
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Applying copies each file to its proposed path, verifies the copy, then deletes the original.
+            Progress appears above and every operation is recorded in the <a href="/audit/" class="underline hover:text-gray-700 dark:hover:text-gray-300">audit log</a>.
+        </p>
+        {% else %}
+        <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Nothing approved yet</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Approve proposals in Rename / Path or Move files first — only approved proposals are applied.
+        </p>
+        {% endif %}
+    </div>
+{% endcall %}

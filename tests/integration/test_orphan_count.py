@@ -31,7 +31,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -41,7 +41,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
-from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, get_live_job_keys, get_stage_orphan_counts
+from phaze.services.pipeline import _BUSY_FUNCTION_TO_STAGE, _compute_stage_orphan_counts, get_live_job_keys, get_stage_orphan_counts
 from phaze.services.scheduling_ledger import get_ledger_rows
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import (
@@ -70,6 +70,31 @@ _TARGET_DB = require_test_database(SA_DSN, context="orphan-count integration tes
 
 _LEGACY_AGENT_ID = "test-fileserver"
 
+# phaze-xwaj: ``saq_jobs`` is SAQ-owned and absent from ``Base.metadata`` (never Alembic-managed), and
+# sibling suites create it with differing schemas, so it is pinned here with the shape this module
+# controls (idiom from tests/integration/test_stage_progress_buckets.py / tests/shared/routers/test_pipeline.py).
+# The drop+create is undone when the per-test transaction rolls back (db_session's teardown). Since the
+# fix for phaze-xwaj makes _compute_stage_orphan_counts read ``saq_jobs`` DIRECTLY (raising, no longer
+# via the degrade-safe get_live_job_keys wrapper), the table must actually EXIST for the happy-path tests
+# below to exercise a real empty read rather than accidentally relying on a "table missing" degrade.
+_PIN_SAQ_JOBS = (
+    text("DROP TABLE IF EXISTS saq_jobs"),
+    text("CREATE TABLE saq_jobs (key TEXT PRIMARY KEY, status TEXT NOT NULL)"),
+)
+
+
+async def _pin_saq_jobs(session: AsyncSession) -> None:
+    """Pin a module-controlled, empty ``saq_jobs`` table so the live-keys read has a real relation."""
+    for stmt in _PIN_SAQ_JOBS:
+        await session.execute(stmt)
+    await session.flush()
+
+
+async def _live_job(session: AsyncSession, key: str, *, status: str = "active") -> None:
+    """Register ``key`` as a LIVE broker row directly in the pinned ``saq_jobs`` table."""
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, :status)"), {"key": key, "status": status})
+    await session.flush()
+
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession]:
@@ -92,6 +117,7 @@ async def db_session() -> AsyncGenerator[AsyncSession]:
         if await session.get(Agent, _LEGACY_AGENT_ID) is None:
             session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
             await session.flush()
+        await _pin_saq_jobs(session)
         try:
             yield session
         finally:
@@ -230,15 +256,16 @@ async def test_force_skipped_stage_is_not_orphaned(db_session: AsyncSession) -> 
     assert counts["metadata"] == 0
 
 
-async def test_live_keyed_row_is_not_orphaned(db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A ledger row whose deterministic key is a LIVE saq_jobs key is still in flight -> excluded."""
+async def test_live_keyed_row_is_not_orphaned(db_session: AsyncSession) -> None:
+    """A ledger row whose deterministic key is a LIVE saq_jobs key is still in flight -> excluded.
+
+    phaze-xwaj: seeds a REAL ``saq_jobs`` row (the core now reads the table directly, raising, rather
+    than through the degrade-safe :func:`get_live_job_keys` wrapper -- a monkeypatch on that wrapper
+    would no longer be observed here).
+    """
     f = await _file(db_session)
     key = await _ledger(db_session, "analyze", f)
-
-    async def _fake_live(_session: AsyncSession) -> set[str]:
-        return {key}
-
-    monkeypatch.setattr("phaze.services.pipeline.get_live_job_keys", _fake_live)
+    await _live_job(db_session, key)
 
     counts = await get_stage_orphan_counts(db_session)
 
@@ -311,6 +338,39 @@ async def test_degrades_to_zero_and_session_stays_usable(db_session: AsyncSessio
 
     counts = await get_stage_orphan_counts(db_session)
 
+    assert counts == {"metadata": 0, "analyze": 0}
+
+    # The SAVEPOINT rollback must NOT have poisoned the outer transaction -- a follow-up read succeeds.
+    still_there = (await db_session.execute(select(SchedulingLedger.key))).scalars().all()
+    assert f"{STAGE_TO_FUNCTION['analyze']}:{f.id}" in still_there
+
+
+async def test_live_keys_read_failure_raises_from_the_core_instead_of_masquerading_as_empty(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-xwaj CORE REGRESSION: a failed live-keys read must propagate out of the RAISING core
+    (:func:`_compute_stage_orphan_counts`), not silently degrade to an empty live set that would
+    misclassify every genuinely in-flight ledger row as a phantom orphan.
+
+    Before the fix, ``_compute_stage_orphan_counts`` called the degrade-safe
+    :func:`get_live_job_keys` wrapper, whose own nested SAVEPOINT rollback un-aborted the enclosing
+    transaction on a live-keys failure -- letting the REST of the (genuinely raising) derivation go
+    on to "succeed" with ``live == set()``. Simulates that failure by pointing the module's
+    ``_LIVE_KEYS_SQL`` at a relation that does not exist, isolated to just that one read (the other
+    reads -- ``scheduling_ledger``, the done-sets, the cloud exclusions -- are untouched and would
+    otherwise succeed, which is exactly the silent-inflation shape this regression guards against).
+    """
+    f = await _file(db_session)
+    await _ledger(db_session, "analyze", f)  # a genuinely LIVE (in-flight) file, no live saq_jobs row seeded
+
+    monkeypatch.setattr("phaze.services.pipeline._LIVE_KEYS_SQL", text("SELECT key FROM nonexistent_saq_jobs_probe"))
+
+    with pytest.raises(Exception, match="nonexistent_saq_jobs_probe"):
+        await _compute_stage_orphan_counts(db_session)
+
+    # The swallowing public wrapper degrades to all-zero -- NEVER an inflated phantom-orphan count
+    # (which is what "live == set()" from a masqueraded failure would have produced: analyze == 1).
+    counts = await get_stage_orphan_counts(db_session)
     assert counts == {"metadata": 0, "analyze": 0}
 
     # The SAVEPOINT rollback must NOT have poisoned the outer transaction -- a follow-up read succeeds.

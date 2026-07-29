@@ -43,7 +43,7 @@ from phaze.services.pagination import (
 )
 from phaze.services.pipeline import get_analyze_files_page, get_analyze_working_set, get_pending_files_page
 
-from .test_pipeline import _backend_settings, _make_pipeline_file
+from .test_pipeline import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
 
 
 if TYPE_CHECKING:
@@ -310,6 +310,48 @@ async def test_analyze_paging_is_stable_when_the_sort_key_ties(session: AsyncSes
         f"a row was DUPLICATED across pages -- the ORDER BY lost its unique tiebreaker ({len(seen) - len(set(seen))} dupes)"
     )
     assert set(seen) == expected, f"a row was SKIPPED across pages -- {len(expected - set(seen))} missing of {len(expected)}"
+
+
+@pytest.mark.asyncio
+async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_file(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-wiz1 regression: a completed file re-enqueued for deepen (an active scheduling-ledger
+    row while ``analysis_completed_at`` stays set, per the migration-033 XOR check) must not appear
+    TWICE across a multi-page working set -- once on an active page, again in the completions window
+    appended to the final page.
+
+    The completions window's old Python ``seen`` dedup was built ONLY from the FINAL page's active
+    rows, so it structurally could not exclude an overlapping file that sorted onto an EARLIER page.
+    Here the deepened file is given the NEWEST ``created_at`` so it lands on PAGE 1 (active-order is
+    ``created_at DESC``), while 14 other partial-analysis files fill pages 1-2 -- forcing the
+    completions window (appended on page 2, the final page) to be exercised against an overlap that
+    is NOT on that final page.
+    """
+    from datetime import datetime, timedelta
+
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+
+    backlog = [_make_pipeline_file() for _ in range(14)]
+    session.add_all(backlog)
+    deepened = _make_pipeline_file()
+    session.add(deepened)
+    await session.flush()
+
+    # Naive datetimes: the test-DB create_all schema makes created_at/analysis_completed_at
+    # TIMESTAMP WITHOUT TIME ZONE.
+    now = datetime.now()
+    for i, f in enumerate(backlog):
+        f.created_at = now - timedelta(minutes=i + 1)  # type: ignore[assignment]
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, fine_windows_analyzed=1, fine_windows_total=10))
+    deepened.created_at = now  # type: ignore[assignment]  # newest -> sorts onto page 1
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=deepened.id, fine_windows_analyzed=10, fine_windows_total=10, analysis_completed_at=now))
+    await _seed_process_file_ledger(session, deepened)
+    await session.commit()
+
+    seen = await _walk_all_pages(lambda p: get_analyze_working_set(session, page=p, page_size=MIN_PAGE_SIZE), MIN_PAGE_SIZE)
+
+    dupes = [file_id for file_id in set(seen) if seen.count(file_id) > 1]
+    assert not dupes, f"deepen-in-flight completed file rendered {seen.count(dupes[0]) if dupes else 0}x across pages -- {dupes}"
+    assert str(deepened.id) in seen, "the deepened file must still appear (on its active page), just not a second time"
 
 
 @pytest.mark.asyncio

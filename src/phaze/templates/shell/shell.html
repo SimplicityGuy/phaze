@@ -256,7 +256,7 @@
          grid then re-emits aria-current + the selected ring for the matching card on every 5s swap. -->
     <div id="pipeline-stats"
          hx-get="/pipeline/stats"
-         hx-trigger="every 5s [document.visibilityState === 'visible']"
+         hx-trigger="every 5s [document.visibilityState === 'visible'], refresh"
          hx-vals='js:{lane: new URLSearchParams(location.search).get("lane")}'
          hx-swap="innerHTML"
          class="hidden"></div>
@@ -367,9 +367,16 @@
         // tick while the tab is backgrounded (htmx keeps the interval but skips the fetch — no
         // second loop). On return to foreground, fire ONE immediate refresh so the live values
         // catch up instead of sitting stale for up to the next 5s tick.
+        // phaze-ircc: fire the poll element's own `refresh` hx-trigger (via htmx.trigger) instead
+        // of a source-less htmx.ajax() call. htmx.ajax() with no `source` element substitutes
+        // document.body as the attribute-inheritance root (htmx 2.0.10 issueAjaxRequest), so the
+        // element's hx-vals (the selected `lane`) was silently dropped on every foreground-resume
+        // refresh -- htmx.trigger() dispatches through the element itself, so hx-vals (and any
+        // other hx-* the element declares) is honored exactly as the declarative 5s tick is.
         document.addEventListener('visibilitychange', function () {
-            if (!document.hidden && window.htmx && document.getElementById('pipeline-stats')) {
-                window.htmx.ajax('GET', '/pipeline/stats', { target: '#pipeline-stats', swap: 'innerHTML' });
+            const pollEl = document.getElementById('pipeline-stats');
+            if (!document.hidden && window.htmx && pollEl) {
+                window.htmx.trigger(pollEl, 'refresh');
             }
         });
     </script>

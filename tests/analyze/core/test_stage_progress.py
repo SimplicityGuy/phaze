@@ -115,23 +115,57 @@ async def test_scan_search_done_counts_tracklists_without_total(session: AsyncSe
 
 @pytest.mark.asyncio
 async def test_proposals_total_is_convergence_set(session: AsyncSession):
-    """proposals.total = files with BOTH metadata AND analysis (the convergence gate)."""
+    """proposals.total = files with BOTH metadata AND a COMPLETED analysis (the convergence gate).
+
+    phaze-nuyn: the analysis conjunct requires ``analysis_completed_at IS NOT NULL`` (DERIV-03),
+    matching ``get_proposal_pending_batches``'s ready-set exactly -- a bare analysis row (no
+    completion timestamp) must NOT count toward the denominator.
+    """
     both = _make_file(1)
     meta_only = _make_file(2)
     analysis_only = _make_file(3)
     session.add_all([both, meta_only, analysis_only])
     await session.flush()
     session.add(FileMetadata(id=uuid.uuid4(), file_id=both.id))
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=both.id, bpm=120.0))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=both.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
     session.add(FileMetadata(id=uuid.uuid4(), file_id=meta_only.id))
-    session.add(AnalysisResult(id=uuid.uuid4(), file_id=analysis_only.id, bpm=110.0))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=analysis_only.id, bpm=110.0, analysis_completed_at=datetime.now(UTC)))
     session.add(RenameProposal(id=uuid.uuid4(), file_id=both.id, proposed_filename="x.mp3", status=ProposalStatus.PENDING))
     await session.commit()
 
     progress = await get_stage_progress(session)
 
-    assert progress["proposals"]["total"] == 1  # only the file with BOTH metadata and analysis
+    assert progress["proposals"]["total"] == 1  # only the file with BOTH metadata and a completed analysis
     assert progress["proposals"]["done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_proposals_total_excludes_partial_and_failed_analysis_rows(session: AsyncSession):
+    """phaze-nuyn regression: a mid-flight partial row or a terminally-failed analyze row must
+    not inflate proposals.total -- neither is a file get_proposal_pending_batches will ever batch.
+    """
+    both_done = _make_file(1)
+    partial_in_flight = _make_file(2)
+    terminally_failed = _make_file(3)
+    session.add_all([both_done, partial_in_flight, terminally_failed])
+    await session.flush()
+
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=both_done.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=both_done.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
+
+    # D-03 upserts a partial analysis row at analysis START: NULL aggregates, completed_at NULL.
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=partial_in_flight.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=partial_in_flight.id, analysis_completed_at=None))
+
+    # A terminal analyze failure: failed_at set, analysis_completed_at NULL (ELIG-03, no auto-retry).
+    session.add(FileMetadata(id=uuid.uuid4(), file_id=terminally_failed.id))
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=terminally_failed.id, failed_at=datetime.now(UTC), analysis_completed_at=None))
+    await session.commit()
+
+    progress = await get_stage_progress(session)
+
+    assert progress["proposals"]["total"] == 1  # only both_done clears the convergence gate
+    assert progress["proposals"]["done"] == 0
 
 
 @pytest.mark.asyncio

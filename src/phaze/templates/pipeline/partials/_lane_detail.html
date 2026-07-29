@@ -44,7 +44,11 @@
     {% set _cap = lane.cap or 0 %}
     {% set _pct = ((lane.in_flight / _cap * 100) if _cap else 0) %}
     {% set _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct) %}
-    <div class="space-y-4{% if not lane.available %} opacity-60{% endif %}">
+    {# phaze-zxbh: data-lane-id stamps the identity of the lane THIS body actually renders, so
+       _detail_pane.html's onLoaded() can detect a late/mismatched response (the own-tick and the
+       row-click trigger both write into the shared #detail-pane from different elements) and
+       self-heal instead of silently pinning the pane to the wrong lane. #}
+    <div class="space-y-4{% if not lane.available %} opacity-60{% endif %}" data-lane-id="{{ lane.id }}">
         {# Header: kind glyph/color + id + RANK micro-label (reused from _lane_card.html). #}
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
@@ -139,6 +143,9 @@
              hx-trigger="every 5s"
              hx-target="#detail-pane"
              hx-swap="innerHTML"
+             {# phaze-zxbh: same sync group as the row trigger (_lane_card.html) -- a newer row
+                click aborts this own-tick's in-flight request instead of racing it to the swap. #}
+             hx-sync="#detail-pane:abort"
              x-data="{ armed: false }"
              x-init="$nextTick(() => { armed = true })"
              x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"></div>
@@ -146,7 +153,7 @@
 {% else %}
     {# Unknown/offline backend_id -> friendly empty state (T-88-03), never a 500. No own-tick: there is
        no lane id to poll; dismiss returns the pane to its resting state. #}
-    <div class="rounded-xl border border-amber-500/30 p-4 opacity-60">
+    <div class="rounded-xl border border-amber-500/30 p-4 opacity-60" data-lane-id="{{ backend_id }}">
         <p role="status" class="text-sm text-amber-600 dark:text-amber-400">Lane offline — no live queue data on this poll.</p>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">This lane is not in the live registry snapshot.</p>
     </div>
