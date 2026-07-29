@@ -10,7 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast as type_cast
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, text
+from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
 from sqlalchemy.orm import aliased
 import structlog
 
@@ -1550,6 +1550,21 @@ async def get_analyze_working_set(
                     await session.execute(
                         _analyze_files_select()
                         .where(AnalysisResult.analysis_completed_at.is_not(None))
+                        # phaze-wiz1: exclude anything the active section would also claim -- a
+                        # deepen-in-flight completed file (analysis_completed_at stays set through a
+                        # re-run per the migration-033 XOR check, while the re-run's enqueue recreates
+                        # the scheduling_ledger row / an active cloud_job) or an orphaned, never-cleared
+                        # ledger row on an already-completed file. The Python `seen` dedup below only
+                        # ever covered the FINAL page's active rows, which structurally cannot exclude
+                        # an overlapping file that sorted onto an earlier page -- excluding at the
+                        # query level (mirroring how _analyze_active_where already excludes completed
+                        # rows from the active section) is correct regardless of which page it landed on.
+                        # NULL-safe: _analyze_active_where()'s CloudJob.status disjunct is NULL (not
+                        # False) for the common case of no cloud_job row at all (a LEFT JOIN miss), so
+                        # a bare `~_analyze_active_where()` would evaluate to NULL -- and therefore
+                        # WHERE-exclude -- every ordinary completed local file. coalesce(..., false())
+                        # forces that NULL to False before negating.
+                        .where(~func.coalesce(_analyze_active_where(), false()))
                         .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
                         .limit(completions_limit)
                     )
