@@ -33,7 +33,7 @@ import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
-from phaze.services import kube_staging
+from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
@@ -227,6 +227,23 @@ async def startup(ctx: dict[str, Any]) -> None:
             await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
         except Exception:
             logger.warning("phaze.controller startup: could not clear stale LocalQueue-reachability flag; control plane boots regardless (D-05)")
+
+    # phaze-cws5: wire the KSTAGE-04/D-02 lifecycle backstop into production. Every comment in the S3
+    # staging pipeline (stage_file_to_s3's phaze-bbwx compensation, the reaper's post-commit cleanup,
+    # report_upload_failed's terminal cleanup) names ensure_bucket_lifecycle_ttl as "the eventual
+    # backstop" for a missed inline abort/delete -- but nothing ever called it, so it configured ZERO
+    # buckets in production (it was vulture-whitelisted as unused). Push it once per configured bucket
+    # at boot. Best-effort PER BUCKET (mirrors the LocalQueue probe above, D-05): a transient S3
+    # auth/network hiccup must never abort control-plane startup -- a failure here just means this
+    # boot's TTL push did not land, and the next restart retries the same idempotent upsert.
+    for bucket in control_cfg.buckets:
+        try:
+            await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+        except Exception:
+            logger.warning(
+                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
+                bucket_id=bucket.id,
+            )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
