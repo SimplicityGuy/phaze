@@ -48,6 +48,7 @@ from phaze.services.pipeline import (
     get_stage_progress,
     get_untracked_files,
 )
+from phaze.services.proposal_queries import get_proposal_stats
 from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
@@ -140,6 +141,15 @@ STAGE_PARTIALS: dict[str, str] = {
     # a STATIC string literal (T-57-01). This is the LAST of the six Review workspaces; every placeholder
     # is now superseded. Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
     "cue": "pipeline/partials/cue_workspace.html",
+    # phaze-vvmh: the Apply (Execute) stage -- the terminal node of "nothing moves without review,
+    # then execute", and the ONLY live caller of POST /execution/start. Its predecessor, the Execute
+    # Approved button in proposals/partials/stats_bar.html, rode inside an OOB fragment addressed to
+    # `#stats-bar`, an id the Phase-62 cutover deleted, so no served document has contained an
+    # execute trigger since. Approved proposals accumulated with no way to dispatch them from the UI.
+    # A STATIC string literal (T-57-01: `stage` is never spliced into a template path) that also acts
+    # as a dead-template-guard entry root. LAST key so the dict order matches the rail order: it
+    # closes the Review & Apply group, after the five review nodes it consumes the output of.
+    "apply": "pipeline/partials/apply_workspace.html",
 }
 
 
@@ -468,6 +478,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # NO enqueue, NO backend change) that returns [] on any DB error, so no router try/except is needed;
         # oob_counts stays False (Pitfall 5).
         context["cue_cards"] = await get_cue_review_cards(session)
+    elif stage == "apply":
+        # phaze-vvmh: the Apply workspace needs ONE read -- the aggregate proposal counts, in a single
+        # query (services/proposal_queries.get_proposal_stats). They drive the EXECUTE APPROVED
+        # button's enabled/disabled branch, its confirm copy, and the counter row that re-hosts the
+        # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
+        # query path; oob_counts stays False (Pitfall 5) like every other review stage.
+        context["stats"] = await get_proposal_stats(session)
 
     if wants_fragment(request):
         # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the
