@@ -2016,3 +2016,88 @@ async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_und
     # The load-bearing assertion: the failing bucket did NOT roll the durable spill back.
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
     assert await backend.in_flight_count(session) == 0  # the cap slot is genuinely released
+
+
+# === phaze-wa9x: the post-commit delete is generation-safe against a concurrent re-dispatch =============
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_delete_when_a_new_staging_cycle_claims_the_key_before_it_runs(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-wa9x: a re-dispatch that claims the SAME bucket/key between commit and delete must not be deleted.
+
+    ``delete_staged_object`` is keyed only by file_id; bucket and object key are deterministic and identical
+    across staging generations of the same file, so once the row is 'awaiting' a concurrent drain tick can
+    stage a FRESH object at the same key while a stalled delete is still in flight. Simulate the race inside
+    the (idempotent) ``abort_multipart_upload`` call: a concurrent cycle re-stages the file (fresh upload_id,
+    back to UPLOADING) before the reaper's delete runs. The re-read-before-delete guard must see the row is
+    no longer 'awaiting' with the observed upload_id and skip the delete entirely.
+    """
+    from sqlalchemy import update as sa_update
+
+    _stub_kube_available(monkeypatch)
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-old",
+    )
+
+    async def _restage_during_abort(*_args: Any, **_kwargs: Any) -> None:
+        # Simulate a concurrent stage cycle claiming the row: fresh upload_id, back to UPLOADING.
+        await session.execute(
+            sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.UPLOADING.value, upload_id="upload-new")
+        )
+        await session.commit()
+
+    abort = AsyncMock(side_effect=_restage_during_abort)
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # the spill itself is unaffected -- it already committed
+    assert abort.await_count == 1
+    assert delete.await_count == 0  # the fresh cycle's object must NOT be deleted
+    row = await _cloud_job_for(session, file_id)
+    assert row.status == CloudJobStatus.UPLOADING.value  # the new cycle's row survives untouched
+    assert row.upload_id == "upload-new"
+
+
+@pytest.mark.asyncio
+async def test_reap_still_deletes_when_no_new_cycle_has_claimed_the_key(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-wa9x: the re-read guard is not a regression -- an untouched 'awaiting' row still gets cleaned up.
+
+    Companion to the race test: when nothing claims the row between commit and delete (the common case),
+    the re-read observes the SAME status/upload_id the reaper itself just wrote and the delete proceeds.
+    """
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-only",
+    )
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1
+    assert abort.await_count == 1
+    assert delete.await_count == 1  # no race -> the (idempotent) cleanup still runs
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value

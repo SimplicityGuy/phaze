@@ -788,7 +788,20 @@ class KueueBackend(_BaseBackend):
                     try:
                         if upload_id:
                             await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-                        await s3_staging.delete_staged_object(file_id, bucket)
+                        # phaze-wa9x: re-read the row IMMEDIATELY before the delete, outside the lock we just
+                        # released. ``delete_staged_object`` is keyed only by file_id, and the bucket/key are
+                        # identical for every staging generation of this file -- once the row is 'awaiting', a
+                        # concurrent drain tick can re-dispatch it and stage a FRESH object at the SAME key
+                        # while this delete is still in flight (a stalled-but-eventually-successful S3 DELETE).
+                        # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
+                        # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
+                        # proves no new cycle has claimed the key -- only then is the delete safe.
+                        current = (
+                            await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
+                        ).one_or_none()
+                        await session.rollback()  # read-only probe; release its implicit tx either way
+                        if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
+                            await s3_staging.delete_staged_object(file_id, bucket)
                     except Exception:
                         logger.warning(
                             "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "
