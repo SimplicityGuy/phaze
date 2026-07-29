@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+from mutagen.id3 import ID3, TCON, TDRC, TRCK
 from mutagen.mp3 import MP3
 import pytest
 from sqlalchemy import select
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.services.tag_writer import (
     _extract_before_tags,
+    _mp4_track_tuple,
     _write_mp4,
     _write_vorbis,
     execute_tag_write,
@@ -253,6 +255,60 @@ class TestExtractBeforeTags:
         assert set(snapshot) == {"artist", "title", "album", "year", "genre", "track_number"}
 
 
+class TestExtractBeforeTagsRawFidelity:
+    """phaze-2zl7: year/track_number/genre must snapshot the RAW on-disk text, not the normalized
+    (search-oriented) parse -- a full release date, a track's total, and every genre value.
+    """
+
+    def test_track_number_preserves_the_total(self, mp3_file: Path) -> None:
+        """ "3/12" must round-trip whole, not truncate to "3" (extract_tags._parse_track's rule)."""
+        audio = ID3(str(mp3_file))
+        audio.add(TRCK(encoding=3, text=["3/12"]))
+        audio.save()
+
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot["track_number"] == "3/12"
+
+    def test_year_preserves_the_full_release_date(self, mp3_file: Path) -> None:
+        """ "2024-03-15" must round-trip whole, not truncate to 2024 (extract_tags._parse_year's rule)."""
+        audio = ID3(str(mp3_file))
+        audio.add(TDRC(encoding=3, text=["2024-03-15"]))
+        audio.save()
+
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot["year"] == "2024-03-15"
+
+    def test_genre_preserves_every_value_not_just_the_first(self, mp3_file: Path) -> None:
+        """A multi-value TCON frame must round-trip all of it, not collapse to _first_str's first."""
+        audio = ID3(str(mp3_file))
+        audio.add(TCON(encoding=3, text=["House", "Techno"]))
+        audio.save()
+
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot["genre"] == "House; Techno"
+
+    def test_absent_fields_still_fall_back_to_none(self, mp3_file: Path) -> None:
+        """No raw text on disk -> the normalized (also None) value is used, not a stray raw value."""
+        snapshot = _extract_before_tags(str(mp3_file))
+        assert snapshot["year"] is None
+        assert snapshot["track_number"] is None
+        assert snapshot["genre"] is None
+
+
+class TestMp4TrackTuple:
+    """phaze-2zl7: the MP4 ``trkn`` atom writer must accept the raw "N/total" undo text."""
+
+    def test_plain_int_writes_zero_total(self) -> None:
+        """Every FORWARD write (compute_proposed_tags has no track-total source) is unchanged."""
+        assert _mp4_track_tuple(5) == (5, 0)
+
+    def test_raw_fraction_text_restores_the_total(self) -> None:
+        assert _mp4_track_tuple("3/12") == (3, 12)
+
+    def test_raw_text_without_a_slash_is_a_plain_number(self) -> None:
+        assert _mp4_track_tuple("7") == (7, 0)
+
+
 class TestUndoDeletesAddedTags:
     """phaze-52qd end-to-end: reverting a write that ADDED tags removes them from disk."""
 
@@ -287,6 +343,35 @@ class TestUndoDeletesAddedTags:
         audio = MP3(str(mp3_file))
         assert "TPE1" not in audio.tags
         assert "TALB" not in audio.tags
+
+    @pytest.mark.asyncio
+    async def test_undo_restores_raw_track_and_date_fidelity(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
+        """phaze-2zl7 end-to-end: undo restores the FULL track total and release date -- not the
+        normalized 4-digit year / truncated track number -- and does not falsely toast a discrepancy.
+        """
+        audio = ID3(str(mp3_file))
+        audio.add(TRCK(encoding=3, text=["3/12"]))
+        audio.add(TDRC(encoding=3, text=["2024-03-15"]))
+        audio.save()
+
+        fr = await make_file()
+        fr.current_path = str(mp3_file)
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            write_log = await execute_tag_write(session, fr, {"artist": "New Artist"}, "tracklist")
+        assert write_log.status == TagWriteStatus.COMPLETED
+        assert write_log.before_tags["track_number"] == "3/12"
+        assert write_log.before_tags["year"] == "2024-03-15"
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            undo_log = await execute_tag_write(session, fr, write_log.before_tags, "undo")
+
+        assert undo_log.status == TagWriteStatus.COMPLETED, (
+            f"undo must not report a discrepancy for a faithful raw-text restore: {undo_log.discrepancies}"
+        )
+        audio = MP3(str(mp3_file))
+        assert str(audio.tags["TRCK"]) == "3/12", "the track TOTAL must survive the undo round trip"
+        assert str(audio.tags["TDRC"]) == "2024-03-15", "the full release date must survive the undo round trip"
 
     def test_verify_raises_on_unreadable_file(self, tmp_path: Path) -> None:
         """phaze-vq3g: an unreadable/absent file on re-read raises TagReadError, not a false discrepancy.
@@ -408,7 +493,17 @@ class TestExecuteTagWrite:
             patch("phaze.services.tag_writer.write_tags") as mock_write,
             patch("phaze.services.tag_writer.verify_write", return_value={}),
         ):
-            mock_extract.return_value = MagicMock(artist=None, title=None, album=None, year=None, genre=None, track_number=None)
+            mock_extract.return_value = MagicMock(
+                artist=None,
+                title=None,
+                album=None,
+                year=None,
+                genre=None,
+                track_number=None,
+                raw_year=None,
+                raw_track_number=None,
+                raw_genre=None,
+            )
             await execute_tag_write(session, fr, {"artist": "Test"}, "tracklist")
             mock_write.assert_called_once_with("/dest/music.mp3", {"artist": "Test"})
 
