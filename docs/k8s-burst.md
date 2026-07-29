@@ -489,7 +489,9 @@ stringData:
 
 The one-shot pod needs more than the file id to run: its entrypoint builds the agent settings and
 calls back to the control plane, so it must know its role, where the control-plane API lives, and
-where the analysis models are on disk. phaze sources that **static, per-deployment** env into the
+where the analysis models are on disk. (It also needs to know it is a `"compute"` agent — see the
+`PHAZE_AGENT_KIND` bullet below; that value is code-injected, not part of this ConfigMap.) phaze
+sources that **static, per-deployment** env into the
 suspended Job's analyze container via `envFrom` from an operator-created `core/v1` ConfigMap —
 named **by name only** (the backend's `[backends.kube].env_configmap_name`, default
 `phaze-agent-env`); **phaze does not create it**.
@@ -526,6 +528,15 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   needed; the same Secret that backs the callback token backs the pod env.
 - `PHAZE_JOB_FILE_ID` is **not** in this ConfigMap and is **not** operator-managed — it varies per
   file, so phaze injects it **per-Job at submit time** into the container env directly.
+- `PHAZE_AGENT_KIND` is likewise **not** in this ConfigMap and needs **no operator action**. Every
+  one-shot analyze pod is a `"compute"` agent (it owns no scan roots — it analyzes exactly the one
+  file named by `PHAZE_JOB_FILE_ID` and calls back), and `AgentSettings.kind` defaults to
+  `"fileserver"`; without `PHAZE_AGENT_KIND=compute` the pod fails settings validation before it can
+  call back at all (phaze-4xks). `build_job_manifest` code-injects the literal `compute` value into
+  the container `env` alongside `PHAZE_JOB_FILE_ID` and `PHAZE_AGENT_CA_FILE`, so it is present
+  regardless of what this ConfigMap carries. Do **not** add `PHAZE_AGENT_KIND` to the ConfigMap
+  above — the code-injected value always wins on conflict (`env` overrides `envFrom` of the same
+  name), so a ConfigMap entry would be silent, confusing dead weight, not a second source of truth.
 
 > If you name the ConfigMap or the env Secret something other than the defaults, set this
 > backend's `[backends.kube].env_configmap_name` / `env_secret_name` to match (mirrors the
