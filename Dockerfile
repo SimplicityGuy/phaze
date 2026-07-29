@@ -76,13 +76,21 @@ WORKDIR /app
 # psycopg[binary] bundles its own libpq, but libpq5 is a belt-and-suspenders fallback for
 # the pure-Python psycopg path — without a libpq backend, `import phaze.main` crash-loops
 # with `ImportError: no pq wrapper available` (the v4.1.0 regression).
+# rsync + openssh-client (phaze-w64q): the `io` lane's `push_file` task
+# (src/phaze/tasks/push.py) shells out to `rsync -e "ssh -i …"` for the
+# cloud-burst push pipeline (docker-compose.agent.yml worker-io). Phase 50/51
+# assumed these binaries would be provisioned on the sending image but never
+# added them — every push terminalized with FileNotFoundError. The `command -v`
+# assertion below turns a future slimming regression into a build failure
+# instead of a silent per-file runtime failure.
 # DL3008: versions are intentionally unpinned — Debian-slim apt package versions
 # shift on every base-image refresh and pinning them would break builds on each
 # security update. The base image tag controls the package snapshot instead.
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v rsync ssh
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /bin/

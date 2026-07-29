@@ -298,8 +298,11 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # uncommitted partial write, so a dispatch that raised AFTER a DB mutation can never leave a
             # committed limbo/phantom row -- and report every candidate held; they stay AWAITING_CLOUD.
             # phaze-grzo: drop the parked s3_upload enqueues too -- firing a job whose cloud_job upsert
-            # was just rolled back is the ORPHANING half of the enqueue-before-commit hole.
-            cloud_staging.drop_pending_s3_enqueues(session)
+            # was just rolled back is the ORPHANING half of the enqueue-before-commit hole. phaze-cws5:
+            # this is now ALSO the only remaining chance to abort the multipart(s) those dropped
+            # enqueues named -- once the rollback below completes their upload_id was never persisted
+            # anywhere, so nothing else can ever find them to clean up.
+            await cloud_staging.drop_pending_s3_enqueues(session)
             logger.warning("stage_cloud_window: tick aborted by an unexpected error -> rolling back, holding all", exc_info=True)
             await session.rollback()
             return {"staged": 0, "skipped": len(candidates)}

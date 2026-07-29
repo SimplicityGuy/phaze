@@ -41,6 +41,7 @@ import contextlib
 import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any
 
 import redis.asyncio as redis_async
@@ -70,18 +71,37 @@ from phaze.tasks.scan import scan_directory
 logger = structlog.get_logger(__name__)
 
 
-def _sweep_scratch(scratch_dir: Path) -> None:
-    """Remove every file (and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
+def _sweep_scratch(scratch_dir: Path, min_age_sec: float) -> None:
+    """Remove stale entries (files and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
 
-    The compute-only startup janitor's worker. Bounds scratch disk to the in-flight set: a
-    hard-killed worker can leave a half-pushed file or a ``.rsync-partial`` directory behind, and
-    any file still genuinely needed is re-pushed by the staging cron (the deterministic
-    ``push_file:<file_id>`` key + FileState window make this safe). Tolerates a missing dir so a
-    fresh compute host (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the
-    module Postgres-free (tests/shared/core/test_task_split.py)."""
+    The compute-only startup janitor's worker. Bounds scratch disk to entries that can no longer
+    be live work: a hard-killed worker can leave a half-pushed file or a ``.rsync-partial``
+    directory behind. The original docstring's safety claim -- "any file still genuinely needed is
+    re-pushed by the staging cron" -- predates Phase 36's move to a durable Postgres SAQ broker:
+    queued/active ``process_file`` jobs now SURVIVE a worker restart and each pins ``scratch_path``
+    to a file this sweep would otherwise delete out from under it (phaze-8z4u), and the staging
+    cron never re-pushes an already-PUSHED file regardless. Since this module MUST NOT import
+    phaze.database/SQLAlchemy (D-25 import boundary, module docstring), there is no cheap way to
+    ask "is a durable job still claiming this path?" -- so instead an entry is only swept once its
+    mtime is older than ``min_age_sec``, a ceiling generous enough to outlast both the push
+    transport and one full in-place SAQ retry of the analysis. A young entry is left for the NEXT
+    startup sweep rather than treated as leaked. Tolerates a missing dir so a fresh compute host
+    (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the module Postgres-free
+    (tests/shared/core/test_task_split.py)."""
     if not scratch_dir.exists():
         return
+    now = time.time()
     for entry in scratch_dir.iterdir():
+        try:
+            age_sec = now - entry.stat().st_mtime
+        except OSError:
+            # Vanished between iterdir() and stat() (e.g. raced by the job that owns it) --
+            # nothing to sweep.
+            continue
+        if age_sec < min_age_sec:
+            # Too young to safely assume orphaned -- may be a live in-flight push or a durable
+            # queued/active process_file job's scratch_path (phaze-8z4u). Leave it for a later sweep.
+            continue
         if entry.is_dir():
             shutil.rmtree(entry, ignore_errors=True)
         else:
@@ -94,9 +114,14 @@ async def _maybe_sweep_scratch(cfg: AgentSettings) -> None:
     Sweeps ONLY when ``cfg.kind == "compute"`` AND a ``cloud_scratch_dir`` is configured. The
     file-server agent runs this SAME module (zero compute-specific worker code) and owns no scratch
     dir, so it must NOT sweep. Runs off the event loop via ``asyncio.to_thread`` (parity with the
-    ``ensure_models_present`` startup step)."""
+    ``ensure_models_present`` startup step). The age ceiling (phaze-8z4u) is
+    ``push_timeout_sec + analysis_inner_timeout_sec`` -- generous enough to outlast a single push
+    transfer PLUS one full analysis attempt, the longest a legitimately-live scratch entry should
+    go unmodified.
+    """
     if cfg.kind == "compute" and cfg.cloud_scratch_dir:
-        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir))
+        min_age_sec = cfg.push_timeout_sec + cfg.analysis_inner_timeout_sec
+        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir), min_age_sec)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
