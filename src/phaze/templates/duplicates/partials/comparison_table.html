@@ -43,7 +43,7 @@
                                 {{ file.file_type }}
                             </td>
                             <td class="px-3 py-3 {% if best_values.get('bitrate') == file.id %}text-green-700 dark:text-green-400 font-semibold{% endif %}">
-                                {% if file.bitrate %}{{ file.bitrate }}kbps{% else %}-{% endif %}
+                                {% if file.bitrate %}{{ file.bitrate // 1000 }}kbps{% else %}-{% endif %}
                             </td>
                             <td class="px-3 py-3 {% if best_values.get('duration') == file.id %}text-green-700 dark:text-green-400 font-semibold{% endif %}">
                                 {% if file.duration %}{{ "%.1f" | format(file.duration) }}s{% else %}-{% endif %}

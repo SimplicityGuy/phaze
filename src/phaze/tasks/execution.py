@@ -54,21 +54,31 @@ success-reporting path used by a first-time success -- already idempotent via th
 ``execution_log_id``/``progress_request_id`` -- which also self-heals ``current_path`` (the
 success PATCH sets it from ``str(proposed)``).
 
-Cross-filesystem crash-state model (phaze-k23z / phaze-q2lg / phaze-qx8z): a cross-fs move is a
-non-atomic copy-then-delete, so it has TWO durable committed states the executor must treat
-coherently:
+Cross-filesystem crash-state model (phaze-k23z / phaze-q2lg / phaze-qx8z / phaze-i7jo): a cross-fs
+move is a non-atomic copy-then-delete, so it has TWO durable committed states the executor must
+treat coherently:
 1. Copy committed, ``original`` still present (only ``original.unlink()`` pending). Produced by a
    live ``unlink()`` OSError (read-only source mount / busy inode -- phaze-q2lg) or a hard worker
    kill in the fsync->unlink window (phaze-qx8z). BOTH files exist; ``proposed`` is a distinct
    inode from ``original`` (different filesystem), so ``_is_same_file`` cannot match it. This is
-   NOT a collision: ``_destination_is_committed_copy`` confirms byte identity (against the supplied
-   hash, else by hashing ``original``) and the move completes FORWARD -- delete ``original``, report
-   executed -- rather than re-copying the multi-GB file or misfiring the phaze-yu2e clobber guard.
+   NOT a collision: the move completes FORWARD -- delete ``original``, report executed -- rather
+   than re-copying the multi-GB file or misfiring the phaze-yu2e clobber guard. phaze-i7jo:
+   byte-identity ALONE (``_destination_is_committed_copy``) is NOT sufficient evidence of this
+   state -- phaze is a dedup tool, so an archive full of exact duplicates means a DIFFERENT
+   proposal's already-completed move can occupy ``proposed`` with content identical to THIS
+   proposal's ``original``. Content identity is corroborating evidence only when paired with a
+   per-proposal marker (``_committed_copy_marker_path``, a sibling file named after this exact
+   ``proposal_id``) written right after ``_atomic_cross_fs_copy`` returns and before
+   ``original.unlink()`` -- i.e. proof that THIS proposal, not some other duplicate's, previously
+   committed a copy to this destination. Absent that marker, the occupied destination is treated as
+   a genuine (if content-identical) collision and refused via phaze-yu2e's ``FileExistsError``,
+   never silently deleting a live duplicate's source.
 2. Fully moved, ``original`` gone + ``proposed`` present -- the phaze-ebpt already-moved case above.
 The copy itself is atomic at the destination (``_atomic_cross_fs_copy`` streams to a temp sibling
 then ``Path.replace``s it -- phaze-k23z), so a copy that ABORTS mid-stream leaves neither a partial
 file at ``proposed`` nor state (1); ``original`` is never unlinked until a full copy lands, so no
-path here loses data. A genuinely foreign file at ``proposed`` (hash mismatch) is still refused.
+path here loses data. A genuinely foreign file at ``proposed`` (hash mismatch), or a byte-identical
+one this proposal never itself started copying to (no marker), is still refused.
 
 NOTE on schema mapping: Phase 25's ExecutionLog schema is per-proposal (one row per file op),
 not per-batch. Plan 11 invariants (one POST at start, per-proposal state PATCH, one PATCH at
@@ -164,6 +174,28 @@ _COPY_CHUNK_BYTES = 16 * 1024 * 1024
 # replace stays within one filesystem and is atomic.
 _COPY_TMP_SUFFIX = ".phaze-tmp"
 
+# phaze-i7jo: suffix for the per-PROPOSAL sibling marker that corroborates a cross-fs
+# "committed copy, pending unlink" residue as THIS proposal's own prior attempt, not a
+# byte-identical duplicate's already-completed move landing on the same destination.
+# The marker filename embeds the proposal_id (see `_committed_copy_marker_path`), so two
+# different proposals racing/replaying against the same destination never share one.
+_COMMIT_MARKER_SUFFIX = ".phaze-committed"
+
+
+def _committed_copy_marker_path(proposed: Path, proposal_id: uuid.UUID) -> Path:
+    """Sibling marker path proving `proposal_id` itself previously committed a copy to `proposed`.
+
+    phaze-i7jo: written right after ``_atomic_cross_fs_copy`` durably lands the copy at
+    `proposed` and before ``original.unlink()`` -- i.e. exactly the crash window
+    ``_destination_is_committed_copy`` exists to recognize. Binding the marker name to
+    ``proposal_id`` (rather than a bare flag file) is what makes the corroboration
+    per-proposal: a DIFFERENT proposal (e.g. a byte-identical duplicate's own move that
+    already completed to this same destination) never wrote a marker under ITS proposal_id
+    at this path, so it cannot mistake the other proposal's residue for its own -- content
+    identity alone stops being sufficient evidence of a resumable move.
+    """
+    return proposed.with_name(f"{proposed.name}{_COMMIT_MARKER_SUFFIX}.{proposal_id}")
+
 
 def _same_filesystem(src: Path, dst_dir: Path) -> bool:
     """True when `src` and `dst_dir` live on the same filesystem (matching st_dev).
@@ -204,14 +236,18 @@ def _destination_is_committed_copy(original: Path, proposed: Path, expected_hash
     from `original` (different filesystem => different st_dev/st_ino, so
     :func:`_is_same_file` is always False across the mount boundary).
 
-    A retry/replay must distinguish that recoverable state (finish the move by
-    deleting `original`) from a genuine collision -- an UNRELATED file that
-    legitimately occupies the destination, which phaze-yu2e must still refuse to
-    clobber. Content identity is the discriminator: prefer the caller-supplied
+    phaze-i7jo: content identity is necessary but, on its own, is NOT SUFFICIENT
+    evidence that `proposed` is THIS proposal's own residue -- phaze is a dedup
+    tool, so an archive full of exact duplicates means a byte-identical `proposed`
+    can just as easily be a DIFFERENT proposal's already-completed move to the
+    same destination. This function answers only the content-identity half of the
+    question; the caller MUST additionally require ``_committed_copy_marker_path``
+    (this exact ``proposal_id``'s own marker) to exist before treating a positive
+    result here as authorization to delete `original` -- see the module docstring's
+    "Cross-filesystem crash-state model". Prefer the caller-supplied
     ``expected_hash`` (the hash of the original content) when present -- the
     original was already verified against it -- otherwise hash `original`
-    directly. Only a proven byte-for-byte match authorizes deleting `original`,
-    so a foreign file at the destination is never destroyed.
+    directly.
     """
     proposed_hash = _sha256_of_file(proposed)
     if expected_hash is not None:
@@ -408,21 +444,33 @@ async def _execute_one(
                 # cross-fs attempt interrupted between the committed copy and the
                 # pending ``original.unlink()`` (a hard worker kill; or a live
                 # unlink() OSError, phaze-q2lg). Across a mount boundary
-                # ``_is_same_file`` can never confirm that residue (st_dev differs),
-                # so before treating it as a collision, check content identity: if
-                # `proposed` is a byte-identical copy of `original`, this is a
-                # resumable move -- skip the (already-done) copy and complete forward
-                # by deleting `original`, instead of misfiring FileExistsError and
-                # flipping an already-succeeded move to FAILED while leaving the file
-                # duplicated. A genuinely foreign file (hash mismatch) is still
-                # refused, preserving the phaze-yu2e no-clobber guarantee.
+                # ``_is_same_file`` can never confirm that residue (st_dev differs).
+                #
+                # phaze-i7jo: content identity alone used to be trusted as proof of that
+                # residue, but phaze is a dedup tool -- an archive full of exact
+                # duplicates means a byte-identical `proposed` can be a DIFFERENT
+                # proposal's own already-completed move to this same destination, not
+                # THIS proposal's. Require BOTH: (a) this exact proposal's own commit
+                # marker (`_committed_copy_marker_path`), written right after THIS
+                # proposal's own prior `_atomic_cross_fs_copy` call returned -- proof the
+                # residue is self-authored, not another duplicate's -- and (b) content
+                # identity (`_destination_is_committed_copy`) as before. Either check
+                # failing falls through to the phaze-yu2e no-clobber refusal: a
+                # byte-identical duplicate at the destination with no marker of ITS OWN
+                # fails loudly instead of silently deleting this proposal's source.
                 # phaze-timy: _destination_is_committed_copy hashes both `proposed` and
                 # (absent a supplied hash) `original` -- multi-GB streaming reads. Offload
                 # so the identity check does not freeze the meta-lane event loop. The
                 # subsequent original.unlink() is a cheap syscall and stays inline.
-                if not same_fs and await asyncio.to_thread(_destination_is_committed_copy, original, proposed, item.sha256_hash):
+                own_marker = _committed_copy_marker_path(proposed, item.proposal_id)
+                if (
+                    not same_fs
+                    and own_marker.exists()
+                    and await asyncio.to_thread(_destination_is_committed_copy, original, proposed, item.sha256_hash)
+                ):
                     current_step = "delete"
                     original.unlink()
+                    own_marker.unlink(missing_ok=True)
                 else:
                     msg = f"destination already exists, refusing to overwrite: {proposed}"
                     raise FileExistsError(msg)
@@ -446,9 +494,18 @@ async def _execute_one(
                 # in the (awaited) window between copy and unlink lands in the recoverable
                 # "copy committed, original present" state the replay logic completes forward.
                 await asyncio.to_thread(_atomic_cross_fs_copy, original, proposed)
+                # phaze-i7jo: write THIS proposal's own commit marker now that the copy is
+                # durably landed at `proposed` -- before the unlink, so a crash in the
+                # window below leaves corroborating evidence a replay can trust (see the
+                # module docstring's "Cross-filesystem crash-state model"). A cheap touch,
+                # kept inline like the unlink it precedes.
+                _committed_copy_marker_path(proposed, item.proposal_id).write_text(str(item.proposal_id))
                 # 5. Delete the original (a cross-filesystem copy leaves it in place).
                 current_step = "delete"
                 original.unlink()
+                # The move completed in full within this same call -- the marker's only
+                # job was to survive a crash between the two lines above; clean it up.
+                _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
 
         # 6a. PATCH execution log to completed
         try:

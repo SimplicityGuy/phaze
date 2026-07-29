@@ -103,7 +103,8 @@ def test_format_size_edges() -> None:
 
 
 def test_format_quality_with_and_without_bitrate() -> None:
-    assert _format_quality({"file_size": 22_400_000, "bitrate": 320}).startswith("320 kbps · ")
+    # phaze-iw2k: bitrate is stored in BITS per second; _format_quality divides by 1000 for display.
+    assert _format_quality({"file_size": 22_400_000, "bitrate": 320_000}).startswith("320 kbps · ")
     assert "kbps" not in _format_quality({"file_size": 22_400_000})  # covers the no-bitrate branch
 
 
