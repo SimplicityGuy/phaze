@@ -24,10 +24,14 @@ token-vs-work ordering below them (stages 4-6):
      silently lost them on the retry). A duplicate request_id applies nothing
      (Stripe-style idempotency; D-15); a reaped batch applies nothing (phaze-pyv3).
   6. If ``sub_batch_terminal`` is True, promote ``status`` to ``"complete"`` /
-     ``"complete_with_errors"`` when ``subjobs_completed == subjobs_expected`` (D-07
+     ``"complete_with_errors"`` once ``subjobs_completed >= subjobs_expected`` (D-07
      final clause). Runs even on a deduped replay so a crash between the atomic
      apply and the promotion cannot strand a terminal batch at ``"running"`` on retry
-     (the promotion is idempotent).
+     (the promotion is idempotent). phaze-a6t8 folded this stage INTO the stage 4/5
+     script -- apply and promote are one atomic span, so no concurrent sub-job can
+     interleave its increment between them -- and relaxed the predicate from exact
+     equality to a ``>=`` threshold, so an overshoot promotes instead of wedging the
+     batch (and the ``exec:active`` sentinel) until the 24h TTL.
 
 This module deliberately omits ``from __future__ import annotations`` so
 FastAPI can resolve ``Annotated[redis_async.Redis, Depends(_get_redis)]`` at
@@ -58,7 +62,16 @@ router = APIRouter(prefix="/api/internal/agent/exec-batches", tags=["agent-inter
 
 
 _REQ_PREFIX = "exec_progress_req:"
-_TTL_SECONDS = 3600  # 1-hour idempotency window (D-15)
+
+# phaze-a6t8: the D-15 dedup window MUST cover the whole life of the batch it protects, not a
+# shorter slice of it. This was 3600 (1h) while ``exec:{batch_id}`` lives 86400 (24h) and the
+# agent's ``request_id`` is persisted in the SAQ job ``meta`` precisely so an arbitrarily-delayed
+# requeue replays with the SAME id. A replay landing more than an hour after the original found
+# ``EXISTS(marker) == 0`` and re-applied the FULL increment set -- including the terminal
+# ``subjobs_completed`` -- so the D-15 contract silently lapsed exactly when it was needed most
+# (a long backoff / evicted-pod requeue is the only way a replay happens at all). Pinned to the
+# batch hash's own TTL so the marker cannot outlive, or under-live, the counters it guards.
+_TTL_SECONDS = 86400  # 24-hour idempotency window -- matches the exec:{batch_id} hash TTL (D-15)
 
 # phaze-fa2p: the single-dispatch sentinel. ``routers/execution.start_execution`` claims this key
 # with ``SET NX`` before seeding/enqueuing a batch so a concurrent or repeated POST cannot
@@ -84,22 +97,42 @@ ACTIVE_DISPATCH_KEY = "exec:active"
 # (``GET == ARGV[1]``), so a newer dispatch that already re-claimed the sentinel is never cleared.
 # ``KEYS[2]``/``ARGV[1]`` are optional: a caller that passes only ``keys=[key]`` (numkeys=1) leaves
 # ``KEYS[2]`` nil and the release block is skipped, keeping the script backward compatible.
-_PROMOTE_STATUS_LUA = """
-local key = KEYS[1]
-if redis.call('EXISTS', key) == 0 then return 0 end
-local sc = tonumber(redis.call('HGET', key, 'subjobs_completed') or '0')
-local se = tonumber(redis.call('HGET', key, 'subjobs_expected') or '0')
-if sc ~= se then return 0 end
-local failed = tonumber(redis.call('HGET', key, 'failed') or '0')
-local new_status = (failed == 0) and 'complete' or 'complete_with_errors'
-redis.call('HSET', key, 'status', new_status)
-local active_key = KEYS[2]
-local batch_id = ARGV[1]
-if active_key and active_key ~= '' and batch_id and redis.call('GET', active_key) == batch_id then
-  redis.call('DEL', active_key)
+#
+# phaze-a6t8: the predicate is ``sc < se`` (a THRESHOLD), not the original ``sc ~= se`` (exact
+# equality). Exact equality made every overshoot PERMANENT: any route that drives
+# ``subjobs_completed`` past ``subjobs_expected`` -- a duplicate terminal event whose dedup marker
+# had lapsed, or a ``subjobs_expected`` lowered by the phaze-kxsb reconcile after a sub-job already
+# reported -- left ``sc > se`` forever, so no later POST could ever promote the batch and the
+# ``exec:active`` sentinel it releases was held until its 24h TTL. Counting PAST the target is
+# still "every sub-job reported"; the batch is terminal and must say so. Under-counting
+# (``sc < se``) remains the only state that legitimately blocks promotion.
+#
+# Shared as a Lua FUNCTION rather than duplicated text because two scripts promote (this one, for
+# the dispatch-side reconcile in ``routers/execution.py``, and ``_APPLY_INCREMENTS_LUA`` below,
+# which folds the promotion into the SAME round-trip as the counter apply). One definition means
+# the predicate cannot drift between them.
+_PROMOTE_LUA_FN = """
+local function phaze_promote(key, active_key, batch_id)
+  if redis.call('EXISTS', key) == 0 then return 0 end
+  local sc = tonumber(redis.call('HGET', key, 'subjobs_completed') or '0')
+  local se = tonumber(redis.call('HGET', key, 'subjobs_expected') or '0')
+  if sc < se then return 0 end
+  local failed = tonumber(redis.call('HGET', key, 'failed') or '0')
+  local new_status = (failed == 0) and 'complete' or 'complete_with_errors'
+  redis.call('HSET', key, 'status', new_status)
+  if active_key and active_key ~= '' and batch_id and redis.call('GET', active_key) == batch_id then
+    redis.call('DEL', active_key)
+  end
+  return 1
 end
-return 1
 """
+
+_PROMOTE_STATUS_LUA = (
+    _PROMOTE_LUA_FN
+    + """
+return phaze_promote(KEYS[1], KEYS[2], ARGV[1])
+"""
+)
 
 # redis-py computes the script SHA when ``register_script`` is called. There is
 # no Redis handle at import time, so register lazily on first use and cache the
@@ -130,21 +163,42 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
 # TTL-less, status-less phantom hash forever). The apply is a no-op when the hash is already gone,
 # and the marker is NOT claimed for a dead batch (nothing to protect against a replay of).
 #
-# KEYS[1] = exec:{batch_id}; KEYS[2] = exec_progress_req:{request_id}. ARGV[1] = marker TTL seconds;
-# ARGV[2..] is a flat [field, by, field, by, ...] list; the caller appends ('subjobs_completed', 1)
-# when the sub-batch is terminal. Returns 1 if applied+claimed, 0 if the hash was already gone
-# (pyv3), -1 if the request was a duplicate (marker already present -> nothing applied).
-_APPLY_INCREMENTS_LUA = """
-if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
+# phaze-a6t8: the terminal PROMOTION is folded into this same script, so the apply and the promote
+# are ONE atomic round-trip instead of two. Previously stage 6 promoted from a separate EVAL, and
+# the gap between them was itself a wedge: with two terminal POSTs in flight, both could apply
+# their ``subjobs_completed`` increment before either ran its promote, so BOTH promotes observed
+# the same post-increment total and -- under the old exact-equality predicate -- neither matched.
+# Relaxing the predicate to ``sc < se`` (above) makes that interleave promote instead of wedge;
+# folding it in here removes the interleave entirely, so the batch promotes on the FIRST terminal
+# POST that completes the count rather than depending on which read wins a race.
+#
+# KEYS[1] = exec:{batch_id}; KEYS[2] = exec_progress_req:{request_id}; KEYS[3] = the exec:active
+# sentinel (pass '' to skip the release). ARGV[1] = marker TTL seconds; ARGV[2] = '1' when the
+# sub-batch is terminal (else ''); ARGV[3] = this batch_id (for the sentinel's GET==batch_id CAS);
+# ARGV[4..] is a flat [field, by, field, by, ...] list, with ('subjobs_completed', 1) appended by
+# the caller when terminal. Returns 1 if applied+claimed, 0 if the hash was already gone (pyv3),
+# -1 if the request was a duplicate (marker already present -> nothing applied, but the promotion
+# below STILL runs -- see stage 6's note on the deduped path).
+_APPLY_INCREMENTS_LUA = (
+    _PROMOTE_LUA_FN
+    + """
+local duplicate = redis.call('EXISTS', KEYS[2]) == 1
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-local i = 2
-while i < #ARGV do
-  redis.call('HINCRBY', KEYS[1], ARGV[i], tonumber(ARGV[i + 1]))
-  i = i + 2
+if not duplicate then
+  local i = 4
+  while i < #ARGV do
+    redis.call('HINCRBY', KEYS[1], ARGV[i], tonumber(ARGV[i + 1]))
+    i = i + 2
+  end
+  redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[1]))
 end
-redis.call('SET', KEYS[2], '1', 'EX', tonumber(ARGV[1]))
+if ARGV[2] == '1' then
+  phaze_promote(KEYS[1], KEYS[3], ARGV[3])
+end
+if duplicate then return -1 end
 return 1
 """
+)
 _apply_increments_script: "AsyncScript | None" = None
 
 
@@ -273,21 +327,20 @@ async def post_exec_batch_progress(
     # batch at 'running' until the 24h TTL dropped the hash. Now either both land or neither does; a
     # duplicate request_id applies nothing (D-15 dedup), and a batch reaped by its 24h TTL between the
     # stage 2/3 HEXISTS checks and here applies nothing and is never resurrected (phaze-pyv3). Note
-    # the D-17 stages 1-3 above are UNCHANGED -- only this token-vs-work ordering moved. ARGV is
-    # [ttl, field, by, ...] with the optional sub_batch_terminal ('subjobs_completed', 1) appended.
+    # the D-17 stages 1-3 above are UNCHANGED -- only this token-vs-work ordering moved.
     req_key = f"{_REQ_PREFIX}{body.request_id}"
     increments = _compute_increments(body)
-    apply_args: list[str] = [str(_TTL_SECONDS)]
+    # phaze-a6t8: ARGV is [ttl, terminal_flag, batch_id, field, by, ...] -- the terminal flag and
+    # batch_id ride along so the script can run stage 6's promotion in the SAME atomic span.
+    apply_args: list[str] = [str(_TTL_SECONDS), "1" if body.sub_batch_terminal else "", str(batch_id)]
     for field, by in increments.items():
         apply_args.extend((field, str(by)))
     if body.sub_batch_terminal:
         apply_args.extend(("subjobs_completed", "1"))
     apply_increments = _get_apply_increments_script(redis_client)
-    await apply_increments(keys=[key, req_key], args=apply_args, client=redis_client)
-
-    # ---- Stage 6: terminal-status detection + promotion (D-07 final clause).
-    # Fires whenever the agent marks this as its last proposal in the sub-batch
-    # -- INCLUDING on a duplicate replay whose increments were deduped above.
+    # ---- Stage 6, now INSIDE the stage 4+5 script (phaze-a6t8): terminal-status detection +
+    # promotion (D-07 final clause). Fires whenever the agent marks this as its last proposal in
+    # the sub-batch -- INCLUDING on a duplicate replay whose increments were deduped above.
     # phaze-gtau: promoting on the deduped path is REQUIRED, not wasteful -- it
     # covers the crash window between the atomic apply+marker (stage 4+5) and this
     # promotion. Were it skipped once the marker is present, a crash there would
@@ -295,14 +348,13 @@ async def post_exec_batch_progress(
     # promoted, stranding the batch at 'running' forever on retry (the terminal-loss
     # half of the defect). The promotion is idempotent: HSET status is a set and the
     # ``exec:active`` release is GET==batch_id-guarded (phaze-fa2p), so re-running it
-    # on a true duplicate is a harmless no-op. The read-then-write is delegated to a
-    # Lua script so it executes atomically on the Redis server; under >=3 concurrent
-    # terminal sub-jobs this is what prevents a stale `failed` read from promoting a
-    # failed batch to "complete" (issue #61).
-    if body.sub_batch_terminal:
-        promote_status = _get_promote_status_script(redis_client)
-        # phaze-fa2p: pass the sentinel key + this batch_id so a terminal promotion also releases
-        # the single-dispatch claim atomically (see ACTIVE_DISPATCH_KEY / _PROMOTE_STATUS_LUA).
-        await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
+    # on a true duplicate is a harmless no-op. It stays server-side Lua so it executes
+    # atomically; under >=3 concurrent terminal sub-jobs that is what prevents a stale
+    # `failed` read from promoting a failed batch to "complete" (issue #61) -- and, since
+    # phaze-a6t8 merged it into the apply, a concurrent sub-job can no longer slip its own
+    # increment between THIS request's apply and THIS request's promote.
+    # phaze-fa2p: the sentinel key rides in KEYS[3] so a terminal promotion also releases the
+    # single-dispatch claim atomically (see ACTIVE_DISPATCH_KEY / _PROMOTE_LUA_FN).
+    await apply_increments(keys=[key, req_key, ACTIVE_DISPATCH_KEY], args=apply_args, client=redis_client)
 
     return Response(status_code=status.HTTP_200_OK)
