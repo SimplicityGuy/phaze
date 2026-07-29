@@ -361,6 +361,47 @@ async def test_tag_bulk_per_file_commit_survives_mid_loop_abort(
 
 
 @pytest.mark.asyncio
+async def test_tag_bulk_rollback_does_not_expire_later_candidates(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
+) -> None:
+    """phaze-o2ln: a per-file ``session.rollback()`` must not poison files LATER in the loop.
+
+    ``session.rollback()`` expires EVERY object still in the session's identity map, not just the
+    one that failed -- so the file immediately after ``aaa`` (the failing file) had its ORM
+    ``FileRecord``/``file_metadata`` expired too. Pre-fix, that file's ``fr.file_metadata`` access
+    (feeding ``compute_proposed_tags``/``_build_comparison``) triggered a lazy reload from a sync
+    context (``MissingGreenlet``), which the loop's own ``except Exception`` swallowed and
+    miscounted as a genuine write FAILURE -- even though nothing was wrong with that file. Post-fix
+    the loop works off a plain snapshot captured before any rollback, so ``bbb`` is written
+    normally regardless of what happened to ``aaa``.
+    """
+    bad, _ = await seed_executed_file_with_metadata(original_filename="aaa - Bad.mp3", artist=None, title=None, album="Keep Album")
+    good, _ = await seed_executed_file_with_metadata(original_filename="bbb - Good.mp3", artist=None, title=None, album="Keep Album")
+    bad_id = bad.id
+    good_id = good.id
+
+    async def _fake_enqueue(sess: AsyncSession, task_router: object, fr: FileRecord, tags: dict, source: str) -> TagWriteLog:
+        if fr.id == bad_id:
+            msg = "Only executed files can have tags written"
+            raise ValueError(msg)
+        entry = TagWriteLog(file_id=fr.id, before_tags={}, after_tags=tags, source=source, status=TagWriteStatus.QUEUED.value)
+        sess.add(entry)
+        await sess.flush()
+        return entry
+
+    with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=_fake_enqueue)):
+        resp = await client.post("/tags/bulk-write-no-discrepancies")
+
+    assert resp.status_code == 200
+    assert await _tagwrite_log_count(session, bad_id) == 0, "enqueue_tag_write raised before any row -- no audit row for the bad file"
+    assert await _tagwrite_log_count(session, good_id, status="queued") == 1, (
+        "the file behind the rollback must be dispatched normally, not miscounted as failed due to an expired ORM attribute"
+    )
+
+
+@pytest.mark.asyncio
 async def test_tag_bulk_reports_failures_truthfully(
     client: AsyncClient,
     seed_executed_file_with_metadata: Callable[..., Awaitable[tuple[FileRecord, FileMetadata]]],
@@ -375,7 +416,7 @@ async def test_tag_bulk_reports_failures_truthfully(
     await seed_executed_file_with_metadata(original_filename="zzz - New Title.mp3", artist=None, title=None, album="Keep Album")
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         resp = await client.post("/tags/bulk-write-no-discrepancies")
 
     assert resp.status_code == 200
@@ -477,7 +518,7 @@ async def test_tag_bulk_write_leaves_discrepancy_and_failed_rows_in_place(
     # Dispatch-failure path: nothing was handed to any agent, so nothing was written.
     failed_file, _ = await seed_executed_file_with_metadata(original_filename="Fail Artist - Fail Title.mp3", artist=None, title=None)
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         resp2 = await client.post("/tags/bulk-write-no-discrepancies")
 
     assert resp2.status_code == 200

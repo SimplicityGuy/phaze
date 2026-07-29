@@ -14,7 +14,7 @@ The statuses it returns come from the DB-free :mod:`phaze.enums.tag_write`.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import unicodedata
 
 import mutagen
@@ -23,7 +23,11 @@ from mutagen.mp4 import MP4
 import structlog
 
 from phaze.enums.tag_write import TagWriteStatus
-from phaze.services.metadata import TagReadError, extract_tags
+from phaze.services.metadata import TagReadError, extract_tags, normalize_track_number_text, normalize_year_text
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 logger = structlog.get_logger(__name__)
@@ -120,6 +124,23 @@ def _write_vorbis(audio: Any, tags: dict[str, str | int | None]) -> None:
             audio[vorbis_key] = [str(value)]
 
 
+def _mp4_track_tuple(value: str | int) -> tuple[int, int]:
+    """Parse a track-number tag value into MP4's ``(track, total)`` atom form.
+
+    phaze-2zl7: undo supplies the RAW on-disk ``"N/total"`` text (see ``_extract_before_tags``)
+    instead of a bare int, so an unconditional ``int(value)`` would crash restoring an M4A file's
+    track number. A plain int -- every FORWARD write, since ``compute_proposed_tags`` has no
+    track-total source -- still writes ``(N, 0)`` exactly as before; only a ``"N/total"`` string
+    (undo) additionally restores the total.
+    """
+    if isinstance(value, str) and "/" in value:
+        num_text, _, total_text = value.partition("/")
+        num = int(num_text.strip()) if num_text.strip().isdigit() else 0
+        total = int(total_text.strip()) if total_text.strip().isdigit() else 0
+        return (num, total)
+    return (int(value), 0)
+
+
 def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
     """Write MP4 atoms to an M4A file. A ``None`` value DELETES the atom (phaze-52qd)."""
     for field, value in tags.items():
@@ -130,9 +151,20 @@ def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
             if mp4_key in audio:
                 del audio[mp4_key]
         elif field == "track_number":
-            audio[mp4_key] = [(int(value), 0)]
+            audio[mp4_key] = [_mp4_track_tuple(value)]
         else:
             audio[mp4_key] = [str(value)]
+
+
+# phaze-2zl7: fields whose normalized value is a LOSSY parse of richer raw text (a full release
+# date truncates to a 4-digit year; "N/total" drops the total). An undo now writes the RAW text
+# back (see _extract_before_tags), which legitimately differs from a byte-for-byte NFC comparison
+# against the value our own reader can represent -- compare through the SAME normalization rule
+# extract_tags applies instead, so a faithful raw write is not misreported as a discrepancy.
+_SEMANTIC_COMPARE_FIELDS: dict[str, Callable[[Any], int | None]] = {
+    "year": normalize_year_text,
+    "track_number": normalize_track_number_text,
+}
 
 
 def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[str, dict[str, str | None]]:
@@ -156,6 +188,10 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
     Note (phaze-52qd): an ``expected`` value of ``None`` means the field should have been
     DELETED (an undo removing a tag a prior write added). Such a field is a discrepancy iff
     it is still present on disk -- verifying deletions, not skipping them.
+
+    Note (phaze-2zl7): ``year``/``track_number`` are compared through the extractor's OWN
+    normalization rule (see :data:`_SEMANTIC_COMPARE_FIELDS`), not raw NFC text -- see that
+    mapping's docstring.
     """
     actual_tags = extract_tags(file_path, strict=True)
     discrepancies: dict[str, dict[str, str | None]] = {}
@@ -171,6 +207,16 @@ def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[
                     "expected": None,
                     "actual": unicodedata.normalize("NFC", str(actual_val)),
                 }
+            continue
+
+        normalizer = _SEMANTIC_COMPARE_FIELDS.get(field)
+        if normalizer is not None:
+            if normalizer(expected_val) == actual_val:
+                continue
+            discrepancies[field] = {
+                "expected": unicodedata.normalize("NFC", str(expected_val)),
+                "actual": unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None,
+            }
             continue
 
         expected_norm = unicodedata.normalize("NFC", str(expected_val))
@@ -193,9 +239,23 @@ def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
     any frame the write added to a previously-untagged file (``None`` -> delete), instead of
     silently leaving it -- which is what made undo a no-op in the product's dominant "add tags to
     an untagged file" scenario.
+
+    phaze-2zl7: ``year``/``track_number``/``genre`` prefer the RAW on-disk text
+    (``ExtractedTags.raw_year``/``raw_track_number``/``raw_genre``) over the normalized fields --
+    ``extract_tags``'s normalization is correct for search/matching but lossy for an undo snapshot
+    (a full release date truncates to a 4-digit year, "N/total" drops the total, a multi-value
+    genre keeps only the first). Falls back to the normalized value when no raw text exists (the
+    field is genuinely absent on disk, or the format has no richer representation to lose).
     """
     tags = extract_tags(file_path)
-    return {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
+    before: dict[str, str | int | None] = {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
+    if tags.raw_year is not None:
+        before["year"] = tags.raw_year
+    if tags.raw_track_number is not None:
+        before["track_number"] = tags.raw_track_number
+    if tags.raw_genre is not None:
+        before["genre"] = tags.raw_genre
+    return before
 
 
 def write_and_verify_sync(

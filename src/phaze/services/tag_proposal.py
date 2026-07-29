@@ -8,15 +8,33 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 
 if TYPE_CHECKING:
     from phaze.models.discogs_link import DiscogsLink
-    from phaze.models.metadata import FileMetadata
     from phaze.models.tracklist import Tracklist
 
 CORE_FIELDS = ("artist", "title", "album", "year", "genre", "track_number")
+
+
+class TagFieldSource(Protocol):
+    """Structural subset of ``FileMetadata`` -- exactly the :data:`CORE_FIELDS` attributes this
+    module and ``routers.tags._build_comparison`` read via ``getattr(..., field, None)``.
+
+    phaze-o2ln: lets a caller pass a plain, non-ORM snapshot (e.g. the bulk tag-write loop's
+    ``_BulkCandidate.metadata``, a ``SimpleNamespace``) wherever a live ``FileMetadata`` relationship
+    used to be required, so per-file DB session churn (a rollback expiring the ORM identity map)
+    cannot invalidate data this function needs.
+    """
+
+    artist: str | None
+    title: str | None
+    album: str | None
+    year: int | None
+    genre: str | None
+    track_number: int | None
+
 
 _YEAR_RE = re.compile(r"\((\d{4})\)")
 
@@ -55,7 +73,7 @@ def parse_filename(filename: str) -> dict[str, str | int | None]:
 
 
 def compute_proposed_tags(
-    file_metadata: FileMetadata | None,
+    file_metadata: TagFieldSource | None,
     tracklist: Tracklist | None,
     filename: str,
     discogs_link: DiscogsLink | None = None,

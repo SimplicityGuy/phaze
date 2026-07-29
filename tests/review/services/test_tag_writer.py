@@ -7,19 +7,22 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
+from mutagen.id3 import ID3, TCON, TDRC, TRCK
 from mutagen.mp3 import MP3
 import pytest
+from sqlalchemy import select
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.tag_write_log import TagWriteStatus
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
-from phaze.services.tag_write_disk import write_and_verify_sync
+from phaze.services.tag_write_disk import _extract_before_tags as _extract_before_tags_disk, _mp4_track_tuple, write_and_verify_sync
 from phaze.services.tag_writer import (
+    TagWriteAlreadyQueuedError,
     _extract_before_tags,
     _write_id3,
     _write_mp4,
@@ -223,6 +226,20 @@ class TestWriteMP4Format:
         audio.__setitem__.assert_not_called()
 
 
+class TestMp4TrackTuple:
+    """phaze-2zl7: the MP4 ``trkn`` atom writer must accept the raw "N/total" undo text."""
+
+    def test_plain_int_writes_zero_total(self) -> None:
+        """Every FORWARD write (compute_proposed_tags has no track-total source) is unchanged."""
+        assert _mp4_track_tuple(5) == (5, 0)
+
+    def test_raw_fraction_text_restores_the_total(self) -> None:
+        assert _mp4_track_tuple("3/12") == (3, 12)
+
+    def test_raw_text_without_a_slash_is_a_plain_number(self) -> None:
+        assert _mp4_track_tuple("7") == (7, 0)
+
+
 class TestWriteID3Format:
     """Direct-dispatch tests for the ID3 writer (the MP3 round-trips above cover the mapped fields)."""
 
@@ -271,6 +288,30 @@ class TestVerifyWrite:
         assert discrepancies["artist"]["expected"] is None
         assert discrepancies["artist"]["actual"] == "Should Be Deleted"
 
+    def test_semantic_field_match_via_normalizer_is_not_a_discrepancy(self, mp3_file: Path) -> None:
+        """phaze-2zl7: a raw "N/total" write compares equal to its own normalized total-drop.
+
+        write_tags/verify_write both see the RAW undo text "3/12"; the normalizer used for
+        year/track_number must find this equal to the on-disk normalized track number (3), not
+        report a false discrepancy just because the raw string differs from the parsed int.
+        """
+        write_tags(str(mp3_file), {"track_number": "3/12"})
+        discrepancies = verify_write(str(mp3_file), {"track_number": "3/12"})
+        assert discrepancies == {}
+
+    def test_semantic_field_mismatch_is_reported_through_the_normalizer(self, mp3_file: Path) -> None:
+        """phaze-2zl7: a genuine track_number mismatch is still caught through the normalized
+        comparator (_SEMANTIC_COMPARE_FIELDS), not silently accepted because it's a "special"
+        field.
+        """
+        write_tags(str(mp3_file), {"track_number": "3/12"})
+        discrepancies = verify_write(str(mp3_file), {"track_number": "9/12"})
+        assert "track_number" in discrepancies
+        assert discrepancies["track_number"]["expected"] == "9/12"
+        # "actual" is the extractor's own normalized parse (a bare int), not the raw on-disk
+        # text -- verify_write re-reads through extract_tags, which drops the total.
+        assert discrepancies["track_number"]["actual"] == "3"
+
 
 class TestExtractBeforeTags:
     """phaze-52qd: the before/undo snapshot must span every core field, marking absent tags None."""
@@ -298,6 +339,51 @@ class TestExtractBeforeTags:
         assert snapshot["artist"] == "Present Artist"
         assert snapshot["album"] is None
         assert set(snapshot) == {"artist", "title", "album", "year", "genre", "track_number"}
+
+
+class TestExtractBeforeTagsRawFidelity:
+    """phaze-2zl7: year/track_number/genre must snapshot the RAW on-disk text, not the normalized
+    (search-oriented) parse -- a full release date, a track's total, and every genre value.
+
+    Exercised through :func:`phaze.services.tag_write_disk._extract_before_tags` directly (the
+    control plane's ``_extract_before_tags`` re-export is only ever CALLED here on the agent, via
+    ``write_and_verify_sync`` -- see ``tests/review/tasks/test_tag_write.py`` for the end-to-end
+    undo round trip through the actual agent task).
+    """
+
+    def test_track_number_preserves_the_total(self, mp3_file: Path) -> None:
+        """ "3/12" must round-trip whole, not truncate to "3" (extract_tags._parse_track's rule)."""
+        audio = ID3(str(mp3_file))
+        audio.add(TRCK(encoding=3, text=["3/12"]))
+        audio.save()
+
+        snapshot = _extract_before_tags_disk(str(mp3_file))
+        assert snapshot["track_number"] == "3/12"
+
+    def test_year_preserves_the_full_release_date(self, mp3_file: Path) -> None:
+        """ "2024-03-15" must round-trip whole, not truncate to 2024 (extract_tags._parse_year's rule)."""
+        audio = ID3(str(mp3_file))
+        audio.add(TDRC(encoding=3, text=["2024-03-15"]))
+        audio.save()
+
+        snapshot = _extract_before_tags_disk(str(mp3_file))
+        assert snapshot["year"] == "2024-03-15"
+
+    def test_genre_preserves_every_value_not_just_the_first(self, mp3_file: Path) -> None:
+        """A multi-value TCON frame must round-trip all of it, not collapse to _first_str's first."""
+        audio = ID3(str(mp3_file))
+        audio.add(TCON(encoding=3, text=["House", "Techno"]))
+        audio.save()
+
+        snapshot = _extract_before_tags_disk(str(mp3_file))
+        assert snapshot["genre"] == "House; Techno"
+
+    def test_absent_fields_still_fall_back_to_none(self, mp3_file: Path) -> None:
+        """No raw text on disk -> the normalized (also None) value is used, not a stray raw value."""
+        snapshot = _extract_before_tags_disk(str(mp3_file))
+        assert snapshot["year"] is None
+        assert snapshot["track_number"] is None
+        assert snapshot["genre"] is None
 
 
 class TestUndoDeletesAddedTags:
@@ -332,6 +418,28 @@ class TestUndoDeletesAddedTags:
         assert "TPE1" not in audio.tags
         assert "TALB" not in audio.tags
 
+    def test_undo_restores_raw_track_and_date_fidelity(self, mp3_file: Path) -> None:
+        """phaze-2zl7 end-to-end: undo restores the FULL track total and release date -- not the
+        normalized 4-digit year / truncated track number -- and does not falsely report a
+        discrepancy for a faithful raw-text restore.
+        """
+        audio = ID3(str(mp3_file))
+        audio.add(TRCK(encoding=3, text=["3/12"]))
+        audio.add(TDRC(encoding=3, text=["2024-03-15"]))
+        audio.save()
+
+        status, _disc, _err, before = write_and_verify_sync(str(mp3_file), {"artist": "New Artist"})
+        assert status == TagWriteStatus.COMPLETED
+        assert before["track_number"] == "3/12"
+        assert before["year"] == "2024-03-15"
+
+        undo_status, undo_disc, _err2, _before2 = write_and_verify_sync(str(mp3_file), before)
+        assert undo_status == TagWriteStatus.COMPLETED, f"undo must not report a discrepancy for a faithful raw-text restore: {undo_disc}"
+
+        audio = MP3(str(mp3_file))
+        assert str(audio.tags["TRCK"]) == "3/12", "the track TOTAL must survive the undo round trip"
+        assert str(audio.tags["TDRC"]) == "2024-03-15", "the full release date must survive the undo round trip"
+
     def test_verify_raises_on_unreadable_file(self, tmp_path: Path) -> None:
         """phaze-vq3g: an unreadable/absent file on re-read raises TagReadError, not a false discrepancy.
 
@@ -364,20 +472,19 @@ class TestEnqueueTagWrite:
     mount, so ``current_path`` (a file-SERVER path) did not exist there and every write failed
     ``[Errno 2]`` behind a toast blaming file permissions. The disk half now lives in
     ``phaze.services.tag_write_disk`` / ``phaze.tasks.tag_write`` and is tested there; what remains
-    here is the control-plane contract: guard, ``queued`` audit row, lane routing, and the
-    dispatch-failure path.
+    here is the control-plane contract: guard, ``queued`` audit row, lane routing, the
+    dispatch-failure path, the phaze-ysnp write-ahead commit ordering, and the phaze-lwqk per-file
+    mutual-exclusion guard.
 
     READ-05 / D-01: the guard gates on ``await is_applied(session, file_record.id)`` -- a real DB
     ``EXISTS`` over ``proposals.status == 'executed'`` -- NOT on ``file_record.state``.
-    """
 
-    def _make_file_record(self, current_path: str = "/data/music/<set-01>.mp3", agent_id: str = "fileserver-01") -> MagicMock:
-        """Mock FileRecord for the dispatch cases (the applied guard is patched separately)."""
-        fr = MagicMock()
-        fr.current_path = current_path
-        fr.agent_id = agent_id
-        fr.id = uuid.uuid4()
-        return fr
+    phaze-lwqk/phaze-ysnp: ``enqueue_tag_write`` now does real DB work of its own (an advisory-lock
+    acquire, an existence check, and a commit) BEFORE dispatching, so the "dispatch contract" cases
+    below use a REAL DB-backed ``FileRecord``/session (``make_file`` + the hermetic ``session``
+    fixture) instead of a bare ``AsyncMock`` session -- a mock can't satisfy those real queries (nor
+    the ``tag_write_log.file_id`` foreign key the QUEUED insert now actually commits).
+    """
 
     # ------------------------------------------------------------------------------------------------
     # SC#2 guard behavior (real DB rows, mutation-checked) -- the load-bearing behavior-revival test.
@@ -392,14 +499,14 @@ class TestEnqueueTagWrite:
         file = await make_file()
         await _add_proposal(session, file.id, ProposalStatus.EXECUTED.value)
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock()
+        router.enqueue_for_agent = AsyncMock()
 
         log_entry = await enqueue_tag_write(session, router, file, {"artist": "New Artist"}, "tracklist")
 
         # The guard admitted the file and the dispatch path ran to completion.
         assert log_entry.status == TagWriteStatus.QUEUED
         assert log_entry.file_id == file.id
-        router.enqueue_for_file.assert_awaited_once()
+        router.enqueue_for_agent.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_applied_file_raises(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
@@ -407,27 +514,26 @@ class TestEnqueueTagWrite:
         file = await make_file()
         await _add_proposal(session, file.id, ProposalStatus.FAILED.value)
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock()
+        router.enqueue_for_agent = AsyncMock()
 
         with pytest.raises(ValueError, match="executed"):
             await enqueue_tag_write(session, router, file, {"artist": "Test"}, "tracklist")
 
-        router.enqueue_for_file.assert_not_awaited()
+        router.enqueue_for_agent.assert_not_awaited()
 
     # ------------------------------------------------------------------------------------------------
     # Dispatch contract -- the guard is explicitly admitted so routing is exercised in isolation.
     # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_creates_queued_tag_write_log(self) -> None:
+    async def test_creates_queued_tag_write_log(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """The audit row is created up front in ``queued``, with an EMPTY before-tags snapshot.
 
         ``before_tags`` can only be read where the file is, so it stays empty until the agent's
         callback fills it -- the row never claims a pre-write state the api did not observe.
         """
-        fr = self._make_file_record()
-        session = AsyncMock()
+        fr = await make_file()
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock()
+        router.enqueue_for_agent = AsyncMock()
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await enqueue_tag_write(session, router, fr, {"artist": "New Artist"}, "tracklist")
@@ -437,31 +543,29 @@ class TestEnqueueTagWrite:
         assert log_entry.after_tags == {"artist": "New Artist"}
         assert log_entry.before_tags == {}
         assert log_entry.error_message is None
-        session.add.assert_called_once()
-        session.flush.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_routes_to_the_owning_agent_with_current_path(self) -> None:
+    async def test_routes_to_the_owning_agent_with_current_path(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """phaze-c9w9 affinity + the D-24 ``current_path`` exception, both asserted on the payload.
 
         The write MUST go to ``file_record.agent_id`` -- the agent that reported the file -- and MUST
         carry ``current_path``, because a tag write is only offered for an APPLIED file whose
         ``original_path`` no longer names anything on disk.
         """
-        fr = self._make_file_record(current_path="/data/music/<set-02>.mp3", agent_id="fileserver-02")
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = "/data/music/<set-02>.mp3"
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock()
+        router.enqueue_for_agent = AsyncMock()
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "tracklist")
 
-        kwargs = router.enqueue_for_file.await_args.kwargs
+        kwargs = router.enqueue_for_agent.await_args.kwargs
         assert kwargs["task_name"] == "write_file_tags"
-        assert kwargs["file_record"] is fr
+        assert kwargs["agent_id"] == fr.agent_id
         payload = kwargs["payload"]
         assert payload.file_path == "/data/music/<set-02>.mp3"
-        assert payload.agent_id == "fileserver-02"
+        assert payload.agent_id == fr.agent_id
         assert payload.tags == {"artist": "Test"}
         # The pre-minted log id is what makes the agent's callback retry-stable.
         assert payload.log_id == log_entry.id
@@ -474,40 +578,124 @@ class TestEnqueueTagWrite:
         assert lane_for_task("write_file_tags") == "meta"
 
     @pytest.mark.asyncio
-    async def test_enqueue_failure_downgrades_the_row_to_failed(self) -> None:
+    async def test_enqueue_failure_downgrades_the_row_to_failed(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """A broker/enqueue failure leaves a FAILED row with an actionable message, not a stuck ``queued``.
 
         A ``queued`` row no agent will ever answer for would hold the file out of every terminal
         count forever with nothing on screen explaining why.
         """
-        fr = self._make_file_record(agent_id="fileserver-09")
-        session = AsyncMock()
+        fr = await make_file()
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock(side_effect=RuntimeError("broker unreachable"))
+        router.enqueue_for_agent = AsyncMock(side_effect=RuntimeError("broker unreachable"))
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "manual_edit")
 
         assert log_entry.status == TagWriteStatus.FAILED
         assert log_entry.error_message is not None
-        assert "fileserver-09" in log_entry.error_message
+        assert fr.agent_id in log_entry.error_message
         assert "broker unreachable" in log_entry.error_message
 
     @pytest.mark.asyncio
-    async def test_does_not_touch_the_filesystem(self, tmp_path: Path) -> None:
+    async def test_does_not_touch_the_filesystem(self, session: AsyncSession, make_file, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
         """The DIST-01 regression guard: a nonexistent path is NOT an error on the control plane.
 
         Pre-fix this exact call did ``mutagen.File("/data/music/...")`` inside the api container and
         recorded FAILED for every file forever. Post-fix the api only records intent and hands off,
         so a path it cannot see is irrelevant to it.
         """
-        fr = self._make_file_record(current_path=str(tmp_path / "does-not-exist.mp3"))
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = str(tmp_path / "does-not-exist.mp3")
         router = MagicMock()
-        router.enqueue_for_file = AsyncMock()
+        router.enqueue_for_agent = AsyncMock()
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "tracklist")
 
         assert log_entry.status == TagWriteStatus.QUEUED
         assert log_entry.error_message is None
+
+    # ------------------------------------------------------------------------------------------------
+    # phaze-ysnp: the QUEUED row must be DURABLE before the dispatch, not merely flushed.
+    # ------------------------------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_queued_row_is_committed_before_the_dispatch(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-ysnp: the write-ahead commit must happen BEFORE ``enqueue_for_agent`` is awaited.
+
+        ``enqueue_for_agent`` hands the job to a REAL external system (the agent's SAQ queue, a
+        separate Postgres connection/transaction from ``session``) that can start running before
+        this transaction would otherwise have committed. Without committing first, a crash between
+        the flush and the caller's own commit would strand an already-dispatched job with no
+        durable row for the agent's callback to PATCH.
+        """
+        fr = await make_file()
+        events: list[str] = []
+        real_commit = session.commit
+
+        async def _tracked_commit() -> None:
+            events.append("commit")
+            await real_commit()
+
+        router = MagicMock()
+
+        async def _tracked_enqueue(**_kwargs: object) -> None:
+            events.append("enqueue")
+
+        router.enqueue_for_agent = _tracked_enqueue
+
+        with (
+            patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
+            patch.object(session, "commit", _tracked_commit),
+        ):
+            await enqueue_tag_write(session, router, fr, {"artist": "Test"}, "tracklist")
+
+        assert "commit" in events
+        assert "enqueue" in events
+        assert events.index("commit") < events.index("enqueue"), f"commit must precede the dispatch, got order {events}"
+
+    # ------------------------------------------------------------------------------------------------
+    # phaze-lwqk: per-file mutual exclusion -- a second concurrent dispatch for the SAME file refuses.
+    # ------------------------------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_second_enqueue_for_an_already_queued_file_raises(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A file with an unresolved ``queued`` row refuses a second dispatch.
+
+        Without this guard, a double-click / two tabs / a per-file write racing the bulk loop's
+        dispatch of the SAME file could queue two ``write_file_tags`` jobs -- two concurrent mutagen
+        full-file rewrites on the agent, a real corruption risk for an irreplaceable archive file.
+        """
+        fr = await make_file()
+        router = MagicMock()
+        router.enqueue_for_agent = AsyncMock()
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            first = await enqueue_tag_write(session, router, fr, {"artist": "First"}, "tracklist")
+            assert first.status == TagWriteStatus.QUEUED
+
+            with pytest.raises(TagWriteAlreadyQueuedError):
+                await enqueue_tag_write(session, router, fr, {"artist": "Second"}, "tracklist")
+
+        # Only the first dispatch actually reached the agent router.
+        router.enqueue_for_agent.assert_awaited_once()
+        rows = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == fr.id))).scalars().all()
+        assert len(rows) == 1, "the refused second call must not create a second row"
+
+    @pytest.mark.asyncio
+    async def test_enqueue_succeeds_again_once_the_prior_write_is_terminal(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """Once the prior ``queued`` row resolves to a terminal status, a new dispatch is allowed."""
+        fr = await make_file()
+        router = MagicMock()
+        router.enqueue_for_agent = AsyncMock()
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            first = await enqueue_tag_write(session, router, fr, {"artist": "First"}, "tracklist")
+
+        # Simulate the agent's callback resolving the row to a terminal status.
+        first.status = TagWriteStatus.COMPLETED.value
+        await session.commit()
+
+        with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
+            second = await enqueue_tag_write(session, router, fr, {"artist": "Second"}, "tracklist")
+
+        assert second.status == TagWriteStatus.QUEUED
+        assert router.enqueue_for_agent.await_count == 2

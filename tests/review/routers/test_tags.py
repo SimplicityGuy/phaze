@@ -439,7 +439,7 @@ async def test_write_tags_dispatch_failure_toast_points_at_the_agent_not_file_pe
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
 
     assert response.status_code == 200
@@ -526,7 +526,7 @@ async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: Async
     )
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(
             f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
@@ -881,6 +881,77 @@ async def test_undo_with_only_failed_write_reports_nothing_to_undo(client: Async
     assert "no prior tag write" in response.text.lower()
 
 
+@pytest.mark.asyncio
+async def test_undo_picks_original_write_not_a_later_successful_retry(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-lwqk: a SUCCESSFUL re-approve must not shadow the TRUE original write.
+
+    L1 is the real COMPLETED write (before_tags = the true original). L2 is a later DISCREPANCY
+    re-approve of the same (non-terminal, self-re-offering) row -- before_tags reflects the disk
+    state L1 already wrote, a real successful write, not a failure/no-op shadow phaze-soph already
+    excludes. Undo must still restore L1's snapshot, not L2's.
+    """
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=base,
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.DISCREPANCY,
+        source="proposal",
+        before_tags={"artist": "Written Artist"},
+        written_at=base + timedelta(seconds=30),
+    )
+
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}, "undo must restore the TRUE original, not the later retry's shadow"
+
+
+@pytest.mark.asyncio
+async def test_undo_chain_resets_after_a_prior_successful_undo(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-lwqk: after a genuine COMPLETED undo, a later write starts a NEW chain.
+
+    L1 (very original) -> L2 (a COMPLETED undo, the chain boundary) -> L3 (a brand-new write).
+    Undo must target L3's snapshot, not walk all the way back past the undo to L1.
+    """
+    file_record, _ = await _create_executed_file(session)
+    base = datetime(2026, 7, 20, 12, 0, 0)
+    await _add_write_log(
+        session, file_record.id, status=TagWriteStatus.COMPLETED, source="proposal", before_tags={"artist": "Ancient Artist"}, written_at=base
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="undo",
+        before_tags={"artist": "Written Artist"},
+        written_at=base + timedelta(seconds=30),
+    )
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Modern Artist"},
+        written_at=base + timedelta(seconds=60),
+    )
+
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
+
+    assert response.status_code == 200
+    assert _dispatched_tags(router) == {"artist": "Modern Artist"}, "undo must target the new chain's write, not the pre-undo ancient one"
+
+
 async def _count_write_logs(session: AsyncSession, file_id: uuid.UUID, *, source: str) -> int:
     """Count TagWriteLog rows for ``file_id`` with the given ``source``."""
     from sqlalchemy import func, select
@@ -1011,7 +1082,7 @@ async def test_undo_failed_reversal_toasts_failure_not_success(client: AsyncClie
     # failure. The rule from phaze-26t7 is unchanged and is what this asserts: never toast a revert
     # that did not happen.
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
@@ -1035,7 +1106,7 @@ async def test_undo_failed_reversal_v7_keeps_approved_row_with_failure_toast(cli
     )
 
     _controller_queue, router = install_fake_queues(client)
-    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("boom")):
+    with patch.object(router, "enqueue_for_agent", side_effect=RuntimeError("boom")):
         response = await client.post(
             f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
