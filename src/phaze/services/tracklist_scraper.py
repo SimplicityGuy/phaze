@@ -179,6 +179,19 @@ class TracklistScraper:
     _META_DATE_SELECTOR = ".evtDate"
 
     _EXTERNAL_ID_PATTERN = re.compile(r"/tracklist/([^/?#]+)")
+    # phaze-7zoh: Tracklist.external_id is String(50) (models/tracklist.py) and is also the
+    # ON CONFLICT idempotency key. The captured slug is the short id today (e.g.
+    # "25fhn7c9"), but a URL-shape change that moves the human-readable slug into this first
+    # path segment would blow the column width and abort the store transaction. Bound it here,
+    # at the scraper boundary, rather than let an oversized value reach Postgres.
+    _EXTERNAL_ID_MAX_LEN = 50
+    # phaze-7zoh: TracklistTrack.timestamp is String(20) (models/tracklist.py); every other
+    # scraped free-text field lands in an unbounded Text column, but this one is width-bounded
+    # while ".cueTime" (like every detail-page selector in this block) is UNVERIFIED and may
+    # drift to matching something else. Validate the shape instead of trusting the width: a
+    # non-conforming value is dropped to None rather than truncated, so a stale/renamed selector
+    # can't silently persist a mangled cue time.
+    _CUE_TIME_PATTERN = re.compile(r"^\d{1,2}(:\d{2}){1,2}$")
     # phaze-mk6y: the href-embedded date trails the slug, e.g.
     # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
     # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
@@ -356,7 +369,8 @@ class TracklistScraper:
             match = self._EXTERNAL_ID_PATTERN.search(href_str)
             if match is None:
                 continue
-            external_id = match.group(1)
+            # phaze-7zoh: bound to the column width -- see _EXTERNAL_ID_MAX_LEN.
+            external_id = match.group(1)[: self._EXTERNAL_ID_MAX_LEN]
 
             if href_str.startswith("/"):
                 url = f"{self.BASE_URL}{href_str}"
@@ -455,9 +469,9 @@ class TracklistScraper:
                 response=response,
             )
 
-        # Extract external_id from URL
+        # Extract external_id from URL -- phaze-7zoh: bound to the column width.
         match = self._EXTERNAL_ID_PATTERN.search(url)
-        external_id = match.group(1) if match else ""
+        external_id = match.group(1)[: self._EXTERNAL_ID_MAX_LEN] if match else ""
 
         soup = BeautifulSoup(response.text, "lxml")
 
@@ -511,9 +525,12 @@ class TracklistScraper:
         label_el = item.select_one(self._TRACK_LABEL_SELECTOR)
         label = label_el.get_text(strip=True) if label_el else None
 
-        # Timestamp
+        # Timestamp -- phaze-7zoh: bound to the column width by validating the cue-time shape
+        # rather than trusting the (UNVERIFIED) selector; non-conforming text is dropped to None
+        # instead of being truncated into a mangled value.
         time_el = item.select_one(self._TRACK_TIME_SELECTOR)
-        timestamp = time_el.get_text(strip=True) if time_el else None
+        raw_timestamp = time_el.get_text(strip=True) if time_el else None
+        timestamp = raw_timestamp if raw_timestamp and self._CUE_TIME_PATTERN.match(raw_timestamp) else None
 
         # Mashup detection
         classes = item.get("class")
