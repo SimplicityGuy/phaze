@@ -66,12 +66,16 @@ def test_sweep_returns_ready_after_settle(fake_clock: Callable[[float], None]) -
 
 
 def test_sweep_evicts_stuck_entries(fake_clock: Callable[[float], None]) -> None:
-    """An entry that never settles and is older than max_pending is evicted (D-02 stuck-file cap).
+    """An entry that never settles across TWO consecutive max_pending crossings is evicted.
 
     Simulates a genuinely stuck path (e.g. a rename loop): it is re-touched
     so ``last_change_at`` stays recent (never satisfies ``settle_period``)
-    while ``first_seen_at`` -- anchored at the first touch -- ages past
-    ``max_pending``.
+    while ``first_seen_at`` keeps getting reset by the phaze-kw36 one-shot
+    grace extension. The first cap crossing only arms the grace flag and
+    resets ``first_seen_at``; eviction requires still-not-settled at a
+    SECOND cap crossing after the reset (see test_sweep_grace_extension_*
+    below for the single-crossing, settles-in-time case this distinguishes
+    from).
     """
     fake_clock(0.0)
     d = Debouncer()
@@ -81,6 +85,86 @@ def test_sweep_evicts_stuck_entries(fake_clock: Callable[[float], None]) -> None
     d.touch("/a.mp3")  # keeps last_change_at recent; first_seen_at stays 0.0
 
     fake_clock(3601.0)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+
+    # First crossing: grace extension armed, NOT evicted yet.
+    assert ready == []
+    assert evicted == []
+    assert d.pending_count() == 1
+
+    # Keep churning across a second full max_pending window from the reset first_seen_at (3601.0).
+    fake_clock(7200.5)
+    d.touch("/a.mp3")  # keeps last_change_at recent; still never settles
+
+    fake_clock(7201.5)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+
+    assert ready == []
+    assert evicted == ["/a.mp3"]
+    assert d.pending_count() == 0
+
+
+def test_sweep_grace_extension_saves_completed_write_in_final_settle_window(
+    fake_clock: Callable[[float], None],
+) -> None:
+    """phaze-kw36 regression: a write whose LAST event lands just inside the cap is not lost.
+
+    Reproduces the exact failure scenario: a long-running copy's final Modified event
+    lands 6s before the entry's age crosses max_pending (settle_period=10s). The first
+    sweep after the crossing must NOT evict the path -- no further events arrive (the
+    write is complete), so a later sweep must find it settled and post it.
+    """
+    fake_clock(0.0)
+    d = Debouncer()
+    d.touch("/a.mp3")
+
+    fake_clock(3600.5)
+    d.touch("/a.mp3")  # the copy's final write landed here -- write is now complete
+
+    fake_clock(3601.0)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+
+    # Would have been wrongly evicted before the fix: now - last_change_at = 0.5 < 10
+    # (not ready) and now - first_seen_at = 3601 > 3600 (capped). The grace extension
+    # keeps it pending instead of dropping it.
+    assert ready == []
+    assert evicted == []
+    assert d.pending_count() == 1
+
+    # No further filesystem events -- the write is done. Once settle_period has
+    # elapsed since the last (and only remaining) change, the entry must be posted.
+    fake_clock(3611.5)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+
+    assert ready == ["/a.mp3"]
+    assert evicted == []
+    assert d.pending_count() == 0
+
+
+def test_sweep_grace_extension_is_one_shot_per_entry(fake_clock: Callable[[float], None]) -> None:
+    """cap_grace_used does not reset just because a touch refreshed last_change_at.
+
+    Once an entry has used its one grace extension, a still-churning entry must be
+    evicted on its NEXT cap crossing rather than being granted unlimited extensions
+    (which would defeat the D-02 bounded-memory containment goal).
+    """
+    fake_clock(0.0)
+    d = Debouncer()
+    d.touch("/a.mp3")
+
+    fake_clock(3600.5)
+    d.touch("/a.mp3")  # keeps last_change_at recent so the first crossing does not settle
+
+    fake_clock(3601.0)
+    ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
+    assert ready == []
+    assert evicted == []  # grace extension #1: first_seen_at reset to 3601.0
+
+    # Keep churning right up to (and past) the second cap crossing so the entry never settles.
+    fake_clock(7200.5)
+    d.touch("/a.mp3")  # keeps last_change_at recent; first_seen_at stays 3601.0
+
+    fake_clock(7201.5)  # > 3601.0 + 3600.0
     ready, evicted = d.sweep(settle_period=10.0, max_pending=3600.0)
 
     assert ready == []

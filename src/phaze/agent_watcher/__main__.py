@@ -111,7 +111,15 @@ async def _sweep_loop(
                 except Exception:
                     logger.exception("watcher: post failed; entry already removed from debouncer path=%s", path)
             for path in evicted:
-                logger.warning("watcher: dropping path=%s; mtime still changing past max_pending cap", path)
+                # phaze-kw36: Debouncer.sweep only reaches eviction after giving the entry one
+                # full extra max_pending window to settle (see debouncer.py), so by the time we
+                # get here the path has failed to go quiet across two consecutive cap windows --
+                # do not assert "mtime still changing" as the cause, since sweep cannot actually
+                # distinguish continued churn from an unusually long single stall.
+                logger.warning(
+                    "watcher: dropping path=%s; did not settle within max_pending cap even after one grace extension",
+                    path,
+                )
         except Exception:
             logger.exception("watcher: sweep iteration failed")
         with contextlib.suppress(TimeoutError):
