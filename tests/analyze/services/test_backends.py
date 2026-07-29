@@ -608,6 +608,9 @@ async def test_compute_dispatch_stamps_destination_on_push_payload(session: Asyn
     Record-don't-rederive originates here: the enqueued push carries THIS backend's own push_host /
     scratch_dir / ssh_user (read off the bound ComputeBackend), so every downstream reader (the Plan-02
     rsync argv) uses the RECORDED destination rather than re-deriving it.
+
+    phaze-s5sz: the enqueue is PARKED, not fired inline -- assert it is queued only after the commit +
+    an explicit ``flush_pending_push_file_enqueues`` (mirrors the kueue s3_upload twin).
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
@@ -618,6 +621,10 @@ async def test_compute_dispatch_stamps_destination_on_push_payload(session: Asyn
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    assert router.captures == [], "the push_file enqueue must be PARKED, not fired inline"
+
+    await session.commit()
+    assert await backends.flush_pending_push_file_enqueues(session) == 1
 
     pushes = [(task, payload) for task, payload in router.queues["nox-io"].captured if task == "push_file"]
     assert len(pushes) == 1
@@ -639,6 +646,8 @@ async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSe
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    await session.commit()
+    assert await backends.flush_pending_push_file_enqueues(session) == 1
 
     _task, payload = next((t, p) for t, p in router.queues["nox-io"].captured if t == "push_file")
     assert payload["dest_host"] == "a1.push.example"
@@ -767,23 +776,24 @@ async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
     assert job is None
 
 
-# === phaze-uciu.3: a POST-WRITE enqueue raise rolls back ONLY the write (SAVEPOINT) =====================
+# === phaze-s5sz: dispatch PARKS (never fires) the push_file enqueue =====================================
 
 
 @pytest.mark.asyncio
-async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(session: AsyncSession) -> None:
-    """A ``push_file`` enqueue failure AFTER the ``cloud_job`` upsert leaves the row re-pickable.
+async def test_compute_dispatch_defers_enqueue_past_the_committed_row(session: AsyncSession) -> None:
+    """phaze-s5sz: ``ComputeAgentBackend.dispatch`` no longer FIRES the ``push_file`` enqueue -- it PARKS it.
 
-    Regression for phaze-uciu.3 (supersedes phaze-3e1i): before the fix, ``dispatch`` upserted
-    ``status='submitted'`` + ``backend_id`` BEFORE the fallible enqueue with NO savepoint -- SAQ's
-    ``PostgresQueue`` uses its own psycopg pool, so an enqueue raise does NOT poison this asyncpg
-    session/transaction, and the drain's per-candidate handler deliberately does not roll back
-    (Landmine L1: a mid-loop rollback would drop the tick's ``pg_advisory_xact_lock``). The un-savepointed
-    upsert therefore SURVIVED into the drain's post-loop commit -- a stranded ``submitted`` row that
-    reconcile/orphan-recovery both scope away from, permanently consuming an ``in_flight_count`` slot.
-    Post-fix the upsert + enqueue run inside ``session.begin_nested()``: the raise still propagates (the
-    caller sees it), but the SAVEPOINT rolls back ONLY the upsert, restoring the pre-dispatch
-    ``status='awaiting'`` row -- re-pickable by the next tick, and NOT counted by ``in_flight_count``.
+    Supersedes the phaze-uciu.3 SAVEPOINT twin (regression test renamed off
+    ``test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint``): pre-fix ``dispatch``
+    enqueued ``push_file`` INLINE (on SAQ's OWN psycopg pool, which commits the job durably +
+    IMMEDIATELY), so a fast rsync push could complete and POST ``/pushed`` before this asyncpg session
+    committed the ``cloud_job`` SUBMITTED row -- ``report_pushed``'s ONLY guard (``status == 'submitted'``)
+    then matched 0 rows and took the idempotent-no-op hold FOREVER (compute has no reconcile/orphan-
+    recovery backstop for an in-flight cloud_job). Post-fix ``dispatch`` upserts the row and PARKS the
+    enqueue; the drain commits FIRST and only then flushes it, so the worker-visible job strictly follows
+    its committed row. Because the enqueue is no longer in the transaction, a raising queue can NOT roll
+    back the upsert -- ``dispatch`` itself never fires it, so it never raises here (mirrors
+    ``test_kueue_dispatch_defers_enqueue_past_the_committed_row``).
     """
     from sqlalchemy import select
 
@@ -797,14 +807,23 @@ async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(s
     await backends.hold_awaiting_cloud(session, file)
     await session.commit()
 
+    # A router whose enqueue always raises: dispatch must NOT touch it (the enqueue is deferred), so
+    # dispatch completes cleanly and stamps the SUBMITTED row + backend_id.
     router = _RaisingTaskRouter()
-    with pytest.raises(RuntimeError, match="saq enqueue blew up"):
-        await backend.dispatch(file, session, router)
+    await backend.dispatch(file, session, router)  # no raise: the enqueue is parked, not fired
 
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
-    assert job.status == CloudJobStatus.AWAITING.value  # rolled back to the pre-dispatch hold status
-    assert job.backend_id is None  # the SAVEPOINT rollback also undid the backend_id stamp
-    assert await backend.in_flight_count(session) == 0  # 'awaiting' is never in the in-flight set (D-10)
+    assert job.status == CloudJobStatus.SUBMITTED.value
+    assert job.backend_id == "compute-a1"
+    assert await backend.in_flight_count(session) == 1  # the staged row holds its cap slot
+
+    await session.commit()
+    # Flushing a parked enqueue whose queue raises is best-effort: it fires 0, swallows the error (never
+    # re-raises), and leaves the committed SUBMITTED row (no compute-lane reaper recovers it today --
+    # tracked separately; the row is still durably correct, not phantom/limbo).
+    assert await backends.flush_pending_push_file_enqueues(session) == 0
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one()
+    assert job.status == CloudJobStatus.SUBMITTED.value  # unchanged by the failed flush
 
 
 @pytest.mark.asyncio

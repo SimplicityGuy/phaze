@@ -143,7 +143,11 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
     # push-job key + compute enqueue leg (it imports this module), and backend_selection imports
     # backends -- importing either at module top would close the backends<->drain import cycle.
     from phaze.services.backend_selection import select_backend  # noqa: PLC0415 -- deferred to break the import cycle
-    from phaze.services.backends import resolve_backends  # noqa: PLC0415 -- deferred to break the import cycle
+    from phaze.services.backends import (  # noqa: PLC0415 -- deferred to break the import cycle
+        drop_pending_push_file_enqueues,
+        flush_pending_push_file_enqueues,
+        resolve_backends,
+    )
 
     # Phase 69 (SCHED-01): resolve ALL backends (resolve_backends no longer raises on >1 non-local).
     backends = resolve_backends(cfg)
@@ -292,6 +296,11 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # report_uploaded callback) can never precede the row it reads. A parked-but-unfired enqueue
             # on a later flush failure leaves a committed UPLOADING row the staging reaper spills back.
             await cloud_staging.flush_pending_s3_enqueues(session)
+            # phaze-s5sz: same discipline for the push_file enqueues ComputeAgentBackend.dispatch parked
+            # -- fire them ONLY now that the cloud_job SUBMITTED rows are durably committed, so a FAST
+            # rsync push's /pushed callback (whose ONLY guard is cloud_job.status == 'submitted') can
+            # never precede the committed row it reads.
+            await flush_pending_push_file_enqueues(session)
         except Exception:
             # A poisoned transaction (or any unexpected raise from the pre-dispatch loop body / the commit)
             # must degrade to a clean hold, never a cron raise. Roll back the whole tick -- this discards any
@@ -300,6 +309,8 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
             # phaze-grzo: drop the parked s3_upload enqueues too -- firing a job whose cloud_job upsert
             # was just rolled back is the ORPHANING half of the enqueue-before-commit hole.
             cloud_staging.drop_pending_s3_enqueues(session)
+            # phaze-s5sz: same for the parked push_file enqueues.
+            drop_pending_push_file_enqueues(session)
             logger.warning("stage_cloud_window: tick aborted by an unexpected error -> rolling back, holding all", exc_info=True)
             await session.rollback()
             return {"staged": 0, "skipped": len(candidates)}

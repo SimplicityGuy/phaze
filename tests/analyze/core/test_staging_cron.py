@@ -599,7 +599,15 @@ async def test_backlog_of_144_stages_at_most_n(async_engine: AsyncEngine, sessio
 
 @pytest.mark.asyncio
 async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngine, session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A file whose push_file:<id> key is already live dedups to a skipped no-op (T-50-double-enqueue)."""
+    """A file whose push_file:<id> key is already live dedups its FLUSHED enqueue to a no-op (T-50-double-enqueue).
+
+    phaze-s5sz: ``ComputeAgentBackend.dispatch`` now PARKS the ``push_file`` enqueue and fires it only
+    after the drain's post-loop commit -- so the dedup outcome is no longer knowable at dispatch time
+    (mirrors the kueue twin's ``dispatch`` always returning ``True``). The cron's ``staged`` tally
+    therefore counts this candidate as staged (the cloud_job SUBMITTED row is a genuine new claim on
+    the slot); the ACTUAL enqueue dedups to ``None`` at flush time against the already-live key, which
+    is asserted directly via the flush return count.
+    """
     _patch_settings(monkeypatch, max_in_flight=2)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     fileserver = await seed_active_agent(session, agent_id="nox", kind="fileserver")
@@ -610,14 +618,14 @@ async def test_double_tick_dedups_via_deterministic_key(async_engine: AsyncEngin
     await _seed_awaiting_rows(session, [f])  # Phase 83: the held file carries its awaiting sidecar row
 
     router = DedupFakeTaskRouter()
-    # Pre-enqueue the deterministic key on the fileserver queue so the cron's enqueue dedups to None.
+    # Pre-enqueue the deterministic key on the fileserver queue so the FLUSHED enqueue dedups to None.
     live_queue = router.queue_for(fileserver.id, "io")
     await live_queue.enqueue("push_file", key=push_file_job_key(fid))
     router.queue_for_calls.clear()
 
     result = await stage_cloud_window(_make_ctx(async_engine, router, DedupFakeQueue("controller")))
 
-    assert result == {"staged": 0, "skipped": 1}
+    assert result == {"staged": 1, "skipped": 0}
     # The state still flips to PUSHING (the file left the AWAITING_CLOUD scan set; the live push job
     # will land it). The window count stays honest on the next tick.
     assert (await _states_for(session, [fid]))[fid] == _DISPATCHED
