@@ -185,6 +185,47 @@ async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) 
     return link_result.scalar_one_or_none()
 
 
+async def _get_tracklists_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, Tracklist]:
+    """Batch form of :func:`_get_tracklist_for_file`: ONE query for a whole page of files (phaze-bto9).
+
+    Same selection rule per file -- highest ``match_confidence``, ``id`` breaking ties -- expressed
+    as a Postgres ``DISTINCT ON (file_id)`` with the identical ``ORDER BY``, so a file resolves to
+    exactly the tracklist the per-file helper would have picked. The per-file helper stays for the
+    single-row mutation routes; this exists because the review scan called it once per CANDIDATE,
+    which is unbounded in the applied backlog rather than in the rows actually rendered.
+    """
+    if not file_ids:
+        return {}
+    stmt = (
+        select(Tracklist)
+        .where(Tracklist.file_id.in_(file_ids))
+        .distinct(Tracklist.file_id)
+        .order_by(Tracklist.file_id, Tracklist.match_confidence.desc().nulls_last(), Tracklist.id)
+    )
+    return {tl.file_id: tl for tl in (await session.execute(stmt)).scalars().all() if tl.file_id is not None}
+
+
+async def _get_accepted_discogs_links_for_files(session: AsyncSession, tracklists: dict[uuid.UUID, Tracklist]) -> dict[uuid.UUID, DiscogsLink]:
+    """Batch form of :func:`_get_accepted_discogs_link`, keyed by file id (phaze-bto9).
+
+    Takes the already-resolved per-file tracklists (so the "which tracklist" decision is made once,
+    not re-derived) and resolves each one's ``latest_version_id`` to its best accepted link in ONE
+    query. Same rule as the per-file helper: highest ``confidence``, ``id`` descending as the
+    phaze-evn9 deterministic tiebreak, expressed as ``DISTINCT ON (version_id)``.
+    """
+    version_to_file = {tl.latest_version_id: file_id for file_id, tl in tracklists.items() if tl.latest_version_id is not None}
+    if not version_to_file:
+        return {}
+    stmt = (
+        select(TracklistTrack.version_id, DiscogsLink)
+        .join(DiscogsLink, DiscogsLink.track_id == TracklistTrack.id)
+        .where(TracklistTrack.version_id.in_(list(version_to_file)), DiscogsLink.status == "accepted")
+        .distinct(TracklistTrack.version_id)
+        .order_by(TracklistTrack.version_id, DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
+    )
+    return {version_to_file[version_id]: link for version_id, link in (await session.execute(stmt)).tuples().all()}
+
+
 async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
     """Get the most recent TagWriteLog for a file (any status/source), for status display."""
     stmt = (
@@ -622,10 +663,15 @@ async def bulk_write_no_discrepancies(
     # services.review imports helpers FROM this module, so importing it back at module scope would
     # cycle; by call time this module is already fully loaded) so the refreshed subcount always
     # matches the row count the operator actually sees after this OOB update lands.
-    from phaze.services.review import get_tagwrite_review_rows  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
+    from phaze.services.review import get_tagwrite_review_page  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
 
-    remaining = len(await get_tagwrite_review_rows(session))
-    subcount = f"{remaining} awaiting approval · mutagen will write these tags"
+    # phaze-bto9: this re-scan is the SECOND full pass of every submit (the first rendered the page
+    # the operator submitted from), so the remediation path used to pay twice over. It is now bounded
+    # the same way the render is -- capped candidate batches, batched per-page lookups -- and reports
+    # a "N+" floor when the scan was truncated, matching the workspace's own subcount exactly.
+    remaining_page = await get_tagwrite_review_page(session)
+    remaining = f"{len(remaining_page.rows)}{'+' if remaining_page.partial else ''}"
+    subcount = f"{remaining} awaiting approval · the file server writes these tags"
     return templates.TemplateResponse(
         request=request,
         name="tags/partials/bulk_write_response.html",
