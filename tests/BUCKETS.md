@@ -49,18 +49,20 @@ The post-reorg full suite MUST report the same **2566 passed** (no test lost, no
 > (`just test-bucket services`, `--cov=phaze`); the sidecars' own code stays out of the
 > `source=["phaze"]` coverage gates by design.
 >
-> **Removed (phaze-0jpe.3):** the `services` bucket and `tests/services/` were deleted
-> along with the `services/audfprint/` and `services/panako/` sidecars themselves — both
-> engines were removed from the product entirely (epic phaze-0jpe). `tests/buckets.json`
-> is back to 9 entries.
-
-> **Removal (phaze-0jpe):** the `fingerprint` bucket (6 files) is gone — audio fingerprinting was
-> removed from the product, so the code those tests covered no longer exists. Two files that lived
-> under `tests/fingerprint/` were NOT fingerprint tests: `test_queue_introspection.py` (the SAQ
-> `active` breakdown, phaze-grx3) and `test_aborting_reaper.py` (the zombie-`aborting` reaper,
-> phaze-e57w) both exercise shared broker machinery and merely used a fingerprint task name in their
-> fixtures. They moved to `tests/analyze/services/` and `tests/analyze/tasks/` re-keyed to
-> `process_file`, which is why `analyze` reads 31 above rather than 29.
+> **Removed (epic phaze-0jpe):** audio fingerprinting was removed from the product entirely, and
+> it took TWO buckets with it — `tests/buckets.json` is now the **8** entries listed above. Neither
+> removal is a rename; in both cases the directory the bucket existed to home is gone.
+>
+> * **`services`** (phaze-0jpe.3) — deleted along with `tests/services/` and the
+>   `services/audfprint/` + `services/panako/` sidecars themselves. The bucket was added by
+>   phaze-uciu.1 for exactly those sidecar regressions and has no other inhabitants.
+> * **`fingerprint`** (phaze-0jpe.2) — 6 files, covering code that no longer exists. Two files
+>   that lived under `tests/fingerprint/` were NOT fingerprint tests:
+>   `test_queue_introspection.py` (the SAQ `active` breakdown, phaze-grx3) and
+>   `test_aborting_reaper.py` (the zombie-`aborting` reaper, phaze-e57w) both exercise shared
+>   broker machinery and merely used a fingerprint task name in their fixtures. They moved to
+>   `tests/analyze/services/` and `tests/analyze/tasks/` re-keyed to `process_file`, which is why
+>   `analyze` reads 31 above rather than 29.
 
 ## File -> bucket assignment
 
