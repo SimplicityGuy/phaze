@@ -475,6 +475,28 @@ async def test_precondition_failures_exit_config(job_env, monkeypatch, scenario,
     assert exc.value.code != jr.EXIT_DOWNLOAD
 
 
+@pytest.mark.parametrize("missing_env", ["PHAZE_AGENT_TOKEN", "PHAZE_AGENT_API_URL"])
+async def test_settings_validation_error_exits_config(job_env, monkeypatch, missing_env):  # type: ignore[no-untyped-def]
+    """A pydantic ``ValidationError`` from ``get_settings()`` maps to EXIT_CONFIG (20), not 1.
+
+    ``AgentSettings._enforce_required_agent_fields`` raises ``ValidationError`` when a
+    required agent env var (PHAZE_AGENT_TOKEN / PHAZE_AGENT_API_URL) is absent -- this
+    happens BEFORE the ``isinstance(cfg, AgentSettings)`` guard ever runs, so left
+    uncaught it would propagate out of ``run()`` as an unclassified exit 1 instead of
+    the documented startup/precondition code 20 (WR-02).
+    """
+    from phaze.config import get_settings
+    import phaze.job_runner as jr
+
+    monkeypatch.delenv(missing_env, raising=False)
+    get_settings.cache_clear()
+
+    with pytest.raises(SystemExit) as exc:
+        await jr.run()
+
+    assert exc.value.code == jr.EXIT_CONFIG == 20
+
+
 @respx.mock
 async def test_ca_verify_threads_baked_ca(job_env, monkeypatch):  # type: ignore[no-untyped-def]
     """The client is built with ``verify=<baked CA path>``; never ``verify=False`` (KJOB-05, T-52-01)."""

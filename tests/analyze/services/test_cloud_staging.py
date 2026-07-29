@@ -694,8 +694,86 @@ async def test_drop_pending_discards_parked_enqueue_without_firing(
     task_router = FakeTaskRouter()
     await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
     # Simulate the caller rolling the tick back: the upsert AND its parked enqueue must both vanish.
-    cloud_staging.drop_pending_s3_enqueues(session)
+    await cloud_staging.drop_pending_s3_enqueues(session)
     await session.rollback()
 
     assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
     assert task_router.captures == []  # the orphan job was never fired
+
+
+async def test_drop_pending_aborts_the_multipart_the_dropped_enqueue_named(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-cws5: dropping a parked enqueue best-effort ABORTS the multipart it named, not just the enqueue.
+
+    Pre-fix, ``drop_pending_s3_enqueues`` discarded the parked enqueue but left the real S3 multipart
+    upload ``_stage_file_to_s3`` created untouched -- a rollback on the CALLER's side (a later
+    candidate poisoning the transaction, or the caller's own post-loop commit failing) orphaned it
+    forever, since ``upload_id`` was never persisted (the row that would have carried it just rolled
+    back). Spies on the real (moto-backed) ``abort_multipart_upload`` so the assertion proves the SAME
+    upload_id ``create_multipart_upload`` minted is the one actually aborted.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+    file_id = file.id
+
+    real_create = s3_staging.create_multipart_upload
+    created_ids: list[str] = []
+
+    async def _spy_create(*args: object, **kwargs: object) -> str:
+        upload_id = await real_create(*args, **kwargs)  # type: ignore[arg-type]
+        created_ids.append(upload_id)
+        return upload_id
+
+    real_abort = s3_staging.abort_multipart_upload
+    aborted: list[tuple[object, ...]] = []
+
+    async def _spy_abort(*args: object, **kwargs: object) -> None:
+        aborted.append(args)
+        await real_abort(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s3_staging, "create_multipart_upload", _spy_create)
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _spy_abort)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+    assert len(created_ids) == 1
+
+    # Simulate a rollback that happens on the CALLER's side -- outside _stage_file_to_s3's own
+    # phaze-bbwx compensation (which only covers a raise INSIDE the core).
+    await cloud_staging.drop_pending_s3_enqueues(session)
+    await session.rollback()
+
+    assert aborted == [(file_id, created_ids[0], bucket)]
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
+
+
+async def test_drop_pending_abort_failure_does_not_raise(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-cws5: a failing best-effort abort must never mask the original rollback / raise on its own.
+
+    Mirrors the phaze-bbwx compensation's discipline: the abort is best-effort logging only, so a
+    wedged/unreachable bucket at drop time can never turn a clean rollback into a crash.
+    """
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    file = await _seed_file(session, fileserver.id, file_size=_PART_SIZE)
+
+    async def _boom_abort(*_args: object, **_kwargs: object) -> None:
+        raise s3_staging.S3StagingError("bucket unreachable")
+
+    task_router = FakeTaskRouter()
+    await cloud_staging._stage_file_to_s3(session, file, task_router, bucket)
+
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", _boom_abort)
+
+    await cloud_staging.drop_pending_s3_enqueues(session)  # must NOT raise despite the failing abort
+    await session.rollback()
+
+    assert await cloud_staging.flush_pending_s3_enqueues(session) == 0
