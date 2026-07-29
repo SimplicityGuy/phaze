@@ -410,7 +410,17 @@ async def delete_scan(
 async def trigger_scan(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
-    agent_id: Annotated[str, Form()],
+    # phaze-oldp: mirrors the sibling agent_roots_swap's `Query(pattern=..., max_length=128)`
+    # (agent-roots swap target above), which is itself the wire mirror of the
+    # `CheckConstraint("id ~ '^[a-z0-9]+(-[a-z0-9]+)*$'")` on Agent.id (models/agent.py). Without
+    # a signature-level bound, a NUL-bearing agent_id (never a valid id -- it can never match the
+    # constraint) reached `session.get(Agent, form.agent_id)` below unfiltered and 500'd: Postgres
+    # cannot bind NUL in a UTF8 text comparison at all, even to fail to match. A stricter
+    # signature rejects it as a 422 at the boundary instead (this handler's own docstring carves
+    # a 422 out for "a genuinely unintelligible envelope" -- an id that can never denote a real
+    # agent is exactly that, unlike scan_root/subpath which stay free-form Form() since they are
+    # validated against agent.scan_roots content, not a charset).
+    agent_id: Annotated[str, Form(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=128)],
     scan_root: Annotated[str, Form()],
     subpath: Annotated[str, Form()] = "",
 ) -> HTMLResponse:

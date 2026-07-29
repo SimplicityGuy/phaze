@@ -237,7 +237,10 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/duplicates/resolve-all", "group_hashes"): "list[str] Form; each element matched against known group hashes",
     # Trigger-scan form: validated server-side against the selected agent's ``scan_roots`` (D-06 /
     # WR-05) before any use, and never stored raw.
-    ("/pipeline/scans", "agent_id"): "validated against the known agent set (D-06) before use",
+    # phaze-oldp: ``agent_id`` no longer needs an entry here -- it now carries an explicit
+    # ``pattern=``/``max_length=128`` bound (mirroring ``/pipeline/agent-roots``' identically-bound
+    # ``agent_id``, which likewise has no registry entry), so it satisfies rule 1 via the bound
+    # itself rather than a classification.
     ("/pipeline/scans", "scan_root"): "must be literal member of agent.scan_roots (WR-05)",
     ("/pipeline/scans", "subpath"): "NFC-normalized + prefix-validated against agent.scan_roots (D-06)",
     ("/admin/agents", "agent"): "selector resolved against the loaded agent list, not stored",
