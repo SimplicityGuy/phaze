@@ -194,10 +194,12 @@ phaze/
 │   ├── integration/               #   End-to-end + Alembic migration tests (test_migrations/)
 │   └── shared/                    #   Config, template-helper, utils, and cross-cutting tests
 ├── alembic/                    # Database migrations (async template)
-│   └── versions/               #   Migration scripts (7): the flattened 039_baseline_schema.py plus the
-│                               #   post-baseline chain 040..045 (tag_write_log timestamptz, tracklist_version
+│   └── versions/               #   Migration scripts (10): the flattened 039_baseline_schema.py plus the
+│                               #   post-baseline chain 040..048 (tag_write_log timestamptz, tracklist_version
 │                               #   unique, scheduling_ledger redrive_attempt, discogs one-accepted-per-track,
-│                               #   scan_batches no-duplicate-running, files.original_filename_repaired)
+│                               #   scan_batches no-duplicate-running, files.original_filename_repaired,
+│                               #   046 drop fingerprint schema, 047 drop analysis.fingerprint,
+│                               #   048 files (original_filename, id) btree) — head is 048
 ├── .github/workflows/          # CI/CD pipelines
 │   ├── ci.yml                  #   Main orchestrator
 │   ├── code-quality.yml        #   Pre-commit hooks
@@ -218,7 +220,7 @@ phaze/
 │   ├── perf_analyze_workspace.py # Baseline the Analyze-workspace slowdown at 200K scale
 │   ├── analyze_browser_soak.py #   Real-browser verification of the Analyze workspace at 200K scale
 │   ├── backfill_mojibake_filenames.py # One-shot operator backfill of files.original_filename_repaired (phaze-x4ux)
-│   └── parity/                 #   Fingerprint-engine parity fixtures (compare/dump analysis, reference.wav)
+│   └── parity/                 #   Essentia-analysis parity fixtures (compare/dump/generate analysis, reference.wav)
 ├── docker-compose.yml          # Service orchestration
 ├── docker-compose.dev.yml      # Local development overlay (opt-in: just up-dev; never auto-merged)
 ├── docker-compose.agent.yml    # Distributed file-server agent stack

@@ -4,9 +4,11 @@
 concurrent seat landed on the same logical database, ``redis://localhost:6380/0``. That broke
 parallel runs two ways:
 
-* **Destructively** — three modules run a global ``scan_iter``+``delete`` sweep over ``exec:*``,
-  ``exec_progress_req:*`` and ``tracklist_req:*`` in fixture setup AND teardown, so one seat's
-  fixture deleted another seat's live keys mid-test.
+* **Destructively** — two modules (``tests/review/routers/test_execution_dispatch.py`` and
+  ``tests/review/routers/test_agent_exec_batches.py``) run a global ``scan_iter``+``delete``
+  sweep over ``exec:*``, ``exec_progress_req:*`` and ``execdispatch:*`` in fixture setup AND
+  teardown, so one seat's fixture deleted another seat's live keys mid-test. (``tracklist_req:*``
+  was swept when phaze-fwo7 was written and no longer is; ``execdispatch:*`` was added since.)
 * **Observationally** — assertions in ``test_execution_dispatch.py`` counted the *global* keyspace
   (``len(exec_keys) == 1``), so any concurrent seat holding an ``exec:*`` key failed them.
 

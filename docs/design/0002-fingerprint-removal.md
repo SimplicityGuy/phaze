@@ -147,8 +147,15 @@ It plausibly dates from the original `pyacoustid`/AcoustID fingerprinting plan t
 implemented (superseded by the `audfprint`/Panako pipeline this epic removed) and was never
 cleaned up afterward. This is **not** a claim that the dependency is proven unnecessary — a
 runtime `dlopen` path was not exhaustively ruled out, only the static link and the plain
-`import essentia` path — so it is kept, unverified, pending an operator decision on whether to
-drop it. Removing it is out of scope for this epic; that is why it survives phaze-0jpe.
+`import essentia` path — so it is kept, unverified. Removing it was out of scope for this epic;
+that is why it survives phaze-0jpe.
+
+**Resolved 2026-07-29 — chromaprint is retained permanently.** The operator closed the open
+phaze-0jpe.6 question as **"keep"**: the `dlopen` uncertainty above was never resolved and the
+cost of carrying the package is trivial, so the balance favours retention over a removal that
+could only be validated in production. This is a settled decision, not a deferral — chromaprint
+should not be re-proposed as cleanup work, and docs must not describe its retention as
+"pending".
 
 ## Consequences
 

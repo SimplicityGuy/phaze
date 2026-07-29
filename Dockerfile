@@ -70,8 +70,10 @@ WORKDIR /app
 # without it, and no `phaze` source calls fpcalc/chromaprint/Chromaprinter/acoustid.
 # It plausibly dates from the original pyacoustid/AcoustID fingerprinting plan
 # that was superseded by the audfprint/Panako pipeline (itself removed, epic
-# phaze-0jpe) and never cleaned up. Left installed pending a separate operator
-# decision to drop it -- see docs/design/0002-fingerprint-removal.md.
+# phaze-0jpe) and never cleaned up. Operator decision 2026-07-29: KEEP permanently
+# (phaze-0jpe.6 closed as "keep") -- a runtime dlopen path was never ruled out and
+# the install cost is trivial. Deliberate retention, not a deferral: do not file
+# this as cleanup. See docs/design/0002-fingerprint-removal.md.
 # libpq5 (v4.1.1): provides libpq.so.5 for psycopg's SAQ PostgresQueue broker (Phase 36).
 # psycopg[binary] bundles its own libpq, but libpq5 is a belt-and-suspenders fallback for
 # the pure-Python psycopg path — without a libpq backend, `import phaze.main` crash-loops

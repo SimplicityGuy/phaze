@@ -8,6 +8,16 @@
 | **Investigation** | `phaze-ytgo` (epic, closed 9/9) |
 | **Supersedes** | — |
 
+> **Post-decision note (2026-07-29) — a premise expired, the decision stands.** Epic
+> `phaze-0jpe` (2026-07-28) removed audio fingerprinting from phaze entirely
+> ([ADR-0002](0002-fingerprint-removal.md)). The P1 rationale below rests on a premise that is
+> no longer true — "Dedup and rename continue to rest on the existing fingerprinting engines"
+> (Consequences → Accepted) — because there are no longer any fingerprinting engines to rest
+> on. Per operator decision 2026-07-29 the **NO-GO stands as written**: nothing in this ADR's
+> cost, licence or feasibility analysis changed. What *is* re-opened is the narrower question
+> of how phaze should detect near-duplicates now that fingerprinting is gone; that is tracked
+> as its own decision bead and is not decided here.
+
 ______________________________________________________________________
 
 ## Context
@@ -184,7 +194,7 @@ These were surfaced by the investigation but are **independent of it**, and are 
 | `phaze-knwk` | `docker-compose.yml` sets no `shm_size` on postgres, leaving parallel dynamic-shared-memory allocations against Docker's 64 MB default. Proven for index builds; whether today's parallel query workload is already affected is that bead's first task. |
 | `phaze-tcqq` | The pinned Postgres image is hardcoded in 10 places with no single source of truth — 4 of them `echo` strings, so a partial version bump prints the old tag while running the new one. |
 | `phaze-gfdx` | Worktree provisioning invokes a `just setup` recipe that does not exist, so no development seat gets working pre-commit hooks. |
-| `phaze-dnso` | **Pre-existing P1.** phaze publishes container images conveying AGPL-3.0 Panako from an MIT repository with no NOTICE and no source offer. Its supporting analysis is `docs/spikes/phaze-ytgo.5-agpl-mit-compliance.md`, landing with this ADR. |
+| `phaze-dnso` | **Pre-existing P1 — conveyance stopped 2026-07-28.** phaze published container images conveying AGPL-3.0 Panako from an MIT repository with no NOTICE and no source offer. `phaze-0jpe` removed Panako from the images on 2026-07-28, so no newly built tag conveys it; the remaining exposure is the set of previously published GHCR tags, whose deletion is tracked as a separate ops bead. Its supporting analysis is `docs/spikes/phaze-ytgo.5-agpl-mit-compliance.md`, landing with this ADR. |
 
 ### Clean-room policy correction — retained
 

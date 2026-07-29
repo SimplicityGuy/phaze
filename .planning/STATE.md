@@ -3,31 +3,39 @@ gsd_state_version: 1.0
 milestone: 2026.7.7
 milestone_name: Console & Cloud-Burst Hardening
 status: roadmapped
-last_updated: "2026-07-14T23:46:41.049Z"
-last_activity: 2026-07-14
+last_updated: "2026-07-29T00:00:00.000Z"
+last_activity: 2026-07-29
 progress:
   total_phases: 10
-  completed_phases: 0
+  completed_phases: 10
   total_plans: 0
   completed_plans: 0
-  percent: 0
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-06 — 2026.7.2 Multi-Compute Agents shipped)
+See: .planning/PROJECT.md (updated 2026-07-29 — reconciled with the 2026-07-28/29 fix push and the phaze-0jpe fingerprint removal)
 
-**Core value:** Get 200K messy music and concert files properly named, organized, deduplicated, with rich metadata in Postgres -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
-**Current focus:** 2026.7.7 roadmap created — phases 93-102 mapped; ready to plan Phase 93
+**Core value:** Get a ~200K-file messy music and concert collection properly named, organized, deduplicated, with rich metadata in Postgres (11,412 files ingested so far) -- human-in-the-loop approval so nothing moves without review. Files stay on file-server agents; decisions stay on the application server.
+**Current focus:** 2026.7.7 — all ten phases (93-102) complete; the remaining gap is the MIG-01/02/03 traceability rows, still Pending, plus the gated prod migration 045 → 048
 
 ## Current Position
 
-Phase: 93 (not started) — Console Derived-Status Truthfulness
+Phase: all of 93-102 complete
 Plan: —
-Status: Roadmap created (10 phases, 93-102); awaiting phase planning
-Last activity: 2026-07-14 — 2026.7.7 roadmap created, 15/15 requirements mapped 1:1
+Status: 2026.7.7 phases 93-102 all ticked in ROADMAP.md; the 12 CONSOLE/COMPUTE/DRAIN/OBS
+requirements are Complete with bead/PR evidence. MIG-01/02/03 traceability rows remain **Pending**.
+Last activity: 2026-07-29 — phaze-pw7v.10 cross-walked fix-round outcomes against
+ROADMAP/REQUIREMENTS and re-ticked them
+
+> **Why this jumped from "not started" to complete in one edit.** The phases were delivered
+> 2026-07-14/16 by dedicated epics (phaze-nawk, phaze-zlv, phaze-qtk, phaze-ph99, phaze-sfbx);
+> their checkboxes were simply never synced back. The 2026-07-28/29 fix rounds did **not** deliver
+> them — those PRs fixed unrelated v7-shell / stats-counter / cloud-burst-race bugs. This is a
+> bookkeeping correction, not new delivery.
 
 ## Performance Metrics
 
@@ -143,9 +151,9 @@ Last activity: 2026-07-14 — 2026.7.7 roadmap created, 15/15 requirements mappe
 
 ### Pending Todos
 
-3 pending (`.planning/todos/pending/`):
+2 pending (`.planning/todos/pending/`) — `analysis-completed-at-backfill.md` has since moved to
+`.planning/todos/completed/`:
 
-- `analysis-completed-at-backfill.md` — analyzed ⇒ analysis_completed_at: 1001 prod rows fail the shadow gate (Phase 84 UAT)
 - `2026-07-14-analysis-pod-progress-post-connecttimeout-spam-event-loop-st.md` — cloud analysis pod progress-POST ConnectTimeout spam (in-pod GIL/event-loop starvation, not the API); minor, log-noise + dead progress bar only (2026.7.6 drain)
 - `2026-07-14-human-friendly-analysis-pod-console-logs-with-file-context-a.md` — pretty-ify pod console logs: file identity, source path, live progress indicator (2026.7.6 drain, operator request)
 
@@ -236,7 +244,13 @@ Last activity: 2026-07-14 — 2026.7.7 roadmap created, 15/15 requirements mappe
 ## Deferred Items
 
 Items acknowledged and deferred at the **2026.7.5** milestone close on 2026-07-14. All are
-**deployment-gated** — they unblock on the live `032→039` migration rollout against the drained prod corpus (prod is at Alembic 031). None block the milestone record; all 45 requirements are satisfied.
+**deployment-gated** — they unblock on the live migration rollout against the drained prod corpus.
+None block the milestone record; all 45 requirements are satisfied.
+
+> **Verified production migration position: 045 as of 2026-07-29** (read from `alembic_version` on
+> the production Postgres container). Migrations `046`-`048` are pending; that gated upgrade is
+> tracked as its own operations bead. This corrects the earlier claim in this section that prod was
+> at Alembic `031`, which was wrong.
 
 | Category | Item | Status | Why deferred |
 |----------|------|--------|--------------|
@@ -310,10 +324,21 @@ These are tracked follow-ups; none blocks the 2026.7.1 milestone record. The PRO
 
 ## Session Continuity
 
-Last session: 2026-07-13T22:58:07.016Z
-Stopped at: Phase 92 context gathered
-Resume file: .planning/phases/92-milestone-close-tech-debt-cleanup/92-CONTEXT.md
+The 2026-07-13 "stopped at Phase 92 context gathered" pointer is superseded: Phase 92 closed, and
+work since has run through beads rather than the phase-resume flow (the 2026-07-28/29 fix push,
+~94 beads across PRs #349-#381, plus the phaze-0jpe fingerprint-removal epic). Use `bh work ready`
+to pick up current work; there is no phase resume file to return to.
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- **Gated production migration upgrade: 045 → 048.** Prod is at 045 as of 2026-07-29; `046` (drop
+  fingerprint schema), `047` (drop `analysis.fingerprint`) and `048` (`files (original_filename,
+  id)` btree) are pending. Tracked as its own operations bead.
+- **Delete the historical Panako-carrying GHCR image tags.** Panako left the images on 2026-07-28,
+  but previously published tags still convey AGPL-3.0 from an MIT repo. Tracked as its own
+  operations bead.
+- **Decide the near-duplicate detection strategy** now that fingerprinting is gone (ADR-0002
+  removed the capability; ADR-0001's NO-GO stands). Tracked as its own decision bead.
+
+*("Start the next milestone with /gsd-new-milestone" was removed — 2026.7.7 is active and three of
+its ten phases are already complete.)*

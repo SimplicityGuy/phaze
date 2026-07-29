@@ -254,13 +254,17 @@ An unknown stage returns **422** (validated against the metadata/analyze allowli
 ```bash
 git clone https://github.com/SimplicityGuy/phaze.git
 cd phaze
-uv sync
+just install                   # uv sync PLUS the Tailwind CSS build (bare `uv sync` skips the CSS)
 cp .env.example .env          # Edit to configure paths and API keys
 just download-models           # Required for audio analysis
-just up-all                    # Start all services (core + agent stacks)
+just up                        # Start the core stack (api, worker, postgres, redis)
 just db-upgrade                # Run database migrations
 curl --cacert ./certs/phaze-ca.crt https://localhost:8000/health   # Verify: {"status": "ok"}
 ```
+
+> To bring up the agent stack too (`just up-all`), **register an agent first** — see
+> [deployment.md Step 3](docs/deployment.md). Started without a registered agent and token, the
+> agent workers cannot authenticate and will crash-loop.
 
 | Service          | URL                     | Default Credentials         |
 | ---------------- | ----------------------- | --------------------------- |
@@ -356,10 +360,24 @@ use.
 have nothing exported and no services running) auto-provisions: if `TEST_DATABASE_URL` isn't
 already set in the environment, it runs `just test-db` first and exports the matching
 `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` before running the suite.
-It never tears the services down afterward (unlike `integration-test`'s EXIT trap) so it's safe to
-run repeatedly, including from concurrent worktrees sharing the same `phaze-test-db`/`phaze-test-redis`
-containers — stop them explicitly with `just test-db-down` when done. Exporting `TEST_DATABASE_URL`
-yourself (e.g. a per-worktree database name) always takes precedence and skips provisioning.
+It never tears the services down afterward (unlike `integration-test`'s EXIT trap). Exporting
+`TEST_DATABASE_URL` yourself (e.g. a per-worktree database name) always takes precedence and skips
+provisioning.
+
+> **The auto-provision path is single-seat only — it is *not* safe from concurrent worktrees.**
+> With `TEST_DATABASE_URL` unset, every caller resolves to the *same* DSN and to `PHAZE_REDIS_URL`
+> DB 0 (`justfile:636-641`), so two seats collide on one database and one logical Redis. Since
+> phaze-ieqg the second pytest session is **hard-refused before collection** with a
+> `SharedTestDatabaseError` naming the holder's pid, rather than silently corrupting both runs.
+> For concurrent worktrees run `just test-db-for <name>` and export all three lines it prints —
+> that is the supported way to run in parallel, and it is verified green.
+
+> **`just test-db-down` is no longer unconditional.** `phaze-test-db` and `phaze-test-redis` are
+> **one shared pair of containers** that `test-db-for` carves seats out of, so tearing them down
+> mid-round destroys every other seat's database and resets the Redis allocation registry. Since
+> phaze-sco9 it **refuses while any client is connected** to a `phaze%test` database and lists the
+> seats it is protecting (`justfile:454-491`). Use `PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down`
+> only for genuinely stale connections.
 
 ### 🔍 Code Quality
 
@@ -411,7 +429,7 @@ This project is licensed under the MIT License -- see the [LICENSE](LICENSE) fil
 ## 🙏 Acknowledgments
 
 - 🎼 [discogsography](https://github.com/SimplicityGuy/discogsography) for the CI/CD patterns, project conventions, and HTTP API integration target that shaped this project
-- 🎵 [Discogs](https://www.discogs.com/) and [AcoustID](https://acoustid.org/) for music identification services
+- 🎵 [Discogs](https://www.discogs.com/) for music identification services
 - 🎧 [1001Tracklists](https://www.1001tracklists.com/) for concert tracklist data
 - 🚀 [uv](https://github.com/astral-sh/uv) for blazing-fast package management
 - 🔥 [Ruff](https://github.com/astral-sh/ruff) for lightning-fast linting

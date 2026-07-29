@@ -134,7 +134,7 @@ If you get a connection error, the containers may still be starting — check
 | ------- | ------------- | ----- | ----- |
 | 🖥️ **Web UI / API** | https://localhost:8000 | core (`just up`) | FastAPI app + HTMX admin UI. HTTPS with a self-signed internal CA — browsers warn until you trust `certs/phaze-ca.crt`; curl needs `--cacert ./certs/phaze-ca.crt`. Plain HTTP only under `just up-dev`. |
 | 🐘 **PostgreSQL** | `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | core (`just up`) | user `POSTGRES_USER` (default `phaze`); `POSTGRES_PASSWORD` is **required** — compose fails to parse without it |
-| 🔴 **Redis** | `localhost:6379` | core (`just up`) | bound to `127.0.0.1` in dev; password from `REDIS_PASSWORD` |
+| 🔴 **Redis** | `${REDIS_BIND_IP:-127.0.0.1}:6379` | core (`just up`) | bound to `127.0.0.1` in dev; override `REDIS_BIND_IP` to a LAN IP so off-host agents can connect. Password from `REDIS_PASSWORD` (**required** — compose fails to parse without it) |
 
 ## 🔄 Your First Workflow
 
@@ -211,6 +211,52 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
    from the execution view (`POST /execution/start`), with live progress at
    `GET /execution/progress/{batch_id}`. The audit trail of every operation is at
    https://localhost:8000/audit/.
+
+## 🧪 Running the tests
+
+The suite needs a real Postgres and Redis. Bring the harness up, then run it:
+
+```bash
+just test-db        # shared test harness: Postgres on 5433, Redis on 6380
+just check          # lint + typecheck + full suite (auto-provisions if nothing is exported)
+```
+
+**One database, one pytest process.** `tests/conftest.py` creates the schema at session start and
+drops it at session teardown, so two pytest processes on the same database destroy each other —
+whichever finishes first pulls the schema out from under the other, and the loser fails with
+hundreds of `relation "…" does not exist` errors that all pass on isolated re-run.
+
+Since phaze-ieqg that is prevented rather than merely documented: `pytest_sessionstart` takes a
+Postgres advisory lock on the resolved database and holds it for the whole run. A second process is
+refused **before collection** with `SharedTestDatabaseError`, naming the holder's pid. That error
+comes from `tests/db_guard.py`; it is a harness precondition, not a bug in the suite.
+
+The trap is ordinary: re-running a subset "just to check something" in a second terminal while the
+full suite is still going is enough to trigger it.
+
+**Working in more than one worktree at a time?** Isolate each seat — never share Postgres *or*
+Redis:
+
+```bash
+just test-db-for <name>
+```
+
+It creates `phaze_<name>_test` + `phaze_<name>_migrations_test` and allocates a dedicated Redis
+logical database, then prints three exports. Export **all three**:
+
+```bash
+export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_test"
+export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_migrations_test"
+export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
+```
+
+Exporting only the first is the common mistake: Redis stays shared and one seat's fixture sweep
+deletes another's live keys mid-test. Two worktrees with their own `test-db-for` databases are the
+supported way to run concurrently.
+
+Every run prints its resolved target in the pytest header — check it before trusting a green run.
+`exclusive` means this process holds the lock; `unlocked` means it does not, and the run is
+unprotected. See [CLAUDE.md](../CLAUDE.md) for the full rules.
 
 ## 🩹 Common Setup Issues
 
