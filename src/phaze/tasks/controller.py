@@ -323,7 +323,16 @@ settings = {
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
-        CronJob(refresh_tracklists, cron="0 3 1 * *"),  # type: ignore[type-var]
+        # phaze-tkd0: give the monthly refresh an explicit UNBOUNDED budget (mirrors the
+        # scan_directory pattern at routers/pipeline_scans.py). With no explicit timeout, SAQ's
+        # Worker.schedule() enqueues the Job at the SAQ-library default (10s), which
+        # apply_project_job_defaults (a before_enqueue hook, also applied to cron-scheduled jobs)
+        # only raises to worker_job_timeout=600s. refresh_tracklists loops in-process over every
+        # stale/unresolved tracklist, sleeping 60-300s jitter per item PLUS an 8-12s rate-limited
+        # scrape (average ~200s/item) -- any run touching more than ~3 candidates was hard-cancelled
+        # by asyncio.wait_for at the 600s wall, retried up to worker_max_retries times, and recorded
+        # FAILED every time without ever reaching the rest of the matched set (bughunt-2026-07-27).
+        CronJob(refresh_tracklists, cron="0 3 1 * *", timeout=0),  # type: ignore[type-var]
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
         # 5-field standard cron form, matching refresh_tracklists above.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
