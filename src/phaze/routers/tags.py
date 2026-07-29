@@ -10,7 +10,9 @@ outright; ``GET /tags/`` now only resolves the legacy bookmark into the shell (S
 ``write_file_tags``/``undo_tag_write`` always return the v7 ``_diff_row.html`` shape.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 import uuid
 
@@ -25,11 +27,10 @@ import structlog
 from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
-from phaze.models.metadata import FileMetadata
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.stage_status import applied_clause, is_applied
-from phaze.services.tag_proposal import CORE_FIELDS, compute_proposed_tags
+from phaze.services.tag_proposal import CORE_FIELDS, TagFieldSource, compute_proposed_tags
 from phaze.services.tag_writer import execute_tag_write
 
 
@@ -271,7 +272,7 @@ async def _get_write_log_to_undo(session: AsyncSession, file_id: uuid.UUID) -> T
 
 
 def _build_comparison(
-    file_metadata: FileMetadata | None,
+    file_metadata: TagFieldSource | None,
     proposed_tags: dict[str, str | int | None],
 ) -> list[dict[str, Any]]:
     """Build comparison list for all CORE_FIELDS."""
@@ -494,6 +495,50 @@ async def write_file_tags(
     return _tagwrite_diff_row_response(request, row_context, toast_message)
 
 
+@dataclass(frozen=True, slots=True)
+class _BulkCandidate:
+    """Plain (non-ORM) snapshot of one bulk-write candidate file (phaze-o2ln).
+
+    ``bulk_write_no_discrepancies`` used to iterate live ``FileRecord`` ORM instances and read
+    ``fr.id`` / ``fr.original_filename`` / ``fr.file_metadata`` throughout the loop. A per-file
+    ``session.rollback()`` (the ``except Exception`` branch below) expires EVERY object still in the
+    session's identity map, not just the one that failed -- so a LATER iteration touching any of
+    those attributes on the (now expired) ``fr`` triggered a lazy reload, which under the async
+    engine raises ``MissingGreenlet`` (or, for attributes reached inside a broader ``try``, gets
+    miscounted as a spurious ``failed`` outcome for a file nothing was ever attempted on). Capturing
+    every needed field into a plain object OUTSIDE the identity map -- built right after the
+    candidate SELECT, before any rollback can happen -- makes the rest of the loop immune: nothing
+    here can ever be expired by a SQLAlchemy transaction event.
+
+    Satisfies :class:`phaze.services.tag_writer.TagWriteTarget` (``id`` + ``current_path``), so it
+    can be passed to :func:`~phaze.services.tag_writer.execute_tag_write` directly in place of the
+    live ``FileRecord``.
+    """
+
+    id: uuid.UUID
+    original_filename: str
+    current_path: str
+    metadata: SimpleNamespace | None
+
+
+def _snapshot_bulk_candidate(file_record: FileRecord) -> _BulkCandidate:
+    """Build a :class:`_BulkCandidate` from a freshly-loaded ``FileRecord`` (phaze-o2ln).
+
+    ``file_record.file_metadata`` is snapshotted into a plain ``SimpleNamespace`` carrying only
+    :data:`CORE_FIELDS` -- the exact surface :func:`~phaze.services.tag_proposal.compute_proposed_tags`
+    and :func:`_build_comparison` read via ``getattr(..., field, None)``, so the snapshot is a
+    drop-in substitute for the live ``FileMetadata`` relationship in both call sites.
+    """
+    metadata = file_record.file_metadata
+    snapshot = SimpleNamespace(**{field: getattr(metadata, field, None) for field in CORE_FIELDS}) if metadata is not None else None
+    return _BulkCandidate(
+        id=file_record.id,
+        original_filename=file_record.original_filename,
+        current_path=file_record.current_path,
+        metadata=snapshot,
+    )
+
+
 def _bulk_write_toast(written: int, discrepancy: int, verify_failed: int, failed: int) -> str:
     """Build a truthful bulk-write toast (phaze-5j82).
 
@@ -584,12 +629,13 @@ async def bulk_write_no_discrepancies(
                 .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
             )
             file_records = list((await session.execute(stmt)).scalars().all())
+            # phaze-o2ln: snapshot every field the loop (or execute_tag_write) needs OUTSIDE the ORM
+            # identity map, right after the SELECT and before any per-file rollback can expire it --
+            # see _BulkCandidate's docstring.
+            candidates = [_snapshot_bulk_candidate(fr) for fr in file_records]
 
-            for fr in file_records:
-                # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM
-                # instance, so a later ``fr.id`` access would trigger a lazy reload (async IO) from
-                # a sync context.
-                file_id = fr.id
+            for candidate in candidates:
+                file_id = candidate.id
                 # phaze-k7g6: isolate each file. A single bad file (e.g. a ValueError from a
                 # concurrently un-applied file, or a transient read error) must SKIP -- never abort
                 # the batch and never discard the already-committed audit rows of prior files.
@@ -603,8 +649,8 @@ async def bulk_write_no_discrepancies(
 
                     tracklist = await _get_tracklist_for_file(session, file_id)
                     discogs_link = await _get_accepted_discogs_link(session, file_id)
-                    proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-                    comparison = _build_comparison(fr.file_metadata, proposed)
+                    proposed = compute_proposed_tags(candidate.metadata, tracklist, candidate.original_filename, discogs_link=discogs_link)
+                    comparison = _build_comparison(candidate.metadata, proposed)
                     if _count_changes(comparison) < 1:
                         # WR-01: a zero-change applied file has nothing to write. Persist a terminal
                         # NO_OP marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it
@@ -629,7 +675,7 @@ async def bulk_write_no_discrepancies(
                         # so defensive.
                         continue
                     tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-                    log_entry = await execute_tag_write(session, fr, tags, source="proposal")
+                    log_entry = await execute_tag_write(session, candidate, tags, source="proposal")
                     # phaze-k7g6: commit the audit row atomically with the disk mutation it describes,
                     # so a mid-loop cancellation/crash can never leave a written file without its
                     # TagWriteLog (which holds the before_tags UNDO snapshot).

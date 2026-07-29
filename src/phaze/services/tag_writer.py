@@ -8,7 +8,7 @@ NFC Unicode normalization. Creates TagWriteLog audit entries.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 import unicodedata
 
 import mutagen
@@ -22,11 +22,29 @@ from phaze.services.stage_status import is_applied
 
 
 if TYPE_CHECKING:
+    import uuid
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from phaze.models.file import FileRecord
-
 logger = structlog.get_logger(__name__)
+
+
+class TagWriteTarget(Protocol):
+    """Structural subset of ``FileRecord`` :func:`execute_tag_write` actually touches.
+
+    phaze-o2ln: the bulk tag-write loop stopped passing live ``FileRecord`` ORM instances across a
+    per-file ``session.rollback()`` (which expires every attribute of every object still in the
+    identity map, not just the one that failed) and now passes a plain, non-ORM snapshot instead
+    (``routers.tags._BulkCandidate``). This Protocol is the minimal surface both a real
+    ``FileRecord`` and that snapshot satisfy, so this function works unchanged for either caller.
+    """
+
+    @property
+    def id(self) -> uuid.UUID: ...
+
+    @property
+    def current_path(self) -> str: ...
+
 
 # Write maps: field name -> format-specific key/class
 _WRITE_ID3_MAP: dict[str, type] = {
@@ -239,7 +257,7 @@ def _write_and_verify_sync(
 
 async def execute_tag_write(
     session: AsyncSession,
-    file_record: FileRecord,
+    file_record: TagWriteTarget,
     proposed_tags: dict[str, str | int | None],
     source: str,
 ) -> TagWriteLog:
@@ -247,7 +265,8 @@ async def execute_tag_write(
 
     Args:
         session: Async database session.
-        file_record: The FileRecord to write tags to (must be applied -- an executed proposal exists).
+        file_record: The file to write tags to (must be applied -- an executed proposal exists). A
+            live ``FileRecord`` or any :class:`TagWriteTarget`-shaped snapshot (phaze-o2ln).
         proposed_tags: Dict of proposed tag values.
         source: Source of the proposal ("tracklist", "metadata", "manual_edit").
 
