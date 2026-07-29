@@ -199,6 +199,29 @@ class TestTracklistScraperSearch:
         assert TracklistScraper.MIN_DELAY >= 8.0
         assert TracklistScraper.MAX_DELAY >= TracklistScraper.MIN_DELAY
 
+    @pytest.mark.asyncio
+    async def test_search_truncates_oversized_external_id_to_column_width(self):
+        """phaze-7zoh: search-result external_id must also be bounded to Tracklist.external_id's
+        String(50) width -- not just the detail-page path."""
+        long_slug = "b" * 80
+        html = f"""
+        <html><body>
+        <div class="bItm action oItm">
+          <div class="bTitle">
+            <a href="/tracklist/{long_slug}/skrillex-coachella-2025-04-12">Skrillex @ Coachella</a>
+          </div>
+        </div>
+        </body></html>
+        """
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(return_value=_mock_response(200, html))
+
+        scraper = TracklistScraper(client=client)
+        results = await scraper.search("Skrillex")
+
+        assert len(results[0].external_id) == 50
+        assert results[0].external_id == long_slug[:50]
+
 
 class TestTracklistScraperSearchParseFailure:
     """phaze-mk6y: a stale-selector defect must be LOUD, not collapsed into the same [] as a
@@ -353,6 +376,75 @@ class TestTracklistScraperScrape:
 
         assert result.title == "Zeds Dead @ EDC 2025"
         assert result.external_id == "zd99"
+
+    @pytest.mark.asyncio
+    async def test_scrape_drops_oversized_cue_time_instead_of_storing_it(self):
+        """phaze-7zoh: TracklistTrack.timestamp is String(20) -- an over-wide/malformed cueTime
+        value must be dropped to None at the scraper boundary instead of reaching the store
+        transaction, where it would raise StringDataRightTruncation and roll back the batch.
+        """
+        html = """
+        <html><head><title>Test | 1001Tracklists</title></head><body>
+        <div id="tlMeta"><h1>Test</h1></div>
+        <div class="tlpTog">
+          <div class="tlpItem">
+            <span class="trackFormat">
+              <span class="tp"><a>Artist</a></span>
+              <span class="tN">Title</span>
+            </span>
+            <span class="cueTime">01:23:45 - 01:27:10 (encore)</span>
+          </div>
+        </div>
+        </body></html>
+        """
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, html))
+
+        scraper = TracklistScraper(client=client)
+        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
+
+        assert result.tracks[0].timestamp is None
+
+    @pytest.mark.asyncio
+    async def test_scrape_keeps_conforming_cue_time(self):
+        """phaze-7zoh: a well-formed cue time (H:MM or H:MM:SS) still passes through unchanged."""
+        html = """
+        <html><head><title>Test | 1001Tracklists</title></head><body>
+        <div id="tlMeta"><h1>Test</h1></div>
+        <div class="tlpTog">
+          <div class="tlpItem">
+            <span class="trackFormat">
+              <span class="tp"><a>Artist</a></span>
+              <span class="tN">Title</span>
+            </span>
+            <span class="cueTime">5:30</span>
+          </div>
+        </div>
+        </body></html>
+        """
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, html))
+
+        scraper = TracklistScraper(client=client)
+        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
+
+        assert result.tracks[0].timestamp == "5:30"
+
+    @pytest.mark.asyncio
+    async def test_scrape_truncates_oversized_external_id_to_column_width(self):
+        """phaze-7zoh: Tracklist.external_id is String(50) and the ON CONFLICT idempotency key --
+        a URL-shape change that moves a long slug into the first path segment must not blow the
+        column; bound it at the scraper boundary instead.
+        """
+        long_slug = "a" * 80
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
+
+        scraper = TracklistScraper(client=client)
+        result = await scraper.scrape_tracklist(f"https://www.1001tracklists.com/tracklist/{long_slug}/skrillex.html")
+
+        assert len(result.external_id) == 50
+        assert result.external_id == long_slug[:50]
 
 
 class TestTracklistScraperSearchEdgeCases:
