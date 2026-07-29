@@ -67,6 +67,37 @@ class TestParseTrack:
     def test_invalid_returns_none(self):
         assert _parse_track("abc") is None
 
+    # phaze-0do9: _parse_track must degrade an out-of-domain value to None, mirroring
+    # _parse_year's sanity check, instead of returning it unbounded to the wire boundary
+    # (MetadataWriteRequest.track_number is Field(ge=0, le=9999)).
+    def test_negative_string_returns_none(self):
+        assert _parse_track("-1") is None
+
+    def test_date_stuffed_into_track_field_returns_none(self):
+        """Common ripper garbage: a TRCK frame carrying a recording date instead of a track number."""
+        assert _parse_track("20211013") is None
+
+    def test_slash_format_out_of_domain_numerator_returns_none(self):
+        assert _parse_track("10000/10000") is None
+
+    def test_tuple_out_of_domain_returns_none(self):
+        assert _parse_track((10000, 12)) is None
+
+    def test_tuple_negative_returns_none(self):
+        assert _parse_track((-1, 12)) is None
+
+    def test_list_of_tuples_out_of_domain_returns_none(self):
+        assert _parse_track([(20211013, 12)]) is None
+
+    def test_boundary_zero_accepted(self):
+        assert _parse_track("0") == 0
+
+    def test_boundary_9999_accepted(self):
+        assert _parse_track("9999") == 9999
+
+    def test_boundary_10000_rejected(self):
+        assert _parse_track("10000") is None
+
 
 class TestSerializeTags:
     """Tests for _serialize_tags helper."""
