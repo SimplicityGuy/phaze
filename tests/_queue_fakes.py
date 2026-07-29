@@ -36,7 +36,7 @@ from saq import Job
 from sqlalchemy import update
 
 from phaze.models.agent import Agent
-from phaze.services.enqueue_router import LANES
+from phaze.services.enqueue_router import LANES, lane_for_task
 
 
 if TYPE_CHECKING:
@@ -256,6 +256,51 @@ class FakeTaskRouter:
 
     def legacy_base_queue(self, agent_id: str) -> FakeQueue:
         return self.queue_for(agent_id, "")
+
+    async def enqueue_for_agent(
+        self,
+        *,
+        agent_id: str,
+        task_name: str,
+        payload: Any,
+        timeout: int | None = None,
+        retries: int | None = None,
+    ) -> Any:
+        """Mirror the real router's producer entry point: resolve the LANE, then enqueue.
+
+        phaze-6bkk: added because the tag-write and CUE-generate routes are producers now (the api
+        container has no media mount, so it dispatches instead of writing). Resolving the lane via
+        the SAME ``lane_for_task`` the real router uses means a test that forgets to register a new
+        task in ``LANE_TASKS`` fails HERE, loudly, instead of silently exercising a queue no worker
+        consumes.
+        """
+        lane = lane_for_task(task_name)
+        queue = self.queue_for(agent_id, lane)
+        await queue.connect()
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        if retries is not None:
+            extra["retries"] = retries
+        return await queue.enqueue(task_name, **payload.model_dump(mode="json"), **extra)
+
+    async def enqueue_for_file(
+        self,
+        *,
+        file_record: Any,
+        task_name: str,
+        payload: Any,
+        timeout: int | None = None,
+        retries: int | None = None,
+    ) -> Any:
+        """Delegate to :meth:`enqueue_for_agent` using ``file_record.agent_id`` (phaze-c9w9 affinity)."""
+        return await self.enqueue_for_agent(
+            agent_id=file_record.agent_id,
+            task_name=task_name,
+            payload=payload,
+            timeout=timeout,
+            retries=retries,
+        )
 
     def set_counts(self, agent_id: str, *, lane: str | None = None, queued: int = 0, active: int = 0) -> None:
         """Pre-seed a per-agent (per-lane, or base) queue's depth before the service enumerates it.

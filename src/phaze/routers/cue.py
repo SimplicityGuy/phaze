@@ -9,7 +9,6 @@ into the shell (SHELL-05).
 """
 
 from pathlib import Path
-import re
 from typing import Any
 import uuid
 
@@ -25,7 +24,8 @@ from phaze.database import get_session
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string, write_cue_file
+from phaze.schemas.agent_tasks import WriteCueSheetPayload
+from phaze.services.cue_generator import CueTrackData, generate_cue_content, parse_timestamp_string
 from phaze.services.stage_status import applied_clause, is_applied
 
 
@@ -115,25 +115,16 @@ async def _get_eligible_tracklist_query(session: AsyncSession, *, limit: int | N
     return list(result.tuples().all())
 
 
-def _get_cue_version(file_path: str) -> int:
-    """Check filesystem for existing CUE files and return the version number.
-
-    Returns 0 if no CUE exists, 1 if base.cue exists, N for highest .vN.cue.
-    """
-    audio_path = Path(file_path)
-    base_cue = audio_path.parent / f"{audio_path.stem}.cue"
-
-    if not base_cue.exists():
-        return 0
-
-    max_version = 1
-    pattern = re.compile(rf"^{re.escape(audio_path.stem)}\.v(\d+)\.cue$")
-    for f in audio_path.parent.iterdir():
-        m = pattern.match(f.name)
-        if m:
-            max_version = max(max_version, int(m.group(1)))
-
-    return max_version
+# phaze-6bkk / phaze-9dwb: ``_get_cue_version`` lived here and did ``base_cue.exists()`` plus a full
+# ``parent.iterdir()`` regex sweep of the archive directory, synchronously on the API event loop.
+# It was wrong on three counts and is gone rather than fixed in place:
+#   1. DIST-01 -- the api container mounts no media, so it could only ever report 0.
+#   2. Redundant -- ``next_cue_path_and_version`` already computes the number during the write; this
+#      re-walked the same directory microseconds later purely to recover it. The version now travels
+#      back with the write, agent-side.
+#   3. On-loop blocking I/O -- an O(directory entries) syscall sweep of a concert-set directory
+#      (thousands of siblings), and on the error path it re-scanned a directory already known to be
+#      misbehaving. There is no filesystem call left in this router at all.
 
 
 async def _build_cue_tracks(
@@ -241,18 +232,39 @@ async def generate_cue(
         toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
-    # Generate and write CUE file
+    # phaze-6bkk (DIST-01): render the CUE text HERE -- it is pure string work over rows the api
+    # already holds -- and dispatch the BYTES to the agent that owns the media mount. The api
+    # container has none, so the previous in-process ``write_cue_file`` could only ever raise
+    # FileNotFoundError on a parent directory that does not exist in this container.
     audio_path = Path(file_record.current_path)
+    content = generate_cue_content(audio_path.name, file_record.file_type, cue_tracks)
     try:
-        content = generate_cue_content(audio_path.name, file_record.file_type, cue_tracks)
-        written_path = write_cue_file(content, audio_path)
+        await request.app.state.task_router.enqueue_for_file(
+            file_record=file_record,
+            task_name="write_cue_sheet",
+            payload=WriteCueSheetPayload(
+                file_id=file_record.id,
+                tracklist_id=tracklist.id,
+                agent_id=file_record.agent_id,
+                audio_path=file_record.current_path,
+                content=content,
+            ),
+        )
     except Exception as exc:
-        toast_msg = f"Failed to write CUE file: {exc}. Check filesystem permissions on the destination directory."
+        # The old advice ("Check filesystem permissions on the destination directory") was the exact
+        # wrong diagnosis for the failure that actually fired in production -- the directory was not
+        # mounted at all. A dispatch failure is a control-plane/broker problem, so say so.
+        logger.warning("cue dispatch failed", tracklist_id=str(tracklist.id), agent_id=file_record.agent_id, exc_info=True)
+        toast_msg = (
+            f"Could not queue the CUE write for agent {file_record.agent_id}: {exc}. "
+            "Check that the agent is registered and the task broker is reachable, then retry."
+        )
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
-    # Determine version for toast message
-    cue_version = _get_cue_version(file_record.current_path)
-    toast_msg = f"CUE file regenerated: {written_path.name} (v{cue_version})" if cue_version > 1 else f"CUE file generated: {written_path.name}"
+    toast_msg = (
+        f"CUE sheet queued for {audio_path.stem} on agent {file_record.agent_id}. "
+        "The file server writes it next to the audio file, versioning it if one already exists."
+    )
 
     # Return updated row + OOB toast
     track_count = await _get_track_count(session, tracklist.latest_version_id)
@@ -263,8 +275,8 @@ async def generate_cue(
     # phaze-js16: the v7 cue-workspace card's APPROVE targets #cue-card-{id} -- mirror the
     # cue-card- branch _render_generate_error already has (phaze-2w49) so a SUCCESSFUL approve
     # re-renders the same _cue_preview.html card instead of falling through to the legacy
-    # cue/partials/cue_row.html markup. The write just succeeded, so the card stays eligible with
-    # a fresh in-memory preview of the CUE we just wrote (no extra query needed -- `content` IS it).
+    # cue/partials/cue_row.html markup. The dispatch succeeded, so the card stays eligible with a
+    # fresh in-memory preview of the CUE that is on its way to disk (no extra query -- `content` IS it).
     if hx_target.startswith("cue-card-"):
         card = {
             "tracklist_id": tracklist.id,
@@ -284,7 +296,10 @@ async def generate_cue(
         "event": tracklist.event or "",
         "date": tracklist.date,
         "track_count": track_count,
-        "cue_version": cue_version,
+        # phaze-6bkk: the version is decided agent-side when the file is actually written, and the
+        # api has no way to observe it (no mount, and the write has not happened yet at response
+        # time). Reported as 0 -- "not known here" -- rather than a fabricated number.
+        "cue_version": 0,
         "source": tracklist.source,
     }
 
@@ -354,7 +369,6 @@ async def _render_generate_error(
     must re-render its own primary content alongside the toast instead.
     """
     hx_target = request.headers.get("HX-Target", "")
-    cue_version = _get_cue_version(file_record.current_path) if file_record is not None else 0
 
     if hx_target.startswith("cue-card-"):
         card = await _build_generate_error_card(session, tracklist, file_record)
@@ -370,7 +384,11 @@ async def _render_generate_error(
         "event": tracklist.event or "",
         "date": tracklist.date,
         "track_count": await _get_track_count(session, tracklist.latest_version_id),
-        "cue_version": cue_version,
+        # phaze-9dwb: previously an unconditional archive ``exists()`` + ``iterdir()`` computed
+        # BEFORE the cue-card branch below returned -- so on the only live surface the scan ran and
+        # was discarded, and on the write-failure branch it re-scanned a directory already known to
+        # be misbehaving, on the event loop. There is no filesystem here to scan any more.
+        "cue_version": 0,
         "source": tracklist.source,
     }
     return templates.TemplateResponse(

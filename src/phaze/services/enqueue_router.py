@@ -98,6 +98,13 @@ LANE_TASKS: dict[str, frozenset[str]] = {
             "extract_file_metadata",
             "scan_directory",
             "execute_approved_batch",
+            # phaze-6bkk (DIST-01): the three archive-touching operations the api/controller used to
+            # attempt in-process against a media path their containers do not mount. All three are
+            # short, per-file, and I/O-light -- the same profile as execute_approved_batch, so they
+            # share its lane rather than competing with CPU-bound analysis.
+            "write_file_tags",
+            "write_cue_sheet",
+            "read_companion_files",
         }
     ),
     # Network-bound offload (off the CPU budget).

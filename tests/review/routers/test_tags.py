@@ -1,4 +1,13 @@
-"""Integration tests for tag review UI endpoints."""
+"""Integration tests for tag review UI endpoints.
+
+phaze-6bkk: ``POST /tags/{id}/write`` and ``/undo`` no longer perform the mutagen write. Under
+DIST-01 the api container mounts no media, so ``current_path`` (a file-SERVER path) did not exist
+there and EVERY write failed ``[Errno 2] No such file or directory`` behind a toast blaming file
+permissions -- tag writing and undo were 100% non-functional in the documented production topology.
+Both routes now create the ``TagWriteLog`` row in ``queued`` and dispatch ``write_file_tags`` to the
+OWNING agent's ``meta`` lane, so these tests assert the ENQUEUE and the audit row. The on-disk half
+lives in ``tests/review/tasks/test_tag_write.py``.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +25,14 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.routers.tags import _get_accepted_discogs_link, _get_tag_stats, _get_tracklist_for_file
+from tests._queue_fakes import install_fake_queues
+
+
+def _dispatched_tags(router) -> dict:  # type: ignore[no-untyped-def]
+    """Return the ``tags`` payload of the single ``write_file_tags`` job the router captured."""
+    jobs = [(q, t, k) for q, t, k in router.captures if t == "write_file_tags"]
+    assert len(jobs) == 1, f"expected exactly one write_file_tags dispatch, got {[t for _q, t, _k in router.captures]}"
+    return jobs[0][2]["tags"]
 
 
 if TYPE_CHECKING:
@@ -115,17 +132,21 @@ async def test_write_tags_success(client: AsyncClient, session: AsyncSession) ->
     """POST /tags/{file_id}/write with valid data returns success status."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(
-            f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist", "title": "New Title"},
-        )
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/tags/{file_record.id}/write",
+        data={"artist": "New Artist", "title": "New Title"},
+    )
     assert response.status_code == 200
-    assert "Tags written to" in response.text
+    # The toast claims only what the api actually did: it handed the write off.
+    assert "Tag write queued for" in response.text
+    assert f"agent {file_record.agent_id}" in response.text
+
+    # One job, on the owning agent's meta lane, carrying the operator's edits.
+    queue_name, task_name, kwargs = router.captures[0]
+    assert (queue_name, task_name) == (f"phaze-agent-{file_record.agent_id}-meta", "write_file_tags")
+    assert kwargs["tags"] == {"artist": "New Artist", "title": "New Title"}
+    assert kwargs["file_path"] == file_record.current_path
 
 
 @pytest.mark.asyncio
@@ -133,16 +154,15 @@ async def test_write_tags_non_integer_year_and_track_number_kept_as_string(clien
     """A non-integer year/track_number falls through the int() ValueError branch and is kept as the raw string."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(
-            f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist", "year": "not-a-year", "track_number": "A1"},
-        )
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/tags/{file_record.id}/write",
+        data={"artist": "New Artist", "year": "not-a-year", "track_number": "A1"},
+    )
     assert response.status_code == 200
+    tags = _dispatched_tags(router)
+    assert tags["year"] == "not-a-year"
+    assert tags["track_number"] == "A1"
 
 
 @pytest.mark.asyncio
@@ -186,19 +206,14 @@ async def test_write_tags_empty_body_uses_fallback(client: AsyncClient, session:
         title="Live Set",
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "DJ Shadow"}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/write")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/write")
 
     assert response.status_code == 200
-    assert "Tags written to" in response.text
+    assert "Tag write queued for" in response.text
 
-    # Verify write_tags was called with non-empty tags (the computed proposed tags)
-    mock_write.assert_called_once()
-    written_tags = mock_write.call_args[0][1]  # second positional arg is tags dict
+    # The DISPATCHED payload carries the server-computed proposed tags.
+    written_tags = _dispatched_tags(router)
     assert len(written_tags) > 0, "Fallback should compute non-empty proposed tags"
     assert "artist" in written_tags
 
@@ -390,42 +405,60 @@ async def test_undo_tag_write_missing_file_404(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_tags_discrepancy_branch(client: AsyncClient, session: AsyncSession) -> None:
-    """A non-empty verify_write result yields a DISCREPANCY status + discrepancy toast."""
+async def test_write_tags_persists_a_queued_audit_row(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-6bkk: the audit row is created up front in ``queued`` with an EMPTY before-tags snapshot.
+
+    ``before_tags`` is the pre-write on-disk state an undo re-applies, and it can only be read where
+    the file is -- so it arrives later with the agent's callback. The row must never claim a
+    snapshot the api did not observe.
+    """
+    from sqlalchemy import select
+
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"sent": "New Artist", "got": "New  Artist"}}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
-
+    install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
     assert response.status_code == 200
-    assert "discrepancy" in response.text.lower()
+
+    rows = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_record.id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == TagWriteStatus.QUEUED
+    assert rows[0].before_tags == {}
+    assert rows[0].after_tags == {"artist": "New Artist"}
 
 
 @pytest.mark.asyncio
-async def test_write_tags_failed_branch(client: AsyncClient, session: AsyncSession) -> None:
-    """A write_tags exception yields a FAILED status + failure toast, not a 500."""
+async def test_write_tags_dispatch_failure_toast_points_at_the_agent_not_file_permissions(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-6bkk verifier correction (a): the failure ADVICE must name the real cause.
+
+    The old message -- "The file may be read-only or corrupted. Check file permissions and try
+    again." -- was wrong for the failure that actually fired in production (no media mount in the
+    api container at all) and sent operators hunting permissions on a path that did not exist. The
+    only failure the api can still have here is a dispatch one, so the toast points at the agent.
+    """
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("read-only file")),
-    ):
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
 
     assert response.status_code == 200
-    assert "failed" in response.text.lower()
+    body = response.text
+    assert "could not be dispatched" in body.lower()
+    assert "broker unreachable" in body
+    assert f"agent {file_record.agent_id} is reachable" in body
+    assert "read-only or corrupted" not in body
+    assert "check file permissions" not in body.lower()
+    # Row stays pending so the operator can retry once the broker is healthy.
+    assert "APPROVE" in body
 
 
 @pytest.mark.asyncio
 async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncSession) -> None:
-    """A ValueError raised by execute_tag_write is caught and surfaced as a failed toast."""
+    """A ValueError raised by enqueue_tag_write is caught and surfaced as a failed toast."""
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with patch("phaze.routers.tags.execute_tag_write", new=AsyncMock(side_effect=ValueError("boom"))):
+    with patch("phaze.routers.tags.enqueue_tag_write", new=AsyncMock(side_effect=ValueError("boom"))):
         response = await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
 
     assert response.status_code == 200
@@ -440,26 +473,29 @@ async def test_write_tags_valueerror_branch(client: AsyncClient, session: AsyncS
 
 @pytest.mark.asyncio
 async def test_write_tags_from_v7_workspace_returns_diff_row_with_undo(client: AsyncClient, session: AsyncSession) -> None:
-    """Approving from the v7 tagwrite workspace returns the styled _diff_row.html WITH a working UNDO,
-    not the legacy <tr>-based tag_row.html (phaze-nvll defects 1+2)."""
+    """Approving from the v7 tagwrite workspace returns the styled _diff_row.html, not the legacy
+    <tr>-based tag_row.html (phaze-nvll defects 1+2).
+
+    phaze-6bkk: the post-approve row is now ``queued``, not ``approved``, and carries NO UNDO --
+    the write is in flight on the agent, nothing has touched the disk yet, and the before-tags
+    snapshot an undo would re-apply does not exist until the agent reports back. Offering UNDO here
+    would let the operator "revert" a write that has not happened.
+    """
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(
-            f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist"},
-            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
-        )
+    install_fake_queues(client)
+    response = await client.post(
+        f"/tags/{file_record.id}/write",
+        data={"artist": "New Artist"},
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+    )
 
     assert response.status_code == 200
     body = response.text
     assert f'id="tagwrite-row-{file_record.id}"' in body
-    assert "approved" in body
-    assert "UNDO" in body
+    assert "queued" in body
+    assert "UNDO" not in body
+    assert "APPROVE" not in body
     # The legacy <tr id="row-..."> markup (and its stray OOB detail-<tr>) must NOT be present.
     assert f'id="row-{file_record.id}"' not in body
     assert "<tr" not in body
@@ -477,15 +513,22 @@ async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: Async
     hx-patch.
     """
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    # phaze-6bkk: an "approved" row is now reached via a COMPLETED write reported by the agent, not
+    # inline from the POST (which lands in "queued"). Seed that state, then drive a failed undo
+    # dispatch, whose response is the approved row keeping its retry control.
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+    )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(
-            f"/tags/{file_record.id}/write",
-            data={"artist": "New Artist"},
+            f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
         )
 
@@ -497,26 +540,35 @@ async def test_write_tags_v7_approved_row_undo_uses_post_not_patch(client: Async
 
 @pytest.mark.asyncio
 async def test_undo_tag_write_from_v7_workspace_restores_pending_row(client: AsyncClient, session: AsyncSession) -> None:
-    """Undoing from the v7 workspace swaps the row back to the pending diff-row (phaze-nvll)."""
+    """Undoing from the v7 workspace swaps the row to the in-flight diff-row (phaze-nvll / phaze-6bkk).
+
+    Pre-phaze-6bkk the reversal completed inline, so the row came back "pending" with APPROVE. The
+    reversal is now an agent job like any other write, so the honest immediate state is "queued";
+    the row returns to pending when the agent reports the revert COMPLETED.
+    """
     file_record, _ = await _create_executed_file(session, artist="Original Artist")
+    await _add_write_log(
+        session,
+        file_record.id,
+        status=TagWriteStatus.COMPLETED,
+        source="proposal",
+        before_tags={"artist": "Original Artist"},
+        written_at=datetime(2026, 7, 20, 12, 0, 0),
+    )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Original Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        await client.post(f"/tags/{file_record.id}/write", data={"artist": "New Artist"})
-
-        response = await client.post(
-            f"/tags/{file_record.id}/undo",
-            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
-        )
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/tags/{file_record.id}/undo",
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+    )
 
     assert response.status_code == 200
     body = response.text
     assert f'id="tagwrite-row-{file_record.id}"' in body
-    assert "APPROVE" in body  # reverted to pending -> the approve action cluster is back
+    assert "queued" in body
     assert f'id="row-{file_record.id}"' not in body
+    # The reversal re-applies the recorded pre-write snapshot -- on the agent.
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}
 
 
 @pytest.mark.asyncio
@@ -769,17 +821,12 @@ async def test_undo_skips_failed_shadow_and_restores_real_write_snapshot(client:
         error_message="boom",
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
-    mock_write.assert_called_once()
-    # The reversal re-applies L1's before_tags (the original), never L2's post-write shadow.
-    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}
+    # The reversal dispatches L1's before_tags (the original), never L2's post-write shadow.
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}
 
 
 @pytest.mark.asyncio
@@ -804,16 +851,11 @@ async def test_undo_skips_no_op_marker_shadow(client: AsyncClient, session: Asyn
         written_at=base + timedelta(seconds=30),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
-    mock_write.assert_called_once()
-    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}
 
 
 @pytest.mark.asyncio
@@ -865,26 +907,22 @@ async def test_second_undo_is_idempotent_no_op(client: AsyncClient, session: Asy
         written_at=datetime(2026, 7, 20, 12, 0, 0),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        first = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    first = await client.post(f"/tags/{file_record.id}/undo")
     assert first.status_code == 200
     assert await _count_write_logs(session, file_record.id, source="undo") == 1
+    assert len(router.captures) == 1
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as second_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        second = await client.post(f"/tags/{file_record.id}/undo")
+    second = await client.post(f"/tags/{file_record.id}/undo")
 
     assert second.status_code == 200
-    assert "already reverted" in second.text.lower()
-    second_write.assert_not_called()
-    # No second reversal was appended to the audit trail.
+    # phaze-6bkk widens the guard to the in-flight case: the first reversal is still ``queued``
+    # (the agent has not reported yet), and that window is now a real interval rather than an
+    # in-request instant, so a second click during it is the COMMON case. Re-dispatching would
+    # enqueue a reversal whose snapshot is read AFTER the first lands -- undoing the undo.
+    assert "already queued" in second.text.lower()
+    # No second reversal was dispatched, and none was appended to the audit trail.
+    assert len(router.captures) == 1
     assert await _count_write_logs(session, file_record.id, source="undo") == 1
 
 
@@ -910,18 +948,18 @@ async def test_second_undo_v7_surfaces_already_reverted_toast(client: AsyncClien
         written_at=base + timedelta(seconds=30),
     )
 
-    with patch("phaze.services.tag_writer.write_tags") as mock_write:
-        response = await client.post(
-            f"/tags/{file_record.id}/undo",
-            headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
-        )
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(
+        f"/tags/{file_record.id}/undo",
+        headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
+    )
 
     assert response.status_code == 200
     body = response.text
     assert "already reverted" in body.lower()
     assert f'id="tagwrite-row-{file_record.id}"' in body
     assert "APPROVE" in body  # pending row
-    mock_write.assert_not_called()
+    assert router.captures == []
 
 
 @pytest.mark.asyncio
@@ -947,18 +985,13 @@ async def test_undo_retries_after_failed_reversal(client: AsyncClient, session: 
         error_message="read-only",
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    _controller_queue, router = install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
     assert "already reverted" not in response.text.lower()
-    # The retry re-applies the real write's before_tags.
-    mock_write.assert_called_once()
-    assert mock_write.call_args.args[1] == {"artist": "Original Artist"}
+    # The retry re-dispatches the real write's before_tags.
+    assert _dispatched_tags(router) == {"artist": "Original Artist"}
 
 
 @pytest.mark.asyncio
@@ -974,18 +1007,18 @@ async def test_undo_failed_reversal_toasts_failure_not_success(client: AsyncClie
         written_at=datetime(2026, 7, 20, 12, 0, 0),
     )
 
-    # A real mutagen error is swallowed into a FAILED log by execute_tag_write.
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("read-only file system")),
-    ):
+    # phaze-6bkk: the api cannot observe an on-disk failure any more -- it observes a DISPATCH
+    # failure. The rule from phaze-26t7 is unchanged and is what this asserts: never toast a revert
+    # that did not happen.
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
     body = response.text.lower()
-    assert "undo failed" in body
-    assert "read-only file system" in body
-    assert "reverted tags for" not in body
+    assert "undo could not be dispatched" in body
+    assert "broker unreachable" in body
+    assert "revert queued for" not in body
 
 
 @pytest.mark.asyncio
@@ -1001,10 +1034,8 @@ async def test_undo_failed_reversal_v7_keeps_approved_row_with_failure_toast(cli
         written_at=datetime(2026, 7, 20, 12, 0, 0),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags", side_effect=OSError("boom")),
-    ):
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("boom")):
         response = await client.post(
             f"/tags/{file_record.id}/undo",
             headers={"HX-Request": "true", "HX-Target": f"tagwrite-row-{file_record.id}"},
@@ -1012,15 +1043,22 @@ async def test_undo_failed_reversal_v7_keeps_approved_row_with_failure_toast(cli
 
     assert response.status_code == 200
     body = response.text
-    assert "Undo failed" in body
+    assert "Undo could not be dispatched" in body
     assert f'id="tagwrite-row-{file_record.id}"' in body
     assert "UNDO" in body  # approved row keeps the retry control
-    assert "Reverted tags for" not in body
+    assert "Revert queued for" not in body
 
 
 @pytest.mark.asyncio
-async def test_undo_discrepancy_reversal_toasts_distinct_message(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-26t7: a DISCREPANCY reversal reports the drift, not a clean 'Reverted tags'."""
+async def test_undo_dispatch_records_a_queued_undo_audit_row(client: AsyncClient, session: AsyncSession) -> None:
+    """REVIEW-05: a reversal is still exactly ONE further append-only audit row -- now ``queued``.
+
+    phaze-26t7's DISCREPANCY-reversal toast case moved to the agent side (the api can no longer
+    observe a verify mismatch); what stays here is the audit-trail invariant plus the honest
+    in-flight status.
+    """
+    from sqlalchemy import select
+
     file_record, _ = await _create_executed_file(session)
     await _add_write_log(
         session,
@@ -1031,13 +1069,15 @@ async def test_undo_discrepancy_reversal_toasts_distinct_message(client: AsyncCl
         written_at=datetime(2026, 7, 20, 12, 0, 0),
     )
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={"artist": {"expected": "A", "actual": "B"}}),
-    ):
-        response = await client.post(f"/tags/{file_record.id}/undo")
+    install_fake_queues(client)
+    response = await client.post(f"/tags/{file_record.id}/undo")
 
     assert response.status_code == 200
-    body = response.text.lower()
-    assert "discrepancy" in body
+    assert "revert queued for" in response.text.lower()
+
+    undo_rows = (
+        (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_record.id, TagWriteLog.source == "undo"))).scalars().all()
+    )
+    assert len(undo_rows) == 1
+    assert undo_rows[0].status == TagWriteStatus.QUEUED
+    assert undo_rows[0].after_tags == {"artist": "Original Artist"}

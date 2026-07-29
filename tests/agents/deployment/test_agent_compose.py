@@ -607,3 +607,82 @@ def test_calver_scheme_documented() -> None:
         + "\n".join(f"  - missing {p}" for p in problems)
         + "\nFix: document the CalVer scheme in docs/deployment.md and/or .planning/MILESTONES.md."
     )
+
+
+# ---------------------------------------------------------------------------
+# phaze-6bkk: the media mount must be WRITABLE wherever archive-mutating tasks run.
+#
+# This is the regression guard the bead asks for: "add a startup assertion or a
+# deployment test that the code path's required mount exists, so this cannot regress
+# silently again". It is deliberately DERIVED from LANE_TASKS rather than hardcoding a
+# service list -- adding a new archive-mutating task to the meta lane, or moving one to
+# another lane, re-points the assertion automatically instead of leaving a stale test
+# that passes while production writes fail EROFS.
+# ---------------------------------------------------------------------------
+
+# Tasks whose whole purpose is to MUTATE the media archive. Every one of these must run in
+# a container whose SCAN_PATH mount is rw.
+ARCHIVE_MUTATING_TASKS: frozenset[str] = frozenset(
+    {
+        "execute_approved_batch",  # move/rename the file to its proposed destination
+        "write_file_tags",  # phaze-6bkk: mutagen save() on the applied file
+        "write_cue_sheet",  # phaze-6bkk: write the .cue sheet beside the audio file
+    }
+)
+
+
+def _scan_path_mode(service: dict[str, Any]) -> str | None:
+    """Return the access mode of a service's SCAN_PATH mount (``"ro"`` / ``"rw"``), or None."""
+    for vol in service.get("volumes", []) or []:
+        if isinstance(vol, str) and "SCAN_PATH" in vol:
+            parts = vol.split(":")
+            return parts[-1] if parts[-1] in ("ro", "rw") else "rw"
+        if isinstance(vol, dict) and "SCAN_PATH" in str(vol.get("source", "")):
+            return "ro" if vol.get("read_only") else "rw"
+    return None
+
+
+def test_archive_mutating_tasks_are_all_in_one_lane() -> None:
+    """Every archive-mutating task shares ONE lane, so exactly one worker needs a rw mount.
+
+    Precondition for the mount assertions below. If a future change splits these across lanes,
+    this fails loudly and points at the compose change that must accompany it -- rather than
+    letting a task land in a ro-mounted lane and fail EROFS on every job.
+    """
+    from phaze.services.enqueue_router import LANE_TASKS
+
+    lanes = {lane for lane, tasks in LANE_TASKS.items() if ARCHIVE_MUTATING_TASKS & tasks}
+    assert lanes == {"meta"}, f"archive-mutating tasks {sorted(ARCHIVE_MUTATING_TASKS)} span lanes {sorted(lanes)}; expected exactly {{'meta'}}"
+
+    unmapped = ARCHIVE_MUTATING_TASKS - frozenset().union(*LANE_TASKS.values())
+    assert not unmapped, f"archive-mutating tasks not registered in any lane: {sorted(unmapped)}"
+
+
+def test_meta_lane_worker_mounts_media_read_write() -> None:
+    """phaze-6bkk: worker-meta's SCAN_PATH mount is rw -- the tag/cue/move writes land there.
+
+    A ``:ro`` mount here is the phaze-mwvt / phaze-au0r failure: every approved move, every tag
+    write, and every CUE sheet fails with EROFS, per-file, with no in-product remedy.
+    """
+    data = _load_agent_compose()
+    mode = _scan_path_mode(data["services"]["worker-meta"])
+    assert mode == "rw", f"worker-meta must mount SCAN_PATH rw (runs {sorted(ARCHIVE_MUTATING_TASKS)}), got {mode!r}"
+
+
+def test_drain_worker_mounts_media_read_write() -> None:
+    """The all-mode drain worker registers EVERY function, so it needs the same rw mount."""
+    data = _load_agent_compose()
+    mode = _scan_path_mode(data["services"]["worker-drain"])
+    assert mode == "rw", f"worker-drain runs in all-mode (every task incl. {sorted(ARCHIVE_MUTATING_TASKS)}); SCAN_PATH must be rw, got {mode!r}"
+
+
+def test_read_only_lanes_stay_read_only() -> None:
+    """Least privilege: analyze / io / watcher never mutate the archive, so they stay ro.
+
+    The complement of the rw assertions -- without it, "make the mount rw" could be satisfied by
+    making EVERY mount rw, which would let an essentia-analysis or upload bug write to the archive.
+    """
+    data = _load_agent_compose()
+    for name in ("worker-analyze", "worker-io", "watcher"):
+        mode = _scan_path_mode(data["services"][name])
+        assert mode == "ro", f"{name} only ever reads the archive; SCAN_PATH must stay ro, got {mode!r}"

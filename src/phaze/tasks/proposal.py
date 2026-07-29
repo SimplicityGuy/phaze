@@ -63,7 +63,9 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
             metadata_row = await session.execute(select(FileMetadata).where(FileMetadata.file_id == uid))
             metadata = metadata_row.scalar_one_or_none()
 
-            companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars)
+            # phaze-6bkk: the controller is fileless (DIST-01), so the companion read is dispatched
+            # to the owning agent through the shared task router the controller already holds.
+            companions = await load_companion_contents(session, uid, settings.llm_max_companion_chars, task_router=ctx.get("task_router"))
 
             ctx_dict = build_file_context(file_record, analysis, companions, metadata=metadata)
             ctx_dict["index"] = len(files_context)
