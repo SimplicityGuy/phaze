@@ -15,6 +15,7 @@ import mutagen
 from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
 from mutagen.mp4 import MP4
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncConnection
 import structlog
 
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -28,6 +29,29 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
+
+
+async def _dedicated_lock_connection(session: AsyncSession) -> tuple[AsyncConnection, bool]:
+    """Resolve a connection to hold the per-file tag-write advisory lock on, PINNED for the whole
+    :func:`execute_tag_write` call -- independent of how many times ``session`` itself commits.
+
+    phaze-ysnp/phaze-lwqk: ``execute_tag_write`` now commits a durable write-ahead audit row BEFORE
+    the disk write (phaze-ysnp), and a SESSION-scoped advisory lock is bound to the physical DBAPI
+    connection, not to any ORM transaction -- acquiring on ``session`` would repeat the exact
+    phaze-yhhy bug (the lock's release landing on whatever connection the pool hands `session` back
+    after that internal commit, not the one that took it) at the per-file level. Opening a
+    connection OUTSIDE the session and holding it for the whole call sidesteps that entirely: the
+    lock's identity never depends on what `session` does with its own connection in between.
+
+    Mirrors ``routers.tags._bulk_tagwrite_lock_connection`` exactly (including the test-harness
+    reuse case -- see that function's docstring for the full rationale). Returns
+    ``(connection, owns_it)``; the caller must ``await connection.close()`` iff ``owns_it``.
+    """
+    bind = session.bind
+    if isinstance(bind, AsyncConnection):
+        return bind, False
+    conn = await bind.connect()
+    return conn, True
 
 
 class TagWriteTarget(Protocol):
@@ -217,43 +241,37 @@ def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
     return {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
 
 
-def _write_and_verify_sync(
+def _write_and_verify_only_sync(
     file_path: str,
     proposed_tags: dict[str, str | int | None],
-) -> tuple[str, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | None]]:
-    """Synchronous disk work for one tag write: read-before, write, verify (phaze-qfxv).
+) -> tuple[str, dict[str, dict[str, str | None]] | None, str | None]:
+    """Synchronous disk work for one tag write's write+verify phase (phaze-qfxv / phaze-ysnp).
 
-    Bundled into a single function so the ENTIRE blocking sequence -- ``_extract_before_tags``
-    (full read), ``write_tags`` (mutagen ``audio.save()``, which rewrites the whole file when the
-    tag area must grow), and ``verify_write`` (another full read) -- runs in exactly one
-    ``asyncio.to_thread`` offload from :func:`execute_tag_write`, instead of blocking the event
-    loop directly. The bulk caller (``bulk_write_no_discrepancies``) loops this up to
-    ``_MAX_BULK_TAG_WRITE`` (2000) times with no other await in between, so any synchronous slice
-    of this work left on the loop freezes every SSE stream, poll, and concurrent request for the
-    whole batch's duration -- an NFS stall inside one ``audio.save()`` would wedge the API
-    indefinitely.
+    phaze-ysnp: split from the former single ``_write_and_verify_sync`` (which also captured
+    ``before_tags``) so :func:`execute_tag_write` can durably commit a write-ahead audit row
+    BETWEEN the before-read and this, the irreversible part. ``write_tags`` (mutagen
+    ``audio.save()``, which rewrites the whole file when the tag area must grow) and
+    ``verify_write`` (a full re-read) still run in exactly one ``asyncio.to_thread`` offload each
+    call, never inline on the event loop (phaze-qfxv): the bulk caller
+    (``bulk_write_no_discrepancies``) loops this up to ``_MAX_BULK_TAG_WRITE`` (2000) times with no
+    other await in between, so any synchronous slice left on the loop freezes every SSE stream,
+    poll, and concurrent request for the whole batch's duration.
 
-    Returns ``(status, discrepancies, error_message, before_tags)`` -- the four fields
-    ``execute_tag_write`` persists onto ``TagWriteLog``. ``before_tags`` is captured and returned
-    on EVERY path (including a failure in ``write_tags``/``verify_write`` after a successful
-    read) so the audit log's before/undo snapshot is preserved exactly as it was when this logic
-    ran inline on the event loop.
+    Returns ``(status, discrepancies, error_message)``.
     """
-    before_tags: dict[str, str | int | None] = {}
     try:
-        before_tags = _extract_before_tags(file_path)
         write_tags(file_path, proposed_tags)
         discrepancies = verify_write(file_path, proposed_tags)
         status = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
-        return status, discrepancies, None, before_tags
+        return status, discrepancies, None
     except TagReadError as exc:
         # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
         # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
         # ``actual=None`` DISCREPANCY that misrepresents a correctly-tagged file as written-wrong.
         # ``discrepancies`` stays None so no false per-field mismatch is persisted.
-        return TagWriteStatus.VERIFY_FAILED, None, f"verify failed: {exc}", before_tags
+        return TagWriteStatus.VERIFY_FAILED, None, f"verify failed: {exc}"
     except Exception as exc:
-        return TagWriteStatus.FAILED, None, str(exc), before_tags
+        return TagWriteStatus.FAILED, None, str(exc)
 
 
 async def execute_tag_write(
@@ -277,39 +295,80 @@ async def execute_tag_write(
     Raises:
         ValueError: If the file is not applied (no executed proposal -- READ-05 / D-01).
     """
-    # phaze-lwqk: serialize every tag-write/undo operation against THIS file. write_file_tags,
-    # undo_tag_write, and the bulk loop all funnel through this one function, so one lock here
-    # closes both: (a) two per-file requests racing each other (a double-click, two tabs, or a
+    # phaze-lwqk/phaze-ysnp: serialize every tag-write/undo operation against THIS file, on a
+    # connection pinned for the WHOLE call (see _dedicated_lock_connection's docstring for why a
+    # plain xact lock on `session` is not enough once this function commits mid-call). One lock
+    # here closes: (a) two per-file requests racing each other (a double-click, two tabs, or a
     # per-file write racing its own retry), and (b) a per-file write/undo racing the bulk loop's
     # write of the SAME file -- previously two concurrent mutagen full-file rewrites on one audio
-    # file, an irreplaceable-archive corruption risk. xact-scoped matches every other advisory lock
-    # in the tree (e.g. routers/agent_push.py:325's `pg_advisory_xact_lock(hashtext(...))`):
-    # execute_tag_write never manages its own transaction, and every caller commits exactly once
-    # right after calling it (phaze-k7g6 for the bulk loop; one commit for each per-file route), so
-    # the lock always releases at that same commit/rollback -- never held past this call.
-    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"tagwrite:{file_record.id}"))))
+    # file, an irreplaceable-archive corruption risk.
+    lock_conn, owns_lock_conn = await _dedicated_lock_connection(session)
+    lock_key = func.hashtext(f"tagwrite:{file_record.id}")
+    try:
+        await lock_conn.execute(select(func.pg_advisory_lock(lock_key)))
+        try:
+            if not await is_applied(session, file_record.id):
+                msg = "Only executed files can have tags written"
+                raise ValueError(msg)
 
-    if not await is_applied(session, file_record.id):
-        msg = "Only executed files can have tags written"
-        raise ValueError(msg)
+            file_path = file_record.current_path
 
-    file_path = file_record.current_path
+            # The before-read is a blocking disk read, offloaded like the write (phaze-qfxv). A
+            # failure HERE (the file vanished, an NFS hiccup, a permission error) never touched
+            # disk -- record it as a FAILED write with no snapshot and return via the caller's
+            # normal single commit, exactly as the pre-phaze-ysnp bundled function did. Only a
+            # failure AFTER a successful before-read reaches the write-ahead durability path below.
+            try:
+                before_tags = await asyncio.to_thread(_extract_before_tags, file_path)
+            except Exception as exc:
+                log_entry = TagWriteLog(
+                    file_id=file_record.id,
+                    before_tags={},
+                    after_tags=proposed_tags,
+                    source=source,
+                    status=TagWriteStatus.FAILED.value,
+                    error_message=str(exc),
+                )
+                session.add(log_entry)
+                await session.flush()
+                return log_entry
 
-    # phaze-qfxv: the entire disk-touching sequence (read-before, mutagen save, verify re-read) runs
-    # off the event loop in a worker thread. Without this, a bulk submit loops this up to 2000 times
-    # inline on the API event loop with no yield between the blocking calls of one file, freezing
-    # every SSE stream, 5s poll, /health check, and agent callback for the whole batch.
-    status, discrepancies, error_message, before_tags = await asyncio.to_thread(_write_and_verify_sync, file_path, proposed_tags)
+            # phaze-ysnp: write-ahead the intent. Committing this IN_PROGRESS row NOW -- durably,
+            # before the irreversible disk write -- means a crash/cancellation between here and the
+            # caller's own commit (e.g. asyncio.CancelledError at an ``asyncio.to_thread`` boundary
+            # during a graceful shutdown; CancelledError derives from BaseException on 3.14 and
+            # unwinds straight past an ``except Exception``) leaves an honest "disk state uncertain,
+            # snapshot preserved" row instead of the mutation vanishing from the append-only audit
+            # trail entirely. IN_PROGRESS is excluded from BOTH
+            # ``routers.tags._TERMINAL_TAGWRITE_STATUSES`` and ``..._UNDOABLE_TAGWRITE_STATUSES`` (see
+            # TagWriteStatus.IN_PROGRESS's docstring), so an orphaned row never shadows a later undo
+            # and never evicts the file from the bulk candidate window -- it simply re-qualifies and
+            # self-heals into a terminal row on the next attempt.
+            log_entry = TagWriteLog(
+                file_id=file_record.id,
+                before_tags=before_tags,
+                after_tags=proposed_tags,
+                source=source,
+                status=TagWriteStatus.IN_PROGRESS.value,
+            )
+            session.add(log_entry)
+            await session.flush()
+            await session.commit()
 
-    log_entry = TagWriteLog(
-        file_id=file_record.id,
-        before_tags=before_tags,
-        after_tags=proposed_tags,
-        source=source,
-        status=status,
-        discrepancies=discrepancies if discrepancies else None,
-        error_message=error_message,
-    )
-    session.add(log_entry)
-    await session.flush()
-    return log_entry
+            # phaze-qfxv: mutagen ``audio.save()`` (which rewrites the whole file when the tag area
+            # must grow) and the verify re-read both run off the event loop in a worker thread, never
+            # inline on the loop -- a bulk submit loops this up to 2000 times with no other await in
+            # between, so any synchronous slice left on the loop freezes every SSE stream, poll, and
+            # concurrent request for the whole batch's duration.
+            status, discrepancies, error_message = await asyncio.to_thread(_write_and_verify_only_sync, file_path, proposed_tags)
+
+            log_entry.status = status
+            log_entry.discrepancies = discrepancies if discrepancies else None
+            log_entry.error_message = error_message
+            await session.flush()
+            return log_entry
+        finally:
+            await lock_conn.execute(select(func.pg_advisory_unlock(lock_key)))
+    finally:
+        if owns_lock_conn:
+            await lock_conn.close()

@@ -9,9 +9,10 @@ import uuid
 
 from mutagen.mp3 import MP3
 import pytest
+from sqlalchemy import select
 
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.tag_write_log import TagWriteStatus
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 
 
 if TYPE_CHECKING:
@@ -256,19 +257,20 @@ class TestUndoDeletesAddedTags:
     """phaze-52qd end-to-end: reverting a write that ADDED tags removes them from disk."""
 
     @pytest.mark.asyncio
-    async def test_undo_snapshot_removes_added_tags(self, mp3_file: Path) -> None:
+    async def test_undo_snapshot_removes_added_tags(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
         """Write artist+album into an untagged file, then re-apply the before snapshot to revert.
 
         The before snapshot (all-None for the untagged file) must delete both added frames and the
         reversal must verify COMPLETED, not silently leave the tags on disk.
+
+        phaze-ysnp: execute_tag_write now COMMITS a write-ahead marker for real, so this needs a
+        real DB-backed ``FileRecord`` for the ``file_id`` foreign key.
         """
         # Untagged file -> capture the true before snapshot (all None).
         before = _extract_before_tags(str(mp3_file))
 
-        fr = MagicMock()
-        fr.id = uuid.uuid4()
+        fr = await make_file()
         fr.current_path = str(mp3_file)
-        session = AsyncMock()
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             write_log = await execute_tag_write(session, fr, {"artist": "Sven Vath", "album": "Coachella 2024"}, "tracklist")
@@ -320,18 +322,6 @@ class TestExecuteTagWrite:
     the mutagen path in isolation.
     """
 
-    def _make_file_record(self, current_path: str = "/mock/dest/test.mp3") -> MagicMock:
-        """Create a mock FileRecord for the write-mechanics cases (the guard is patched separately).
-
-        Note (READ-05): the file's ``state`` is deliberately NOT set here -- the revived guard reads
-        ``applied()`` (an executed proposal), never ``file_record.state``, so a mock ``.state`` no
-        longer drives the guard.
-        """
-        fr = MagicMock()
-        fr.current_path = current_path
-        fr.id = uuid.uuid4()
-        return fr
-
     # ------------------------------------------------------------------------------------------------
     # SC#2 guard behavior (real DB rows, mutation-checked) -- the load-bearing behavior-revival test.
     # ------------------------------------------------------------------------------------------------
@@ -374,10 +364,15 @@ class TestExecuteTagWrite:
     # Write-mechanics cases -- guard explicitly admitted so the mutagen path is exercised in isolation.
     # ------------------------------------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_creates_tag_write_log_on_success(self, mp3_file: Path) -> None:
-        """execute_tag_write creates a TagWriteLog entry on successful write."""
-        fr = self._make_file_record(current_path=str(mp3_file))
-        session = AsyncMock()
+    async def test_creates_tag_write_log_on_success(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
+        """execute_tag_write creates a TagWriteLog entry on successful write.
+
+        phaze-ysnp: execute_tag_write now COMMITS a write-ahead marker for real (not just
+        ``session.flush()``), so this needs a real DB-backed ``FileRecord`` for the ``file_id``
+        foreign key -- a bare mock session/file_record can no longer stand in.
+        """
+        fr = await make_file()
+        fr.current_path = str(mp3_file)
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await execute_tag_write(session, fr, {"artist": "New Artist"}, "tracklist")
@@ -386,28 +381,26 @@ class TestExecuteTagWrite:
         assert log_entry.source == "tracklist"
         assert log_entry.after_tags == {"artist": "New Artist"}
         assert isinstance(log_entry.before_tags, dict)
-        session.add.assert_called_once()
-        session.flush.assert_awaited_once()
+        assert log_entry.id is not None
 
     @pytest.mark.asyncio
-    async def test_creates_failed_log_on_error(self, tmp_path: Path) -> None:
+    async def test_creates_failed_log_on_error(self, session: AsyncSession, make_file, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
         """execute_tag_write creates a FAILED log entry when write errors."""
         bad_path = tmp_path / "nonexistent.mp3"
-        fr = self._make_file_record(current_path=str(bad_path))
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = str(bad_path)
 
         with patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)):
             log_entry = await execute_tag_write(session, fr, {"artist": "Test"}, "manual_edit")
 
         assert log_entry.status == TagWriteStatus.FAILED
         assert log_entry.error_message is not None
-        session.add.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_uses_current_path_not_original(self) -> None:
+    async def test_uses_current_path_not_original(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         """execute_tag_write uses file_record.current_path."""
-        fr = self._make_file_record(current_path="/dest/music.mp3")
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = "/dest/music.mp3"
 
         with (
             patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
@@ -420,10 +413,10 @@ class TestExecuteTagWrite:
             mock_write.assert_called_once_with("/dest/music.mp3", {"artist": "Test"})
 
     @pytest.mark.asyncio
-    async def test_discrepancy_status(self, mp3_file: Path) -> None:
+    async def test_discrepancy_status(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
         """execute_tag_write returns DISCREPANCY status when verify finds mismatches."""
-        fr = self._make_file_record(current_path=str(mp3_file))
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = str(mp3_file)
 
         with (
             patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
@@ -434,7 +427,7 @@ class TestExecuteTagWrite:
             assert log_entry.discrepancies == {"artist": {"expected": "A", "actual": "B"}}
 
     @pytest.mark.asyncio
-    async def test_verify_read_failure_records_verify_failed_not_discrepancy(self, mp3_file: Path) -> None:
+    async def test_verify_read_failure_records_verify_failed_not_discrepancy(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
         """phaze-vq3g: a LANDED write whose verify re-read fails is audited VERIFY_FAILED, not DISCREPANCY.
 
         ``write_tags`` succeeds (patched no-op) but the verify re-read raises ``TagReadError``. The
@@ -444,8 +437,8 @@ class TestExecuteTagWrite:
         """
         from phaze.services.metadata import TagReadError
 
-        fr = self._make_file_record(current_path=str(mp3_file))
-        session = AsyncMock()
+        fr = await make_file()
+        fr.current_path = str(mp3_file)
 
         with (
             patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
@@ -458,3 +451,40 @@ class TestExecuteTagWrite:
         assert log_entry.discrepancies is None
         assert log_entry.error_message is not None
         assert "verify failed" in log_entry.error_message
+
+    @pytest.mark.asyncio
+    async def test_write_ahead_marker_survives_a_failure_after_it_commits(self, session: AsyncSession, make_file, mp3_file: Path) -> None:  # type: ignore[no-untyped-def]
+        """phaze-ysnp: a failure AFTER the write-ahead marker's own commit must not lose the row.
+
+        Simulates a crash/DB-connectivity drop between the durable IN_PROGRESS commit and the final
+        status update: the SECOND ``session.flush()`` call (the one persisting the terminal status)
+        raises. The caller's own rollback (mirroring the bulk loop's per-file ``except``/
+        ``rollback``) must not undo the ALREADY-COMMITTED marker -- an orphaned IN_PROGRESS row is
+        the honest, self-healing outcome the fix exists to produce, instead of the write vanishing
+        from the append-only audit trail entirely.
+        """
+        fr = await make_file()
+        fr.current_path = str(mp3_file)
+        # Capture BEFORE the rollback below expires this ORM instance (phaze-o2ln's own lesson).
+        file_id = fr.id
+
+        flaky_flush = AsyncMock(side_effect=[None, OSError("simulated DB connectivity drop")])
+
+        with (
+            patch("phaze.services.tag_writer.is_applied", AsyncMock(return_value=True)),
+            patch.object(session, "flush", flaky_flush),
+            pytest.raises(OSError, match="simulated DB connectivity drop"),
+        ):
+            await execute_tag_write(session, fr, {"artist": "New Artist"}, "tracklist")
+
+        # Mirror the bulk loop's per-file recovery (phaze-k7g6): roll back only the uncommitted
+        # tail of work, exactly like `bulk_write_no_discrepancies`'s per-file `except Exception`.
+        await session.rollback()
+
+        rows = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file_id))).scalars().all()
+        assert len(rows) == 1, "the write-ahead marker must survive the caller's rollback"
+        assert rows[0].status == TagWriteStatus.IN_PROGRESS.value
+        assert rows[0].before_tags == dict.fromkeys(("artist", "title", "album", "year", "genre", "track_number")), (
+            "the untagged fixture file's before-snapshot is every core field, explicitly None"
+        )
+        assert rows[0].after_tags == {"artist": "New Artist"}

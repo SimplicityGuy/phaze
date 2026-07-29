@@ -39,6 +39,20 @@ class TagWriteStatus(enum.StrEnum):
     # slots and starve qualifying files. The ``status`` column is a ``String(20)`` (no PG enum /
     # CHECK constraint), so adding this value needs no migration.
     NO_OP = "no_op"
+    # phaze-ysnp: a write-ahead marker. execute_tag_write commits a row in this status (carrying
+    # before_tags) BEFORE dispatching the irreversible disk write, so a crash/cancellation between
+    # the write and the caller's final commit (e.g. asyncio.CancelledError at the
+    # ``asyncio.to_thread`` boundary during a graceful shutdown -- CancelledError derives from
+    # BaseException on 3.14 and unwinds straight past an ``except Exception``) leaves an honest
+    # "disk state uncertain, snapshot preserved" audit row instead of the mutation vanishing from
+    # the append-only trail entirely. Deliberately excluded from BOTH
+    # ``routers.tags._TERMINAL_TAGWRITE_STATUSES`` (an orphaned row must not evict the file from the
+    # candidate window -- it re-qualifies and self-heals on the next pass) and
+    # ``routers.tags._UNDOABLE_TAGWRITE_STATUSES`` (it never confirmed landing on disk, so it must
+    # never shadow the real write's snapshot in an undo). Always immediately overwritten with a
+    # terminal status inside the SAME ``execute_tag_write`` call under normal operation -- a row
+    # actually observed in this status is, by construction, an orphan from an aborted operation.
+    IN_PROGRESS = "in_progress"
 
 
 class TagWriteLog(TimestampMixin, Base):

@@ -40,7 +40,7 @@ import uuid
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.database import get_session
@@ -48,6 +48,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.tags import (
     _BULK_TAGWRITE_LOCK_KEY,
     _acquire_bulk_tagwrite_lock,
@@ -162,6 +163,26 @@ async def test_bulk_tagwrite_lock_survives_pooled_connection_churn() -> None:
         await engine.dispose()
 
 
+async def _delete_seeded_files(engine, file_ids: list[uuid.UUID]) -> None:  # type: ignore[no-untyped-def]
+    """Delete seeded ``FileRecord``s (and their children) for real, in FK-safe order.
+
+    This module's tests commit through a REAL engine, independent of the suite's hermetic
+    per-test savepoint sandbox (that sandbox is exactly what these tests must NOT use -- see the
+    module docstring). Nothing rolls these commits back automatically, so a row left behind here
+    persists in the shared test database for the rest of the pytest session and pollutes any LATER
+    test that counts rows globally (e.g. ``_get_tag_stats``'s ``TagWriteLog`` tallies). None of the
+    child tables declare ``ON DELETE CASCADE`` (``proposals``/``file_metadata``/``tag_write_log``
+    all FK to ``files.id`` with the default RESTRICT), so children are deleted first.
+    """
+    if not file_ids:
+        return
+    async with engine.begin() as conn:
+        await conn.execute(delete(TagWriteLog).where(TagWriteLog.file_id.in_(file_ids)))
+        await conn.execute(delete(FileMetadata).where(FileMetadata.file_id.in_(file_ids)))
+        await conn.execute(delete(RenameProposal).where(RenameProposal.file_id.in_(file_ids)))
+        await conn.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+
+
 async def _seed_bulk_qualifying_file(session: AsyncSession, *, filename: str) -> uuid.UUID:
     """Seed one applied file with a real bulk-qualifying change (artist/title absent from metadata)."""
     file_id = uuid.uuid4()
@@ -195,6 +216,7 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
     require_test_database(SA_DSN, context="tag-write advisory lock regression")
     engine = create_async_engine(SA_DSN, pool_size=3, max_overflow=0)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    file_ids: list[uuid.UUID] = []
     try:
         async with session_factory() as seed_session:
             # get-or-insert: async_engine's own session-scoped seed may already have committed this
@@ -203,7 +225,7 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
                 seed_session.add(Agent(id="test-fileserver", name="test-fileserver", kind="fileserver", scan_roots=[]))
                 await seed_session.commit()
             for i in range(4):
-                await _seed_bulk_qualifying_file(seed_session, filename=f"bulk-lock-{i}.mp3")
+                file_ids.append(await _seed_bulk_qualifying_file(seed_session, filename=f"bulk-lock-{i}.mp3"))
 
         app = FastAPI(title="smoke", version="test")
         app.include_router(tags_router)
@@ -222,5 +244,6 @@ async def test_bulk_write_endpoint_releases_lock_over_a_real_pool(async_engine) 
             count = (await verify_conn.execute(_ADVISORY_LOCK_COUNT_SQL, {"classid": _LOCK_CLASSID, "objid": _LOCK_OBJID})).scalar()
         assert count == 0, "the live endpoint must never leave the bulk-tagwrite advisory lock held"
     finally:
+        await _delete_seeded_files(engine, file_ids)
         await _force_unlock_all(engine)
         await engine.dispose()
