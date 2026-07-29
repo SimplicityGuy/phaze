@@ -1,11 +1,11 @@
 """Unit tests for phaze.agent_watcher.__main__ (Phase 27 D-04, D-16, D-18, Pitfall 1).
 
-Six behaviors:
+Seven behaviors:
 
-1. main() calls whoami() then constructs the Observer and starts it.
+1. main() calls whoami() then constructs ONE Observer per scan root and starts each.
 2. Observer.schedule is invoked once per identity.scan_root.
 3. Graceful shutdown on SIGTERM: observer.stop / observer.join / client.close
-   are awaited in order.
+   are awaited in order (for every per-root observer).
 4. main() raises RuntimeError when whoami_with_retry exhausts the budget.
 5. End-to-end event-to-post: synthesizing a FileCreatedEvent + advancing the
    fake clock past settle_period results in one POST with batch_id absent
@@ -13,6 +13,9 @@ Six behaviors:
 6. OSError on the vanished-path path is swallowed -- sweep loop survives
    (Pitfall 1 behavior gate; this is the binding for Task 1's poster.py
    acceptance criterion).
+7. phaze-jzid: a per-root observer.start() OSError is contained -- the failing
+   root is skipped (logged as a WARNING) and the remaining roots still start;
+   main() only raises when EVERY root fails to start.
 """
 
 from __future__ import annotations
@@ -131,9 +134,11 @@ async def test_main_calls_whoami_then_starts_observer(monkeypatch: pytest.Monkey
     await wmain.main()
 
     assert fake_client.whoami.await_count == 1
-    # One schedule call per scan_root
+    # phaze-jzid: one Observer instance PER scan_root -- both schedule() and start()
+    # fire once per root (the two calls land on the same MagicMock instance here
+    # because `Observer` is patched to always return `fake_observer`).
     assert fake_observer.schedule.call_count == 2
-    fake_observer.start.assert_called_once()
+    assert fake_observer.start.call_count == 2
 
 
 async def test_main_uses_polling_observer_when_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -239,6 +244,89 @@ async def test_main_constructs_observer_per_scan_root(monkeypatch: pytest.Monkey
     assert fake_observer.schedule.call_count == 3
     scheduled_paths = [c.kwargs.get("path") or c.args[1] for c in fake_observer.schedule.call_args_list]
     assert scheduled_paths == ["/a", "/b", "/c"]
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (phaze-jzid): per-root observer.start() failure is contained --
+# one bad root does not abort the others, and the watcher only fails hard
+# when EVERY root fails.
+# ---------------------------------------------------------------------------
+async def test_main_continues_when_one_root_fails_to_start(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """A missing/unmounted root's observer.start() OSError must not abort the healthy root.
+
+    Regression for phaze-jzid: previously a single shared Observer scheduled every
+    root and start() raising for ANY of them aborted watching of ALL of them. Now
+    each root gets its own Observer instance, so a FileNotFoundError on one root's
+    start() is caught, logged, and skipped while the other root's observer still
+    starts and is watched normally.
+    """
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/good", "/missing"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    good_observer = MagicMock()
+    good_observer.is_alive.return_value = False
+    bad_observer = MagicMock()
+    bad_observer.start.side_effect = FileNotFoundError("[Errno 2] No such file or directory: '/missing'")
+    per_root_observers = [good_observer, bad_observer]
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", MagicMock(side_effect=lambda *_a, **_k: per_root_observers.pop(0)))
+    real_event_cls = asyncio.Event
+    monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
+
+    await wmain.main()
+
+    # The healthy root's observer was scheduled and started normally.
+    good_observer.schedule.assert_called_once()
+    good_observer.start.assert_called_once()
+    # The failing root's observer attempted to start (and raised) but is never
+    # added to the tracked/shutdown observer list.
+    bad_observer.start.assert_called_once()
+    bad_observer.stop.assert_not_called()
+    bad_observer.join.assert_not_called()
+    # Shutdown only touches the surviving (healthy) observer.
+    good_observer.stop.assert_called_once()
+    good_observer.join.assert_called_once_with(timeout=10.0)
+
+    text = capsys.readouterr().out
+    assert "/missing" in text
+    assert "failed to start observer" in text
+
+
+async def test_main_raises_when_all_roots_fail_to_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() still fails hard when EVERY scan root's observer fails to start.
+
+    Nothing to watch means the watcher genuinely has no useful work to do; the
+    per-root containment must not silently succeed with zero observers running.
+    """
+    cfg = _build_agent_settings(monkeypatch)
+    identity = _build_identity(roots=["/missing-a", "/missing-b"])
+
+    fake_client = AsyncMock(spec=PhazeAgentClient)
+    fake_client.whoami = AsyncMock(return_value=identity)
+    fake_client.close = AsyncMock()
+
+    def _always_failing_observer(*_args: Any, **_kwargs: Any) -> MagicMock:
+        obs = MagicMock()
+        obs.start.side_effect = FileNotFoundError("no such directory")
+        return obs
+
+    monkeypatch.setattr(wmain, "get_settings", lambda: cfg)
+    monkeypatch.setattr(wmain, "construct_agent_client", lambda _cfg: fake_client)
+    monkeypatch.setattr(wmain, "Observer", MagicMock(side_effect=_always_failing_observer))
+    real_event_cls = asyncio.Event
+    monkeypatch.setattr(wmain.asyncio, "Event", lambda: (lambda e: (e.set(), e)[1])(real_event_cls()))
+
+    with pytest.raises(RuntimeError, match="no scan root could be watched"):
+        await wmain.main()
+
+    # client.close() still runs -- the outer try/finally is unaffected by this failure.
+    fake_client.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

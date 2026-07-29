@@ -199,17 +199,29 @@ class KubeConfig(BaseModel):
     # PV/PVC and references the claim by name only. Unset (None) -> no models volume/mount is emitted
     # (byte-identical manifest, current behavior). The PVC carries ONLY model weights -- never secrets/certs.
     models_pvc_name: str | None = None
-    # phaze-1b39: the Job-level wall-clock bound, emitted as ``spec.activeDeadlineSeconds`` by
-    # ``build_job_manifest``. LOAD-BEARING, not cosmetic: ``job_runner``'s exit-code contract
-    # (job_runner.py:17-19) explicitly delegates ALL wall-clock bounding to this deadline (the analyze
-    # stage runs with ``timeout=None``), and the reconcile loop derives RUNNING purely from Kueue
-    # admission state -- so without it an admitted-but-stalled pod (ImagePullBackOff /
-    # CreateContainerConfigError from a missing operator ConfigMap/Secret, a hung essentia analyze, a
-    # black-holed callback) is NEVER terminal and occupies its burst-lane cap slot forever.
-    # ``activeDeadlineSeconds`` makes k8s SIGTERM the pod and mark the Job Failed, which routes the row
-    # into the existing ``_handle_no_callback_terminal`` re-drive/spill recovery. Default 3h -- comfortably
-    # above a worst-case long analyze, far below "forever". Per-backend so a slow cluster can raise it.
-    active_deadline_seconds: int = Field(default=10800, gt=0)
+    # phaze-202e: OPT-IN, and OFF by default. Emitted as ``spec.activeDeadlineSeconds`` by
+    # ``build_job_manifest`` only when set; ``None`` (the default) emits NO key at all, so k8s applies
+    # no wall-clock bound to the analyze Job.
+    #
+    # History, because the reversal matters. phaze-1b39 introduced this field as a REQUIRED 3h bound
+    # (``int = 10800, gt=0`` -- not disableable) on the theory that it was the pipeline's only defence
+    # against an admitted-but-stalled pod holding a burst-lane cap slot forever. In production that
+    # theory cost more than the failure it guarded: a 2-6 h concert set is a legitimate analyze, so the
+    # deadline SIGTERM'd every long recording at exactly 3h, burned ``cloud_submit_max_attempts`` per
+    # file, and D-04 then barred those files from Kueue entirely -- stalling the whole burst lane (phaze
+    # incident 2026-07-28). A wall clock cannot tell a 4h analyze from a hang.
+    #
+    # The 1b39 protection is preserved WITHOUT a wall clock: ``reconcile_cloud_jobs`` now detects a
+    # wedged Job by POD STATE (``kube_staging.classify_job_pods`` -- ImagePullBackOff / ErrImagePull /
+    # InvalidImageName / CreateContainerConfigError, or PodScheduled=False/Unschedulable past a
+    # scheduling probe, or an unsuspended Job with zero active pods past a probe). A pod that is
+    # genuinely Running is NEVER terminalized, at any age.
+    #
+    # Left configurable (rather than deleted) so an operator with a genuinely runaway cluster can still
+    # opt a single backend back into a hard bound, and so an already-deployed backends.toml carrying the
+    # key keeps validating. Setting it re-arms exactly the behaviour that caused the incident -- do not
+    # set it as a matter of course.
+    active_deadline_seconds: Annotated[int, Field(gt=0)] | None = None
     kubeconfig: SecretStr | None = None
     sa_token: SecretStr | None = None
 

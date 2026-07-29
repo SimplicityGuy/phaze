@@ -7,6 +7,12 @@ resolved backend) and calls this per FIFO candidate file; the function returns t
 dispatch to, or `None` to hold the file this tick. It NEVER raises -- `None` feeds the cron
 no-op discipline (a clean hold, not a failure).
 
+phaze-9sqa adds `select_backend_with_reason`: the SAME policy, returning `(backend, None)` or
+`(None, HOLD_*)`. `select_backend` is now a thin wrapper that drops the label. The label exists because a
+bare `None` cannot distinguish a self-clearing hold (everything busy, the spill clock still ticking) from a
+permanent one (the D-04 attempts cap with local full) -- the distinction between a lane that is idle and a
+lane that is starving, which the drain needs in order to alarm on the second.
+
 The policy encodes (RESEARCH § "Pattern 2" + § "Novel Mechanism 3"):
 
 * **SCHED-01** rank-first eligible dispatch -- the available lowest-rank backend with a free slot
@@ -70,6 +76,30 @@ class BackendSlot(TypedDict):
     cap: int
 
 
+# phaze-9sqa: the closed vocabulary of "why was this candidate held this tick?", surfaced by
+# :func:`select_backend_with_reason` and aggregated by the drain into the repeated-all-held WARNING.
+# Before this, a hold was an unlabelled `None` and the drain's only trace was `skipped: N` -- which
+# reads identically whether the lane is healthy-and-idle or starving behind poisoned heads, and so hid
+# a >24h production stall in plain sight. Plain module constants (not a StrEnum): these are log values,
+# never persisted, never compared across a wire.
+HOLD_NO_FREE_SLOTS = "no_free_slots"
+"""Every backend is unavailable or already at cap -- the whole registry is saturated, not this file."""
+
+HOLD_CLOUD_ATTEMPTS_EXHAUSTED = "cloud_attempts_exhausted"
+"""D-04: the file spent its cloud budget, so only local could take it -- and local had no free slot.
+
+The production phaze-9sqa shape. It is a PERMANENT hold for as long as local is full: `cloud_attempts`
+only ever grows, so the file cannot become cloud-eligible again by waiting. That is what made these
+files head-of-line poison rather than a transient skip.
+"""
+
+HOLD_LOCAL_SPILL_NOT_REACHED = "local_spill_not_reached"
+"""D-01/D-03: local was the only backend with a slot, but the file has not waited out the spill gate.
+
+Self-clearing -- the file becomes eligible once `cloud_spill_to_local_after_seconds` elapses.
+"""
+
+
 def _utilization(slot: BackendSlot) -> float:
     """in_flight/cap utilization for the SCHED-04 tie-break; 0.0 when cap is 0 (never divides by zero)."""
     cap = slot["cap"]
@@ -90,15 +120,51 @@ def select_backend(
     Pure and synchronous -- reads only `lane_entered_at` (the awaiting `cloud_job.updated_at` staleness
     clock, D-07), the in-memory `snapshot`, `cloud_attempts`, and the two bounded config knobs. Encodes
     SCHED-01/04 + D-01/D-03/D-04/D-06 (see module docstring).
+
+    The one-value face of :func:`select_backend_with_reason`, which carries the identical policy plus the
+    label for WHY a hold happened. Kept as the primary name because every caller that only routes (and
+    every policy test) wants exactly this.
+    """
+    return select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg)[0]
+
+
+def select_backend_with_reason(
+    lane_entered_at: datetime,
+    cloud_attempts: int,
+    snapshot: dict[str, BackendSlot],
+    now: datetime,
+    cfg: ControlSettings,
+) -> tuple[Backend | None, str]:
+    """Return `(backend, "")` on a dispatch, or `(None, reason)` on a hold (phaze-9sqa; never raises).
+
+    THE policy -- :func:`select_backend` delegates here and drops the label. The second element is `""`
+    exactly when a backend was selected (a plain `str` rather than `str | None` so the drain can bin it
+    without a narrowing dance the type system cannot do across an unpacked tuple). On a hold it is one of
+    the `HOLD_*` constants above, naming which filter emptied the eligible set -- which is the difference
+    between "the lane is idle because everything is busy" (`HOLD_NO_FREE_SLOTS`, self-clearing) and "the
+    lane is starving because its oldest rows can never be routed" (`HOLD_CLOUD_ATTEMPTS_EXHAUSTED`,
+    permanent while local is full). The drain aggregates these per tick and escalates to WARNING when
+    consecutive ticks hold 100% of what they scanned.
+
+    Behavior is byte-identical to the pre-label policy: the same filters in the same order, the same
+    `None` for the same inputs. Each filter now returns its own labelled empty-set exit instead of falling
+    through to one shared `if not eligible` at the end -- an equivalent short-circuit, since a filter that
+    empties the list can never be refilled by a later one.
     """
     # 1. Eligible = available AND has a free slot.
     eligible = [slot for slot in snapshot.values() if slot["available"] and slot["remaining"] > 0]
+    if not eligible:
+        # Registry-wide saturation, not a property of this file: every backend is down or at cap.
+        return None, HOLD_NO_FREE_SLOTS
 
     # 2. Attempt-exclusion (D-04): a file that has spent its cloud budget is cloud/Kueue-INELIGIBLE.
     #    Local is never excluded -- it is the guaranteed safety net.
     attempts_exhausted = cloud_attempts >= cfg.cloud_submit_max_attempts
     if attempts_exhausted:
         eligible = [slot for slot in eligible if isinstance(slot["backend"], LocalBackend)]
+        if not eligible:
+            # phaze-9sqa's head-of-line poison: cloud-ineligible forever, and local has nothing free.
+            return None, HOLD_CLOUD_ATTEMPTS_EXHAUSTED
 
     # 3. Staleness gate on local spill (D-01/D-03). Local is eligible ONLY when:
     #      (a) every non-local backend is OFFLINE (spill immediately -- NOT staleness-gated), OR
@@ -111,11 +177,10 @@ def select_backend(
     local_ok = (not any_non_local_online) or waited or attempts_exhausted
     if not local_ok:
         eligible = [slot for slot in eligible if not isinstance(slot["backend"], LocalBackend)]
+        if not eligible:
+            # Only local had a slot and this file has not waited it out yet -- clears itself with time.
+            return None, HOLD_LOCAL_SPILL_NOT_REACHED
 
-    # 4. Hold when nothing is eligible (clean no-op -- the file stays AWAITING_CLOUD this tick).
-    if not eligible:
-        return None
-
-    # 5. Rank-first, tie-break by utilization then stable id (SCHED-04).
+    # 4. Rank-first, tie-break by utilization then stable id (SCHED-04).
     eligible.sort(key=lambda slot: (slot["backend"].rank, _utilization(slot), slot["backend"].id))
-    return eligible[0]["backend"]
+    return eligible[0]["backend"], ""
