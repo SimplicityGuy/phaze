@@ -4,7 +4,10 @@ Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposa
 1. Resolve `original_path` under its owning scan_root, then build the destination as
    ``owning_root/proposed_path/proposed_filename`` (``proposed_path`` is a RELATIVE dir;
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
-2. POST /execution-log with status='in_progress' (per-proposal audit row).
+2. POST /execution-log with status='in_progress' (per-proposal audit row). phaze-87ba: if that
+   POST fails it is retried once more immediately before the terminal PATCH, because PATCH is an
+   UPDATE that 404s on a missing row (and a 404 is never retried), which otherwise erased the
+   audit record of a move that actually happened.
 3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
 4. Move `original_path` -> destination (an atomic no-clobber os.link claim when same-fs, else a
    bounded streamed copy published by the same claim -- never load the whole file into RAM;
@@ -412,6 +415,47 @@ def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> Fa
     return current_step
 
 
+async def _ensure_start_log(api: PhazeAgentClient, start_log: ExecutionLogCreate, *, start_logged: bool) -> bool:
+    """Re-POST the write-ahead audit row if its original POST failed. Returns True if a row should now exist.
+
+    phaze-87ba: the two writers of an ExecutionLog row are asymmetric BY DESIGN, and that asymmetry
+    had a hole. CREATE is deliberately idempotent (``on_conflict_do_nothing(index_elements=["id"])``,
+    D-13) precisely so an agent can replay it. PATCH is a monotonic-ladder UPDATE (D-15) and
+    therefore assumes the row exists -- ``patch_execution_log`` 404s when it does not. A 404 is a
+    4xx, so ``PhazeAgentClient._should_retry`` returns False and it is never retried; it then
+    surfaces as ``AgentApiClientError`` and is swallowed like any other reporting failure.
+
+    So a single transient failure of the START POST permanently erased the audit record of a file
+    move that actually happened: the move committed, the proposal reached EXECUTED, and no row
+    ever existed for the terminal PATCH to update. The damage is not just a missing audit page row
+    -- ``services/pipeline``'s execute-stage progress counts DISTINCT proposals with a COMPLETED
+    ExecutionLog, so a missing row leaves that DAG node reading done < total FOREVER with no path
+    to parity, and the apply-stage eligibility probe reports the file as never-applied.
+
+    The fix is entirely agent-side and needs no controller change: this function is called
+    immediately before BOTH terminal PATCH sites, and when the start POST is known to have failed
+    it re-creates the row first. Safe by construction -- CREATE is ON CONFLICT DO NOTHING, so on
+    the ordinary path (or a SAQ replay) this is a no-op against the retry-stable
+    ``execution_log_id``.
+    """
+    if start_logged:
+        return True
+    try:
+        await api.post_execution_log(start_log)
+    except Exception as exc:
+        logger.error(
+            "execute_approved_batch: audit row for %s could not be created -- this committed move will have NO audit trail: %s",
+            start_log.proposal_id,
+            exc,
+        )
+        return False
+    logger.info(
+        "execute_approved_batch: recovered the missing audit row for %s before its terminal report",
+        start_log.proposal_id,
+    )
+    return True
+
+
 def _report_progress_failure(item: ExecuteBatchProposalItem, is_last: bool, exc: BaseException) -> None:
     """Apply the D-16 swallow rule -- but ONLY to the telemetry half of the message (phaze-j7u8).
 
@@ -492,21 +536,25 @@ async def _execute_one(
     dest_display = f"{item.proposed_path.rstrip('/')}/{item.proposed_filename}" if item.proposed_path else item.proposed_filename
     # Always POST the in-progress audit row first -- this is the durable trail
     # that survives a crash mid-copy.
+    start_log = ExecutionLogCreate(
+        id=execution_log_id,
+        proposal_id=item.proposal_id,
+        operation="move",
+        source_path=item.original_path,
+        destination_path=dest_display,
+        sha256_verified=False,  # not yet verified at this point
+        status=ExecutionStatus.IN_PROGRESS,
+    )
+    # phaze-87ba: REMEMBER whether this landed. _execute_one is the only component that knows the
+    # POST failed, and discarding that knowledge here is what erased the audit row entirely -- see
+    # _ensure_start_log.
+    start_logged = True
     try:
-        await api.post_execution_log(
-            ExecutionLogCreate(
-                id=execution_log_id,
-                proposal_id=item.proposal_id,
-                operation="move",
-                source_path=item.original_path,
-                destination_path=dest_display,
-                sha256_verified=False,  # not yet verified at this point
-                status=ExecutionStatus.IN_PROGRESS,
-            ),
-        )
+        await api.post_execution_log(start_log)
     except Exception as exc:
         # If the audit log POST itself fails (network blip), still attempt the
         # file op so we don't leave the user with stalled state. Best-effort.
+        start_logged = False
         logger.warning("execute_approved_batch: could not record start log for %s: %s", item.proposal_id, exc)
 
     # Phase 28: track which sub-step is currently executing so the failure
@@ -676,7 +724,11 @@ async def _execute_one(
                 # job was to survive a crash between the two lines above; clean it up.
                 _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
 
-        # 6a. PATCH execution log to completed
+        # 6a. PATCH execution log to completed.
+        # phaze-87ba: heal the row first if its write-ahead POST never landed -- otherwise this
+        # PATCH 404s against a row that does not exist, is not retried (4xx), and is swallowed,
+        # leaving a committed move with no audit trail at all.
+        start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
         try:
             await api.patch_execution_log(
                 execution_log_id,
@@ -760,6 +812,9 @@ async def _execute_one(
             exc_info=True,
         )
         # 6a-failed. PATCH execution log to failed (D-01 "<step>: <reason>" prefix).
+        # phaze-87ba: the FAILED audit row is lost exactly the same way as the completed one, so it
+        # gets the same heal. A failed move with no record of the attempt is, if anything, worse.
+        start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
         try:
             await api.patch_execution_log(
                 execution_log_id,
