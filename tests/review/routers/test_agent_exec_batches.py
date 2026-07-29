@@ -70,14 +70,14 @@ async def redis_client() -> AsyncGenerator[redis_async.Redis]:
     """
     client: redis_async.Redis = redis_async.Redis.from_url(_REDIS_URL, decode_responses=True)
     # Pre-clean (defensive in case prior runs leaked keys).
-    for pattern in ("exec:*", "exec_progress_req:*"):
+    for pattern in ("exec:*", "exec_progress_req:*", "execdispatch:*"):
         keys = [k async for k in client.scan_iter(match=pattern, count=100)]
         if keys:
             await client.delete(*keys)
     try:
         yield client
     finally:
-        for pattern in ("exec:*", "exec_progress_req:*"):
+        for pattern in ("exec:*", "exec_progress_req:*", "execdispatch:*"):
             keys = [k async for k in client.scan_iter(match=pattern, count=100)]
             if keys:
                 await client.delete(*keys)

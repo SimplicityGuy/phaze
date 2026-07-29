@@ -36,6 +36,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from redis.exceptions import ResponseError
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 import structlog
@@ -526,6 +527,25 @@ def _agents_view_from_hash(
     return rows
 
 
+async def _hgetall_or_empty(redis_client: Redis, key: str) -> dict[str, str]:
+    """HGETALL ``key``, degrading a wrong-key-type reply to the empty state (phaze-c3j0).
+
+    Belt to the ``uuid.UUID`` parameter typing's braces. With the namespace split and the typed
+    parameter there is no longer a spelling of ``batch_id`` that can name a non-hash key, but this
+    is a read on the operator's live progress view: if some future key ever collides again, the
+    right failure is the empty-state render / terminal SSE close both call sites already handle for
+    a reaped batch -- not a 500 for one caller and a silently dead stream for the other.
+    """
+    try:
+        # The shared client is wired with decode_responses=True (main.lifespan, Phase 26 D-27), so
+        # this really is str->str; redis-py's own type is the undecoded union.
+        data: dict[str, str] = await redis_client.hgetall(key)  # type: ignore[assignment]
+    except ResponseError:
+        logger.warning("execution progress: %s is not a hash -- rendering the empty state", key)
+        return {}
+    return data
+
+
 def _render_partial(request: Request, name: str, context: dict[str, object]) -> str:
     """Render a Jinja partial through FastAPI's ``Jinja2Templates`` wrapper.
 
@@ -542,7 +562,7 @@ def _render_partial(request: Request, name: str, context: dict[str, object]) -> 
 
 
 @router.get("/execution/progress/{batch_id}")
-async def execution_progress(request: Request, batch_id: str) -> EventSourceResponse:
+async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSourceResponse:
     """Stream SSE events with real-time execution progress from Redis (D-04 + D-11).
 
     Event sequence per poll tick (1s cadence):
@@ -562,14 +582,22 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
     polling Redis every second until the client disconnects. After the cap the
     generator emits a terminal ``complete`` close event and returns so the stream
     always terminates on its own.
+
+    phaze-c3j0: ``batch_id`` is typed ``uuid.UUID``, matching the ``uuid.uuid4()`` the dispatcher
+    actually mints, so FastAPI 422s a malformed id before any Redis call. That is what closes the
+    key-aliasing defect: the parameter used to be a free-form ``str`` interpolated straight into
+    ``exec:{batch_id}``, so the literal value ``active`` reconstructed the ``exec:active`` STRING
+    sentinel and HGETALL against it raised WRONGTYPE from inside this generator -- before the first
+    yield, so the stream emitted nothing at all, never the terminal close event it documents.
     """
     redis_client = request.app.state.redis
+    batch_key = f"{BATCH_KEY_PREFIX}{batch_id}"
 
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
         first_connect = True
         empty_polls = 0
         while True:
-            data: dict[str, str] = await redis_client.hgetall(f"exec:{batch_id}")
+            data = await _hgetall_or_empty(redis_client, batch_key)
             if not data:
                 empty_polls += 1
                 if empty_polls >= _MAX_EMPTY_POLLS:
@@ -603,7 +631,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
             sort_state = EXEC_AGENTS_SORT.resolve(
                 sort=data.get("agents_sort"),
                 order=data.get("agents_order"),
-                view_state={"batch_id": batch_id},
+                view_state={"batch_id": str(batch_id)},
             )
 
             # First-connect dispatch_summary event (D-11 / UI-SPEC C1 step 2).
@@ -634,7 +662,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
             agents_html = _render_partial(
                 request,
                 "execution/partials/agents_table.html",
-                {"agents": _sort_agents_view(agents_view, sort_state), "sort": sort_state, "batch_id": batch_id},
+                {"agents": _sort_agents_view(agents_view, sort_state), "sort": sort_state, "batch_id": str(batch_id)},
             )
             yield {"event": "agents_table", "data": agents_html}
 
@@ -656,7 +684,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
 @router.get("/execution/agents-table", response_class=HTMLResponse)
 async def execution_agents_table_sort(
     request: Request,
-    batch_id: str = Query(...),
+    batch_id: uuid.UUID = Query(...),
     sort: str | None = Query(None),
     order: str | None = Query(None),
 ) -> HTMLResponse:
@@ -677,11 +705,17 @@ async def execution_agents_table_sort(
     A batch that has already reaped (empty hash -- 24h TTL, or a stale/garbage-collected id) renders
     the same empty state ``agents_table.html`` already shows for zero agents, matching the SSE
     reader's own empty-hash handling; it does not 404 a poll for a batch that simply finished.
+
+    phaze-c3j0: ``batch_id`` is typed ``uuid.UUID`` for the same reason as the SSE route above --
+    a free-form ``str`` let ``?batch_id=active`` rebuild the ``exec:active`` STRING sentinel, and
+    the resulting WRONGTYPE escaped as an unhandled 500, contradicting the empty-state promise this
+    docstring makes. The write below is already gated behind ``if data:``, so the read failing shut
+    is enough; there was never a corruption path, only a wrong status code.
     """
     redis_client = request.app.state.redis
-    key = f"exec:{batch_id}"
-    data: dict[str, str] = await redis_client.hgetall(key)
-    sort_state = EXEC_AGENTS_SORT.resolve(sort=sort, order=order, view_state={"batch_id": batch_id})
+    key = f"{BATCH_KEY_PREFIX}{batch_id}"
+    data = await _hgetall_or_empty(redis_client, key)
+    sort_state = EXEC_AGENTS_SORT.resolve(sort=sort, order=order, view_state={"batch_id": str(batch_id)})
 
     agents_view: list[dict[str, object]] = []
     if data:
@@ -701,7 +735,7 @@ async def execution_agents_table_sort(
     return templates.TemplateResponse(
         request=request,
         name="execution/partials/agents_table.html",
-        context={"agents": agents_view, "sort": sort_state, "batch_id": batch_id},
+        context={"agents": agents_view, "sort": sort_state, "batch_id": str(batch_id)},
     )
 
 

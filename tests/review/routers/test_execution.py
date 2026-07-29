@@ -317,7 +317,7 @@ async def test_sse_progress(client: AsyncClient) -> None:
     Phase 28: the SSE reader switched from ``queue.redis`` to ``app.state.redis``
     (decode_responses=True, returns str directly).
     """
-    batch_id = uuid.uuid4().hex
+    batch_id = str(uuid.uuid4())
 
     mock_redis = MagicMock()
     mock_redis.hgetall = AsyncMock(
@@ -615,7 +615,13 @@ async def test_start_execution_agents_table_default_sort_is_name_ascending(clien
     client._transport.app.state.task_router = mock_task_router  # type: ignore[union-attr]
     client._transport.app.state.redis = mock_redis  # type: ignore[union-attr]
 
-    response = await client.post("/execution/start")
+    # phaze-j7u8: the sentinel claim runs a registered Lua script. Patch the ACCESSOR rather than
+    # letting ``AsyncMock.register_script`` return a coroutine -- the accessor memoizes its result
+    # in a module global, so a bogus script object registered here would be reused by every later
+    # test in the session (including the ones driving a REAL Redis).
+    claim = AsyncMock(return_value=1)
+    with patch("phaze.routers.execution._get_claim_dispatch_script", MagicMock(return_value=claim)):
+        response = await client.post("/execution/start")
     assert response.status_code == 200
     body = response.text
     assert body.index("Alpha Agent") < body.index("Zeta Agent"), "default sort is name ascending"
@@ -625,7 +631,7 @@ async def test_start_execution_agents_table_default_sort_is_name_ascending(clien
 @pytest.mark.asyncio
 async def test_agents_table_sort_reorders_by_completed_descending(client: AsyncClient) -> None:
     """GET /execution/agents-table?sort=completed&order=desc reorders the WHOLE rollup server-side."""
-    batch_id = uuid.uuid4().hex
+    batch_id = str(uuid.uuid4())
     dispatch_summary = [
         {"agent_id": "a1", "name": "Agent One", "total": 10},
         {"agent_id": "a2", "name": "Agent Two", "total": 20},
@@ -668,7 +674,7 @@ async def test_agents_table_sort_unwhitelisted_key_degrades_to_default_not_422(c
     implementation that happily reached an arbitrary attribute via ``getattr``/``__class__``-style
     lookup. This asserts the actual row ORDER stayed at the contract's default too.
     """
-    batch_id = uuid.uuid4().hex
+    batch_id = str(uuid.uuid4())
     dispatch_summary = [
         {"agent_id": "a1", "name": "Agent One", "total": 10},
         {"agent_id": "a2", "name": "Agent Two", "total": 20},
@@ -706,7 +712,7 @@ async def test_agents_table_sort_unknown_batch_renders_empty_state(client: Async
 
     persist_mock = AsyncMock()
     with patch("phaze.routers.execution._get_persist_sort_script", return_value=persist_mock):
-        response = await client.get("/execution/agents-table?batch_id=does-not-exist&sort=total")
+        response = await client.get(f"/execution/agents-table?batch_id={uuid.uuid4()}&sort=total")
     assert response.status_code == 200
     assert "No active sub-jobs." in response.text
     # phaze-pyv3: an already-reaped batch (empty hgetall) must NOT be written at all -- no
@@ -723,7 +729,7 @@ async def test_sse_progress_agents_table_honors_persisted_sort(client: AsyncClie
     honours it on its own next read, and that the header's aria-sort/caret state travels with it
     (not just the row order).
     """
-    batch_id = uuid.uuid4().hex
+    batch_id = str(uuid.uuid4())
     dispatch_summary = [
         {"agent_id": "a1", "name": "Agent One", "total": 10},
         {"agent_id": "a2", "name": "Agent Two", "total": 20},

@@ -77,7 +77,14 @@ _TTL_SECONDS = 86400  # 24-hour idempotency window -- matches the exec:{batch_id
 # with ``SET NX`` before seeding/enqueuing a batch so a concurrent or repeated POST cannot
 # double-dispatch the same still-APPROVED proposals. It is released atomically with the terminal
 # status promotion below (and by a 24h safety TTL if a batch's sub-jobs never report terminal).
-ACTIVE_DISPATCH_KEY = "exec:active"
+#
+# phaze-c3j0: this used to be ``exec:active``, i.e. a STRING control key living inside the same
+# ``exec:`` namespace as the per-batch HASHES. Because the progress routes interpolated a free-form
+# ``batch_id`` into ``exec:{batch_id}``, the literal value ``active`` rebuilt this key exactly, and
+# HGETALL against a string replies WRONGTYPE. Typing those parameters as ``uuid.UUID`` is the
+# primary fix; moving the control key into its own namespace is the structural one, so no future
+# batch-id spelling can alias it again regardless of what the routes accept.
+ACTIVE_DISPATCH_KEY = "execdispatch:active"
 
 # The per-batch progress hash key prefix (``exec:{batch_id}``), named once so the claim-reconcile
 # Lua can rebuild a held batch's key from the sentinel's value without hard-coding the spelling.

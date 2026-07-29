@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from httpx import ASGITransport, AsyncClient
 import pytest
+from redis.exceptions import ResponseError
 from starlette.requests import Request
 
 from phaze.routers import execution
@@ -185,7 +186,7 @@ async def test_sse_emits_waiting_when_hash_absent(smoke_sse_app: tuple[FastAPI, 
     redis.hgetall = fake_hgetall  # AsyncMock-compatible: hgetall is an async def
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -203,7 +204,7 @@ async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI,
     redis.hgetall = AsyncMock(return_value={})
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/never-seeded") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -236,7 +237,7 @@ async def test_sse_falls_back_when_dispatch_summary_is_malformed_json(
     # Render through real Jinja but skip the sleep.
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -269,7 +270,7 @@ async def test_sse_with_valid_dispatch_summary_succeeds(
     )
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 body = b""
                 async for chunk in resp.aiter_bytes():
                     body += chunk
@@ -696,3 +697,97 @@ async def test_start_execution_returns_collision_block_when_destinations_collide
     # Collision short-circuit means dispatch helpers should NEVER be touched.
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# phaze-c3j0: batch_id is a UUID, and the sentinel no longer shares the
+# per-batch key namespace, so no batch-id spelling can alias a control key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def progress_read_app() -> tuple[FastAPI, MagicMock]:
+    """Smoke app exposing the two progress-READ routes with a fake Redis."""
+    app = FastAPI()
+    app.include_router(execution.router)
+    redis = MagicMock()
+    redis.hgetall = AsyncMock(return_value={})
+    app.state.redis = redis
+    app.state.task_router = MagicMock()
+    app.state.queue = MagicMock()
+    return app, redis
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/execution/progress/active",
+        "/execution/agents-table?batch_id=active",
+    ],
+)
+async def test_progress_routes_reject_the_sentinel_spelling_before_touching_redis(
+    progress_read_app: tuple[FastAPI, MagicMock],
+    url: str,
+) -> None:
+    """``batch_id=active`` is refused by validation, not by a WRONGTYPE traceback (phaze-c3j0).
+
+    Both routes used to take a free-form ``str`` and interpolate it into ``exec:{batch_id}``, so
+    the literal ``active`` rebuilt the ``exec:active`` STRING sentinel. HGETALL against a string
+    replies WRONGTYPE, which escaped as an unhandled 500 on the table route and killed the SSE
+    stream before its first yield on the other. Typing the parameter as ``uuid.UUID`` means FastAPI
+    422s it before Redis is touched at all.
+    """
+    app, redis = progress_read_app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get(url)
+
+    assert resp.status_code == 422
+    redis.hgetall.assert_not_called()
+
+
+def test_sentinel_lives_outside_the_per_batch_key_namespace() -> None:
+    """The structural half of the fix: no batch-id spelling can name the control key (phaze-c3j0).
+
+    Typing the parameter fixes the two known call sites; separating the namespaces means a future
+    route that accepts a looser batch_id cannot reintroduce the alias.
+    """
+    assert not execution.ACTIVE_DISPATCH_KEY.startswith(execution.BATCH_KEY_PREFIX)
+
+
+async def test_agents_table_wrong_key_type_degrades_to_the_empty_state(
+    progress_read_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """A WRONGTYPE read renders the documented empty state rather than a 500 (phaze-c3j0).
+
+    Defence in depth behind the typed parameter: this route's own docstring promises that a batch
+    which has already reaped renders an empty ``agents_table.html``, and a wrong key type should
+    not be the one input that contradicts it.
+    """
+    app, redis = progress_read_app
+    redis.hgetall = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get(f"/execution/agents-table?batch_id={uuid.uuid4()}")
+
+    assert resp.status_code == 200
+    # The write is gated behind ``if data:``, so a failed read must not reach the persist script.
+    assert "aria-sort" in resp.text or resp.text.strip()
+
+
+async def test_sse_wrong_key_type_still_emits_a_terminal_close(
+    progress_read_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """The SSE generator must always terminate with a close event, even on a bad key type (phaze-c3j0)."""
+    app, redis = progress_read_app
+    redis.hgetall = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    # Degrades to the empty-hash path, which is bounded by _MAX_EMPTY_POLLS and closes the stream.
+    assert b"event: complete" in body
