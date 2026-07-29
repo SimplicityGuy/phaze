@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from phaze.models.agent import Agent
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.tasks.scan_reaper import reap_stalled_scans
+from tests.db_guard import BLOCKED_WAITER_SQL
 
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ async def _seed_stale_running_batch(session: AsyncSession, *, last_progress_at: 
 
 
 async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSession], *, timeout: float = 5.0) -> None:
-    """Poll ``pg_locks`` until some OTHER backend is genuinely queued waiting on a lock.
+    """Poll ``pg_locks`` until some OTHER backend IN THIS DATABASE is queued waiting on a lock.
 
     Proves the reaper's write has reached Postgres and is blocked behind the completer's held row lock --
     deterministic, not a guessed sleep-and-hope duration. A backend blocked on an in-use ROW (as opposed
@@ -94,7 +95,7 @@ async def _wait_for_blocked_waiter(session_factory: async_sessionmaker[AsyncSess
     async def _poll() -> None:
         while True:
             async with session_factory() as probe:
-                waiting = (await probe.execute(text("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted)"))).scalar()
+                waiting = (await probe.execute(text(BLOCKED_WAITER_SQL))).scalar()
             if waiting:
                 return
             await asyncio.sleep(0.02)

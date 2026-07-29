@@ -70,7 +70,18 @@ SA_DSN = resolve_test_dsn()
 _LOCK_CLASSID = _BULK_TAGWRITE_LOCK_KEY >> 32
 _LOCK_OBJID = _BULK_TAGWRITE_LOCK_KEY & 0xFFFFFFFF
 
-_ADVISORY_LOCK_COUNT_SQL = text("select count(*) from pg_locks where locktype = 'advisory' and classid = :classid and objid = :objid")
+# phaze-ieqg: `pg_locks` is CLUSTER-wide, not database-scoped. Without the `database` predicate this
+# count includes every OTHER worktree's seat holding the same application key against its own
+# `phaze_<name>_test` database on the shared harness Postgres -- so `count == 1` reads 2 and
+# `count == 0` reads 1, and the module fails with a leak that does not exist. Measured: two
+# concurrent full suites, correctly isolated per phaze-fwo7, both red here on
+# `assert 2 == 1`. Advisory locks taken with the single-argument `pg_advisory_lock(bigint)` are
+# always database-scoped, so `pg_locks.database` is populated for them and this predicate is exact.
+_ADVISORY_LOCK_COUNT_SQL = text(
+    "select count(*) from pg_locks "
+    "where locktype = 'advisory' and classid = :classid and objid = :objid "
+    "and database = (select oid from pg_database where datname = current_database())"
+)
 
 
 async def _prime_two_connections_fifo(engine):  # type: ignore[no-untyped-def]

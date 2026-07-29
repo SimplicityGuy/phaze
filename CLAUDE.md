@@ -41,7 +41,10 @@ The test suite resolves its target from `TEST_DATABASE_URL`, validated by a sing
   so the bare `uv run pytest` above stays safe and needs no extra setup.
 
 Every run prints its resolved target in the pytest header
-(`phaze test database: 'phaze_test' on localhost:5433`) — check it before trusting a green run.
+(`phaze test database: 'phaze_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)`) — check
+it before trusting a green run. `exclusive` means this pytest process holds the session lock
+described below; `unlocked` means Postgres was unreachable at session start, so the run is *not*
+protected and its failures are not trustworthy under any concurrency.
 
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
 default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
@@ -72,6 +75,57 @@ registry; seats get 1 upward), so re-running `test-db-for` for the same worktree
 two worktrees can never collide. The container is started with 64 logical databases; allocation
 past that fails loudly rather than wrapping onto a shared index. **Leaving `PHAZE_REDIS_URL` unset
 is still valid for single-agent and CI runs** — it defaults to DB 0.
+
+### One database, one pytest process (phaze-ieqg)
+
+`TEST_DATABASE_URL` isolates a **worktree**. It never isolated a **process**, and that gap — not
+some undiscovered third shared surface — is what made full-suite runs untrustworthy under
+concurrency for two dispatch rounds.
+
+Two pytest processes on one database destroy each other. `tests/conftest.py`'s session-scoped
+`async_engine` runs `Base.metadata.create_all` at session start and `drop_all` at session teardown,
+so whichever process finishes **first** drops the schema out from under the other. Measured:
+`pytest tests/analyze/routers` (61 tests, 6.8 s) and `pytest tests/review` sharing one database left
+the second run at **238 failed + 12 errors**, all `UndefinedTableError: relation "agents" does not
+exist`, all green on isolated re-run. The most common way to hit this is the most natural one:
+re-running a subset "to check something in isolation" in a second terminal while the full suite is
+still going, or a reviewer running the suite in the same worktree the developer is working in.
+
+`pytest_sessionstart` now takes a session-level Postgres advisory lock on the resolved database and
+holds it for the whole run. A second process is **refused before collection** with the holder's pid
+and the fix, instead of silently corrupting both runs. `PHAZE_TEST_DB_ALLOW_SHARED=1` bypasses it;
+pytest-xdist against one database is this exact defect and is not a reason to set it (CI keeps every
+DB bucket serial for the same reason).
+
+Two suites in two worktrees with their own `test-db-for` databases are unaffected — that is the
+supported way to run concurrently, and it is verified green.
+
+### `pg_locks` and `pg_stat_activity` are cluster-wide — always scope them
+
+A per-worktree database isolates table data completely and the system catalogues not at all. Any
+test that reads `pg_locks` or `pg_stat_activity` sees **every** seat's backends. Two concurrent
+suites, each correctly isolated, both went red on
+`tests/integration/test_tag_bulk_write_advisory_lock.py` with `assert 2 == 1` — an advisory-lock
+count that had picked up the other seat's copy of the same application key. The three
+`_wait_for_blocked_waiter` barriers had the nastier version: `SELECT EXISTS (SELECT 1 FROM pg_locks
+WHERE NOT granted)` is satisfied by any blocked backend in the cluster, so the barrier returned
+before the test's own waiter had queued and everything after it raced.
+
+Scope every such query with `current_database()`. For an advisory-lock count use
+`and database = (select oid from pg_database where datname = current_database())`; for a
+"somebody is blocked" barrier join the waiting backend instead
+(`pg_locks.database` is NULL for `transactionid` locks, so the column filter never matches there) —
+`tests/db_guard.BLOCKED_WAITER_SQL` is the shared correct form.
+`tests/shared/test_cluster_wide_catalog_scoping.py` fails the build on an unscoped query.
+
+### Never `just test-db-down` while another seat is running
+
+`phaze-test-db` and `phaze-test-redis` are **one shared pair of containers**; `test-db-for` carves
+seats out of them rather than giving each seat its own. On 2026-07-29 a `test-db-down` + recreate
+mid-round destroyed 89 per-worktree databases and reset the Redis allocation registry while five
+suites were in flight, producing the same false-red signature from a different cause. `test-db-down`
+now refuses while any client is connected to a `phaze%test` database, listing the seats it is
+protecting; `PHAZE_TEST_DB_FORCE_DOWN=1` overrides for genuinely stale connections.
 
 ## Code Quality
 

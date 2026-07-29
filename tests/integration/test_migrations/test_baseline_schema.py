@@ -806,10 +806,13 @@ async def test_migration_048_upgrade_heals_invalid_leftover_index() -> None:
         try:
             pid = None
             for _ in range(100):
+                # datname scope: pg_stat_activity is CLUSTER-wide, and without it this poll can
+                # match another worktree's copy of the same build on the shared harness -- and
+                # then pg_cancel_backend THEIR build (tests/shared/test_cluster_wide_catalog_scoping.py).
                 row = await cancel_conn.fetchrow(
                     "SELECT pid FROM pg_stat_activity "
                     "WHERE query ILIKE '%CREATE INDEX CONCURRENTLY%ix_files_original_filename_id%' "
-                    "AND pid != pg_backend_pid()"
+                    "AND pid != pg_backend_pid() AND datname = current_database()"
                 )
                 if row is not None:
                     pid = row["pid"]

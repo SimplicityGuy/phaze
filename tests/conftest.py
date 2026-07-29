@@ -25,7 +25,14 @@ from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from tests._queue_fakes import install_fake_queues
-from tests.db_guard import coerce_async_dsn, database_name, resolve_test_dsn
+from tests.db_guard import (
+    SharedTestDatabaseError,
+    acquire_exclusive_session_lock,
+    coerce_async_dsn,
+    database_name,
+    release_exclusive_session_lock,
+    resolve_test_dsn,
+)
 
 
 # Re-exported under its historical private name: `tests/shared/test_conftest_dsn_coercion.py`
@@ -137,15 +144,64 @@ def _route_structlog_through_stdlib() -> "AsyncGenerator[None]":  # type: ignore
         root.removeHandler(handler)
 
 
-def pytest_report_header() -> str:
+# Stash key for the connection holding this session's exclusive lock on the test database.
+# Parked on `config` (not a module global) so it travels with the pytest session that owns it.
+_SESSION_LOCK_ATTR = "_phaze_test_db_session_lock"
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Claim the test database for THIS pytest process, or refuse to run (phaze-ieqg).
+
+    ``TEST_DATABASE_URL`` isolates a worktree; it never isolated a *process*. Two pytest
+    processes resolving one DSN wreck each other -- ``async_engine``'s ``drop_all`` at the
+    first-finishing session's teardown deletes the schema the other is still using -- and the
+    victim's output is a large, branch-unrelated failure set that passes on isolated re-run.
+    That signature was misdiagnosed as cross-worktree contention for two dispatch rounds.
+
+    Refusing here (before collection, before a single test runs) turns hours of false-red
+    triage into one line naming the process that already owns the database. If Postgres is not
+    reachable the lock is simply not taken -- see ``acquire_exclusive_session_lock``.
+
+    ``--collect-only`` is exempt: it imports modules and never opens the schema, so it cannot
+    corrupt a live run, and it is exactly the command someone reaches for to inspect the suite
+    WHILE it is running (CI itself uses `pytest tests/<bucket> -m integration --collect-only` to
+    decide bucket parallelism). Refusing it would buy no safety and cost the one non-destructive
+    introspection tool available mid-run.
+    """
+    if session.config.option.collectonly:
+        setattr(session.config, _SESSION_LOCK_ATTR, None)
+        return
+    try:
+        lock = acquire_exclusive_session_lock(TEST_DATABASE_URL)
+    except SharedTestDatabaseError as exc:
+        # `pytest.exit` rather than a raised exception: this is a harness precondition, not a
+        # bug in the suite, and it should read as a refusal instead of an INTERNALERROR dump.
+        pytest.exit(str(exc), returncode=pytest.ExitCode.USAGE_ERROR)
+    setattr(session.config, _SESSION_LOCK_ATTR, lock)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: object) -> None:
+    """Release the test-database lock so the next run (or another worktree) can claim it."""
+    release_exclusive_session_lock(getattr(session.config, _SESSION_LOCK_ATTR, None))
+    setattr(session.config, _SESSION_LOCK_ATTR, None)
+
+
+def pytest_report_header(config: pytest.Config) -> str:
     """State the resolved test database in the pytest header, on every run.
 
     Silent misconfiguration was only possible because nothing in the default output said which
     database the suite had targeted. Printing it unconditionally means a wrong target is visible
     in any captured log, including a passing one.
+
+    The exclusivity state is printed on the same line for the same reason: ``unlocked`` means
+    ``pytest_sessionstart`` could not reach Postgres, so this run is NOT protected against a
+    second pytest process sharing the database -- worth seeing in a captured log before someone
+    spends a round triaging its failure set.
     """
     url = make_url(TEST_DATABASE_URL)
-    return f"phaze test database: {database_name(TEST_DATABASE_URL)!r} on {url.host}:{url.port} (from TEST_DATABASE_URL)"
+    held = getattr(config, _SESSION_LOCK_ATTR, None) is not None
+    exclusivity = "exclusive" if held else "unlocked (Postgres unreachable or bypass set)"
+    return f"phaze test database: {database_name(TEST_DATABASE_URL)!r} on {url.host}:{url.port} (from TEST_DATABASE_URL, {exclusivity})"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
