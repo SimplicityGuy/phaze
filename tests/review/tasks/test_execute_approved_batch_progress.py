@@ -1440,7 +1440,7 @@ async def test_lost_completion_token_on_success_path_raises_for_saq_replay(
     # every downstream write on the replay path is idempotent.
     assert proposed_paths[0].exists()
     assert not orig_paths[0].exists()
-    assert any("COMPLETION TOKEN lost" in r.message for r in caplog.records)
+    assert any("terminal completion event lost" in r.message for r in caplog.records)
 
 
 async def test_lost_completion_token_does_not_mark_the_proposal_failed(
