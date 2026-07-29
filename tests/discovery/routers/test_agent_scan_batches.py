@@ -573,3 +573,116 @@ def test_router_registered_in_main_app() -> None:
     # Also confirm the PATCH operation has the right method binding.
     matching = [r for r in routes if "/api/internal/agent/scan-batches" in r.path]
     assert any("PATCH" in getattr(r, "methods", set()) for r in matching), "No PATCH method bound on the scan-batches route"
+
+
+# ---------------------------------------------------------------------------
+# phaze-bnvx: concurrent PATCH must not bypass the terminal/state-machine guards.
+#
+# The hermetic ``session`` fixture binds every session to ONE connection inside a
+# single uncommitted outer transaction, so it cannot exercise a real row lock
+# between two genuinely concurrent transactions. This test therefore stands up a
+# dedicated NullPool engine against the same isolated test database (mirroring
+# tests/review/routers/test_agent_execution.py::test_concurrent_patch_does_not_regress_terminal_status,
+# phaze-6zxs), commits a RUNNING row, and races two terminal PATCHes (completed vs
+# failed) each on its OWN connection. With the ``session.get(..., with_for_update=True)``
+# load the two PATCHes serialize on the row lock: the loser blocks until the winner
+# commits, then re-reads the committed terminal status and gets 409 instead of
+# silently overwriting it. Without the lock both reads observe the same stale
+# RUNNING snapshot and the last commit wins blindly -- the regression this bead closes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_terminal_patches_serialize_on_the_row_lock(async_engine) -> None:  # type: ignore[no-untyped-def]
+    """Two concurrent terminal PATCHes (completed vs failed) never both apply (phaze-bnvx).
+
+    Takes the session-scoped ``async_engine`` fixture purely so the schema exists on the isolated
+    test database (this test builds its own committed rows on that same NullPool engine so the two
+    racing PATCHes run on genuinely separate connections -- the hermetic ``session`` fixture binds
+    everything to ONE connection and cannot exercise a real row lock).
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    engine = async_engine
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    agent_id = "g02-conc-scan-agent"
+    batch_id = uuid.uuid4()
+
+    async def _override_session():  # type: ignore[no-untyped-def]
+        async with factory() as s:
+            yield s
+
+    app = FastAPI(title="conc-agent-scan-batches", version="test")
+    app.include_router(agent_scan_batches.router)
+    app.dependency_overrides[get_session] = _override_session
+
+    async def _reset_to_running() -> None:
+        async with factory() as s:
+            row = await s.get(ScanBatch, batch_id)
+            row.status = ScanStatus.RUNNING.value
+            row.completed_at = None
+            row.error_message = None
+            await s.commit()
+
+    try:
+        async with factory() as s:
+            s.add(Agent(id=agent_id, name=agent_id, token_hash=token_hash, scan_roots=["/test/music"]))
+            s.add(
+                ScanBatch(
+                    id=batch_id,
+                    agent_id=agent_id,
+                    scan_path="/test/music/conc",
+                    status=ScanStatus.RUNNING.value,
+                    total_files=0,
+                    processed_files=0,
+                )
+            )
+            await s.commit()
+
+        headers = {"Authorization": f"Bearer {raw_token}"}
+        url = f"/api/internal/agent/scan-batches/{batch_id}"
+        # Repeat rounds to make a stale-read interleaving overwhelmingly likely if the lock is absent.
+        for _ in range(15):
+            await _reset_to_running()
+            async with (
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_a,
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_b,
+            ):
+                r_a, r_b = await asyncio.gather(
+                    ac_a.patch(url, json={"status": "completed"}),
+                    ac_b.patch(url, json={"status": "failed", "error_message": "conc race"}),
+                    return_exceptions=False,
+                )
+            statuses = {r_a.status_code, r_b.status_code}
+            # Exactly one PATCH applies (200); the loser re-reads the committed terminal
+            # status and is refused with 409 -- never both 200 (that would mean the second
+            # commit silently overwrote the first's terminal outcome).
+            assert statuses <= {200, 409}, (r_a.status_code, r_b.status_code)
+            assert 200 in statuses and 409 in statuses, f"both PATCHes did not resolve to exactly one winner: {r_a.status_code=} {r_b.status_code=}"
+
+            async with factory() as s:
+                row = await s.get(ScanBatch, batch_id)
+                assert row.status in (ScanStatus.COMPLETED.value, ScanStatus.FAILED.value)
+                # The row's status matches whichever response returned 200 -- confirms the
+                # 409 loser never silently applied its own field mutations on top.
+                winner_status = "completed" if r_a.status_code == 200 else "failed"
+                assert row.status == winner_status, (
+                    f"terminal outcome regressed under concurrency: row.status={row.status!r}, winner was {winner_status!r}"
+                )
+    finally:
+        async with factory() as s:
+            batch = await s.get(ScanBatch, batch_id)
+            if batch is not None:
+                await s.delete(batch)
+            ag = await s.get(Agent, agent_id)
+            if ag is not None:
+                await s.delete(ag)
+            await s.commit()
+        # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
+        # owned (and disposed) by conftest.
