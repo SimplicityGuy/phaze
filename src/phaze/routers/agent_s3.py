@@ -205,12 +205,40 @@ async def report_uploaded(
         # (UPLOADING -> UPLOADED, rowcount==0 early-returns before reaching this block) PLUS the
         # deterministic submit_cloud_job key -- a duplicate/late callback is already a no-op at the
         # cloud_job sidecar (the sole derived authority PR-A reads), so no state guard is load-bearing.
+        #
+        # phaze-0vuf: COMMIT the UPLOADING -> UPLOADED CAS BEFORE enqueuing submit_cloud_job.
+        # resolve_queue_for_task returns the controller's own SAQ PostgresQueue, which enqueues on
+        # ITS OWN psycopg pool and commits the job durably and IMMEDIATELY -- independent of THIS
+        # asyncpg session's commit boundary (the same class the phaze-grzo / phaze-v40v fixes closed
+        # for cloud_staging and agent_push). Enqueuing first meant a subsequent commit failure (request
+        # cancellation, a PgBouncer blip) rolled the UPLOADED flip back while a real Kueue Job had
+        # already been submitted for it: submit_cloud_job's own upsert then reads the still-'uploading'
+        # row, misses its `where=status IN ('uploaded','submitted')` guard, rolls back, and deletes the
+        # Job it just created -- a real k8s Job created and destroyed for nothing, and the file stuck
+        # UPLOADING until the age-bounded stranded-staging reaper spills it (discarding the fully
+        # staged object). Committing first makes a failure here benign: nothing is dispatched, the
+        # cloud_job stays durably UPLOADED, and the file re-enters the drain on the next tick.
+        await session.commit()
+
         # Route submit_cloud_job onto the CONTROLLER queue via the single Phase-30 seam (never a raw
         # controller_queue.enqueue / the default queue -- KROUTE-04, T-55-SEAM-03). Deterministic key
         # dedups a replayed submit (KSUBMIT-01). submit_cloud_job stays staging-free (rejected coupling).
-        routed = await resolve_queue_for_task("submit_cloud_job", request.app.state, session)
-        await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
-        await session.commit()
+        # Post-commit: a failed enqueue (controller pool down) is best-effort -- the control state is
+        # already correct + durable (cloud_job UPLOADED), so log loudly and still return 200 rather than
+        # 500 (mirrors report_pushed's post-commit process_file enqueue, agent_push.py:227-237).
+        try:
+            routed = await resolve_queue_for_task("submit_cloud_job", request.app.state, session)
+            await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
+        except Exception:
+            logger.warning(
+                "report_uploaded: cloud_job committed UPLOADED but the post-commit submit_cloud_job "
+                "enqueue failed -- file needs a re-triggered submit (control state is durable, not stranded)",
+                file_id=str(file_id),
+                agent_id=agent.id,
+                exc_info=True,
+            )
+            return UploadedResponse(file_id=file_id)
+
         logger.info("report_uploaded: submit_cloud_job routed", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 

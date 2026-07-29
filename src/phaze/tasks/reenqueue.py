@@ -234,7 +234,7 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
       additive-only contract, T-87-20, never clears it) must stay domain-complete UNCONDITIONALLY,
       never re-subjected to the failed-only ``enqueued_at`` comparison (phaze-3m5n).
     - ``push_done``: ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` (D-07). A
-      ``push_file`` ledger row implies compute (``_enqueue_push_file`` is its only producer), so no
+      ``push_file`` ledger row implies compute (``ComputeAgentBackend.dispatch`` is its only producer), so no
       backend-kind resolution is needed: SUCCEEDED covers the landed-but-not-yet-analyzed window and
       ``domain_completed(analyze)`` covers the onward advance; a SUBMITTED / AWAITING / no-row file is
       NOT push-done and re-drives.
@@ -294,7 +294,7 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     """Build the ledger-scoped SELECT for file ids whose push stage is done (D-07, sidecar-derived).
 
     ``push_done = cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)``. A ``push_file``
-    ledger row is created ONLY by ``ComputeAgentBackend.dispatch`` -> ``_enqueue_push_file``, so a
+    ledger row is created ONLY by ``ComputeAgentBackend.dispatch``'s parked enqueue, so a
     push_file row IMPLIES the compute lane (kueue never enqueues push_file); on that lane SUCCEEDED
     means "pushed and analyzing" and SUBMITTED means "still pushing". This is behavior-identical to the
     retired ``state IN (PUSHED, ANALYZED, ANALYSIS_FAILED)``: SUCCEEDED covers PUSHED (the

@@ -1,4 +1,4 @@
-"""POST /api/internal/agent/push/{file_id}/{pushed,mismatch} -- control-side push callbacks (Phase 50, Plan 50-05).
+"""POST /api/internal/agent/push/{file_id}/{pushed,mismatch,failed} -- control-side push callbacks (Phase 50, Plan 50-05).
 
 The Postgres-free file-server / compute agents cannot mutate ``FileRecord`` or the
 scheduling ledger directly (RESEARCH §Critical Finding 1), so the ``push_file``
@@ -31,9 +31,18 @@ Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
   to local instead of looping forever (T-50-loop) -- ANALYSIS_FAILED comes only from a
   local analysis failure.
 
+- ``/failed`` (phaze-c53x, TERMINAL ack): the fileserver agent's ``push_file`` task calls this
+  on its non-retryable attempt (SAQ retries exhausted -- ``PUSH_FILE_SAQ_RETRIES``) or a
+  non-retryable config/binary error. Every OTHER file-keyed agent task has a terminal-failure
+  ack; ``push_file`` was the sole exception, so an exhausted push left ``cloud_job`` stuck
+  ``SUBMITTED`` forever with no reconciler and no recovery path short of manual SQL. Spills the
+  ``cloud_job`` back to ``AWAITING_CLOUD`` with its cloud budget marked spent (mirrors
+  ``report_upload_failed`` / ``report_push_mismatch``'s over-cap branches) so the next drain tick
+  routes the file to local, and clears the ``push_file:<id>`` ledger row.
+
 AUTH-01 discipline: ``file_id`` always travels on the URL PATH and the agent identity
-comes from the token dependency -- never from a request body (the agent client sends
-no body for either callback).
+comes from the token dependency -- never from a request body (``/pushed`` and ``/mismatch``
+send no body at all; ``/failed`` carries only an optional bounded diagnostic).
 
 NULL-GUARD FOR A CONCURRENTLY-DELETED FileRecord (request_guards.py rule 3, phaze-zdej): both
 callbacks load ``FileRecord`` on a ``file_id`` a PREVIOUS request named, and a scan-deletion
@@ -65,7 +74,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
+from phaze.schemas.agent_push import PushedResponse, PushFailedRequest, PushFailedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends import hold_awaiting_cloud, resolve_compute_backend
@@ -246,6 +255,83 @@ async def report_pushed(
     return PushedResponse(file_id=file_id)
 
 
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=PushFailedResponse)
+async def report_push_failed(
+    file_id: uuid.UUID,
+    body: PushFailedRequest,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PushFailedResponse:
+    """Record a TERMINAL ``push_file`` failure: spill the ``cloud_job`` back to ``awaiting`` (phaze-c53x).
+
+    ``push_file`` (``tasks/push.py``) is the ONLY file-keyed agent task with no terminal-failure ack --
+    every sibling (``process_file`` -> ``report_analysis_failed``, ``extract_file_metadata`` ->
+    ``report_metadata_failed``, ``fingerprint_file`` -> ``report_fingerprint_failed``, ``scan_live_set``
+    -> ``report_scan_terminal``, ``s3_upload`` -> ``report_upload_failed``) has one. Without this
+    endpoint a push that exhausts its SAQ retries (``PUSH_FILE_SAQ_RETRIES``) -- or hits a non-retryable
+    config/binary error on its FIRST attempt -- settles the SAQ job FAILED with NO control-plane
+    callback: ``cloud_job`` sits ``SUBMITTED`` forever (``ComputeAgentBackend.reconcile`` is a documented
+    no-op; ``recover_orphaned_work`` excludes any file carrying an in-flight ``cloud_job`` row on the
+    premise that the ``/pushed``/``/mismatch`` callback path owns it), permanently consuming a compute
+    ``in_flight_count`` cap slot and silently dropping the file from the pipeline -- invisible to the
+    orphaned-work badge (``get_stage_orphan_counts`` uses the same in-flight exclusion predicate).
+    Recovery previously required manual SQL.
+
+    The fileserver agent is the ``push_file`` runner (mirrors ``/pushed``'s reporter -- no D-07-style
+    cross-agent authorization gate is needed here, unlike ``/mismatch``, whose reporter IS the compute
+    agent). Spill mirrors ``report_upload_failed``'s over-cap branch and ``report_push_mismatch``'s
+    over-cap branch: CAS the ``cloud_job`` ``submitted -> awaiting`` via the single go-forward writer
+    (:func:`hold_awaiting_cloud`) with the cloud budget marked SPENT (``attempts=cloud_submit_max_attempts``)
+    so ``select_backend`` routes the file to LOCAL on the next drain tick instead of re-trying a dead
+    compute lane, and clear the ``push_file:<file_id>`` scheduling-ledger row so it does not immortally
+    survive (it was previously excluded from every recovery path by the same in-flight predicate).
+
+    NULL-GUARD (mirrors ``/pushed``/``/mismatch``, request_guards.py rule 3): a concurrent scan-deletion
+    can remove the ``FileRecord`` between the previous request that named it and this callback -- a clean
+    ``cleared=False`` no-op, never a 500. A late/duplicate ``/failed`` whose ``cloud_job`` already
+    advanced past ``submitted`` (a concurrent ``/pushed``/``/mismatch`` landed first) is the SAME
+    idempotent no-op via the CAS rowcount guard (T-83-PUSH-CLOBBER discipline).
+
+    ``file_id`` is the PATH value only; ``agent`` from the token dependency (AUTH-01). ``body.detail`` is
+    a bounded optional diagnostic that carries no identity.
+    """
+    settings = cast("ControlSettings", get_settings())
+
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        logger.warning(
+            "report_push_failed held: file record no longer exists (concurrent scan-deletion)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return PushFailedResponse(file_id=file_id, cleared=False)
+
+    cleared = await hold_awaiting_cloud(
+        session,
+        file,
+        attempts=settings.cloud_submit_max_attempts,
+        expect_status=(CloudJobStatus.SUBMITTED.value,),
+    )
+    if cleared:
+        await clear_ledger_entry(session, f"push_file:{file_id}")
+    await session.commit()
+
+    if cleared:
+        logger.warning(
+            "report_push_failed: push_file exhausted its retries -> cloud_job spilled to awaiting (routes to local)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            detail=body.detail,
+        )
+    else:
+        logger.info(
+            "report_push_failed: idempotent no-op (cloud_job no longer 'submitted')",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+    return PushFailedResponse(file_id=file_id, cleared=cleared)
+
+
 @router.post("/{file_id}/mismatch", status_code=status.HTTP_200_OK, response_model=PushMismatchResponse)
 async def report_push_mismatch(
     file_id: uuid.UUID,
@@ -267,17 +353,30 @@ async def report_push_mismatch(
     bounded budget survives a crash in the enqueue->stamp window). Read it (default 0) and increment:
 
     - ``attempt + 1 > push_max_attempts`` -> SPILL to ``FileState.AWAITING_CLOUD`` via a CAS on
-      ``cloud_job.status == 'submitted'`` (SC#1/D-12: the sidecar is the single CAS domain, no
-      ``FileRecord.state`` routing read) that re-stamps the row ``submitted -> awaiting`` with ``attempts``
-      marked spent (D-03), + ``clear_ledger_entry`` in one transaction (Phase 69, SCHED-03/D-04): the file
-      falls to local on the next drain tick instead of re-pushing forever (T-50-loop). The terminal
-      ``ANALYSIS_FAILED`` now comes only from a local analysis failure. A late/duplicate /mismatch on a
-      file whose cloud_job already advanced past ``submitted`` matches 0 rows and cannot clobber it.
-    - otherwise -> re-enqueue ``push_file`` on the FILESERVER queue (the rsync initiator) keeping
-      the file ``PUSHING`` (the slot is retained, Open-Q1), and stamp the incremented
-      ``push_attempt`` back onto the ledger row's ``redrive_attempt`` column. The deterministic ``push_file:<id>`` key dedups a
-      still-live push. With no fileserver online the file is left ``PUSHING`` for the staging cron /
-      recovery to re-drive.
+      ``cloud_job.status IN ('submitted', 'succeeded')`` (SC#1/D-12: the sidecar is the single CAS
+      domain, no ``FileRecord.state`` routing read) that re-stamps the row ``-> awaiting`` with
+      ``attempts`` marked spent (D-03), + ``clear_ledger_entry`` in one transaction (Phase 69,
+      SCHED-03/D-04): the file falls to local on the next drain tick instead of re-pushing forever
+      (T-50-loop). The terminal ``ANALYSIS_FAILED`` now comes only from a local analysis failure. A
+      late/duplicate /mismatch on a file whose cloud_job already advanced past that pair matches 0 rows
+      and cannot clobber it.
+    - otherwise -> re-arm the ``cloud_job`` CAS domain (``succeeded``/``submitted`` -> ``submitted`` --
+      phaze-7lpe) then re-enqueue ``push_file`` on the FILESERVER queue (the rsync initiator) keeping
+      the file ``PUSHING`` (the slot is retained, Open-Q1), and stamp the incremented ``push_attempt``
+      back onto the ledger row's ``redrive_attempt`` column -- all in the SAME final commit this
+      handler already used (the ``pg_advisory_xact_lock`` taken above must stay held across the whole
+      counter read->increment->write, HARD-02/D-05, so the re-arm is NOT committed early). The
+      deterministic ``push_file:<id>`` key dedups a still-live push. With no fileserver online the file
+      is left ``PUSHING`` for the staging cron / recovery to re-drive.
+
+    phaze-7lpe: ``report_pushed``'s ONLY CAS guard is ``cloud_job.status == 'submitted'``, and it
+    CONSUMES that token (flips it to ``succeeded``) before ``process_file`` -- the sole caller of THIS
+    endpoint -- can ever run. So the REAL state reaching /mismatch is ALWAYS ``succeeded``, never
+    ``submitted``. Both branches above therefore key on the ``('submitted', 'succeeded')`` pair rather
+    than ``'submitted'`` alone, and the under-cap branch additionally re-arms the row back to
+    ``submitted`` before re-driving -- without that re-arm the re-driven push's OWN /pushed callback
+    would match 0 rows and silently never re-enqueue ``process_file``, permanently killing the D-12
+    re-verify loop after exactly one re-push.
 
     ``file_id`` is the PATH value only; ``agent`` from the token dependency (AUTH-01).
     """
@@ -343,14 +442,22 @@ async def report_push_mismatch(
         # the hard shadow invariant AWAITING_CLOUD => status='awaiting' holds, keeping attempts SPENT
         # (>= cloud_submit_max_attempts) so select_backend excludes cloud and routes the file to local (D-04).
         # A duplicate/late /mismatch (SAQ retry) -- or a stale/removed-backend reporter that skipped the D-07
-        # gate -- on a file whose cloud_job already advanced past 'submitted' (SUCCEEDED/RUNNING/reaped) matches
-        # 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
+        # gate -- on a file whose cloud_job already advanced past 'submitted'/'succeeded' (RUNNING/reaped/
+        # awaiting) matches 0 rows and CANNOT clobber it back to AWAITING_CLOUD (T-83-PUSH-CLOBBER).
+        #
+        # phaze-7lpe: expect_status widens to ('submitted', 'succeeded'). /mismatch is reached ONLY via
+        # process_file (tasks/functions.py), which by construction runs AFTER report_pushed has already
+        # flipped the row submitted -> succeeded (compute has no further transition between a landed push
+        # and analysis completing -- unlike kueue, a compute cloud_job never advances past 'succeeded').
+        # So the REAL state at /mismatch time is ALWAYS 'succeeded', never 'submitted' -- the original
+        # 'submitted'-only guard meant this branch could never fire in production, permanently disabling
+        # the T-50-loop spill-to-local safety for a persistently corrupt/skewed push.
         #
         # D-01/D-02: route the spill re-stamp through the SINGLE awaiting writer
-        # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch keys on
-        # expect_status=('submitted',) and re-stamps submitted -> awaiting with attempts SPENT (D-03),
-        # returning False (a full no-op) on the 0-row advanced-file case. NO clear_cloud_phase: the push
-        # spill must NOT touch cloud_phase (D-12 -- only the s3 spill clears it).
+        # (services.backends.hold_awaiting_cloud) instead of an inline CAS. Its spill branch re-stamps
+        # submitted/succeeded -> awaiting with attempts SPENT (D-03), returning False (a full no-op) on
+        # the 0-row advanced-file case. NO clear_cloud_phase: the push spill must NOT touch cloud_phase
+        # (D-12 -- only the s3 spill clears it).
         #
         # NULL-GUARD: the helper's CAS dereferences file.id, so load the FileRecord (none is loaded in this
         # branch today). An absent file (unreachable in practice -- cloud_job.file_id FKs files.id) takes the
@@ -362,14 +469,14 @@ async def report_push_mismatch(
             session,
             file,
             attempts=settings.cloud_submit_max_attempts,
-            expect_status=(CloudJobStatus.SUBMITTED.value,),
+            expect_status=(CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value),
         )
         if not cleared:
-            # cloud_job no longer 'submitted' (already advanced, reaped, or a non-compute file with no row):
-            # idempotent FULL no-op. No cloud_job write, no FileRecord write, no ledger clear.
+            # cloud_job no longer submitted/succeeded (already advanced, reaped, or a non-compute file
+            # with no row): idempotent FULL no-op. No cloud_job write, no FileRecord write, no ledger clear.
             await session.commit()
             logger.info(
-                "report_push_mismatch: idempotent no-op (cloud_job no longer 'submitted', over-cap spill skipped)",
+                "report_push_mismatch: idempotent no-op (cloud_job no longer submitted/succeeded, over-cap spill skipped)",
                 file_id=str(file_id),
                 agent_id=agent.id,
             )
@@ -436,6 +543,41 @@ async def report_push_mismatch(
             attempt=next_attempt,
         )
         await session.commit()
+        return PushMismatchResponse(file_id=file_id, cleared=False)
+
+    # phaze-7lpe: re-arm the cloud_job CAS domain BEFORE re-driving. report_pushed's ONLY guard is
+    # cloud_job.status == 'submitted' (SC#1/D-12); by the time /mismatch is reachable that token has
+    # ALREADY been consumed -- report_pushed flips submitted -> succeeded before process_file (the sole
+    # /mismatch caller) can ever run. Without this re-stamp the re-driven push's OWN /pushed callback
+    # matches 0 rows (idempotent no-op) and NEVER re-enqueues process_file -- the D-12 re-verify loop
+    # silently dies after exactly one re-push. CAS from 'succeeded' (the real state) -- or 'submitted'
+    # (kept for idempotency / defense-in-depth against a re-drive racing a fresh dispatch) -- back to
+    # 'submitted'. NOT committed here: the ``pg_advisory_xact_lock`` taken above is TRANSACTION-scoped
+    # and serializes the redrive_attempt counter's read->increment->write across concurrent /mismatch
+    # calls for this file -- an early commit here would release it before the counter stamp below and
+    # reopen the lost-update window (HARD-02/D-05). It commits together with the enqueue + counter
+    # stamp in the SAME final commit this handler already used, matching the existing (accepted) risk
+    # profile of that commit boundary rather than the tighter enqueue-after-commit discipline used
+    # where no counter atomicity is at stake (report_pushed, ComputeAgentBackend.dispatch).
+    res = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(CloudJob)
+            .where(CloudJob.file_id == file_id, CloudJob.status.in_((CloudJobStatus.SUBMITTED.value, CloudJobStatus.SUCCEEDED.value)))
+            .values(status=CloudJobStatus.SUBMITTED.value)
+        ),
+    )
+    if res.rowcount == 0:
+        # cloud_job already advanced past a mismatch-reachable state (e.g. a concurrent over-cap
+        # /mismatch already spilled it to 'awaiting', or the row was reaped): hold rather than re-drive
+        # a push whose callback could never re-arm the CAS either way.
+        await session.commit()
+        logger.info(
+            "report_push_mismatch held: cloud_job no longer re-armable (already advanced)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            attempt=next_attempt,
+        )
         return PushMismatchResponse(file_id=file_id, cleared=False)
 
     fileserver_queue = request.app.state.task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
