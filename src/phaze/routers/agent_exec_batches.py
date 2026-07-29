@@ -227,6 +227,29 @@ def _get_claim_dispatch_script(redis_client: redis_async.Redis) -> "AsyncScript"
     return _claim_dispatch_script
 
 
+# phaze-0t2c: compare-and-delete release for a dispatch that ends before any sub-job lands (so no
+# terminal POST will ever run the promotion that normally releases the claim). The GET==batch_id
+# guard is the whole point and mirrors the promote script's: on the failure path this can run well
+# after the claim was taken, and an unconditional DEL would drop a NEWER dispatch's claim,
+# re-opening the double-move hazard the sentinel exists to close.
+# KEYS[1] = the sentinel key. ARGV[1] = the batch_id that must still hold it. Returns 1 if released.
+_RELEASE_DISPATCH_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+_release_dispatch_script: "AsyncScript | None" = None
+
+
+def _get_release_dispatch_script(redis_client: redis_async.Redis) -> "AsyncScript":
+    """Return the cached CAS-release script, registering it on first call (phaze-0t2c)."""
+    global _release_dispatch_script
+    if _release_dispatch_script is None:
+        _release_dispatch_script = redis_client.register_script(_RELEASE_DISPATCH_LUA)
+    return _release_dispatch_script
+
+
 # phaze-gtau: apply the D-07 HINCRBY counter set AND claim the request-idempotency marker
 # (KEYS[2]) ATOMICALLY, in one round-trip. The marker becomes authoritative ONLY together with the
 # HINCRBYs, closing the window the prior "SET NX marker, THEN pipeline HINCRBY" ordering left open:
