@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
+from phaze.services.bulk_insert import chunk_rows
 
 
 MEDIA_CATEGORIES: set[FileCategory] = {FileCategory.MUSIC, FileCategory.VIDEO}
@@ -92,15 +93,28 @@ async def associate_companions(session: AsyncSession) -> int:
 
     count = 0
     if rows:
-        # The unlinked read above is a snapshot: a concurrent run computes the same
-        # pairs, and whichever commits second would violate uq_file_companions_pair.
-        # ON CONFLICT DO NOTHING makes that first-writer-wins; rowcount counts only
-        # the rows actually inserted, keeping the return value honest under races.
-        # An INSERT returns a CursorResult at runtime (exposing rowcount); the async
-        # stubs type it as the base Result, so cast (agent_push.py precedent).
-        insert_stmt = pg_insert(FileCompanion).values(rows).on_conflict_do_nothing(constraint="uq_file_companions_pair")
-        result = cast("CursorResult[Any]", await session.execute(insert_stmt))
-        count = result.rowcount
+        # phaze-p3qr: CHUNKED, because an explicit multi-row VALUES binds
+        # `len(rows) * params_per_row` parameters in ONE statement and PostgreSQL's Bind
+        # message caps that at int16 (32767) -- 10,922 rows at this model's 3 parameters
+        # (id/companion_id/media_id), a threshold a conventional album directory (folder art +
+        # a couple of scene-release sidecars against a dozen tracks) clears in roughly 230
+        # directories on the large personal archive this project targets. `chunk_rows` derives
+        # the split from the rows' actual parameter count (services/bulk_insert.py), so adding a
+        # column to FileCompanion cannot silently reintroduce the break.
+        #
+        # The unlinked read above is a snapshot: a concurrent run computes the same pairs, and
+        # whichever commits second would violate uq_file_companions_pair. ON CONFLICT DO NOTHING
+        # makes that first-writer-wins; summing each chunk's rowcount keeps the return value
+        # honest under races. An INSERT returns a CursorResult at runtime (exposing rowcount);
+        # the async stubs type it as the base Result, so cast (agent_push.py precedent).
+        #
+        # ATOMICITY: every chunk executes on THIS session inside the SAME transaction (bulk_insert.py's
+        # "atomicity is the caller's job" rule) -- the single `session.commit()` below is still the
+        # only commit boundary, so a mid-loop failure rolls back every chunk, never a partial link set.
+        for chunk in chunk_rows(rows):
+            insert_stmt = pg_insert(FileCompanion).values(chunk).on_conflict_do_nothing(constraint="uq_file_companions_pair")
+            result = cast("CursorResult[Any]", await session.execute(insert_stmt))
+            count += result.rowcount
 
     await session.commit()
     return count
