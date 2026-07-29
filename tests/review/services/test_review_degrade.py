@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 
+from phaze.models.discogs_link import DiscogsLink
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -28,6 +29,7 @@ from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
     get_pending_proposal_rows,
+    get_tagwrite_review_page,
     get_tagwrite_review_rows,
 )
 
@@ -103,7 +105,8 @@ def test_format_size_edges() -> None:
 
 
 def test_format_quality_with_and_without_bitrate() -> None:
-    assert _format_quality({"file_size": 22_400_000, "bitrate": 320}).startswith("320 kbps · ")
+    # phaze-iw2k: bitrate is stored in BITS per second; _format_quality divides by 1000 for display.
+    assert _format_quality({"file_size": 22_400_000, "bitrate": 320_000}).startswith("320 kbps · ")
     assert "kbps" not in _format_quality({"file_size": 22_400_000})  # covers the no-bitrate branch
 
 
@@ -337,6 +340,167 @@ async def test_get_tagwrite_review_rows_pages_across_scan_batches(session: Async
     offered = {row["file_id"] for row in await get_tagwrite_review_rows(session)}
 
     assert qual_id in offered
+
+
+# ---------------------------------------------------------------------------
+# phaze-bto9 — the tag-write review scan's cost shape
+# ---------------------------------------------------------------------------
+
+
+class _CountingSession:
+    """Wrap a real session and count SELECTs, so a per-row query fan-out is directly observable.
+
+    The defect phaze-bto9 fixes is invisible to a result-shape assertion -- the rows returned were
+    always correct, it was the ROUND-TRIP COUNT that was linear (and quadratic with the missing
+    index) in the applied backlog. Counting is therefore the only honest test of it.
+    """
+
+    def __init__(self, inner: AsyncSession) -> None:
+        self._inner = inner
+        self.executes = 0
+
+    async def execute(self, *args: object, **kwargs: object) -> object:
+        self.executes += 1
+        return await self._inner.execute(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+@pytest.mark.asyncio
+async def test_scan_issues_a_constant_number_of_queries_per_batch(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-bto9: query count is per SCAN BATCH, not per CANDIDATE.
+
+    Pre-fix the loop called ``_get_tracklist_for_file`` (1 SELECT) and ``_get_accepted_discogs_link``
+    (1-2 SELECTs) for EVERY candidate, so a 200K applied backlog of already-correct files issued
+    ~500K round-trips to render a page that qualifies almost nothing. Both are now batched by
+    ``file_id IN (...)`` alongside the ``logged_ids`` batch that was already there.
+
+    Asserted as a bound rather than an exact number so the test does not ossify the batch internals:
+    doubling the candidate count within ONE batch must not change the query count at all.
+    """
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 50)
+
+    for i in range(4):
+        await _seed_qualifying_applied_file(session, filename=f"aaa_{i} - Title.mp3")
+    counting_four = _CountingSession(session)
+    await get_tagwrite_review_page(counting_four)  # type: ignore[arg-type]
+
+    for i in range(4, 12):
+        await _seed_qualifying_applied_file(session, filename=f"aaa_{i} - Title.mp3")
+    counting_twelve = _CountingSession(session)
+    page = await get_tagwrite_review_page(counting_twelve)  # type: ignore[arg-type]
+
+    assert len(page.rows) == 12, "all twelve candidates fit in one scan batch"
+    assert counting_twelve.executes == counting_four.executes, (
+        f"tripling the candidates in one batch changed the query count "
+        f"({counting_four.executes} -> {counting_twelve.executes}) -- a per-row query survived the batching"
+    )
+
+
+@pytest.mark.asyncio
+async def test_batched_lookups_pick_the_same_rows_as_the_per_file_helpers(session: AsyncSession) -> None:
+    """The batch helpers must resolve EXACTLY what the per-file helpers would, ties included.
+
+    Both are ``DISTINCT ON`` rewrites of an ``ORDER BY ... LIMIT 1``, so a mismatched ORDER BY would
+    silently change which tracklist (and therefore which proposed tags) a file is reviewed against.
+    Seeded with a deliberate confidence TIE so the ``id`` tiebreak is what decides.
+    """
+    from phaze.routers.tags import (
+        _get_accepted_discogs_link,
+        _get_accepted_discogs_links_for_files,
+        _get_tracklist_for_file,
+        _get_tracklists_for_files,
+    )
+
+    file_id = await _seed_qualifying_applied_file(session, filename="Tie Artist - Tie Title.mp3")
+    version_ids = []
+    for confidence in (0.5, 0.5, 0.9):
+        version_id = uuid.uuid4()
+        tracklist_id = uuid.uuid4()
+        session.add(
+            Tracklist(
+                id=tracklist_id,
+                external_id=f"ext-{uuid.uuid4().hex[:8]}",
+                source_url="https://example.com",
+                file_id=file_id,
+                artist="Tie Artist",
+                latest_version_id=version_id,
+                source="1001tracklists",
+                status="approved",
+                match_confidence=confidence,
+            )
+        )
+        session.add(TracklistVersion(id=version_id, tracklist_id=tracklist_id, version_number=1))
+        version_ids.append(version_id)
+    await session.commit()
+
+    per_file = await _get_tracklist_for_file(session, file_id)
+    batched = (await _get_tracklists_for_files(session, [file_id])).get(file_id)
+    assert per_file is not None
+    assert batched is not None
+    assert batched.id == per_file.id, "the batch helper must pick the same tracklist as the per-file one"
+
+    # Two accepted links on the winning version's tracks, tied on confidence -> id DESC decides.
+    track_ids = [uuid.uuid4(), uuid.uuid4()]
+    for position, track_id in enumerate(track_ids, start=1):
+        session.add(TracklistTrack(id=track_id, version_id=per_file.latest_version_id, position=position, title=f"T{position}", timestamp="0:00"))
+        session.add(
+            DiscogsLink(
+                id=uuid.uuid4(),
+                track_id=track_id,
+                discogs_release_id=f"rel-{position}",
+                status="accepted",
+                confidence=0.7,
+                discogs_label="L",
+                discogs_year=2024,
+            )
+        )
+    await session.commit()
+
+    per_file_link = await _get_accepted_discogs_link(session, file_id)
+    batched_link = (await _get_accepted_discogs_links_for_files(session, {file_id: per_file})).get(file_id)
+    assert per_file_link is not None
+    assert batched_link is not None
+    assert batched_link.id == per_file_link.id, "the batch helper must pick the same accepted link as the per-file one"
+
+
+@pytest.mark.asyncio
+async def test_scan_stops_at_the_batch_cap_and_reports_partial(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-bto9: the walk is bounded by CANDIDATES SCANNED, not just by rows accumulated.
+
+    The accumulate-only-qualifying-rows design (WR-01) means the ``len(rows) < _MAX_REVIEW_ROWS``
+    guard NEVER fires when candidates do not qualify -- zero-change files ``continue`` without
+    contributing -- so pre-fix the loop terminated only on candidate exhaustion, i.e. after paging
+    every applied file. Here five zero-change files span more batches than the cap allows: the scan
+    must stop early and SAY so, rather than walking the whole backlog.
+    """
+    monkeypatch.setattr("phaze.services.review._REVIEW_SCAN_BATCH", 1)
+    monkeypatch.setattr("phaze.services.review._MAX_REVIEW_SCAN_BATCHES", 2)
+    for i in range(5):
+        await _seed_zero_change_applied_file(session, filename=f"aaa_noop_{i}.mp3")
+    # A qualifying file sorting AFTER the wall -- unreachable within the cap, by design.
+    await _seed_qualifying_applied_file(session, filename="zzz_qual - Title.mp3")
+
+    page = await get_tagwrite_review_page(session)
+
+    assert page.partial is True, "a truncated scan must report itself partial, not silently understate the queue"
+    assert page.rows == [], "nothing qualified within the scanned prefix"
+
+
+@pytest.mark.asyncio
+async def test_complete_scan_is_not_reported_partial(session: AsyncSession) -> None:
+    """The complement: an exhausted candidate set is a COMPLETE answer, so the subcount is exact.
+
+    Without this, "always partial" would satisfy the assertion above while making every count in the
+    workspace read as an underestimate.
+    """
+    qual_id = await _seed_qualifying_applied_file(session, filename="aaa_qual - Title.mp3")
+
+    page = await get_tagwrite_review_page(session)
+
+    assert page.partial is False
+    assert {row["file_id"] for row in page.rows} == {qual_id}
 
 
 # ---------------------------------------------------------------------------

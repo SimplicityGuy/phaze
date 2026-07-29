@@ -21,7 +21,6 @@ class AnalysisResult(TimestampMixin, Base):
     musical_key: Mapped[str | None] = mapped_column(String(10), nullable=True)
     mood: Mapped[str | None] = mapped_column(String(50), nullable=True)
     style: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
     features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Phase 43 windowed-analysis coverage (migration 021). All nullable: pre-43
     # rows and empty-body PUTs leave coverage NULL. These are dedicated columns so

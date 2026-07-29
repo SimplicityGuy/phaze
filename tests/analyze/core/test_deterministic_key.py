@@ -45,6 +45,15 @@ _UNKEYED_TASKS: frozenset[str] = frozenset(
         # keyed elsewhere / optional per 35-RESEARCH Q4 (batch execution carries its own
         # idempotency at the approved-batch layer, not the job key).
         "execute_approved_batch",
+        # phaze-6bkk: a re-generate is genuinely NEW work -- it writes the next `.vN.cue` version
+        # beside the audio file rather than replacing the previous one -- so collapsing a second
+        # generate onto the first would silently drop a version the operator asked for. Same
+        # reasoning as scan_directory.
+        "write_cue_sheet",
+        # phaze-6bkk: request/response via saq.Queue.apply. A deterministic key would let a second
+        # caller's enqueue dedup onto an in-flight job it has no handle on, so it would wait out
+        # its full timeout and then propose with no companion context. Distinct jobs, always.
+        "read_companion_files",
     }
 )
 
@@ -59,6 +68,23 @@ async def test_process_file_key_matches_legacy_template() -> None:
     job = Job(function="process_file", kwargs={"file_id": fid})
     await apply_deterministic_key(job)
     assert job.key == f"process_file:{fid}"
+
+
+async def test_write_file_tags_key_is_the_audit_row_not_the_file() -> None:
+    """phaze-6bkk: keying on log_id keeps an undo distinct from the write it reverts.
+
+    Both carry the same file_id, so a file-keyed job would make the undo dedup into the original
+    write's still-incomplete job and never run -- the reversal would silently do nothing.
+    """
+    log_id = uuid.uuid4()
+    fid = uuid.uuid4()
+    job = Job(function="write_file_tags", kwargs={"log_id": log_id, "file_id": fid})
+    await apply_deterministic_key(job)
+    assert job.key == f"write_file_tags:{log_id}"
+
+    undo = Job(function="write_file_tags", kwargs={"log_id": uuid.uuid4(), "file_id": fid})
+    await apply_deterministic_key(undo)
+    assert undo.key != job.key
 
 
 async def test_extract_file_metadata_key() -> None:

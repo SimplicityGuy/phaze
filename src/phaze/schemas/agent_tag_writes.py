@@ -1,0 +1,55 @@
+"""Wire contract for the agent -> control tag-write result callback (phaze-6bkk).
+
+``PATCH /api/internal/agent/tag-writes/{log_id}`` is how the file-server agent reports the
+outcome of a ``write_file_tags`` job back to the control plane, which owns the ``tag_write_log``
+audit table. Mirrors the ``agent_execution`` / ``agent_metadata`` callback shape: the agent never
+touches Postgres (D-25), so every durable effect of an on-disk write lands through this endpoint.
+
+``extra="forbid"`` per Phase 25 D-16 -- agent-supplied bodies are validated as strictly as any
+other HTTP request body.
+"""
+
+from __future__ import annotations
+
+import uuid  # noqa: TC003 -- pydantic resolves annotations at runtime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from phaze.enums.tag_write import TagWriteStatus  # noqa: TC001  -- pydantic resolves this annotation at runtime
+
+
+# Bound the persisted failure detail to the same wire bound the metadata failure callback uses.
+# The column is unbounded ``Text``, so the cap is the DoS guard, not a column-width echo.
+_ERROR_MESSAGE_MAX = 2000
+
+
+class TagWriteResultPayload(BaseModel):
+    """Terminal outcome of one on-agent tag write.
+
+    ``status`` is deliberately typed as the shared :class:`TagWriteStatus` minus its non-terminal
+    ``queued`` member: a callback that re-asserted ``queued`` would strand the row forever, so the
+    router rejects it (422) rather than persisting a no-progress update.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: TagWriteStatus
+    # phaze-52qd: the COMPLETE before/undo snapshot the agent read off disk immediately before
+    # writing -- every core field, ``None`` where the tag was absent. This is the only place it can
+    # be captured (the control plane cannot read the file), and it is what an undo re-applies.
+    before_tags: dict[str, str | int | None] = Field(default_factory=dict)
+    discrepancies: dict[str, dict[str, str | None]] | None = None
+    error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX)
+
+
+class TagWriteResultResponse(BaseModel):
+    """Ack for a tag-write result callback."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    log_id: uuid.UUID
+    status: TagWriteStatus
+    # False when the row was already terminal and this callback was a duplicate/late replay --
+    # the endpoint is idempotent, so a replay is a 200 no-op, never an error.
+    applied: bool

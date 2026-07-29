@@ -31,7 +31,7 @@ from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.services.stage_status import applied_clause, is_applied
 from phaze.services.tag_proposal import CORE_FIELDS, TagFieldSource, compute_proposed_tags
-from phaze.services.tag_writer import execute_tag_write
+from phaze.services.tag_writer import TagWriteAlreadyQueuedError, enqueue_tag_write
 
 
 logger = structlog.get_logger(__name__)
@@ -143,6 +143,20 @@ async def _has_terminal_tagwrite(session: AsyncSession, file_id: uuid.UUID) -> b
     return bool((await session.execute(stmt)).scalar())
 
 
+async def _has_queued_tagwrite(session: AsyncSession, file_id: uuid.UUID) -> bool:
+    """Re-check under the lock whether ``file_id`` already has an unresolved ``queued`` write.
+
+    phaze-lwqk: ``queued`` is deliberately NON-terminal (see ``TagWriteStatus.QUEUED``'s
+    docstring), so the candidate SELECT above does not exclude it -- a per-file
+    ``write_file_tags``/``undo`` could have dispatched a job for this file since the SELECT. Skip
+    it here rather than let ``enqueue_tag_write`` raise ``TagWriteAlreadyQueuedError`` for it (which
+    would still correctly refuse the second dispatch, just via a spurious "failed" tally instead of
+    a clean skip).
+    """
+    stmt = select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_id, TagWriteLog.status == TagWriteStatus.QUEUED.value)
+    return bool((await session.execute(stmt)).scalar())
+
+
 async def _get_tag_stats(session: AsyncSession) -> dict[str, int]:
     """Count pending, completed, and discrepancy files for tag writing."""
     # Count applied files (potential tag write targets -- an executed proposal exists, READ-05/D-01)
@@ -223,6 +237,47 @@ async def _get_accepted_discogs_link(session: AsyncSession, file_id: uuid.UUID) 
     )
     link_result = await session.execute(link_stmt)
     return link_result.scalar_one_or_none()
+
+
+async def _get_tracklists_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, Tracklist]:
+    """Batch form of :func:`_get_tracklist_for_file`: ONE query for a whole page of files (phaze-bto9).
+
+    Same selection rule per file -- highest ``match_confidence``, ``id`` breaking ties -- expressed
+    as a Postgres ``DISTINCT ON (file_id)`` with the identical ``ORDER BY``, so a file resolves to
+    exactly the tracklist the per-file helper would have picked. The per-file helper stays for the
+    single-row mutation routes; this exists because the review scan called it once per CANDIDATE,
+    which is unbounded in the applied backlog rather than in the rows actually rendered.
+    """
+    if not file_ids:
+        return {}
+    stmt = (
+        select(Tracklist)
+        .where(Tracklist.file_id.in_(file_ids))
+        .distinct(Tracklist.file_id)
+        .order_by(Tracklist.file_id, Tracklist.match_confidence.desc().nulls_last(), Tracklist.id)
+    )
+    return {tl.file_id: tl for tl in (await session.execute(stmt)).scalars().all() if tl.file_id is not None}
+
+
+async def _get_accepted_discogs_links_for_files(session: AsyncSession, tracklists: dict[uuid.UUID, Tracklist]) -> dict[uuid.UUID, DiscogsLink]:
+    """Batch form of :func:`_get_accepted_discogs_link`, keyed by file id (phaze-bto9).
+
+    Takes the already-resolved per-file tracklists (so the "which tracklist" decision is made once,
+    not re-derived) and resolves each one's ``latest_version_id`` to its best accepted link in ONE
+    query. Same rule as the per-file helper: highest ``confidence``, ``id`` descending as the
+    phaze-evn9 deterministic tiebreak, expressed as ``DISTINCT ON (version_id)``.
+    """
+    version_to_file = {tl.latest_version_id: file_id for file_id, tl in tracklists.items() if tl.latest_version_id is not None}
+    if not version_to_file:
+        return {}
+    stmt = (
+        select(TracklistTrack.version_id, DiscogsLink)
+        .join(DiscogsLink, DiscogsLink.track_id == TracklistTrack.id)
+        .where(TracklistTrack.version_id.in_(list(version_to_file)), DiscogsLink.status == "accepted")
+        .distinct(TracklistTrack.version_id)
+        .order_by(TracklistTrack.version_id, DiscogsLink.confidence.desc(), DiscogsLink.id.desc())
+    )
+    return {version_to_file[version_id]: link for version_id, link in (await session.execute(stmt)).tuples().all()}
 
 
 async def _get_latest_write_log(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
@@ -426,6 +481,25 @@ async def list_tags() -> RedirectResponse:
     return RedirectResponse(url="/s/tagwrite", status_code=302)
 
 
+def _tagwrite_dispatch_toast(status: str, filename: str, agent_id: str, error_message: str | None) -> str:
+    """Toast for a dispatched (or undispatchable) tag write -- phaze-6bkk.
+
+    The old wording asserted an outcome the api process was in no position to know, and its failure
+    advice ("The file may be read-only or corrupted. Check file permissions and try again.") was
+    actively misdirecting: under DIST-01 the real and universal cause was that the archive is not
+    mounted in the api container at all, so the operator was sent hunting for permissions on a
+    directory that does not exist there. Both are fixed at the source now -- the write runs on the
+    agent that owns the mount -- so the toast only claims what actually happened: the job was handed
+    off, or it could not be.
+    """
+    if status == TagWriteStatus.QUEUED:
+        return f"Tag write queued for {filename} on agent {agent_id}. The file server applies it; the row updates when the agent reports back."
+    detail = error_message or "Unknown error"
+    return (
+        f"Tag write could not be dispatched for {filename}: {detail}. Check that agent {agent_id} is reachable and its worker is running, then retry."
+    )
+
+
 @router.post("/{file_id}/write", response_class=HTMLResponse)
 async def write_file_tags(
     request: Request,
@@ -482,31 +556,25 @@ async def write_file_tags(
         source = "manual_edit" if has_edits else "proposal"
 
     try:
-        log_entry = await execute_tag_write(session, file_record, tags, source)
+        log_entry = await enqueue_tag_write(session, request.app.state.task_router, file_record, tags, source)
         await session.commit()
-
         status = log_entry.status
-        if status == TagWriteStatus.COMPLETED:
-            toast_message = f"Tags written to {file_record.original_filename}"
-        elif status == TagWriteStatus.DISCREPANCY:
-            disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
-            toast_message = f"Tags written with {disc_count} discrepancy. Re-read values differ from what was sent -- usually encoding normalization. Review the audit log for details."
-        elif status == TagWriteStatus.VERIFY_FAILED:
-            # phaze-vq3g: the write LANDED but the immediate verify re-read failed (transient I/O).
-            # Do not claim a discrepancy -- the on-disk tags are the ones sent; the file just could
-            # not be confirmed. It resurfaces for a later re-verify that self-heals to COMPLETED.
-            toast_message = f"Tags written to {file_record.original_filename}, but the file could not be re-read to verify ({log_entry.error_message or 'verify failed'}). The write itself succeeded; it will re-verify later."
-        else:
-            toast_message = f"Tag write failed: {log_entry.error_message or 'Unknown error'}. The file may be read-only or corrupted. Check file permissions and try again."
+        toast_message = _tagwrite_dispatch_toast(status, file_record.original_filename, file_record.agent_id, log_entry.error_message)
     except ValueError as exc:
-        status = "failed"
+        status = TagWriteStatus.FAILED.value
         toast_message = f"Tag write failed: {exc}"
+    except TagWriteAlreadyQueuedError:
+        # phaze-lwqk: a write is already in flight for this file (a double-click, two tabs, or the
+        # bulk loop just dispatched it) -- redraw the row as "queued" rather than dispatching a
+        # second concurrent write_file_tags job against the same file.
+        status = TagWriteStatus.QUEUED.value
+        toast_message = f"A tag write is already queued for {file_record.original_filename}. Wait for it to finish, then retry if needed."
 
-    # phaze-nvll defects 1+2: the row gets the shared _diff_row.html back, in "approved" (WITH a
-    # working UNDO) for a write that LANDED on disk (COMPLETED/DISCREPANCY/VERIFY_FAILED -- all
-    # mutated the file), or "pending" (APPROVE still available to retry) when nothing was actually
-    # written (FAILED / a raised ValueError).
-    row_state = "approved" if status in (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPANCY, TagWriteStatus.VERIFY_FAILED) else "pending"
+    # phaze-nvll defects 1+2 / phaze-6bkk: the row gets the shared _diff_row.html back, in "queued"
+    # (in flight on the owning agent -- no UNDO yet, because nothing has touched the disk and the
+    # before-tags snapshot an undo re-applies does not exist until the agent reports it), or
+    # "pending" (APPROVE still available to retry) when the dispatch itself failed.
+    row_state = "queued" if status == TagWriteStatus.QUEUED else "pending"
     row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
     return _tagwrite_diff_row_response(request, row_context, toast_message)
 
@@ -526,12 +594,13 @@ class _BulkCandidate:
     candidate SELECT, before any rollback can happen -- makes the rest of the loop immune: nothing
     here can ever be expired by a SQLAlchemy transaction event.
 
-    Satisfies :class:`phaze.services.tag_writer.TagWriteTarget` (``id`` + ``current_path``), so it
-    can be passed to :func:`~phaze.services.tag_writer.execute_tag_write` directly in place of the
-    live ``FileRecord``.
+    Satisfies :class:`phaze.services.tag_writer.TagWriteTarget` (``id`` + ``agent_id`` +
+    ``current_path``), so it can be passed to :func:`~phaze.services.tag_writer.enqueue_tag_write`
+    directly in place of the live ``FileRecord``.
     """
 
     id: uuid.UUID
+    agent_id: str
     original_filename: str
     current_path: str
     metadata: SimpleNamespace | None
@@ -549,33 +618,36 @@ def _snapshot_bulk_candidate(file_record: FileRecord) -> _BulkCandidate:
     snapshot = SimpleNamespace(**{field: getattr(metadata, field, None) for field in CORE_FIELDS}) if metadata is not None else None
     return _BulkCandidate(
         id=file_record.id,
+        agent_id=file_record.agent_id,
         original_filename=file_record.original_filename,
         current_path=file_record.current_path,
         metadata=snapshot,
     )
 
 
-def _bulk_write_toast(written: int, discrepancy: int, verify_failed: int, failed: int) -> str:
-    """Build a truthful bulk-write toast (phaze-5j82).
+def _bulk_write_toast(queued: int, noop: int, failed: int) -> str:
+    """Build a truthful bulk-dispatch toast (phaze-5j82, re-truthed for phaze-6bkk).
 
-    Only ``written`` (COMPLETED) files are reported as tagged. DISCREPANCY, VERIFY_FAILED, and
-    FAILED outcomes are surfaced separately so the operator is never told "N files tagged" when
-    zero tags actually landed.
+    phaze-5j82 established the rule this function exists for: never report an outcome the server has
+    not observed. phaze-6bkk moves the write itself onto the agent, so at response time the ONLY
+    honest tallies are how many writes were handed off (``queued``), how many files needed no write
+    at all (``noop`` -- a terminal NO_OP marker, decided entirely from DB state), and how many could
+    not be dispatched (``failed``). The per-file COMPLETED / DISCREPANCY / VERIFY_FAILED split now
+    arrives asynchronously through the agent callback and is read from the audit log, not guessed at
+    here.
     """
-    if not (written or discrepancy or verify_failed or failed):
+    if not (queued or noop or failed):
         return "Nothing matched -- no executed files qualify for a no-discrepancy bulk write right now."
 
-    parts = [f"{written} file{'s' if written != 1 else ''} tagged"]
+    parts = [f"{queued} tag write{'s' if queued != 1 else ''} queued on the file server"]
     extras: list[str] = []
-    if discrepancy:
-        extras.append(f"{discrepancy} with discrepancies")
-    if verify_failed:
-        extras.append(f"{verify_failed} written but unverified")
+    if noop:
+        extras.append(f"{noop} already correct (nothing to write)")
     if failed:
-        extras.append(f"{failed} failed")
+        extras.append(f"{failed} could not be dispatched")
     if extras:
-        return f"{parts[0]}; {', '.join(extras)}. Review the audit log for the non-clean writes."
-    return f"{parts[0]} (no discrepancies)."
+        return f"{parts[0]}; {', '.join(extras)}. Outcomes land in the audit log as each agent reports back."
+    return f"{parts[0]}. Outcomes land in the audit log as each agent reports back."
 
 
 @router.post("/bulk-write-no-discrepancies", response_class=HTMLResponse)
@@ -592,17 +664,21 @@ async def bulk_write_no_discrepancies(
     existing tag. It reads NO client-supplied id-list, so a stale or forged selection can never
     mass-apply. Non-qualifying files stay per-file Approve/Edit/Skip. The candidate set is capped at
     :data:`_MAX_BULK_TAG_WRITE` per submit (D-03) so a large first-time-visible applied backlog cannot
-    blow up the loop. Each qualifying file is written via the EXISTING :func:`execute_tag_write`.
+    blow up the loop. Each qualifying file is DISPATCHED via :func:`enqueue_tag_write`.
+
+    phaze-6bkk: the loop no longer performs any disk I/O -- under DIST-01 it never could, since the
+    api container mounts no media. It queues one ``write_file_tags`` job per qualifying file onto
+    that file's OWNING agent's meta lane, so a mixed-agent candidate set fans out correctly instead
+    of every write being attempted against one (non-existent) local path.
 
     phaze-gwe1: the pending workspace's rows are NOT re-queried/re-rendered by anything else after
-    this commits (no self-poll, and the chrome ``/pipeline/stats`` poll is counts-only) -- every row
-    this handler resolves to a TERMINAL outcome (a fresh NO_OP marker, or a write that actually
-    COMPLETED) is stale on screen: still "pending" with a live APPROVE that would re-write an
-    already-written file and shadow the bulk write's own before/after snapshot in the undo chain. The
-    response therefore also OOB-removes exactly those rows (keyed by ``tagwrite-row-{id}``, the SAME
-    id the workspace renders) and refreshes the subcount. A DISCREPANCY or FAILED outcome is
-    deliberately left in place (both are non-terminal by design -- DISCREPANCY re-offers itself for a
-    retry, FAILED never wrote anything -- so the row staying pending is correct, not stale).
+    this commits (no self-poll, and the chrome ``/pipeline/stats`` poll is counts-only), so a row
+    this handler resolves to a TERMINAL outcome is stale on screen: still "pending" with a live
+    APPROVE that would re-dispatch it. Post-phaze-6bkk the only outcome this handler can resolve
+    terminally is the zero-change NO_OP marker (which is decided from DB state alone); a QUEUED
+    write is by definition not yet terminal, so its row correctly stays. The response OOB-removes
+    exactly the NO_OP rows (keyed by ``tagwrite-row-{id}``, the SAME id the workspace renders) and
+    refreshes the subcount.
     """
     # phaze-yhhy: acquire/release the SESSION-scoped advisory lock on a connection pinned for the
     # whole request, independent of how many times ``session`` itself checks its pooled connection
@@ -627,13 +703,13 @@ async def bulk_write_no_discrepancies(
                 },
             )
 
-        written = 0
+        queued = 0
+        noop = 0
         failed = 0
-        discrepancy = 0
-        verify_failed = 0
-        # phaze-gwe1: files whose tag-write reached a TERMINAL state this pass (COMPLETED / NO_OP) --
-        # the response removes their stale pending rows. DISCREPANCY/VERIFY_FAILED/FAILED are
-        # non-terminal by design and stay in the queue.
+        # phaze-gwe1 / phaze-6bkk: files that reached a TERMINAL state this pass -- now only the
+        # zero-change NO_OP markers, since a dispatched write stays non-terminal until the agent
+        # reports. The response removes exactly these rows; a QUEUED row stays (correctly) on
+        # screen.
         resolved_ids: list[uuid.UUID] = []
         try:
             terminal_subq = _terminal_tagwrite_subq()
@@ -645,7 +721,7 @@ async def bulk_write_no_discrepancies(
                 .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
             )
             file_records = list((await session.execute(stmt)).scalars().all())
-            # phaze-o2ln: snapshot every field the loop (or execute_tag_write) needs OUTSIDE the ORM
+            # phaze-o2ln: snapshot every field the loop (or enqueue_tag_write) needs OUTSIDE the ORM
             # identity map, right after the SELECT and before any per-file rollback can expire it --
             # see _BulkCandidate's docstring.
             candidates = [_snapshot_bulk_candidate(fr) for fr in file_records]
@@ -658,9 +734,16 @@ async def bulk_write_no_discrepancies(
                 try:
                     # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
                     # concurrent BULK submit, but a per-file write_file_tags could have landed a
-                    # terminal log for this candidate since the SELECT -- skip it rather than write it
-                    # twice.
+                    # terminal log for this candidate since the SELECT -- skip it rather than
+                    # dispatch it twice.
                     if await _has_terminal_tagwrite(session, file_id):
+                        continue
+                    # phaze-lwqk: a per-file write_file_tags/undo could ALSO have queued a job for
+                    # this candidate since the SELECT (queued is non-terminal, so the candidate SELECT
+                    # above does not exclude it) -- skip it rather than raise
+                    # TagWriteAlreadyQueuedError out of enqueue_tag_write below and burn a spurious
+                    # "failed" tally for a file that is simply already in flight.
+                    if await _has_queued_tagwrite(session, file_id):
                         continue
 
                     tracklist = await _get_tracklist_for_file(session, file_id)
@@ -683,6 +766,7 @@ async def bulk_write_no_discrepancies(
                         )
                         # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
                         await session.commit()
+                        noop += 1
                         resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
                         continue
                     if not _qualifies_for_bulk_write(comparison):
@@ -691,38 +775,33 @@ async def bulk_write_no_discrepancies(
                         # so defensive.
                         continue
                     tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-                    log_entry = await execute_tag_write(session, candidate, tags, source="proposal")
-                    # phaze-k7g6: commit the audit row atomically with the disk mutation it describes,
-                    # so a mid-loop cancellation/crash can never leave a written file without its
-                    # TagWriteLog (which holds the before_tags UNDO snapshot).
+                    log_entry = await enqueue_tag_write(session, request.app.state.task_router, candidate, tags, source="proposal")
+                    # phaze-k7g6: commit the audit row atomically with the dispatch it describes, so
+                    # a mid-loop cancellation/crash can never leave a job enqueued with no
+                    # TagWriteLog row for its agent callback to PATCH (which would strand the write
+                    # silently).
                     await session.commit()
 
-                    # phaze-5j82: count outcomes truthfully -- only a real COMPLETED write is a
-                    # success. FAILED (nothing written) and DISCREPANCY/VERIFY_FAILED (written but not
-                    # confirmed clean) are tallied separately and surfaced, never reported as clean
-                    # successes.
-                    if log_entry.status == TagWriteStatus.COMPLETED:
-                        written += 1
-                        resolved_ids.append(file_id)  # phaze-gwe1: terminal clean write -- remove the stale pending row
-                    elif log_entry.status == TagWriteStatus.DISCREPANCY:
-                        discrepancy += 1
-                    elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
-                        verify_failed += 1
+                    # phaze-5j82 / phaze-6bkk: count only what the server actually observed -- the
+                    # hand-off. The real per-file outcome arrives asynchronously via the agent
+                    # callback.
+                    if log_entry.status == TagWriteStatus.QUEUED:
+                        queued += 1
                     else:
                         failed += 1
                 except Exception:
                     # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits
-                    # stand) and keep going. A raised ValueError/DB error is a failed file, not a
-                    # batch abort.
+                    # stand) and keep going. A raised ValueError/TagWriteAlreadyQueuedError/DB error
+                    # is a failed file, not a batch abort.
                     await session.rollback()
                     failed += 1
                     logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
                     continue
         finally:
             # phaze-yhhy: the release runs on ``lock_conn`` -- never on ``session`` -- so it can
-            # never be skipped by ``session`` sitting in an aborted transaction (the candidate SELECT
-            # or an early per-file failure left it there) the way the old same-connection release
-            # could be.
+            # never be skipped by ``session`` sitting in an aborted transaction (the candidate
+            # SELECT or an early per-file failure left it there) the way the old same-connection
+            # release could be.
             await _release_bulk_tagwrite_lock(lock_conn)
             # Defensive: reset ``session`` if the try block above left it mid-transaction (e.g. the
             # candidate SELECT itself raised) so the stats/subcount reads below don't inherit an
@@ -733,22 +812,30 @@ async def bulk_write_no_discrepancies(
             await lock_conn.close()
 
     stats = await _get_tag_stats(session)
-    toast_message = _bulk_write_toast(written, discrepancy, verify_failed, failed)
+    toast_message = _bulk_write_toast(queued, noop, failed)
     # phaze-gwe1: re-query the SAME builder the workspace itself renders from (deferred import --
     # services.review imports helpers FROM this module, so importing it back at module scope would
     # cycle; by call time this module is already fully loaded) so the refreshed subcount always
     # matches the row count the operator actually sees after this OOB update lands.
-    from phaze.services.review import get_tagwrite_review_rows  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
+    from phaze.services.review import get_tagwrite_review_page  # noqa: PLC0415 -- deferred to break the tags<->review import cycle
 
-    remaining = len(await get_tagwrite_review_rows(session))
-    subcount = f"{remaining} awaiting approval · mutagen will write these tags"
+    # phaze-bto9: this re-scan is the SECOND full pass of every submit (the first rendered the page
+    # the operator submitted from), so the remediation path used to pay twice over. It is now bounded
+    # the same way the render is -- capped candidate batches, batched per-page lookups -- and reports
+    # a "N+" floor when the scan was truncated, matching the workspace's own subcount exactly.
+    remaining_page = await get_tagwrite_review_page(session)
+    remaining = f"{len(remaining_page.rows)}{'+' if remaining_page.partial else ''}"
+    subcount = f"{remaining} awaiting approval · the file server writes these tags"
     return templates.TemplateResponse(
         request=request,
         name="tags/partials/bulk_write_response.html",
         context={
             "request": request,
             "stats": stats,
-            "written": written,
+            # phaze-6bkk: the hand-off count, not an on-disk write count -- the api never observes
+            # the write. The template does not render it today; it stays for parity with the
+            # already-in-progress branch above.
+            "written": queued,
             "toast_message": toast_message,
             "resolved_ids": resolved_ids,
             "subcount": subcount,
@@ -765,10 +852,15 @@ async def undo_tag_write(
 ) -> HTMLResponse:
     """REVIEW-05 (D-04): revert a tag write by re-applying ``TagWriteLog.before_tags``.
 
-    Reuses the EXISTING :func:`execute_tag_write` mutagen path (``source="undo"``) to restore the
+    Reuses the EXISTING :func:`enqueue_tag_write` dispatch path (``source="undo"``) to restore the
     snapshot captured before the latest write -- NO new apply/undo logic. Appends one further
     ``TagWriteLog`` so the append-only audit trail stays coherent (REVIEW-05: every apply,
     including a reversal, is one audit row).
+
+    phaze-6bkk: the reversal is a tag write like any other, so it too runs on the owning agent (the
+    api container has no media mount). ``before_tags`` is read from the audit row -- it was captured
+    on the agent at write time and reported back through the callback -- so the undo payload is
+    fully determined here without touching the archive.
 
     phaze-y4s6: this used to fork on ``_is_v7_tagwrite_target`` the same way ``write_file_tags``
     did; the legacy ``tag_row.html`` fallback it shared with that route is gone (see
@@ -783,15 +875,26 @@ async def undo_tag_write(
     # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
     # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
     #
+    # phaze-6bkk widens the guard to QUEUED: with the write dispatched to the agent, the window
+    # between "undo pressed" and "undo COMPLETED" is now a real, observable interval rather than an
+    # in-request instant, so a second click during it is the COMMON case, not a rare double-click.
+    # Re-dispatching would enqueue a second reversal whose before_tags snapshot is read AFTER the
+    # first one lands -- i.e. it would restore the reverted state, undoing the undo.
+    #
     # phaze-lwqk: this idempotency check MUST run before ``_get_write_log_to_undo`` below. That
     # selector's chain-walk treats a COMPLETED undo as the boundary of the CURRENT write chain and
     # deliberately returns nothing for a file with no write AFTER that boundary (there is genuinely
     # nothing left to revert) -- which would otherwise reach the generic "No prior tag write to
     # undo" branch instead of this more specific "already reverted" one.
     newest = await _get_latest_write_log(session, file_id)
-    if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
-        already_message = f"Tags for {file_record.original_filename} were already reverted."
-        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+    if newest is not None and newest.source == "undo" and newest.status in (TagWriteStatus.COMPLETED, TagWriteStatus.QUEUED):
+        in_flight = newest.status == TagWriteStatus.QUEUED
+        already_message = (
+            f"A revert for {file_record.original_filename} is already queued on the file server."
+            if in_flight
+            else f"Tags for {file_record.original_filename} were already reverted."
+        )
+        row_context = await _tagwrite_row_context(session, file_record, row_state="queued" if in_flight else "pending")
         return _tagwrite_diff_row_response(request, row_context, already_message)
 
     # phaze-soph/phaze-lwqk: target the HEAD of the current write chain -- the row whose
@@ -804,32 +907,34 @@ async def undo_tag_write(
         row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
         return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
 
-    log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
-    await session.commit()
+    try:
+        log_entry = await enqueue_tag_write(session, request.app.state.task_router, file_record, latest.before_tags, source="undo")
+        await session.commit()
+    except TagWriteAlreadyQueuedError:
+        # phaze-lwqk: something else (a fresh per-file write, or the bulk loop) queued a job for
+        # this file between our idempotency check above and here -- redraw as "queued" rather than
+        # dispatching a second concurrent job.
+        row_context = await _tagwrite_row_context(session, file_record, row_state="queued")
+        already_message = f"A tag write is already queued for {file_record.original_filename}. Wait for it to finish, then retry the undo if needed."
+        return _tagwrite_diff_row_response(request, row_context, already_message)
 
-    # phaze-26t7: the toast must reflect the REAL on-disk outcome. execute_tag_write swallows
-    # mutagen/file errors into a FAILED log rather than raising, so an unconditional 'Reverted tags'
-    # lies whenever the reversal write did not land. Branch the message on status, mirroring
-    # write_file_tags: success only for COMPLETED, a distinct note for DISCREPANCY, and the error for
-    # FAILED.
+    # phaze-26t7 / phaze-6bkk: the toast must never claim an on-disk outcome the api has not
+    # observed -- and post-DIST-01 it observes none, because the reversal runs on the agent. Say
+    # exactly what happened: the revert was queued, or it could not be handed off (and in that case
+    # point at the agent, NOT at file permissions -- the advice that used to send operators hunting
+    # a directory that simply is not mounted in this container).
     filename = file_record.original_filename
-    if log_entry.status == TagWriteStatus.COMPLETED:
-        toast_message = f"Reverted tags for {filename}."
-    elif log_entry.status == TagWriteStatus.DISCREPANCY:
-        disc_count = len(log_entry.discrepancies) if log_entry.discrepancies else 0
-        toast_message = (
-            f"Reverted tags for {filename} with {disc_count} discrepancy. Re-read values differ from "
-            "what was restored -- usually encoding normalization. Review the audit log for details."
-        )
+    if log_entry.status == TagWriteStatus.QUEUED:
+        toast_message = f"Revert queued for {filename} on agent {file_record.agent_id}. The file server restores the previous tags; the row updates when it reports back."
     else:
         toast_message = (
-            f"Undo failed for {filename}: {log_entry.error_message or 'Unknown error'}. The file may be "
-            "read-only or corrupted. Check file permissions and try again."
+            f"Undo could not be dispatched for {filename}: {log_entry.error_message or 'Unknown error'}. "
+            f"Check that agent {file_record.agent_id} is reachable and its worker is running, then retry."
         )
 
-    # phaze-nvll: undo restores the row -- back to "pending" (APPROVE available again) once the
-    # reversal write actually completed; a failed reversal keeps "approved" (UNDO stays available
-    # to retry) rather than claiming a revert that did not happen.
-    row_state = "pending" if log_entry.status == TagWriteStatus.COMPLETED else "approved"
+    # phaze-nvll / phaze-6bkk: a queued revert leaves the row in "queued" (no control -- the write
+    # is in flight and there is nothing coherent to press); an undispatchable one keeps "approved"
+    # so UNDO stays available to retry, rather than claiming a revert that did not happen.
+    row_state = "queued" if log_entry.status == TagWriteStatus.QUEUED else "approved"
     row_context = await _tagwrite_row_context(session, file_record, row_state=row_state)
     return _tagwrite_diff_row_response(request, row_context, toast_message)

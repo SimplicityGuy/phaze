@@ -54,7 +54,7 @@ from phaze.services.review import (
     get_dedupe_groups,
     get_pending_proposal_rows,
     get_proposal_workspace_page,
-    get_tagwrite_review_rows,
+    get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
 
@@ -460,7 +460,14 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # files await a move is CORRECT). get_tagwrite_review_rows is a read-only, SAVEPOINT-wrapped,
         # degrade-safe assembly that returns [] on any DB error, so no router try/except is needed;
         # oob_counts stays False (Pitfall 5).
-        context["tagwrite_files"] = await get_tagwrite_review_rows(session)
+        #
+        # phaze-bto9: the scan is capped at a fixed number of candidate batches, so on a large
+        # already-correctly-tagged backlog it returns a bounded PREFIX of the queue instead of
+        # walking every applied file. ``partial`` carries that into the subcount, which would
+        # otherwise print a number that silently understates the real backlog.
+        tagwrite_page = await get_tagwrite_review_page(session)
+        context["tagwrite_files"] = tagwrite_page.rows
+        context["tagwrite_partial"] = tagwrite_page.partial
     elif stage == "dedupe":
         # Phase 60 (60-04, REVIEW-03/REVIEW-05): the Dedupe keeper-select workspace renders the scored
         # duplicate groups (each keeper == score_group's canonical_id). get_dedupe_groups is a read-only,

@@ -67,6 +67,37 @@ class TestParseTrack:
     def test_invalid_returns_none(self):
         assert _parse_track("abc") is None
 
+    # phaze-0do9: _parse_track must degrade an out-of-domain value to None, mirroring
+    # _parse_year's sanity check, instead of returning it unbounded to the wire boundary
+    # (MetadataWriteRequest.track_number is Field(ge=0, le=9999)).
+    def test_negative_string_returns_none(self):
+        assert _parse_track("-1") is None
+
+    def test_date_stuffed_into_track_field_returns_none(self):
+        """Common ripper garbage: a TRCK frame carrying a recording date instead of a track number."""
+        assert _parse_track("20211013") is None
+
+    def test_slash_format_out_of_domain_numerator_returns_none(self):
+        assert _parse_track("10000/10000") is None
+
+    def test_tuple_out_of_domain_returns_none(self):
+        assert _parse_track((10000, 12)) is None
+
+    def test_tuple_negative_returns_none(self):
+        assert _parse_track((-1, 12)) is None
+
+    def test_list_of_tuples_out_of_domain_returns_none(self):
+        assert _parse_track([(20211013, 12)]) is None
+
+    def test_boundary_zero_accepted(self):
+        assert _parse_track("0") == 0
+
+    def test_boundary_9999_accepted(self):
+        assert _parse_track("9999") == 9999
+
+    def test_boundary_10000_rejected(self):
+        assert _parse_track("10000") is None
+
 
 class TestSerializeTags:
     """Tests for _serialize_tags helper."""
@@ -483,6 +514,42 @@ class TestExtractTagsDurationBitrate:
 
         assert result.duration is None
         assert result.bitrate is None
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_cd_quality_wav_bitrate_stored_unclamped(self, mock_file):
+        """phaze-iw2k: a stereo CD-quality-or-better WAV/AIFF bitrate is well over 1,000,000.
+
+        mutagen reports bitrate in BITS per second for every format (wave.py: ``channels *
+        bits_per_sample * sample_rate``). 44100 Hz / 16-bit / stereo = 1,411,200 bps -- extract_tags
+        must store the raw bps value unchanged (the wire contract's bound is what widened to
+        accommodate it, not this extraction boundary).
+        """
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 180.0
+        mock_audio.info.bitrate = 1_411_200
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.wav")
+
+        assert result.bitrate == 1_411_200
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_24bit_hires_flac_bitrate_stored_unclamped(self, mock_file):
+        """phaze-iw2k: 24-bit/96kHz hi-res FLAC/ALAC bitrate (~2-4 Mbps) is also well over 1,000,000."""
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 200.0
+        mock_audio.info.bitrate = 3_000_000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.flac")
+
+        assert result.bitrate == 3_000_000
 
 
 class TestStripsNulBytes:

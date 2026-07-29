@@ -67,11 +67,14 @@ if TYPE_CHECKING:
     )
 
     # Phase 50 push-pipeline callbacks (50-01 schemas).
-    from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
+    from phaze.schemas.agent_push import PushedResponse, PushFailedResponse, PushMismatchResponse
 
     # Phase 53 S3 upload-leg callbacks (53-03 schemas).
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
+
+    # phaze-6bkk tag-write result callback.
+    from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
 
 
 logger = structlog.get_logger(__name__)
@@ -358,6 +361,26 @@ class PhazeAgentClient:
         )
         return PushedResponse.model_validate(response.json())
 
+    async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> PushFailedResponse:
+        """POST /api/internal/agent/push/{file_id}/failed -- push_file TERMINAL failure (phaze-c53x).
+
+        The fileserver agent calls this on the non-retryable ``push_file`` attempt (SAQ retries
+        exhausted, or a non-retryable config/binary error), so control spills the ``cloud_job`` back to
+        ``awaiting`` with its cloud budget marked spent -- ``select_backend`` then routes the file to
+        local instead of leaving it silently and permanently stranded ``SUBMITTED``. Inherits the
+        tenacity retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
+        5xx retries, 4xx surface immediately. ``file_id`` rides the path only (AUTH-01); the body carries
+        only an optional bounded ``detail``. httpx-only -- NO database import, keeping the agent worker
+        Postgres-free (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_push import PushFailedRequest, PushFailedResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/push/{file_id}/failed",
+            json=PushFailedRequest(detail=detail).model_dump(mode="json"),
+        )
+        return PushFailedResponse.model_validate(response.json())
+
     async def report_push_mismatch(self, file_id: uuid.UUID) -> PushMismatchResponse:
         """POST /api/internal/agent/push/{file_id}/mismatch -- post-transfer sha256 mismatch (Phase 50, 50-03).
 
@@ -432,6 +455,24 @@ class PhazeAgentClient:
             **kwargs,
         )
         return MetadataFailureResponse.model_validate(response.json())
+
+    async def patch_tag_write(self, log_id: uuid.UUID, payload: TagWriteResultPayload) -> TagWriteResultResponse:
+        """PATCH /api/internal/agent/tag-writes/{log_id} -- terminal outcome of an on-agent tag write (phaze-6bkk).
+
+        The agent owns the mutagen write (DIST-01: the api container has no media mount) but never
+        the ``tag_write_log`` table, so this is how the audit row leaves its ``queued`` state. The
+        endpoint is idempotent on ``log_id``, so a SAQ retry that already landed its callback gets a
+        200 with ``applied=false`` rather than a duplicate row. ``log_id`` rides the path only
+        (AUTH-01). httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_tag_writes import TagWriteResultResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/tag-writes/{log_id}",
+            json=payload.model_dump(mode="json"),
+        )
+        return TagWriteResultResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""

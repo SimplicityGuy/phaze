@@ -44,16 +44,23 @@
         {% if row_state and row_state != 'pending' %}
         {# Applied/approved/skipped lifecycle (Pattern 6): status word + neutral UNDO (never destructive-red).
            'skipped' (a rejected row) is a neutral-gray word; approved/applied stay emerald. #}
-        {% set _life_word = 'applied ✓' if row_state == 'applied' else ('skipped' if row_state == 'skipped' else 'approved') %}
-        {% set _life_tint = 'text-gray-500 dark:text-gray-400' if row_state == 'skipped' else 'text-emerald-600 dark:text-emerald-300' %}
+        {# phaze-6bkk: 'queued' is the tag facet's in-flight state -- the write has been dispatched to
+           the file server's agent (DIST-01: the api container holds no media mount and can never
+           perform it) but no on-disk outcome has been reported yet. Neutral-gray like 'skipped', and
+           it deliberately carries NO undo control: there is nothing on disk to revert, and the
+           before-tags snapshot an undo needs does not exist until the agent reports it. #}
+        {% set _life_word = 'applied ✓' if row_state == 'applied' else ('skipped' if row_state == 'skipped' else ('queued …' if row_state == 'queued' else 'approved')) %}
+        {% set _life_tint = 'text-gray-500 dark:text-gray-400' if row_state in ('skipped', 'queued') else 'text-emerald-600 dark:text-emerald-300' %}
         <div class="flex items-center gap-1.5 shrink-0 ml-4">
             <span class="font-jura text-[11px] font-medium uppercase tracking-wider {{ _life_tint }}">{{ _life_word }}</span>
+            {% if row_state != 'queued' %}
             {# phaze-ldaq: this branch is ALSO reached by the tag facet's post-write "approved" row,
                which passes undo_method="post" because /tags/{id}/undo is POST-only -- unlike this
                branch, the pending branch below already templates the verb. Rename/move pass no
                undo_method (defaults to "patch") and their undo routes are PATCH, so templating the
                verb here is a no-op for them and the fix for the tag facet. #}
             <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
+            {% endif %}
         </div>
         {% else %}
         {# Pending action cluster -- Alpine LOCAL island (x-data above); swaps to Save edit / Discard while editing.
@@ -71,7 +78,7 @@
             <button type="button" hx-patch="{{ skip_url }}" hx-confirm="Skip this proposal?" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">SKIP</button>
             {% endif %}
             {% if show_undo|default(false) %}
-            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" class="{{ _sec }}">UNDO</button>
+            <button type="button" hx-{{ undo_method|default('patch') }}="{{ undo_url }}" hx-target="#{{ row_id_prefix }}-{{ pid }}" hx-swap="outerHTML" hx-disabled-elt="this" class="{{ _sec }}">UNDO</button>
             {% endif %}
         </div>
         {% if show_edit|default(true) %}

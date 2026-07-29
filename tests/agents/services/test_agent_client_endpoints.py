@@ -302,6 +302,24 @@ async def test_report_push_mismatch_posts_to_correct_url_and_returns_response_mo
 
 
 @respx.mock
+async def test_report_push_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """phaze-c53x: report_push_failed -> POST /push/{file_id}/failed, parses PushFailedResponse."""
+    from phaze.schemas.agent_push import PushFailedResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/push/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "status": "failed", "cleared": True})
+    )
+    result = await client.report_push_failed(file_id, detail="rsync exit 30")
+    assert route.called
+    assert isinstance(result, PushFailedResponse)
+    assert result.cleared is True
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["detail"] == "rsync exit 30"
+
+
+@respx.mock
 async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
     """report_metadata_failed -> POST /metadata/{file_id}/failed, parses MetadataFailureResponse."""
     from phaze.schemas.agent_metadata import MetadataFailureResponse
@@ -314,3 +332,38 @@ async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_
     assert route.called
     assert isinstance(result, MetadataFailureResponse)
     assert result.file_id == file_id
+
+
+@respx.mock
+async def test_patch_tag_write_uses_correct_url_and_body(client):  # type: ignore[no-untyped-def]
+    """phaze-6bkk: patch_tag_write -> PATCH /api/internal/agent/tag-writes/{log_id}.
+
+    The wire contract for the ONLY way an on-disk tag write reaches the control plane's audit table
+    (DIST-01 moved the mutagen write to the agent, which never touches Postgres). ``log_id`` rides
+    the PATH, never the body -- the control plane pre-mints it so a SAQ retry PATCHes the same row.
+    """
+    from phaze.enums.tag_write import TagWriteStatus
+    from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
+
+    log_id = uuid.uuid4()
+
+    route = respx.patch(f"{_BASE_URL}/api/internal/agent/tag-writes/{log_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"agent_id": "fileserver-01", "log_id": str(log_id), "status": "completed", "applied": True},
+        ),
+    )
+
+    payload = TagWriteResultPayload(
+        status=TagWriteStatus.COMPLETED,
+        before_tags={"artist": "Old Artist", "title": None},
+    )
+    result = await client.patch_tag_write(log_id, payload)
+
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["status"] == "completed"
+    assert sent["before_tags"] == {"artist": "Old Artist", "title": None}
+    assert "log_id" not in sent, "log_id rides the path only (AUTH-01 shape)"
+    assert isinstance(result, TagWriteResultResponse)
+    assert result.applied is True

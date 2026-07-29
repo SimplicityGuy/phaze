@@ -154,10 +154,27 @@ def _parse_year(val: str | None) -> int | None:
     return None
 
 
+def _bounded_track(n: int) -> int | None:
+    """Clamp a parsed track number to the wire contract's domain (phaze-0do9).
+
+    Mirrors ``_parse_year``'s sanity check immediately above: ``MetadataWriteRequest.track_number``
+    (schemas/agent_metadata.py) is ``Field(ge=0, le=9999)``, guarding an int4 column. Degrading an
+    out-of-domain value to ``None`` here -- instead of letting it ride to the wire boundary -- keeps
+    one junk field from sinking the whole metadata row: previously a TRCK tag like "20211013" (a
+    ripper stuffing a date into the track frame) or a bogus "-1"/"10000" raised a pydantic
+    ValidationError *inside* the extraction task's try block, which the generic except treated as
+    a terminal metadata failure -- permanently losing that file's artist/title/album/year too.
+    """
+    return n if 0 <= n <= 9999 else None
+
+
 def _parse_track(val: Any) -> int | None:
     """Parse a track number from various formats.
 
-    Handles: "3", "3/12", (3, 12), [(3, 12)], and invalid values.
+    Handles: "3", "3/12", (3, 12), [(3, 12)], and invalid values. Every parsed value is
+    clamped to the 0-9999 wire domain via :func:`_bounded_track` (phaze-0do9) -- an
+    out-of-range or negative track number degrades to ``None`` instead of reaching the wire
+    boundary, the same defensive-parse convention :func:`_parse_year` already follows.
     """
     if val is None:
         return None
@@ -169,7 +186,7 @@ def _parse_track(val: Any) -> int | None:
         first = val[0]
         if isinstance(first, tuple) and len(first) >= 1:
             try:
-                return int(first[0]) if first[0] else None
+                return _bounded_track(int(first[0])) if first[0] else None
             except (ValueError, TypeError):
                 return None
         val = first
@@ -177,7 +194,7 @@ def _parse_track(val: Any) -> int | None:
     # Handle tuple directly
     if isinstance(val, tuple) and len(val) >= 1:
         try:
-            return int(val[0]) if val[0] else None
+            return _bounded_track(int(val[0])) if val[0] else None
         except (ValueError, TypeError):
             return None
 
@@ -186,7 +203,7 @@ def _parse_track(val: Any) -> int | None:
     if "/" in text:
         text = text.split("/")[0].strip()
     try:
-        return int(text) if text else None
+        return _bounded_track(int(text)) if text else None
     except ValueError:
         return None
 

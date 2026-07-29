@@ -1,6 +1,6 @@
 """Pydantic schemas for the internal-API push callbacks (Phase 50).
 
-Two control-plane endpoints mirror the existing `put_analysis` /
+Three control-plane endpoints mirror the existing `put_analysis` /
 `report_analysis_failed` split (RESEARCH §Critical Finding 1 + Open-Q2):
 
 - ``POST /api/internal/agent/push/{file_id}/pushed``   — the fileserver agent
@@ -12,6 +12,12 @@ Two control-plane endpoints mirror the existing `put_analysis` /
 - ``POST /api/internal/agent/push/{file_id}/mismatch`` — the compute agent
   reports the rsync'd copy failed sha256 verification; control re-drives the
   push, or caps it to a terminal failure once ``push_max_attempts`` is reached.
+- ``POST /api/internal/agent/push/{file_id}/failed`` (phaze-c53x) — the
+  fileserver agent reports a TERMINAL ``push_file`` failure (SAQ retries
+  exhausted, or a non-retryable config/binary error): control spills the
+  ``cloud_job`` back to ``awaiting`` with its cloud budget marked spent, so
+  ``select_backend`` routes the file to local instead of leaving it silently
+  and permanently stranded ``SUBMITTED``.
 
 These models are consumed by the agent HTTP client (``services/agent_client.py``,
 50-03) and the control-plane router (``routers/agent_push.py``, 50-05). They are
@@ -78,4 +84,36 @@ class PushMismatchResponse(BaseModel):
 
     file_id: uuid.UUID
     status: Literal["mismatch"] = "mismatch"
+    cleared: bool
+
+
+class PushFailedRequest(BaseModel):
+    """Body the fileserver agent POSTs when ``push_file`` exhausts its SAQ retries (phaze-c53x).
+
+    ``file_id`` is on the path (AUTH-01); the body carries only optional
+    diagnostics. ``detail`` is a bounded free-text string (``max_length`` caps the
+    DoS-via-huge-string threat) and MUST NOT carry identity.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str | None = Field(default=None, max_length=2000)
+
+
+class PushFailedResponse(BaseModel):
+    """Echo confirming the terminal push failure was recorded.
+
+    ``cleared`` is True when the ``cloud_job`` was spilled back to ``awaiting``
+    (the normal outcome); False on the defensive no-op branches (no attributed
+    ``FileRecord``, or a cloud_job that already advanced past ``submitted`` --
+    a late/duplicate callback).
+
+    RESPONSE-only model the agent TRUSTS from the control plane -- stays loose
+    (Phase 25 convention) for the same forward-compat reason as ``PushedResponse``.
+    """
+
+    model_config = ConfigDict(extra="ignore")  # forward-compat: tolerate additive fields from a newer control plane (rollout skew)
+
+    file_id: uuid.UUID
+    status: Literal["failed"] = "failed"
     cleared: bool

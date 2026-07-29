@@ -13,7 +13,7 @@ the templates never touch an ORM object and the hot render/poll path can NEVER 5
 * :func:`get_proposal_workspace_page` -- the FILTERED, SEARCHED, PAGINATED sibling of the above,
   plus the filter-tab counts, for the Propose workspace (phaze-a6hm.2 / .9). Same row dict shape,
   so both feed ``_file_table.html`` interchangeably.
-* :func:`get_tagwrite_review_rows`  -- applied files (``applied_clause()``, READ-05/D-01) with a
+* :func:`get_tagwrite_review_page`  -- applied files (``applied_clause()``, READ-05/D-01) with a
   pending, >=1-change tag comparison (Tag-write, Plan 60-03; Pitfall 3 -- only applied files without
   a COMPLETED ``TagWriteLog``). Each row also carries ``has_prior_write`` (phaze-o5rf) so the
   workspace only surfaces UNDO where it can actually revert something.
@@ -39,8 +39,8 @@ from phaze.routers.cue import _build_cue_tracks, _get_eligible_tracklist_query
 from phaze.routers.tags import (
     _build_comparison,
     _count_changes,
-    _get_accepted_discogs_link,
-    _get_tracklist_for_file,
+    _get_accepted_discogs_links_for_files,
+    _get_tracklists_for_files,
     _summarize_tags,
     _terminal_tagwrite_subq,
 )
@@ -81,6 +81,35 @@ _MAX_REVIEW_ROWS = 2000
 # only QUALIFYING rows until ``_MAX_REVIEW_ROWS``. The bulk-write path additionally marks zero-change
 # files NO_OP so ``_terminal_tagwrite_subq`` evicts them, keeping this scan cheap in steady state.
 _REVIEW_SCAN_BATCH = 500
+
+# phaze-bto9: a hard cap on CANDIDATES SCANNED, not just on rows accumulated. Without it the
+# ``while len(rows) < _MAX_REVIEW_ROWS`` guard never fires when few candidates qualify -- zero-change
+# files ``continue`` without contributing to ``rows`` -- so the loop only ends when the candidate set
+# is exhausted, i.e. after paging EVERY applied file. At the project's 200K design scale that is ~400
+# round-trips of keyset paging (and, before this bead, another two to three per candidate on top),
+# all inside one pooled connection held in a SAVEPOINT: the workspace never renders, and the only
+# documented remedy (bulk write's NO_OP eviction) sits behind the page that will not load.
+#
+# The NO_OP mitigation the WR-01 comment names is unreachable from a cold start -- it is
+# chicken-and-egg (the bulk-write POST comes from a template this scan must render first) and clears
+# at most ``_MAX_BULK_TAG_WRITE`` files per submit, so a 200K wall needs 100 submits, each preceded
+# by another full scan. A scanned cap is what makes the render degrade to a PARTIAL list instead.
+#
+# 40 batches x 500 = 20,000 candidates: comfortably above any realistic qualifying set (the render
+# itself caps at 2,000 rows) while bounding the worst case to a fixed, small number of round-trips.
+_MAX_REVIEW_SCAN_BATCHES = 40
+
+
+class TagwriteReviewPage(NamedTuple):
+    """The tag-write queue's rows plus the honesty flag the subcount needs (phaze-bto9).
+
+    ``partial`` is True when the scan hit :data:`_MAX_REVIEW_SCAN_BATCHES` with candidates still
+    unexamined -- the render is a bounded prefix of the queue, not the whole of it. The workspace
+    subcount says so rather than printing a number that silently understates the backlog.
+    """
+
+    rows: list[dict[str, Any]]
+    partial: bool
 
 
 class PendingProposalRows(NamedTuple):
@@ -244,37 +273,61 @@ async def get_proposal_workspace_page(
         )
 
 
-async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return the pending tag-write review rows as plain dicts for the Tag-write workspace (degrade-safe).
+async def get_tagwrite_review_page(session: AsyncSession) -> TagwriteReviewPage:
+    """Return the pending tag-write review rows for the Tag-write workspace (degrade-safe, bounded).
 
     Surfaces ONLY applied files (READ-05/D-01 -- an ``executed`` ``RenameProposal`` exists, via
-    ``applied_clause()``; the file's ``state`` column is NEVER read) that have NO ``COMPLETED``
+    ``applied_clause()``; the file's ``state`` column is NEVER read) that have NO terminal
     ``TagWriteLog`` (Pitfall 3 -- a file still awaiting a move never appears, so an empty queue is
-    CORRECT, not a bug), bounded by ``_MAX_REVIEW_ROWS`` (D-03), and whose
-    server-computed tag comparison has ``>= 1`` change (there is something to write). For each it mirrors
-    ``tags.list_tags``: ``compute_proposed_tags`` over the file's metadata + tracklist + accepted Discogs
-    link, then ``_build_comparison`` / ``_count_changes``. The whole read runs inside a
-    ``session.begin_nested()`` SAVEPOINT and returns ``[]`` on any error so the render/poll path degrades
-    instead of 500ing (no router try/except needed). Per row: ``file_id`` · ``filename`` ·
-    ``before_summary`` (current tags joined) · ``after_summary`` (proposed tags joined) · ``changed_count``
-    · ``has_blanking`` (any field whose current value would be erased) · ``has_prior_write`` (phaze-o5rf:
-    True iff the file already carries a ``TagWriteLog`` -- since ``_terminal_tagwrite_subq`` already
-    evicted every COMPLETED/NO_OP file from the candidate window, a row reaching here with a log can
-    only hold a DISCREPANCY or FAILED entry, both of which ``undo_tag_write`` can actually revert. A
-    FRESH row with no log at all has nothing for UNDO to revert -- ``_get_latest_write_log`` returns
-    ``None`` and the button would be dead in the common case). No enqueue, no commit, no write.
+    CORRECT, not a bug), bounded by ``_MAX_REVIEW_ROWS`` (D-03), and whose server-computed tag
+    comparison has ``>= 1`` change (there is something to write). For each it mirrors
+    ``tags.write_file_tags``: ``compute_proposed_tags`` over the file's metadata + tracklist +
+    accepted Discogs link, then ``_build_comparison`` / ``_count_changes``. The whole read runs
+    inside a ``session.begin_nested()`` SAVEPOINT and returns an empty page on any error so the
+    render/poll path degrades instead of 500ing (no router try/except needed). Per row: ``file_id``
+    · ``filename`` · ``before_summary`` (current tags joined) · ``after_summary`` (proposed tags
+    joined) · ``changed_count`` · ``has_blanking`` (any field whose current value would be erased) ·
+    ``has_prior_write`` (phaze-o5rf: True iff the file already carries a ``TagWriteLog`` -- since
+    ``_terminal_tagwrite_subq`` already evicted every COMPLETED/NO_OP file from the candidate window,
+    a row reaching here with a log can only hold a QUEUED/DISCREPANCY/FAILED entry). No enqueue, no
+    commit, no write.
+
+    **Cost shape (phaze-bto9).** Two bounds, both necessary and neither sufficient alone:
+
+    * Per SCAN BATCH the tracklist and accepted-Discogs lookups are TWO queries keyed by
+      ``file_id IN (...)``, mirroring the ``logged_ids`` batch that was already here. They used to
+      be two-to-three queries PER CANDIDATE, so a 200K applied backlog of already-correctly-tagged
+      files issued ~500K round-trips to render a page that qualifies almost nothing.
+    * The scan stops after :data:`_MAX_REVIEW_SCAN_BATCHES` batches and reports ``partial=True``.
+      The accumulate-only-qualifying-rows design (WR-01) means the row cap alone can never terminate
+      a scan over a corpus where few candidates qualify -- the walk is linear and unbounded in the
+      applied backlog, which is a TIME bound the docstring's "the D-03 memory bound is preserved"
+      claim never covered (it is true for memory, and was false for time).
+
+    Both rest on the ``(original_filename, id)`` btree added in migration 048: the keyset paging
+    orders and ranges on exactly that tuple, and without it each batch re-scanned and re-sorted the
+    whole ``files`` table (the only ``original_filename`` index is a GIN trgm one, which cannot serve
+    an ordered range), making the paging itself the dominant cost.
     """
     try:
         async with session.begin_nested():
             terminal_subq = _terminal_tagwrite_subq()
             rows: list[dict[str, Any]] = []
+            partial = False
             # WR-01: accumulate QUALIFYING rows up to the cap by keyset-paging the candidate set on
             # ``(original_filename, id)`` (id breaks ties on the non-unique filename), instead of
             # ``.limit(_MAX_REVIEW_ROWS)``-ing raw candidates and dropping the non-qualifying majority.
             # This surfaces a qualifying file even when it sorts behind a wall of zero-change files,
             # while bounding memory to ``_REVIEW_SCAN_BATCH`` rows per round-trip (D-03).
             last_key: tuple[str, Any] | None = None
+            batches = 0
             while len(rows) < _MAX_REVIEW_ROWS:
+                if batches >= _MAX_REVIEW_SCAN_BATCHES:
+                    # phaze-bto9: candidates remain, but the walk is capped. Report a PARTIAL list --
+                    # a usable prefix of the queue -- rather than holding a pooled connection inside
+                    # a SAVEPOINT for the rest of the applied backlog and rendering nothing at all.
+                    partial = True
+                    break
                 stmt = (
                     select(FileRecord)
                     .options(selectinload(FileRecord.file_metadata))
@@ -287,17 +340,23 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
                 batch = list((await session.execute(stmt)).scalars().all())
                 if not batch:
                     break
+                batches += 1
                 last_key = (batch[-1].original_filename, batch[-1].id)
+                batch_ids = [fr.id for fr in batch]
                 # phaze-o5rf: batch-fetch which of THIS page's files already carry a TagWriteLog (can
-                # only be DISCREPANCY/FAILED here -- COMPLETED/NO_OP were excluded by terminal_subq
-                # above), one round-trip per scan batch rather than per row.
-                logged_ids = set(
-                    (await session.execute(select(TagWriteLog.file_id).where(TagWriteLog.file_id.in_([fr.id for fr in batch])))).scalars().all()
-                )
+                # only be QUEUED/DISCREPANCY/FAILED here -- COMPLETED/NO_OP were excluded by
+                # terminal_subq above), one round-trip per scan batch rather than per row.
+                logged_ids = set((await session.execute(select(TagWriteLog.file_id).where(TagWriteLog.file_id.in_(batch_ids)))).scalars().all())
+                # phaze-bto9: the same batching, extended to the two lookups that were still per-row.
+                tracklists = await _get_tracklists_for_files(session, batch_ids)
+                discogs_links = await _get_accepted_discogs_links_for_files(session, tracklists)
                 for fr in batch:
-                    tracklist = await _get_tracklist_for_file(session, fr.id)
-                    discogs_link = await _get_accepted_discogs_link(session, fr.id)
-                    proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+                    proposed = compute_proposed_tags(
+                        fr.file_metadata,
+                        tracklists.get(fr.id),
+                        fr.original_filename,
+                        discogs_link=discogs_links.get(fr.id),
+                    )
                     comparison = _build_comparison(fr.file_metadata, proposed)
                     changed_count = _count_changes(comparison)
                     if changed_count < 1:
@@ -317,10 +376,15 @@ async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]
                         break
                 if len(batch) < _REVIEW_SCAN_BATCH:
                     break  # candidate set exhausted
-            return rows
+            return TagwriteReviewPage(rows=rows, partial=partial)
     except Exception:
         logger.warning("tagwrite_review_rows_degraded", exc_info=True)
-        return []
+        return TagwriteReviewPage(rows=[], partial=False)
+
+
+async def get_tagwrite_review_rows(session: AsyncSession) -> list[dict[str, Any]]:
+    """Rows-only view of :func:`get_tagwrite_review_page` (unchanged legacy shape)."""
+    return (await get_tagwrite_review_page(session)).rows
 
 
 def _format_size(num_bytes: int | None) -> str:
@@ -336,11 +400,15 @@ def _format_size(num_bytes: int | None) -> str:
 
 
 def _format_quality(file_dict: dict[str, Any]) -> str:
-    """Render a duplicate file's quality summary (``"320 kbps · 22.4 MB"``), omitting an absent bitrate."""
+    """Render a duplicate file's quality summary (``"320 kbps · 22.4 MB"``), omitting an absent bitrate.
+
+    ``bitrate`` is stored in BITS per second (phaze-iw2k -- matching what mutagen actually
+    reports); divide by 1000 here to render kbps.
+    """
     size = _format_size(file_dict.get("file_size"))
     bitrate = file_dict.get("bitrate")
     if bitrate:
-        return f"{bitrate} kbps · {size}"
+        return f"{bitrate // 1000} kbps · {size}"
     return size
 
 

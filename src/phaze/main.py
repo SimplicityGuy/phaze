@@ -29,6 +29,7 @@ from phaze.routers import (
     agent_push,
     agent_s3,
     agent_scan_batches,
+    agent_tag_writes,
     companion,
     cue,
     duplicates,
@@ -279,6 +280,10 @@ def create_app() -> FastAPI:
     # Phase 28 internal-agent router (D-05): per-proposal terminal-state progress reporting
     # — the single mutation point for exec:{batch_id} Redis hash (D-02).
     app.include_router(agent_exec_batches.router)
+    # phaze-6bkk internal-agent router (DIST-01): terminal outcome of an on-agent tag write. The
+    # api container has no media mount, so the mutagen write runs on the owning agent's meta lane
+    # and its result reaches the tag_write_log audit table only through this callback.
+    app.include_router(agent_tag_writes.router)
     # Phase 27 admin-UI router (D-05..D-08): POST /pipeline/scans + the HTMX
     # poll partial + the agent-roots swap. Distinct from `pipeline.router`,
     # which serves the dashboard page and existing pipeline-stage triggers.
