@@ -27,6 +27,33 @@
    trigger); on dismiss we return focus by STABLE id (document.getElementById('lane-trigger-'+id)) —
    the re-rendered trigger keeps the same id.
 
+   phaze-5462: the x-data="{...}" script below ships on every /s/analyze response (this pane has no
+   `oob`-only variant), so its bytes count fully against the payload-budget guard
+   (test_5462_payload_measure.py) on every load, not just the swap. The narrative that used to live as
+   inline `//` comments inside that JS now lives HERE instead -- Alpine reads the object literal at
+   runtime and never sees documentation prose either way, so moving it into this Jinja comment (which
+   Jinja strips before the response is ever serialized) is byte-free for the client and lossless for a
+   reader of the template source. Kept in sync with the (comment-free) methods below:
+     * onLoaded() -- fires on every after-swap of #detail-pane, both the click-triggered wave-2 body AND
+       the body's own 5s own-tick refresh (an inner swap re-fires the parent's after-swap handler every
+       time, not just on open). It reads the pushed `?<param>` back off the URL: absent means the pane
+       was just dismissed (wipe() instead of resurrecting a stale swap); present means record the
+       selected id and open. phaze-zxbh: the own-tick and a row click both write into #detail-pane from
+       different elements, so a late response for a PREVIOUSLY selected lane can still land after a
+       newer selection's -- every swapped body stamps its own `data-<param>-id`, and a mismatch against
+       the URL's current selection means self-heal by re-triggering the CURRENT selection's own row
+       click (reusing its real hx-get/hx-target, never a source-less htmx.ajax()) rather than trusting
+       or displaying the stale body. The pre-swap `open` state is captured before mutating it so the
+       focus-park stays a closed->open transition effect only -- refocusing on every 5s tick would rip
+       focus off the ✕ Close / completions list / ⌘K palette for keyboard and screen-reader operators.
+     * wipe() -- full dismiss. Flipping `open` alone only hides the ✕; the swapped wave-2 body is not
+       gated on `open`, so clearing #detail-pane's innerHTML is what actually removes the body AND its
+       own-tick poller (htmx cancels an `every 5s` trigger when its element leaves the DOM).
+     * hide() -- wipes, then clears `?<param>` back to the base path WITHOUT a navigation
+       (history.replaceState; a throw there -- history unavailable -- degrades silently) and returns
+       focus to the originating trigger by STABLE id, since the 5s poll may have replaced the original
+       node but the re-rendered trigger keeps the same id.
+
    Context (all optional):
      * selected_lane  -- the ?lane= id (server-seeded on a reload). #}
 {% set _trigger_prefix = 'lane-trigger-' %}
@@ -45,25 +72,11 @@
              refreshError: false,
              degraded: false,
              onLoaded() {
-                 // A wave-2 body just innerHTML-swapped into #detail-pane. Record the selected
-                 // trigger id from the pushed ?param (STABLE id, never a captured node) and park
-                 // focus on the pane heading — off the poll-doomed trigger (Pitfall 1).
                  const id = new URLSearchParams(location.search).get(this.param);
                  if (!id) {
-                     // No ?param means the pane was dismissed (hide() cleared it) — this is a LATE
-                     // in-flight own-tick response landing after the ✕. Wipe instead of resurrecting.
                      this.wipe();
                      return;
                  }
-                 // phaze-zxbh: the own-tick and the row-click trigger both write into this SAME
-                 // target from DIFFERENT elements (hx-sync on both narrows the window, but cannot
-                 // cover the deep-link load-triggered producer on #detail-pane itself), so a
-                 // late response for a PREVIOUSLY selected lane can still land after a newer
-                 // selection's response. Every swapped body stamps its own identity
-                 // (data-<param>-id); if it disagrees with the URL's current selection, this is
-                 // exactly that stale response — self-heal by re-triggering the CURRENT
-                 // selection's own row click (reusing its real hx-get/hx-target, never a
-                 // source-less htmx.ajax()) instead of trusting or displaying it.
                  const pane = document.getElementById('detail-pane');
                  const bodyId = pane && pane.firstElementChild ? pane.firstElementChild.getAttribute('data-' + this.param + '-id') : null;
                  if (bodyId && bodyId !== id) {
@@ -73,12 +86,6 @@
                      }
                      return;
                  }
-                 // The swapped body carries the 5s own-tick, which re-swaps THIS target — htmx
-                 // fires afterSwap on the swap target for EVERY swap, so onLoaded() runs on each
-                 // refresh, not just the card-click open. Capture the pre-swap open state so the
-                 // focus park below stays a closed->open transition effect; re-focusing on every
-                 // tick rips focus off the ✕ Close, the completions list, or the ⌘K palette every
-                 // 5s and locks keyboard/screen-reader operators out of the whole pane.
                  const wasOpen = this.open;
                  this.selectedId = this.triggerPrefix + id;
                  this.open = true;
@@ -88,20 +95,13 @@
                  }
              },
              wipe() {
-                 // Full dismiss: flipping `open` alone only hides the ✕ — the swapped wave-2 body is
-                 // not gated on `open`, and the innerHTML swap already destroyed anything that was
-                 // inside the target. Clearing the target removes the body AND its own-tick poller
-                 // (htmx cancels the every-5s trigger when the element leaves the DOM).
                  this.open = false;
                  const pane = document.getElementById('detail-pane');
                  if (pane) pane.innerHTML = '';
              },
              hide() {
                  this.wipe();
-                 // Clear the ?param back to the base path WITHOUT a navigation, then return focus
-                 // to the originating trigger by STABLE id (the 5s poll may have replaced the
-                 // original node; the re-rendered trigger keeps the same id).
-                 try { history.replaceState({}, '', this.basePath); } catch (e) { /* history unavailable: degrade */ }
+                 try { history.replaceState({}, '', this.basePath); } catch (e) { /* degrade */ }
                  const id = this.selectedId;
                  this.$nextTick(() => { if (id) document.getElementById(id)?.focus(); });
              }
