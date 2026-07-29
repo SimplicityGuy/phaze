@@ -333,7 +333,7 @@ def test_build_agents_view_empty_groups_returns_empty_list() -> None:
 
 
 @pytest.fixture
-def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
+def dispatch_app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock, MagicMock]:
     """Smoke FastAPI app with a mock task_router + redis pipeline for /execution/start."""
     from phaze.database import get_session
 
@@ -364,11 +364,15 @@ def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
     pipe.delete = MagicMock()
     pipe.execute = AsyncMock(return_value=None)
     redis_client.pipeline = MagicMock(return_value=pipe)
-    # phaze-fa2p: the single-dispatch guard claims ``exec:active`` via SET NX before seeding. Default
-    # to "claim won" so the enqueue-failure/reconcile tests exercise a live dispatch; the double-
-    # dispatch rejection is covered by its own test that overrides ``.set`` to return None.
     redis_client.set = AsyncMock(return_value=True)
     app.state.redis = redis_client
+    # phaze-fa2p / phaze-j7u8: the single-dispatch guard claims the sentinel before seeding, now via
+    # the claim-or-reconcile Lua rather than a bare SET NX. Default to 1 ("claimed outright") so the
+    # enqueue-failure/reconcile tests exercise a live dispatch; the refusal and stale-reconcile paths
+    # are covered by their own tests, which re-set ``claim.return_value``.
+    claim = AsyncMock(return_value=1)
+    redis_client.claim_dispatch_mock = claim
+    monkeypatch.setattr("phaze.routers.execution._get_claim_dispatch_script", MagicMock(return_value=claim))
     app.state.queue = MagicMock()
 
     return app, mock_router, redis_client
@@ -505,16 +509,16 @@ async def test_start_execution_skips_redis_seed_when_no_groups(
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
     # phaze-fa2p: an empty dispatch enqueues nothing, so it never claims the single-dispatch sentinel.
-    redis_client.set.assert_not_awaited()
+    redis_client.claim_dispatch_mock.assert_not_awaited()
 
 
 async def test_start_execution_rejected_when_dispatch_already_active(
     dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
 ) -> None:
-    """A losing SET NX on ``exec:active`` -> the dispatch is refused, nothing is seeded or enqueued (phaze-fa2p)."""
+    """A refused claim on the sentinel -> the dispatch is refused, nothing seeded or enqueued (phaze-fa2p)."""
     app, mock_router, redis_client = dispatch_app
-    # Simulate a concurrent/active dispatch already holding the sentinel: SET NX returns None.
-    redis_client.set = AsyncMock(return_value=None)
+    # Simulate a dispatch that is GENUINELY in flight: the claim script returns 0 (refused).
+    redis_client.claim_dispatch_mock.return_value = 0
     groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
 
     with (
@@ -528,9 +532,38 @@ async def test_start_execution_rejected_when_dispatch_already_active(
     assert resp.status_code == 200
     assert "Execution already in progress" in resp.text
     # The guard fires BEFORE any seed or enqueue -- no double-dispatch.
-    redis_client.set.assert_awaited_once()
+    redis_client.claim_dispatch_mock.assert_awaited_once()
     redis_client.pipeline.assert_not_called()
     mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+async def test_start_execution_reconciled_stale_sentinel_is_logged_and_proceeds(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A claim taken by RECONCILING a leaked sentinel proceeds -- and says so in the log (phaze-j7u8).
+
+    Return code 2 means the previous dispatch could never have released its own claim (its hash was
+    reaped, already terminal, or fully reported but unpromoted). The operator must not be locked out
+    for 24h over it, but the leak is still a defect worth a WARNING rather than a silent recovery.
+    """
+    app, mock_router, redis_client = dispatch_app
+    redis_client.claim_dispatch_mock.return_value = 2
+    groups = {"agent-a": [_proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        caplog.at_level("WARNING", logger="phaze.routers.execution"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" not in resp.text
+    mock_router.enqueue_for_agent.assert_awaited()  # the dispatch really went ahead
+    assert any("stale exec:active sentinel" in r.getMessage() for r in caplog.records)
 
 
 async def test_start_execution_returns_collision_block_when_destinations_collide(

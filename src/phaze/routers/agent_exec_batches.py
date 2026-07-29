@@ -79,6 +79,15 @@ _TTL_SECONDS = 86400  # 24-hour idempotency window -- matches the exec:{batch_id
 # status promotion below (and by a 24h safety TTL if a batch's sub-jobs never report terminal).
 ACTIVE_DISPATCH_KEY = "exec:active"
 
+# The per-batch progress hash key prefix (``exec:{batch_id}``), named once so the claim-reconcile
+# Lua can rebuild a held batch's key from the sentinel's value without hard-coding the spelling.
+BATCH_KEY_PREFIX = "exec:"
+
+# Safety TTL on the single-dispatch claim. The designed worst case: if a batch's sub-jobs never
+# report terminal AND the claim-time reconcile below cannot prove the batch dead, the sentinel
+# self-expires rather than wedging the execute stage forever.
+DISPATCH_CLAIM_TTL_SECONDS = 86400
+
 
 # Lua: atomically read the sub-batch counters and promote `status` in a SINGLE
 # round-trip (issue #61). The prior three-HGET-then-conditional-HSET sequence
@@ -147,6 +156,75 @@ def _get_promote_status_script(redis_client: redis_async.Redis) -> "AsyncScript"
     if _promote_status_script is None:
         _promote_status_script = redis_client.register_script(_PROMOTE_STATUS_LUA)
     return _promote_status_script
+
+
+# phaze-j7u8: the shared mitigation for the exec:active wedge. THREE disjoint defects converge on
+# the same failure -- a claim taken before it is releasable (phaze-0t2c), a double-counted
+# terminal event overshooting the target (phaze-a6t8), and a LOST terminal event undershooting it
+# (phaze-j7u8) -- and each one leaves the sentinel held for its full 24h TTL, refusing every
+# subsequent Execute Approved. Each has its own fix; this is the net under all three.
+#
+# The sentinel is claimed through this script instead of a bare SET NX, so a claim attempt also
+# RECONCILES a held-but-dead one. "Dead" is decided from the named batch's own hash -- the only
+# durable record of that dispatch -- in three conclusive shapes:
+#   1. The hash is GONE. Reaped by its TTL, or never seeded (the phaze-0t2c crash window between
+#      the claim and the seed). Nothing will ever POST against it, so nothing will ever release
+#      the claim.
+#   2. The hash is already TERMINAL. The promotion landed but its sentinel release did not -- e.g.
+#      the release raced a newer claim, or the promotion ran before phaze-a6t8 wired the release in.
+#   3. Every sub-batch has reported (``subjobs_completed >= subjobs_expected``) but the status was
+#      never promoted. Finish the promotion first (``phaze_promote`` also handles the release), then
+#      take over.
+# In every other case -- ``sc < se`` on a live hash -- the dispatch is presumed IN FLIGHT and the
+# claim is REFUSED. That asymmetry is deliberate: the sentinel exists to stop a second dispatch
+# re-selecting still-APPROVED proposals and double-moving files, so failing closed costs the
+# operator a refused click while failing open costs archive files. Notably this means a token lost
+# past SAQ's retry budget still falls back to the 24h TTL -- Redis alone cannot distinguish that
+# from a slow multi-GB copy, and guessing is not worth a double-move. The re-raise in
+# ``tasks/execution._report_progress_failure`` is what makes reaching that state require SAQ to
+# exhaust its retries rather than a single transient 502.
+#
+# KEYS[1] = the sentinel key. ARGV[1] = this dispatch's batch_id, ARGV[2] = claim TTL seconds,
+# ARGV[3] = the per-batch hash key prefix. Returns 1 if claimed outright, 2 if claimed by
+# reconciling a stale sentinel (caller should log it -- it means an earlier dispatch leaked), and
+# 0 if refused because a dispatch is genuinely in flight.
+_CLAIM_DISPATCH_LUA = (
+    _PROMOTE_LUA_FN
+    + """
+local held = redis.call('GET', KEYS[1])
+if not held then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+  return 1
+end
+local held_key = ARGV[3] .. held
+if redis.call('EXISTS', held_key) == 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+  return 2
+end
+local st = redis.call('HGET', held_key, 'status')
+if st == 'complete' or st == 'complete_with_errors' then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+  return 2
+end
+local sc = tonumber(redis.call('HGET', held_key, 'subjobs_completed') or '0')
+local se = tonumber(redis.call('HGET', held_key, 'subjobs_expected') or '0')
+if sc >= se then
+  phaze_promote(held_key, KEYS[1], held)
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+  return 2
+end
+return 0
+"""
+)
+_claim_dispatch_script: "AsyncScript | None" = None
+
+
+def _get_claim_dispatch_script(redis_client: redis_async.Redis) -> "AsyncScript":
+    """Return the cached claim-or-reconcile script, registering it on first call (phaze-j7u8)."""
+    global _claim_dispatch_script
+    if _claim_dispatch_script is None:
+        _claim_dispatch_script = redis_client.register_script(_CLAIM_DISPATCH_LUA)
+    return _claim_dispatch_script
 
 
 # phaze-gtau: apply the D-07 HINCRBY counter set AND claim the request-idempotency marker

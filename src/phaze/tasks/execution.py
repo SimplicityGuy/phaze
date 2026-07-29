@@ -31,7 +31,12 @@ Phase 28 changes (Plan 28-05):
   the LAST item of a sub-batch sets ``sub_batch_terminal=True`` so the controller can detect
   ``subjobs_completed == subjobs_expected`` and promote the batch status.
 - Progress POST failures (after the agent_client's tenacity retries) log WARNING and do NOT
-  raise -- file ops are already committed via ``patch_proposal_state`` (D-16).
+  raise -- file ops are already committed via ``patch_proposal_state`` (D-16). phaze-j7u8 SPLITS
+  that rule by event kind: it holds for the telemetry HINCRBYs, but NOT for the
+  ``sub_batch_terminal=True`` POST, which is the sub-batch's non-reconstructible COMPLETION TOKEN
+  (the only writer of ``subjobs_completed``, hence the only trigger of the status promotion and
+  the ``exec:active`` sentinel release). A lost token re-raises
+  ``ExecBatchTerminalReportError`` so SAQ replays the job; see ``_report_progress_failure``.
 - The success-path ``patch_proposal_state`` (the 'report' step) is likewise guarded: the move
   is committed on disk before it runs, so a 5xx there is swallowed + logged and the proposal
   still counts as executed. Letting it raise would misattribute the failure to
@@ -122,6 +127,16 @@ logger = structlog.get_logger(__name__)
 # Literal type alias for the three terminal sub-steps tracked by _execute_one.
 # Matches ExecBatchProgressPayload.failed_at_step (Phase 28 D-06).
 FailedAtStep = Literal["copy", "verify", "delete"]
+
+
+class ExecBatchTerminalReportError(RuntimeError):
+    """The sub-batch COMPLETION TOKEN could not be delivered -- fail the job so SAQ replays it (phaze-j7u8).
+
+    Raised only from the ``sub_batch_terminal=True`` progress POST. Every other progress POST is
+    telemetry and stays fire-and-forget under D-16; this one is not telemetry, and the distinction
+    is the whole point (see :func:`_report_progress_failure`).
+    """
+
 
 # phaze-eycl: `_resolve_and_check_containment` now lives in `phaze.services.containment` (shared
 # with `services/proposal.py::load_companion_contents`, which needs the identical symlink-safe
@@ -315,6 +330,54 @@ def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> Fa
     if "sha256 mismatch" in text:
         return "verify"
     return current_step
+
+
+def _report_progress_failure(item: ExecuteBatchProposalItem, is_last: bool, exc: BaseException) -> None:
+    """Apply the D-16 swallow rule -- but ONLY to the telemetry half of the message (phaze-j7u8).
+
+    ``post_exec_batch_progress`` carries two semantically different things on one wire message:
+
+    * **Telemetry** -- the ``copied`` / ``verified`` / ``deleted`` / ``completed`` HINCRBYs. These
+      are progress reporting for a file op that has ALREADY committed (``patch_proposal_state``
+      landed before we got here), so losing one costs a wrong number on a progress bar. D-16's
+      swallow rule is correct for these, and they stay fire-and-forget.
+    * **The completion token** -- ``sub_batch_terminal=True``. This is the ONLY event that bumps
+      ``subjobs_completed``, and that counter reaching ``subjobs_expected`` is the ONLY thing that
+      promotes the batch to a terminal status and releases the ``exec:active`` single-dispatch
+      sentinel. It is not reconstructible: nothing else ever writes it, and once ``_execute_one``
+      returns nothing re-drives the POST. Swallowing it strands the batch at 'running' until the
+      24h TTL, holds the SSE stream open for that entire window, and refuses EVERY subsequent
+      Execute Approved with "a dispatch is already in progress" -- a stage-level outage caused by
+      a transient 502 during a batch whose work had entirely succeeded.
+
+    So the token re-raises, which fails the SAQ job and gets it replayed. The replay is safe by
+    construction: every downstream write on that path is idempotent -- the ExecutionLog INSERT is
+    ON CONFLICT DO NOTHING (D-13), the progress POST dedups on the retry-stable ``request_id``
+    held in the job meta (D-15), ``patch_proposal_state`` to the same state is a no-op, and the
+    phaze-ebpt already-moved detection skips the file op outright.
+
+    Contrast ``post_analysis_progress``, swallowed by the same D-16 rule at
+    ``agent_client.py`` and genuinely safe there: that path has a SECOND durable completion write
+    (``put_analysis`` writes the final count regardless). The exec-batch path has no second
+    writer, which is exactly what makes the identical swallow unsound here.
+
+    Raises:
+        ExecBatchTerminalReportError: when ``is_last`` -- i.e. the lost POST was the token.
+    """
+    if not is_last:
+        logger.warning(
+            "execute_approved_batch: progress POST failed for %s: %s",
+            item.proposal_id,
+            exc,
+        )
+        return
+    logger.error(
+        "execute_approved_batch: sub-batch COMPLETION TOKEN lost for %s: %s -- failing the job so SAQ replays it",
+        item.proposal_id,
+        exc,
+    )
+    msg = f"sub_batch_terminal progress POST failed for proposal {item.proposal_id}: {exc}"
+    raise ExecBatchTerminalReportError(msg) from exc
 
 
 async def _execute_one(
@@ -550,8 +613,8 @@ async def _execute_one(
             )
 
         # 7. Phase 28 D-03: per-proposal terminal progress POST (success path).
-        # Fire-and-forget: D-16 says swallow + log WARNING on failure because the
-        # file ops + per-proposal PATCH have already committed.
+        # D-16 swallow + log WARNING for telemetry; phaze-j7u8 re-raises the
+        # sub_batch_terminal completion token instead -- see _report_progress_failure.
         try:
             await api.post_exec_batch_progress(
                 payload.batch_id,
@@ -566,13 +629,16 @@ async def _execute_one(
                 ),
             )
         except Exception as progress_exc:
-            logger.warning(
-                "execute_approved_batch: progress POST failed for %s: %s",
-                item.proposal_id,
-                progress_exc,
-            )
+            _report_progress_failure(item, is_last, progress_exc)
 
         return True
+    except ExecBatchTerminalReportError:
+        # phaze-j7u8: a lost completion token must reach `execute_approved_batch` so SAQ replays the
+        # job. It must NOT fall into the generic handler below -- this proposal's move SUCCEEDED and
+        # its state is already reported; treating the undeliverable token as a per-proposal failure
+        # would flip an executed proposal to FAILED and post a `terminal_step="failed"` event for a
+        # file that is sitting correctly at its destination.
+        raise
     except Exception as exc:
         # Phase 28: classify the failure step BEFORE any PATCH so both the
         # error_message prefix (D-01) and the progress POST failed_at_step
@@ -637,11 +703,11 @@ async def _execute_one(
                 ),
             )
         except Exception as progress_exc:
-            logger.warning(
-                "execute_approved_batch: progress POST failed for %s: %s",
-                item.proposal_id,
-                progress_exc,
-            )
+            # phaze-j7u8: the twin site. A sub-batch whose LAST proposal legitimately FAILED carries
+            # its completion token on this POST, and loses it exactly the same way -- the batch is
+            # stranded and the sentinel held whether the final item succeeded or not. Same rule:
+            # telemetry is swallowed, the token re-raises (out of this handler, into the caller).
+            _report_progress_failure(item, is_last, progress_exc)
 
         return False
 

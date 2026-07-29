@@ -1031,3 +1031,117 @@ async def test_mid_span_crash_on_terminal_event_recovers_promotion_on_retry(
     h = await redis_client.hgetall(f"exec:{batch_id}")
     assert h["subjobs_completed"] == "1", f"retry must apply the lost terminal increment, got {h['subjobs_completed']!r}"
     assert h["status"] == "complete", f"retry must promote the batch instead of stranding at 'running', got {h['status']!r}"
+
+
+# ---------------------------------------------------------------------------
+# phaze-j7u8: the claim-or-reconcile script -- the shared net under all three
+# exec:active wedges. A held sentinel whose named batch demonstrably cannot
+# release it is reclaimed; a genuinely in-flight one is refused.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def claim_script(redis_client: redis_async.Redis) -> AsyncGenerator[object]:
+    """The registered claim-or-reconcile script, with the module-level cache reset around the test."""
+    agent_exec_batches._claim_dispatch_script = None
+    agent_exec_batches._promote_status_script = None
+    try:
+        yield agent_exec_batches._get_claim_dispatch_script(redis_client)
+    finally:
+        agent_exec_batches._claim_dispatch_script = None
+        agent_exec_batches._promote_status_script = None
+
+
+async def _claim(script: object, redis_client: redis_async.Redis, batch_id: uuid.UUID) -> int:
+    return int(
+        await script(  # type: ignore[operator]
+            keys=[agent_exec_batches.ACTIVE_DISPATCH_KEY],
+            args=[str(batch_id), str(agent_exec_batches.DISPATCH_CLAIM_TTL_SECONDS), agent_exec_batches.BATCH_KEY_PREFIX],
+            client=redis_client,
+        ),
+    )
+
+
+@pytest.mark.integration
+async def test_claim_takes_a_free_sentinel(claim_script: object, redis_client: redis_async.Redis) -> None:
+    """No sentinel held -> claimed outright (return 1), with the safety TTL applied."""
+    batch_id = uuid.uuid4()
+    assert await _claim(claim_script, redis_client, batch_id) == 1
+    assert await redis_client.get(agent_exec_batches.ACTIVE_DISPATCH_KEY) == str(batch_id)
+    assert await redis_client.ttl(agent_exec_batches.ACTIVE_DISPATCH_KEY) > 0
+
+
+@pytest.mark.integration
+async def test_claim_refused_while_a_dispatch_is_genuinely_in_flight(
+    claim_script: object,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """A live batch still short of its target holds the claim -- failing CLOSED is the safe direction.
+
+    The sentinel exists to stop a second dispatch re-selecting still-APPROVED proposals and
+    double-moving files, so an ambiguous state must refuse rather than reclaim.
+    """
+    agent, _token = seed_test_agent
+    held = uuid.uuid4()
+    await _seed_exec_hash(redis_client, held, agent.id, subjobs_expected=3, subjobs_completed=1)
+    await redis_client.set(agent_exec_batches.ACTIVE_DISPATCH_KEY, str(held), ex=86400)
+
+    assert await _claim(claim_script, redis_client, uuid.uuid4()) == 0
+    assert await redis_client.get(agent_exec_batches.ACTIVE_DISPATCH_KEY) == str(held)
+
+
+@pytest.mark.integration
+async def test_claim_reconciles_sentinel_whose_batch_hash_is_gone(
+    claim_script: object,
+    redis_client: redis_async.Redis,
+) -> None:
+    """The named batch's hash was reaped or never seeded -> nothing can ever release it (phaze-0t2c window)."""
+    held = uuid.uuid4()
+    await redis_client.set(agent_exec_batches.ACTIVE_DISPATCH_KEY, str(held), ex=86400)
+    new_batch = uuid.uuid4()
+
+    assert await _claim(claim_script, redis_client, new_batch) == 2
+    assert await redis_client.get(agent_exec_batches.ACTIVE_DISPATCH_KEY) == str(new_batch)
+
+
+@pytest.mark.integration
+async def test_claim_reconciles_sentinel_whose_batch_is_already_terminal(
+    claim_script: object,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """The batch promoted but its sentinel release did not land -> reclaim it."""
+    agent, _token = seed_test_agent
+    held = uuid.uuid4()
+    await _seed_exec_hash(redis_client, held, agent.id, subjobs_expected=1, subjobs_completed=1, status="complete")
+    await redis_client.set(agent_exec_batches.ACTIVE_DISPATCH_KEY, str(held), ex=86400)
+    new_batch = uuid.uuid4()
+
+    assert await _claim(claim_script, redis_client, new_batch) == 2
+    assert await redis_client.get(agent_exec_batches.ACTIVE_DISPATCH_KEY) == str(new_batch)
+
+
+@pytest.mark.integration
+async def test_claim_finishes_the_promotion_of_a_fully_reported_batch_then_reclaims(
+    claim_script: object,
+    seed_test_agent: tuple[Agent, str],
+    redis_client: redis_async.Redis,
+) -> None:
+    """Every sub-batch reported but the status was never promoted -> promote it, then take over.
+
+    This is the phaze-a6t8 two-round-trip interleave's residue: both promotes observed the same
+    total and neither fired, leaving a batch that is finished but says 'running'. The reconcile
+    completes the promotion (so the operator's SSE stream and audit view agree) rather than merely
+    stealing the key.
+    """
+    agent, _token = seed_test_agent
+    held = uuid.uuid4()
+    await _seed_exec_hash(redis_client, held, agent.id, subjobs_expected=2, subjobs_completed=3, failed=1)
+    await redis_client.set(agent_exec_batches.ACTIVE_DISPATCH_KEY, str(held), ex=86400)
+    new_batch = uuid.uuid4()
+
+    assert await _claim(claim_script, redis_client, new_batch) == 2
+    # The stranded batch was finished off, not just abandoned -- and with the right terminal status.
+    assert (await redis_client.hget(f"exec:{held}", "status")) == "complete_with_errors"
+    assert await redis_client.get(agent_exec_batches.ACTIVE_DISPATCH_KEY) == str(new_batch)

@@ -43,7 +43,13 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog
-from phaze.routers.agent_exec_batches import ACTIVE_DISPATCH_KEY, _get_promote_status_script
+from phaze.routers.agent_exec_batches import (
+    ACTIVE_DISPATCH_KEY,
+    BATCH_KEY_PREFIX,
+    DISPATCH_CLAIM_TTL_SECONDS,
+    _get_claim_dispatch_script,
+    _get_promote_status_script,
+)
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -284,13 +290,33 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # a competing dispatch loses the claim and is refused until the active batch reaches a terminal
     # status (the promote script releases the sentinel) or the 24h safety TTL elapses. Only guard
     # when there is actually something to dispatch -- an empty dispatch enqueues nothing.
+    #
+    # phaze-j7u8: the claim goes through ``_CLAIM_DISPATCH_LUA`` rather than a bare SET NX, so the
+    # same call that claims also RECONCILES a sentinel left behind by a dispatch that can no longer
+    # release it (batch hash reaped, already terminal, or fully reported but never promoted). That
+    # is the shared net under all three exec:active wedges -- without it, one lost terminal event
+    # or one crash in the claim window costs the operator the whole execute stage for 24h.
     if groups:
-        claimed = await redis_client.set(ACTIVE_DISPATCH_KEY, str(batch_id), nx=True, ex=86400)
-        if not claimed:
+        claim_dispatch = _get_claim_dispatch_script(redis_client)
+        claim_result = int(
+            await claim_dispatch(
+                keys=[ACTIVE_DISPATCH_KEY],
+                args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
+                client=redis_client,
+            ),
+        )
+        if claim_result == 0:
             return templates.TemplateResponse(
                 request=request,
                 name="execution/partials/dispatch_in_progress.html",
                 context={"request": request},
+            )
+        if claim_result == 2:
+            # Not routine. A previous dispatch leaked its claim, so surface it: the reconcile keeps
+            # the operator working, but the leak itself is a defect worth seeing in the logs.
+            logger.warning(
+                "dispatch: reconciled a stale exec:active sentinel before claiming batch_id=%s",
+                batch_id,
             )
 
     if groups:
