@@ -38,6 +38,7 @@ from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -69,6 +70,9 @@ _EXPECTED_COUNTS = {
     # cascade always reports every table in its ordered list (0 rows deleted here).
     "dedup_resolution": 0,
     "cloud_job": 0,
+    # phaze-u5dn: the full-graph seed creates no scheduling_ledger rows either -- exercised
+    # separately by test_cascade_purges_scheduling_ledger_rows_for_its_files below.
+    "scheduling_ledger": 0,
     "files": 2,
     "scan_batches": 1,
 }
@@ -329,3 +333,67 @@ async def test_null_file_id_tracklist_is_never_touched(session: AsyncSession) ->
     # The orphan tracklist must survive; the batch's own tracklist is gone.
     assert await session.get(Tracklist, orphan.id) is not None
     assert await _count(session, Tracklist) == 1
+
+
+@pytest.mark.asyncio
+async def test_cascade_purges_scheduling_ledger_rows_for_its_files(session: AsyncSession) -> None:
+    """phaze-u5dn: scheduling_ledger rows keyed on a deleted batch's files are purged, not stranded.
+
+    scheduling_ledger carries NO foreign key to files (models/scheduling_ledger.py -- deliberate,
+    "the row must survive even if its target row is mid-flight"), so the cascade must locate and
+    remove these rows by natural-id predicate (``payload->>'file_id'``) rather than FK order. Before
+    the fix, a ledger row for a file whose scan batch was deleted became an immortal orphan: every
+    recovery pass re-dispatched it (full essentia re-analysis for ``process_file``), and its
+    write-back FK-failed against the missing FileRecord so ``clear_ledger_entry`` was never reached.
+    """
+    batch_a = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/a", status=ScanStatus.COMPLETED.value)
+    batch_b = ScanBatch(id=uuid.uuid4(), agent_id="test-fileserver", scan_path="/b", status=ScanStatus.COMPLETED.value)
+    session.add_all([batch_a, batch_b])
+    await session.flush()
+
+    file_a = _make_file(batch_a.id, "a-media")  # in the batch being deleted
+    file_b = _make_file(batch_b.id, "b-media")  # in a surviving batch
+    session.add_all([file_a, file_b])
+    await session.flush()
+
+    # Two file-keyed ledger rows for batch A's file (mirrors the two IMMORTAL stages the verifier
+    # confirmed: process_file and extract_file_metadata both write an FK'd row before clearing).
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{file_a.id}",
+            function="process_file",
+            routing="agent",
+            payload={"file_id": str(file_a.id), "agent_id": "test-fileserver"},
+        )
+    )
+    session.add(
+        SchedulingLedger(
+            key=f"extract_file_metadata:{file_a.id}",
+            function="extract_file_metadata",
+            routing="agent",
+            payload={"file_id": str(file_a.id), "agent_id": "test-fileserver"},
+        )
+    )
+    # A ledger row for the SURVIVING batch-B file must NOT be touched.
+    session.add(
+        SchedulingLedger(
+            key=f"process_file:{file_b.id}",
+            function="process_file",
+            routing="agent",
+            payload={"file_id": str(file_b.id), "agent_id": "test-fileserver"},
+        )
+    )
+    await session.flush()
+
+    file_a_id, file_b_id, batch_b_id = file_a.id, file_b.id, batch_b.id
+
+    counts = await delete_scan_cascade(session, batch_a.id)
+    session.expire_all()
+
+    # Both of batch A's ledger rows are purged; batch B's survives untouched.
+    assert counts["scheduling_ledger"] == 2
+    remaining = (await session.execute(select(SchedulingLedger.key))).scalars().all()
+    assert remaining == [f"process_file:{file_b_id}"]
+    assert await session.get(FileRecord, file_a_id) is None
+    assert await session.get(FileRecord, file_b_id) is not None
+    assert await session.get(ScanBatch, batch_b_id) is not None

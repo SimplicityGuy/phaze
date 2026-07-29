@@ -75,7 +75,19 @@ async def patch_scan_batch(
 ) -> ScanBatchPatchResponse:
     """Update a ScanBatch row. Cross-tenant guard runs BEFORE state-machine evaluation (T-27-01)."""
     # 1. 404 if batch_id is unknown.
-    batch = await session.get(ScanBatch, batch_id)
+    #
+    # phaze-bnvx: load under a row-level write lock, mirroring the two sibling PATCH handlers
+    # (agent_execution.patch_execution_log, phaze-6zxs; agent_proposals.patch_proposal_state,
+    # phaze-jlu6). ScanBatch has no version_id_col and the engine runs at READ COMMITTED, so a
+    # plain PK read here is a TOCTOU: two concurrent PATCHes (e.g. the control-side stall reaper
+    # racing an in-flight agent PATCH, or the agent client's own tenacity retry landing after a
+    # prior attempt already committed) can both read the same RUNNING snapshot, both pass the
+    # step-2b terminal guard and the step-5 transition guard against that stale read, and the
+    # last committer wins blindly -- overwriting a just-committed COMPLETED/FAILED outcome, or
+    # re-stamping a fresh heartbeat onto an already-terminal row. FOR UPDATE serializes the two:
+    # the second PATCH blocks on the row lock until the first commits, then re-evaluates every
+    # guard below against the now-committed status.
+    batch = await session.get(ScanBatch, batch_id, with_for_update=True)
     if batch is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
 

@@ -17,16 +17,19 @@ Design choices:
 - Child -> parent ordering so every subquery references only tables not yet
   deleted at that step (verified order in the PR plan's 15-step block; extended
   from 13 to add the ``dedup_resolution`` and ``cloud_job`` file sidecars, then
-  to 16 to add the ``stage_skip`` force-skip sidecar -- phaze-6l74).
+  to 16 to add the ``stage_skip`` force-skip sidecar (phaze-6l74), then to 17 to
+  purge stranded ``scheduling_ledger`` rows for the batch's files (phaze-u5dn).
+  Note ``scheduling_ledger`` carries no FK to ``files`` -- this delete is by
+  natural-id predicate (``payload->>'file_id'``), not FK order.
 - The caller owns the transaction: this function does NOT commit. That keeps it
   composable and lets the endpoint commit the whole cascade atomically.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast as typing_cast
 
-from sqlalchemy import CursorResult, delete, select
+from sqlalchemy import CursorResult, String, cast as sql_cast, delete, select
 import structlog
 
 from phaze.models.analysis import AnalysisResult
@@ -39,6 +42,7 @@ from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -57,7 +61,7 @@ logger = structlog.get_logger(__name__)
 async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dict[str, int]:
     """Delete ``batch_id`` and every descendant row, scoped strictly to its files.
 
-    Executes 16 ordered set-based deletes (child -> parent). Every statement is
+    Executes 17 ordered set-based deletes (child -> parent). Every statement is
     scoped to the files of THIS batch via nested ``SELECT`` subqueries, so no
     other batch's data is ever touched. The ``dedup_resolution`` step is scoped by
     BOTH of its FK columns (``file_id`` OR ``canonical_file_id``), so a canonical
@@ -72,6 +76,22 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         A dict mapping each affected ``__tablename__`` to the number of rows
         deleted from it (``result.rowcount`` per statement).
     """
+    # phaze-8567: lock the ScanBatch row itself FIRST, before anything else. The phaze-q1ow
+    # fix below locks only the batch's PRE-EXISTING file rows -- it does nothing for a brand
+    # NEW FileRecord INSERT into this batch, because that INSERT takes only an implicit `FOR
+    # KEY SHARE` on the *scan_batches* row (the parent of `FileRecord.batch_id`'s FK), and
+    # nothing in the cascade locked that row until the final `DELETE FROM scan_batches` at the
+    # very end. Under READ COMMITTED, a new file row committed after the files DELETE (step 15
+    # below) scans its snapshot but before the `scan_batches` DELETE's RI check runs leaves a
+    # live `files.batch_id` reference, aborting the whole 16-step transaction with a bare
+    # ForeignKeyViolation -> 500. Taking `FOR UPDATE` on the ScanBatch row up front closes the
+    # window the same way the file-row lock already closes it for child-table inserts: a
+    # worker's `upsert_files` INSERT already in flight blocks on this row's lock until this
+    # transaction ends (so it can never land mid-cascade), and a post-commit INSERT simply
+    # FK-fails cheaply against the already-deleted batch (the correct, cheap place for that
+    # race to resolve).
+    await session.execute(select(ScanBatch.id).where(ScanBatch.id == batch_id).with_for_update())
+
     # Files belonging to this batch -- the scoping anchor for every child delete.
     files_of_batch = select(FileRecord.id).where(FileRecord.batch_id == batch_id)
 
@@ -134,6 +154,26 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         # the ONLY file sidecar with no undo/reaper, so a force-skipped file leaves a live stage_skip
         # row that blocks the files delete (ForeignKeyViolation -> 500 -> batch permanently undeletable).
         (StageSkip.__tablename__, delete(StageSkip).where(StageSkip.file_id.in_(files_of_batch))),
+        # phaze-u5dn: scheduling_ledger rows are deliberately FK-free (models/scheduling_ledger.py --
+        # "the row must survive even if its target row is mid-flight"), so this cascade otherwise never
+        # touches them and a deleted file's ledger row is stranded forever. Every ledger row this
+        # cascade can identify by natural id is file-keyed (`_KEY_BUILDERS` in
+        # tasks/_shared/deterministic_key.py stores `payload["file_id"] = str(file_id)` for
+        # process_file, extract_file_metadata, search_tracklist, push_file, s3_upload and
+        # submit_cloud_job), so scope the delete to `payload->>'file_id'` matching one of this batch's
+        # files. `recover_orphaned_work`'s done-set predicates derive from the very output tables this
+        # cascade just deleted, so a stranded row can NEVER become domain-complete -- it is replayed on
+        # every recovery pass (burning hours of essentia CPU for `process_file`), and its write-back
+        # then FK-fails/404s against the missing FileRecord, so `clear_ledger_entry` is never reached
+        # and the row survives to the next recovery cycle. Batch-shaped keys (e.g. a hypothetical
+        # `scan_directory:<batch_id>`) are deliberately OUT of scope: `scan_directory` is absent from
+        # `_KEY_BUILDERS`, so no such row is ever written.
+        (
+            SchedulingLedger.__tablename__,
+            delete(SchedulingLedger).where(
+                SchedulingLedger.payload["file_id"].astext.in_(select(sql_cast(FileRecord.id, String)).where(FileRecord.batch_id == batch_id))
+            ),
+        ),
         (FileRecord.__tablename__, delete(FileRecord).where(FileRecord.batch_id == batch_id)),
         (ScanBatch.__tablename__, delete(ScanBatch).where(ScanBatch.id == batch_id)),
     ]
@@ -142,7 +182,7 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
     for tablename, stmt in ordered:
         # A DELETE returns a CursorResult at runtime (exposing rowcount); the
         # execute() overload mypy selects only promises the base Result type.
-        result = cast("CursorResult[Any]", await session.execute(stmt.execution_options(synchronize_session=False)))
+        result = typing_cast("CursorResult[Any]", await session.execute(stmt.execution_options(synchronize_session=False)))
         counts[tablename] = result.rowcount
 
     logger.info("scan cascade deleted", batch_id=str(batch_id), **counts)

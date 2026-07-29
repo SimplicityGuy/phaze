@@ -166,3 +166,93 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
         assert await session.get(FileRecord, file_id) is None
         remaining = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalars().all()
         assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# phaze-8567: the phaze-q1ow fix above locks only PRE-EXISTING file rows. A concurrent
+# agent upsert INSERTing a brand NEW FileRecord into the batch takes only an implicit
+# `FOR KEY SHARE` on the *scan_batches* row (the parent of `FileRecord.batch_id`'s FK) --
+# a lock nothing in the cascade acquired until its OWN final `DELETE FROM scan_batches`
+# step. This test reproduces that exact vector: a still-running scan worker has already
+# flushed (not yet committed) an INSERT of a NEW FileRecord for this batch.
+#
+# * Pre-fix: the cascade runs every child-delete step unobstructed (none of them lock the
+#   ScanBatch row), then blocks at its OWN LAST statement -- `DELETE FROM scan_batches` --
+#   incompatible with the worker's held `FOR KEY SHARE`. When the worker commits, the
+#   blocked `DELETE FROM scan_batches` wakes, Postgres re-validates the FK, discovers the
+#   just-committed `files.batch_id` reference the earlier `DELETE FROM files` step never
+#   saw (it ran on an older snapshot), and raises `ForeignKeyViolation` -- the whole
+#   16-step transaction aborts.
+#
+# * Fixed (this test's expectation): the cascade's FIRST statement is now `SELECT ...
+#   FOR UPDATE` on the ScanBatch row -- incompatible with the worker's `FOR KEY SHARE` --
+#   so the cascade blocks IMMEDIATELY, before any delete step runs. Once the worker
+#   commits its new FileRecord, the cascade's lock acquisition succeeds and every
+#   subsequent step (including the files-scoping subqueries, which are re-evaluated
+#   fresh against the now-committed row) sweeps the new file up along with everything
+#   else -- the whole cascade commits cleanly, with zero ForeignKeyViolation.
+# ---------------------------------------------------------------------------
+
+
+async def test_cascade_blocks_on_in_flight_new_file_insert_then_sweeps_it_instead_of_fk_violating(
+    committed_db: tuple[AsyncEngine, async_sessionmaker[AsyncSession]],
+) -> None:
+    """A worker's uncommitted-but-flushed NEW FileRecord insert must serialize the cascade, not FK-violate it.
+
+    Reproduces the bug's own root mechanism: `upsert_files` INSERTs a brand new FileRecord
+    referencing this batch's id -- which, per Postgres FK enforcement, holds an implicit
+    `FOR KEY SHARE` lock on the `scan_batches` row for the lifetime of the worker's open
+    transaction. `delete_scan_cascade` must block on that lock (via its own upfront `FOR
+    UPDATE` on the ScanBatch row) rather than racing past it and discovering the conflict
+    only at its own final `DELETE FROM scan_batches` step.
+    """
+    _engine, session_factory = committed_db
+
+    async with session_factory() as seed_session:
+        await _seed_agent(seed_session)
+        batch_id, existing_file_id = await _seed_batch_with_one_file(seed_session)
+
+    # The "in-flight agent upsert": an uncommitted transaction that has ALREADY flushed
+    # (sent, not yet committed) an INSERT of a brand new FileRecord for this batch -- exactly
+    # the shape of the new-file write the bug describes landing mid-cascade.
+    new_file_id = uuid.uuid4()
+    holder_session = session_factory()
+    holder_session.add(
+        FileRecord(
+            id=new_file_id,
+            agent_id="test-fileserver",
+            batch_id=batch_id,
+            sha256_hash="b" * 64,
+            original_path=f"/data/music/{new_file_id}.flac",
+            original_filename=f"{new_file_id}.flac",
+            current_path=f"/data/music/{new_file_id}.flac",
+            file_type="flac",
+            file_size=4096,
+        )
+    )
+    await holder_session.flush()
+
+    async def _release_after_waiter() -> None:
+        await _wait_for_blocked_waiter(session_factory)
+        await holder_session.commit()
+
+    async def _run_cascade() -> dict[str, int]:
+        async with session_factory() as cascade_session:
+            counts = await delete_scan_cascade(cascade_session, batch_id)
+            await cascade_session.commit()
+            return counts
+
+    try:
+        _release_result, counts = await asyncio.gather(_release_after_waiter(), _run_cascade())
+    finally:
+        await holder_session.close()
+
+    # The cascade's OWN files delete step -- which runs AFTER the ScanBatch lock is granted,
+    # i.e. AFTER the worker's new file row is committed -- sweeps it up too: both the
+    # pre-existing seeded file AND the concurrently-inserted new one are deleted.
+    assert counts["files"] == 2
+
+    async with session_factory() as session:
+        assert await session.get(ScanBatch, batch_id) is None
+        assert await session.get(FileRecord, existing_file_id) is None
+        assert await session.get(FileRecord, new_file_id) is None
