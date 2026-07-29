@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -45,6 +45,21 @@ _UNDO_FROM = UNDO_FROM
 # member. Keyed off the SAME literal pair `status_map` there already spells out, so a third action
 # can never silently fall through a shared suffix rule again.
 _PAST_TENSE = {"approve": "approved", "reject": "rejected"}
+
+
+def _proposal_ids_scope(proposal_ids: list[uuid.UUID], name: str) -> Any:
+    """``RenameProposal.id = ANY(:name)`` -- ONE Postgres array bind, never a bare ``.in_(ids)``.
+
+    phaze-sco9: mirrors the repo's established idiom for this exact problem (``tasks/reenqueue.py::
+    _fids_scope``, ``routers/pipeline.py::_analysis_file_ids_scope`` / ``_ledger_keys_scope``,
+    landed by the phaze-r7j9 bind-cap sweep). A bare ``.in_(proposal_ids)`` expands to one bind
+    parameter PER id, and asyncpg's Bind message caps a statement at 32767 parameters -- D-04 keeps
+    one PENDING proposal per file for a ~200K-file archive, so the confidence-threshold candidate
+    set ``bulk_approve_high_confidence`` hydrates rows from can organically exceed that cap. Binding
+    the whole id list as ONE ``uuid[]`` array parameter sidesteps the ceiling regardless of list
+    size, and is a single (cheaper) round trip besides.
+    """
+    return RenameProposal.id == func.any(bindparam(name, value=proposal_ids, type_=ARRAY(PGUUID(as_uuid=True))))
 
 
 def _bulk_toast(action: str, *, requested: int, applied: int) -> str:
@@ -446,9 +461,11 @@ async def bulk_approve_high_confidence(
     phaze-0ew3: a pre-update snapshot SELECT used to build ``candidate_ids`` here, duplicating
     ``approve_pending_above_confidence``'s own predicate as a SECOND unbounded ``id IN (...)`` (the
     32,767-bind-parameter cap the service fix addresses). Reusing the service's own ``RETURNING id``
-    list removes that duplicate id-list entirely, and the row-hydration SELECT below binds it as one
-    ``= ANY(:ids)`` array parameter (mirrors ``tasks.reenqueue._fids_scope``) instead of an
-    expanding ``.in_(...)``, so this path never re-introduces the same bind-count ceiling.
+    list removes that duplicate id-list entirely, and the row-hydration SELECT below binds it via
+    :func:`_proposal_ids_scope` -- one ``= ANY(:ids)`` array parameter (the same idiom as
+    ``tasks.reenqueue._fids_scope`` / ``routers.pipeline._analysis_file_ids_scope``) instead of an
+    expanding ``.in_(...)``, so this path never re-introduces the same bind-count ceiling
+    (phaze-sco9: extracted to a named, independently-testable helper).
     """
     threshold = 0.9
     v7_target = _BULK_HIGH_CONFIDENCE_TARGETS.get(request.headers.get("HX-Target", ""))
@@ -461,11 +478,7 @@ async def bulk_approve_high_confidence(
         row_id_prefix, facet = v7_target
         approved_rows: list[dict[str, object]] = []
         if approved_ids:
-            rows_stmt = (
-                select(RenameProposal)
-                .options(selectinload(RenameProposal.file))
-                .where(RenameProposal.id == func.any(bindparam("approved_ids", value=approved_ids, type_=ARRAY(PGUUID(as_uuid=True)))))
-            )
+            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(_proposal_ids_scope(approved_ids, "approved_ids"))
             proposals = (await session.execute(rows_stmt)).scalars().all()
             approved_rows = [_diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals]
         return templates.TemplateResponse(
