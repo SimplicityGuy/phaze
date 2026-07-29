@@ -445,15 +445,25 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
         # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows
         # is a read-only, SAVEPOINT-wrapped, degrade-safe assembly over the existing proposal reads (NO
-        # new query path, NO enqueue, NO backend change) that returns [] on any DB error, so no router
-        # try/except is needed; oob_counts stays False (Pitfall 5) -- the live sub-count would ride the
-        # single chrome poll's OOB seeds.
-        context["rename_proposals"] = await get_pending_proposal_rows(session)
+        # new query path, NO enqueue, NO backend change) that degrades to empty/zero on any DB error, so
+        # no router try/except is needed; oob_counts stays False (Pitfall 5) -- the live sub-count would
+        # ride the single chrome poll's OOB seeds.
+        #
+        # phaze-rw14: the row list is capped at 200 for render; the header/confirm counts below are the
+        # bundled REAL totals (corpus-wide pending count, >=90%-confidence pending count), not the
+        # capped list's length.
+        rename_pending = await get_pending_proposal_rows(session)
+        context["rename_proposals"] = rename_pending.rows
+        context["rename_pending_total"] = rename_pending.total_pending
+        context["rename_high_confidence_pending"] = rename_pending.high_confidence_pending
     elif stage == "move":
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Move-files review workspace -- the SIBLING of rename
-        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper;
-        # oob_counts stays False (Pitfall 5).
-        context["move_proposals"] = await get_pending_proposal_rows(session)
+        # over the SAME pending RenameProposal source (proposed_path facet, D-06). Same degrade-safe helper
+        # and phaze-rw14 real-total bundle; oob_counts stays False (Pitfall 5).
+        move_pending = await get_pending_proposal_rows(session)
+        context["move_proposals"] = move_pending.rows
+        context["move_pending_total"] = move_pending.total_pending
+        context["move_high_confidence_pending"] = move_pending.high_confidence_pending
     elif stage == "propose":
         context |= await build_propose_list_context(request, session)
     elif stage == "tagwrite":

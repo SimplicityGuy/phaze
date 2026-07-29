@@ -18,12 +18,20 @@
    raw). NO second poll (R-2); the live sub-count would ride the single chrome poll's OOB seeds.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = "'" ~ (rename_proposals | length) ~ " awaiting approval · proposed filename + destination'" %}
+{# phaze-rw14: the header quotes the REAL corpus-wide pending total (rename_pending_total), not
+   `rename_proposals | length` -- that length is the 200-row RENDER CAP, so the old expression
+   reported "200 awaiting approval" for any backlog at or past that size, with no pager and no
+   "showing first 200" caption to say so. #}
+{% set subcount = "'" ~ rename_pending_total ~ " awaiting approval · proposed filename + destination'" %}
 {% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button"
             hx-patch="/proposals/bulk-approve-high-confidence" hx-target="#rename-trigger-response" hx-swap="innerHTML"
-            hx-confirm="Approve all pending proposals at ≥90% confidence? The server re-checks confidence at submit — {{ rename_proposals | length }} match now. Every apply is audited and reversible."
+            {# phaze-rw14: quotes rename_high_confidence_pending -- the real >=90%-confidence PENDING
+               count the server is about to approve -- not the rendered row count. The old text was
+               wrong on two axes: it was the 200-row render cap, and rows render confidence-ASC, so
+               the visible page can hold zero >=90% rows while the server approves thousands. #}
+            hx-confirm="Approve all pending proposals at ≥90% confidence? The server re-checks confidence at submit — {{ rename_high_confidence_pending }} match now. Every apply is audited and reversible."
             hx-disabled-elt="this"
             :disabled="$store.pipeline.controllerBusy > 0"
             aria-label="Approve all pending proposals at or above 90 percent confidence"
@@ -33,6 +41,15 @@
     {# Bulk-approve response (approve_response.html toast) lands here; empty:hidden until it fires. #}
     <div id="rename-trigger-response" class="px-6 pt-4 empty:hidden"></div>
     {% if rename_proposals %}
+    {# phaze-rw14: name the truncation instead of silently rendering only the first page. The rows
+       ARE ordered confidence-ASC (get_proposals_page's default), so this cap is not a lottery -- it
+       is the lowest-confidence rows first, and the queue drains toward the hidden tail as these are
+       cleared -- but nothing said so before this caption existed. #}
+    {% if rename_pending_total > (rename_proposals | length) %}
+    <div class="px-6 pt-4 text-xs text-gray-500 dark:text-gray-400">
+        Showing the lowest-confidence {{ rename_proposals | length }} of {{ rename_pending_total }} awaiting approval. Approve or skip these to reveal the rest.
+    </div>
+    {% endif %}
     <div>
         {% for p in rename_proposals %}
             {% with row_id_prefix="rename-row",

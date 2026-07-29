@@ -652,6 +652,8 @@ async def test_edit_on_approved_proposal_returns_409(client: AsyncClient, sessio
         data={"proposed": "performances/Unreviewed", "facet": "path"},
     )
     assert response.status_code == 409
+    # phaze-3mru: the detail names the refusal, not a self-contradictory "approved -> approved".
+    assert response.json()["detail"] == "edit refused: proposal is approved, only PENDING rows are editable"
 
 
 @pytest.mark.asyncio

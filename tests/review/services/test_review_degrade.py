@@ -58,7 +58,11 @@ class _RaisingSession:
 async def test_get_pending_proposal_rows_degrades_to_empty_and_logs(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         result = await get_pending_proposal_rows(_RaisingSession())  # type: ignore[arg-type]
-    assert result == []
+    # phaze-rw14: the degrade branch returns an all-empty/zero PendingProposalRows bundle, not a
+    # bare list -- rows AND both real-total counts degrade together.
+    assert result.rows == []
+    assert result.total_pending == 0
+    assert result.high_confidence_pending == 0
     assert any("pending_proposal_rows_degraded" in r.getMessage() for r in caplog.records)
 
 

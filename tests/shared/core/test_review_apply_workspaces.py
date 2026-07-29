@@ -150,6 +150,31 @@ async def test_bulk_approve_high_confidence_server_predicate(
 
 
 @pytest.mark.asyncio
+async def test_rename_move_headers_and_confirm_quote_real_counts_not_render_length(
+    client: AsyncClient,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """phaze-rw14: the Rename/Move header sub-count and bulk-approve confirm text quote the REAL
+    corpus-wide pending total / >=90%-confidence match count -- not ``rename_proposals | length``
+    (the 200-row render cap) -- so a rendered page of low-confidence rows can't understate either
+    number to the operator.
+    """
+    await seed_pending_proposal(0.95, original_filename="high1.mp3")
+    await seed_pending_proposal(0.95, original_filename="high2.mp3")
+    await seed_pending_proposal(0.5, original_filename="low1.mp3")
+    await seed_pending_proposal(0.5, original_filename="low2.mp3")
+    await seed_pending_proposal(0.5, original_filename="low3.mp3")
+
+    for stage, header_target in (("rename", "rename-trigger-response"), ("move", "move-trigger-response")):
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200
+        assert "5 awaiting approval" in frag.text, f"{stage} header must report the true pending total (5), not a page length"
+        assert f'hx-target="#{header_target}"' in frag.text
+        assert "2 match now" in frag.text, f"{stage} confirm text must quote the real >=90%-confidence count (2)"
+        assert "5 match now" not in frag.text, f"{stage} confirm text must not fall back to the rendered row count"
+
+
+@pytest.mark.asyncio
 async def test_edit_patch_targets_own_row(
     client: AsyncClient,
     session: AsyncSession,
