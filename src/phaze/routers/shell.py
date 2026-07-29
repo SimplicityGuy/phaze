@@ -372,12 +372,11 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         context["active_stage"] = None
         context["active_bucket"] = None
         context["sort"] = files_sort_state
-        # 87-09 gap-fix: mounted as a WORKSPACE, so host the shared OOB seed-target placeholders (like
-        # every other workspace via _workspace_scaffold) — else the single chrome /pipeline/stats poll's
-        # OOB seeds (rail orphan badge, priority store, agent-busy gating) land nowhere on /s/files and log
-        # htmx:oobErrorNoTarget every 5s. The pipeline_files() filter/pagination endpoint omits this flag,
-        # so the fragment it swaps into #files-table-view never re-emits (and never duplicates) the seeds.
-        context["include_poll_seeds"] = True
+        # phaze-t0b8: files_workspace.html now composes _workspace_scaffold.html like every other
+        # STAGE_PARTIALS host, which both supplies the <h1 tabindex="-1"> focus target this stage was
+        # missing and unconditionally includes _workspace_poll_seeds.html itself — so the former
+        # `include_poll_seeds` context flag (87-09 gap-fix's hand-rolled substitute for that same
+        # include) has no remaining producer and is removed rather than left to double-emit the seeds.
         context["stage"] = stage
         context["stage_partial"] = STAGE_PARTIALS[stage]
         context["oob_counts"] = False
