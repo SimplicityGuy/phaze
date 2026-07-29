@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
 
@@ -81,15 +81,54 @@ def _terminal_tagwrite_subq() -> Select[tuple[uuid.UUID]]:
 _BULK_TAGWRITE_LOCK_KEY = 0x506861_7A657461
 
 
-async def _acquire_bulk_tagwrite_lock(session: AsyncSession) -> bool:
-    """Try to take the session-scoped bulk-tag-write advisory lock. ``True`` if acquired."""
-    result = await session.execute(select(func.pg_try_advisory_lock(_BULK_TAGWRITE_LOCK_KEY)))
+async def _acquire_bulk_tagwrite_lock(conn: AsyncConnection) -> bool:
+    """Try to take the session-scoped bulk-tag-write advisory lock on a PINNED connection.
+
+    ``True`` if acquired. phaze-yhhy: this MUST run on a connection the caller holds open for the
+    whole operation -- see :func:`_bulk_tagwrite_lock_connection`.
+    """
+    result = await conn.execute(select(func.pg_try_advisory_lock(_BULK_TAGWRITE_LOCK_KEY)))
     return bool(result.scalar())
 
 
-async def _release_bulk_tagwrite_lock(session: AsyncSession) -> None:
-    """Release the session-scoped bulk-tag-write advisory lock (idempotent-safe on our own hold)."""
-    await session.execute(select(func.pg_advisory_unlock(_BULK_TAGWRITE_LOCK_KEY)))
+async def _release_bulk_tagwrite_lock(conn: AsyncConnection) -> None:
+    """Release the session-scoped bulk-tag-write advisory lock on the SAME pinned connection.
+
+    Idempotent-safe on our own hold. phaze-yhhy: must be the identical ``AsyncConnection`` object
+    :func:`_acquire_bulk_tagwrite_lock` was called on -- a Postgres session-scoped advisory lock is
+    bound to the physical DBAPI connection, not to any ORM transaction.
+    """
+    await conn.execute(select(func.pg_advisory_unlock(_BULK_TAGWRITE_LOCK_KEY)))
+
+
+async def _bulk_tagwrite_lock_connection(session: AsyncSession) -> tuple[AsyncConnection, bool]:
+    """Resolve the connection to acquire/release the bulk-tag-write advisory lock on.
+
+    phaze-yhhy: ``bulk_write_no_discrepancies`` commits per file (phaze-k7g6), and a pooled
+    ``AsyncSession`` returns its DBAPI connection to the pool on every ``commit()``/``rollback()``.
+    Acquiring the SESSION-scoped lock on ``session`` and releasing it on ``session`` again therefore
+    acquires and releases on WHATEVER connection the pool happens to hand back each time -- almost
+    always a DIFFERENT physical connection than the one that took the lock once the pool holds more
+    than one idle connection, silently no-op'ing the release and leaking the lock onto an idle pooled
+    connection (unrecoverable short of that connection's ``pool_recycle``/next ping-death).
+
+    The fix is to open a connection OUTSIDE the ORM session and hold it for the caller's entire
+    request, immune to how many times ``session`` itself commits or rolls back in between. Returns
+    ``(connection, owns_it)`` -- the caller must ``await connection.close()`` iff ``owns_it`` is
+    ``True``.
+
+    ``session.bind`` is the production ``AsyncEngine`` under normal operation, so a genuinely new
+    connection is opened. Under the test suite's hermetic ``session`` fixture every DB-bound fixture
+    is deliberately pinned to ONE shared ``AsyncConnection`` for the whole test (so seeded rows stay
+    visible across the request) -- opening yet another connection there would just be a second,
+    functionally-redundant physical connection to the same DB, so this reuses the existing one
+    instead of fighting that harness.
+    """
+    bind = session.bind
+    if isinstance(bind, AsyncConnection):
+        return bind, False
+    conn = await bind.connect()
+    return conn, True
 
 
 async def _has_terminal_tagwrite(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -504,110 +543,132 @@ async def bulk_write_no_discrepancies(
     deliberately left in place (both are non-terminal by design -- DISCREPANCY re-offers itself for a
     retry, FAILED never wrote anything -- so the row staying pending is correct, not stale).
     """
-    # phaze-u28m: serialize the whole bulk operation. A second concurrent/duplicate submit that
-    # cannot take the lock does NOTHING (no re-select, no double disk write, no duplicate audit rows)
-    # rather than racing the first. Fail-fast (``pg_try_advisory_lock``) suits a single-user tool: a
-    # double-click gets a clear "already in progress" toast instead of silently re-tagging every file.
-    if not await _acquire_bulk_tagwrite_lock(session):
-        stats = await _get_tag_stats(session)
-        return templates.TemplateResponse(
-            request=request,
-            name="tags/partials/bulk_write_response.html",
-            context={
-                "request": request,
-                "stats": stats,
-                "written": 0,
-                "toast_message": "A bulk tag write is already in progress -- nothing was re-written. Wait for it to finish, then retry.",
-            },
-        )
-
-    written = 0
-    failed = 0
-    discrepancy = 0
-    verify_failed = 0
-    # phaze-gwe1: files whose tag-write reached a TERMINAL state this pass (COMPLETED / NO_OP) --
-    # the response removes their stale pending rows. DISCREPANCY/VERIFY_FAILED/FAILED are
-    # non-terminal by design and stay in the queue.
-    resolved_ids: list[uuid.UUID] = []
+    # phaze-yhhy: acquire/release the SESSION-scoped advisory lock on a connection pinned for the
+    # whole request, independent of how many times ``session`` itself checks its pooled connection
+    # in and out via the per-file commits below.
+    lock_conn, owns_lock_conn = await _bulk_tagwrite_lock_connection(session)
     try:
-        terminal_subq = _terminal_tagwrite_subq()
-        stmt = (
-            select(FileRecord)
-            .options(selectinload(FileRecord.file_metadata))
-            .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
-            .order_by(FileRecord.original_filename)
-            .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
-        )
-        file_records = list((await session.execute(stmt)).scalars().all())
+        # phaze-u28m: serialize the whole bulk operation. A second concurrent/duplicate submit that
+        # cannot take the lock does NOTHING (no re-select, no double disk write, no duplicate audit
+        # rows) rather than racing the first. Fail-fast (``pg_try_advisory_lock``) suits a
+        # single-user tool: a double-click gets a clear "already in progress" toast instead of
+        # silently re-tagging every file.
+        if not await _acquire_bulk_tagwrite_lock(lock_conn):
+            stats = await _get_tag_stats(session)
+            return templates.TemplateResponse(
+                request=request,
+                name="tags/partials/bulk_write_response.html",
+                context={
+                    "request": request,
+                    "stats": stats,
+                    "written": 0,
+                    "toast_message": "A bulk tag write is already in progress -- nothing was re-written. Wait for it to finish, then retry.",
+                },
+            )
 
-        for fr in file_records:
-            # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM instance,
-            # so a later ``fr.id`` access would trigger a lazy reload (async IO) from a sync context.
-            file_id = fr.id
-            # phaze-k7g6: isolate each file. A single bad file (e.g. a ValueError from a concurrently
-            # un-applied file, or a transient read error) must SKIP -- never abort the batch and never
-            # discard the already-committed audit rows of prior files.
-            try:
-                # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
-                # concurrent BULK submit, but a per-file write_file_tags could have landed a terminal
-                # log for this candidate since the SELECT -- skip it rather than write it twice.
-                if await _has_terminal_tagwrite(session, file_id):
-                    continue
+        written = 0
+        failed = 0
+        discrepancy = 0
+        verify_failed = 0
+        # phaze-gwe1: files whose tag-write reached a TERMINAL state this pass (COMPLETED / NO_OP) --
+        # the response removes their stale pending rows. DISCREPANCY/VERIFY_FAILED/FAILED are
+        # non-terminal by design and stay in the queue.
+        resolved_ids: list[uuid.UUID] = []
+        try:
+            terminal_subq = _terminal_tagwrite_subq()
+            stmt = (
+                select(FileRecord)
+                .options(selectinload(FileRecord.file_metadata))
+                .where(applied_clause(), FileRecord.id.not_in(terminal_subq))
+                .order_by(FileRecord.original_filename)
+                .limit(_MAX_BULK_TAG_WRITE)  # D-03: bound the operator-triggered loop at 200K scale
+            )
+            file_records = list((await session.execute(stmt)).scalars().all())
 
-                tracklist = await _get_tracklist_for_file(session, file_id)
-                discogs_link = await _get_accepted_discogs_link(session, file_id)
-                proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
-                comparison = _build_comparison(fr.file_metadata, proposed)
-                if _count_changes(comparison) < 1:
-                    # WR-01: a zero-change applied file has nothing to write. Persist a terminal NO_OP
-                    # marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it re-occupies this
-                    # same window on every submit and permanently starves the qualifying files behind it.
-                    session.add(
-                        TagWriteLog(
-                            file_id=file_id,
-                            before_tags={},
-                            after_tags={},
-                            source="bulk_noop",
-                            status=TagWriteStatus.NO_OP.value,
+            for fr in file_records:
+                # Capture the id BEFORE any write: a per-file rollback (below) expires the ORM
+                # instance, so a later ``fr.id`` access would trigger a lazy reload (async IO) from
+                # a sync context.
+                file_id = fr.id
+                # phaze-k7g6: isolate each file. A single bad file (e.g. a ValueError from a
+                # concurrently un-applied file, or a transient read error) must SKIP -- never abort
+                # the batch and never discard the already-committed audit rows of prior files.
+                try:
+                    # phaze-u28m: re-check terminal status under the lock. The advisory lock blocks a
+                    # concurrent BULK submit, but a per-file write_file_tags could have landed a
+                    # terminal log for this candidate since the SELECT -- skip it rather than write it
+                    # twice.
+                    if await _has_terminal_tagwrite(session, file_id):
+                        continue
+
+                    tracklist = await _get_tracklist_for_file(session, file_id)
+                    discogs_link = await _get_accepted_discogs_link(session, file_id)
+                    proposed = compute_proposed_tags(fr.file_metadata, tracklist, fr.original_filename, discogs_link=discogs_link)
+                    comparison = _build_comparison(fr.file_metadata, proposed)
+                    if _count_changes(comparison) < 1:
+                        # WR-01: a zero-change applied file has nothing to write. Persist a terminal
+                        # NO_OP marker so ``_terminal_tagwrite_subq`` EVICTS it -- otherwise it
+                        # re-occupies this same window on every submit and permanently starves the
+                        # qualifying files behind it.
+                        session.add(
+                            TagWriteLog(
+                                file_id=file_id,
+                                before_tags={},
+                                after_tags={},
+                                source="bulk_noop",
+                                status=TagWriteStatus.NO_OP.value,
+                            )
                         )
-                    )
-                    # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
+                        # phaze-k7g6: commit the marker immediately so a later abort cannot lose it.
+                        await session.commit()
+                        resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
+                        continue
+                    if not _qualifies_for_bulk_write(comparison):
+                        # A >=1-change file that would blank an existing tag: never bulk-written
+                        # (stays per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks,
+                        # so defensive.
+                        continue
+                    tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
+                    log_entry = await execute_tag_write(session, fr, tags, source="proposal")
+                    # phaze-k7g6: commit the audit row atomically with the disk mutation it describes,
+                    # so a mid-loop cancellation/crash can never leave a written file without its
+                    # TagWriteLog (which holds the before_tags UNDO snapshot).
                     await session.commit()
-                    resolved_ids.append(file_id)  # phaze-gwe1: now terminal -- remove the stale pending row
-                    continue
-                if not _qualifies_for_bulk_write(comparison):
-                    # A >=1-change file that would blank an existing tag: never bulk-written (stays
-                    # per-file Approve/Edit/Skip). ``compute_proposed_tags`` never blanks, so defensive.
-                    continue
-                tags: dict[str, str | int | None] = {k: v for k, v in proposed.items() if v is not None}
-                log_entry = await execute_tag_write(session, fr, tags, source="proposal")
-                # phaze-k7g6: commit the audit row atomically with the disk mutation it describes, so a
-                # mid-loop cancellation/crash can never leave a written file without its TagWriteLog
-                # (which holds the before_tags UNDO snapshot).
-                await session.commit()
 
-                # phaze-5j82: count outcomes truthfully -- only a real COMPLETED write is a success.
-                # FAILED (nothing written) and DISCREPANCY/VERIFY_FAILED (written but not confirmed
-                # clean) are tallied separately and surfaced, never reported as clean successes.
-                if log_entry.status == TagWriteStatus.COMPLETED:
-                    written += 1
-                    resolved_ids.append(file_id)  # phaze-gwe1: terminal clean write -- remove the stale pending row
-                elif log_entry.status == TagWriteStatus.DISCREPANCY:
-                    discrepancy += 1
-                elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
-                    verify_failed += 1
-                else:
+                    # phaze-5j82: count outcomes truthfully -- only a real COMPLETED write is a
+                    # success. FAILED (nothing written) and DISCREPANCY/VERIFY_FAILED (written but not
+                    # confirmed clean) are tallied separately and surfaced, never reported as clean
+                    # successes.
+                    if log_entry.status == TagWriteStatus.COMPLETED:
+                        written += 1
+                        resolved_ids.append(file_id)  # phaze-gwe1: terminal clean write -- remove the stale pending row
+                    elif log_entry.status == TagWriteStatus.DISCREPANCY:
+                        discrepancy += 1
+                    elif log_entry.status == TagWriteStatus.VERIFY_FAILED:
+                        verify_failed += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits
+                    # stand) and keep going. A raised ValueError/DB error is a failed file, not a
+                    # batch abort.
+                    await session.rollback()
                     failed += 1
-            except Exception:
-                # phaze-k7g6: roll back only this file's uncommitted work (prior per-file commits
-                # stand) and keep going. A raised ValueError/DB error is a failed file, not a batch abort.
-                await session.rollback()
-                failed += 1
-                logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
-                continue
+                    logger.warning("bulk_tag_write_file_skipped", file_id=str(file_id), exc_info=True)
+                    continue
+        finally:
+            # phaze-yhhy: the release runs on ``lock_conn`` -- never on ``session`` -- so it can
+            # never be skipped by ``session`` sitting in an aborted transaction (the candidate SELECT
+            # or an early per-file failure left it there) the way the old same-connection release
+            # could be.
+            await _release_bulk_tagwrite_lock(lock_conn)
+            # Defensive: reset ``session`` if the try block above left it mid-transaction (e.g. the
+            # candidate SELECT itself raised) so the stats/subcount reads below don't inherit an
+            # aborted transaction.
+            await session.rollback()
     finally:
-        await _release_bulk_tagwrite_lock(session)
-        await session.commit()
+        if owns_lock_conn:
+            await lock_conn.close()
 
     stats = await _get_tag_stats(session)
     toast_message = _bulk_write_toast(written, discrepancy, verify_failed, failed)
