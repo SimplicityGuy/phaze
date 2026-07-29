@@ -1933,6 +1933,51 @@ async def test_reap_still_fires_when_the_broker_key_is_terminal_not_live(session
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
 
 
+@pytest.mark.asyncio
+async def test_reap_skips_an_uploaded_row_whose_submit_job_is_live_in_the_broker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1k0i: an aged UPLOADED row with a LIVE ``submit_cloud_job`` broker key is NEVER reaped.
+
+    ``report_uploaded`` flips UPLOADING -> UPLOADED and enqueues ``submit_cloud_job:<file_id>`` in the SAME
+    transaction; the completed ``s3_upload`` job's key is swept from ``saq_jobs``. So for an UPLOADED row the
+    live owner the phaze-31q3 gate must consult is the SUBMIT key, not the (already-gone) upload key -- a
+    ``submit_cloud_job`` stuck behind a controller-queue backlog reads UPLOADED with a frozen ``updated_at``
+    and must not be reaped out from under it.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=3_600)
+    await _seed_live_saq_job(session, key=f"submit_cloud_job:{file_id}", status="queued")
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # live submit key -> NOT reaped despite age
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADED.value
+
+
+@pytest.mark.asyncio
+async def test_reap_still_fires_on_an_uploaded_row_with_a_live_but_irrelevant_s3_upload_key(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-1k0i: a live ``s3_upload`` broker key does NOT protect an UPLOADED row (wrong key for this status).
+
+    Pre-fix the gate checked ONLY ``s3_upload:<file_id>`` regardless of status, so a stale/unrelated
+    ``s3_upload`` entry (e.g. left behind by an unrelated retry bookkeeping quirk) would have falsely shielded
+    an UPLOADED row whose actual owner (``submit_cloud_job``) is genuinely gone. The gate must key off the
+    OBSERVED status, not a single hardcoded key.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=3_600)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="active")  # wrong key for UPLOADED
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # s3_upload key is irrelevant once UPLOADED -> genuinely lost, reaped
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
 # === phaze-jwz0: the reaper commits the spill BEFORE the S3 cleanup (outside the txn/lock) ============
 
 
