@@ -54,19 +54,27 @@
 {% call ws.workspace(title="Propose", subcount=subcount, actions=actions) %}
     {# Trigger response lands here (trigger_response.html branches: count>0 / none ready). #}
     <div id="propose-trigger-response" class="px-6 pt-4 empty:hidden"></div>
-    {# phaze-a6hm.2: the status filter tabs + search box the v7 cutover dropped, restored by ADOPTING
-       the legacy proposals/partials/*.html markup (which had been orphaned but intact) rather than
-       rewriting it -- so the visual language matches the rest of the app. Both partials are now
-       parameterised; they point at /s/propose and swap the list container below.
+    {# phaze-a6hm.2: the search box the v7 cutover dropped, restored by ADOPTING the legacy
+       proposals/partials/search_box.html markup (which had been orphaned but intact) rather than
+       rewriting it -- so the visual language matches the rest of the app. It is now parameterised;
+       it points at /s/propose and swaps the list container below.
 
-       Both push /s/propose?... URLs. That is what makes the filtered view bookmarkable AND correct
+       It pushes a /s/propose?... URL. That is what makes the filtered view bookmarkable AND correct
        on a history restore: the pushed URL is a real full-page route, so a restore re-renders the
        whole document with the same filter applied (response_shape.py rule 2) rather than dropping a
-       chrome-less fragment into <body>. #}
+       chrome-less fragment into <body>.
+
+       phaze-xxp2: the status filter tabs used to live HERE, in a sibling div OUTSIDE
+       #propose-workspace-list -- but every control that swaps into that container uses
+       hx-swap="innerHTML", and the narrow list-only response (_propose_list.html) never re-rendered
+       this div. A tab click updated the rows but left the previously-active tab's underline +
+       aria-current="page" in place -- actively announcing the WRONG filter to screen-reader users.
+       The tabs now render INSIDE _propose_list.html itself (see that file), the same fix shape as
+       the pager (phaze-a6hm.9) and the bulk bar (phaze-a6hm.11): anything that must reflect the
+       swap's own state has to be re-rendered BY that swap. The search box stays out here -- unlike
+       the tabs it holds a focused input mid-keystroke, and re-rendering it on every debounce tick
+       would destroy focus and caret position (see search_box.html's own contract, point 3). #}
     <div class="px-6 pt-4">
-        {% with view = propose_view, stats = propose_stats, tabs_url = "/s/propose", tabs_target = "#" ~ propose_list_id %}
-            {% include "proposals/partials/filter_tabs.html" %}
-        {% endwith %}
         {% with view = propose_view, search_url = "/s/propose", search_target = "#" ~ propose_list_id, search_id = "propose-search" %}
             {% include "proposals/partials/search_box.html" %}
         {% endwith %}

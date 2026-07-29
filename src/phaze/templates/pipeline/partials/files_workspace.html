@@ -10,12 +10,25 @@
    content with a copy of the host). Splitting host and fragment means the swap always lands
    CONTENT under the host id, never a second id-bearing element.
 
-   The shared OOB seed-target placeholders (87-09 gap-fix) move here too: they are a WORKSPACE-only
-   concern (the single chrome /pipeline/stats poll needs a pre-existing landing target), so they sit
-   as a SIBLING of #files-table-view, exactly as they did inside files_table_view.html before. The
+   phaze-t0b8: composes _workspace_scaffold.html now, like every other STAGE_PARTIALS host --
+   the split above extracted this host but hand-rolled it (the seed-hosting concern below), instead
+   of routing it through ws.workspace(...) like every sibling. That left this the ONE workspace in
+   the app with no <h1 tabindex="-1">: the shell's htmx:afterSwap / htmx:historyRestore focus
+   handler (`ws.querySelector('h1')`) silently no-ops on a rail swap to Files, stranding
+   keyboard/screen-reader operators on the rail, and a direct nav/reload of /s/files carries no
+   top-level heading anywhere in the document at all (shell.html contributes none). No `subcount`
+   is passed -- this stage is a cross-stage file matrix, not a per-stage count with an obvious
+   $store.pipeline key, so the scaffold's default (no sub-count line) is the right rendering.
+
+   The shared OOB seed-target placeholders (87-09 gap-fix) no longer need a hand-rolled
+   `include_poll_seeds` flag: _workspace_scaffold.html ALWAYS includes _workspace_poll_seeds.html
+   (see that macro's tail), which is exactly the WORKSPACE-only concern this host used to wire
+   itself -- the single chrome /pipeline/stats poll needs a pre-existing landing target, and the
    pipeline_files() filter/pagination endpoint never renders this host, so the fragment it returns
-   never re-emits (and never duplicates) the seeds. #}
-{% if include_poll_seeds %}{% include "pipeline/partials/_workspace_poll_seeds.html" %}{% endif %}
+   still never re-emits (and never duplicates) the seeds. #}
+{% import "pipeline/partials/_workspace_scaffold.html" as ws %}
+{% call ws.workspace(title="FILES") %}
 <div id="files-table-view">
     {% include "pipeline/partials/files_table_view.html" %}
 </div>
+{% endcall %}
