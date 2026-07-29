@@ -2,11 +2,11 @@
 
 ## What This Is
 
-A music collection organizer that ingests ~200K music files (mp3, m4a, ogg, opus) and concert video streams, analyzes them for BPM/mood/style/key, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. As of v4.0, phaze runs as a **two-host distributed system**: an application server (API, UI, Postgres, Redis, fileless workers, no file mounts) and one or more file-server agents that own the music/video files locally, pull jobs from per-agent SAQ queues, and write every state change back over authenticated HTTPS. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
+A music collection organizer that ingests music files (mp3, m4a, ogg, opus) and concert video streams — the full collection is ~200K files, of which **11,412 have been ingested so far** (measured for ADR-0002) — analyzes them for BPM/mood/style/key, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. As of v4.0, phaze runs as a **two-host distributed system**: an application server (API, UI, Postgres, Redis, fileless workers, no file mounts) and one or more file-server agents that own the music/video files locally, pull jobs from per-agent SAQ queues, and write every state change back over authenticated HTTPS. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
 
 ## Core Value
 
-Get 200K messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
+Get a ~200K-file messy music and concert collection properly named, organized into logical folders, deduplicated, with rich metadata in Postgres (11,412 files ingested so far) — and provide a human-in-the-loop approval workflow so nothing moves without review. Files stay where they live; decisions stay on one server.
 
 ## Current Milestone: 2026.7.7 Console & Cloud-Burst Hardening
 
@@ -187,10 +187,10 @@ Get 200K messy music and concert files properly named, organized into logical fo
 
 - ~14,300 lines of Python source + ~28,000 lines of tests across 29 phases, 94+ plans total (v1.0–v4.0)
 - Tech stack: FastAPI, SQLAlchemy (async), SAQ + Redis (per-agent queues), litellm, essentia-tensorflow, mutagen, rapidfuzz, httpx, watchdog, cryptography (self-signed CA), tenacity, respx, HTMX + Tailwind + Alpine.js
-- Two Docker Compose stacks: `docker-compose.yml` (app-server: api with TLS via internal CA, controller worker, postgres, redis with `requirepass` + LAN bind, no file mounts) and `docker-compose.agent.yml` (file-server: agent worker, watcher, audfprint + panako sidecars)
-- 14 Alembic migrations, 14 SQLAlchemy models (Agents added in v4.0), per-file-server fingerprint sidecars
+- Two Docker Compose stacks: `docker-compose.yml` (app-server: api with TLS via internal CA, controller worker, postgres, redis with `requirepass` + LAN bind, no file mounts) and `docker-compose.agent.yml` (file-server: three lane workers — analyze/meta/io — plus watcher; the audfprint + panako sidecars were **removed** by phaze-0jpe, 2026-07-28, see ADR-0002)
+- 10 Alembic migrations (039 baseline + 040..048, head 048), 14 SQLAlchemy models (Agents added in v4.0)
 - Internal API surface: `/api/internal/agent/*` with token-hash bearer auth, idempotent natural-key upserts, 403-before-state-machine cross-tenant guards, 30s heartbeat
-- Admin UI: proposals, duplicates (with cross-FS fingerprint notice), tracklists, pipeline dashboard with **Trigger Scan card**, unified search, Discogs linking, tag review, CUE management, **Agents** page with liveness + queue depth
+- Admin UI: proposals, duplicates, tracklists, pipeline dashboard with **Trigger Scan card**, unified search, Discogs linking, tag review, CUE management, **Agents** page with liveness + queue depth (the cross-FS fingerprint notice and every Track-ID surface went away with phaze-0jpe)
 - Operator workflow: `just up` (app-server), `just up-agent` (each file-server), `just up-all` (single-host dev); full deployment walkthrough in `docs/deployment.md`
 
 ## Previous State
@@ -314,7 +314,11 @@ Full pipeline operational: scan → analyze → propose → approve → execute.
 
 ### Active
 
-**No active milestone.** 2026.7.2 Multi-Compute Agents shipped 2026-07-06; start the next cycle with `/gsd:new-milestone`.
+**2026.7.7 Console & Cloud-Burst Hardening** — see *Current Milestone* at the top of this file.
+Fix the DAG-console UI correctness bugs and multi-Kueue compute surfacing, make cloud-analysis
+pods observable, and pay down the Alembic migration-chain debt. Zero new dependencies, no new
+product features. (This block previously still said "No active milestone / 2026.7.2 shipped",
+contradicting the header five milestones later.)
 
 **Candidate work for the next milestone (v2 compute backlog, deferred from 2026.7.2):**
 - **PROV-01** — N-compute-aware orphan recovery: make `recover_orphaned_work` (`tasks/reenqueue.py`) route held `AWAITING_CLOUD` re-drives through the rank/cap-tiered, per-entry-bound backend selection (not `select_active_agent(kind="compute")`) and stamp `cloud_job.backend_id`. A feature with Phase-45-class over-enqueue risk — not a fix (surfaced as GAP-01 in the 2026.7.2 audit).
@@ -325,7 +329,7 @@ Separate remaining ship step (not a milestone): the `2026.7.1` release tag push 
 
 ### Out of Scope
 
-- Cross-file-server fingerprint matching — per-agent fingerprint DB only in v4.0; documented as v4.0 limitation, tracked as XAGENT-01, deferred to a later milestone
+- Cross-file-server fingerprint matching — **mooted by ADR-0002**: phaze-0jpe removed fingerprinting entirely (2026-07-28), so XAGENT-01 has nothing left to generalize. Not deferred; gone
 - Cross-file-server execution batches (moves spanning hosts) — XAGENT-02, deferred
 - Delete / move / rename detection in the file watcher — v4.0 watcher only handles `created` events; tracked as WATCH-05/06, deferred
 - Watcher catch-up on startup (rescan files that landed while watcher was down) — WATCH-07; manual user-initiated scan covers this in v4.0
@@ -333,7 +337,7 @@ Separate remaining ship step (not a milestone): the `2026.7.1` release tag push 
 - Multi-tenant agent self-service registration — OPS-06; today operator pre-seeds tokens
 - Agent metric scraping endpoint (Prometheus-compatible) — OPS-07, deferred
 - Natural language querying across services — deferred
-- Acoustic near-duplicate detection via fingerprint similarity — deferred
+- Acoustic near-duplicate detection via fingerprint similarity — **mooted by ADR-0002** as specified (there is no fingerprint similarity to compute). Whether phaze should detect near-duplicates by some other means is re-opened as its own decision bead
 - Public network access — private LAN only
 - Offline mode — real-time server tool, not a desktop app
 - Files transferred between application server and file server — v4.0 keeps files local to file servers; transfer would defeat the boundary. **(Narrowed in v5.0: still no app↔file-server transfer, but a file-server agent may push a long file to an ephemeral *cloud compute agent* for analysis-only, then delete it — extra compute, not a data home. v6.0 keeps this: the long file is staged to ephemeral object storage for the Kueue Job, downloaded, analyzed, deleted — analysis-only, not a data home.)**
@@ -348,7 +352,7 @@ Separate remaining ship step (not a milestone): the `2026.7.1` release tag push 
 - ~200K files total, mix of music files and full concert video streams
 - Concert videos are primarily recordings of live streams (YouTube streams from festivals, etc.)
 - FileMetadata fully populated via mutagen tag extraction (ID3/Vorbis/MP4/FLAC/OPUS)
-- Dual fingerprint service (audfprint + Panako) per file server with weighted scoring (60/40, 70% single-engine cap); no cross-file-server matching in v4.0
+- No audio fingerprinting: the dual audfprint + Panako service was **removed 2026-07-28** (ADR-0002, phaze-0jpe). Deduplication rests on metadata and content digests
 - 1001tracklists integration operational with monthly refresh cron (runs on app-server controller worker)
 - This is a personal tool running on a private home LAN, not a multi-user SaaS
 
@@ -358,17 +362,17 @@ Separate remaining ship step (not a milestone): the `2026.7.1` release tag push 
 - **Package manager**: uv only
 - **Deployment**: Docker Compose on private LAN; two-host topology (app-server + file-server agents)
 - **Database**: PostgreSQL (app-server only; agents have zero direct DB access)
-- **Scale**: Must handle ~200K files efficiently — batch processing and parallelization required
+- **Scale**: Must handle the full ~200K-file collection efficiently (11,412 ingested so far) — batch processing and parallelization required
 - **Naming format**: Live sets: `{Artist} - Live @ {Venue|Event} {YYYY.MM.DD}.{ext}`, Album tracks: `{Artist} - {Track #} - {Track Title}.{ext}`
 
-**Per-agent fingerprint indices (v4.0).** Each file server's `audfprint` and `panako` sidecars index ONLY that file server's local files. Duplicate audio content landing on different file servers will NOT cross-match. Cross-file-server fingerprint matching is XAGENT-01 (deferred to a post-v4.0 milestone). The Duplicate Resolution admin UI surfaces this constraint as an inline, per-session-dismissible banner on every page load so the operator interprets fingerprint-derived results with this scope in mind.
+**Per-agent fingerprint indices (v4.0) — REMOVED 2026-07-28.** phaze-0jpe deleted audio fingerprinting from the product (ADR-0002): the `audfprint` and `panako` sidecars, the `fingerprint_results` schema (migrations 046/047) and the Duplicate Resolution cross-FS banner are all gone. The constraint this paragraph described no longer exists because the capability no longer exists; deduplication now rests on metadata and content digests only.
 
 ### Deployment (v4.0 — Distributed Agents)
 
 Phaze v4.0 production runs as **two Docker Compose files on two private-LAN hosts**:
 
 - **Application server** (`docker-compose.yml`): `api` (uvicorn-direct TLS via internal CA), `worker` (fileless controller-role SAQ worker), `postgres`, `redis` (password-auth + LAN-bound port). **No file mounts** beyond `./certs/` — the app-server has no way to read or write music/video file content (DIST-01).
-- **File servers** (`docker-compose.agent.yml`, one stack per file-server host): `worker` (agent-role SAQ worker), `watcher` (watchdog-based file event poster), `audfprint` + `panako` (local fingerprint sidecars). Holds the music/video library locally; reaches the app-server over HTTPS for every state change.
+- **File servers** (`docker-compose.agent.yml`, one stack per file-server host): the three lane workers `worker-analyze` / `worker-meta` / `worker-io` (agent-role SAQ workers) and `watcher` (watchdog-based file event poster). Holds the music/video library locally; reaches the app-server over HTTPS for every state change. *(The `audfprint` + `panako` fingerprint sidecars were removed 2026-07-28 by phaze-0jpe — ADR-0002.)*
 
 Locked invariants (Phase 29):
 
@@ -396,14 +400,14 @@ Deferred to a future ops phase: mTLS for the agent boundary, agent self-registra
 | copy-verify-delete protocol | Never direct move — SHA256 verification before deleting original | ✓ Good — safety for irreplaceable collection, preserved across the v4.0 HTTP boundary via per-operation PATCH |
 | State machine on FileRecord | Explicit state transitions (DISCOVERED→ANALYZED→PROPOSED→APPROVED→EXECUTED→MOVED/UNCHANGED/FAILED) | ✓ Good — enables pipeline dashboard stage counts |
 | mutagen for tag read/write | Zero-dependency, supports all major tag formats | ✓ Good — reliable across ID3/Vorbis/MP4/FLAC/OPUS |
-| audfprint + Panako hybrid | Complement each other: landmark-based vs tempo-robust | ✓ Good — weighted orchestrator with per-engine results |
+| audfprint + Panako hybrid | Complement each other: landmark-based vs tempo-robust | ⛔ **Superseded — removed 2026-07-28 (ADR-0002, phaze-0jpe).** Both engines, the orchestrator and the persisted results are deleted |
 | rapidfuzz for fuzzy matching | Fast token_set_ratio for tracklist-to-file matching | ✓ Good — weighted scoring with artist/event/date |
-| Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ✓ Good — persistent DBs, Docker Compose integration; now per-file-server in v4.0 |
+| Long-running fingerprint containers | HTTP API over subprocess calls for fingerprint services | ⛔ **Superseded — removed 2026-07-28 (ADR-0002, phaze-0jpe).** The sidecars are gone from `docker-compose.agent.yml`; the preserved `phaze_audfprint_data` volume is cleanup material (see `docs/runbook.md`) |
 | Distributed agents (v4.0) | Files stay on file servers; application server owns API, UI, Postgres, Redis | ✓ Good — v4.0 shipped end-to-end; two-host topology operational with strict HTTP-only boundary |
 | HTTP-only agent boundary (v4.0) | Agents have zero Postgres access; all writes go through `/api/internal/agent/*` | ✓ Good — `test_agent_worker_does_not_import_phaze_database` subprocess gate enforces the boundary at CI time |
 | One SAQ queue per agent (v4.0) | `phaze-agent-<id>` queue per file server; enqueuer picks queue by `FileRecord.agent_id` | ✓ Good — matches SAQ's native pull model, clean per-agent maintenance |
 | Per-agent bearer token auth (v4.0) | `agent_id` derived from token lookup on application server, never from request body | ✓ Good — partial-index `ix_agents_token_hash_active WHERE revoked_at IS NULL` gives O(1) lookup; revoke = instant block |
-| Per-agent fingerprint DB (v4.0) | Each file server runs its own audfprint+panako sidecars indexing only its files | ⚠️ Revisit — known v4.0 limitation; XAGENT-01 deferred. Operator banner mitigates UX surprise |
+| Per-agent fingerprint DB (v4.0) | Each file server ran its own audfprint+panako sidecars indexing only its files | ⛔ **Superseded — removed 2026-07-28 (ADR-0002, phaze-0jpe).** Not "revisit / XAGENT-01 deferred": there is no fingerprint DB left to make cross-agent. XAGENT-01 is mooted, and the operator banner is gone with the feature |
 | Self-signed internal CA (v4.0) | Generated in api container on first start; public cert distributed by operator via scp | ✓ Good — no DNS dependency, no public ACME, no rotation pain for single-user LAN |
 | Redis `requirepass` + LAN bind (v4.0) | App-server Redis is broker + cache; password + interface bind is the minimal credible hardening on a private LAN | ✓ Good — `AgentSettings` fail-fast in production prevents passwordless misconfig |
 | Group-by-agent execution dispatch (v4.0) | In-Python `defaultdict(list)` over SQL `GROUP BY` — at 1-5 agents × ≤10K proposals, type-safe path is cheaper than DB aggregation | ✓ Good — preserves write-ahead `ExecutionLog` audit over HTTP boundary via per-operation PATCH |
