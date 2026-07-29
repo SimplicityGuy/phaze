@@ -18,8 +18,8 @@ import uuid  # noqa: TC003
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, exists, select, tuple_, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
+from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
 
@@ -371,6 +371,24 @@ router = APIRouter(tags=["pipeline"])
 
 # Hold references to background enqueue tasks to prevent GC (same pattern as scan.py)
 _background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
+    """``AnalysisResult.file_id = ANY(:name)`` -- ONE Postgres array bind, never a bare ``.in_(file_ids)``.
+
+    phaze-r7j9: mirrors ``tasks/reenqueue.py::_fids_scope``, the repo's established idiom for this
+    exact problem. A bare ``.in_(file_ids)`` expands to one bind parameter per element, and asyncpg's
+    Bind message caps a statement at 32767 parameters -- this module's own docstrings cite ~44.5K-file
+    failure sets as the incident scale the bulk retry / cloud-backfill paths were hardened for, well
+    past that ceiling. Binding the whole id list as ONE ``uuid[]`` array parameter sidesteps the
+    ceiling regardless of list size, and is a single (cheaper) round trip besides.
+    """
+    return AnalysisResult.file_id == func.any(bindparam(name, value=file_ids, type_=ARRAY(PGUUID(as_uuid=True))))
+
+
+def _ledger_keys_scope(keys: list[str], name: str) -> Any:
+    """``SchedulingLedger.key = ANY(:name)`` -- the same array-bind idiom, string keys (phaze-r7j9)."""
+    return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
 
 
 async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> None:
@@ -1441,10 +1459,15 @@ async def trigger_backfill_cloud(
     # ``_route_discovered_by_duration`` flushes ALL THREE mutations atomically. Every backfill candidate
     # is long (the query filters ``duration >= threshold``) and cloud is enabled here, so the router
     # ALWAYS holds >=1 file and therefore ALWAYS commits -- the staged strips can never be left dangling.
+    # phaze-r7j9: both id/key lists below are array-bound as ONE Postgres array parameter
+    # (`_analysis_file_ids_scope` / `_ledger_keys_scope`) rather than a bare `.in_(...)`, which
+    # SQLAlchemy expands to one bind parameter per element and exceeds asyncpg's 32767-parameter
+    # cap on a large enough candidate set (same failure mode as `retry_analysis_failed`'s marker
+    # clear, lower reachability here since candidates are duration-gated).
     candidate_ids = [file.id for file, _ in candidates]
     if candidate_ids:
         await session.execute(
-            update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
+            update(AnalysisResult).where(_analysis_file_ids_scope(candidate_ids, "candidate_ids")).values(failed_at=None, error_message=None),
         )
         # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
         # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
@@ -1474,7 +1497,7 @@ async def trigger_backfill_cloud(
         # next backfill click. See the ADR for the full two-pool analysis.
         ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
         observed_ledger_rows = (
-            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(SchedulingLedger.key.in_(ledger_keys)))
+            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
             await session.execute(
@@ -1539,6 +1562,11 @@ async def retry_analysis_failed(
       above already moved every file off the red bucket, so a client/proxy timeout cancelling this
       HTTP request can no longer leave the tail of a large failed set with its marker cleared but
       no job ever enqueued.
+    - phaze-r7j9: the marker-clearing UPDATE binds the routed id list as ONE ``uuid[]`` array
+      parameter (:func:`_analysis_file_ids_scope`) instead of a bare ``.in_(...)``, which expands to
+      one bind parameter per id and exceeds asyncpg's 32767-parameter cap at the ~44.5K-file incident
+      scale this docstring cites -- that used to make the bulk retry itself deterministically 500 at
+      the exact scale it exists for.
     """
     files = await get_analysis_failed_files(session)
     if not files:
@@ -1576,8 +1604,14 @@ async def retry_analysis_failed(
     # `analysis_completed_at IS NULL` on a failed row). phaze-c9w9: cleared ONLY for the files that
     # actually route -- clearing a skipped (owner-offline) file's marker would drop it off the red
     # bucket with no job ever enqueued.
+    #
+    # phaze-r7j9: array-bind the whole routed id list as ONE `uuid[]` parameter
+    # (`_analysis_file_ids_scope`) rather than a bare `.in_(...)`, which SQLAlchemy expands to one
+    # bind parameter per id -- past asyncpg's 32767-parameter wire cap at the ~44.5K-file incident
+    # scale this handler is documented to be hardened for.
+    routed_file_ids = [f.id for f in routed_files]
     await session.execute(
-        update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in routed_files])).values(failed_at=None, error_message=None),
+        update(AnalysisResult).where(_analysis_file_ids_scope(routed_file_ids, "retry_ids")).values(failed_at=None, error_message=None),
     )
     await session.commit()
 
