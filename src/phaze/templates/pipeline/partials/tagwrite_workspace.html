@@ -19,18 +19,21 @@
    hx-disabled-elt so a second bulk write can't fire mid-run.
 
    Body = the pending tag-write queue (shell._render_stage -> tagwrite_files, via
-   services/review.get_tagwrite_review_rows). Pitfall 3: the queue shows ONLY EXECUTED files without a
+   services/review.get_tagwrite_review_page). Pitfall 3: the queue shows ONLY EXECUTED files without a
    COMPLETED TagWriteLog -- an empty queue while files still await a move is CORRECT, not a bug. Rows are
    inert-but-present (R-1); every DB-sourced tag value autoescapes through _diff_row.html (T-60-XSS --
    never raw). NO second poll (R-2); the live sub-count would ride the single chrome poll's OOB seeds.
 #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
-{% set subcount = "'" ~ (tagwrite_files | length) ~ " awaiting approval · mutagen will write these tags'" %}
+{# phaze-bto9: a capped scan renders a bounded PREFIX of the queue, so the count is a floor, not a
+   total -- say "N+" rather than printing a number that understates the backlog. #}
+{% set _tagwrite_count = (tagwrite_files | length) ~ ("+" if tagwrite_partial|default(false) else "") %}
+{% set subcount = "'" ~ _tagwrite_count ~ " awaiting approval · the file server writes these tags'" %}
 {% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
 {% set actions %}
     <button type="button"
             hx-post="/tags/bulk-write-no-discrepancies" hx-target="#tagwrite-trigger-response" hx-swap="innerHTML"
-            hx-confirm="Approve all pending tag-writes with no discrepancies? The server re-checks at submit — {{ tagwrite_files | length }} match now. Reversible via undo."
+            hx-confirm="Approve all pending tag-writes with no discrepancies? The server re-checks at submit — {{ _tagwrite_count }} match now. Reversible via undo."
             hx-disabled-elt="this"
             aria-label="Approve all pending tag-writes with no discrepancies"
             class="{{ _bulk_btn }}">APPROVE ALL WITH NO DISCREPANCIES</button>

@@ -107,7 +107,10 @@ def test_lane_tasks_totality_union_equals_agent_tasks() -> None:
     """The union of the lane frozensets EXACTLY equals AGENT_TASKS (no orphan)."""
     union = frozenset().union(*LANE_TASKS.values())
     assert union == AGENT_TASKS
-    assert len(AGENT_TASKS) == 6  # the six file-touching agent tasks
+    # phaze-6bkk added three more file-touching agent tasks to the meta lane (write_file_tags,
+    # write_cue_sheet, read_companion_files) -- the archive I/O the fileless api/controller used to
+    # attempt in-process against a mount they do not have.
+    assert len(AGENT_TASKS) == 9
 
 
 def test_lane_tasks_no_task_in_two_lanes() -> None:

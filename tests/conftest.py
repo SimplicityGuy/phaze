@@ -24,6 +24,7 @@ from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from tests._queue_fakes import install_fake_queues
 from tests.db_guard import coerce_async_dsn, database_name, resolve_test_dsn
 
 
@@ -342,10 +343,20 @@ async def verify(session: AsyncSession, _db_connection: AsyncConnection) -> Asyn
 
 @pytest_asyncio.fixture
 async def client(session) -> AsyncGenerator[AsyncClient]:  # type: ignore[no-untyped-def]
-    """Yield an async HTTP test client with database session override."""
+    """Yield an async HTTP test client with database session override.
+
+    phaze-6bkk: ``app.state.controller_queue`` / ``app.state.task_router`` are wired to the shared
+    fakes by default. The real lifespan (which builds them) never runs under ASGITransport, and
+    since DIST-01 forced the archive-touching routes (/tags write+undo, /cue generate) to become
+    PRODUCERS rather than doing their own disk I/O, an unwired ``app.state`` turns every one of
+    them into an ``AttributeError``. Tests that want to assert on the enqueues still call
+    ``install_fake_queues`` / ``wire_fakes`` themselves to get a handle -- both simply replace
+    these, so the default is invisible to them.
+    """
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        install_fake_queues(ac)
         yield ac
 
 

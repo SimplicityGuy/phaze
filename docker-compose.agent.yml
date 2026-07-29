@@ -14,7 +14,8 @@
 # concurrency). This stops I/O offload + cheap analysis being head-of-line-blocked
 # behind CPU-bound essentia backlog:
 #   worker-analyze      — process_file (in-process essentia; CPU-bound). Heartbeat lives HERE.
-#   worker-meta         — extract_file_metadata / scan_directory / execute_approved_batch (light).
+#   worker-meta         — extract_file_metadata / scan_directory / execute_approved_batch,
+#                         plus (phaze-6bkk) write_file_tags / write_cue_sheet / read_companion_files.
 #   worker-io           — s3_upload / push_file (network-bound; off the CPU budget).
 #   worker-drain        — OFF by default (profiles: ["drain"]): transitional all-mode consumer of
 #                         the LEGACY un-suffixed `phaze-agent-nox` queue for the migration window.
@@ -31,12 +32,22 @@
 # were busy. The control plane keeps max(last_seen) and a per-lane depth breakdown.
 # worker-drain stays false: it is unlaned (all-mode), so its beat carries no lane tag.
 #
+# Media-mount access (phaze-6bkk, cross-ref phaze-mwvt / phaze-au0r). SCAN_PATH is mounted rw ONLY
+# where the archive is actually mutated -- the meta lane, and the all-mode drain worker that also
+# registers the meta functions. analyze / io / watcher stay READ-ONLY: essentia analysis, rsync/S3
+# upload and the directory watcher only ever read, so least-privilege keeps a bug in any of them
+# from touching the archive. The meta lane's rw requirement is not new with this bead --
+# execute_approved_batch (the move stage) has always needed it, and phaze-mwvt / phaze-au0r track
+# that every approved move failed EROFS against the previous ro mount -- but phaze-6bkk makes it
+# load-bearing for two further surfaces (tag write and CUE generation), so it is fixed here.
+#
 # Invariants (asserted by tests/agents/deployment/test_agent_compose.py):
 #   - No DATABASE_URL on any service (DIST-04: agents reach Postgres only via
 #     the application server's HTTP API).
 #   - No postgres or redis service here (agents connect to the app-server's).
 #   - ${SCAN_PATH:?SCAN_PATH required} fail-fast on ALL services — docker compose up
 #     errors at parse time on a misconfigured host (WARNING-2/-3).
+#   - SCAN_PATH is rw on the meta + drain workers and ro everywhere else (phaze-6bkk).
 #   - MODELS_PATH bind mount is rw on every worker + watcher (D-21 auto-download).
 #   - CA_PATH bind mount is ro everywhere (operator-distributed CA cert).
 #
@@ -79,7 +90,10 @@ services:
       - PHAZE_LANE_META_CONCURRENCY=${PHAZE_LANE_META_CONCURRENCY:-2}
       - PHAZE_AGENT_HEARTBEAT=true
     volumes:
-      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      # rw, NOT ro (phaze-6bkk; see the header note). Every meta-lane task that mutates the archive
+      # lives behind this mount: execute_approved_batch (move/rename), write_file_tags (mutagen
+      # save), write_cue_sheet (CUE write). A :ro mount here fails all three with EROFS.
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:rw"
       - "${MODELS_PATH:-./models}:/models:rw"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
@@ -123,7 +137,10 @@ services:
       - TF_NUM_INTRAOP_THREADS=1
       - TF_NUM_INTEROP_THREADS=1
     volumes:
-      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
+      # rw for the same reason as worker-meta: all-mode registers EVERY function, including the
+      # three archive-mutating meta-lane tasks, so a :ro mount here silently fails legacy-queue
+      # drain jobs that a lane worker would have completed.
+      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:rw"
       - "${MODELS_PATH:-./models}:/models:rw"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped

@@ -59,6 +59,8 @@ from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
+from phaze.tasks.companion_read import read_companion_files
+from phaze.tasks.cue_write import write_cue_sheet
 from phaze.tasks.execution import execute_approved_batch
 from phaze.tasks.functions import process_file
 from phaze.tasks.heartbeat import _heartbeat_loop
@@ -66,6 +68,7 @@ from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
 from phaze.tasks.scan import scan_directory
+from phaze.tasks.tag_write import write_file_tags
 
 
 logger = structlog.get_logger(__name__)
@@ -300,6 +303,11 @@ _FUNCTIONS_BY_NAME: dict[str, Any] = {
     "extract_file_metadata": extract_file_metadata,
     "scan_directory": scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
     "execute_approved_batch": execute_approved_batch,
+    # phaze-6bkk (DIST-01): archive-touching work moved off the fileless api/controller onto the
+    # agent that actually mounts the media. MUST mirror LANE_TASKS["meta"] in enqueue_router.py.
+    "write_file_tags": write_file_tags,
+    "write_cue_sheet": write_cue_sheet,
+    "read_companion_files": read_companion_files,
     "push_file": push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
     # Phase 53: fileserver httpx multipart-PUT upload to presigned S3 URLs. Registered under the
     # explicit SAQ name "s3_upload" (a (name, func) tuple) so the control-plane producer enqueues
@@ -312,6 +320,9 @@ _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "extract_file_metadata",
     "scan_directory",
     "execute_approved_batch",
+    "write_file_tags",
+    "write_cue_sheet",
+    "read_companion_files",
     "push_file",
     "s3_upload",
 )

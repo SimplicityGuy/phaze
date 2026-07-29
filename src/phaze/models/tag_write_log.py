@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[] annotations at runtime
-import enum
 from typing import TYPE_CHECKING
 import uuid
 
@@ -11,6 +10,7 @@ from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from phaze.enums.tag_write import TagWriteStatus
 from phaze.models.base import Base, TimestampMixin
 
 
@@ -18,27 +18,11 @@ if TYPE_CHECKING:
     from phaze.models.file import FileRecord
 
 
-class TagWriteStatus(enum.StrEnum):
-    """Status of a tag write operation."""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    DISCREPANCY = "discrepancy"
-    # phaze-vq3g: the on-disk write SUCCEEDED but the immediate verify re-read failed (transient
-    # I/O / mutagen re-parse error). Distinct from DISCREPANCY (write landed the WRONG values) and
-    # from FAILED (the write itself never landed): here the file is correctly tagged but could not
-    # be confirmed, so it must NOT be audited as an all-field ``actual=None`` discrepancy. Like
-    # FAILED/DISCREPANCY it is intentionally NON-terminal, so the file resurfaces and a later submit
-    # re-verifies and self-heals to COMPLETED once the transient condition clears. ``status`` is a
-    # plain ``String(20)`` (no PG enum / CHECK), so adding this value needs no migration.
-    VERIFY_FAILED = "verify_failed"
-    # WR-01: a terminal marker for an applied file whose server-computed proposal has ZERO changes
-    # (nothing to write). It is NOT an audio write -- it records that the file was inspected and
-    # needs no tag write, so the idempotency anti-join (``completed``/terminal subquery) EVICTS it
-    # from the candidate window and it can never re-occupy the alphabetically-first ``.limit()``
-    # slots and starve qualifying files. The ``status`` column is a ``String(20)`` (no PG enum /
-    # CHECK constraint), so adding this value needs no migration.
-    NO_OP = "no_op"
+# phaze-6bkk: the enum moved to the DB-free ``phaze.enums.tag_write`` so the agent-side
+# ``write_file_tags`` task and the ``schemas.agent_tag_writes`` wire contract can name the same
+# statuses without importing SQLAlchemy (the D-25 agent import boundary). Re-exported here so every
+# existing ``from phaze.models.tag_write_log import TagWriteStatus`` import keeps working.
+__all__ = ["TagWriteLog", "TagWriteStatus"]
 
 
 class TagWriteLog(TimestampMixin, Base):

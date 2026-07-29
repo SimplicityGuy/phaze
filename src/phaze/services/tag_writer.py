@@ -1,283 +1,206 @@
-"""Tag writer service - format-aware tag writing with verify-after-write.
+"""Tag writer service -- the CONTROL-PLANE half: audit row + dispatch to the owning agent.
 
-Writes tags to MP3 (ID3), OGG/FLAC/OPUS (Vorbis), and M4A (MP4) files
-using mutagen. Verifies written tags by re-reading and comparing with
-NFC Unicode normalization. Creates TagWriteLog audit entries.
+phaze-6bkk (DIST-01). This module used to do the mutagen write itself, inside the api process,
+against ``FileRecord.current_path``. That path is the FILE SERVER's absolute archive path, and the
+``api`` container mounts no media at all ("api + worker have NO music/model/output file mounts",
+docker-compose.yml) -- so every tag write, undo, and bulk submit in the documented production
+topology failed with ``[Errno 2] No such file or directory`` and rendered a toast blaming file
+permissions. Two shipped operator-facing surfaces were 100% non-functional.
+
+The write now runs where the file is. :func:`enqueue_tag_write` creates the ``TagWriteLog`` audit
+row in the ``queued`` state and enqueues ``write_file_tags`` onto the owning agent's ``meta`` lane
+via ``AgentTaskRouter.enqueue_for_file`` -- the same shape ``execute_approved_batch`` already uses
+for the move stage. The agent runs :mod:`phaze.services.tag_write_disk` against its mount and
+PATCHes the terminal status back through ``/api/internal/agent/tag-writes/{log_id}``.
+
+The pure on-disk helpers (``write_tags`` / ``verify_write`` / ``_extract_before_tags`` /
+``write_and_verify_sync``) moved to :mod:`phaze.services.tag_write_disk`, which is import-safe for
+the agent worker (D-25). They are re-exported here so existing importers are unchanged; call sites
+that actually perform I/O must import from the disk module so it is obvious which process they run
+in.
 """
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING, Any
-import unicodedata
+from typing import TYPE_CHECKING, Protocol
+import uuid
 
-import mutagen
-from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
-from mutagen.mp4 import MP4
+from sqlalchemy import func, select
 import structlog
 
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
-from phaze.services.metadata import TagReadError, extract_tags
+from phaze.schemas.agent_tasks import WriteFileTagsPayload
 from phaze.services.stage_status import is_applied
+
+# Re-exported for back-compat: the disk-side helpers now live in the agent-importable module.
+from phaze.services.tag_write_disk import (  # noqa: F401  -- re-export
+    _CORE_TAG_FIELDS,
+    _extract_before_tags,
+    _write_id3,
+    _write_mp4,
+    _write_vorbis,
+    verify_write,
+    write_and_verify_sync,
+    write_tags,
+)
 
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from phaze.models.file import FileRecord
+    from phaze.services.agent_task_router import AgentTaskRouter
 
 logger = structlog.get_logger(__name__)
 
-# Write maps: field name -> format-specific key/class
-_WRITE_ID3_MAP: dict[str, type] = {
-    "artist": TPE1,
-    "title": TIT2,
-    "album": TALB,
-    "year": TDRC,
-    "genre": TCON,
-    "track_number": TRCK,
-}
 
-_WRITE_VORBIS_MAP: dict[str, str] = {
-    "artist": "artist",
-    "title": "title",
-    "album": "album",
-    "year": "date",
-    "genre": "genre",
-    "track_number": "tracknumber",
-}
-
-_WRITE_MP4_MAP: dict[str, str] = {
-    "artist": "\xa9ART",
-    "title": "\xa9nam",
-    "album": "\xa9alb",
-    "year": "\xa9day",
-    "genre": "\xa9gen",
-    "track_number": "trkn",
-}
-
-# phaze-52qd: the full set of core tag fields a write/undo snapshot must span. ``_extract_before_tags``
-# records EVERY one of these -- ``None`` where the field is absent on disk -- so an undo can DELETE a
-# frame the write added, not merely leave it.
-_CORE_TAG_FIELDS: tuple[str, ...] = ("artist", "title", "album", "year", "genre", "track_number")
+class TagWriteDispatchError(RuntimeError):
+    """The tag write could not be handed to the owning agent (broker/enqueue failure)."""
 
 
-def write_tags(file_path: str, tags: dict[str, str | int | None]) -> None:
-    """Write tags to an audio file using format-aware mutagen methods.
+class TagWriteAlreadyQueuedError(RuntimeError):
+    """A tag write is already ``queued`` for this file -- refuse a second concurrent dispatch.
 
-    Supports ID3 (MP3), Vorbis (OGG/FLAC/OPUS), and MP4 (M4A) formats.
-
-    Args:
-        file_path: Path to the audio file.
-        tags: Dict of field names to values. A ``None`` value DELETES the corresponding
-            frame/atom/comment (phaze-52qd: this is how an undo removes a tag a prior write
-            added). A field that is simply absent from the dict is left untouched.
-
-    Raises:
-        ValueError: If the file is not a recognized audio format.
+    phaze-lwqk: a per-file mutual-exclusion lock inside the mutagen write is no longer possible --
+    phaze-6bkk moved the disk write onto the agent, and DIST-04 gives the agent NO database access
+    at all, so there is nowhere agent-side to take a DB lock. The guard moves control-side instead,
+    to the one place both a double-click and a per-file write racing the bulk loop's dispatch of the
+    SAME file must still pass through: deciding whether to create a new ``queued`` row. Without it,
+    two ``write_file_tags`` jobs for the same file could run concurrently on the agent -- two
+    mutagen full-file rewrites racing each other, a real corruption risk for an irreplaceable
+    archive file.
     """
-    audio = mutagen.File(file_path)
-    if audio is None:
-        msg = f"{file_path} is not a recognized audio file"
-        raise ValueError(msg)
-
-    # Ensure tags container exists
-    if audio.tags is None:
-        audio.add_tags()
-
-    if isinstance(audio.tags, ID3):
-        _write_id3(audio, tags)
-    elif isinstance(audio, MP4):
-        _write_mp4(audio, tags)
-    else:
-        _write_vorbis(audio, tags)
-
-    audio.save()
 
 
-def _write_id3(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write ID3 frames to an MP3 file. A ``None`` value DELETES the frame (phaze-52qd)."""
-    for field, value in tags.items():
-        frame_cls = _WRITE_ID3_MAP.get(field)
-        if frame_cls is None:
-            continue
-        if value is None:
-            audio.tags.delall(frame_cls.__name__)
-        else:
-            audio.tags.add(frame_cls(encoding=3, text=[str(value)]))
+class TagWriteTarget(Protocol):
+    """Structural subset of ``FileRecord`` :func:`enqueue_tag_write` actually touches.
 
-
-def _write_vorbis(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write Vorbis comments to an OGG/FLAC/OPUS file. A ``None`` value DELETES the key (phaze-52qd)."""
-    for field, value in tags.items():
-        vorbis_key = _WRITE_VORBIS_MAP.get(field)
-        if vorbis_key is None:
-            continue
-        if value is None:
-            if vorbis_key in audio:
-                del audio[vorbis_key]
-        else:
-            audio[vorbis_key] = [str(value)]
-
-
-def _write_mp4(audio: Any, tags: dict[str, str | int | None]) -> None:
-    """Write MP4 atoms to an M4A file. A ``None`` value DELETES the atom (phaze-52qd)."""
-    for field, value in tags.items():
-        mp4_key = _WRITE_MP4_MAP.get(field)
-        if mp4_key is None:
-            continue
-        if value is None:
-            if mp4_key in audio:
-                del audio[mp4_key]
-        elif field == "track_number":
-            audio[mp4_key] = [(int(value), 0)]
-        else:
-            audio[mp4_key] = [str(value)]
-
-
-def verify_write(file_path: str, expected: dict[str, str | int | None]) -> dict[str, dict[str, str | None]]:
-    """Verify written tags by re-reading and comparing with NFC normalization.
-
-    Args:
-        file_path: Path to the audio file to verify.
-        expected: Dict of expected field values.
-
-    Returns:
-        Dict of discrepancies: {field: {"expected": exp, "actual": act}}.
-        Empty dict means perfect write.
-
-    Raises:
-        TagReadError: If the just-written file cannot be re-read/parsed (phaze-vq3g). This is a
-            VERIFY failure, NOT a discrepancy -- the re-read is done in ``strict`` mode so a
-            transient I/O/parse error surfaces as an exception the caller records distinctly,
-            instead of an all-field ``actual=None`` false discrepancy. A file that opens cleanly
-            but has no tags still returns a normal (all-field) discrepancy dict.
-
-    Note (phaze-52qd): an ``expected`` value of ``None`` means the field should have been
-    DELETED (an undo removing a tag a prior write added). Such a field is a discrepancy iff
-    it is still present on disk -- verifying deletions, not skipping them.
+    phaze-o2ln: the bulk tag-write loop stopped passing live ``FileRecord`` ORM instances across a
+    per-file ``session.rollback()`` (which expires every attribute of every object still in the
+    identity map, not just the one that failed) and now passes a plain, non-ORM snapshot instead
+    (``routers.tags._BulkCandidate``). This Protocol is the minimal surface both a real
+    ``FileRecord`` and that snapshot satisfy, so this function works unchanged for either caller --
+    including ``.agent_id``, which ``enqueue_for_file``/``WriteFileTagsPayload`` route on.
     """
-    actual_tags = extract_tags(file_path, strict=True)
-    discrepancies: dict[str, dict[str, str | None]] = {}
 
-    for field, expected_val in expected.items():
-        actual_val = getattr(actual_tags, field, None)
+    @property
+    def id(self) -> uuid.UUID: ...
 
-        if expected_val is None:
-            # The field was meant to be absent (a deletion). It is a discrepancy only if a
-            # value survives on disk.
-            if actual_val is not None:
-                discrepancies[field] = {
-                    "expected": None,
-                    "actual": unicodedata.normalize("NFC", str(actual_val)),
-                }
-            continue
+    @property
+    def agent_id(self) -> str: ...
 
-        expected_norm = unicodedata.normalize("NFC", str(expected_val))
-        actual_norm = unicodedata.normalize("NFC", str(actual_val)) if actual_val is not None else None
-
-        if expected_norm != actual_norm:
-            discrepancies[field] = {
-                "expected": expected_norm,
-                "actual": actual_norm,
-            }
-
-    return discrepancies
+    @property
+    def current_path(self) -> str: ...
 
 
-def _extract_before_tags(file_path: str) -> dict[str, str | int | None]:
-    """Extract current tags as a COMPLETE before/undo snapshot.
-
-    phaze-52qd: records EVERY core field, mapping an absent tag to an explicit ``None`` rather
-    than omitting the key. Re-applying this snapshot through :func:`write_tags` therefore DELETES
-    any frame the write added to a previously-untagged file (``None`` -> delete), instead of
-    silently leaving it -- which is what made undo a no-op in the product's dominant "add tags to
-    an untagged file" scenario.
-    """
-    tags = extract_tags(file_path)
-    return {field: getattr(tags, field, None) for field in _CORE_TAG_FIELDS}
-
-
-def _write_and_verify_sync(
-    file_path: str,
-    proposed_tags: dict[str, str | int | None],
-) -> tuple[str, dict[str, dict[str, str | None]] | None, str | None, dict[str, str | int | None]]:
-    """Synchronous disk work for one tag write: read-before, write, verify (phaze-qfxv).
-
-    Bundled into a single function so the ENTIRE blocking sequence -- ``_extract_before_tags``
-    (full read), ``write_tags`` (mutagen ``audio.save()``, which rewrites the whole file when the
-    tag area must grow), and ``verify_write`` (another full read) -- runs in exactly one
-    ``asyncio.to_thread`` offload from :func:`execute_tag_write`, instead of blocking the event
-    loop directly. The bulk caller (``bulk_write_no_discrepancies``) loops this up to
-    ``_MAX_BULK_TAG_WRITE`` (2000) times with no other await in between, so any synchronous slice
-    of this work left on the loop freezes every SSE stream, poll, and concurrent request for the
-    whole batch's duration -- an NFS stall inside one ``audio.save()`` would wedge the API
-    indefinitely.
-
-    Returns ``(status, discrepancies, error_message, before_tags)`` -- the four fields
-    ``execute_tag_write`` persists onto ``TagWriteLog``. ``before_tags`` is captured and returned
-    on EVERY path (including a failure in ``write_tags``/``verify_write`` after a successful
-    read) so the audit log's before/undo snapshot is preserved exactly as it was when this logic
-    ran inline on the event loop.
-    """
-    before_tags: dict[str, str | int | None] = {}
-    try:
-        before_tags = _extract_before_tags(file_path)
-        write_tags(file_path, proposed_tags)
-        discrepancies = verify_write(file_path, proposed_tags)
-        status = TagWriteStatus.DISCREPANCY if discrepancies else TagWriteStatus.COMPLETED
-        return status, discrepancies, None, before_tags
-    except TagReadError as exc:
-        # phaze-vq3g: the disk write LANDED but the verify re-read failed. Record a distinct
-        # VERIFY_FAILED status with an explanatory message instead of synthesizing an all-field
-        # ``actual=None`` DISCREPANCY that misrepresents a correctly-tagged file as written-wrong.
-        # ``discrepancies`` stays None so no false per-field mismatch is persisted.
-        return TagWriteStatus.VERIFY_FAILED, None, f"verify failed: {exc}", before_tags
-    except Exception as exc:
-        return TagWriteStatus.FAILED, None, str(exc), before_tags
-
-
-async def execute_tag_write(
+async def enqueue_tag_write(
     session: AsyncSession,
-    file_record: FileRecord,
+    task_router: AgentTaskRouter,
+    file_record: TagWriteTarget,
     proposed_tags: dict[str, str | int | None],
     source: str,
 ) -> TagWriteLog:
-    """Orchestrate a tag write: read before, write, verify, create audit log.
+    """Create the audit row and dispatch the write to the file's OWNING agent.
 
     Args:
         session: Async database session.
-        file_record: The FileRecord to write tags to (must be applied -- an executed proposal exists).
+        task_router: ``app.state.task_router`` -- the per-agent, per-lane SAQ enqueuer.
+        file_record: The file to write tags to (must be applied -- an executed proposal exists). A
+            live ``FileRecord`` or any :class:`TagWriteTarget`-shaped snapshot (phaze-o2ln).
         proposed_tags: Dict of proposed tag values.
-        source: Source of the proposal ("tracklist", "metadata", "manual_edit").
+        source: Source of the proposal ("tracklist", "metadata", "manual_edit", "undo", ...).
 
     Returns:
-        The created TagWriteLog entry.
+        The created ``TagWriteLog`` entry: ``queued`` when the job was handed to the agent,
+        ``failed`` (with ``error_message``) when the enqueue itself could not be completed.
 
     Raises:
         ValueError: If the file is not applied (no executed proposal -- READ-05 / D-01).
+        TagWriteAlreadyQueuedError: If this file already has an unresolved ``queued`` row
+            (phaze-lwqk) -- refuses the second concurrent dispatch rather than racing two
+            ``write_file_tags`` jobs against the same file on the agent.
+
+    ``queued`` is intentionally NOT in ``_TERMINAL_TAGWRITE_STATUSES``: a dispatched-but-unreported
+    write must keep its file in the tag-write candidate window, so an agent that never reports
+    leaves a visibly-stuck row rather than silently evicting the file forever.
+
+    Routing goes to ``file_record.agent_id`` -- the agent that reported the file -- never to
+    "some live agent" (phaze-c9w9): ``current_path`` only means anything on the mount it came from,
+    and the composite ``(agent_id, original_path)`` key explicitly models the same path existing
+    under two different agents as two different files.
     """
     if not await is_applied(session, file_record.id):
         msg = "Only executed files can have tags written"
         raise ValueError(msg)
 
-    file_path = file_record.current_path
+    # phaze-lwqk: serialize the enqueue DECISION for THIS file -- see TagWriteAlreadyQueuedError's
+    # docstring for why the guard lives here rather than around the (now agent-side) disk write.
+    # xact-scoped: this function commits once, immediately after the check+insert below, so the
+    # lock's lifetime matches exactly the transaction that decides whether a new row gets created --
+    # a concurrent caller either blocks until that commit and then correctly sees the row (refused),
+    # or got here first and refuses THIS caller instead. Matches the xact-lock convention used
+    # everywhere else in the tree (e.g. routers/agent_push.py:325).
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"tagwrite:{file_record.id}"))))
 
-    # phaze-qfxv: the entire disk-touching sequence (read-before, mutagen save, verify re-read) runs
-    # off the event loop in a worker thread. Without this, a bulk submit loops this up to 2000 times
-    # inline on the API event loop with no yield between the blocking calls of one file, freezing
-    # every SSE stream, 5s poll, /health check, and agent callback for the whole batch.
-    status, discrepancies, error_message, before_tags = await asyncio.to_thread(_write_and_verify_sync, file_path, proposed_tags)
+    already_queued = await session.execute(
+        select(func.count()).select_from(TagWriteLog).where(TagWriteLog.file_id == file_record.id, TagWriteLog.status == TagWriteStatus.QUEUED.value)
+    )
+    if already_queued.scalar():
+        msg = f"a tag write is already queued for file {file_record.id}"
+        raise TagWriteAlreadyQueuedError(msg)
 
     log_entry = TagWriteLog(
+        id=uuid.uuid4(),
         file_id=file_record.id,
-        before_tags=before_tags,
+        # The pre-write on-disk snapshot can only be read where the file is, so it arrives with the
+        # agent's result callback. Empty until then -- never a lie about what was on disk.
+        before_tags={},
         after_tags=proposed_tags,
         source=source,
-        status=status,
-        discrepancies=discrepancies if discrepancies else None,
-        error_message=error_message,
+        status=TagWriteStatus.QUEUED.value,
+        discrepancies=None,
+        error_message=None,
     )
     session.add(log_entry)
     await session.flush()
+    # phaze-ysnp: commit the QUEUED row NOW -- durably, before the dispatch below, not merely
+    # flushed. enqueue_for_file hands the job to a REAL external system (the agent's SAQ queue, a
+    # separate Postgres connection/transaction from `session`), which can pick the job up and start
+    # running before this transaction would otherwise have committed. Without this commit, a crash
+    # (or simply a caller that never reaches its own commit) between here and there strands an
+    # already-dispatched job with NO row for the agent's callback to PATCH: exactly the "audit row
+    # lost while the mutation stands" failure phaze-ysnp closed for the pre-phaze-6bkk single-process
+    # write, now recurring one hop later at the enqueue boundary instead of the disk-write boundary.
+    await session.commit()
+
+    try:
+        # phaze-o2ln: ``enqueue_for_agent`` directly, not the ``FileRecord``-typed
+        # ``enqueue_for_file`` convenience wrapper -- it only ever does
+        # ``enqueue_for_agent(agent_id=file_record.agent_id, ...)`` internally, and calling it
+        # directly here lets ``file_record`` stay :class:`TagWriteTarget`-typed (a live
+        # ``FileRecord`` OR the bulk loop's plain snapshot) instead of narrowing back to a
+        # nominal ``FileRecord``.
+        await task_router.enqueue_for_agent(
+            agent_id=file_record.agent_id,
+            task_name="write_file_tags",
+            payload=WriteFileTagsPayload(
+                log_id=log_entry.id,
+                file_id=file_record.id,
+                agent_id=file_record.agent_id,
+                file_path=file_record.current_path,
+                tags=proposed_tags,
+            ),
+        )
+    except Exception as exc:
+        # The audit row already exists (and is durable -- see above); downgrade it to FAILED in
+        # place rather than leaving a ``queued`` row no agent will ever answer for. FAILED is
+        # non-terminal, so the file stays in the queue and the operator can retry once the broker is
+        # healthy.
+        logger.warning("tag write enqueue failed", file_id=str(file_record.id), agent_id=file_record.agent_id, exc_info=True)
+        log_entry.status = TagWriteStatus.FAILED.value
+        log_entry.error_message = f"could not dispatch the tag write to agent {file_record.agent_id!r}: {exc}"
+        await session.flush()
+        await session.commit()
+        return log_entry
+
+    logger.info("tag write queued", file_id=str(file_record.id), log_id=str(log_entry.id), agent_id=file_record.agent_id, source=source)
     return log_entry

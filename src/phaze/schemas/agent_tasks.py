@@ -189,6 +189,76 @@ class ExecuteBatchProposalItem(BaseModel):
     sha256_hash: str | None = None  # optional pre-copy integrity check
 
 
+class WriteFileTagsPayload(BaseModel):
+    """SAQ job: mutagen tag write + verify for ONE applied file, on the owning agent (phaze-6bkk).
+
+    Deliberately carries ``file_path`` -- the post-execution ``FileRecord.current_path`` -- which
+    the D-24 "no current_path in task payloads" convention normally forbids. The exception is
+    explicit and narrow: a tag write is only ever offered for an APPLIED file (an executed
+    proposal exists), so the file has already been moved and ``original_path`` no longer names
+    anything on disk. ``current_path`` is exactly the state D-24 describes as "only meaningful
+    AFTER execute_approved_batch flips state" -- which is precisely the state this task requires.
+
+    ``log_id`` is the pre-minted ``TagWriteLog.id`` the control plane created in the ``queued``
+    state. It makes the agent's result callback retry-stable: a SAQ retry PATCHes the SAME audit
+    row instead of appending a duplicate (the ``execution_log_id`` discipline from Phase 28 D-15).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    log_id: uuid.UUID
+    file_id: uuid.UUID
+    agent_id: str
+    file_path: str
+    # Values may be str / int / None -- ``None`` DELETES the frame (phaze-52qd undo semantics).
+    tags: dict[str, str | int | None]
+
+
+class WriteCueSheetPayload(BaseModel):
+    """SAQ job: write a fully-rendered CUE sheet next to its audio file, on the owning agent (phaze-6bkk).
+
+    The CUE TEXT is generated on the control plane (``services.cue_generator.generate_cue_content``
+    is pure string work over rows the api already has) and shipped whole, so the agent needs no DB
+    access -- it only picks the next unused ``.cue`` / ``.vN.cue`` filename beside ``audio_path``
+    and writes the bytes. Same ``current_path`` exception as
+    :class:`WriteFileTagsPayload`: CUE generation is gated on the file being applied.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: uuid.UUID
+    tracklist_id: uuid.UUID
+    agent_id: str
+    audio_path: str
+    content: str
+
+
+class CompanionReadItem(BaseModel):
+    """One companion sidecar to read: its display filename and its on-agent path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    path: str
+
+
+class ReadCompanionFilesPayload(BaseModel):
+    """SAQ job: bounded read of a media file's companion sidecars, on the owning agent (phaze-6bkk).
+
+    Unlike every other agent task this one is REQUEST/RESPONSE -- ``services.proposal`` awaits its
+    result via ``saq.Queue.apply`` rather than getting a callback. The controller worker is fileless
+    under DIST-01, so the ``.nfo`` / ``.txt`` / ``.m3u`` context an LLM proposal wants can only be
+    read where the mount is. Paths are agent-supplied strings; the agent re-runs the symlink-safe
+    containment check against ITS OWN configured scan roots before opening anything.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    companions: list[CompanionReadItem] = Field(min_length=1, max_length=200)
+    max_chars: int = Field(gt=0, le=1_000_000)
+
+
 class ExecuteApprovedBatchPayload(BaseModel):
     """SAQ job: per-agent sub-batch of an approved-proposal execution dispatch.
 

@@ -15,11 +15,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
-from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.services.containment import resolve_and_check_containment
+from phaze.schemas.agent_tasks import CompanionReadItem, ReadCompanionFilesPayload
+from phaze.services.enqueue_router import lane_for_task
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.text_repair import repair_mojibake
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from phaze.models.analysis import AnalysisResult
     from phaze.models.metadata import FileMetadata
+    from phaze.services.agent_task_router import AgentTaskRouter
 
 
 logger = structlog.get_logger(__name__)
@@ -36,10 +37,19 @@ logger = structlog.get_logger(__name__)
 # Module constant: max chars for companion file content sent to LLM
 MAX_COMPANION_CHARS = 3000
 
-# phaze-cycw: margin multiplier over max_chars for the bounded companion read below -- headroom
-# for clean_companion_content's ASCII-art-line stripping (which runs BEFORE truncation) to still
-# leave >= max_chars of real content after stripping, without ever reading the whole file.
-_COMPANION_READ_CHAR_MARGIN = 4
+# phaze-6bkk: the bounded-read helper and its margin constant moved to services/companion_read.py
+# (stdlib-only, agent-importable) because the read itself now happens on the AGENT. Re-imported
+# above under their original private names so any existing importer is unchanged.
+
+# How long the controller waits for an agent to return companion text before giving up and
+# proposing without it. Companion sidecars are a few KB; the budget is dominated by lane queueing,
+# not by the read. Bounded on purpose: companion context is an ENRICHMENT, and generate_proposals
+# must never wedge a whole proposal batch behind one unresponsive file server.
+_COMPANION_READ_TIMEOUT_S = 30.0
+
+# Matches ReadCompanionFilesPayload.companions' max_length wire bound, so a media file with an
+# unusual number of sidecars is chunked rather than 422'd.
+_COMPANION_CHUNK = 200
 
 # Path to the prompts directory (sibling of services/)
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
@@ -434,102 +444,85 @@ async def store_proposals(
 # ---------------------------------------------------------------------------
 
 
-def _read_companion_bounded_sync(path: str, max_chars: int) -> str:
-    """Synchronous BOUNDED read of one companion file (phaze-cycw).
-
-    Reads at most ``max_chars * _COMPANION_READ_CHAR_MARGIN`` DECODED characters -- not the whole
-    file -- via a text-mode file object, so ``TextIOWrapper.read(n)`` only pulls as many bytes off
-    disk as needed to decode ``n`` characters instead of ``Path.read_text()``'s unconditional
-    whole-file slurp. The margin (not a bare ``max_chars`` cap) leaves ``clean_companion_content``
-    (which strips ASCII-art lines BEFORE truncating) enough headroom to still land >= ``max_chars``
-    of real content after stripping. Only ~3000 chars are ever kept, so peak memory for even a
-    multi-hundred-MB mis-categorized companion (a big log, an oversized .nfo, or an image matched by
-    a COMPANION extension) is now a small, fixed multiple of ``max_chars`` -- not the file size.
-
-    Must be run via ``asyncio.to_thread`` by the caller: the open()+read() here is still
-    synchronous, blocking disk I/O.
-    """
-    with Path(path).open(encoding="utf-8", errors="replace") as f:
-        return f.read(max_chars * _COMPANION_READ_CHAR_MARGIN)
-
-
 async def load_companion_contents(
     session: AsyncSession,
     media_file_id: uuid.UUID,
     max_chars: int,
+    task_router: AgentTaskRouter | None = None,
 ) -> list[dict[str, str]]:
-    """Load and clean companion file contents for a media file.
+    """Load and clean companion file contents for a media file, reading them ON THE OWNING AGENT.
 
-    Queries the ``FileCompanion`` join table, reads each companion file from
-    disk, cleans the content, and returns a list of filename/content dicts.
+    phaze-6bkk (DIST-01): this used to ``open()`` the companion path directly. ``generate_proposals``
+    runs on the CONTROLLER worker, which docker-compose.yml documents as "fileless -- never touches
+    SCAN_PATH", so that read could not succeed in any documented production topology. It failed
+    invisibly: the ``except OSError: continue`` treated a permanent, architectural failure exactly
+    like a single unreadable sidecar, and every proposal was silently generated with an empty
+    companion context. The read now goes to the agent that owns the file, via a bounded
+    request/response ``read_companion_files`` job on its ``meta`` lane.
 
     Args:
         session: Active async database session.
         media_file_id: UUID of the media file.
         max_chars: Maximum chars per companion file (passed to ``clean_companion_content``).
+        task_router: The per-agent SAQ enqueuer (``ctx["task_router"]``). ``None`` means "no
+            dispatcher available" and yields an empty list -- companion text is ENRICHMENT, so its
+            absence must degrade the proposal, never block it.
 
     Returns:
         List of dicts with ``"filename"`` and ``"content"`` keys.
     """
+    if task_router is None:
+        # No dispatcher available (a unit-level caller, or a deployment without agents wired). The
+        # proposal is still generated -- companion text is enrichment, never a precondition.
+        logger.debug("companion_read_skipped_no_task_router", media_file_id=str(media_file_id))
+        return []
+
     result = await session.execute(select(FileCompanion).where(FileCompanion.media_id == media_file_id))
     companions = result.scalars().all()
+    if not companions:
+        return []
 
-    contents: list[dict[str, str]] = []
+    # Group by OWNING agent (phaze-c9w9 affinity): a companion path only means anything on the
+    # mount it was reported from, so each owner reads its own files. In practice a media file and
+    # its sidecars share one agent, so this is normally a single group.
+    by_agent: dict[str, list[CompanionReadItem]] = {}
     for comp in companions:
         rec_result = await session.execute(select(FileRecord).where(FileRecord.id == comp.companion_id))
         rec = rec_result.scalar_one_or_none()
         if rec is None:
             continue
+        by_agent.setdefault(rec.agent_id, []).append(CompanionReadItem(filename=rec.original_filename, path=rec.current_path))
 
-        # phaze-eycl: `rec.current_path` is pure agent input -- POST /agent/files upserts it
-        # verbatim, and PATCH /agent/proposals can re-point it afterwards (see the module docstring
-        # correction on this bead). Containment-check it against the OWNING agent's `scan_roots`
-        # before ever opening it, using the same symlink-safe resolve-then-compare the executor
-        # uses for `original_path` (T-26-11-S1) -- a bare prefix-string check would miss both a
-        # symlink planted inside a scan_root that points out of it, and a `..`-laden path that
-        # resolves outside every root. An agent with no configured scan_roots gets ALL of its
-        # companions skipped, never allowed through.
-        agent_result = await session.execute(select(Agent).where(Agent.id == rec.agent_id))
-        agent = agent_result.scalar_one_or_none()
-        if agent is None or not agent.scan_roots:
-            logger.warning(
-                "companion_containment_no_scan_roots",
-                agent_id=rec.agent_id,
-                companion_id=str(rec.id),
-                current_path=rec.current_path,
-            )
-            continue
-        try:
-            resolved_path, _owning_root = resolve_and_check_containment(rec.current_path, agent.scan_roots)
-        except ValueError:
-            logger.warning(
-                "companion_containment_escape",
-                agent_id=rec.agent_id,
-                companion_id=str(rec.id),
-                current_path=rec.current_path,
-            )
-            continue
+    contents: list[dict[str, str]] = []
+    for agent_id, items in by_agent.items():
+        # phaze-6bkk: request/response over the agent's meta lane. The containment check that used
+        # to run here (phaze-eycl) moved WITH the read, onto the agent, and is re-run there against
+        # that agent's own configured scan_roots -- the only place `Path.resolve()` can answer
+        # honestly, since the controller has no such filesystem. Chunked to the payload's wire bound
+        # so an unusually companion-heavy media file cannot 422 the whole read.
+        for start in range(0, len(items), _COMPANION_CHUNK):
+            chunk = items[start : start + _COMPANION_CHUNK]
+            try:
+                queue = task_router.queue_for(agent_id, lane_for_task("read_companion_files"))
+                await queue.connect()
+                payload = ReadCompanionFilesPayload(agent_id=agent_id, companions=chunk, max_chars=max_chars)
+                job_result = await queue.apply("read_companion_files", timeout=_COMPANION_READ_TIMEOUT_S, **payload.model_dump(mode="json"))
+            except Exception:
+                # An offline agent, a saturated lane, or a timeout. Log and propose WITHOUT the
+                # companion context rather than failing the batch -- the pre-phaze-6bkk behavior on
+                # an unreadable companion, minus the silence (it used to be an unconditional
+                # `except OSError: continue` that hid a permanent, topology-level failure).
+                logger.warning("companion_read_unavailable", agent_id=agent_id, media_file_id=str(media_file_id), exc_info=True)
+                continue
 
-        try:
-            # phaze-cycw: bounded read (not a full-file slurp) run off the event loop -- a
-            # multi-hundred-MB companion (log/.nfo/.m3u, or a binary file mis-matched by a
-            # COMPANION extension) previously buffered the ENTIRE file, then splitlines()-copied
-            # it again, all synchronously on the event loop, to keep only ~3000 chars.
-            #
-            # phaze-eycl: read the RESOLVED path (not the raw `rec.current_path` string) -- it is
-            # what the containment check above actually verified, so opening it here (rather than
-            # re-resolving symlinks implicitly via the raw string at open() time) closes the
-            # check-then-open race a symlink swapped between the two could otherwise exploit.
-            raw = await asyncio.to_thread(_read_companion_bounded_sync, str(resolved_path), max_chars)
-            # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
-            # context_used JSONB column. errors="replace" leaves a raw 0x00 intact (U+0000 is valid
-            # UTF-8), and a UTF-16LE .nfo/.txt companion decodes to text riddled with U+0000. PostgreSQL
-            # jsonb rejects U+0000 outright, aborting store_proposals for the WHOLE batch and poisoning
-            # every retry with identical content -- the retry-forever loop sanitize_pg_text exists to
-            # prevent. Sanitizing at this boundary keeps the companion content storable.
-            cleaned = sanitize_pg_text(clean_companion_content(raw, max_chars))
-            contents.append({"filename": sanitize_pg_text(rec.original_filename), "content": cleaned})
-        except OSError:
-            continue
+            for entry in (job_result or {}).get("contents", []):
+                # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
+                # context_used JSONB column. A UTF-16LE .nfo/.txt companion decodes to text riddled
+                # with U+0000, which PostgreSQL jsonb rejects outright -- aborting store_proposals for
+                # the WHOLE batch and poisoning every retry with identical content. Both the cleaning
+                # and the sanitizing stay control-side: they are pure functions, and this is where the
+                # value is persisted.
+                cleaned = sanitize_pg_text(clean_companion_content(entry["content"], max_chars))
+                contents.append({"filename": sanitize_pg_text(entry["filename"]), "content": cleaned})
 
     return contents

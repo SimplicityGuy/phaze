@@ -60,6 +60,16 @@ class ExtractedTags:
     duration: float | None = None
     bitrate: int | None = None
     raw_tags: dict[str, Any] = field(default_factory=dict)
+    # phaze-2zl7: RAW (un-normalized) text for the three fields whose normalization is lossy --
+    # ``year``/``track_number``/``genre`` below discard information ``_parse_year``/``_parse_track``/
+    # ``_first_str`` intentionally trim for search/matching (a full release date truncates to a
+    # 4-digit year, "N/total" drops the total, a multi-value genre keeps only the first). A caller
+    # that needs to faithfully RESTORE what was on disk (an undo snapshot) should prefer these over
+    # the normalized fields above; see ``tag_writer._extract_before_tags``. ``None`` iff the
+    # corresponding normalized field is also ``None`` (the tag is genuinely absent).
+    raw_year: str | None = None
+    raw_track_number: str | None = None
+    raw_genre: str | None = None
 
 
 # Tag key mappings for each format family
@@ -198,6 +208,62 @@ def _parse_track(val: Any) -> int | None:
         return None
 
 
+def normalize_year_text(value: Any) -> int | None:
+    """Public wrapper for :func:`_parse_year` (phaze-2zl7).
+
+    Lets a caller outside this module (``tag_writer.verify_write``) compare a RAW year/date value
+    against a re-read tag using the EXACT same normalization rule :func:`extract_tags` applies, so
+    a faithful raw-text undo write (e.g. a full "2024-03-15" restored, re-read back as the int
+    ``2024``) is not misreported as a discrepancy.
+    """
+    return _parse_year(str(value)) if value is not None else None
+
+
+def normalize_track_number_text(value: Any) -> int | None:
+    """Public wrapper for :func:`_parse_track`, for the same reason as :func:`normalize_year_text`."""
+    return _parse_track(value)
+
+
+def _raw_join(val: Any) -> str | None:
+    """Join every value of a multi-value tag field into one ``"; "``-separated raw string.
+
+    phaze-2zl7: unlike :func:`_first_str` (which keeps only the FIRST value -- correct for the
+    normalized ``genre`` field used in search/matching), this preserves the full genre list for an
+    undo snapshot, so reverting a write does not silently collapse a multi-genre tag down to one
+    value.
+    """
+    if val is None:
+        return None
+    if isinstance(val, list):
+        parts = [_sanitize_pg_text(str(item)) for item in val if not isinstance(item, bytes)]
+        return "; ".join(parts) if parts else None
+    return _sanitize_pg_text(str(val))
+
+
+def _raw_track_text(val: Any) -> str | None:
+    """Raw ``"N"`` / ``"N/total"`` text for a track-number tag value (phaze-2zl7).
+
+    Unlike :func:`_parse_track` (which keeps only the leading number, discarding a "/total"
+    suffix), this preserves the total for an undo snapshot. Handles the same shapes
+    ``_parse_track`` does: a plain string ("3", "3/12"), an MP4 ``trkn`` tuple/list-of-tuple
+    (``(3, 12)`` / ``[(3, 12)]``), and ``None``.
+    """
+    if val is None:
+        return None
+    if isinstance(val, list):
+        if not val:
+            return None
+        val = val[0]
+    if isinstance(val, tuple):
+        if len(val) >= 2 and val[1]:
+            return f"{val[0]}/{val[1]}"
+        if len(val) >= 1 and val[0]:
+            return str(val[0])
+        return None
+    text = _sanitize_pg_text(str(val)).strip()
+    return text or None
+
+
 def _serialize_tags(tags: Any) -> dict[str, Any]:
     """Serialize all tags to a JSON-safe dict.
 
@@ -314,12 +380,22 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
         # File has no tags
         return ExtractedTags(duration=duration, bitrate=bitrate, raw_tags=raw_tags)
 
+    # phaze-2zl7: capture the RAW pre-normalization source value for genre/track_number alongside
+    # ``fields`` (which already carries the raw, un-truncated string for "year" -- see below). Only
+    # these two need a separate capture: _first_str already collapses a multi-value genre to its
+    # first entry, and the MP4 branch keeps track_number as the raw tuple/list "as-is for
+    # _parse_track", neither of which is directly usable as raw TEXT for an undo snapshot.
+    raw_sources: dict[str, Any] = {}
+
     if isinstance(audio.tags, ID3):
         # ID3-tagged files (MP3, AIFF, etc.)
         for id3_key, field_name in _ID3_MAP.items():
             frame = audio.tags.get(id3_key)
             if frame is not None:
-                fields[field_name] = _first_str(getattr(frame, "text", [frame]))
+                raw_val = getattr(frame, "text", [frame])
+                fields[field_name] = _first_str(raw_val)
+                if field_name in ("genre", "track_number"):
+                    raw_sources[field_name] = raw_val
     elif isinstance(audio, MP4):
         # MP4/M4A atoms
         for mp4_key, field_name in _MP4_MAP.items():
@@ -329,12 +405,16 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
                     fields[field_name] = val  # Keep as-is for _parse_track
                 else:
                     fields[field_name] = _first_str(val)
+                if field_name in ("genre", "track_number"):
+                    raw_sources[field_name] = val
     else:
         # Vorbis-style comments (OGG, FLAC, OPUS)
         for vorbis_key, field_name in _VORBIS_MAP.items():
             val = audio.tags.get(vorbis_key)
             if val is not None:
                 fields[field_name] = _first_str(val)
+                if field_name in ("genre", "track_number"):
+                    raw_sources[field_name] = val
 
     return ExtractedTags(
         artist=fields.get("artist"),
@@ -346,4 +426,10 @@ def extract_tags(file_path: str, *, strict: bool = False) -> ExtractedTags:
         duration=duration,
         bitrate=bitrate,
         raw_tags=raw_tags,
+        # phaze-2zl7: "year" is already the raw, un-truncated date string here -- _parse_year (used
+        # for the normalized field above) is the only thing that ever shortens it, and it is called
+        # on a COPY (`fields.get("year")`), never mutating `fields` itself.
+        raw_year=fields.get("year"),
+        raw_track_number=_raw_track_text(raw_sources.get("track_number")),
+        raw_genre=_raw_join(raw_sources.get("genre")),
     )

@@ -202,7 +202,9 @@ def test_baseline_is_the_only_migration() -> None:
     UNIQUE(agent_id, scan_path) WHERE status='running' on scan_batches; 045 (phaze-x4ux) lands the
     nullable files.original_filename_repaired mojibake-repair column; 046 (phaze-0jpe.4) drops
     fingerprint_results and narrows stage_skip's CHECK; 047 (phaze-s7mb) drops the never-populated
-    analysis.fingerprint column. Any other resurrected 0xx chain file is a regression.
+    analysis.fingerprint column; 048 (phaze-bto9) adds the files (original_filename, id) btree the
+    tag-write review keyset paging orders and ranges on. Any other resurrected 0xx chain file is a
+    regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -215,6 +217,7 @@ def test_baseline_is_the_only_migration() -> None:
         "045_files_original_filename_repaired.py",
         "046_drop_fingerprint_schema.py",
         "047_drop_analysis_fingerprint_column.py",
+        "048_files_original_filename_id_btree.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -223,10 +226,10 @@ def test_baseline_is_the_only_migration() -> None:
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (047: analysis.fingerprint drop)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (048: tag-write review btree)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "047"
+    assert version == "048"
 
 
 @pytest.mark.asyncio
@@ -496,7 +499,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "047"
+        assert version == "048"
     finally:
         if engine is not None:
             await engine.dispose()
