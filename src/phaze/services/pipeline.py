@@ -998,6 +998,17 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
     / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
     preserve the control-only agent-worker boundary (``tests/shared/core/test_task_split.py``); do NOT hoist.
+
+    phaze-xwaj: the live-broker-keys read below executes :data:`_LIVE_KEYS_SQL` DIRECTLY rather than
+    going through the degrade-safe :func:`get_live_job_keys` wrapper. That wrapper SWALLOWS any DB
+    error into an empty set via its own nested SAVEPOINT -- which un-aborts the enclosing transaction,
+    so the rest of THIS function's raising reads would go on to succeed with ``live == set()``, i.e.
+    every genuinely live/in-flight ledger row misclassifies as orphaned. That is exactly the "RAISES
+    on ANY DB error" contract this function promises breaking silently: mixing one swallowing read
+    into an otherwise-raising core lets a live-keys failure masquerade as a real (inflated) success,
+    which :func:`refresh_stage_orphan_counts` would then rebind as the new cache value instead of
+    keeping the last-good one (D-03). ``get_live_job_keys`` itself is UNCHANGED and stays the right
+    call for its degrade-tolerant consumers (the recovery producer).
     """
     out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
     async with session.begin_nested():
@@ -1015,7 +1026,8 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         )
 
         rows = await get_ledger_rows(session)
-        live = await get_live_job_keys(session)
+        # RAISING read (phaze-xwaj) -- deliberately NOT get_live_job_keys, see docstring above.
+        live = {row[0] for row in (await session.execute(_LIVE_KEYS_SQL)).all()}
         done_sets = await _build_done_sets(session, _ledger_fids(rows))
         in_flight = await _in_flight_cloud_job_ids(session)
         # phaze-w0yr: mirror recover_orphaned_work's FOUR-way filter. Since 83-06 recovery ALSO
