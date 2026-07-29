@@ -322,15 +322,17 @@ lifespan as `app.state.task_router`.
   phaze-e57w — deleting them releases the deterministic key so the blocked file is
   re-queueable), and `recover_orphaned_work` (the gated boot-time queue-loss recovery pass).
   It connects to Postgres directly.
-- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **6**
+- **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **9**
   file-bound functions: `process_file`, `extract_file_metadata`,
-  `scan_directory`, `execute_approved_batch`, `push_file` (Phase 50 —
-  the fileserver rsync-over-SSH push of a long file to the compute agent's scratch dir), and
-  `s3_upload` (Phase 53 — the multipart-PUT upload to presigned S3 URLs; registered under an
-  explicit `(name, func)` tuple so its SAQ name stays `s3_upload`). With `PHAZE_AGENT_LANE`
-  set, the worker registers **only that lane's subset** — `analyze` / `meta` /
+  `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`,
+  `read_companion_files` (the three archive-touching operations phaze-6bkk / DIST-01 moved off
+  the fileless api+controller onto the agent that actually mounts the media), `push_file`
+  (Phase 50 — the fileserver rsync-over-SSH push of a long file to the compute agent's scratch
+  dir), and `s3_upload` (Phase 53 — the multipart-PUT upload to presigned S3 URLs; registered
+  under an explicit `(name, func)` tuple so its SAQ name stays `s3_upload`). With
+  `PHAZE_AGENT_LANE` set, the worker registers **only that lane's subset** — `analyze` / `meta` /
   `io` per `LANE_TASKS` (`services/enqueue_router.py`, the single source of truth for
-  task→lane membership); all-mode registers all 6, and the union of the three lanes equals
+  task→lane membership); all-mode registers all 9, and the union of the three lanes equals
   `AGENT_TASKS` (quick-260707-dh1, asserted in `tests/shared/core/test_task_split.py`).
   Its startup hook
   authenticates against the application server, downloads essentia weights if missing, sizes
@@ -412,10 +414,12 @@ controller fans out approved proposals across agents:
 
 ### Internal-agent HTTP API
 
-All agent → server communication funnels through **11** routers under
+All agent → server communication funnels through **12** routers under
 `/api/internal/agent/*` (registered in `main.py`): `files`, `metadata`,
 `execution`, `heartbeat`, `identity`, `analysis`, `push`, `s3`, `proposals`,
-`scan-batches`, and `exec-batches`. (`routers/agent_auth.py` is **not** a router — it exports
+`scan-batches`, `exec-batches`, and `tag-writes` (phaze-6bkk DIST-01 — the terminal outcome of
+an on-agent tag write; the only path by which a queued `TagWriteLog` row ever
+resolves). (`routers/agent_auth.py` is **not** a router — it exports
 the `get_authenticated_agent` dependency the handlers depend on.) The `agent_id` is always
 taken from the authenticated
 bearer token (`get_authenticated_agent`), never from the request body, so a forged body
@@ -481,9 +485,17 @@ graph TD
 
 The bounded top-up cron `stage_cloud_window` (`tasks/release_awaiting_cloud.py`) fires every
 ~5 minutes under a single advisory lock. Once per tick it **snapshots** every resolved
-backend's `is_available()` and its `remaining = cap - in_flight_count()`, pulls that many of
-the oldest `AWAITING_CLOUD` files (FIFO, `FOR UPDATE SKIP LOCKED`), and routes each through
-the pure policy `select_backend` (`services/backend_selection.py`). The policy is
+backend's `is_available()` and its `remaining = cap - in_flight_count()`, then walks the
+oldest `AWAITING_CLOUD` files (FIFO, `FOR UPDATE SKIP LOCKED`) and routes each through the
+pure policy `select_backend` (`services/backend_selection.py`). The walk is a **paged keyset
+walk, not a single fixed-size pull** (phaze-9sqa): a candidate the policy holds does not
+consume a free slot, so the tick keeps fetching further pages until either the free slots are
+filled, a short page proves the queue is exhausted, or the `_MAX_CANDIDATE_SCAN = 500`
+per-tick scan budget is spent — which bounds the lock footprint. Unroutable candidates are
+therefore *skipped past* rather than blocking the drain behind them, and each held candidate
+is binned by the `select_backend` filter that rejected it (`hold_reasons`) for the completion
+log line and the repeated-all-held warning. This matches
+[runbook.md → tiered drain](runbook.md). The policy is
 **rank-first with spillover**: the available lowest-rank backend with a free slot wins; a
 full lowest-rank tier spills to the next rank (ties broken by in-flight/cap utilization, then
 id). The **local backend (detected by class identity, not the rank-99 literal) is gated**:

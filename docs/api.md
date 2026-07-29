@@ -82,6 +82,13 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 | POST   | `/api/internal/agent/push/{file_id}/failed`         | terminal `push_file` failure (SAQ retries exhausted): spill `cloud_job` to `AWAITING_CLOUD` with its cloud budget spent, routing the file to local |
 | POST   | `/api/internal/agent/files/{file_id}/presign-download` | Mint a fresh short-TTL presigned GET URL for a file's staged bytes (409 unless `cloud_job` is `UPLOADED`) |
 
+> **The names above are `cloud_job.status` values, not file states.** `PUSHING`/`PUSHED` read like
+> enum members but `CloudJobStatus` has none — its members are `awaiting`, `uploading`, `uploaded`,
+> `submitted`, `running`, `succeeded`, `failed`. Phase 90 removed the `FileState` enum and the
+> `files.state` column entirely; stage and status are **derived** from the `cloud_job` sidecar plus
+> the output tables via `services/stage_status.py`. See the caveat in
+> [cloud-burst.md → walkthrough](cloud-burst.md) for the same point in operator terms.
+
 ```mermaid
 flowchart LR
     D[DISCOVERED file] --> R{select_backend<br/>by cost-tier rank}
@@ -89,7 +96,7 @@ flowchart LR
     R -->|rank 0| L[Local analyze]
     R -->|rank 1..N| K[Kueue cluster 1..N<br/>S3 staging]
     R -->|rank N+1| C[Cloud compute<br/>rsync push]
-    K -->|upload ack /s3/.../uploaded| KP[PUSHED → submit_cloud_job]
+    K -->|upload ack /s3/.../uploaded| KP[UPLOADED → submit_cloud_job]
     C -->|push ack /push/.../pushed| CP[PUSHED → process_file]
     K -. cap exhausted .-> SP[spill AWAITING_CLOUD → local]
     C -. cap exhausted .-> SP
@@ -187,16 +194,24 @@ The interactive tracklists UI was removed with the v7.0 shell cutover (phaze-y4s
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
 | GET    | `/tags/`                      | Legacy route: 302-redirects into the v7.0 shell's Tag Write workspace (`/s/tagwrite`) |
-| POST   | `/tags/{file_id}/write`       | Execute tag write to file          |
-| POST   | `/tags/bulk-write-no-discrepancies` | Server-predicate bulk tag-write over files with no discrepancies |
-| POST   | `/tags/{file_id}/undo`        | Undo a tag write (restore prior tags) |
+| POST   | `/tags/{file_id}/write`       | **Enqueues** a tag write — commits a durable `TagWriteLog` row and dispatches the `write_file_tags` task to the owning agent's **meta lane**. Does not touch the file: the api container has no media mount. The row resolves on the agent's callback |
+| POST   | `/tags/bulk-write-no-discrepancies` | Server-predicate bulk tag-write over files with no discrepancies (same enqueue semantics, one dispatch per file) |
+| POST   | `/tags/{file_id}/undo`        | **Enqueues** an undo (restore prior tags) through the same queued-`TagWriteLog` + meta-lane path |
+
+> **These endpoints hand off; they do not write.** A `200` means *queued on the owning agent*, not
+> *applied to disk* — the `TagWriteLog` row stays `QUEUED` until the agent reports back through
+> `PATCH /api/internal/agent/tag-writes/{log_id}` (see the Distributed Agent API table below).
+> A second call while a write is already in flight for the same file raises
+> `TagWriteAlreadyQueuedError` and redraws the row as "queued" rather than dispatching a
+> concurrent second write (phaze-lwqk). Undo only becomes available once the agent has reported
+> the before-tags snapshot. This moved onto the agent in phaze-6bkk (DIST-01).
 
 ## CUE Sheets (`/cue`)
 
 | Method | Path                          | Description                        |
 |--------|-------------------------------|------------------------------------|
 | GET    | `/cue/`                       | Legacy route: 302-redirects into the v7.0 shell's CUE workspace (`/s/cue`) |
-| POST   | `/cue/{tracklist_id}/generate`| Generate CUE file for a tracklist  |
+| POST   | `/cue/{tracklist_id}/generate`| **Enqueues** CUE generation: renders the CUE text in-process (pure string work over rows the api already holds) and dispatches the **bytes** as a `write_cue_sheet` task to the owning agent's **meta lane**, which writes the file. The api container has no media mount (phaze-6bkk DIST-01) |
 
 ## Search (`/search`)
 
@@ -266,3 +281,4 @@ The server stores only `sha256(token)` (in `agents.token_hash`) and verifies eac
 | PATCH  | `/api/internal/agent/execution-log/{execution_log_id}`| Update an existing execution-log row                                        |
 | POST   | `/api/internal/agent/exec-batches/{batch_id}/progress`| Report a per-proposal terminal-state event for an execution batch           |
 | PATCH  | `/api/internal/agent/scan-batches/{batch_id}`         | Advance a scan-batch state-machine (with cross-tenant guard)               |
+| PATCH  | `/api/internal/agent/tag-writes/{log_id}`             | Terminal outcome of an on-agent tag write — **the only endpoint that resolves a queued `TagWriteLog`** (phaze-6bkk DIST-01) |
