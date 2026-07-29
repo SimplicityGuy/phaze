@@ -28,6 +28,7 @@ Transport invariants (RESEARCH §"rsync-over-SSH from asyncio", D-06/D-07):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 import tempfile
 from typing import TYPE_CHECKING, Any
@@ -201,78 +202,107 @@ def _require_push_config(cfg: AgentSettings) -> None:
 
 
 async def push_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-    """Rsync a cloud-routed file to the compute scratch dir, then report success via HTTP.
+    """Rsync a cloud-routed file to the compute scratch dir, then report success/failure via HTTP.
 
     rc==0 -> ``api.report_pushed(file_id)`` (control flips the file to PUSHED and enqueues
     ``process_file`` against the scratch copy). rc!=0 -> RuntimeError (SAQ retry; ``--partial``
-    resumes). Missing rsync/ssh binary -> clear terminal RuntimeError, NO callback, NO local
-    fallback. The SSH key + known_hosts SecretStr contents are materialized to private temp files
-    (0600) for the duration of the transfer and shredded in ``finally`` -- their paths/contents are
-    never logged (T-50-secret-leak).
+    resumes). Missing rsync/ssh binary -> clear terminal RuntimeError, NO local fallback. The SSH
+    key + known_hosts SecretStr contents are materialized to private temp files (0600) for the
+    duration of the transfer and shredded in ``finally`` -- their paths/contents are never logged
+    (T-50-secret-leak).
+
+    phaze-c53x: every raise here (destination-less payload, missing push config, missing binary,
+    a wedged/killed transfer, a non-zero rsync exit) is now acked. On the NON-retryable attempt
+    (``ctx["job"].retryable`` False -- SAQ has exhausted ``PUSH_FILE_SAQ_RETRIES``, or a
+    config/binary error that will fail identically on every attempt) it calls
+    ``api.report_push_failed(file_id, detail)`` BEFORE re-raising, mirroring the
+    ``job = ctx.get('job'); if job is not None and not job.retryable`` guard every sibling
+    file-keyed task (``process_file``, ``extract_file_metadata``, ``fingerprint_file``,
+    ``scan_live_set``, ``s3_upload``) already uses -- without it ``cloud_job`` stayed ``SUBMITTED``
+    forever with no reconciler and no recovery path short of manual SQL. A retryable attempt
+    reports NOTHING (the in-place SAQ retry + rsync ``--partial`` resume owns recovery); a SAQ
+    job-net cancellation (``asyncio.CancelledError``) also reports nothing (SAQ owns whatever
+    comes next, mirrors ``upload_file_s3``'s discipline).
     """
     payload = PushFilePayload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
-    cfg = _agent_settings()
-    _require_push_config(cfg)
-
-    # Materialize the file-mounted secrets (SecretStr CONTENTS) into a private temp dir so ssh -i /
-    # UserKnownHostsFile have real paths to read. The dir is 0700 and the key file 0600 (ssh refuses
-    # a world-readable identity); both are removed in finally.
-    tmp_dir = Path(tempfile.mkdtemp(prefix="phaze-push-"))
-    key_path = tmp_dir / "id_key"
-    known_hosts_path = tmp_dir / "known_hosts"
     try:
-        key_path.write_text(cfg.push_ssh_key.get_secret_value())  # type: ignore[union-attr]  # _require_push_config asserts not None
-        key_path.chmod(0o600)
-        known_hosts_path.write_text(cfg.push_known_hosts.get_secret_value())  # type: ignore[union-attr]
-        known_hosts_path.chmod(0o600)
+        cfg = _agent_settings()
+        _require_push_config(cfg)
 
-        argv = _build_rsync_argv(cfg, payload, key_path=str(key_path), known_hosts_path=str(known_hosts_path))
-
+        # Materialize the file-mounted secrets (SecretStr CONTENTS) into a private temp dir so ssh -i /
+        # UserKnownHostsFile have real paths to read. The dir is 0700 and the key file 0600 (ssh refuses
+        # a world-readable identity); both are removed in finally.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="phaze-push-"))
+        key_path = tmp_dir / "id_key"
+        known_hosts_path = tmp_dir / "known_hosts"
         try:
-            # Fixed list argv, no shell; remote path is the server UUID (T-50-injection): neither
-            # ruff S603 nor bandit B603 flags create_subprocess_exec with a list argv.
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            # rsync (or ssh) is not installed/on PATH. TERMINAL -- surface clearly and NEVER fall
-            # back to local analysis (T-50-no-fallback / CLOUDROUTE-02). Provisioned in Phase 51.
-            missing = exc.filename or "rsync/ssh"
-            msg = f"push_file: required binary {missing!r} not found; cannot push (no local fallback)"
-            raise RuntimeError(msg) from exc
+            key_path.write_text(cfg.push_ssh_key.get_secret_value())  # type: ignore[union-attr]  # _require_push_config asserts not None
+            key_path.chmod(0o600)
+            known_hosts_path.write_text(cfg.push_known_hosts.get_secret_value())  # type: ignore[union-attr]
+            known_hosts_path.chmod(0o600)
 
-        # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
-        # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
-        # genuine wedge. A failed stat (rare -- the source is on the local mount) falls back to 0, i.e.
-        # the small-file floor, so we never build a shorter-than-default budget from a missing size.
-        try:
-            file_size = Path(payload.original_path).stat().st_size
-        except OSError:
-            file_size = 0
-        outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
-        try:
-            _out, err = await asyncio.wait_for(proc.communicate(), timeout=outer_guard)
-        except (TimeoutError, asyncio.CancelledError):
-            # Outer-layer kill (rsync wedged past its own --timeout) OR a SAQ job-net cancellation
-            # (CancelledError, NOT TimeoutError -- WR-03). Either way reap the child BEFORE the
-            # ``finally`` shreds id_key/known_hosts, so no live ``ssh -i`` keeps reading secret files
-            # we are about to delete and no rsync child is orphaned. ``--partial`` resumes on retry.
-            proc.kill()
-            await proc.wait()
-            raise
+            argv = _build_rsync_argv(cfg, payload, key_path=str(key_path), known_hosts_path=str(known_hosts_path))
 
-        if proc.returncode != 0:
-            snippet = err.decode(errors="replace")[:_STDERR_SNIPPET_MAX]
-            msg = f"push_file: rsync exit {proc.returncode} for file_id={payload.file_id}: {snippet}"
-            raise RuntimeError(msg)
-    finally:
-        # Shred the materialized secrets regardless of outcome.
-        for secret_file in (key_path, known_hosts_path):
-            secret_file.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+            try:
+                # Fixed list argv, no shell; remote path is the server UUID (T-50-injection): neither
+                # ruff S603 nor bandit B603 flags create_subprocess_exec with a list argv.
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError as exc:
+                # rsync (or ssh) is not installed/on PATH. TERMINAL -- surface clearly and NEVER fall
+                # back to local analysis (T-50-no-fallback / CLOUDROUTE-02). Provisioned in Phase 51.
+                missing = exc.filename or "rsync/ssh"
+                msg = f"push_file: required binary {missing!r} not found; cannot push (no local fallback)"
+                raise RuntimeError(msg) from exc
+
+            # phaze-2qpn: size-derived total wall-clock budget so a healthy long transfer is never killed.
+            # rsync's --timeout (I/O inactivity) is the primary stall kill; this outer guard only reaps a
+            # genuine wedge. A failed stat (rare -- the source is on the local mount) falls back to 0, i.e.
+            # the small-file floor, so we never build a shorter-than-default budget from a missing size.
+            try:
+                file_size = Path(payload.original_path).stat().st_size
+            except OSError:
+                file_size = 0
+            outer_guard = push_transfer_budget_sec(file_size, io_stall_timeout_sec=cfg.push_timeout_sec)
+            try:
+                _out, err = await asyncio.wait_for(proc.communicate(), timeout=outer_guard)
+            except (TimeoutError, asyncio.CancelledError):
+                # Outer-layer kill (rsync wedged past its own --timeout) OR a SAQ job-net cancellation
+                # (CancelledError, NOT TimeoutError -- WR-03). Either way reap the child BEFORE the
+                # ``finally`` shreds id_key/known_hosts, so no live ``ssh -i`` keeps reading secret files
+                # we are about to delete and no rsync child is orphaned. ``--partial`` resumes on retry.
+                proc.kill()
+                await proc.wait()
+                raise
+
+            if proc.returncode != 0:
+                snippet = err.decode(errors="replace")[:_STDERR_SNIPPET_MAX]
+                msg = f"push_file: rsync exit {proc.returncode} for file_id={payload.file_id}: {snippet}"
+                raise RuntimeError(msg)
+        finally:
+            # Shred the materialized secrets regardless of outcome.
+            for secret_file in (key_path, known_hosts_path):
+                secret_file.unlink(missing_ok=True)
+            tmp_dir.rmdir()
+    except asyncio.CancelledError:
+        # A SAQ job-net cancellation (WR-03): the child was already reaped above (if the transfer was
+        # in flight). SAQ owns the re-drive; no premature terminal report (mirrors upload_file_s3).
+        raise
+    except Exception as exc:
+        # phaze-c53x: report ONLY on the terminal attempt (SAQ has exhausted its retries), matching
+        # every sibling file-keyed task. A retryable attempt reports nothing -- the in-place SAQ retry
+        # (plus rsync --partial resume) is the recovery path, and a premature report here would let a
+        # transient rsync/ssh blip spill a file to local that the very next attempt would have pushed.
+        job = ctx.get("job")
+        if job is not None and not job.retryable:
+            # Best-effort: a failure delivering the FAILURE report must not mask the original error.
+            with contextlib.suppress(Exception):
+                await api.report_push_failed(payload.file_id, detail=str(exc)[:_STDERR_SNIPPET_MAX])
+        raise
 
     # rc==0: the push landed atomically (rsync temp-then-rename). Hand off to control (D-08).
     await api.report_pushed(payload.file_id)

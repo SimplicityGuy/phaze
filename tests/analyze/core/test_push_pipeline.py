@@ -153,17 +153,26 @@ class _FakeProc:
 
 
 class _FakeApi:
-    """Records report_pushed / report_push_mismatch calls."""
+    """Records report_pushed / report_push_mismatch / report_push_failed calls."""
 
     def __init__(self) -> None:
         self.pushed: list[uuid.UUID] = []
         self.mismatched: list[uuid.UUID] = []
+        self.failed: list[tuple[uuid.UUID, str | None]] = []
 
     async def report_pushed(self, file_id: uuid.UUID) -> None:
         self.pushed.append(file_id)
 
     async def report_push_mismatch(self, file_id: uuid.UUID) -> None:
         self.mismatched.append(file_id)
+
+    async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> None:
+        self.failed.append((file_id, detail))
+
+
+def _job(*, retryable: bool) -> SimpleNamespace:
+    """A duck-typed ``ctx["job"]`` stand-in carrying only the ``retryable`` flag push_file reads."""
+    return SimpleNamespace(retryable=retryable)
 
 
 # ----------------------------------------------------------------------
@@ -354,6 +363,136 @@ async def test_rsync_exit_code_stderr_truncated_no_key_leak(monkeypatch: pytest.
     msg = str(exc_info.value)
     assert len(msg) < 2000
     assert "PRIVATE-KEY-DATA" not in msg
+
+
+# ----------------------------------------------------------------------
+# phaze-c53x — terminal-failure ack via report_push_failed
+# ----------------------------------------------------------------------
+
+
+async def test_rsync_exit_code_nonzero_retryable_attempt_no_terminal_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A RETRYABLE attempt (job.retryable True) reports nothing -- the in-place SAQ retry owns recovery."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError):
+        await push.push_file({"api_client": api, "job": _job(retryable=True)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+    assert api.failed == []
+
+
+async def test_rsync_exit_code_nonzero_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-c53x: the NON-retryable (terminal) attempt calls report_push_failed before re-raising.
+
+    Without this ack a push that exhausts PUSH_FILE_SAQ_RETRIES left cloud_job SUBMITTED forever
+    with no reconciler and no recovery path short of manual SQL.
+    """
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError, match="rsync exit 23"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+    assert len(api.failed) == 1
+    fid, detail = api.failed[0]
+    assert fid == payload.file_id
+    assert detail is not None and "rsync exit 23" in detail
+
+
+async def test_missing_binary_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing rsync/ssh binary on the terminal attempt also acks -- it is deterministic, so SAQ's
+    own retries would fail identically, but the callback still must not be skipped."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _raise_fnf(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        raise FileNotFoundError(2, "No such file or directory", "rsync")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _raise_fnf)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert len(api.failed) == 1
+    assert api.failed[0][0] == payload.file_id
+
+
+async def test_missing_push_config_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing push-config field raises before any subprocess is spawned; the terminal attempt still acks."""
+    cfg = _fake_cfg(push_ssh_key=None)
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError, match="push_file missing required push config"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert len(api.failed) == 1
+    assert api.failed[0][0] == payload.file_id
+
+
+async def test_report_push_failed_error_does_not_mask_transfer_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure delivering report_push_failed must not mask the ORIGINAL transfer error."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+
+    class _BrokenApi(_FakeApi):
+        async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> None:  # noqa: ARG002 -- stub raises, args unused
+            raise ConnectionError(f"control unreachable for {file_id}")
+
+    api = _BrokenApi()
+    with pytest.raises(RuntimeError, match="rsync exit 23"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+
+
+async def test_cancellation_does_not_call_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SAQ job-net cancellation on the terminal attempt still reports NOTHING -- SAQ owns whatever
+    comes next (mirrors upload_file_s3's discipline); a premature report here would be wrong for a
+    graceful-shutdown cancellation the job may still be re-driven from."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    proc = _FakeProc(returncode=0)
+
+    async def _cancelled_communicate() -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+    proc.communicate = _cancelled_communicate  # type: ignore[method-assign]
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(asyncio.CancelledError):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+
+    assert proc.killed is True
+    assert api.pushed == []
+    assert api.failed == []
 
 
 # ----------------------------------------------------------------------

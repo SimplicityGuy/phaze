@@ -652,6 +652,160 @@ async def test_pushed_missing_auth_returns_401(
 
 
 # ---------------------------------------------------------------------------
+# /failed (phaze-c53x)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_failed_spills_cloud_job_to_awaiting_and_clears_ledger(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-c53x: a terminal push_file failure spills the SUBMITTED cloud_job to awaiting + clears the ledger.
+
+    Without this endpoint an exhausted push left cloud_job stuck SUBMITTED forever: no reconciler
+    (ComputeAgentBackend.reconcile is a documented no-op), invisible to recover_orphaned_work /
+    get_stage_orphan_counts (both exclude any file carrying an in-flight cloud_job row), and a
+    permanently leaked compute in_flight_count cap slot. The fix routes the file to LOCAL instead.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={"detail": "rsync exit 30"})
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["file_id"] == str(file_id)
+    assert body["status"] == "failed"
+    assert body["cleared"] is True
+
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.AWAITING.value, "the spill re-stamps to 'awaiting', NOT 'failed' (D-03)"
+    # The cloud budget is marked spent so select_backend routes the spilled file to LOCAL.
+    settings = ControlSettings()
+    assert cloud_job.attempts >= settings.cloud_submit_max_attempts
+    assert await _ledger_row(session, f"push_file:{file_id}") is None, "the ledger row must be cleared behind the CAS"
+    assert task_router.queues == {}, "no re-drive is enqueued -- the file spills to local on the next drain tick"
+
+
+@pytest.mark.asyncio
+async def test_push_failed_no_body_defaults_detail_to_none(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """An empty body is valid -- detail is optional."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+
+
+@pytest.mark.asyncio
+async def test_push_failed_does_not_clobber_advanced_cloud_job(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """T-83-PUSH-CLOBBER: a late/duplicate /failed whose cloud_job already advanced past 'submitted'
+    (a concurrent /pushed or /mismatch landed first) is a FULL idempotent no-op, cleared=False."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is False
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value, "the already-advanced cloud_job must be UNCHANGED"
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the ledger row must NOT be cleared on the no-op"
+
+
+@pytest.mark.asyncio
+async def test_push_failed_null_guard_no_file_is_full_noop(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """NULL-GUARD (request_guards.py rule 3): a concurrent scan-deletion vanished FileRecord -> 200 hold, never a 500."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUBMITTED)
+    _install_concurrent_scan_deletion(session, file_id)
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={})
+
+    assert r.status_code == 200, r.text  # NULL-GUARD: clean hold, never a 500/NoResultFound
+    assert r.json()["cleared"] is False
+    assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the null-guard hold must not clear the ledger row"
+    assert task_router.queues == {}
+
+
+@pytest.mark.asyncio
+async def test_push_failed_rejects_identity_in_body(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """AUTH-01: extra='forbid' rejects any attempt to smuggle file_id in the body."""
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, FakeTaskRouter(), raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={"file_id": str(uuid.uuid4())})
+
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_push_failed_missing_auth_returns_401(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """No Authorization header -> 401 (HTTPBearer auto_error)."""
+    agent, _ = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env)
+    file_id = await _seed_file(session, agent.id)
+
+    async with _make_client(session, FakeTaskRouter(), token=None) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/failed", json={})
+
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # /mismatch
 # ---------------------------------------------------------------------------
 

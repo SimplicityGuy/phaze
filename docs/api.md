@@ -86,6 +86,7 @@ Operator overrides and control-side agent callbacks for the pluggable multi-back
 | POST   | `/api/internal/agent/s3/{file_id}/failed`           | S3-staging upload failure (bounded re-drive, or terminal cleanup + spill to `AWAITING_CLOUD` at the cap) |
 | POST   | `/api/internal/agent/push/{file_id}/pushed`         | rsync push success (`PUSHING → PUSHED` + ledger clear + `process_file` enqueue on the compute queue) |
 | POST   | `/api/internal/agent/push/{file_id}/mismatch`       | rsync post-transfer sha256 mismatch (capped re-drive, or spill to `AWAITING_CLOUD` at the cap) |
+| POST   | `/api/internal/agent/push/{file_id}/failed`         | terminal `push_file` failure (SAQ retries exhausted): spill `cloud_job` to `AWAITING_CLOUD` with its cloud budget spent, routing the file to local |
 | POST   | `/api/internal/agent/files/{file_id}/presign-download` | Mint a fresh short-TTL presigned GET URL for a file's staged bytes (409 unless `cloud_job` is `UPLOADED`) |
 
 ```mermaid

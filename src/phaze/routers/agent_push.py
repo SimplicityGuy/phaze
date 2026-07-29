@@ -1,4 +1,4 @@
-"""POST /api/internal/agent/push/{file_id}/{pushed,mismatch} -- control-side push callbacks (Phase 50, Plan 50-05).
+"""POST /api/internal/agent/push/{file_id}/{pushed,mismatch,failed} -- control-side push callbacks (Phase 50, Plan 50-05).
 
 The Postgres-free file-server / compute agents cannot mutate ``FileRecord`` or the
 scheduling ledger directly (RESEARCH §Critical Finding 1), so the ``push_file``
@@ -31,9 +31,18 @@ Mirrors ``agent_analysis.py`` (``put_analysis`` / ``report_analysis_failed``):
   to local instead of looping forever (T-50-loop) -- ANALYSIS_FAILED comes only from a
   local analysis failure.
 
+- ``/failed`` (phaze-c53x, TERMINAL ack): the fileserver agent's ``push_file`` task calls this
+  on its non-retryable attempt (SAQ retries exhausted -- ``PUSH_FILE_SAQ_RETRIES``) or a
+  non-retryable config/binary error. Every OTHER file-keyed agent task has a terminal-failure
+  ack; ``push_file`` was the sole exception, so an exhausted push left ``cloud_job`` stuck
+  ``SUBMITTED`` forever with no reconciler and no recovery path short of manual SQL. Spills the
+  ``cloud_job`` back to ``AWAITING_CLOUD`` with its cloud budget marked spent (mirrors
+  ``report_upload_failed`` / ``report_push_mismatch``'s over-cap branches) so the next drain tick
+  routes the file to local, and clears the ``push_file:<id>`` ledger row.
+
 AUTH-01 discipline: ``file_id`` always travels on the URL PATH and the agent identity
-comes from the token dependency -- never from a request body (the agent client sends
-no body for either callback).
+comes from the token dependency -- never from a request body (``/pushed`` and ``/mismatch``
+send no body at all; ``/failed`` carries only an optional bounded diagnostic).
 
 NULL-GUARD FOR A CONCURRENTLY-DELETED FileRecord (request_guards.py rule 3, phaze-zdej): both
 callbacks load ``FileRecord`` on a ``file_id`` a PREVIOUS request named, and a scan-deletion
@@ -65,7 +74,7 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.routers.agent_auth import get_authenticated_agent
-from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
+from phaze.schemas.agent_push import PushedResponse, PushFailedRequest, PushFailedResponse, PushMismatchResponse
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services.analysis_enqueue import enqueue_process_file
 from phaze.services.backends import hold_awaiting_cloud, resolve_compute_backend
@@ -244,6 +253,83 @@ async def report_pushed(
         compute_agent_id=agent_ref,
     )
     return PushedResponse(file_id=file_id)
+
+
+@router.post("/{file_id}/failed", status_code=status.HTTP_200_OK, response_model=PushFailedResponse)
+async def report_push_failed(
+    file_id: uuid.UUID,
+    body: PushFailedRequest,
+    agent: Annotated[Agent, Depends(get_authenticated_agent)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PushFailedResponse:
+    """Record a TERMINAL ``push_file`` failure: spill the ``cloud_job`` back to ``awaiting`` (phaze-c53x).
+
+    ``push_file`` (``tasks/push.py``) is the ONLY file-keyed agent task with no terminal-failure ack --
+    every sibling (``process_file`` -> ``report_analysis_failed``, ``extract_file_metadata`` ->
+    ``report_metadata_failed``, ``fingerprint_file`` -> ``report_fingerprint_failed``, ``scan_live_set``
+    -> ``report_scan_terminal``, ``s3_upload`` -> ``report_upload_failed``) has one. Without this
+    endpoint a push that exhausts its SAQ retries (``PUSH_FILE_SAQ_RETRIES``) -- or hits a non-retryable
+    config/binary error on its FIRST attempt -- settles the SAQ job FAILED with NO control-plane
+    callback: ``cloud_job`` sits ``SUBMITTED`` forever (``ComputeAgentBackend.reconcile`` is a documented
+    no-op; ``recover_orphaned_work`` excludes any file carrying an in-flight ``cloud_job`` row on the
+    premise that the ``/pushed``/``/mismatch`` callback path owns it), permanently consuming a compute
+    ``in_flight_count`` cap slot and silently dropping the file from the pipeline -- invisible to the
+    orphaned-work badge (``get_stage_orphan_counts`` uses the same in-flight exclusion predicate).
+    Recovery previously required manual SQL.
+
+    The fileserver agent is the ``push_file`` runner (mirrors ``/pushed``'s reporter -- no D-07-style
+    cross-agent authorization gate is needed here, unlike ``/mismatch``, whose reporter IS the compute
+    agent). Spill mirrors ``report_upload_failed``'s over-cap branch and ``report_push_mismatch``'s
+    over-cap branch: CAS the ``cloud_job`` ``submitted -> awaiting`` via the single go-forward writer
+    (:func:`hold_awaiting_cloud`) with the cloud budget marked SPENT (``attempts=cloud_submit_max_attempts``)
+    so ``select_backend`` routes the file to LOCAL on the next drain tick instead of re-trying a dead
+    compute lane, and clear the ``push_file:<file_id>`` scheduling-ledger row so it does not immortally
+    survive (it was previously excluded from every recovery path by the same in-flight predicate).
+
+    NULL-GUARD (mirrors ``/pushed``/``/mismatch``, request_guards.py rule 3): a concurrent scan-deletion
+    can remove the ``FileRecord`` between the previous request that named it and this callback -- a clean
+    ``cleared=False`` no-op, never a 500. A late/duplicate ``/failed`` whose ``cloud_job`` already
+    advanced past ``submitted`` (a concurrent ``/pushed``/``/mismatch`` landed first) is the SAME
+    idempotent no-op via the CAS rowcount guard (T-83-PUSH-CLOBBER discipline).
+
+    ``file_id`` is the PATH value only; ``agent`` from the token dependency (AUTH-01). ``body.detail`` is
+    a bounded optional diagnostic that carries no identity.
+    """
+    settings = cast("ControlSettings", get_settings())
+
+    file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
+    if file is None:
+        logger.warning(
+            "report_push_failed held: file record no longer exists (concurrent scan-deletion)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return PushFailedResponse(file_id=file_id, cleared=False)
+
+    cleared = await hold_awaiting_cloud(
+        session,
+        file,
+        attempts=settings.cloud_submit_max_attempts,
+        expect_status=(CloudJobStatus.SUBMITTED.value,),
+    )
+    if cleared:
+        await clear_ledger_entry(session, f"push_file:{file_id}")
+    await session.commit()
+
+    if cleared:
+        logger.warning(
+            "report_push_failed: push_file exhausted its retries -> cloud_job spilled to awaiting (routes to local)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+            detail=body.detail,
+        )
+    else:
+        logger.info(
+            "report_push_failed: idempotent no-op (cloud_job no longer 'submitted')",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+    return PushFailedResponse(file_id=file_id, cleared=cleared)
 
 
 @router.post("/{file_id}/mismatch", status_code=status.HTTP_200_OK, response_model=PushMismatchResponse)
