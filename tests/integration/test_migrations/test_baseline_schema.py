@@ -35,6 +35,7 @@ import uuid
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+import asyncpg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -754,4 +755,107 @@ async def test_migration_046_drops_fingerprint_results_and_narrows_stage_skip_ch
     finally:
         if engine is not None:
             await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+def _asyncpg_dsn(sqlalchemy_url: str) -> str:
+    """Strip the ``+asyncpg`` driver qualifier so the raw ``asyncpg`` client can connect."""
+    return sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql://")
+
+
+@pytest.mark.asyncio
+async def test_migration_048_upgrade_heals_invalid_leftover_index() -> None:
+    """phaze-44sj: an INTERRUPTED ``CREATE INDEX CONCURRENTLY`` leaves ``ix_files_original_filename_id``
+    present but INVALID (``pg_index.indisvalid = false``); re-running ``upgrade`` to 048 must detect
+    that and drop+rebuild rather than silently no-op via ``IF NOT EXISTS``.
+
+    Simulates the interrupted build with the same mechanism a real interruption produces: an open
+    REPEATABLE READ transaction against ``files`` holds a snapshot old enough that Postgres's
+    CONCURRENTLY machinery must wait on it before marking the new index valid, giving a second
+    connection running the concurrent build a window to be cancelled mid-build via
+    ``pg_cancel_backend`` -- exactly what a killed connection, a ``statement_timeout``, or a deploy
+    restart does to a live CONCURRENTLY build. Then asserts the pre-fix precondition (index present,
+    INVALID) actually holds before driving ``upgrade`` to 048 and asserting it heals.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    dsn = _asyncpg_dsn(MIGRATIONS_TEST_DATABASE_URL)
+    blocker_conn: asyncpg.Connection | None = None
+    cic_conn: asyncpg.Connection | None = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "047")
+
+        # 1) Hold a REPEATABLE READ snapshot open against `files` so the CONCURRENTLY build below
+        #    must block waiting for it, giving us a window to cancel the build mid-flight.
+        blocker_conn = await asyncpg.connect(dsn)
+        blocker_tx = blocker_conn.transaction(isolation="repeatable_read")
+        await blocker_tx.start()
+        await blocker_conn.fetch("SELECT 1 FROM files")
+
+        # 2) Start the concurrent build on its own connection; it will hang behind the blocker.
+        cic_conn = await asyncpg.connect(dsn)
+        cic_task = asyncio.create_task(
+            cic_conn.execute("CREATE INDEX CONCURRENTLY ix_files_original_filename_id ON public.files USING btree (original_filename, id)")
+        )
+
+        # 3) Poll pg_stat_activity for the build's backend pid, then cancel it mid-build --
+        #    the same signal a killed connection or statement_timeout delivers in production.
+        cancel_conn = await asyncpg.connect(dsn)
+        try:
+            pid = None
+            for _ in range(100):
+                row = await cancel_conn.fetchrow(
+                    "SELECT pid FROM pg_stat_activity "
+                    "WHERE query ILIKE '%CREATE INDEX CONCURRENTLY%ix_files_original_filename_id%' "
+                    "AND pid != pg_backend_pid()"
+                )
+                if row is not None:
+                    pid = row["pid"]
+                    break
+                await asyncio.sleep(0.05)
+            assert pid is not None, "the CONCURRENTLY build never showed up in pg_stat_activity to cancel"
+            await cancel_conn.execute("SELECT pg_cancel_backend($1)", pid)
+        finally:
+            await cancel_conn.close()
+
+        with pytest.raises(asyncpg.PostgresError):
+            await cic_task
+
+        # Release the blocker -- nothing else should stay stuck on its snapshot.
+        await blocker_tx.rollback()
+        await blocker_conn.close()
+        blocker_conn = None
+        await cic_conn.close()
+        cic_conn = None
+
+        # Confirm the simulated precondition this bead fixes: an INVALID index was left behind.
+        verify_conn = await asyncpg.connect(dsn)
+        try:
+            precondition = await verify_conn.fetchrow(
+                "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.ix_files_original_filename_id'::regclass"
+            )
+        finally:
+            await verify_conn.close()
+        assert precondition is not None, "simulated interruption did not leave an index behind"
+        assert precondition["indisvalid"] is False, "simulated interruption did not leave the index INVALID"
+
+        # The regression this bead fixes: upgrade must self-heal, not silently no-op.
+        await asyncio.to_thread(upgrade_to, cfg, "048")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        try:
+            async with engine.connect() as conn:
+                healed = (
+                    await conn.execute(text("SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.ix_files_original_filename_id'::regclass"))
+                ).scalar_one()
+            assert healed is True, "upgrade must drop and rebuild the INVALID leftover index rather than no-op on it"
+        finally:
+            await engine.dispose()
+    finally:
+        if cic_conn is not None:
+            await cic_conn.close()
+        if blocker_conn is not None:
+            await blocker_conn.close()
         await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
