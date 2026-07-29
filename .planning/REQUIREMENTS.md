@@ -9,27 +9,27 @@
 
 ### CONSOLE — DAG Console Correctness
 
-- [ ] **CONSOLE-01**: Operator sees each stage's real derived status (done / in-flight / failed / not-started / skipped) in the file detail slide-in's *Stage Eligibility* pills, consistent with the Files-matrix row for the same file (today the pills are status-blind — a row showing Meta=done / Analyze=in-flight renders identical plain pills).
-- [ ] **CONSOLE-02**: Operator sees the left-rail stage badges reflect actual work — the Analyze badge shows the true in-flight/pending count, never `0` while files are in flight (observed `0` while 2,183 analyze jobs were in flight).
-- [ ] **CONSOLE-03**: Operator can dismiss the detail pop-out with its X / close control — both the Agents detail panel and the Analyze-lane detail panel fully close, rather than only removing the X icon (HTMX-swap / Alpine-global-scope trap).
+- [x] **CONSOLE-01**: Operator sees each stage's real derived status (done / in-flight / failed / not-started / skipped) in the file detail slide-in's *Stage Eligibility* pills, consistent with the Files-matrix row for the same file (today the pills are status-blind — a row showing Meta=done / Analyze=in-flight renders identical plain pills). (Phase 93 / epic phaze-nawk.1, PR #260 — record slide-in renders the shared `_stage_pill.html` token off `stage_status_case`, the same derivation the Files matrix uses; browser-UAT verified phaze-nawk.4. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **CONSOLE-02**: Operator sees the left-rail stage badges reflect actual work — the Analyze badge shows the true in-flight/pending count, never `0` while files are in flight (observed `0` while 2,183 analyze jobs were in flight). (Phase 93 / epic phaze-nawk.2, PR #260 — the rail `<aside>` was missing its Alpine `x-data` root, so every badge binding was inert and stuck at the server-rendered `0`; fixed in commit d09b398; browser-UAT confirmed the badge now tracks in-flight count. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **CONSOLE-03**: Operator can dismiss the detail pop-out with its X / close control — both the Agents detail panel and the Analyze-lane detail panel fully close, rather than only removing the X icon (HTMX-swap / Alpine-global-scope trap). (Phase 94 / epic phaze-nawk.3, PR #260 — `_detail_pane.html`'s `hide()` clears the swapped body and reaches Alpine state via `Alpine.$data(this)` instead of a bare global reference; verified closed on both surfaces and survives the 5s poll-swap; browser-UAT verified phaze-nawk.4. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
 - [x] **CONSOLE-04**: Operator can open the Analyze workspace without the browser severely slowing or hanging. (Phase 95 / epic phaze-zqvh, PR #264 — browser-verified at 200K corpus: ~4.1s open, ~80MB heap, flat 31-minute soak, no-jank interactions at the 13K-row working set; see 95-VERIFICATION.md)
 
 ### COMPUTE — Multi-Kueue Compute Surfacing (systemic)
 
-- [ ] **COMPUTE-01**: Operator sees each Kueue cluster (vox, xenolab) as a live, per-cluster ephemeral identity on the Agents page while it runs workloads — derived from in-flight Kueue jobs, ACTIVE not perpetually `NEVER`/dead — and the single generic "k8s burst" lane is reconciled with these per-cluster identities (a cluster is never shown twice: once dead as an agent row, once as a generic active burst lane).
-- [ ] **COMPUTE-02**: Operator sees the header agent count include every active compute lane (not `Agents · 1` while multiple compute lanes are actively running).
-- [ ] **COMPUTE-03**: Operator sees each file's lane labeled with its real backend/cluster (derived from `backend_id`); the stale `☁ A1` label never appears when no A1 backend exists (only Kueue vox/xenolab + local are configured).
+- [x] **COMPUTE-01**: Operator sees each Kueue cluster (vox, xenolab) as a live, per-cluster ephemeral identity on the Agents page while it runs workloads — derived from in-flight Kueue jobs, ACTIVE not perpetually `NEVER`/dead — and the single generic "k8s burst" lane is reconciled with these per-cluster identities (a cluster is never shown twice: once dead as an agent row, once as a generic active burst lane). (Phase 96 / epic phaze-zlv.1-.3, PR #258 — `derive_compute_lane_identities` (`services/agent_liveness.py`) derives each cluster's live identity from in-flight workloads; registry-shadowed never-heartbeating rows suppressed; epic verification gate phaze-zlv.6 passed. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **COMPUTE-02**: Operator sees the header agent count include every active compute lane (not `Agents · 1` while multiple compute lanes are actively running). (Phase 97 / epic phaze-zlv.4, PR #258 — header `Agents · N` sums `$store.pipeline.agentOnline + computeLanesActive`. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **COMPUTE-03**: Operator sees each file's lane labeled with its real backend/cluster (derived from `backend_id`); the stale `☁ A1` label never appears when no A1 backend exists (only Kueue vox/xenolab + local are configured). (Phase 97 / epic phaze-zlv.5, PR #258 — per-file lane badge derives from `CloudJob.backend_id` via `f.lane_kind` (commit c7736a2), replacing the retired `cloud_phase`-based a1/k8s heuristic. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
 
 ### DRAIN — Cloud-Drain Hold (functional investigation)
 
-- [ ] **DRAIN-01**: The cloud-drain dispatch path does not falsely gate on a heartbeat-liveness signal that compute agents never emit — the "Awaiting cloud" backlog dispatches to available Kueue clusters and does not stall while compute is actively analyzing (verified by measured, non-zero dispatch throughput and a decreasing backlog). *(Scoped as investigate-then-fix: if the investigation proves the hold is purely a display artifact, this collapses into DRAIN-02.)*
-- [ ] **DRAIN-02**: The Cloud Routing card message reflects real routing state — it does not read "held — no compute agent online" while compute agents are actively analyzing files.
+- [x] **DRAIN-01**: The cloud-drain dispatch path does not falsely gate on a heartbeat-liveness signal that compute agents never emit — the "Awaiting cloud" backlog dispatches to available Kueue clusters and does not stall while compute is actively analyzing (verified by measured, non-zero dispatch throughput and a decreasing backlog). *(Scoped as investigate-then-fix: if the investigation proves the hold is purely a display artifact, this collapses into DRAIN-02.)* (Phase 98 / epic phaze-qtk.1, PR #257 — investigated and recorded COSMETIC/refuted: `KueueBackend.is_available` has no agent/heartbeat dependency, the fileserver gate is ever-checked-in not heartbeat-based, and capacity math explains the observed backlog; collapses into DRAIN-02 per the scoped contract above. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **DRAIN-02**: The Cloud Routing card message reflects real routing state — it does not read "held — no compute agent online" while compute agents are actively analyzing files. (Phase 98 / epic phaze-qtk.2 + phaze-613, PR #257 — `derive_cloud_hold_reason` (`services/backends.py`) derives the caption from the real per-lane snapshot, replacing the hardcoded literal; the drain's hung-probe gap also bounded with `asyncio.wait_for`. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
 
 ### OBS — Analysis-Pod Observability (#249)
 
-- [ ] **OBS-01**: Analysis pods no longer emit sustained progress-POST `ConnectTimeout` warning spam during analysis — progress posts use a short connect-timeout + zero retries and the progress-path transport-error log is demoted to debug; a regression guard asserts the short-timeout/no-retry client on the progress path.
-- [ ] **OBS-02**: Operator can read a human-friendly frame for each job in the pod console — readable filename, source path/origin (fileserver, original path), target cluster / `backend_id` / staging bucket, duration and size — alongside the existing structured JSON logs.
-- [ ] **OBS-03**: The admin-UI live analysis progress bar advances mid-analysis — essentia analysis runs in a subprocess so the pod's asyncio event loop is no longer GIL-starved — and the console progress lines and the UI progress bar share one source.
+- [x] **OBS-01**: Analysis pods no longer emit sustained progress-POST `ConnectTimeout` warning spam during analysis — progress posts use a short connect-timeout + zero retries and the progress-path transport-error log is demoted to debug; a regression guard asserts the short-timeout/no-retry client on the progress path. (Phase 99 / PR #252 + regression-guard PR #253, backfilled as epic phaze-ph99 — `services/agent_client.py` progress POSTs use a short connect-timeout with zero retries, the transport-error log demoted to debug, a regression guard pins the client, and a dropped POST still never fails the analysis job. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **OBS-02**: Operator can read a human-friendly frame for each job in the pod console — readable filename, source path/origin (fileserver, original path), target cluster / `backend_id` / staging bucket, duration and size — alongside the existing structured JSON logs. (Phase 100 / epic phaze-sfbx, PR #259 — `job_runner.py` emits a human-readable startup banner + step lines beside the existing structured JSON fields; essentia's own stdout bracket-framed. Not a fix-round 1-2 outcome — see phaze-pw7v.10)
+- [x] **OBS-03**: The admin-UI live analysis progress bar advances mid-analysis — essentia analysis runs in a subprocess so the pod's asyncio event loop is no longer GIL-starved — and the console progress lines and the UI progress bar share one source. (Phase 101, already recorded complete in ROADMAP.md 2026-07-16 — epic phaze-bo3p (epic + 5 issues): analysis runs via `phaze.analysis_child` over a JSONL protocol driven by `services/analysis_exec.py`, shared by both the pod and SAQ-worker lanes; `services/analysis.py` untouched (byte-identity preserved). This checkbox was simply never synced from the ROADMAP tick — not a fix-round 1-2 outcome, and out of phase-range 93-100 for this cross-walk; see phaze-pw7v.10)
 
 ### MIG — Alembic Migration-Chain Flatten
 
@@ -64,21 +64,21 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONSOLE-01 | Phase 93 | Pending |
-| CONSOLE-02 | Phase 93 | Pending |
-| CONSOLE-03 | Phase 94 | Pending |
+| CONSOLE-01 | Phase 93 | Complete (epic phaze-nawk.1, PR #260 — browser-UAT verified phaze-nawk.4) |
+| CONSOLE-02 | Phase 93 | Complete (epic phaze-nawk.2, PR #260 — browser-UAT verified phaze-nawk.4) |
+| CONSOLE-03 | Phase 94 | Complete (epic phaze-nawk.3, PR #260 — browser-UAT verified phaze-nawk.4) |
 | CONSOLE-04 | Phase 95 | Complete (verified — 95-VERIFICATION passed) |
-| COMPUTE-01 | Phase 96 | Pending |
-| COMPUTE-02 | Phase 97 | Pending |
-| COMPUTE-03 | Phase 97 | Pending |
-| DRAIN-01 | Phase 98 | Pending |
-| DRAIN-02 | Phase 98 | Pending |
-| OBS-01 | Phase 99 | Pending |
-| OBS-02 | Phase 100 | Pending |
-| OBS-03 | Phase 101 | Pending |
-| MIG-01 | Phase 102 | Pending |
-| MIG-02 | Phase 102 | Pending |
-| MIG-03 | Phase 102 | Pending |
+| COMPUTE-01 | Phase 96 | Complete (epic phaze-zlv.1-.3, PR #258 — epic verification gate phaze-zlv.6 passed) |
+| COMPUTE-02 | Phase 97 | Complete (epic phaze-zlv.4, PR #258) |
+| COMPUTE-03 | Phase 97 | Complete (epic phaze-zlv.5, PR #258) |
+| DRAIN-01 | Phase 98 | Complete (epic phaze-qtk.1, PR #257 — investigated, recorded cosmetic/refuted, collapses into DRAIN-02) |
+| DRAIN-02 | Phase 98 | Complete (epic phaze-qtk.2 + phaze-613, PR #257) |
+| OBS-01 | Phase 99 | Complete (PR #252 + #253, backfilled as epic phaze-ph99) |
+| OBS-02 | Phase 100 | Complete (epic phaze-sfbx, PR #259) |
+| OBS-03 | Phase 101 | Complete (epic phaze-bo3p — already recorded complete in ROADMAP.md 2026-07-16; this table simply hadn't been synced) |
+| MIG-01 | Phase 102 | Pending (out of scope for this cross-walk — phaze-pw7v.10 covers CONSOLE/COMPUTE/DRAIN/OBS only) |
+| MIG-02 | Phase 102 | Pending (out of scope for this cross-walk) |
+| MIG-03 | Phase 102 | Pending (out of scope for this cross-walk) |
 
 **Coverage:**
 - Milestone requirements: 15 total
@@ -88,4 +88,4 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 ---
 *Requirements defined: 2026-07-14*
-*Last updated: 2026-07-14 after roadmap creation — traceability populated, phases 93-102 (milestone 2026.7.7)*
+*Last updated: 2026-07-29 (phaze-pw7v.10) — cross-walked CONSOLE-01/02/03, COMPUTE-01/02/03, DRAIN-01/02, OBS-01/02/03 against merged code and re-ticked all 12 as Complete with bead/PR evidence; OBS-03 synced from ROADMAP.md's already-complete Phase 101. None of these were delivered by fix rounds 1-2 (PRs #349-360, which fixed unrelated v7-shell/stats-counter/cloud-burst-race bugs) — each was already shipped 2026-07-14/16 via a dedicated Phase-93..100 delivery epic (phaze-nawk, phaze-zlv, phaze-qtk, phaze-ph99, phaze-sfbx) that simply never had its ROADMAP/REQUIREMENTS checkbox synced back. MIG-01/02/03 left Pending — out of this cross-walk's scope.*
