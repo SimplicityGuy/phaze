@@ -19,7 +19,7 @@ import uuid
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
@@ -248,25 +248,41 @@ _UNDOABLE_TAGWRITE_STATUSES = (TagWriteStatus.COMPLETED, TagWriteStatus.DISCREPA
 
 
 async def _get_write_log_to_undo(session: AsyncSession, file_id: uuid.UUID) -> TagWriteLog | None:
-    """Get the latest TagWriteLog that is the ACTUAL write an undo should revert.
+    """Get the HEAD of the current write chain -- the TagWriteLog an undo should revert to.
 
     phaze-soph: ``_get_latest_write_log`` returns the newest row regardless of status/source, so a
     FAILED retry (before_tags = the post-previous-write disk state) or a bulk NO_OP marker
-    (before_tags = {}) shadows the real write, and undo re-applies the wrong snapshot while toasting
-    'Reverted'. This selects the newest row that truly wrote to disk (COMPLETED/DISCREPANCY) and is
-    not itself a reversal (``source != 'undo'``) -- the row whose ``before_tags`` restores the
-    pre-write state.
+    (before_tags = {}) shadowed the real write, and undo re-applied the wrong snapshot while
+    toasting 'Reverted'. Excluding those non-``_UNDOABLE_TAGWRITE_STATUSES`` rows fixed that case.
+
+    phaze-lwqk: a SUCCESSFUL retry is still a shadow. DISCREPANCY is deliberately non-terminal
+    (``_TERMINAL_TAGWRITE_STATUSES`` -- the row "re-offers itself for a retry"), so an ordinary,
+    non-racy operator sequence -- APPROVE -> DISCREPANCY -> APPROVE again -> UNDO -- appends a
+    SECOND undoable row whose ``before_tags`` is the disk state the FIRST write already left
+    (not the true original). Picking "newest" (phaze-soph's fix) still replays that shadow instead
+    of the real original. The correct target is the OLDEST undoable, non-undo row since the last
+    COMPLETED undo -- the head of the CURRENT write chain, not the tail. A completed undo resets
+    the chain (a later write after it starts a genuinely new one), so only rows after that boundary
+    are candidates.
     """
-    stmt = (
-        select(TagWriteLog)
-        .where(
-            TagWriteLog.file_id == file_id,
-            TagWriteLog.status.in_(_UNDOABLE_TAGWRITE_STATUSES),
-            TagWriteLog.source != "undo",
-        )
+    boundary_stmt = (
+        select(TagWriteLog.written_at, TagWriteLog.id)
+        .where(TagWriteLog.file_id == file_id, TagWriteLog.source == "undo", TagWriteLog.status == TagWriteStatus.COMPLETED)
         .order_by(TagWriteLog.written_at.desc(), TagWriteLog.id.desc())
         .limit(1)
     )
+    boundary = (await session.execute(boundary_stmt)).one_or_none()
+
+    stmt = select(TagWriteLog).where(
+        TagWriteLog.file_id == file_id,
+        TagWriteLog.status.in_(_UNDOABLE_TAGWRITE_STATUSES),
+        TagWriteLog.source != "undo",
+    )
+    if boundary is not None:
+        boundary_written_at, boundary_id = boundary
+        stmt = stmt.where(tuple_(TagWriteLog.written_at, TagWriteLog.id) > tuple_(boundary_written_at, boundary_id))
+    stmt = stmt.order_by(TagWriteLog.written_at.asc(), TagWriteLog.id.asc()).limit(1)
+
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -763,23 +779,30 @@ async def undo_tag_write(
         # phaze-nvll defect 3: a stale row (file gone) gets a 200 + OOB toast, not a bare 404.
         return _tagwrite_stale_toast_response(request, "File not found -- it may have been removed or already processed.")
 
-    # phaze-soph: target the latest row that ACTUALLY wrote to disk (COMPLETED/DISCREPANCY, not a
-    # prior undo), skipping FAILED/NO_OP shadows whose before_tags would restore the wrong state.
+    # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
+    # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
+    # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
+    #
+    # phaze-lwqk: this idempotency check MUST run before ``_get_write_log_to_undo`` below. That
+    # selector's chain-walk treats a COMPLETED undo as the boundary of the CURRENT write chain and
+    # deliberately returns nothing for a file with no write AFTER that boundary (there is genuinely
+    # nothing left to revert) -- which would otherwise reach the generic "No prior tag write to
+    # undo" branch instead of this more specific "already reverted" one.
+    newest = await _get_latest_write_log(session, file_id)
+    if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
+        already_message = f"Tags for {file_record.original_filename} were already reverted."
+        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
+        return _tagwrite_diff_row_response(request, row_context, already_message)
+
+    # phaze-soph/phaze-lwqk: target the HEAD of the current write chain -- the row whose
+    # before_tags is the true pre-write state, not a later retry's shadow (see the selector's own
+    # docstring for the full chain-walk rationale).
     latest = await _get_write_log_to_undo(session, file_id)
     if latest is None:
         # phaze-nvll defect 3: nothing to undo (a race/stale row) -- redraw the row as pending
         # alongside the toast rather than silently doing nothing.
         row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
         return _tagwrite_diff_row_response(request, row_context, "No prior tag write to undo.")
-
-    # phaze-04bz: undo must be idempotent. If the most recent operation on this file was already a
-    # COMPLETED reversal (an htmx double-click, or a second tab firing the still-rendered UNDO), a
-    # repeat undo must be a NO-OP -- never a re-apply of the written tags -- with an honest toast.
-    newest = await _get_latest_write_log(session, file_id)
-    if newest is not None and newest.source == "undo" and newest.status == TagWriteStatus.COMPLETED:
-        already_message = f"Tags for {file_record.original_filename} were already reverted."
-        row_context = await _tagwrite_row_context(session, file_record, row_state="pending")
-        return _tagwrite_diff_row_response(request, row_context, already_message)
 
     log_entry = await execute_tag_write(session, file_record, latest.before_tags, source="undo")
     await session.commit()

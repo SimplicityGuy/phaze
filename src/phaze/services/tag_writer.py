@@ -14,6 +14,7 @@ import unicodedata
 import mutagen
 from mutagen.id3 import ID3, TALB, TCON, TDRC, TIT2, TPE1, TRCK
 from mutagen.mp4 import MP4
+from sqlalchemy import func, select
 import structlog
 
 from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
@@ -276,6 +277,18 @@ async def execute_tag_write(
     Raises:
         ValueError: If the file is not applied (no executed proposal -- READ-05 / D-01).
     """
+    # phaze-lwqk: serialize every tag-write/undo operation against THIS file. write_file_tags,
+    # undo_tag_write, and the bulk loop all funnel through this one function, so one lock here
+    # closes both: (a) two per-file requests racing each other (a double-click, two tabs, or a
+    # per-file write racing its own retry), and (b) a per-file write/undo racing the bulk loop's
+    # write of the SAME file -- previously two concurrent mutagen full-file rewrites on one audio
+    # file, an irreplaceable-archive corruption risk. xact-scoped matches every other advisory lock
+    # in the tree (e.g. routers/agent_push.py:325's `pg_advisory_xact_lock(hashtext(...))`):
+    # execute_tag_write never manages its own transaction, and every caller commits exactly once
+    # right after calling it (phaze-k7g6 for the bulk loop; one commit for each per-file route), so
+    # the lock always releases at that same commit/rollback -- never held past this call.
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"tagwrite:{file_record.id}"))))
+
     if not await is_applied(session, file_record.id):
         msg = "Only executed files can have tags written"
         raise ValueError(msg)
