@@ -50,9 +50,12 @@ instead of analyzed window-by-window, so cost is O(constant), not O(duration)
 > handled entirely by the `audfprint` and `panako` HTTP sidecars, which the app called over httpx.
 > Both engines and every integration point were removed (phaze-0jpe, 2026-07-28; see
 > `docs/design/0002-fingerprint-removal.md`). There is no `pyacoustid` dependency and nothing
-> imports it; `libchromaprint` / `fpcalc` survive in the images as an `essentia-tensorflow`
-> runtime dependency, independent of the removed fingerprinting engines. This page is only about
-> the `essentia-tensorflow` analysis stage.
+> imports it. `libchromaprint` / `fpcalc` also survive in the images, but **not** because
+> `essentia-tensorflow` needs them at runtime — `ldd` on the shipped `_essentia` extension shows
+> no chromaprint link and `import essentia` succeeds without it (phaze-0jpe.6 correction, tested
+> against the live deployment). They have no verified consumer anywhere in this codebase; see
+> `docs/design/0002-fingerprint-removal.md` for the full correction. This page is only about the
+> `essentia-tensorflow` analysis stage.
 
 ______________________________________________________________________
 

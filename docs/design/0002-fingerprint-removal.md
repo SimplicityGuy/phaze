@@ -122,17 +122,33 @@ same tool also ships. Both engines can be made to work on this content only with
 re-architecture (windowed precompute, a different matching strategy, or both) — re-architecture
 that was never attempted because findings #1 and #2 made it not worth attempting first.
 
-## Chromaprint — kept, and why
+## Chromaprint — kept, but its original justification was wrong
 
 `chromaprint`/`fpcalc`/`libchromaprint` remain in the main application and agent Docker images.
-**Verified before removal, not assumed:** this is a runtime dependency of
-`essentia-tensorflow`'s native `_essentia` extension itself, wholly independent of the two
-fingerprinting engines removed here — confirmed by the Dockerfiles' own comments ("without
-these, `import essentia` fails at runtime and every analysis job dead-letters") and by
-`docs/essentia-analysis.md`'s own prior note that audio fingerprinting was never essentia's
-concern. Only `services/audfprint/` and `services/panako/` (their own separate Dockerfiles and
+Only `services/audfprint/` and `services/panako/` (their own separate Dockerfiles and
 dependencies) were removed. `pyacoustid` was never a dependency and remains unused — it was
-never wired to either engine.
+never wired to either removed engine.
+
+**Correction, phaze-0jpe.6 (2026-07-28):** this ADR originally justified keeping chromaprint by
+asserting it was a runtime dependency of `essentia-tensorflow`'s native `_essentia` extension —
+"without these, `import essentia` fails at runtime" — citing the Dockerfiles' own comments as
+confirmation. That claim was **tested against the live deployment and found false**: `ldd` on the
+deployed `_essentia.cpython-314-x86_64-linux-gnu.so` returns 12 linked entries (`libdrm`,
+`libatomic`, `libtensorflow`, `libstdc++`, `libm`, `libgcc_s`, `libpthread`, and similar toolchain
+libraries) — **zero** of which is chromaprint — and `import essentia` succeeds (2.1-beta6-dev)
+with chromaprint entirely absent. The Dockerfile comment was never itself verified; it repeated
+an assumption forward. (The comment's `libatomic1` claim is separately correct and unaffected by
+this correction — `libatomic.so.1` genuinely is linked.)
+
+The accurate status, with `CLAUDE.md` and the Dockerfiles corrected to match: chromaprint is
+retained with **no verified consumer in this codebase**. No `phaze` source calls `fpcalc`,
+`chromaprint`, `Chromaprinter`, or `acoustid`, and the shipped essentia wheel does not link it.
+It plausibly dates from the original `pyacoustid`/AcoustID fingerprinting plan that was never
+implemented (superseded by the `audfprint`/Panako pipeline this epic removed) and was never
+cleaned up afterward. This is **not** a claim that the dependency is proven unnecessary — a
+runtime `dlopen` path was not exhaustively ruled out, only the static link and the plain
+`import essentia` path — so it is kept, unverified, pending an operator decision on whether to
+drop it. Removing it is out of scope for this epic; that is why it survives phaze-0jpe.
 
 ## Consequences
 
