@@ -2281,6 +2281,52 @@ async def test_recover_returns_200_when_producer_raises_is_isolated(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_run_recovery_logs_producer_exception_instead_of_letting_it_vanish(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_run_recovery logs a failing producer instead of leaving it an unretrieved task exception (phaze-o1xx).
+
+    Pre-fix, ``_run_recovery`` awaited ``recover_orphaned_work`` with no try/except, and the
+    fire-and-forget ``asyncio.create_task``'s only done-callback discarded it from
+    ``_background_tasks`` -- so a genuine forced-recovery failure (as opposed to the isolated
+    per-row failures ``recover_orphaned_work`` itself now tallies) surfaced nowhere the operator or
+    an on-call engineer could see except asyncio's default "Task exception was never retrieved" at
+    GC. This pins that ``_run_recovery`` itself never raises and DOES log.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        raise RuntimeError("recovery boom")
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", boom)
+
+    with caplog.at_level("ERROR", logger="phaze.routers.pipeline"):
+        await pipeline_mod._run_recovery({})  # never raises -- the whole point of the fix
+
+    assert "manual recovery trigger failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_logs_the_final_tally_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_run_recovery logs the producer's return value on the happy path (visibility parity with startup)."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0}}}
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+
+    with caplog.at_level("INFO", logger="phaze.routers.pipeline"):
+        await pipeline_mod._run_recovery({})
+
+    assert "manual recovery trigger complete" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_dashboard_renders_recover_button_end_to_end(client: AsyncClient) -> None:
     """GET /pipeline/ exposes the GLOBAL Recover button posting to /pipeline/recover (REQ-42-5).
 

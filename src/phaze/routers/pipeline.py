@@ -2658,8 +2658,22 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     safety net, D-05) -- it never bypasses the per-item deterministic-key dedup, so a forced
     reconcile over a live queue collapses every still-in-flight item to a skipped no-op and
     can NEVER double the backlog (Phase-32 doubling class is closed).
+
+    Per-row failures inside ``recover_orphaned_work`` are already isolated and tallied under
+    ``errored`` (phaze-o1xx) rather than raising, so this normally just logs the final tally. The
+    ``try/except`` here is the LAST line of defense for a failure the producer itself cannot
+    isolate (e.g. the session/DETECT-gate read at the top of the function): the previous
+    fire-and-forget ``asyncio.create_task`` had no done-callback and no `except`, so that exception
+    was never retrieved -- the operator's HTMX response already said "recovery started" and nothing
+    else ever surfaced the failure. Log it here so a failed forced recovery is at least visible in
+    the controller logs instead of silently vanishing.
     """
-    await recover_orphaned_work(ctx, force=True)
+    try:
+        result = await recover_orphaned_work(ctx, force=True)
+    except Exception:
+        logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced (phaze-o1xx)")
+        return
+    logger.info("manual recovery trigger complete", detected_loss=result["detected_loss"], stages=result["stages"])
 
 
 @router.post("/pipeline/recover", response_class=HTMLResponse)
