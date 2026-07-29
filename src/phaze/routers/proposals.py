@@ -8,7 +8,8 @@ import uuid
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import ARRAY, bindparam, func, select
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -454,33 +455,35 @@ async def bulk_approve_high_confidence(
     OOB ``#stats-bar`` that does not exist in the v7 shell) therefore left every just-approved row
     rendered PENDING with live APPROVE/EDIT/SKIP controls, so a later click 409'd silently
     (``APPROVE_REJECT_FROM = frozenset({PENDING})``). When the request comes from one of those two
-    v7 targets, snapshot the PENDING rows the predicate is ABOUT to approve before the guarded
-    update runs, then answer with the toast plus one ``hx-swap-oob`` ``_diff_row.html`` fragment
-    (``row_state="approved"``) per row this request actually transitioned -- rows a concurrent
-    request already claimed are simply not re-fetched as APPROVED and are left alone.
+    v7 targets, build the ``hx-swap-oob`` ``_diff_row.html`` fragments (``row_state="approved"``)
+    from the ids ``approve_pending_above_confidence`` itself RETURNs as having just transitioned --
+    NOT from a snapshot taken before the update runs.
+
+    phaze-0ew3: a pre-update snapshot SELECT used to build ``candidate_ids`` here, duplicating
+    ``approve_pending_above_confidence``'s own predicate as a SECOND unbounded ``id IN (...)`` (the
+    32,767-bind-parameter cap the service fix addresses). Reusing the service's own ``RETURNING id``
+    list removes that duplicate id-list entirely, and the row-hydration SELECT below binds it as one
+    ``= ANY(:ids)`` array parameter (mirrors ``tasks.reenqueue._fids_scope``) instead of an
+    expanding ``.in_(...)``, so this path never re-introduces the same bind-count ceiling.
     """
     threshold = 0.9
     v7_target = _BULK_HIGH_CONFIDENCE_TARGETS.get(request.headers.get("HX-Target", ""))
-    candidate_ids: list[uuid.UUID] = []
-    if v7_target is not None:
-        candidate_stmt = select(RenameProposal.id).where(
-            RenameProposal.status == ProposalStatus.PENDING,
-            RenameProposal.confidence >= threshold,
-        )
-        candidate_ids = list((await session.execute(candidate_stmt)).scalars().all())
 
-    count = await approve_pending_above_confidence(session, threshold=threshold)
+    approved_ids = await approve_pending_above_confidence(session, threshold=threshold)
+    count = len(approved_ids)
     toast_message = f"{count} proposals approved." if count else "Nothing matched -- no pending rows meet the >=90% confidence predicate right now."
 
     if v7_target is not None:
         row_id_prefix, facet = v7_target
         approved_rows: list[dict[str, object]] = []
-        if candidate_ids:
-            rows_stmt = select(RenameProposal).options(selectinload(RenameProposal.file)).where(RenameProposal.id.in_(candidate_ids))
+        if approved_ids:
+            rows_stmt = (
+                select(RenameProposal)
+                .options(selectinload(RenameProposal.file))
+                .where(RenameProposal.id == func.any(bindparam("approved_ids", value=approved_ids, type_=ARRAY(PGUUID(as_uuid=True)))))
+            )
             proposals = (await session.execute(rows_stmt)).scalars().all()
-            approved_rows = [
-                _diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals if p.status == ProposalStatus.APPROVED
-            ]
+            approved_rows = [_diff_row_context(p, row_id_prefix, facet, "approved", oob=True) for p in proposals]
         return templates.TemplateResponse(
             request=request,
             name="proposals/partials/_bulk_approve_high_confidence_response.html",

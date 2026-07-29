@@ -459,8 +459,8 @@ async def test_approve_pending_above_confidence_leaves_non_pending_untouched(ses
     pending = await _create_proposal(session, original_filename="hc_pending.mp3", confidence=0.95)
     rejected = await _create_proposal(session, original_filename="hc_rejected.mp3", confidence=0.95, status=ProposalStatus.REJECTED)
 
-    count = await approve_pending_above_confidence(session, threshold=0.9)
-    assert count == 1
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == [pending.id]
 
     approved_row = await session.get(RenameProposal, pending.id)
     assert approved_row is not None
@@ -469,6 +469,35 @@ async def test_approve_pending_above_confidence_leaves_non_pending_untouched(ses
     rejected_row = await session.get(RenameProposal, rejected.id)
     assert rejected_row is not None
     assert rejected_row.status == ProposalStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_no_matches_returns_empty_list(session: AsyncSession) -> None:
+    """No PENDING row meets the threshold: an empty list, not a stray query error."""
+    await _create_proposal(session, original_filename="low_conf.mp3", confidence=0.3)
+
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == []
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_above_confidence_reads_latest_confidence(session: AsyncSession) -> None:
+    """phaze-p35v: the confidence predicate is evaluated INSIDE the same UPDATE that flips
+    ``status``, so a PENDING row whose confidence was lowered (mirroring a concurrent re-propose
+    upsert that keeps the id and PENDING status but replaces ``confidence``) is judged against its
+    CURRENT value, never a value read by an earlier, separate SELECT.
+    """
+    proposal = await _create_proposal(session, original_filename="reproposed.mp3", confidence=0.95)
+    # Mirrors store_proposals' upsert lowering confidence on a re-propose while the row stays PENDING.
+    proposal.confidence = 0.3
+    await session.commit()
+
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert approved_ids == []
+
+    refetched = await session.get(RenameProposal, proposal.id)
+    assert refetched is not None
+    assert refetched.status == ProposalStatus.PENDING
 
 
 # ---------------------------------------------------------------------------
