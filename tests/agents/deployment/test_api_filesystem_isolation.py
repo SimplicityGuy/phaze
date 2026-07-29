@@ -6,7 +6,7 @@ Covers four invariants for the root ``docker-compose.yml``:
 
 1. ``api`` service has no banned filesystem mounts (DIST-01).
 2. ``worker`` (controller) service has no banned filesystem mounts (DIST-01).
-3. ``watcher``, ``agent-worker``, ``audfprint``, ``panako`` services are absent
+3. ``watcher``, ``agent-worker`` services are absent
    from the root compose (D-15, D-17 — those live in ``docker-compose.agent.yml``).
 4. ``redis`` service is hardened: ``--requirepass``, IP-prefixed port binding,
    and an authenticated healthcheck with ``--no-auth-warning`` (D-05 / AUTH-03).
@@ -71,17 +71,15 @@ def test_controller_worker_has_no_file_mounts() -> None:
 
 
 def test_no_watcher_or_agent_worker_in_root_compose() -> None:
-    """D-15 / D-17: agent + sidecar services live ONLY in docker-compose.agent.yml.
+    """D-15 / D-17: agent services live ONLY in docker-compose.agent.yml.
 
     The root compose is the application-server compose; it must not declare
-    watcher, agent-worker, audfprint, or panako.
+    watcher or agent-worker.
     """
     data = _load_compose()
     services = data["services"]
     assert "watcher" not in services, "watcher belongs in docker-compose.agent.yml (D-17)"
     assert "agent-worker" not in services, "agent-worker belongs in docker-compose.agent.yml (D-17)"
-    assert "audfprint" not in services, "audfprint sidecar is file-server-local (D-15)"
-    assert "panako" not in services, "panako sidecar is file-server-local (D-15)"
 
 
 def test_redis_hardened() -> None:

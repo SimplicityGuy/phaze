@@ -5,8 +5,8 @@
 # re-tests each entry after dependency upgrades and removes resolved ones.
 #
 # NOTE: osv-scanner applies each osv-scanner.toml only to lockfiles in its own
-# directory tree. Ignores for sub-project lockfiles live next to that lockfile,
-# e.g. services/audfprint/osv-scanner.toml.
+# directory tree. Ignores for a sub-project's lockfile (if one is ever added)
+# live next to that lockfile, not here.
 #
 # Only add entries when no fix is available upstream.
 #
