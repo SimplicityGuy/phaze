@@ -12,7 +12,7 @@
                             too), so [] only means "genuinely none yet" or a degraded read -> the "No
                             completions in the last N" empty state. label is a filename (never a bare
                             hash/id -- phaze-2u8v.3); completed_at is the TRUE completion instant.
-     * queue_depths      -- per-lane-tier {analyze,fingerprint,meta,io} depth; each degrades to 0 (D-00b).
+     * queue_depths      -- per-lane-tier {analyze,meta,io} depth; each degrades to 0 (D-00b).
                             None (phaze-2u8v.1) when the lane has NO SAQ agent queue -> render the note.
      * queue_depths_agent -- the agent id whose SAQ lanes those depths were counted from, or None.
      * queue_depths_note -- why there is no per-tier figure (kueue lane / no live fileserver agent).
@@ -44,7 +44,11 @@
     {% set _cap = lane.cap or 0 %}
     {% set _pct = ((lane.in_flight / _cap * 100) if _cap else 0) %}
     {% set _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct) %}
-    <div class="space-y-4{% if not lane.available %} opacity-60{% endif %}">
+    {# phaze-zxbh: data-lane-id stamps the identity of the lane THIS body actually renders, so
+       _detail_pane.html's onLoaded() can detect a late/mismatched response (the own-tick and the
+       row-click trigger both write into the shared #detail-pane from different elements) and
+       self-heal instead of silently pinning the pane to the wrong lane. #}
+    <div class="space-y-4{% if not lane.available %} opacity-60{% endif %}" data-lane-id="{{ lane.id }}">
         {# Header: kind glyph/color + id + RANK micro-label (reused from _lane_card.html). #}
         <div class="flex items-center justify-between gap-2">
             <span class="text-sm text-gray-700 dark:text-gray-200">
@@ -93,7 +97,7 @@
            phaze-2u8v.1: `queue_depths` is None (NOT {}) when the lane has no SAQ agent queue at all --
            a kueue lane (its work is a k8s Job, which consumes no queue) or a local lane with no live
            fileserver agent. Render `queue_depths_note` in that case. A fabricated "analyze 0 ·
-           fingerprint 0 · meta 0 · io 0" row is indistinguishable from a genuinely idle agent, which is
+           meta 0 · io 0" row is indistinguishable from a genuinely idle agent, which is
            exactly how a lane holding 2075 queued jobs read as idle on this panel. `queue_depths_agent`
            names the agent the figures were read from so the panel can never again silently count a
            queue nobody writes to. #}
@@ -139,6 +143,9 @@
              hx-trigger="every 5s"
              hx-target="#detail-pane"
              hx-swap="innerHTML"
+             {# phaze-zxbh: same sync group as the row trigger (_lane_card.html) -- a newer row
+                click aborts this own-tick's in-flight request instead of racing it to the swap. #}
+             hx-sync="#detail-pane:abort"
              x-data="{ armed: false }"
              x-init="$nextTick(() => { armed = true })"
              x-effect="if (armed && !open && window.htmx) window.htmx.remove($el)"></div>
@@ -146,7 +153,7 @@
 {% else %}
     {# Unknown/offline backend_id -> friendly empty state (T-88-03), never a 500. No own-tick: there is
        no lane id to poll; dismiss returns the pane to its resting state. #}
-    <div class="rounded-xl border border-amber-500/30 p-4 opacity-60">
+    <div class="rounded-xl border border-amber-500/30 p-4 opacity-60" data-lane-id="{{ backend_id }}">
         <p role="status" class="text-sm text-amber-600 dark:text-amber-400">Lane offline — no live queue data on this poll.</p>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">This lane is not in the live registry snapshot.</p>
     </div>

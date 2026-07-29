@@ -1,7 +1,7 @@
 ---
 # Application-server compose. Phase 29 hardening (D-05, D-17, D-19):
 #   - Only the application-server services live here: {api, worker, postgres, redis}.
-#   - The watcher, agent-worker, and audfprint/panako sidecar services live in
+#   - The watcher and agent-worker services live in
 #     docker-compose.agent.yml (deployed on the file server in Plan 04+).
 #   - api + worker have NO music/model/output file mounts (DIST-01). The api
 #     container only mounts ./certs/ so the cert bootstrap (Plan 01) can read

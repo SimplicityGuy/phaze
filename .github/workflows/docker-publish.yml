@@ -27,22 +27,12 @@ jobs:
           # Phase 29 D-15 / D-16: the api image is pulled by docker-compose.agent.yml's
           # worker + watcher services via the bare-repo URL
           # ghcr.io/simplicityguy/phaze:<tag> (no /api sub-path), so we override
-          # image_suffix to "" for api and keep the sub-path for the sidecars.
+          # image_suffix to "" for api.
           - name: api
             dockerfile: Dockerfile
             context: .
             use_cache: true
             image_suffix: ""
-          - name: audfprint
-            dockerfile: services/audfprint/Dockerfile.audfprint
-            context: .
-            use_cache: true
-            image_suffix: "/audfprint"
-          - name: panako
-            dockerfile: services/panako/Dockerfile.panako
-            context: .
-            use_cache: true
-            image_suffix: "/panako"
 
     steps:
       - name: "⏱️ Start timer"

@@ -42,7 +42,6 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pipeline import ORPHANED_BUCKET, _agent_stage_buckets
@@ -64,7 +63,7 @@ _TARGET_DB = require_test_database(SA_DSN, context="agent-stage-bucket integrati
 _AGENT_A = "agent-a-drill"
 _AGENT_B = "agent-b-drill"
 
-_ENRICH_STAGES = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE)
+_ENRICH_STAGES = (Stage.METADATA, Stage.ANALYZE)
 _FIVE_BUCKETS = (
     Status.NOT_STARTED.value,
     Status.IN_FLIGHT.value,
@@ -183,12 +182,6 @@ async def _seed_agent_a_corpus(session: AsyncSession) -> int:
     f = await _file(session, agent_id=_AGENT_A)
     await _ledger(session, Stage.METADATA, f)
 
-    # fingerprint: 1 done (a success engine), 1 failed-only (a failed engine, no success).
-    f = await _file(session, agent_id=_AGENT_A)
-    session.add(FingerprintResult(file_id=f.id, engine="audfprint", status="success"))
-    f = await _file(session, agent_id=_AGENT_A)
-    session.add(FingerprintResult(file_id=f.id, engine="audfprint", status="failed"))
-
     # analyze: 1 done (completed_at set), 1 failed (failed_at set), 1 in_flight (ledger).
     f = await _file(session, agent_id=_AGENT_A)
     session.add(AnalysisResult(file_id=f.id, analysis_completed_at=datetime.now(UTC)))
@@ -198,7 +191,7 @@ async def _seed_agent_a_corpus(session: AsyncSession) -> int:
     await _ledger(session, Stage.ANALYZE, f)
 
     await session.flush()
-    music_video_total = 3 + 4 + 2 + 3  # every seeded music file above (11)
+    music_video_total = 3 + 4 + 3  # every seeded music file above (10)
 
     # One non-music file owned by agent A -- must NOT count toward any enrich total (music/video scope).
     await _file(session, agent_id=_AGENT_A, file_type="txt")
@@ -237,10 +230,6 @@ async def test_seeded_failed_and_in_flight_are_visible(db_session: AsyncSession)
     assert int(meta[Status.DONE.value] or 0) == 2
     assert int(meta[Status.FAILED.value] or 0) == 1
     assert int(meta[Status.IN_FLIGHT.value] or 0) == 1
-
-    fp = await _agent_stage_buckets(db_session, _AGENT_A, Stage.FINGERPRINT)
-    assert int(fp[Status.DONE.value] or 0) == 1
-    assert int(fp[Status.FAILED.value] or 0) == 1
 
     an = await _agent_stage_buckets(db_session, _AGENT_A, Stage.ANALYZE)
     assert int(an[Status.DONE.value] or 0) == 1

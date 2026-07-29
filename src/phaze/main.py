@@ -22,7 +22,6 @@ from phaze.routers import (
     agent_exec_batches,
     agent_execution,
     agent_files,
-    agent_fingerprint,
     agent_heartbeat,
     agent_identity,
     agent_metadata,
@@ -30,7 +29,6 @@ from phaze.routers import (
     agent_push,
     agent_s3,
     agent_scan_batches,
-    agent_tracklists,
     companion,
     cue,
     duplicates,
@@ -198,7 +196,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         async with async_session() as session:
             agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
             agents = (await session.execute(agents_stmt)).scalars().all()
-        # quick-260707-dh1: mount ALL FOUR lane queues per agent (analyze/fingerprint/meta/io)
+        # quick-260707-dh1: mount ALL THREE lane queues per agent (analyze/meta/io)
         # PLUS the legacy base queue so the migration drain window is visible in the dashboard.
         agent_queues = [
             q for agent in agents for q in (*_app.state.task_router.all_lane_queues(agent.id), _app.state.task_router.legacy_base_queue(agent.id))
@@ -268,7 +266,6 @@ def create_app() -> FastAPI:
     # Phase 25 internal-agent routers (D-10)
     app.include_router(agent_files.router)
     app.include_router(agent_metadata.router)
-    app.include_router(agent_fingerprint.router)
     app.include_router(agent_execution.router)
     app.include_router(agent_heartbeat.router)
     # Phase 26 internal-agent routers (D-15, D-26, D-27, D-28)
@@ -276,7 +273,6 @@ def create_app() -> FastAPI:
     app.include_router(agent_analysis.router)
     app.include_router(agent_push.router)
     app.include_router(agent_s3.router)
-    app.include_router(agent_tracklists.router)
     app.include_router(agent_proposals.router)
     # Phase 27 internal-agent router (D-10).
     app.include_router(agent_scan_batches.router)

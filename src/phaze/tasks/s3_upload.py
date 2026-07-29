@@ -123,7 +123,12 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
     """
     src = Path(payload.original_path)
     try:
-        fh = src.open("rb")
+        # phaze-2yjf: open() off-loop too, not just the reads. open() against the media mount
+        # (typically NFS/SMB) issues lookup/open RPCs (plus any attribute revalidation) and can
+        # block just as long as a read on a stalled/hung mount -- phaze-1lvp only off-loaded
+        # fh.read, leaving this statement free to wedge the agent worker's event loop (and with
+        # it every co-scheduled lane task and the Phase-46 liveness heartbeat) indefinitely.
+        fh = await asyncio.to_thread(src.open, "rb")
     except OSError as exc:
         # Missing/unreadable source. TERMINAL -- NEVER fall back to a local copy (KSTAGE-02).
         msg = f"upload_file_s3: cannot read original_path {payload.original_path!r} for file_id={payload.file_id}: {exc}"
@@ -160,7 +165,10 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
                 etag = response.headers.get("ETag", "").strip('"')
                 parts.append(UploadedPart(part_number=part_number, etag=etag))
     finally:
-        fh.close()
+        # close() on a read-only handle flushes nothing and is normally a local no-op, but
+        # off-load it too for symmetry with open/read -- cheap insurance against an NFS client
+        # that revalidates attributes on close.
+        await asyncio.to_thread(fh.close)
     return parts
 
 
@@ -176,6 +184,14 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     cloud_job UPLOADING (phaze-lssv). A SAQ job-net cancellation (CancelledError) reaps the in-flight
     request and re-raises WITHOUT a callback (SAQ owns the re-drive; no premature terminal report).
     NO local fallback ever.
+
+    phaze-jsrt: ``report_upload_complete`` itself is ALSO guarded (mirrors ``process_file``'s CR-01
+    handling of ``put_analysis``). Every byte is already transferred by the time this callback fires,
+    so a failure delivering it (a 5xx on ``CompleteMultipartUpload``, a 409 from an unresolved staging
+    bucket, a DB error on the post-complete CAS/enqueue, or any other transport failure) must still
+    call ``report_upload_failed`` before re-raising -- otherwise ``S3_UPLOAD_SAQ_RETRIES = 0`` makes
+    the failure terminal with NO callback at all, stranding ``cloud_job`` UPLOADING until the 6h
+    stranded-staging reaper aborts the multipart and discards the fully-uploaded object.
     """
     payload = UploadFileS3Payload.model_validate(kwargs)
     api: PhazeAgentClient = ctx["api_client"]
@@ -211,5 +227,21 @@ async def upload_file_s3(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
         raise
 
-    await api.report_upload_complete(payload.file_id, parts)
+    try:
+        await api.report_upload_complete(payload.file_id, parts)
+    except asyncio.CancelledError:
+        # A SAQ job-net cancellation racing the completion callback: no premature report either way,
+        # SAQ owns whatever comes next.
+        raise
+    except Exception as exc:
+        # phaze-jsrt: the completion callback sits OUTSIDE the transfer-loop try, but every byte is
+        # already delivered by the time it runs -- a 5xx / 409 / DB error here (report_uploaded raising
+        # after S3's CompleteMultipartUpload already ran, or before it even gets there) used to bypass
+        # report_upload_failed entirely and go terminal with retries=0 and NO callback at all, stranding
+        # cloud_job UPLOADING until the 6h reaper discards the fully-uploaded object. Report it here too
+        # (best-effort -- a failure delivering the FAILURE report must not mask the original error) so
+        # control's bounded re-drive / at-cap spill runs instead.
+        with contextlib.suppress(Exception):
+            await api.report_upload_failed(payload.file_id, detail=str(exc)[:_BODY_SNIPPET_MAX])
+        raise
     return {"file_id": str(payload.file_id), "status": "uploaded"}

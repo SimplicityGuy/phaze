@@ -3,6 +3,17 @@ name: Security
 
 on:
   workflow_call:
+    inputs:
+      code-changed:
+        description: >-
+          Whether non-documentation files changed. Gates the code-focused
+          scanners (bandit/pip-audit/osv-scanner, semgrep, trivy) so they
+          keep skipping on docs-only changes. secret-scanning ignores this
+          input and always runs -- prose files are the highest-probability
+          carrier of a pasted credential (phaze-84ca).
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -13,6 +24,7 @@ jobs:
     name: Python Security
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: inputs.code-changed
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -48,7 +60,7 @@ jobs:
     timeout-minutes: 15
     container:
       image: semgrep/semgrep
-    if: github.actor != 'dependabot[bot]'
+    if: inputs.code-changed && github.actor != 'dependabot[bot]'
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -84,6 +96,12 @@ jobs:
     name: Secret Scanning
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Deliberately no `if: inputs.code-changed` gate (phaze-84ca): prose files
+    # (docs/**, *.md, .planning/**) are the highest-probability carrier of a
+    # pasted generic credential, and GitHub's non-provider secret-scanning
+    # patterns are disabled on this repo, so this is the only detective
+    # control for that class. Always run, regardless of the docs-only path
+    # filter that gates the rest of this workflow.
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -100,6 +118,7 @@ jobs:
     name: Container Scanning
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: inputs.code-changed
     steps:
       - name: 🔀 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

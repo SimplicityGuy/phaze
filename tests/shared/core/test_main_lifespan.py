@@ -242,7 +242,7 @@ def _patch_saq_lifespan(
             _lane_q_cache[name] = FakeQueue(name)
         return _lane_q_cache[name]
 
-    fake_router.all_lane_queues = MagicMock(side_effect=lambda aid: [_lane_q(aid, lane) for lane in ("analyze", "fingerprint", "meta", "io")])
+    fake_router.all_lane_queues = MagicMock(side_effect=lambda aid: [_lane_q(aid, lane) for lane in ("analyze", "meta", "io")])
     fake_router.legacy_base_queue = MagicMock(side_effect=lambda aid: _lane_q(aid, ""))
     monkeypatch.setattr(main_module, "AgentTaskRouter", lambda **_kw: fake_router)
 
@@ -302,7 +302,6 @@ async def test_saq_queues_assembled_and_reused(monkeypatch: pytest.MonkeyPatch) 
         assert set(saq_starlette.QUEUES.keys()) == {
             "controller",
             "phaze-agent-nox-analyze",
-            "phaze-agent-nox-fingerprint",
             "phaze-agent-nox-meta",
             "phaze-agent-nox-io",
             "phaze-agent-nox",
@@ -411,7 +410,7 @@ async def test_saq_mount_excludes_compute_agents(session: AsyncSession, _db_conn
         assert "controller" in queue_names
         assert saq_starlette.QUEUES["controller"] is controller_queue
         for agent_id in ("nox", "lux"):
-            for lane in ("analyze", "fingerprint", "meta", "io"):
+            for lane in ("analyze", "meta", "io"):
                 assert f"phaze-agent-{agent_id}-{lane}" in queue_names
             assert f"phaze-agent-{agent_id}" in queue_names
         # The compute agent contributes NO queue of any name -- not just its exact id, but any

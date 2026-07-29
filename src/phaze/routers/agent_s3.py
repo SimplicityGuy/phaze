@@ -171,11 +171,22 @@ async def report_uploaded(
     # Idempotent flip guarded on the CURRENT status so a concurrent duplicate that also passed the
     # pre-check above does not double-flip. An UPDATE returns a CursorResult at runtime (exposing
     # rowcount); the async stubs type it as the base Result, so cast to read the affected-row count.
+    #
+    # phaze-p8h3: ALSO pin the CAS to the SAME upload_id captured above. complete_multipart_upload
+    # swallows NoSuchUpload as "already assembled" (the documented retry-after-DB-failure case), but
+    # NoSuchUpload is ambiguous -- it is also what S3 returns for an ABORTED upload. Nothing locks the
+    # row between the pre-check and this CAS (the transaction was committed above precisely to avoid
+    # pinning a connection across the S3 round-trip), so a concurrent under-cap /failed re-drive
+    # (cloud_staging.redrive_upload) can abort THIS upload_id and stamp a fresh one while keeping
+    # cloud_job UPLOADING. Without the upload_id predicate, complete's silent "success" on the aborted
+    # upload would still flip the row to UPLOADED (status alone still matches) for an object that was
+    # never assembled. Requiring the row's upload_id to still equal the one we just completed makes a
+    # concurrent re-drive's fresh upload_id fail the CAS instead -- a clean no-op mirroring a lost race.
     res = cast(
         "CursorResult[Any]",
         await session.execute(
             update(CloudJob)
-            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.UPLOADING.value)
+            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.UPLOADING.value, CloudJob.upload_id == upload_id)
             .values(status=CloudJobStatus.UPLOADED.value)
         ),
     )
@@ -194,12 +205,40 @@ async def report_uploaded(
         # (UPLOADING -> UPLOADED, rowcount==0 early-returns before reaching this block) PLUS the
         # deterministic submit_cloud_job key -- a duplicate/late callback is already a no-op at the
         # cloud_job sidecar (the sole derived authority PR-A reads), so no state guard is load-bearing.
+        #
+        # phaze-0vuf: COMMIT the UPLOADING -> UPLOADED CAS BEFORE enqueuing submit_cloud_job.
+        # resolve_queue_for_task returns the controller's own SAQ PostgresQueue, which enqueues on
+        # ITS OWN psycopg pool and commits the job durably and IMMEDIATELY -- independent of THIS
+        # asyncpg session's commit boundary (the same class the phaze-grzo / phaze-v40v fixes closed
+        # for cloud_staging and agent_push). Enqueuing first meant a subsequent commit failure (request
+        # cancellation, a PgBouncer blip) rolled the UPLOADED flip back while a real Kueue Job had
+        # already been submitted for it: submit_cloud_job's own upsert then reads the still-'uploading'
+        # row, misses its `where=status IN ('uploaded','submitted')` guard, rolls back, and deletes the
+        # Job it just created -- a real k8s Job created and destroyed for nothing, and the file stuck
+        # UPLOADING until the age-bounded stranded-staging reaper spills it (discarding the fully
+        # staged object). Committing first makes a failure here benign: nothing is dispatched, the
+        # cloud_job stays durably UPLOADED, and the file re-enters the drain on the next tick.
+        await session.commit()
+
         # Route submit_cloud_job onto the CONTROLLER queue via the single Phase-30 seam (never a raw
         # controller_queue.enqueue / the default queue -- KROUTE-04, T-55-SEAM-03). Deterministic key
         # dedups a replayed submit (KSUBMIT-01). submit_cloud_job stays staging-free (rejected coupling).
-        routed = await resolve_queue_for_task("submit_cloud_job", request.app.state, session)
-        await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
-        await session.commit()
+        # Post-commit: a failed enqueue (controller pool down) is best-effort -- the control state is
+        # already correct + durable (cloud_job UPLOADED), so log loudly and still return 200 rather than
+        # 500 (mirrors report_pushed's post-commit process_file enqueue, agent_push.py:227-237).
+        try:
+            routed = await resolve_queue_for_task("submit_cloud_job", request.app.state, session)
+            await routed.queue.enqueue("submit_cloud_job", key=submit_cloud_job_key(file_id), file_id=str(file_id))
+        except Exception:
+            logger.warning(
+                "report_uploaded: cloud_job committed UPLOADED but the post-commit submit_cloud_job "
+                "enqueue failed -- file needs a re-triggered submit (control state is durable, not stranded)",
+                file_id=str(file_id),
+                agent_id=agent.id,
+                exc_info=True,
+            )
+            return UploadedResponse(file_id=file_id)
+
         logger.info("report_uploaded: submit_cloud_job routed", file_id=str(file_id), agent_id=agent.id)
         return UploadedResponse(file_id=file_id)
 
@@ -326,6 +365,24 @@ async def report_upload_failed(
     file = (await session.execute(select(FileRecord).where(FileRecord.id == file_id))).scalar_one_or_none()
     if file is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown file_id")
+
+    # phaze-0deg: guard the under-cap re-drive on cloud_job.status == UPLOADING, mirroring the over-cap
+    # branch's CAS a few lines up (and report_uploaded's "absent or not UPLOADING" no-op). Without this a
+    # late/duplicate /failed -- including one that lands after the reaper (phaze-ul2v) already spilled this
+    # row to 'awaiting' and cleared its ledger entry, resetting next_attempt back to 1 -- would unconditionally
+    # clobber an ADVANCED row (UPLOADED / SUBMITTED / RUNNING / already-spilled 'awaiting') back to UPLOADING
+    # via redrive_upload's unconditional upsert (cloud_staging's on_conflict_do_update has no ``where=``
+    # predicate), re-consuming a kueue cap slot with a fresh multipart, 409ing the live pod's presign download,
+    # and burning a redundant re-drive attempt from the bounded budget.
+    cloud_job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file_id))).scalar_one_or_none()
+    if cloud_job is None or cloud_job.status != CloudJobStatus.UPLOADING.value:
+        await session.commit()
+        logger.info(
+            "report_upload_failed: idempotent no-op (cloud_job absent or not UPLOADING, under-cap re-drive skipped)",
+            file_id=str(file_id),
+            agent_id=agent.id,
+        )
+        return UploadFailedResponse(file_id=file_id, cleared=False)
 
     try:
         await cloud_staging.redrive_upload(session, file, request.app.state.task_router)

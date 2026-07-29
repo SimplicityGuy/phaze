@@ -2,7 +2,7 @@
 
 ``_workspace_scaffold.html``'s ``ws.workspace()`` macro used to emit ``x-data`` on its ``<section>``
 root ONLY when the caller passed ``x_data`` (``<section{% if x_data %} x-data="{{ x_data }}"{% endif
-%}>``). 12 of its 13 real callers (every stage but ``discover_workspace.html``) never pass
+%}>``). 13 of its 14 real callers (every stage but ``discover_workspace.html``) never pass
 ``x_data``, so those stage fragments rendered with NO Alpine root at all.
 
 Per this repo's own locked convention (see ``test_rail_root_carries_alpine_x_data`` below, and the
@@ -13,7 +13,7 @@ of ancestry, but a FULL-DOCUMENT render (any direct navigation, reload, or bookm
 back up to find an ancestor ``x-data``, and ``<html>``/``<body>`` carry none either. So on reload
 every store-bound directive the header/actions slot renders was permanently inert: the sub-count's
 bare ``x-text`` (no fallback text) rendered blank forever, and the R-4 double-enqueue busy-gate
-``:disabled="$store.pipeline.<stage>Busy > 0"`` never disabled its EXTRACT ALL / FINGERPRINT ALL /
+``:disabled="$store.pipeline.<stage>Busy > 0"`` never disabled its EXTRACT ALL /
 etc. button — the exact double-enqueue hazard the busy-gate exists to prevent.
 
 The fix makes the root unconditional: ``<section x-data="{{ x_data or '{}' }}">`` — a bare ``{}``
@@ -53,24 +53,24 @@ def _strip_comments(text: str) -> str:
 _STANDALONE_CALLERS = [
     "pipeline/partials/analyze_workspace.html",
     "pipeline/partials/dedupe_workspace.html",
-    "pipeline/partials/trackid_workspace.html",
     "pipeline/partials/tagwrite_workspace.html",
     "pipeline/partials/cue_workspace.html",
     "pipeline/partials/rename_workspace.html",
     "pipeline/partials/metadata_workspace.html",
-    "pipeline/partials/fingerprint_workspace.html",
     "pipeline/partials/move_workspace.html",
     "shell/partials/summary_placeholder.html",
 ]
 
-# tracklist_workspace.html and propose_workspace.html need substantial route-supplied context
-# (tracklist_steps, propose_pagination/propose_stats/propose_view, further nested includes) to
-# render at all, so they are not exercised as a live render here -- the macro-level guard below
+# tracklist_workspace.html, propose_workspace.html and (phaze-t0b8) files_workspace.html need
+# substantial route-supplied context (tracklist_steps, propose_pagination/propose_stats/
+# propose_view, files_page/sort, further nested includes) to render at all, so they are not
+# exercised as a live render here -- the macro-level guard below
 # (test_workspace_scaffold_macro_always_emits_alpine_root) covers them too, since it asserts the
 # macro itself never gates the root behind the caller's x_data.
 _CONTEXT_HEAVY_CALLERS = [
     "pipeline/partials/tracklist_workspace.html",
     "pipeline/partials/propose_workspace.html",
+    "pipeline/partials/files_workspace.html",
 ]
 
 

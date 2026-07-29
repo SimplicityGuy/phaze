@@ -36,46 +36,6 @@ async def client():  # type: ignore[no-untyped-def]
 
 
 @respx.mock
-async def test_create_tracklist_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
-    """create_tracklist -> POST /api/internal/agent/tracklists, returns TracklistCreateResponse."""
-    from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistCreateResponse, TracklistTrackPayload
-
-    tracklist_id = uuid.uuid4()
-    file_id = uuid.uuid4()
-    request_id = uuid.uuid4()
-
-    route = respx.post(f"{_BASE_URL}/api/internal/agent/tracklists").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "tracklist_id": str(tracklist_id),
-                "version": 1,
-                "track_count": 1,
-            },
-        ),
-    )
-
-    payload = TracklistCreatePayload(
-        file_id=file_id,
-        source="fingerprint",
-        external_id="ext-001",
-        tracks=[TracklistTrackPayload(position=0, title="Track One")],
-        request_id=request_id,
-    )
-
-    result = await client.create_tracklist(payload)
-
-    assert route.called
-    assert route.call_count == 1
-    assert isinstance(result, TracklistCreateResponse), f"Expected TracklistCreateResponse, got {type(result)}"
-    assert result.tracklist_id == tracklist_id
-    assert result.track_count == 1
-
-    sent_body = json.loads(route.calls.last.request.content)
-    assert str(file_id) in json.dumps(sent_body), "file_id not serialized into request body"
-
-
-@respx.mock
 async def test_patch_proposal_state_uses_correct_url_and_exclude_unset(client):  # type: ignore[no-untyped-def]
     """patch_proposal_state -> PATCH /api/internal/agent/proposals/{id}/state, exclude_unset=True."""
     from phaze.schemas.agent_proposals import ProposalStatePatch, ProposalStateResponse
@@ -342,6 +302,24 @@ async def test_report_push_mismatch_posts_to_correct_url_and_returns_response_mo
 
 
 @respx.mock
+async def test_report_push_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """phaze-c53x: report_push_failed -> POST /push/{file_id}/failed, parses PushFailedResponse."""
+    from phaze.schemas.agent_push import PushFailedResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/push/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "status": "failed", "cleared": True})
+    )
+    result = await client.report_push_failed(file_id, detail="rsync exit 30")
+    assert route.called
+    assert isinstance(result, PushFailedResponse)
+    assert result.cleared is True
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["detail"] == "rsync exit 30"
+
+
+@respx.mock
 async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
     """report_metadata_failed -> POST /metadata/{file_id}/failed, parses MetadataFailureResponse."""
     from phaze.schemas.agent_metadata import MetadataFailureResponse
@@ -354,33 +332,3 @@ async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_
     assert route.called
     assert isinstance(result, MetadataFailureResponse)
     assert result.file_id == file_id
-
-
-@respx.mock
-async def test_report_fingerprint_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
-    """report_fingerprint_failed -> POST /fingerprints/{file_id}/failed, parses FingerprintFailureResponse."""
-    from phaze.schemas.agent_fingerprint import FingerprintFailureResponse
-
-    file_id = uuid.uuid4()
-    route = respx.post(f"{_BASE_URL}/api/internal/agent/fingerprints/{file_id}/failed").mock(
-        return_value=httpx.Response(200, json={"agent_id": "agent-1", "file_id": str(file_id), "cleared": True})
-    )
-    result = await client.report_fingerprint_failed(file_id)
-    assert route.called
-    assert isinstance(result, FingerprintFailureResponse)
-    assert result.file_id == file_id
-
-
-@respx.mock
-async def test_report_scan_terminal_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
-    """report_scan_terminal -> POST /tracklists/{file_id}/scanned, parses ScanTerminalAckResponse."""
-    from phaze.schemas.agent_tracklists import ScanTerminalAckResponse
-
-    file_id = uuid.uuid4()
-    route = respx.post(f"{_BASE_URL}/api/internal/agent/tracklists/{file_id}/scanned").mock(
-        return_value=httpx.Response(200, json={"file_id": str(file_id), "cleared": True})
-    )
-    result = await client.report_scan_terminal(file_id)
-    assert route.called
-    assert isinstance(result, ScanTerminalAckResponse)
-    assert result.cleared is True

@@ -59,7 +59,6 @@ async def _seed_stages(session: AsyncSession) -> None:
         [
             PipelineStageControl(stage="metadata", paused=False, priority=50),
             PipelineStageControl(stage="analyze", paused=False, priority=50),
-            PipelineStageControl(stage="fingerprint", paused=False, priority=50),
         ]
     )
     await session.commit()
@@ -122,18 +121,18 @@ async def test_pause_then_resume_flip_and_persist_paused(client: AsyncClient, se
     """pause sets paused=true and resume sets it back to false; both persist + return shape."""
     await _seed_stages(session)
 
-    pause_response = await client.post("/pipeline/stages/fingerprint/pause")
+    pause_response = await client.post("/pipeline/stages/analyze/pause")
     assert pause_response.status_code == 200
-    assert pause_response.json() == {"stage": "fingerprint", "priority": 50, "paused": True}
+    assert pause_response.json() == {"stage": "analyze", "priority": 50, "paused": True}
 
-    paused_row = await session.get(PipelineStageControl, "fingerprint")
+    paused_row = await session.get(PipelineStageControl, "analyze")
     assert paused_row is not None
     assert paused_row.paused is True
 
-    resume_response = await client.post("/pipeline/stages/fingerprint/resume")
+    resume_response = await client.post("/pipeline/stages/analyze/resume")
     assert resume_response.status_code == 200
-    assert resume_response.json() == {"stage": "fingerprint", "priority": 50, "paused": False}
+    assert resume_response.json() == {"stage": "analyze", "priority": 50, "paused": False}
 
-    resumed_row = await session.get(PipelineStageControl, "fingerprint")
+    resumed_row = await session.get(PipelineStageControl, "analyze")
     assert resumed_row is not None
     assert resumed_row.paused is False

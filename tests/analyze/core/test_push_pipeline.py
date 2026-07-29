@@ -16,7 +16,9 @@ manual verification (50-VALIDATION.md Manual-Only).
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import Any
 import uuid
@@ -153,17 +155,26 @@ class _FakeProc:
 
 
 class _FakeApi:
-    """Records report_pushed / report_push_mismatch calls."""
+    """Records report_pushed / report_push_mismatch / report_push_failed calls."""
 
     def __init__(self) -> None:
         self.pushed: list[uuid.UUID] = []
         self.mismatched: list[uuid.UUID] = []
+        self.failed: list[tuple[uuid.UUID, str | None]] = []
 
     async def report_pushed(self, file_id: uuid.UUID) -> None:
         self.pushed.append(file_id)
 
     async def report_push_mismatch(self, file_id: uuid.UUID) -> None:
         self.mismatched.append(file_id)
+
+    async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> None:
+        self.failed.append((file_id, detail))
+
+
+def _job(*, retryable: bool) -> SimpleNamespace:
+    """A duck-typed ``ctx["job"]`` stand-in carrying only the ``retryable`` flag push_file reads."""
+    return SimpleNamespace(retryable=retryable)
 
 
 # ----------------------------------------------------------------------
@@ -357,6 +368,136 @@ async def test_rsync_exit_code_stderr_truncated_no_key_leak(monkeypatch: pytest.
 
 
 # ----------------------------------------------------------------------
+# phaze-c53x — terminal-failure ack via report_push_failed
+# ----------------------------------------------------------------------
+
+
+async def test_rsync_exit_code_nonzero_retryable_attempt_no_terminal_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A RETRYABLE attempt (job.retryable True) reports nothing -- the in-place SAQ retry owns recovery."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError):
+        await push.push_file({"api_client": api, "job": _job(retryable=True)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+    assert api.failed == []
+
+
+async def test_rsync_exit_code_nonzero_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-c53x: the NON-retryable (terminal) attempt calls report_push_failed before re-raising.
+
+    Without this ack a push that exhausts PUSH_FILE_SAQ_RETRIES left cloud_job SUBMITTED forever
+    with no reconciler and no recovery path short of manual SQL.
+    """
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError, match="rsync exit 23"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+    assert len(api.failed) == 1
+    fid, detail = api.failed[0]
+    assert fid == payload.file_id
+    assert detail is not None and "rsync exit 23" in detail
+
+
+async def test_missing_binary_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing rsync/ssh binary on the terminal attempt also acks -- it is deterministic, so SAQ's
+    own retries would fail identically, but the callback still must not be skipped."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _raise_fnf(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        raise FileNotFoundError(2, "No such file or directory", "rsync")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _raise_fnf)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert len(api.failed) == 1
+    assert api.failed[0][0] == payload.file_id
+
+
+async def test_missing_push_config_terminal_attempt_calls_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing push-config field raises before any subprocess is spawned; the terminal attempt still acks."""
+    cfg = _fake_cfg(push_ssh_key=None)
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+    api = _FakeApi()
+
+    with pytest.raises(RuntimeError, match="push_file missing required push config"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert len(api.failed) == 1
+    assert api.failed[0][0] == payload.file_id
+
+
+async def test_report_push_failed_error_does_not_mask_transfer_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure delivering report_push_failed must not mask the ORIGINAL transfer error."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=23, stderr=b"rsync: partial transfer")
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+
+    class _BrokenApi(_FakeApi):
+        async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> None:  # noqa: ARG002 -- stub raises, args unused
+            raise ConnectionError(f"control unreachable for {file_id}")
+
+    api = _BrokenApi()
+    with pytest.raises(RuntimeError, match="rsync exit 23"):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+    assert api.pushed == []
+
+
+async def test_cancellation_does_not_call_report_push_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SAQ job-net cancellation on the terminal attempt still reports NOTHING -- SAQ owns whatever
+    comes next (mirrors upload_file_s3's discipline); a premature report here would be wrong for a
+    graceful-shutdown cancellation the job may still be re-driven from."""
+    cfg = _fake_cfg()
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: cfg)
+
+    proc = _FakeProc(returncode=0)
+
+    async def _cancelled_communicate() -> tuple[bytes, bytes]:
+        raise asyncio.CancelledError
+
+    proc.communicate = _cancelled_communicate  # type: ignore[method-assign]
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+    api = _FakeApi()
+
+    with pytest.raises(asyncio.CancelledError):
+        await push.push_file({"api_client": api, "job": _job(retryable=False)}, **payload.model_dump(mode="json"))
+
+    assert proc.killed is True
+    assert api.pushed == []
+    assert api.failed == []
+
+
+# ----------------------------------------------------------------------
 # WR-03 — SAQ cancellation reaps the rsync child before shredding the key
 # ----------------------------------------------------------------------
 
@@ -443,6 +584,34 @@ async def test_push_file_large_source_gets_scaled_outer_guard(monkeypatch: pytes
     assert captured["timeout"] > 3600  # a healthy multi-GB push is NOT capped at ~630s
 
 
+async def test_push_file_source_stat_runs_off_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-2yjf: the size-derived outer-guard stat() must be offloaded via asyncio.to_thread,
+    # same class as the s3_upload.py open()/read() fix -- original_path is the media mount
+    # (typically NFS/SMB), so a plain on-loop .stat() can block the event loop (and the
+    # Phase-46 liveness heartbeat) for the duration of a stall.
+    payload = _payload()
+    monkeypatch.setattr(push, "_agent_settings", lambda: _fake_cfg())
+
+    async def _fake_exec(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(push.asyncio, "create_subprocess_exec", _fake_exec)
+
+    real_to_thread = asyncio.to_thread
+    offloaded_names: list[str] = []
+
+    async def _spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        offloaded_names.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(push.asyncio, "to_thread", _spy)
+
+    api = _FakeApi()
+    await push.push_file({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert "stat" in offloaded_names
+
+
 def test_require_push_config_passes_at_default_timeout() -> None:
     # WR-03 guard: the documented default (push_timeout_sec=600) keeps the layering valid, so the
     # fail-fast guard stays silent on a correctly-configured agent.
@@ -507,26 +676,37 @@ def _import_agent_worker(monkeypatch: pytest.MonkeyPatch) -> Any:
     return aw
 
 
-def test_startup_janitor_sweep_removes_files_and_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # CLOUDPIPE-04: _sweep_scratch unlinks every file AND the .rsync-partial dir under the scratch
-    # dir, and tolerates a missing dir (no raise).
+def test_startup_janitor_sweep_removes_only_stale_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-8z4u: _sweep_scratch now only unlinks entries whose mtime is OLDER than
+    # min_age_sec. Since Phase 36 the SAQ broker is durable Postgres, so a queued/active
+    # process_file job's scratch_path SURVIVES a worker restart -- sweeping unconditionally
+    # deleted the copy a durable retry still needed. A recent (young) entry must be left
+    # alone; only an old (orphaned) one is swept.
     aw = _import_agent_worker(monkeypatch)
 
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    (scratch / "orphan-1.flac").write_bytes(b"a")
-    (scratch / "orphan-2.mp3").write_bytes(b"b")
-    partial = scratch / ".rsync-partial"
-    partial.mkdir()
-    (partial / "in-flight.flac.tmp").write_bytes(b"c")
+    stale_file = scratch / "orphan-1.flac"
+    stale_file.write_bytes(b"a")
+    fresh_file = scratch / "live-2.mp3"
+    fresh_file.write_bytes(b"b")
+    stale_partial = scratch / ".rsync-partial"
+    stale_partial.mkdir()
+    (stale_partial / "in-flight.flac.tmp").write_bytes(b"c")
 
-    aw._sweep_scratch(scratch)
+    old_mtime = time.time() - 10_000
+    os.utime(stale_file, (old_mtime, old_mtime))
+    os.utime(stale_partial, (old_mtime, old_mtime))
+    # fresh_file keeps its just-written (now) mtime.
 
-    assert list(scratch.iterdir()) == []
-    assert not partial.exists()
+    aw._sweep_scratch(scratch, min_age_sec=100.0)
+
+    assert not stale_file.exists(), "an entry older than min_age_sec must be swept"
+    assert not stale_partial.exists(), "an old .rsync-partial dir must be swept"
+    assert fresh_file.exists(), "an entry younger than min_age_sec must be left for a later sweep"
 
     # Missing dir is tolerated.
-    aw._sweep_scratch(tmp_path / "does-not-exist")
+    aw._sweep_scratch(tmp_path / "does-not-exist", min_age_sec=100.0)
 
 
 async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -534,12 +714,13 @@ async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: 
     # The fileserver agent runs the SAME module and must NOT sweep (it has no scratch dir).
     aw = _import_agent_worker(monkeypatch)
 
-    calls: list[Path] = []
-    monkeypatch.setattr(aw, "_sweep_scratch", calls.append)
+    calls: list[tuple[Path, float]] = []
+    monkeypatch.setattr(aw, "_sweep_scratch", lambda path, min_age_sec: calls.append((path, min_age_sec)))
 
     scratch = str(tmp_path / "scratch")
-    await aw._maybe_sweep_scratch(SimpleNamespace(kind="compute", cloud_scratch_dir=scratch))
-    assert calls == [Path(scratch)]
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=scratch, push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg)
+    assert calls == [(Path(scratch), 7200.0)]
 
     calls.clear()
     await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=scratch))

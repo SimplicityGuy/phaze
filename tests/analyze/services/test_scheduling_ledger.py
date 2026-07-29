@@ -41,8 +41,6 @@ from phaze.services.scheduling_ledger import (
 def test_routing_for_agent_function() -> None:
     assert routing_for_function("process_file") == "agent"
     assert routing_for_function("extract_file_metadata") == "agent"
-    assert routing_for_function("fingerprint_file") == "agent"
-    assert routing_for_function("scan_live_set") == "agent"
 
 
 def test_routing_for_controller_function() -> None:
@@ -182,8 +180,8 @@ async def test_insert_if_absent_inserts_when_missing(session) -> None:  # type: 
 
 @pytest.mark.asyncio
 async def test_clear_entry_deletes_and_is_noop_when_absent(session) -> None:  # type: ignore[no-untyped-def]
-    key = "fingerprint_file:f1"
-    await upsert_ledger_entry(session, key=key, function="fingerprint_file", kwargs={"file_id": "f1"})
+    key = "extract_file_metadata:f1"
+    await upsert_ledger_entry(session, key=key, function="extract_file_metadata", kwargs={"file_id": "f1"})
     await session.commit()
 
     await clear_ledger_entry(session, key)
@@ -272,9 +270,9 @@ async def test_clear_entry_survives_a_racing_re_enqueue_with_a_live_saq_job(sess
 @pytest.mark.asyncio
 async def test_clear_entry_survives_when_saq_job_is_active(session) -> None:  # type: ignore[no-untyped-def]
     """``active`` (not just ``queued``) is also a LIVE status recovery would treat as owning the key."""
-    key = "fingerprint_file:racer-active"
+    key = "extract_file_metadata:racer-active"
     await _seed_saq_jobs_table(session)
-    await upsert_ledger_entry(session, key=key, function="fingerprint_file", kwargs={"file_id": "racer-active"})
+    await upsert_ledger_entry(session, key=key, function="extract_file_metadata", kwargs={"file_id": "racer-active"})
     await _seed_saq_job_row(session, key=key, status="active")
     await session.commit()
 

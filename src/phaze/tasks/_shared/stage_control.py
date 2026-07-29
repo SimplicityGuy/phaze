@@ -111,7 +111,6 @@ class StagePausedRetry(Exception):
 STAGE_TO_FUNCTION: dict[str, str] = {
     "metadata": "extract_file_metadata",
     "analyze": "process_file",
-    "fingerprint": "fingerprint_file",
 }
 
 # Exact inverse: registered function name -> stage label. Used by the enqueue hook to

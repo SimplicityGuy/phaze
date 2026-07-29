@@ -7,7 +7,9 @@ wraps its query in a ``session.begin_nested()`` SAVEPOINT and maps every ORM row
 the templates never touch an ORM object and the hot render/poll path can NEVER 500 (mirrors
 :func:`phaze.services.pipeline.get_analyze_working_set`). No enqueue, no commit, no schema change.
 
-* :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02).
+* :func:`get_pending_proposal_rows` -- pending ``RenameProposal`` rows (Rename/Move, Plan 60-02),
+  bundled with the corpus-wide pending total and the >=90%-confidence match count (phaze-rw14) --
+  both real ``COUNT``s, never the length of the 200-row render cap.
 * :func:`get_proposal_workspace_page` -- the FILTERED, SEARCHED, PAGINATED sibling of the above,
   plus the filter-tab counts, for the Propose workspace (phaze-a6hm.2 / .9). Same row dict shape,
   so both feed ``_file_table.html`` interchangeably.
@@ -44,7 +46,13 @@ from phaze.routers.tags import (
 )
 from phaze.services.cue_generator import generate_cue_content
 from phaze.services.dedup import find_duplicate_groups_with_metadata, score_group
-from phaze.services.proposal_queries import Pagination, ProposalStats, get_proposal_stats, get_proposals_page
+from phaze.services.proposal_queries import (
+    Pagination,
+    ProposalStats,
+    count_pending_above_confidence,
+    get_proposal_stats,
+    get_proposals_page,
+)
 from phaze.services.stage_status import applied_clause
 from phaze.services.tag_proposal import compute_proposed_tags
 
@@ -75,19 +83,52 @@ _MAX_REVIEW_ROWS = 2000
 _REVIEW_SCAN_BATCH = 500
 
 
-async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any]]:
-    """Return pending ``RenameProposal`` rows as plain dicts for the diff workspaces (degrade-safe).
+class PendingProposalRows(NamedTuple):
+    """Pending ``RenameProposal`` rows for the Rename/Move diff workspaces, plus the two corpus-wide
+    counts their header and bulk-approve confirm need (phaze-rw14).
+
+    The row LIST is capped at 200 for render (a render cap wearing a page's clothing -- proposal
+    201 is not on a later page, it is simply absent from this list). ``total_pending`` and
+    ``high_confidence_pending`` are NOT derived from ``len(rows)``: reporting the capped list length
+    as either count is exactly the defect this bundle exists to close --
+
+    * the workspace header used to report ``rename_proposals | length`` as "N awaiting approval",
+      which stops counting at 200 for any backlog past that size;
+    * the bulk-approve confirm dialog used to quote the SAME capped, confidence-unfiltered length
+      as the number of proposals about to be approved at >=90% confidence. Because the row order is
+      confidence-ASC (the lowest-confidence pending rows render first), the visible 200 can hold
+      ZERO rows meeting the threshold while the server-side predicate approves thousands -- an
+      operator confirming "200 match now" could be approving many times that.
+    """
+
+    rows: list[dict[str, Any]]
+    total_pending: int
+    high_confidence_pending: int
+
+
+async def get_pending_proposal_rows(session: AsyncSession, *, confidence_threshold: float = 0.9) -> PendingProposalRows:
+    """Return pending ``RenameProposal`` rows for the diff workspaces, plus the real totals (degrade-safe).
 
     Reuses ``get_proposals_page(status="pending")`` inside a ``session.begin_nested()`` SAVEPOINT and
     maps each proposal (plus its ``selectinload``'d file) to a plain dict keyed for both diff facets:
     ``id`` · ``filename`` (``file.original_filename``) · ``original_path`` (``file.current_path``) ·
-    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status``. Returns ``[]`` on any DB error so the
-    render/poll path degrades instead of 500ing (no router try/except needed).
+    ``proposed_filename`` · ``proposed_path`` · ``confidence`` · ``status``. Returns an all-empty/zero
+    :class:`PendingProposalRows` on any DB error so the render/poll path degrades instead of 500ing
+    (no router try/except needed).
+
+    phaze-rw14: ``get_proposals_page`` already runs a real ``COUNT(*)`` for its ``Pagination.total``
+    on every call -- that total used to be fetched and immediately discarded (bound to ``_pagination``
+    and dropped). Returning it here is free: no new query, just no longer throwing away the one this
+    function already ran. ``high_confidence_pending`` is one additional lightweight COUNT
+    (:func:`count_pending_above_confidence`) using the SAME predicate
+    :func:`approve_pending_above_confidence` bulk-approves, so the confirm dialog can name what the
+    action actually does instead of the rendered page's row count.
     """
     try:
         async with session.begin_nested():
-            proposals, _pagination = await get_proposals_page(session, status="pending", page_size=200)
-            return [
+            proposals, pagination = await get_proposals_page(session, status="pending", page_size=200)
+            high_confidence_pending = await count_pending_above_confidence(session, threshold=confidence_threshold)
+            rows = [
                 {
                     "id": proposal.id,
                     "filename": proposal.file.original_filename,
@@ -99,9 +140,10 @@ async def get_pending_proposal_rows(session: AsyncSession) -> list[dict[str, Any
                 }
                 for proposal in proposals
             ]
+            return PendingProposalRows(rows=rows, total_pending=pagination.total, high_confidence_pending=high_confidence_pending)
     except Exception:
         logger.warning("pending_proposal_rows_degraded", exc_info=True)
-        return []
+        return PendingProposalRows(rows=[], total_pending=0, high_confidence_pending=0)
 
 
 class ProposalWorkspacePage(NamedTuple):

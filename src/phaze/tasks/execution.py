@@ -85,7 +85,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, Any, Literal
 import uuid
@@ -98,9 +97,12 @@ from phaze.schemas.agent_exec_batches import ExecBatchProgressPayload
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_proposals import ProposalStatePatch
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
+from phaze.services.containment import resolve_and_check_containment as _resolve_and_check_containment
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from phaze.services.agent_client import PhazeAgentClient
 
 
@@ -111,29 +113,10 @@ logger = structlog.get_logger(__name__)
 # Matches ExecBatchProgressPayload.failed_at_step (Phase 28 D-06).
 FailedAtStep = Literal["copy", "verify", "delete"]
 
-
-def _resolve_and_check_containment(candidate: str, scan_roots: list[str]) -> tuple[Path, Path]:
-    """Resolve `candidate` and assert it lives under at least one of `scan_roots`.
-
-    Returns ``(resolved, owning_root)`` -- the resolved candidate path and the
-    resolved scan_root it lives under. Callers resolve a proposed RELATIVE
-    destination directory against this same ``owning_root`` (mirroring
-    ``services.collision`` ``concat(proposed_path, '/', proposed_filename)``)
-    so the destination lands under the file's own scan_root.
-
-    Raises ValueError on path traversal (T-26-11-S1). The resolved path is what
-    we use for the actual file op so symlinks-out are also caught.
-    """
-    resolved = Path(candidate).resolve()
-    for root in scan_roots:
-        root_resolved = Path(root).resolve()
-        try:
-            resolved.relative_to(root_resolved)
-            return resolved, root_resolved
-        except ValueError:
-            continue
-    msg = f"path {candidate!r} (resolved to {resolved}) escapes all scan_roots {scan_roots}"
-    raise ValueError(msg)
+# phaze-eycl: `_resolve_and_check_containment` now lives in `phaze.services.containment` (shared
+# with `services/proposal.py::load_companion_contents`, which needs the identical symlink-safe
+# containment check for agent-supplied companion paths). Imported above under this module's
+# original private name so every call site here is unchanged.
 
 
 def _resolve_destination(

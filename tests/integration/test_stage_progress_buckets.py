@@ -1,6 +1,6 @@
 """Four-bucket-sums-to-total invariant + a visible failed count per enrich stage (READ-02).
 
-Phase 82 extends ``get_stage_progress``'s three enrich nodes (metadata / fingerprint / analyze) from
+Phase 82 extends ``get_stage_progress``'s enrich nodes (metadata / analyze) from
 the old ``{done, total}`` shape to the four-bucket ``{not_started, in_flight, done, failed, total}``,
 derived through ONE ``GROUP BY stage_status_case(stage)`` per stage (scoped to music/video files).
 Because every music/video file falls into exactly one of the four ``stage_status_case`` buckets, the
@@ -46,7 +46,6 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.services.pipeline import get_stage_progress
@@ -67,7 +66,7 @@ _TARGET_DB = require_test_database(SA_DSN, context="stage-progress-bucket integr
 
 _LEGACY_AGENT_ID = "test-fileserver"
 
-_ENRICH_STAGES = ("metadata", "fingerprint", "analyze")
+_ENRICH_STAGES = ("metadata", "analyze")
 _FOUR_BUCKETS = (Status.NOT_STARTED.value, Status.IN_FLIGHT.value, Status.DONE.value, Status.FAILED.value)
 
 
@@ -197,12 +196,6 @@ async def _seed_mixed_corpus(session: AsyncSession) -> dict[str, int]:
     f = await _file(session)
     await _ledger(session, "metadata", f)
 
-    # fingerprint: 1 done (a success engine), 1 failed-only (a failed engine, no success).
-    f = await _file(session)
-    session.add(FingerprintResult(file_id=f.id, engine="audfprint", status="success"))
-    f = await _file(session)
-    session.add(FingerprintResult(file_id=f.id, engine="audfprint", status="failed"))
-
     # analyze: 1 done (completed_at set), 1 failed (failed_at set), 1 in_flight (ledger).
     f = await _file(session)
     session.add(AnalysisResult(file_id=f.id, analysis_completed_at=datetime.now(UTC)))
@@ -212,7 +205,7 @@ async def _seed_mixed_corpus(session: AsyncSession) -> dict[str, int]:
     await _ledger(session, "analyze", f)
 
     await session.flush()
-    music_video_total = 3 + 4 + 2 + 3  # every seeded music file above
+    music_video_total = 3 + 4 + 3  # every seeded music file above
 
     # One non-music file -- must NOT count toward any enrich total (music/video scope).
     await _file(session, file_type="txt")
@@ -244,7 +237,6 @@ async def test_seeded_failed_rows_are_visible_per_stage(db_session: AsyncSession
 
     # The corpus seeds exactly one failed row for each enrich stage.
     assert int(progress["metadata"]["failed"] or 0) >= 1, "a metadata failure-only row must surface in failed"
-    assert int(progress["fingerprint"]["failed"] or 0) >= 1, "a failed-only fingerprint must surface in failed"
     assert int(progress["analyze"]["failed"] or 0) >= 1, "a failed analyze row must surface in failed"
 
 

@@ -4,7 +4,7 @@
 Production deployment of Phaze 2026.7.1 (Distributed Agents + Multi-Cloud Backends) runs as **two compose files on two (or more) hosts**:
 
 - **Application server** (`docker-compose.yml`): API/UI, controller worker, Postgres, Redis. No music/model/output file mounts. HTTPS via an internal CA. Redis `requirepass` + LAN binding.
-- **File servers** (`docker-compose.agent.yml`, one per host): four per-lane agent workers (`worker-analyze`, `worker-fingerprint`, `worker-meta`, `worker-io`), a watcher, and the `audfprint` + `panako` fingerprint sidecars. Holds music/video files locally; reaches the app-server over HTTPS for every state change.
+- **File servers** (`docker-compose.agent.yml`, one per host): three per-lane agent workers (`worker-analyze`, `worker-meta`, `worker-io`) and a watcher. Holds music/video files locally; reaches the app-server over HTTPS for every state change.
 
 This guide walks through bringing up a fresh two-host deployment from a clean checkout, then covers the build pipeline, rollback, and monitoring.
 
@@ -27,15 +27,11 @@ flowchart TB
     end
 
     subgraph fs["File server(s) (docker-compose.agent.yml, one per host)"]
-        aw["worker-analyze/-fingerprint/-meta/-io<br/>PHAZE_ROLE=agent (4 lanes)"]
+        aw["worker-analyze/-meta/-io<br/>PHAZE_ROLE=agent (3 lanes)"]
         wt["watcher"]
-        af["audfprint"]
-        pk["panako"]
         media[("/data/music (ro)")]
         aw --- media
         wt --- media
-        aw --- af
-        aw --- pk
     end
 
     subgraph cloud["Cloud-compute agent (docker-compose.cloud-agent.yml)"]
@@ -68,7 +64,7 @@ The repo ships three deployment compose files plus a dev overlay:
 | File | Host | Services | Notes |
 |------|------|----------|-------|
 | `docker-compose.yml` | Application server | `api`, `worker` (control role), `postgres`, `redis` | Built locally from `Dockerfile`. No file mounts on `api`/`worker` except `./certs/` on `api` (DIST-01). |
-| `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-fingerprint`, `worker-meta`, `worker-io` (four per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher`, `audfprint`, `panako` | All services pull from GHCR via `PHAZE_IMAGE_TAG`: the lane workers/`watcher` from `ghcr.io/simplicityguy/phaze`, `audfprint`/`panako` from the `/audfprint` + `/panako` sub-paths. Each sidecar keeps a commented dev-only `build:` fallback. See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
+| `docker-compose.agent.yml` | File server (one per host) | `worker-analyze`, `worker-meta`, `worker-io` (three per-lane agent-role workers, plus an off-by-default `worker-drain` profile service), `watcher` | All services pull from GHCR via `PHAZE_IMAGE_TAG` (`ghcr.io/simplicityguy/phaze`). See [agent-queue-lanes.md](agent-queue-lanes.md) for the lane split. |
 | `docker-compose.cloud-agent.yml` | OCI A1 (cloud) | `worker` (agent role, `kind=compute`) | arm64 image, no media, named scratch. Cloud-burst compute agent over Tailscale. See [cloud-burst.md](cloud-burst.md). |
 | `docker-compose.dev.yml` | Application server (dev only) | overlays `api` + `worker` | **Explicit opt-in only** — included via `just up-dev` (`-f docker-compose.yml -f docker-compose.dev.yml`), NEVER auto-merged (phaze-476w: it was formerly `docker-compose.override.yml`, which `docker compose` auto-merged and silently hijacked the production `just up`). Mounts `./src` for live reload, runs `uvicorn --reload`, sets `PHAZE_DEBUG=true`, and deliberately skips the cert-bootstrap entrypoint. `just up` (base compose only) is unaffected. |
 
@@ -87,16 +83,13 @@ The repo ships three deployment compose files plus a dev overlay:
 
 | Service | Image / build | Command | Role |
 |---------|---------------|---------|------|
-| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; default concurrency 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all four lane workers, phaze-30fo). |
-| `worker-fingerprint` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `fingerprint` lane (`fingerprint_file`; default concurrency 2). Heartbeats with `lane=fingerprint`. |
-| `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`scan_live_set`/`execute_approved_batch`; default concurrency 2). Heartbeats with `lane=meta`. |
+| `worker-analyze` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker (`PHAZE_ROLE=agent`) consuming the `analyze` lane (`process_file`; default concurrency 4). Heartbeats with `lane=analyze` (`PHAZE_AGENT_HEARTBEAT=true` — as do all three lane workers, phaze-30fo). |
+| `worker-meta` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `meta` lane (`extract_file_metadata`/`scan_directory`/`execute_approved_batch`; default concurrency 2). Heartbeats with `lane=meta`. |
 | `worker-io` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Agent-role SAQ worker consuming the `io` lane (`s3_upload`/`push_file`; default concurrency 4). Heartbeats with `lane=io`. |
-| `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. The only worker with `PHAZE_AGENT_HEARTBEAT=false`: it is unlaned, so an untagged beat would wipe the per-lane breakdown the four lane workers maintain. |
+| `worker-drain` (profile `drain`, off by default) | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run saq phaze.tasks.agent_worker.settings` | Transitional all-mode consumer of the legacy un-suffixed `phaze-agent-<agent_id>` queue during the lane-split migration. Start with `docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain`. The only worker with `PHAZE_AGENT_HEARTBEAT=false`: it is unlaned, so an untagged beat would wipe the per-lane breakdown the three lane workers maintain. |
 | `watcher` | `ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}` | `uv run python -m phaze.agent_watcher` | Always-on directory watcher (`PHAZE_ROLE=agent`). |
-| `audfprint` | `ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
-| `panako` | `ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}` | (image default) | Fingerprint sidecar. Pulls from GHCR. (Commented dev-only `build:` fallback in the compose file.) |
 
-The four lane workers, `watcher`, `audfprint`, and `panako` all mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool. See [agent-queue-lanes.md](agent-queue-lanes.md) for the full lane topology, concurrency knobs, and the legacy-queue drain runbook.
+The three lane workers and `watcher` all mount the music library read-only via `${SCAN_PATH:?SCAN_PATH required}:/data/music:ro`. There is **no `postgres` or `redis` service here** — agents reach the app-server's Redis (cache) and, as of the Phase-36 queue-backend migration, the app-server's **Postgres broker** directly over the LAN via `PHAZE_QUEUE_URL` (Postgres:5432). Application/file metadata is still reached only via the HTTP API — DIST-04 — and there is **no `DATABASE_URL`** on any agent service; the agent's only Postgres connection is the SAQ broker pool. See [agent-queue-lanes.md](agent-queue-lanes.md) for the full lane topology, concurrency knobs, and the legacy-queue drain runbook.
 
 ## Cloud backends (`backends.toml`)
 
@@ -166,7 +159,7 @@ restart, with no re-provisioning.
 Phaze 2026.7.1 selects its settings class at process boot from the `PHAZE_ROLE` env var (default `control`), via `phaze.config.get_settings()`:
 
 - `PHAZE_ROLE=control` → `ControlSettings` (LLM proposal generation, Discogs matching, fileless tasks). Used by the app-server `api` + `worker`.
-- `PHAZE_ROLE=agent` → `AgentSettings` (HTTP client to the app-server, file-bound tasks). Used by the file-server's four lane workers (`worker-analyze`/`worker-fingerprint`/`worker-meta`/`worker-io`) + `watcher`. The validators in `AgentSettings` raise at construction time if `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, or `PHAZE_AGENT_SCAN_ROOTS` is missing — agents fail fast with a clear error rather than emitting runtime 401s.
+- `PHAZE_ROLE=agent` → `AgentSettings` (HTTP client to the app-server, file-bound tasks). Used by the file-server's three lane workers (`worker-analyze`/`worker-meta`/`worker-io`) + `watcher`. The validators in `AgentSettings` raise at construction time if `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, or `PHAZE_AGENT_SCAN_ROOTS` is missing — agents fail fast with a clear error rather than emitting runtime 401s.
 
 The `api` container does **not** start uvicorn directly. It runs `uv run python -m phaze.entrypoint`, which:
 
@@ -326,7 +319,7 @@ agent's queue name is `phaze-agent-fileserver-east`.
 
 ## Step 4 — Populate the file-server `.env`
 
-On the **file-server host**, get the compose file and the `.env` template. All four agent images are pulled from GHCR, so the checkout is only needed for `docker-compose.agent.yml` + `.env.example.agent` (and optionally if you want to build a sidecar from source via the commented dev-only `build:` fallback) — not to build the sidecars for a normal deployment:
+On the **file-server host**, get the compose file and the `.env` template. All agent images are pulled from GHCR, so the checkout is only needed for `docker-compose.agent.yml` + `.env.example.agent` — not to build anything locally for a normal deployment:
 
 ```bash
 git clone https://github.com/simplicityguy/phaze.git
@@ -368,7 +361,7 @@ On the **file-server host**:
 just up-agent
 ```
 
-`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all four lane workers (`worker-analyze`, `worker-fingerprint`, `worker-meta`, `worker-io`) plus `watcher`, `audfprint`, and `panako` (the off-by-default `worker-drain` profile service is not included). On first start, each lane worker boots, calls `/api/internal/agent/whoami` to verify its token, then downloads ~150MB of essentia weights to `./models/` (2-5 minutes; logs an INFO line). The watcher comes up in parallel.
+`just up-agent` runs `docker compose -f docker-compose.agent.yml up -d`, which brings up all three lane workers (`worker-analyze`, `worker-meta`, `worker-io`) plus `watcher` (the off-by-default `worker-drain` profile service is not included). On first start, each lane worker boots, calls `/api/internal/agent/whoami` to verify its token, then downloads ~150MB of essentia weights to `./models/` (2-5 minutes; logs an INFO line). The watcher comes up in parallel.
 
 Watch the logs (`worker-analyze` also carries the agent's one liveness heartbeat):
 
@@ -383,7 +376,7 @@ You should see (per lane worker; `lane=` varies by service):
 - `Models downloaded successfully to /models`
 - `phaze.tasks.agent_worker startup complete agent_id=fileserver-east queue=phaze-agent-fileserver-east-analyze lane=analyze`
 
-After ~5 minutes, the heartbeat — an asyncio background task in **each** of the four lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
+After ~5 minutes, the heartbeat — an asyncio background task in **each** of the three lane workers (every 30s, each beat tagged with its own lane; see [agent-queue-lanes.md](agent-queue-lanes.md)) — starts firing against `POST /api/internal/agent/heartbeat`.
 
 > **Run both stacks on one host (dev convenience):** `just up-all` runs `docker compose -f docker-compose.yml -f docker-compose.agent.yml up -d`. This is for development only — production keeps the app-server and file-server stacks on separate hosts to preserve filesystem isolation (DIST-01).
 
@@ -430,7 +423,7 @@ Images are built and published to the GitHub Container Registry (GHCR) by two re
 
 Called from the CI `docker` job (after `quality`, only when non-markdown files change). It:
 
-- Builds each Dockerfile via a **four-entry** matrix and lints them with **hadolint** (`failure-threshold: error`): `Dockerfile` (api), `services/audfprint/Dockerfile.audfprint`, `services/panako/Dockerfile.panako`, and `Dockerfile.agent-arm64` (the cloud-compute arm64 agent image — **lint-only** here, its `build:`/`push:` steps are guarded off because a full QEMU C++ essentia compile on the x86 runner is forbidden; the real native build runs in `docker-publish.yml`).
+- Builds each Dockerfile via a **two-entry** matrix and lints them with **hadolint** (`failure-threshold: error`): `Dockerfile` (api) and `Dockerfile.agent-arm64` (the cloud-compute arm64 agent image — **lint-only** here, its `build:`/`push:` steps are guarded off because a full QEMU C++ essentia compile on the x86 runner is forbidden; the real native build runs in `docker-publish.yml`).
 - Validates both compose files parse cleanly: `docker compose -f docker-compose.yml config --quiet` (with placeholder `REDIS_PASSWORD`/`REDIS_BIND_IP`) and `docker compose -f docker-compose.agent.yml --env-file .env.agent config --quiet` (with placeholder agent vars).
 
 No images are pushed by this workflow — it is a gate.
@@ -439,21 +432,19 @@ No images are pushed by this workflow — it is a gate.
 
 Called from the CI `docker-publish` job, which runs only after `aggregate-results` passes and only when code changed. It:
 
-This workflow produces **five** GHCR artifacts across three build stages (`push` is `true` for non-PR events):
+This workflow produces **three** GHCR artifacts across three build stages (`push` is `true` for non-PR events):
 
-- A **3-image matrix** (`build-and-push`) builds `Dockerfile` (api), `services/audfprint/Dockerfile.audfprint`, and `services/panako/Dockerfile.panako` on `linux/amd64`.
+- A **single-image matrix** (`build-and-push`) builds `Dockerfile` (api) on `linux/amd64`.
 - A native-arm64 stage builds `Dockerfile.agent-arm64` on an `ubuntu-24.04-arm` runner. It `load`s (does not push) the image, runs an import smoke test, and hands the resolved `-arm64` tags + OCI labels to a **parity-gated pusher** (`parity-guard`) — the arm64 image reaches GHCR only after its analysis output matches the x86 golden byte-for-byte, so a parity-divergent image can never publish ahead of the guard.
 - A `build-job-runner` stage builds `Dockerfile.job` **FROM** the freshly-pushed x86 api image (a `needs: build-and-push` dependent, not a matrix row) — the Kueue one-shot Job image.
 
 | Artifact | Dockerfile | Platform | Consumed by |
 |----------|------------|----------|-------------|
-| `ghcr.io/simplicityguy/phaze` | `Dockerfile` | amd64 | app-server `api`/`worker` (built locally) **and** `docker-compose.agent.yml`'s four lane workers (`worker-analyze`/`worker-fingerprint`/`worker-meta`/`worker-io`) + `watcher` (pulled) |
-| `ghcr.io/simplicityguy/phaze/audfprint` | `Dockerfile.audfprint` | amd64 | `docker-compose.agent.yml` `audfprint` sidecar |
-| `ghcr.io/simplicityguy/phaze/panako` | `Dockerfile.panako` | amd64 | `docker-compose.agent.yml` `panako` sidecar |
+| `ghcr.io/simplicityguy/phaze` | `Dockerfile` | amd64 | app-server `api`/`worker` (built locally) **and** `docker-compose.agent.yml`'s three lane workers (`worker-analyze`/`worker-meta`/`worker-io`) + `watcher` (pulled) |
 | `ghcr.io/simplicityguy/phaze:*-arm64` | `Dockerfile.agent-arm64` | arm64 | `docker-compose.cloud-agent.yml` cloud-compute agent (`kind=compute`); parity-gated push |
 | `ghcr.io/simplicityguy/phaze/job` | `Dockerfile.job` | amd64 | Kueue backend (`kind=kueue`) one-shot Jobs submitted by the control plane |
 
-- The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s four lane workers + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
+- The `api` image publishes to the **bare** repo URL `ghcr.io/simplicityguy/phaze` (no sub-path) so `docker-compose.agent.yml`'s three lane workers + `watcher` can pull it directly; the arm64 variant is the same bare URL with a `-arm64` tag suffix. `ghcr.io/simplicityguy/phaze/api` is a **deprecated/orphaned** path from a pre-D-15 convention — it is no longer published and must NOT be pulled or referenced.
 - Tag strategy (via `docker/metadata-action`): `latest` on the default branch, plus `{{version}}` and `{{major}}.{{minor}}` semver tags, `ref`-based tags (tag/branch/PR), and a dated schedule tag. Tagged releases therefore produce **both** `:latest` and `:<version>`.
 - Release tags MUST be 3-part CalVer (`YYYY.MM.REVISION`, e.g. `2026.7.0`) — `ci.yml` triggers the publish pipeline on `push` of a `[0-9]+.[0-9]+.[0-9]+` tag, and the `{{version}}` / `{{major}}.{{minor}}` image tags are only produced for a 3-part ref. A 2-part tag (`2026.7`) will not match the trigger and will not publish version-pinnable images, so the 3-part shape is still required.
 - Builds with `provenance: true` and `sbom: true` for supply-chain attestation, on `linux/amd64`.
@@ -465,10 +456,8 @@ This workflow produces **five** GHCR artifacts across three build stages (`push`
 ```mermaid
 flowchart LR
     df1["Dockerfile"] --> api["ghcr.io/…/phaze<br/>(amd64)"]
-    df2["Dockerfile.audfprint"] --> aud["…/phaze/audfprint"]
-    df3["Dockerfile.panako"] --> pk["…/phaze/panako"]
 
-    api -->|"docker-compose.yml + agent.yml"| use1["api / worker / watcher / sidecars"]
+    api -->|"docker-compose.yml + agent.yml"| use1["api / worker / watcher"]
 
     api -.->|"FROM (needs build-and-push)"| dfjob["Dockerfile.job"]
     dfjob --> job["…/phaze/job (amd64)"]
@@ -564,11 +553,22 @@ DELETE FROM saq_jobs WHERE key = 'cron:heartbeat_tick';
 
 It is harmless if the row is already absent (e.g. on a fresh broker or after a `saq_jobs` truncate). This mirrors the prior Redis orphaned-cron-purge runbook, adapted to the Postgres broker.
 
+## Historical: sidecar volume chown runbook (removed, phaze-0jpe)
+
+Prior revisions of this guide carried a one-time volume-ownership repair for the `audfprint`/
+`panako` fingerprint sidecars (a uid-999-to-1000 mismatch on pre-`7b9adec` hosts). Both engines
+and their sidecars were removed in full — 2026-07-28, epic phaze-0jpe; see
+[docs/design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) for why — so the
+runbook no longer applies to a current checkout and has been deleted from this guide. The live
+`audfprint_data`/`panako_data` Docker volumes on any already-deployed file server are **not**
+touched by this removal; their disposal is a separate, explicitly-approved operator step (see
+`docs/runbook.md`, phaze-0jpe.6) because they are the only surviving evidence for the two
+production outages the ADR cites.
+
 ## Monitoring & Health
 
 - **API health endpoint:** `GET /health` returns `{"status":"ok"}` and checks database connectivity (`SELECT 1`). It requires Postgres to be reachable. Use it as the app-server liveness probe: `curl --cacert ./certs/phaze-ca.crt https://<app-server>:8000/health`.
-- **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-fingerprint`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention (phaze-30fo): pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other three lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
-- **Sidecar health:** the `audfprint` and `panako` fingerprint sidecars expose `/health`. `just audfprint-health` and `just panako-health` exec into the **sidecar containers themselves** via the agent stack (`docker compose -f docker-compose.agent.yml exec audfprint …` / `… exec panako …`) and hit `http://localhost:8001/health` / `:8002/health` with a `python -m urllib.request` one-liner — the image ships no `curl`, and the sidecars are not services in the core compose project.
+- **Agent heartbeat / liveness:** **every** lane worker (`worker-analyze`/`worker-meta`/`worker-io`, all with `PHAZE_AGENT_HEARTBEAT=true`) runs an asyncio background task (every 30s — `phaze.tasks.heartbeat._heartbeat_loop`, gated by `PHAZE_AGENT_HEARTBEAT`) that POSTs to `/api/internal/agent/heartbeat` with `{agent_version, worker_pid, queue_depth, lane}`. It is launched in the worker `startup` hook and cancelled on `shutdown`, so it runs outside the SAQ job-dispatch pool and is never starved by long-running analysis jobs (Phase 46). Each beat carries its own lane tag and that lane's depth; the control plane keeps the per-lane breakdown and sums an honest all-lane `queue_depth`, while `last_seen_at` is inherently `max(last_seen)` across lanes. This replaced the former single-heartbeat convention (phaze-30fo): pinning liveness to `worker-analyze` alone meant one stalled process marked the whole agent DEAD and cost it work-routing rank (`select_active_agent` orders by `last_seen_at DESC`) while its other lanes were busy. Only the transitional `worker-drain` sets `PHAZE_AGENT_HEARTBEAT=false` — it is unlaned, and an untagged beat would wipe the per-lane breakdown (see [agent-queue-lanes.md](agent-queue-lanes.md)). The endpoint stamps `agents.last_seen_at` and persists the payload to the `agents.last_status` JSONB column. The `/admin/agents` page classifies each agent as alive/stale/dead/never/revoked from `last_seen_at` (thresholds: alive < 90s, dead >= 300s) and self-refreshes every 5s via HTMX.
 - **Worker health:** `just worker-health` runs the SAQ `--check` against the controller worker; `just worker-logs` follows its logs.
 - **Logging:** services log to stdout/stderr (`docker compose logs -f <service>`). The cert-bootstrap banner additionally lands in `docker compose logs api` via `logger.warning()`. No external metrics/tracing exporter (Sentry, Datadog, OpenTelemetry) is configured in this repo. <!-- VERIFY: any external log aggregation, alerting, or metrics dashboard configured at the deployment level (outside the repo) is not represented here. -->
 

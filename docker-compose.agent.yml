@@ -6,32 +6,29 @@
 # on a file server (no other compose file needed).
 #
 # Service split — only file-server-local services live here. All agent images are
-# pulled from GHCR (published by docker-publish.yml); each sidecar keeps a
-# commented-out `build:` block as a local-dev-only fallback.
+# pulled from GHCR (published by docker-publish.yml).
 #
 # quick-260707-dh1 — per-lane worker split. The single shared SAQ worker is replaced
-# by FOUR lane workers (analyze/fingerprint/meta/io), ALL from the one agent image
+# by THREE lane workers (analyze/meta/io), ALL from the one agent image
 # with the IDENTICAL command, differing ONLY by env (PHAZE_AGENT_LANE + its lane
 # concurrency). This stops I/O offload + cheap analysis being head-of-line-blocked
 # behind CPU-bound essentia backlog:
 #   worker-analyze      — process_file (in-process essentia; CPU-bound). Heartbeat lives HERE.
-#   worker-fingerprint  — fingerprint_file (via panako/audfprint sidecars; CPU-bound).
-#   worker-meta         — extract_file_metadata / scan_directory / scan_live_set / execute_approved_batch (light).
+#   worker-meta         — extract_file_metadata / scan_directory / execute_approved_batch (light).
 #   worker-io           — s3_upload / push_file (network-bound; off the CPU budget).
 #   worker-drain        — OFF by default (profiles: ["drain"]): transitional all-mode consumer of
 #                         the LEGACY un-suffixed `phaze-agent-nox` queue for the migration window.
 #   watcher             — directory watcher (PHAZE_ROLE=agent). Pulls from GHCR.
-#   audfprint / panako  — fingerprint sidecars (PHAZE_ROLE n/a). Pull from GHCR sub-paths.
 #
-# CPU budget (nox = 8 cores): analyze(4) + fingerprint(2) = 6 CPU-bound slots, leaving
-# headroom for the fast meta lane + sidecars + OS. essentia/TF are pinned single-threaded
+# CPU budget (nox = 8 cores): analyze(4) CPU-bound slots, leaving headroom
+# for the fast meta lane + OS. essentia/TF are pinned single-threaded
 # (OMP_NUM_THREADS=1, TF intra/inter-op=1) on the CPU lanes so one slot ≈ one core.
-# EVERY lane worker heartbeats (PHAZE_AGENT_HEARTBEAT=true on all four), each tagging its
+# EVERY lane worker heartbeats (PHAZE_AGENT_HEARTBEAT=true on all three), each tagging its
 # own lane (phaze-30fo). This REPLACES the former "exactly one heartbeat per agent, on
 # worker-analyze" rule: that pinned the agent's whole liveness signal -- and its work-routing
 # rank, via select_active_agent's ORDER BY last_seen_at DESC -- to a single process, so one
-# stalled analyze worker marked the agent DEAD and cost it routing while its other three
-# lanes were busy. The control plane keeps max(last_seen) and a per-lane depth breakdown.
+# stalled analyze worker marked the agent DEAD and cost it routing while its other lanes
+# were busy. The control plane keeps max(last_seen) and a per-lane depth breakdown.
 # worker-drain stays false: it is unlaned (all-mode), so its beat carries no lane tag.
 #
 # Invariants (asserted by tests/agents/deployment/test_agent_compose.py):
@@ -50,7 +47,7 @@
 # test_docker_publish_workflow_tags_both_latest_and_version).
 
 services:
-  # --- quick-260707-dh1: four lane workers, one image, identical command, env-only difference ---
+  # --- quick-260707-dh1: three lane workers, one image, identical command, env-only difference ---
   worker-analyze:
     image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}
     command: uv run saq phaze.tasks.agent_worker.settings
@@ -63,25 +60,6 @@ services:
       # lane=analyze; the dashboard's get_queue_activity remains the authoritative all-lane figure.
       - PHAZE_AGENT_HEARTBEAT=true
       # CPU-bound lane: pin essentia/TF single-threaded so one slot ≈ one core (honest budget).
-      - OMP_NUM_THREADS=1
-      - TF_NUM_INTRAOP_THREADS=1
-      - TF_NUM_INTEROP_THREADS=1
-    volumes:
-      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - "${MODELS_PATH:-./models}:/models:rw"
-      - "${CA_PATH:-./certs}:/certs:ro"
-    restart: unless-stopped
-
-  worker-fingerprint:
-    image: ghcr.io/simplicityguy/phaze:${PHAZE_IMAGE_TAG:-latest}
-    command: uv run saq phaze.tasks.agent_worker.settings
-    env_file: .env
-    environment:
-      - PHAZE_ROLE=agent
-      - PHAZE_AGENT_LANE=fingerprint
-      - PHAZE_LANE_FINGERPRINT_CONCURRENCY=${PHAZE_LANE_FINGERPRINT_CONCURRENCY:-2}
-      - PHAZE_AGENT_HEARTBEAT=true
-      # CPU-bound lane (drives the panako/audfprint sidecars): pin threads for an honest budget.
       - OMP_NUM_THREADS=1
       - TF_NUM_INTRAOP_THREADS=1
       - TF_NUM_INTEROP_THREADS=1
@@ -124,11 +102,11 @@ services:
 
   # --- Transitional legacy-queue drain (quick-260707-dh1 migration; OFF by default) ---
   # Producers flip to the lane queues on deploy, so the legacy un-suffixed `phaze-agent-nox`
-  # queue only DRAINS (never grows). This all-mode consumer (PHAZE_AGENT_LANE UNSET -> all 8
+  # queue only DRAINS (never grows). This all-mode consumer (PHAZE_AGENT_LANE UNSET -> all
   # functions, base queue) finishes any in-flight legacy job IN PLACE, so a running multi-hour
   # process_file is NOT re-enqueued (no duplicate-active hazard). PHAZE_AGENT_HEARTBEAT=false
   # because this consumer is UNLANED: an untagged beat is persisted verbatim and would wipe
-  # the per-lane `lanes` breakdown the four lane workers maintain (phaze-30fo). Bring it up
+  # the per-lane `lanes` breakdown the three lane workers maintain (phaze-30fo). Bring it up
   # ONLY during the migration:
   #   docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain
   # Remove it once `phaze-agent-nox` reports 0 queued + 0 active (see docs/agent-queue-lanes.md).
@@ -161,29 +139,3 @@ services:
       - "${MODELS_PATH:-./models}:/models:rw"
       - "${CA_PATH:-./certs}:/certs:ro"
     restart: unless-stopped
-
-  audfprint:
-    image: ghcr.io/simplicityguy/phaze/audfprint:${PHAZE_IMAGE_TAG:-latest}
-    # Local-dev override — build from source instead of pulling GHCR:
-    # build:
-    #   context: .
-    #   dockerfile: services/audfprint/Dockerfile.audfprint
-    volumes:
-      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - audfprint_data:/data/fprint
-    restart: unless-stopped
-
-  panako:
-    image: ghcr.io/simplicityguy/phaze/panako:${PHAZE_IMAGE_TAG:-latest}
-    # Local-dev override — build from source instead of pulling GHCR:
-    # build:
-    #   context: .
-    #   dockerfile: services/panako/Dockerfile.panako
-    volumes:
-      - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
-      - panako_data:/data/fprint
-    restart: unless-stopped
-
-volumes:
-  audfprint_data:
-  panako_data:

@@ -1,4 +1,4 @@
-"""phaze-5462 payload measurement: the three enrich tabs under a LARGE backlog.
+"""phaze-5462 payload measurement: the enrich tabs under a LARGE backlog.
 
 Not a permanent assertion of byte counts (brittle); this pins the ORDER OF MAGNITUDE the bead's
 acceptance criteria demand -- analyze in the same ballpark as its siblings, not 180x.
@@ -23,7 +23,7 @@ from ..services.test_pipeline import _make_pipeline_file
 
 @pytest.mark.asyncio
 async def test_enrich_tab_payloads_are_same_order_of_magnitude(session: AsyncSession, client: AsyncClient) -> None:
-    """With a 500-file analyze backlog, /s/analyze must not dwarf /s/metadata and /s/fingerprint."""
+    """With a 500-file analyze backlog, /s/analyze must not dwarf its sibling enrich tab /s/metadata."""
     files = [_make_pipeline_file() for _ in range(500)]
     names = [f.original_filename for f in files]  # captured BEFORE commit (ORM rows expire on commit)
     session.add_all(files)
@@ -33,7 +33,7 @@ async def test_enrich_tab_payloads_are_same_order_of_magnitude(session: AsyncSes
     await session.commit()
 
     sizes = {}
-    for stage in ("metadata", "fingerprint", "analyze"):
+    for stage in ("metadata", "analyze"):
         resp = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert resp.status_code == 200
         sizes[stage] = len(resp.content)
@@ -50,5 +50,5 @@ async def test_enrich_tab_payloads_are_same_order_of_magnitude(session: AsyncSes
     print(f"  fragment: {len(frag.content):,} bytes for {rows_on_page} rows (~{per_row:.0f} B/row)")
     print(f"  inline-render equivalent for all 500: ~{per_row * 500 / 1024:.0f} KiB (the retired behaviour)")
     assert rows_on_page <= 50, f"the fragment page is unbounded ({rows_on_page} rows)"
-    baseline = max(sizes["metadata"], sizes["fingerprint"])
-    assert sizes["analyze"] < baseline * 3, f"analyze payload {sizes['analyze']} dwarfs siblings {baseline} -- the inline render is back"
+    baseline = sizes["metadata"]
+    assert sizes["analyze"] < baseline * 3, f"analyze payload {sizes['analyze']} dwarfs sibling {baseline} -- the inline render is back"

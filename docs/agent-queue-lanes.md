@@ -13,7 +13,7 @@ The nox agent used to run a **single** SAQ worker with one shared concurrency po
    competed for the same slots as CPU-bound essentia analysis; a local analysis backlog left
    offload jobs stuck (4 files stuck in `pushing`, 2026-07-07).
 2. **Head-of-line blocking across analysis types.** A deep `process_file` backlog made a
-   newly-enqueued `fingerprint_file` / `extract_file_metadata` wait behind it.
+   newly-enqueued `extract_file_metadata` wait behind it.
 
 Splitting into per-type **lanes** buys **fairness / no head-of-line blocking** — not unlimited
 parallelism. nox has **8 physical cores**; CPU-bound lanes must sum to ≈ cores.
@@ -29,15 +29,14 @@ consumer (the lane worker settings) derive from it.
 | Lane          | Tasks                                                                                 | Bound by                        | Concurrency env                          | Default |
 |---------------|---------------------------------------------------------------------------------------|---------------------------------|------------------------------------------|---------|
 | `analyze`     | `process_file`                                                                        | Host CPU (in-process essentia)  | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | 4       |
-| `fingerprint` | `fingerprint_file`                                                                    | Host CPU (panako/audfprint)     | `PHAZE_LANE_FINGERPRINT_CONCURRENCY`     | 2       |
-| `meta`        | `extract_file_metadata`, `scan_directory`, `scan_live_set`, `execute_approved_batch`  | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
+| `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`                   | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
 
 ### Core-budget rationale
 
-`analyze(4) + fingerprint(2) = 6` CPU-bound slots on 8 cores, leaving headroom for the fast
-`meta` lane, sidecar overhead, and the OS. The `io` lane is network-bound and runs **off** the
-CPU budget. All concurrencies are env-overridable.
+`analyze(4)` = 4 CPU-bound slots on 8 cores (phaze-0jpe removed the `fingerprint` lane's 2
+slots), leaving headroom for the fast `meta` lane and the OS. The `io` lane is network-bound
+and runs **off** the CPU budget. All concurrencies are env-overridable.
 
 **`WORKER_MAX_JOBS` is a ceiling in lane mode (quick-260707-g84).** In lane mode the per-lane
 concurrency knob (`PHAZE_LANE_<LANE>_CONCURRENCY`) **governs** the worker's concurrency, and
@@ -49,7 +48,7 @@ concurrency, the lane, and whether the ceiling clamped it are logged once at wor
 
 ### Thread pinning
 
-essentia/TensorFlow are pinned single-threaded on the CPU lanes (`analyze`, `fingerprint`) so one
+essentia/TensorFlow are pinned single-threaded on the `analyze` CPU lane so one
 slot ≈ one core and the budget stays honest: `OMP_NUM_THREADS=1`, `TF_NUM_INTRAOP_THREADS=1`,
 `TF_NUM_INTEROP_THREADS=1` (set in `docker-compose.agent.yml`). This addresses the load-18-on-8-cores
 oversubscription observed under the old single pool.
@@ -57,12 +56,12 @@ oversubscription observed under the old single pool.
 ## Heartbeat — every lane beats, tagged with its lane (phaze-30fo)
 
 The liveness heartbeat (Phase 46 asyncio background task) runs in **every** lane worker —
-`PHAZE_AGENT_HEARTBEAT=true` on all four (`docker-compose.agent.yml`) — and each beat carries a
-`lane` tag (`analyze` | `fingerprint` | `meta` | `io`).
+`PHAZE_AGENT_HEARTBEAT=true` on all three (`docker-compose.agent.yml`) — and each beat carries a
+`lane` tag (`analyze` | `meta` | `io`).
 
 This **replaced** the original quick-260707-dh1 convention (heartbeat on exactly `worker-analyze`,
-false on the other three). Pinning the agent's entire liveness signal to one process meant that when
-that process stalled, the agent was classified DEAD after 300s while its other three lanes were
+false on the others). Pinning the agent's entire liveness signal to one process meant that when
+that process stalled, the agent was classified DEAD after 300s while its other lanes were
 actively working (observed on nox, 2026-07-18). That was never only a display bug:
 `Agent.last_seen_at` is also the **work-routing key** — `enqueue_router.select_active_agent` orders by
 `last_seen_at DESC` — so a stale beat sorted the busiest machine in the fleet to the bottom and cost
@@ -75,8 +74,8 @@ Two consequences, both handled server-side:
   paint the whole agent DEAD.
 - **`last_status` keeps a per-lane breakdown under `lanes`, and the top-level `queue_depth` is the
   cross-lane SUM.** The merge is a single atomic statement (`_LANE_MERGE_SQL` in
-  `routers/agent_heartbeat.py`) rather than a Python read-modify-write, because four lanes beat
-  concurrently (~4 writes/30s per agent) and an interleaved Python merge would silently drop a lane
+  `routers/agent_heartbeat.py`) rather than a Python read-modify-write, because three lanes beat
+  concurrently (~3 writes/30s per agent) and an interleaved Python merge would silently drop a lane
   from the breakdown until its next tick. The admin table already renders
   `last_status['queue_depth']`, so that column went from analyze-lane-only to the agent's true
   all-lane total with no template change.
@@ -88,15 +87,15 @@ means "unlaned beat" and is stored the way it always was. `worker-drain` stays
 `PHAZE_AGENT_HEARTBEAT=false` for the same reason: it is unlaned, so its beat carries no lane tag.
 
 The dashboard's `get_queue_activity` (`src/phaze/services/pipeline.py`) remains the broker-side
-in-flight view, summing queued+active across all four lane queues **plus** the legacy base queue
+in-flight view, summing queued+active across all three lane queues **plus** the legacy base queue
 per agent.
 
 ## Compute (cloud/x86) agent — single lane
 
 The compute agent is media-less and analysis-only; its ONLY task is `process_file`. Because producers
 target lane-suffixed queue names uniformly, the compute agent consumes the **single `analyze` lane**
-(`docker-compose.cloud-agent.yml` sets `PHAZE_AGENT_LANE=analyze`). It is NOT a 4-service split — the
-`fingerprint` / `meta` / `io` lanes would be permanently empty on a compute host, and the I/O-starvation /
+(`docker-compose.cloud-agent.yml` sets `PHAZE_AGENT_LANE=analyze`). It is NOT a 3-service split — the
+`meta` / `io` lanes would be permanently empty on a compute host, and the I/O-starvation /
 head-of-line problems the lane split solves are file-server-only. Single lane ⇒ single heartbeat (its
 `PHAZE_AGENT_HEARTBEAT` is left unset → default true). k8s burst pods are untouched.
 
@@ -120,12 +119,12 @@ idempotent via the deterministic key (`s3_upload:<file_id>`, `push_file:<file_id
 
 **Steps (homelab):**
 
-1. Deploy the new compose. Bring up the four lane workers (+ the compute `analyze` lane on the cloud host):
+1. Deploy the new compose. Bring up the three lane workers (+ the compute `analyze` lane on the cloud host):
    ```bash
-   docker compose -f docker-compose.agent.yml up -d worker-analyze worker-fingerprint worker-meta worker-io watcher audfprint panako
+   docker compose -f docker-compose.agent.yml up -d worker-analyze worker-meta worker-io watcher
    ```
    Producers now enqueue ONLY onto the lane queues, so `phaze-agent-nox` only drains (never grows).
-2. Start the transitional drain consumer (all-mode: `PHAZE_AGENT_LANE` unset → all 8 functions on the
+2. Start the transitional drain consumer (all-mode: `PHAZE_AGENT_LANE` unset → every agent function on the
    legacy base queue; `PHAZE_AGENT_HEARTBEAT=false`):
    ```bash
    docker compose -f docker-compose.agent.yml --profile drain up -d worker-drain
@@ -136,7 +135,7 @@ idempotent via the deterministic key (`s3_upload:<file_id>`, `push_file:<file_id
    docker compose -f docker-compose.agent.yml --profile drain rm -sf worker-drain
    ```
 
-Once `worker-drain` is removed, the migration is complete and all work flows through the four lane queues.
+Once `worker-drain` is removed, the migration is complete and all work flows through the three lane queues.
 
 ## Related files
 

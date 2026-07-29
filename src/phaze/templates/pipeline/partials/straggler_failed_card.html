@@ -9,10 +9,21 @@
    card always renders a (possibly zero) number and NEVER raises (T-44-11). The values are
    plain ints rendered through Jinja autoescape -- no operator free-text is interpolated.
 
-   Rendered inline in dashboard.html on first load (#straggler-failed-card lives OUTSIDE the
-   #pipeline-stats poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment
-   on every 5s poll (oob=True) so the counts stay live without re-rendering the DAG buttons.
-   Same id on both renders is the OOB contract. #}
+   phaze-tyt3: rendered inline in pipeline/partials/analyze_workspace.html on first load
+   (#straggler-failed-card lives OUTSIDE the #pipeline-stats poll target), then re-pushed by
+   stats_bar.html as an hx-swap-oob fragment on every 5s poll (oob=True) so the counts stay
+   live without re-rendering the DAG buttons. Same id on both renders is the OOB contract. On
+   every OTHER stage, _workspace_poll_seeds.html carries a hidden sink under this same id so
+   the poll's OOB re-push always has a landing target (formerly this card's only host; the
+   original "Rendered inline in dashboard.html" claim described the pre-v7.0 legacy dashboard,
+   deleted in the Phase 62 cutover).
+
+   phaze-tyt3 / phaze-8pmj: analyze_workspace.html is one of test_workspace_scaffold_alpine_root's
+   `_STANDALONE_CALLERS`, rendered there with an EMPTY context and no DB -- that suite's documented
+   invariant is that every included partial degrades an Undefined value via truthy `{% if %}`
+   rather than a comparison, since Jinja's default Undefined raises on `>` but not on a bare
+   boolean test. `analysis_failed_count > 0` broke that invariant; `{% if analysis_failed_count %}`
+   is equivalent for the real (non-negative int) values every live caller supplies. #}
 <section id="straggler-failed-card"
          aria-labelledby="straggler-failed-heading"
          {% if oob %}hx-swap-oob="true"{% endif %}
@@ -32,7 +43,7 @@
                something to retry. hx-confirm gates the bulk action (up to hundreds of files);
                the ack swaps into the sibling #retry-failed-result span (NOT the OOB wrapper),
                and the red count drops on the next 5s stats poll. #}
-            {% if analysis_failed_count > 0 %}
+            {% if analysis_failed_count %}
             <button type="button"
                     hx-post="/pipeline/analysis-failed/retry"
                     hx-target="#retry-failed-result"

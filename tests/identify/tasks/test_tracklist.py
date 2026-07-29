@@ -600,7 +600,8 @@ async def test_store_scraped_tracklist_relinks_same_file() -> None:
 async def test_refresh_tracklists_filters_query_to_scrapeable_source(mock_sleep: AsyncMock, mock_scrape: AsyncMock) -> None:
     """The stale/unresolved SELECT restricts to source == '1001tracklists' (phaze-p1vy).
 
-    Fingerprint-sourced tracklists (source='fingerprint', source_url='') are structurally
+    HISTORICAL rows from the retired fingerprint-scan path (source='fingerprint', source_url='')
+    are structurally
     un-rescrapeable; without this filter they re-enter the stale arm forever once aged past 90
     days, each attempt burning a guaranteed-failing scrape plus the 60-300s jitter sleep.
     """

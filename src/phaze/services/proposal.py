@@ -15,9 +15,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 import structlog
 
+from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
+from phaze.services.containment import resolve_and_check_containment
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.text_repair import repair_mojibake
 
@@ -478,12 +480,47 @@ async def load_companion_contents(
         rec = rec_result.scalar_one_or_none()
         if rec is None:
             continue
+
+        # phaze-eycl: `rec.current_path` is pure agent input -- POST /agent/files upserts it
+        # verbatim, and PATCH /agent/proposals can re-point it afterwards (see the module docstring
+        # correction on this bead). Containment-check it against the OWNING agent's `scan_roots`
+        # before ever opening it, using the same symlink-safe resolve-then-compare the executor
+        # uses for `original_path` (T-26-11-S1) -- a bare prefix-string check would miss both a
+        # symlink planted inside a scan_root that points out of it, and a `..`-laden path that
+        # resolves outside every root. An agent with no configured scan_roots gets ALL of its
+        # companions skipped, never allowed through.
+        agent_result = await session.execute(select(Agent).where(Agent.id == rec.agent_id))
+        agent = agent_result.scalar_one_or_none()
+        if agent is None or not agent.scan_roots:
+            logger.warning(
+                "companion_containment_no_scan_roots",
+                agent_id=rec.agent_id,
+                companion_id=str(rec.id),
+                current_path=rec.current_path,
+            )
+            continue
+        try:
+            resolved_path, _owning_root = resolve_and_check_containment(rec.current_path, agent.scan_roots)
+        except ValueError:
+            logger.warning(
+                "companion_containment_escape",
+                agent_id=rec.agent_id,
+                companion_id=str(rec.id),
+                current_path=rec.current_path,
+            )
+            continue
+
         try:
             # phaze-cycw: bounded read (not a full-file slurp) run off the event loop -- a
             # multi-hundred-MB companion (log/.nfo/.m3u, or a binary file mis-matched by a
             # COMPANION extension) previously buffered the ENTIRE file, then splitlines()-copied
             # it again, all synchronously on the event loop, to keep only ~3000 chars.
-            raw = await asyncio.to_thread(_read_companion_bounded_sync, rec.current_path, max_chars)
+            #
+            # phaze-eycl: read the RESOLVED path (not the raw `rec.current_path` string) -- it is
+            # what the containment check above actually verified, so opening it here (rather than
+            # re-resolving symlinks implicitly via the raw string at open() time) closes the
+            # check-then-open race a symlink swapped between the two could otherwise exploit.
+            raw = await asyncio.to_thread(_read_companion_bounded_sync, str(resolved_path), max_chars)
             # phaze-qj9e: strip NUL/lone-surrogate bytes before the content flows into the
             # context_used JSONB column. errors="replace" leaves a raw 0x00 intact (U+0000 is valid
             # UTF-8), and a UTF-16LE .nfo/.txt companion decodes to text riddled with U+0000. PostgreSQL

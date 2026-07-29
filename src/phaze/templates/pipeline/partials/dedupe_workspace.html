@@ -18,8 +18,14 @@
    mass-action guard (hx-confirm naming the count + hx-disabled-elt) still stops a second bulk write from
    firing mid-run. Its response's OOB bulk toast carries all_file_states for a reversible UNDO ALL.
 
-   NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO
-   hx-swap-oob on any group card; NO | safe. KEEP/archive are text tags, never hue-only (WCAG 1.4.1). #}
+   NO second poll (R-2 -- the live sub-count would ride the single chrome poll's OOB seeds); NO | safe.
+   KEEP/archive are text tags, never hue-only (WCAG 1.4.1).
+
+   Group cards ARE OOB-addressed, contrary to what this header said until phaze-dpc5 ("NO hx-swap-oob
+   on any group card"): phaze-wgse made bulk_resolve_response.html OOB-delete every
+   #dupe-group-{hash} it was shown, and bulk_undo_response.html OOB-appends the restored ones back
+   into #dedupe-group-list. The two are one contract -- change either side and the other must move
+   with it, or a successful undo leaves the workspace claiming N files restored with no cards. #}
 {% import "pipeline/partials/_workspace_scaffold.html" as ws %}
 {% set subcount = "'" ~ (dedupe_groups | length) ~ " duplicate groups · pick the keeper, others archived'" %}
 {% set _bulk_btn = 'inline-flex items-center justify-center h-9 px-3 rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-50 disabled:cursor-not-allowed' %}
@@ -50,7 +56,13 @@
        separate Alpine state and timers. Same hazard the scaffold calls out at _workspace_scaffold.html
        ("don't create duplicate ids that would steal the live OOB swap"). #}
     {% if dedupe_groups %}
-    <div class="space-y-3 p-6">
+    {# id (phaze-dpc5): the card list is an OOB landing zone, not just a layout div. Bulk resolve
+       OOB-DELETES every #dupe-group-{hash} card inside it, so "Undo All" has nothing left to swap
+       into -- bulk_undo_response.html appends the restored cards back here
+       (hx-swap-oob="beforeend:#dedupe-group-list"). Append, never innerHTML: a group the operator
+       resolved SINGLY before the bulk still owns a hidden #group-{hash} placeholder in this list
+       that its own 10s undo toast targets, and a wholesale innerHTML replace would delete it. #}
+    <div id="dedupe-group-list" class="space-y-3 p-6">
         {% for group in dedupe_groups %}
             {% include "pipeline/partials/_dupe_group.html" %}
         {% endfor %}
@@ -58,7 +70,7 @@
     {% else %}
     <div class="px-6 py-12 text-center">
         <p class="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">No duplicates found</p>
-        <p class="text-sm text-gray-500 dark:text-gray-400">Fingerprinting surfaced no duplicate groups. Nothing to reconcile.</p>
+        <p class="text-sm text-gray-500 dark:text-gray-400">No duplicate groups surfaced. Nothing to reconcile.</p>
     </div>
     {% endif %}
 {% endcall %}

@@ -43,7 +43,7 @@ from phaze.services.pagination import (
 )
 from phaze.services.pipeline import get_analyze_files_page, get_analyze_working_set, get_pending_files_page
 
-from .test_pipeline import _backend_settings, _make_pipeline_file
+from .test_pipeline import _backend_settings, _make_pipeline_file, _seed_process_file_ledger
 
 
 if TYPE_CHECKING:
@@ -155,27 +155,26 @@ async def test_analyze_working_set_bounded_regardless_of_backlog_size(session: A
 
 @pytest.mark.asyncio
 async def test_pending_files_page_bounded_regardless_of_backlog_size(session: AsyncSession) -> None:
-    """phaze-5462: the metadata/fingerprint workspaces are bounded too.
+    """phaze-5462: the metadata workspace is bounded too.
 
-    The bead assumed these two "already page". They did not -- ``get_metadata_pending_files`` /
-    ``get_fingerprint_pending_files`` have no LIMIT and no ORDER BY; those tabs measured a harmless
-    ~70 KB purely because their backlogs are empty in production today. This seeds a real backlog and
-    asserts the RENDER read stays bounded.
+    The bead assumed it "already pages". It did not -- ``get_metadata_pending_files`` has no LIMIT
+    and no ORDER BY; the tab measured a harmless ~70 KB purely because its backlog is empty in
+    production today. This seeds a real backlog and asserts the RENDER read stays bounded.
     """
     backlog = [_make_pipeline_file() for _ in range(40)]
     session.add_all(backlog)
     await session.commit()
 
-    for stage in (Stage.METADATA, Stage.FINGERPRINT):
+    for stage in (Stage.METADATA,):
         page = await get_pending_files_page(session, stage, page=1, page_size=MIN_PAGE_SIZE)
         assert len(page.rows) <= MIN_PAGE_SIZE, f"{stage.value} pending render read is unbounded ({len(page.rows)} rows)"
 
 
 def test_enrich_workspaces_render_no_file_rows_inline() -> None:
-    """phaze-5462 acceptance: none of the three enrich workspaces may server-render a file list inline.
+    """phaze-5462 acceptance: no enrich workspace may server-render a file list inline.
 
     The 12.7 MB Analyze payload came from the workspace template ``{% include %}``-ing the file table
-    with the whole working set already in context. All three now ship an EMPTY host div that hx-gets a
+    with the whole working set already in context. Each now ships an EMPTY host div that hx-gets a
     bounded, paged fragment on load. This is a structural guard: it fails if anyone reintroduces an
     inline row loop or include on a landing path, which is precisely how phaze-zqvh's partial fix
     regressed into this bead.
@@ -184,7 +183,6 @@ def test_enrich_workspaces_render_no_file_rows_inline() -> None:
     cases = {
         "analyze_workspace.html": ("analyze-files-view", "/pipeline/analyze-files"),
         "metadata_workspace.html": ("metadata-files-view", "/pipeline/pending-files?stage=metadata"),
-        "fingerprint_workspace.html": ("fingerprint-files-view", "/pipeline/pending-files?stage=fingerprint"),
     }
     for name, (host_id, endpoint) in cases.items():
         body = (templates / name).read_text()
@@ -199,25 +197,23 @@ def test_enrich_workspaces_render_no_file_rows_inline() -> None:
 def test_shell_router_does_not_read_unbounded_pending_sets() -> None:
     """phaze-5462: the shell must not seed the unbounded ``get_*_pending_files`` reads into a render.
 
-    Those two readers stay UNBOUNDED on purpose (contract rule 7 -- they are the ENQUEUE set), so the
-    guard is that the RENDER path no longer calls them, not that they gained a LIMIT.
+    That reader stays UNBOUNDED on purpose (contract rule 7 -- it is the ENQUEUE set), so the
+    guard is that the RENDER path no longer calls it, not that it gained a LIMIT.
     """
     shell_src = pathlib.Path("src/phaze/routers/shell.py").read_text()
     assert "get_metadata_pending_files(" not in shell_src, "the shell render path must use the bounded get_pending_files_page"
-    assert "get_fingerprint_pending_files(" not in shell_src, "the shell render path must use the bounded get_pending_files_page"
 
 
 def test_identify_workspaces_render_no_rows_inline() -> None:
-    """phaze-1wvb acceptance: neither Identify workspace may server-render its table inline.
+    """phaze-1wvb acceptance: the Identify workspace may not server-render its table inline.
 
-    The Phase-59 Track-ID and Tracklist workspaces were authored BEFORE this contract existed and
-    were never retrofitted: both `{% include %}`-d ``_file_table.html`` with a whole-corpus row list
-    already in context (get_trackid_stage_files / get_tracklist_set_rows -- no LIMIT, `.all()`).
-    Same structural guard as the enrich workspaces above.
+    The Phase-59 Tracklist workspace was authored BEFORE this contract existed and was never
+    retrofitted: it `{% include %}`-d ``_file_table.html`` with a whole-corpus row list already in
+    context (get_tracklist_set_rows -- no LIMIT, `.all()`). Same structural guard as the enrich
+    workspaces above. (Its Track-ID sibling went with fingerprinting in phaze-0jpe.)
     """
     templates = pathlib.Path("src/phaze/templates/pipeline/partials")
     cases = {
-        "trackid_workspace.html": ("trackid-files-view", "/pipeline/trackid-files"),
         "tracklist_workspace.html": ("tracklist-sets-view", "/pipeline/tracklist-sets"),
     }
     for name, (host_id, endpoint) in cases.items():
@@ -233,11 +229,10 @@ def test_identify_workspaces_render_no_rows_inline() -> None:
 def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
     """phaze-1wvb: the shell render path must not call the old whole-corpus Identify readers.
 
-    Both were RENDER-ONLY (verified by call graph -- no enqueue consumed them), so unlike the pending
-    sets they were bounded in place rather than split; the old names must not come back.
+    It was RENDER-ONLY (verified by call graph -- no enqueue consumed it), so unlike the pending
+    set it was bounded in place rather than split; the old name must not come back.
     """
     shell_src = pathlib.Path("src/phaze/routers/shell.py").read_text()
-    assert "get_trackid_stage_files(" not in shell_src, "the shell render path must use the bounded get_trackid_files_page"
     assert "get_tracklist_set_rows(" not in shell_src, "the shell render path must use the bounded get_tracklist_sets_page"
 
 
@@ -263,7 +258,6 @@ def test_bulk_enqueue_still_uses_the_unbounded_pending_set() -> None:
     """
     router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
     assert "get_metadata_pending_files(session)" in router_src, "EXTRACT ALL must enqueue the UNBOUNDED pending set"
-    assert "get_fingerprint_pending_files(session)" in router_src, "FINGERPRINT ALL must enqueue the UNBOUNDED pending set"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -319,6 +313,48 @@ async def test_analyze_paging_is_stable_when_the_sort_key_ties(session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_file(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-wiz1 regression: a completed file re-enqueued for deepen (an active scheduling-ledger
+    row while ``analysis_completed_at`` stays set, per the migration-033 XOR check) must not appear
+    TWICE across a multi-page working set -- once on an active page, again in the completions window
+    appended to the final page.
+
+    The completions window's old Python ``seen`` dedup was built ONLY from the FINAL page's active
+    rows, so it structurally could not exclude an overlapping file that sorted onto an EARLIER page.
+    Here the deepened file is given the NEWEST ``created_at`` so it lands on PAGE 1 (active-order is
+    ``created_at DESC``), while 14 other partial-analysis files fill pages 1-2 -- forcing the
+    completions window (appended on page 2, the final page) to be exercised against an overlap that
+    is NOT on that final page.
+    """
+    from datetime import datetime, timedelta
+
+    monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
+
+    backlog = [_make_pipeline_file() for _ in range(14)]
+    session.add_all(backlog)
+    deepened = _make_pipeline_file()
+    session.add(deepened)
+    await session.flush()
+
+    # Naive datetimes: the test-DB create_all schema makes created_at/analysis_completed_at
+    # TIMESTAMP WITHOUT TIME ZONE.
+    now = datetime.now()
+    for i, f in enumerate(backlog):
+        f.created_at = now - timedelta(minutes=i + 1)  # type: ignore[assignment]
+        session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, fine_windows_analyzed=1, fine_windows_total=10))
+    deepened.created_at = now  # type: ignore[assignment]  # newest -> sorts onto page 1
+    session.add(AnalysisResult(id=uuid.uuid4(), file_id=deepened.id, fine_windows_analyzed=10, fine_windows_total=10, analysis_completed_at=now))
+    await _seed_process_file_ledger(session, deepened)
+    await session.commit()
+
+    seen = await _walk_all_pages(lambda p: get_analyze_working_set(session, page=p, page_size=MIN_PAGE_SIZE), MIN_PAGE_SIZE)
+
+    dupes = [file_id for file_id in set(seen) if seen.count(file_id) > 1]
+    assert not dupes, f"deepen-in-flight completed file rendered {seen.count(dupes[0]) if dupes else 0}x across pages -- {dupes}"
+    assert str(deepened.id) in seen, "the deepened file must still appear (on its active page), just not a second time"
+
+
+@pytest.mark.asyncio
 async def test_analyze_files_page_is_stable_when_the_sort_key_ties(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
     """The same degenerate-sort-key walk over the filtered/paged lens (``get_analyze_files_page``)."""
     monkeypatch.setattr(pipeline_mod, "get_settings", lambda: _backend_settings())
@@ -342,7 +378,7 @@ async def test_analyze_files_page_is_stable_when_the_sort_key_ties(session: Asyn
 
 @pytest.mark.asyncio
 async def test_pending_files_paging_is_stable_when_the_sort_key_ties(session: AsyncSession) -> None:
-    """The same degenerate-sort-key walk over the shared metadata/fingerprint pending pager."""
+    """The same degenerate-sort-key walk over the shared enrich pending pager."""
     files = [_make_pipeline_file() for _ in range(25)]
     session.add_all(files)
     await session.commit()

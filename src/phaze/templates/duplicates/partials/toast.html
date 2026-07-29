@@ -15,6 +15,13 @@
           hx-swap="{{ undo_swap | default('innerHTML') }}"
           class="inline">
         <input type="hidden" name="file_states" value="{{ undo_file_states }}">
+        {# phaze-dpc5: carry the SUBMITTED group hashes into the undo, mirroring how bulk resolve
+           acts on exactly what the operator was shown (phaze-81bu). Bulk resolve OOB-deletes each
+           #dupe-group-{hash} card; without these the undo endpoint cannot know which cards to put
+           back, and a successful undo left an empty workspace claiming N files restored. #}
+        {% for hash in (undo_group_hashes if undo_group_hashes is defined else []) %}
+        <input type="hidden" name="group_hashes" value="{{ hash }}">
+        {% endfor %}
         <button type="submit"
                 @click="show = false"
                 class="text-blue-300 hover:text-blue-100 font-semibold underline">

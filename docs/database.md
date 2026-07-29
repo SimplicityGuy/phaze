@@ -17,12 +17,11 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `metadata`            | Audio tag metadata (1:1 with `files`)                                  |
 | `analysis`            | BPM, key, mood, style results (1:1 with `files`)                       |
 | `analysis_window`     | Per-window time-series analysis rows (1:many with `files`, `ON DELETE CASCADE`) |
-| `fingerprint_results` | Per-engine fingerprint results (one row per `file_id` + `engine`)     |
 | `proposals`           | AI-generated rename/move proposals (`ProposalStatus`)                  |
 | `execution_log`       | Append-only audit trail for file rename/move operations               |
 | `tag_write_log`       | Append-only audit trail for tag write operations (before/after tags)  |
 | `file_companions`     | Many-to-many: companion files to media files                          |
-| `tracklists`          | Tracklist metadata (`1001tracklists` or `fingerprint` source)         |
+| `tracklists`          | Tracklist metadata (sourced from `1001tracklists`; audio-fingerprint sourcing was removed, phaze-0jpe) |
 | `tracklist_versions`  | Versioned tracklist snapshots                                         |
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
@@ -48,7 +47,7 @@ guarded by `status = 'queued'`.
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
 deleted); `analysis_window` and `file_companions` cascade with their `files` row
 (`ON DELETE CASCADE`); the remaining per-file sidecars (`metadata`, `analysis`,
-`fingerprint_results`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
+`proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
 tracklist chain use the default restricting FK (no cascade).
 
 ```mermaid
@@ -58,7 +57,6 @@ erDiagram
     files ||--|| metadata : "1:1"
     files ||--|| analysis : "1:1"
     files ||--o{ analysis_window : "CASCADE"
-    files ||--o{ fingerprint_results : "per engine"
     files ||--o{ proposals : "rename/move"
     files ||--o| cloud_job : "0..1 sidecar"
     files ||--o{ file_companions : "CASCADE"
@@ -95,11 +93,12 @@ There is **no `files.state` column and no file-level state enum** — Phase 90 d
 `state` column, the file-level state `StrEnum`, and the `ix_files_state` index (in the
 pre-flatten chain's migration `039_drop_files_state_column`, now folded into the `039`
 baseline schema). A file's status is instead **derived on read**, per stage,
-from its output tables (`metadata`, `fingerprint_results`, `analysis`, `proposals`,
+from its output tables (`metadata`, `analysis`, `proposals`,
 `execution_log`), the `cloud_job` sidecar, and the `dedup_resolution` marker.
 
-- `Stage` (`src/phaze/enums/stage.py`, 7 stages): `metadata`, `fingerprint`, `analyze`,
-  `tracklist`, `propose`, `review`, `apply`.
+- `Stage` (`src/phaze/enums/stage.py`, 6 stages): `metadata`, `analyze`,
+  `tracklist`, `propose`, `review`, `apply`. Audio fingerprinting was removed as a stage
+  (phaze-0jpe).
 - `Status` (`src/phaze/enums/stage.py`, 5 states): `not_started`, `in_flight`, `done`,
   `skipped`, `failed`, resolved under the precedence ladder
   `in_flight ≻ done ≻ skipped ≻ failed ≻ not_started`. The durable `scheduling_ledger` is the
@@ -126,9 +125,8 @@ The conceptual per-file stage progression (each node's status is derived, never 
 ```mermaid
 flowchart TD
     discovered --> metadata
-    metadata --> fingerprint
-    fingerprint --> analyze
-    fingerprint -.long file, cloud/compute routed.-> cloud_job[(cloud_job sidecar)]
+    metadata --> analyze
+    metadata -.long file, cloud/compute routed.-> cloud_job[(cloud_job sidecar)]
     cloud_job --> analyze
     analyze --> propose
     propose --> review

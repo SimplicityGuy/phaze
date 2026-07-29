@@ -608,6 +608,9 @@ async def test_compute_dispatch_stamps_destination_on_push_payload(session: Asyn
     Record-don't-rederive originates here: the enqueued push carries THIS backend's own push_host /
     scratch_dir / ssh_user (read off the bound ComputeBackend), so every downstream reader (the Plan-02
     rsync argv) uses the RECORDED destination rather than re-deriving it.
+
+    phaze-s5sz: the enqueue is PARKED, not fired inline -- assert it is queued only after the commit +
+    an explicit ``flush_pending_push_file_enqueues`` (mirrors the kueue s3_upload twin).
     """
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
@@ -618,6 +621,10 @@ async def test_compute_dispatch_stamps_destination_on_push_payload(session: Asyn
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    assert router.captures == [], "the push_file enqueue must be PARKED, not fired inline"
+
+    await session.commit()
+    assert await backends.flush_pending_push_file_enqueues(session) == 1
 
     pushes = [(task, payload) for task, payload in router.queues["nox-io"].captured if task == "push_file"]
     assert len(pushes) == 1
@@ -639,6 +646,8 @@ async def test_compute_dispatch_stamps_none_ssh_user_when_unset(session: AsyncSe
 
     router = DedupFakeTaskRouter()
     await backend.dispatch(file, session, router)
+    await session.commit()
+    assert await backends.flush_pending_push_file_enqueues(session) == 1
 
     _task, payload = next((t, p) for t, p in router.queues["nox-io"].captured if t == "push_file")
     assert payload["dest_host"] == "a1.push.example"
@@ -767,23 +776,24 @@ async def test_kueue_dispatch_no_fileserver_agent_leaves_file_untouched(
     assert job is None
 
 
-# === phaze-uciu.3: a POST-WRITE enqueue raise rolls back ONLY the write (SAVEPOINT) =====================
+# === phaze-s5sz: dispatch PARKS (never fires) the push_file enqueue =====================================
 
 
 @pytest.mark.asyncio
-async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(session: AsyncSession) -> None:
-    """A ``push_file`` enqueue failure AFTER the ``cloud_job`` upsert leaves the row re-pickable.
+async def test_compute_dispatch_defers_enqueue_past_the_committed_row(session: AsyncSession) -> None:
+    """phaze-s5sz: ``ComputeAgentBackend.dispatch`` no longer FIRES the ``push_file`` enqueue -- it PARKS it.
 
-    Regression for phaze-uciu.3 (supersedes phaze-3e1i): before the fix, ``dispatch`` upserted
-    ``status='submitted'`` + ``backend_id`` BEFORE the fallible enqueue with NO savepoint -- SAQ's
-    ``PostgresQueue`` uses its own psycopg pool, so an enqueue raise does NOT poison this asyncpg
-    session/transaction, and the drain's per-candidate handler deliberately does not roll back
-    (Landmine L1: a mid-loop rollback would drop the tick's ``pg_advisory_xact_lock``). The un-savepointed
-    upsert therefore SURVIVED into the drain's post-loop commit -- a stranded ``submitted`` row that
-    reconcile/orphan-recovery both scope away from, permanently consuming an ``in_flight_count`` slot.
-    Post-fix the upsert + enqueue run inside ``session.begin_nested()``: the raise still propagates (the
-    caller sees it), but the SAVEPOINT rolls back ONLY the upsert, restoring the pre-dispatch
-    ``status='awaiting'`` row -- re-pickable by the next tick, and NOT counted by ``in_flight_count``.
+    Supersedes the phaze-uciu.3 SAVEPOINT twin (regression test renamed off
+    ``test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint``): pre-fix ``dispatch``
+    enqueued ``push_file`` INLINE (on SAQ's OWN psycopg pool, which commits the job durably +
+    IMMEDIATELY), so a fast rsync push could complete and POST ``/pushed`` before this asyncpg session
+    committed the ``cloud_job`` SUBMITTED row -- ``report_pushed``'s ONLY guard (``status == 'submitted'``)
+    then matched 0 rows and took the idempotent-no-op hold FOREVER (compute has no reconcile/orphan-
+    recovery backstop for an in-flight cloud_job). Post-fix ``dispatch`` upserts the row and PARKS the
+    enqueue; the drain commits FIRST and only then flushes it, so the worker-visible job strictly follows
+    its committed row. Because the enqueue is no longer in the transaction, a raising queue can NOT roll
+    back the upsert -- ``dispatch`` itself never fires it, so it never raises here (mirrors
+    ``test_kueue_dispatch_defers_enqueue_past_the_committed_row``).
     """
     from sqlalchemy import select
 
@@ -797,14 +807,23 @@ async def test_compute_dispatch_enqueue_failure_rolls_back_write_via_savepoint(s
     await backends.hold_awaiting_cloud(session, file)
     await session.commit()
 
+    # A router whose enqueue always raises: dispatch must NOT touch it (the enqueue is deferred), so
+    # dispatch completes cleanly and stamps the SUBMITTED row + backend_id.
     router = _RaisingTaskRouter()
-    with pytest.raises(RuntimeError, match="saq enqueue blew up"):
-        await backend.dispatch(file, session, router)
+    await backend.dispatch(file, session, router)  # no raise: the enqueue is parked, not fired
 
     job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id))).scalar_one()
-    assert job.status == CloudJobStatus.AWAITING.value  # rolled back to the pre-dispatch hold status
-    assert job.backend_id is None  # the SAVEPOINT rollback also undid the backend_id stamp
-    assert await backend.in_flight_count(session) == 0  # 'awaiting' is never in the in-flight set (D-10)
+    assert job.status == CloudJobStatus.SUBMITTED.value
+    assert job.backend_id == "compute-a1"
+    assert await backend.in_flight_count(session) == 1  # the staged row holds its cap slot
+
+    await session.commit()
+    # Flushing a parked enqueue whose queue raises is best-effort: it fires 0, swallows the error (never
+    # re-raises), and leaves the committed SUBMITTED row (no compute-lane reaper recovers it today --
+    # tracked separately; the row is still durably correct, not phantom/limbo).
+    assert await backends.flush_pending_push_file_enqueues(session) == 0
+    job = (await session.execute(select(CloudJob).where(CloudJob.file_id == file.id).execution_options(populate_existing=True))).scalar_one()
+    assert job.status == CloudJobStatus.SUBMITTED.value  # unchanged by the failed flush
 
 
 @pytest.mark.asyncio
@@ -1020,6 +1039,43 @@ async def test_kueue_reconcile_scope_ignores_other_backend_rows(session: AsyncSe
     session.expire_all()
     compute_row = (await session.execute(select(CloudJob).where(CloudJob.file_id == compute_fid))).scalar_one()
     assert compute_row.status == CloudJobStatus.SUBMITTED.value  # the compute row is left for its /pushed callback
+
+
+@pytest.mark.asyncio
+async def test_reconcile_releases_the_advisory_lock_on_a_row_deleted_mid_sweep(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-c1u7: a row removed by a concurrent ``delete_scan`` cascade between snapshot and re-read
+    must roll back (releasing ``pg_advisory_xact_lock(5_000_504)``), not leak it past the row boundary.
+
+    Mirrors ``_reap_stranded_staging``'s identical vanished-row skip. Pre-fix the reconcile loop's
+    vanished-row branch was a bare ``continue`` with no rollback: the transaction that acquired the
+    drain advisory lock at the top of the per-row unit stayed open, stalling every subsequent row's kube
+    I/O (and the rest of the tick, if this was the last row) until some LATER commit or session close.
+    The load-bearing assertion is that the session is NOT left inside an open transaction after the skip.
+    """
+    from sqlalchemy import delete, select
+
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    fid = await _seed_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.SUBMITTED)
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    cloud_job_id = row.id
+
+    real_get = session.get
+
+    async def _delete_then_get(entity: Any, ident: Any, **kwargs: Any) -> Any:
+        if ident == cloud_job_id:
+            await session.execute(delete(CloudJob).where(CloudJob.id == cloud_job_id))
+            session.expire_all()
+        return await real_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", _delete_then_get)
+
+    tally = await backend.reconcile(session)
+
+    monkeypatch.undo()
+    assert tally is not None
+    assert tally["reconciled"] == 0  # the vanished row is skipped, never counted
+    assert session.in_transaction() is False  # the skip released the lock rather than leaking it
 
 
 # === Layer 2: D-02 equivalence invariant =================================================
@@ -1933,6 +1989,51 @@ async def test_reap_still_fires_when_the_broker_key_is_terminal_not_live(session
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
 
 
+@pytest.mark.asyncio
+async def test_reap_skips_an_uploaded_row_whose_submit_job_is_live_in_the_broker(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-1k0i: an aged UPLOADED row with a LIVE ``submit_cloud_job`` broker key is NEVER reaped.
+
+    ``report_uploaded`` flips UPLOADING -> UPLOADED and enqueues ``submit_cloud_job:<file_id>`` in the SAME
+    transaction; the completed ``s3_upload`` job's key is swept from ``saq_jobs``. So for an UPLOADED row the
+    live owner the phaze-31q3 gate must consult is the SUBMIT key, not the (already-gone) upload key -- a
+    ``submit_cloud_job`` stuck behind a controller-queue backlog reads UPLOADED with a frozen ``updated_at``
+    and must not be reaped out from under it.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=3_600)
+    await _seed_live_saq_job(session, key=f"submit_cloud_job:{file_id}", status="queued")
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 0  # live submit key -> NOT reaped despite age
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.UPLOADED.value
+
+
+@pytest.mark.asyncio
+async def test_reap_still_fires_on_an_uploaded_row_with_a_live_but_irrelevant_s3_upload_key(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-1k0i: a live ``s3_upload`` broker key does NOT protect an UPLOADED row (wrong key for this status).
+
+    Pre-fix the gate checked ONLY ``s3_upload:<file_id>`` regardless of status, so a stale/unrelated
+    ``s3_upload`` entry (e.g. left behind by an unrelated retry bookkeeping quirk) would have falsely shielded
+    an UPLOADED row whose actual owner (``submit_cloud_job``) is genuinely gone. The gate must key off the
+    OBSERVED status, not a single hardcoded key.
+    """
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.UPLOADED, age_sec=3_600)
+    await _seed_live_saq_job(session, key=f"s3_upload:{file_id}", status="active")  # wrong key for UPLOADED
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # s3_upload key is irrelevant once UPLOADED -> genuinely lost, reaped
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
+
+
 # === phaze-jwz0: the reaper commits the spill BEFORE the S3 cleanup (outside the txn/lock) ============
 
 
@@ -1971,3 +2072,88 @@ async def test_reap_commits_the_spill_before_s3_io_so_a_failing_bucket_never_und
     # The load-bearing assertion: the failing bucket did NOT roll the durable spill back.
     assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value
     assert await backend.in_flight_count(session) == 0  # the cap slot is genuinely released
+
+
+# === phaze-wa9x: the post-commit delete is generation-safe against a concurrent re-dispatch =============
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_delete_when_a_new_staging_cycle_claims_the_key_before_it_runs(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-wa9x: a re-dispatch that claims the SAME bucket/key between commit and delete must not be deleted.
+
+    ``delete_staged_object`` is keyed only by file_id; bucket and object key are deterministic and identical
+    across staging generations of the same file, so once the row is 'awaiting' a concurrent drain tick can
+    stage a FRESH object at the same key while a stalled delete is still in flight. Simulate the race inside
+    the (idempotent) ``abort_multipart_upload`` call: a concurrent cycle re-stages the file (fresh upload_id,
+    back to UPLOADING) before the reaper's delete runs. The re-read-before-delete guard must see the row is
+    no longer 'awaiting' with the observed upload_id and skip the delete entirely.
+    """
+    from sqlalchemy import update as sa_update
+
+    _stub_kube_available(monkeypatch)
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-old",
+    )
+
+    async def _restage_during_abort(*_args: Any, **_kwargs: Any) -> None:
+        # Simulate a concurrent stage cycle claiming the row: fresh upload_id, back to UPLOADING.
+        await session.execute(
+            sa_update(CloudJob).where(CloudJob.file_id == file_id).values(status=CloudJobStatus.UPLOADING.value, upload_id="upload-new")
+        )
+        await session.commit()
+
+    abort = AsyncMock(side_effect=_restage_during_abort)
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1  # the spill itself is unaffected -- it already committed
+    assert abort.await_count == 1
+    assert delete.await_count == 0  # the fresh cycle's object must NOT be deleted
+    row = await _cloud_job_for(session, file_id)
+    assert row.status == CloudJobStatus.UPLOADING.value  # the new cycle's row survives untouched
+    assert row.upload_id == "upload-new"
+
+
+@pytest.mark.asyncio
+async def test_reap_still_deletes_when_no_new_cycle_has_claimed_the_key(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, backends_toml_env: Any
+) -> None:
+    """phaze-wa9x: the re-read guard is not a regression -- an untouched 'awaiting' row still gets cleaned up.
+
+    Companion to the race test: when nothing claims the row between commit and delete (the common case),
+    the re-read observes the SAME status/upload_id the reaper itself just wrote and the delete proceeds.
+    """
+    _stub_kube_available(monkeypatch)
+    abort = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(s3_staging, "abort_multipart_upload", abort)
+    monkeypatch.setattr(s3_staging, "delete_staged_object", delete)
+    backend = _kueue_with_buckets(backends_toml_env, bucket_ids=["staging-a"], backend_id="kueue-x64")
+    file_id = await _seed_staging_cloud_job(
+        session,
+        backend_id="kueue-x64",
+        status=CloudJobStatus.UPLOADING,
+        age_sec=90_000,
+        staging_bucket="staging-a",
+        upload_id="upload-only",
+    )
+
+    tally = await backend.reconcile(session)
+
+    assert tally is not None
+    assert tally["staging_reaped"] == 1
+    assert abort.await_count == 1
+    assert delete.await_count == 1  # no race -> the (idempotent) cleanup still runs
+    assert (await _cloud_job_for(session, file_id)).status == CloudJobStatus.AWAITING.value

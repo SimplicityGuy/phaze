@@ -9,8 +9,7 @@ Control role: runs the application server's SAQ worker pool. Fileless tasks only
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
   authoritative, current ``functions`` / ``cron_jobs`` list)
 
-This module does NOT import `phaze.services.fingerprint` or `phaze.tasks.pool`
-(those belong to the agent role per Phase 26 D-03). Cross-imports between
+This module does NOT import `phaze.tasks.pool` (that belongs to the agent role per Phase 26 D-03). Cross-imports between
 controller and agent_worker are forbidden -- the import-boundary test in
 Plan 10 enforces the symmetric invariant for agent_worker.
 
@@ -33,7 +32,7 @@ import structlog
 
 from phaze.config import export_llm_api_keys, get_settings
 from phaze.logging_config import configure_logging
-from phaze.services import kube_staging
+from phaze.services import kube_staging, s3_staging
 from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.discogs_matcher import DiscogsographyClient
 from phaze.services.proposal import ProposalService, load_prompt_template
@@ -61,7 +60,7 @@ logger = structlog.get_logger(__name__)
 async def startup(ctx: dict[str, Any]) -> None:
     """Initialize shared resources for fileless tasks (SAQ startup hook).
 
-    Does NOT initialize: process pool, fingerprint orchestrator, models check.
+    Does NOT initialize: process pool, models check.
     Those belong to the agent role; the control role's worker never reads files.
     """
     cfg = get_settings()
@@ -227,6 +226,23 @@ async def startup(ctx: dict[str, Any]) -> None:
             await ctx["redis"].delete("phaze:k8s:localqueue_unreachable")
         except Exception:
             logger.warning("phaze.controller startup: could not clear stale LocalQueue-reachability flag; control plane boots regardless (D-05)")
+
+    # phaze-cws5: wire the KSTAGE-04/D-02 lifecycle backstop into production. Every comment in the S3
+    # staging pipeline (stage_file_to_s3's phaze-bbwx compensation, the reaper's post-commit cleanup,
+    # report_upload_failed's terminal cleanup) names ensure_bucket_lifecycle_ttl as "the eventual
+    # backstop" for a missed inline abort/delete -- but nothing ever called it, so it configured ZERO
+    # buckets in production (it was vulture-whitelisted as unused). Push it once per configured bucket
+    # at boot. Best-effort PER BUCKET (mirrors the LocalQueue probe above, D-05): a transient S3
+    # auth/network hiccup must never abort control-plane startup -- a failure here just means this
+    # boot's TTL push did not land, and the next restart retries the same idempotent upsert.
+    for bucket in control_cfg.buckets:
+        try:
+            await s3_staging.ensure_bucket_lifecycle_ttl(bucket)
+        except Exception:
+            logger.warning(
+                "phaze.controller startup: could not configure the staging bucket's lifecycle TTL backstop; control plane boots regardless (D-05)",
+                bucket_id=bucket.id,
+            )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:

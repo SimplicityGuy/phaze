@@ -81,7 +81,7 @@ _CONTROL_DDL = text(
 _SEED_CONTROL_SQL = text(
     """
     INSERT INTO pipeline_stage_control (stage, paused, priority)
-    VALUES ('metadata', false, 50), ('analyze', false, 50), ('fingerprint', false, 50)
+    VALUES ('metadata', false, 50), ('analyze', false, 50)
     ON CONFLICT (stage) DO UPDATE SET paused = EXCLUDED.paused, priority = EXCLUDED.priority, updated_at = now()
     """
 )
@@ -90,7 +90,7 @@ _SEED_CONTROL_SQL = text(
 # three rows outlive the test and any LATER hermetic test in the SAME pytest process that inserts
 # a fresh ``pipeline_stage_control`` row for one of these three stages collides on the PK
 # (``pk_pipeline_stage_control``). No FK references this table, so a plain scoped DELETE is safe.
-_CLEAR_CONTROL_SQL = text("DELETE FROM pipeline_stage_control WHERE stage IN ('metadata', 'analyze', 'fingerprint')")
+_CLEAR_CONTROL_SQL = text("DELETE FROM pipeline_stage_control WHERE stage IN ('metadata', 'analyze')")
 
 
 def _reset_hook_cache() -> None:

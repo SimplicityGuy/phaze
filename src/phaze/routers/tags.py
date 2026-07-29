@@ -147,7 +147,7 @@ async def _get_tracklist_for_file(session: AsyncSession, file_id: uuid.UUID) -> 
     """Find the best tracklist associated with a file.
 
     ``tracklists.file_id`` has only a NON-unique index, and mainline paths (>=90 auto-link,
-    fingerprint re-scan) can legitimately create multiple tracklists per file. A ``scalar_one_or_none``
+    a re-scrape) can legitimately create multiple tracklists per file. A ``scalar_one_or_none``
     here would raise ``MultipleResultsFound`` -> 500 the tags page and silently empty the tagwrite queue
     (services/review.py swallows it). Pick the highest-confidence link deterministically instead, mirroring
     services/pipeline.py's ``max(match_confidence)`` per-file model.

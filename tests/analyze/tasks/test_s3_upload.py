@@ -87,6 +87,67 @@ async def test_upload_puts_each_part_and_reports_etags(agent_env, tmp_path):  # 
 
 
 @respx.mock
+async def test_report_upload_complete_failure_calls_report_upload_failed(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-jsrt: a failure DELIVERING the completion callback must still notify control.
+
+    Every byte is transferred by the time ``report_upload_complete`` runs -- a 5xx / 409 / DB error
+    on that call used to bypass ``report_upload_failed`` entirely (the guard covered only the
+    transfer loop) and go terminal with ``S3_UPLOAD_SAQ_RETRIES = 0`` and NO callback at all,
+    stranding ``cloud_job`` UPLOADING until the 6h reaper discards the fully-uploaded object.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"A" * 6)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(200, headers={"ETag": '"etag-1"'}))
+
+    class _CompleteFailsApi(_FakeApiClient):
+        async def report_upload_complete(self, file_id, parts):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise RuntimeError("control 5xx on CompleteMultipartUpload")
+
+    api = _CompleteFailsApi()
+    file_id = uuid.uuid4()
+    with pytest.raises(RuntimeError, match="control 5xx"):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_report_upload_complete_cancellation_reraised_without_callback(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """A SAQ job-net cancellation racing the completion callback re-raises without a premature report."""
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"A" * 6)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(200, headers={"ETag": '"etag-1"'}))
+
+    class _CompleteCancelsApi(_FakeApiClient):
+        async def report_upload_complete(self, file_id, parts):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise asyncio.CancelledError
+
+    api = _CompleteCancelsApi()
+    file_id = uuid.uuid4()
+    with pytest.raises(asyncio.CancelledError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.failed_calls == []
+
+
+@respx.mock
 async def test_non_2xx_part_raises_runtimeerror_no_callback(agent_env, tmp_path):  # type: ignore[no-untyped-def]
     """A non-2xx part PUT raises RuntimeError (SAQ retry) and never reports completion."""
     from phaze.tasks.s3_upload import upload_file_s3
@@ -344,3 +405,43 @@ async def test_part_reads_run_off_loop(agent_env, tmp_path, monkeypatch):  # typ
     # Both part reads (6 bytes, then the final 4 bytes exhausting the source) were
     # offloaded via to_thread rather than run on the event loop.
     assert offloaded_names.count("read") == 2
+    # phaze-2yjf: the source open() and close() must ALSO be off-loop -- phaze-1lvp only
+    # off-loaded the reads, leaving open()'s lookup/open RPCs against the media mount free
+    # to wedge the loop on a stalled/hung mount, same as an on-loop read would.
+    assert offloaded_names.count("open") == 1
+    assert offloaded_names.count("close") == 1
+
+
+@respx.mock
+async def test_source_open_offloaded_even_when_missing(agent_env, tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-2yjf: the missing-source open() attempt is also dispatched via asyncio.to_thread.
+
+    ``test_missing_original_path_is_terminal`` already covers the outcome (TERMINAL,
+    RuntimeError, report_upload_failed); this asserts the offload discipline specifically.
+    """
+    import phaze.tasks.s3_upload as s3_mod
+
+    real_to_thread = asyncio.to_thread
+    offloaded_names: list[str] = []
+
+    async def _spy(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        offloaded_names.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(s3_mod.asyncio, "to_thread", _spy)
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    missing = tmp_path / "does-not-exist.mp3"
+
+    with pytest.raises(RuntimeError, match="cannot read original_path"):
+        await s3_mod.upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(missing),
+            part_urls=["https://s3.test/bucket/key?partNumber=1"],
+            part_size_bytes=6,
+            agent_id="fileserver-1",
+        )
+
+    assert offloaded_names.count("open") == 1

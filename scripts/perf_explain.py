@@ -3,16 +3,15 @@
 Standalone ``uv run`` companion to :mod:`scripts.seed_perf_corpus`. Run it AFTER seeding a ~200K corpus into
 a perf DB at migration HEAD (>=036, so the migration-032 partial indexes exist). It:
 
-1. Rebuilds SIX hot derived query statements (four distinct shapes from Plans 82-02/03 -- the
-   three four-bucket instances below share one shape) using the REAL clause builders
+1. Rebuilds the hot derived query statements (three distinct shapes from Plans 82-02/03 -- the
+   four-bucket instances below share one shape) using the REAL clause builders
    (``eligible_clause`` / ``dedup_resolved_clause`` / ``stage_status_case`` imported from
    ``phaze.services``), compiles each to literal-bound SQL, and runs ``EXPLAIN (ANALYZE, BUFFERS)`` --
    so the recorded plan is the ACTUAL query the app issues, not a hand-rewrite:
      * get_metadata_pending_files   -- eligible_clause(METADATA)
-     * get_fingerprint_pending_files -- eligible_clause(FINGERPRINT)
      * get_discovered_files_with_duration -- eligible_clause(ANALYZE) + LEFT JOIN + cloud-exclusion
-     * four-bucket GROUP BY stage_status_case(METADATA | FINGERPRINT | ANALYZE) -- one shape, run
-       once per stage (three statements)
+     * four-bucket GROUP BY stage_status_case(METADATA | ANALYZE) -- one shape, run
+       once per stage
 2. Times the full ``GET /pipeline/stats`` endpoint (the real ASGI route via httpx ``ASGITransport`` with
    the DB session pointed at the perf DB), N iterations, reporting p50/p95.
 
@@ -55,16 +54,11 @@ def _bucket_stmt(stage: Stage):  # type: ignore[no-untyped-def]
 
 
 def _hot_statements() -> dict[str, object]:
-    """Return {label: SQLAlchemy Select} for the six derived hot statements (verbatim from Plans 82-02/03)."""
+    """Return {label: SQLAlchemy Select} for the derived hot statements (verbatim from Plans 82-02/03)."""
     return {
         "get_metadata_pending_files": select(FileRecord).where(
             FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
             eligible_clause(Stage.METADATA),
-            ~dedup_resolved_clause(),
-        ),
-        "get_fingerprint_pending_files": select(FileRecord).where(
-            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-            eligible_clause(Stage.FINGERPRINT),
             ~dedup_resolved_clause(),
         ),
         "get_discovered_files_with_duration": select(FileRecord, FileMetadata.duration)
@@ -76,7 +70,6 @@ def _hot_statements() -> dict[str, object]:
             ~exists(select(CloudJob.id).where(CloudJob.file_id == FileRecord.id, CloudJob.status.in_(_ACTIVE_CLOUD_STATUSES))),
         ),
         "four_bucket[metadata]": _bucket_stmt(Stage.METADATA),
-        "four_bucket[fingerprint]": _bucket_stmt(Stage.FINGERPRINT),
         "four_bucket[analyze]": _bucket_stmt(Stage.ANALYZE),
     }
 

@@ -12,11 +12,7 @@ Startup sequence (D-16 + B1):
    = up to 63s total) -- raises RuntimeError if still failing.
 4. Assert identity.agent_id matches the operator-supplied PHAZE_AGENT_QUEUE env
    suffix; if not, raise RuntimeError (anti-misconfiguration probe per Pitfall 1).
-5. Construct FingerprintOrchestrator(engines=[AudfprintAdapter, PanakoAdapter])
-   and stash at ctx["fingerprint_orchestrator"] (B1 -- Plan 11 fingerprint.py +
-   scan.py read it). AudfprintAdapter + PanakoAdapter are HTTP wrappers around
-   local sidecars; they do NOT pull phaze.database into the import graph.
-6. Create CPU-bound essentia process pool.
+5. Create CPU-bound essentia process pool.
 
 Queue name resolution (D-16 step 5 + D-18):
 - SAQ requires the Queue at module-import time.
@@ -45,6 +41,7 @@ import contextlib
 import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any
 
 import redis.asyncio as redis_async
@@ -53,7 +50,6 @@ import structlog
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
 from phaze.services.enqueue_router import LANE_TASKS, LANES
-from phaze.services.fingerprint import AudfprintAdapter, FingerprintOrchestrator, PanakoAdapter
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
     construct_agent_client,
@@ -64,30 +60,48 @@ from phaze.tasks._shared.model_bootstrap import ensure_models_present
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks._shared.stage_control import enforce_stage_pause_on_process, repark_if_stage_paused
 from phaze.tasks.execution import execute_approved_batch
-from phaze.tasks.fingerprint import fingerprint_file
 from phaze.tasks.functions import process_file
 from phaze.tasks.heartbeat import _heartbeat_loop
 from phaze.tasks.metadata_extraction import extract_file_metadata
 from phaze.tasks.push import push_file
 from phaze.tasks.s3_upload import upload_file_s3
-from phaze.tasks.scan import scan_directory, scan_live_set
+from phaze.tasks.scan import scan_directory
 
 
 logger = structlog.get_logger(__name__)
 
 
-def _sweep_scratch(scratch_dir: Path) -> None:
-    """Remove every file (and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
+def _sweep_scratch(scratch_dir: Path, min_age_sec: float) -> None:
+    """Remove stale entries (files and the ``.rsync-partial`` dir) under the compute scratch dir (D-14).
 
-    The compute-only startup janitor's worker. Bounds scratch disk to the in-flight set: a
-    hard-killed worker can leave a half-pushed file or a ``.rsync-partial`` directory behind, and
-    any file still genuinely needed is re-pushed by the staging cron (the deterministic
-    ``push_file:<file_id>`` key + FileState window make this safe). Tolerates a missing dir so a
-    fresh compute host (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the
-    module Postgres-free (tests/shared/core/test_task_split.py)."""
+    The compute-only startup janitor's worker. Bounds scratch disk to entries that can no longer
+    be live work: a hard-killed worker can leave a half-pushed file or a ``.rsync-partial``
+    directory behind. The original docstring's safety claim -- "any file still genuinely needed is
+    re-pushed by the staging cron" -- predates Phase 36's move to a durable Postgres SAQ broker:
+    queued/active ``process_file`` jobs now SURVIVE a worker restart and each pins ``scratch_path``
+    to a file this sweep would otherwise delete out from under it (phaze-8z4u), and the staging
+    cron never re-pushes an already-PUSHED file regardless. Since this module MUST NOT import
+    phaze.database/SQLAlchemy (D-25 import boundary, module docstring), there is no cheap way to
+    ask "is a durable job still claiming this path?" -- so instead an entry is only swept once its
+    mtime is older than ``min_age_sec``, a ceiling generous enough to outlast both the push
+    transport and one full in-place SAQ retry of the analysis. A young entry is left for the NEXT
+    startup sweep rather than treated as leaked. Tolerates a missing dir so a fresh compute host
+    (scratch volume not yet created) starts cleanly. stdlib-only -- keeps the module Postgres-free
+    (tests/shared/core/test_task_split.py)."""
     if not scratch_dir.exists():
         return
+    now = time.time()
     for entry in scratch_dir.iterdir():
+        try:
+            age_sec = now - entry.stat().st_mtime
+        except OSError:
+            # Vanished between iterdir() and stat() (e.g. raced by the job that owns it) --
+            # nothing to sweep.
+            continue
+        if age_sec < min_age_sec:
+            # Too young to safely assume orphaned -- may be a live in-flight push or a durable
+            # queued/active process_file job's scratch_path (phaze-8z4u). Leave it for a later sweep.
+            continue
         if entry.is_dir():
             shutil.rmtree(entry, ignore_errors=True)
         else:
@@ -100,9 +114,14 @@ async def _maybe_sweep_scratch(cfg: AgentSettings) -> None:
     Sweeps ONLY when ``cfg.kind == "compute"`` AND a ``cloud_scratch_dir`` is configured. The
     file-server agent runs this SAME module (zero compute-specific worker code) and owns no scratch
     dir, so it must NOT sweep. Runs off the event loop via ``asyncio.to_thread`` (parity with the
-    ``ensure_models_present`` startup step)."""
+    ``ensure_models_present`` startup step). The age ceiling (phaze-8z4u) is
+    ``push_timeout_sec + analysis_inner_timeout_sec`` -- generous enough to outlast a single push
+    transfer PLUS one full analysis attempt, the longest a legitimately-live scratch entry should
+    go unmodified.
+    """
     if cfg.kind == "compute" and cfg.cloud_scratch_dir:
-        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir))
+        min_age_sec = cfg.push_timeout_sec + cfg.analysis_inner_timeout_sec
+        await asyncio.to_thread(_sweep_scratch, Path(cfg.cloud_scratch_dir), min_age_sec)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -212,18 +231,6 @@ async def startup(ctx: dict[str, Any]) -> None:
     if cfg.agent_heartbeat_enabled:
         ctx["heartbeat_task"] = asyncio.create_task(_heartbeat_loop(ctx))
 
-    # Step 5: Construct fingerprint orchestrator (B1 -- fingerprint_file + scan_live_set
-    # read ctx["fingerprint_orchestrator"]). AudfprintAdapter + PanakoAdapter are
-    # HTTP wrappers around local sidecars; they do NOT pull phaze.database into the
-    # import graph. Transitive-import chain verified clean:
-    #   phaze.services.fingerprint -> httpx + structlog only (no SQLAlchemy/DB)
-    ctx["fingerprint_orchestrator"] = FingerprintOrchestrator(
-        engines=[
-            AudfprintAdapter(base_url=cfg.audfprint_url),
-            PanakoAdapter(base_url=cfg.panako_url),
-        ],
-    )
-
     # Step 6: bound concurrent essentia analysis children (Phase 101). The exec'd
     # child-per-file model (services.analysis_exec) replaced the pebble ProcessPool;
     # this semaphore preserves the pool's worker_process_pool_size concurrency bound.
@@ -253,12 +260,6 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     # Phase 101: no process pool to tear down — analysis children are per-file
     # subprocesses owned and reaped by services.analysis_exec; the semaphore needs
     # no shutdown.
-
-    orchestrator = ctx.get("fingerprint_orchestrator")
-    if orchestrator is not None:
-        for eng in orchestrator.engines:
-            if hasattr(eng, "close"):
-                await eng.close()
 
     client = ctx.get("api_client")
     if client is not None:
@@ -297,8 +298,6 @@ if not _base:
 _FUNCTIONS_BY_NAME: dict[str, Any] = {
     "process_file": process_file,
     "extract_file_metadata": extract_file_metadata,
-    "fingerprint_file": fingerprint_file,
-    "scan_live_set": scan_live_set,
     "scan_directory": scan_directory,  # Phase 27 D-13: chunked HTTP-only directory walk
     "execute_approved_batch": execute_approved_batch,
     "push_file": push_file,  # Phase 50: fileserver rsync-over-SSH push to the compute scratch dir
@@ -311,17 +310,14 @@ _FUNCTIONS_BY_NAME: dict[str, Any] = {
 _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "process_file",
     "extract_file_metadata",
-    "fingerprint_file",
-    "scan_live_set",
     "scan_directory",
     "execute_approved_batch",
     "push_file",
     "s3_upload",
 )
-# Per-lane concurrency knob attribute on Settings (design defaults 4/2/2/4).
+# Per-lane concurrency knob attribute on Settings (design defaults 4/2/4).
 _LANE_CONCURRENCY_ATTR: dict[str, str] = {
     "analyze": "lane_analyze_concurrency",
-    "fingerprint": "lane_fingerprint_concurrency",
     "meta": "lane_meta_concurrency",
     "io": "lane_io_concurrency",
 }

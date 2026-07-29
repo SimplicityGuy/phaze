@@ -5,21 +5,21 @@
 
       0 summary (landing/overview — the node `/` renders; PLACEHOLDER, no store key)
       1 discover (live: discovered)
-      group Enrich · parallel: metadata (metadataDone) · fingerprint (fingerprintDone)
+      group Enrich · parallel: metadata (metadataDone)
                              · analyze (analyzeActive, blue-pulse, one click away at /s/analyze)
-      group Identify: trackid (STATIC label — no store key) · tracklist (tracklistDone)
+      group Identify: tracklist (tracklistDone)
       propose (proposalsDone)
-      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue (all STATIC)
+      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue · apply (all STATIC)
       below-the-line (border-t): audit → /audit/ , agents → /admin/agents (plain links)
 
   Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
-  exists in $store.pipeline (base.html:106-136). summary + trackid + the five Review & Apply
+  exists in $store.pipeline (base.html:106-136). summary + the six Review & Apply
   items carry NO count. Counts are numeric server/store values only.
 
   Phase 87 (87-08) ambient enrich-node additions (each rides the SAME #pipeline-stats OOB
   fanout — no self-poll; store keys added to base.html):
     • UI-05 — amber orphaned/stuck (recovery-candidate) badge bound to
-      $store.pipeline.{metadata,fingerprint,analyze}Orphan, role="status", hidden at 0.
+      $store.pipeline.{metadata,analyze}Orphan, role="status", hidden at 0.
     • PRIO-01 — per-enrich-stage priority stepper (▲/▼) + pause/resume toggle, re-wired to the
       LIVE durable-control endpoints POST /pipeline/stages/{stage}/{priority,pause,resume}
       (routers/pipeline_stages.py). The interactive controls live in a sub-row OUTSIDE the nav
@@ -48,7 +48,8 @@
     • each node  → native title="{label}" (same text as the visible/sr-only label)
   Active-state (aria-[current=page] tint + inset bar) and the focus-visible ring are
   preserved verbatim in BOTH states. The Review & Apply group is unrolled from its former
-  {% for %} into five explicit buttons so each can carry its own distinct glyph.
+  {% for %} into explicit buttons (five at CUT-04, six since phaze-vvmh added Execute) so each
+  can carry its own distinct glyph.
   The compiled CSS (src/phaze/static/css/app.css) is GITIGNORED and rebuilt by
   `just tailwind` / at Docker image-build via the @source template scan in assets/src/app.css.
 #}
@@ -188,59 +189,6 @@
                 <span x-show="$store.pipeline.metadataPaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
             </div>
 
-            {# 2b — Fingerprint (done) #}
-            <button type="button"
-                    data-rail-stage="fingerprint"
-                    hx-get="/s/fingerprint" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Fingerprint"
-                    {% if stage == 'fingerprint' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M7.864 4.243A7.5 7.5 0 0 1 19.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 0 0 4.5 10.5a7.464 7.464 0 0 1-1.15 3.993m1.989 3.559A11.209 11.209 0 0 0 8.25 10.5a3.75 3.75 0 1 1 7.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 0 1-3.6 9.75m6.633-4.596a18.666 18.666 0 0 1-2.485 5.33"/></svg>
-                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Fingerprint</span>
-                {# phaze-nebh: done/total + matching :title/:aria-label (same rationale as Metadata above).
-                   phaze-cvn6.2: shrink-0 + whitespace-nowrap -- see the Analyze node's fuller note. #}
-                <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
-                      x-text="`${$store.pipeline.fingerprintDone} / ${$store.pipeline.fingerprintTotal}`"
-                      :title="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'"
-                      :aria-label="$store.pipeline.fingerprintDone + ' of ' + $store.pipeline.fingerprintTotal + ' fingerprint files done'">0 / 0</span>
-                {# Phase 87 (87-08, UI-05 / D-05): amber orphaned/stuck (recovery-candidate) badge.
-                   phaze-nebh: :title added to match the pre-existing :aria-label. #}
-                <span x-show="$store.pipeline.fingerprintOrphan > 0" x-cloak
-                      role="status"
-                      :title="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
-                      :aria-label="$store.pipeline.fingerprintOrphan + ' orphaned fingerprint file(s) awaiting recovery'"
-                      class="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400 max-lg:hidden shrink-0"
-                      x-text="$store.pipeline.fingerprintOrphan">0</span>
-            </button>
-
-            {# 2b-controls — Phase 87 (87-08, PRIO-01 / D-11): fingerprint priority stepper + pause/resume
-               (LIVE endpoints; hx-swap="none"; store-driven label; collapsed-rail hidden). #}
-            <div class="mt-0.5 mb-1 pl-9 pr-2 flex items-center gap-1 max-lg:hidden" role="group" aria-label="Fingerprint priority and pause controls">
-                <span class="flex-1 text-[11px] text-gray-500 dark:text-gray-400 max-lg:hidden"
-                      x-text="'Priority: ' + ($store.pipeline.fingerprintPriority < 50 ? 'High' : ($store.pipeline.fingerprintPriority > 50 ? 'Low' : 'Normal')) + ' (' + $store.pipeline.fingerprintPriority + ')'">Priority: Normal (50)</span>
-                <button type="button"
-                        hx-post="/pipeline/stages/fingerprint/priority" hx-vals='{"delta": -10}' hx-swap="none"
-                        aria-label="Raise fingerprint priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▲</button>
-                <button type="button"
-                        hx-post="/pipeline/stages/fingerprint/priority" hx-vals='{"delta": 10}' hx-swap="none"
-                        aria-label="Lower fingerprint priority"
-                        title="▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
-                        class="rounded px-1 text-xs leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">▼</button>
-                <button type="button"
-                        x-show="!$store.pipeline.fingerprintPaused"
-                        hx-post="/pipeline/stages/fingerprint/pause" hx-swap="none"
-                        aria-label="Pause fingerprint"
-                        class="rounded px-1.5 text-[11px] leading-none text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Pause</button>
-                <button type="button"
-                        x-show="$store.pipeline.fingerprintPaused" x-cloak
-                        hx-post="/pipeline/stages/fingerprint/resume" hx-swap="none"
-                        aria-label="Resume fingerprint"
-                        class="rounded px-1.5 text-[11px] leading-none font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100/60 dark:hover:bg-amber-950/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Resume</button>
-                <span x-show="$store.pipeline.fingerprintPaused" x-cloak class="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">Paused</span>
-            </div>
-
             {# 2c — Analyze (live · blue pulse · the / default node) #}
             <button type="button"
                     data-rail-stage="analyze"
@@ -251,24 +199,24 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/></svg>
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Analyze</span>
                 {# phaze-nebh: this numeral used to bind analyzeActive (files IN FLIGHT) while the
-                   identically-styled Metadata/Fingerprint numerals bind *Done (files DONE) -- three
+                   identically-styled Metadata numerals bind *Done (files DONE) -- three
                    visually-identical grey numerals reading as three different measures, precisely
                    inverted at a glance ("Analyze 3134" read as "nearly done" actually meant "3,134
                    still running"). Switch to analyzeDone/analyzeTotal so all three enrich stages
                    agree on DONE (matches the bead's preferred resolution: "done" reads more naturally
                    next to a stage name, and in-flight is still surfaced by the ANALYZE workspace's own
                    sub-count, which analyzeActive continues to drive -- see analyze_workspace.html /
-                   phaze-xd8k). done/total + matching :title/:aria-label, same as Metadata/Fingerprint. #}
+                   phaze-xd8k). done/total + matching :title/:aria-label, same as Metadata. #}
                 {# phaze-cvn6.2: this is the node that actually hit the wrap. The count span is a flex
                    sibling of the flex-1 label -- by default a flex item can shrink below its content
                    width, so once the orphan badge below ALSO claims horizontal space (analyze runs
-                   with a live orphan count where Metadata/Fingerprint currently sit at 0), the browser
+                   with a live orphan count where Metadata currently sits at 0), the browser
                    had room to break "1701 / 11428" at the " / " and stacked it onto a second line,
                    growing this row taller than its done/in-flight/not-started neighbours. shrink-0
                    pins the count (and the badge) to their natural width and whitespace-nowrap forbids
                    the internal break; the flex-1 label absorbs any squeeze instead (a single word, so
                    it can only overflow its own box, never push a sibling). Applied to all three
-                   enrich-stage nodes (Metadata/Fingerprint above) so a future non-zero orphan count on
+                   enrich-stage nodes (Metadata above) so a future non-zero orphan count on
                    THEM doesn't reproduce the same wrap. #}
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden shrink-0 whitespace-nowrap"
                       x-text="`${$store.pipeline.analyzeDone} / ${$store.pipeline.analyzeTotal}`"
@@ -317,17 +265,6 @@
         <div class="mx-2 mt-1.5 rounded-lg border border-gray-200 dark:border-phaze-border bg-white dark:bg-phaze-panel px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
             <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-gray-500 px-1.5 mb-1 max-lg:hidden">Identify</div>
 
-            {# 3a — Track-ID (idle · STATIC label, no backing store key in 57) #}
-            <button type="button"
-                    data-rail-stage="trackid"
-                    hx-get="/s/trackid" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
-                    title="Track-ID"
-                    {% if stage == 'trackid' %}aria-current="page"{% endif %}
-                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M15 9h3.75M15 12h3.75M15 15h3.75M4.5 19.5h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Zm6-10.125a1.875 1.875 0 1 1-3.75 0 1.875 1.875 0 0 1 3.75 0Zm1.294 6.336a6.721 6.721 0 0 1-3.17.789 6.721 6.721 0 0 1-3.168-.789 3.376 3.376 0 0 1 6.338 0Z"/></svg>
-                <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Track-ID</span>
-            </button>
-
             {# 3b — Tracklist (idle · live tracklistDone) #}
             <button type="button"
                     data-rail-stage="tracklist"
@@ -339,7 +276,7 @@
                 <span class="flex-1 text-sm text-gray-700 dark:text-gray-300 max-lg:sr-only">Tracklist</span>
                 {# phaze-nebh: sweep -- tracklistDone had no title/aria-label either. No tracklistTotal
                    key exists in the store (base.html), so this stays a bare DONE count (unambiguous on
-                   its own, unlike the three-way metadata/fingerprint/analyze mix above); label it. #}
+                   its own, unlike the metadata/analyze mix above); label it. #}
                 <span class="font-mono text-xs text-gray-500 max-lg:hidden"
                       x-text="$store.pipeline.tracklistDone"
                       :title="$store.pipeline.tracklistDone + ' tracklist files done'"
@@ -357,7 +294,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/></svg>
             <span class="flex-1 text-sm text-gray-700 dark:text-gray-200 max-lg:sr-only">Propose</span>
             {# phaze-nebh: sweep -- proposalsTotal is already in the store (base.html), so render
-               done/total (same self-explanatory form as metadata/fingerprint/analyze) with a matching
+               done/total (same self-explanatory form as metadata/analyze) with a matching
                :title/:aria-label rather than a bare, unlabeled DONE count. #}
             <span class="font-mono text-xs text-gray-500 max-lg:hidden"
                   x-text="`${$store.pipeline.proposalsDone} / ${$store.pipeline.proposalsTotal}`"
@@ -366,8 +303,9 @@
         </button>
 
         {# 5 — Review & Apply (AMBER group · all items STATIC, no store keys in 57).
-           CUT-04: the former {% for %} is unrolled to five explicit buttons so each carries
-           its own distinct heroicons glyph (a single loop body cannot emit per-item SVGs). #}
+           CUT-04: the former {% for %} is unrolled to explicit buttons so each carries its own
+           distinct heroicons glyph (a single loop body cannot emit per-item SVGs). phaze-vvmh
+           appended a sixth, Execute -- the group's terminal node. #}
         <div class="mx-2 mt-1.5 rounded-lg border bg-amber-500/[0.06] border-amber-500/25 px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
             <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400/80 px-1.5 mb-1 max-lg:hidden">Review &amp; Apply</div>
 
@@ -424,6 +362,24 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="m9 9 10.5-3m0 6.553v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 1 1-.99-3.467l2.31-.66a2.25 2.25 0 0 0 1.632-2.163Zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 0 1-.99-3.467l2.31-.66A2.25 2.25 0 0 0 9 15.553Z"/></svg>
                 <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Cue sheets</span>
+            </button>
+
+            {# 5f — Execute (phaze-vvmh). The group's terminal node and the ONLY in-product trigger for
+               POST /execution/start. Its predecessor lived in proposals/partials/stats_bar.html, which
+               the v7 cutover left renderable ONLY as an OOB fragment aimed at the deleted `#stats-bar`
+               id -- so from that cutover until this node landed, approving proposals was possible and
+               applying them was not, from anywhere in the UI. Wired identically to every navigable
+               node; STATIC label with no count (locked live-vs-static rule -- the approved/pending
+               numbers live in the workspace itself, where they are labelled). heroicons v2 outline
+               "play". #}
+            <button type="button"
+                    data-rail-stage="apply"
+                    hx-get="/s/apply" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    title="Execute"
+                    {% if stage == 'apply' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.347a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
+                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Execute</span>
             </button>
         </div>
     </nav>

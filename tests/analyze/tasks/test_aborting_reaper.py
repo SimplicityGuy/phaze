@@ -3,7 +3,7 @@
 phaze-e57w REGRESSION: a swept job that exhausts retries (or a never-run buffered row) can stick in
 ``status='aborting'`` forever. SAQ's ``_enqueue`` upsert only overwrites a conflicting key whose
 status is in ``('aborted','complete','failed')`` -- ``'aborting'`` is NOT in that allowlist -- so the
-surviving deterministic key ``fingerprint_file:<file_id>`` permanently blocks re-enqueue of the file.
+surviving deterministic key ``process_file:<file_id>`` permanently blocks re-enqueue of the file.
 
 The reaper DELETEs such rows (releasing the key) once they are older than ``aborting_reap_seconds``,
 measured against the FROZEN ``started`` timestamp (NOT ``touched`` -- SAQ's sweeper bumps ``touched``
@@ -78,9 +78,9 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-async def _seed_job(session: AsyncSession, *, key: str, status: str, started_ms: int, queue: str = "phaze-agent-nox-fingerprint") -> None:
+async def _seed_job(session: AsyncSession, *, key: str, status: str, started_ms: int, queue: str = "phaze-agent-nox-analyze") -> None:
     """Insert a saq_jobs row whose JSON blob carries the given started (ms) timestamp."""
-    blob = json.dumps({"function": "fingerprint_file", "status": status, "started": started_ms, "touched": _now_ms()}).encode("utf-8")
+    blob = json.dumps({"function": "process_file", "status": status, "started": started_ms, "touched": _now_ms()}).encode("utf-8")
     await session.execute(
         text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:key, :job, :queue, :status, 0)"),
         {"key": key, "job": blob, "queue": queue, "status": status},
@@ -96,7 +96,7 @@ async def test_reaper_frees_stuck_aborting_zombie(session: AsyncSession, monkeyp
     """A zombie 'aborting' row older than the bound is deleted, releasing its deterministic key."""
     await session.execute(_CREATE_SAQ_JOBS)
     bound = 900
-    zombie_key = "fingerprint_file:11111111-1111-1111-1111-111111111111"
+    zombie_key = "process_file:11111111-1111-1111-1111-111111111111"
     # started well past the bound -> stuck.
     await _seed_job(session, key=zombie_key, status="aborting", started_ms=_now_ms() - (bound + 300) * 1000)
     await session.commit()
@@ -113,7 +113,7 @@ async def test_reaper_leaves_fresh_aborting_row(session: AsyncSession, monkeypat
     """A row that only just entered 'aborting' is NOT reaped -- a genuine mid-abort must not be stolen."""
     await session.execute(_CREATE_SAQ_JOBS)
     bound = 900
-    fresh_key = "fingerprint_file:22222222-2222-2222-2222-222222222222"
+    fresh_key = "process_file:22222222-2222-2222-2222-222222222222"
     await _seed_job(session, key=fresh_key, status="aborting", started_ms=_now_ms() - 5 * 1000)  # 5s old
     await session.commit()
 
@@ -128,7 +128,7 @@ async def test_reaper_ignores_non_aborting_rows(session: AsyncSession, monkeypat
     """An old 'active' row (grx3's buffered claim) is NOT this reaper's job -- only 'aborting' is reaped."""
     await session.execute(_CREATE_SAQ_JOBS)
     bound = 900
-    active_key = "fingerprint_file:33333333-3333-3333-3333-333333333333"
+    active_key = "process_file:33333333-3333-3333-3333-333333333333"
     await _seed_job(session, key=active_key, status="active", started_ms=_now_ms() - (bound + 300) * 1000)
     await session.commit()
 

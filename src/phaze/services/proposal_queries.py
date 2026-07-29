@@ -47,6 +47,21 @@ class ProposalPendingConflictError(Exception):
         self.proposal_id = proposal_id
 
 
+class ProposalEditRefusedError(Exception):
+    """A field-edit write blocked because the row is no longer editable (phaze-3mru).
+
+    :func:`update_proposal_fields` has no "attempted status" -- an edit doesn't transition
+    ``status`` at all -- so reusing :class:`ProposalTransitionError` there meant passing the row's
+    CURRENT status as both the current and the attempted value, producing a self-contradictory 409
+    detail like "illegal transition approved -> approved". This carries only the current status and
+    names the refusal for what it is.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        super().__init__(f"edit refused: proposal is {current_status}, only PENDING rows are editable")
+        self.current_status = current_status
+
+
 @dataclass
 class Pagination:
     """Pagination metadata for a page of results."""
@@ -94,6 +109,29 @@ class ProposalStats:
     approved: int
     rejected: int
     avg_confidence: float | None
+
+
+async def count_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
+    """Count PENDING proposals with confidence >= threshold -- read-only, mirrors the EXACT
+    predicate :func:`approve_pending_above_confidence` bulk-approves (phaze-rw14).
+
+    The Rename/Move workspaces' bulk-approve confirm dialog used to quote the RENDERED row count
+    (``rename_proposals | length``, capped at 200 and unfiltered by confidence) as the number of
+    proposals the action was about to approve. That is wrong on two axes at once: it is the
+    render cap, not the true match count, and the render is ordered confidence-ASC, so the visible
+    200 can hold zero rows meeting the threshold while the server-side predicate approves
+    thousands. This gives the confirm dialog the real number instead.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(RenameProposal)
+        .where(
+            RenameProposal.status == ProposalStatus.PENDING.value,
+            RenameProposal.confidence >= threshold,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
@@ -277,30 +315,51 @@ async def bulk_update_status(
     return int(cursor_result.rowcount)
 
 
-async def approve_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
-    """Approve every PENDING proposal whose confidence >= threshold (server-evaluated predicate).
+async def approve_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> list[uuid_mod.UUID]:
+    """Approve every PENDING proposal whose confidence >= threshold in ONE atomic UPDATE.
 
-    REVIEW-02 / D-02: the caller passes NO id-list; the server re-queries the pending rows that
-    meet the fixed confidence predicate at submit and bulk-updates them to APPROVED. Rows whose
-    ``confidence`` IS NULL are excluded by the SQL comparison (Pitfall 2 -- the conservative-correct
-    behavior for an irreplaceable archive; do NOT COALESCE), leaving them for per-file review.
-    Reuses :func:`bulk_update_status` so the ``proposals.status`` write is identical to the existing
-    bulk path. Returns the number of proposals approved.
+    REVIEW-02 / D-02: the caller passes NO id-list; the server re-evaluates the fixed confidence
+    predicate at submit. Rows whose ``confidence`` IS NULL are excluded by the SQL comparison
+    (Pitfall 2 -- the conservative-correct behavior for an irreplaceable archive; do NOT COALESCE),
+    leaving them for per-file review. Returns the ids actually transitioned to APPROVED.
 
-    phaze-bg4w: the ``allowed_from=[PENDING]`` guard is passed through to ``bulk_update_status`` so
-    the from-state predicate lands INSIDE the UPDATE's WHERE clause. Without it the UPDATE carried
-    only ``WHERE id IN (:ids)`` -- the ids snapshotted by the SELECT above -- so a proposal a
-    concurrent tab REJECTED between this function's SELECT and UPDATE was silently flipped back to
-    APPROVED (the same TOCTOU the single-row and existing bulk paths already close).
+    phaze-0ew3 / phaze-p35v: this used to SELECT the matching ids, then hand them to
+    :func:`bulk_update_status` as an expanding ``id IN (...)`` -- one bind parameter per id. Two
+    defects followed from that snapshot-then-write shape, and both are closed by folding the WHOLE
+    predicate (status AND confidence) into a SINGLE ``UPDATE ... WHERE ... RETURNING id``:
+
+    * (phaze-0ew3) asyncpg caps a statement at 32,767 bind parameters. D-04 keeps one PENDING
+      proposal per file and the product is designed for a ~200K-file archive, so the pending set
+      with confidence >= 0.9 can organically exceed that cap -- the id-list UPDATE then 500s
+      deterministically, every retry, at exactly the scale the feature exists for. A predicate-only
+      UPDATE binds ``threshold`` once regardless of how many rows match.
+    * (phaze-p35v) the id SELECT and the UPDATE were two statements: the from-state guard
+      (``allowed_from=[PENDING]``) landed inside the UPDATE's WHERE (phaze-bg4w), but the
+      CONFIDENCE half of the predicate did not, so a proposal a concurrent ``store_proposals``
+      upsert overwrote between the SELECT and the UPDATE -- keeping the same id and PENDING status
+      but replacing ``proposed_filename`` / ``proposed_path`` / ``confidence`` -- could be approved
+      with content nobody ever saw at >= threshold. Evaluating BOTH predicates inside the one
+      UPDATE means the write only ever approves a row whose confidence is >= threshold AT THE
+      MOMENT it commits, closing this TOCTOU the same way phaze-bg4w closed the status half.
+
+    ``RETURNING id`` also lets ``routers.proposals.bulk_approve_high_confidence`` build its v7 OOB
+    row fragments from the rows THIS call actually approved, instead of a separate pre-update
+    id-snapshot select (the second unbounded ``id IN (...)`` the phaze-0ew3 review found at
+    ``routers/proposals.py``).
     """
-    stmt = select(RenameProposal.id).where(
-        RenameProposal.status == ProposalStatus.PENDING,
-        RenameProposal.confidence >= threshold,
+    stmt = (
+        update(RenameProposal)
+        .where(
+            RenameProposal.status == ProposalStatus.PENDING.value,
+            RenameProposal.confidence >= threshold,
+        )
+        .values(status=ProposalStatus.APPROVED.value)
+        .returning(RenameProposal.id)
     )
-    ids = list((await session.execute(stmt)).scalars().all())
-    if not ids:
-        return 0
-    return await bulk_update_status(session, ids, ProposalStatus.APPROVED, allowed_from=frozenset({ProposalStatus.PENDING}))
+    cursor_result: Any = await session.execute(stmt)
+    ids = list(cursor_result.scalars().all())
+    await session.commit()
+    return ids
 
 
 async def update_proposal_fields(
@@ -324,7 +383,12 @@ async def update_proposal_fields(
     concurrent approval silently rewrote the ``proposed_path`` an APPROVED row feeds straight into
     ``execution_dispatch`` -- redirecting a reviewed move to an unreviewed destination -- and edits
     to terminal EXECUTED/FAILED rows corrupted the historical record. With ``allowed_from`` the
-    edit refuses (``ProposalTransitionError`` -> 409) rather than mutating a non-editable row.
+    edit refuses (:class:`ProposalEditRefusedError` -> 409) rather than mutating a non-editable row.
+
+    phaze-3mru: the refusal raises :class:`ProposalEditRefusedError`, not
+    :class:`ProposalTransitionError`. An edit has no "attempted status" to name -- reusing the
+    status-transition error meant passing the row's current status as both arguments, producing a
+    409 detail like "illegal transition approved -> approved".
     """
     values: dict[str, Any] = {}
     if proposed_filename is not None:
@@ -346,7 +410,7 @@ async def update_proposal_fields(
         if proposal is None:
             return None
         if allowed_from is not None:
-            raise ProposalTransitionError(proposal.status, proposal.status)
+            raise ProposalEditRefusedError(proposal.status)
         return proposal
 
     # Re-fetch with selectinload to ensure the file relationship is available for the row render

@@ -44,7 +44,7 @@ reframe below): the WORK set is still, exactly, ``ledger MINUS live MINUS domain
 THE PER-STAGE DOMAIN-COMPLETED PREDICATE (the SECONDARY net for Plan 02's residual gap):
 Phase 80 (READ-03) CUT this predicate over from ``FileRecord.state`` reads to the Phase-78/81
 single-source derivation layer (``services/stage_status.py``): recovery now derives "done" DIRECTLY
-from the per-stage output tables via the LOCKED ``done_clause`` / ``domain_completed_clause`` builders,
+from the per-stage output tables via the LOCKED ``domain_completed_clause`` builder,
 with ZERO ``FileRecord.state`` reads. This lands AFTER migration ``036`` backfilled
 ``analysis.analysis_completed_at`` (so ``done(analyze)`` reads a complete corpus) and BEFORE Phase 82
 redefines "pending", closing the double-negation (D-05): the enrich branches flip from
@@ -56,16 +56,12 @@ NOT in_flight``) to a DIRECT ``in done-set`` test. The exclusion stays EXPLICIT 
   ``domain_completed_clause(ANALYZE)`` == done OR terminal-failed -- FAILURE_IS_TERMINAL[analyze],
   so an un-analyzable file is NEVER auto-re-driven), ``extract_file_metadata`` (done via
   ``domain_completed_clause(METADATA)`` with the D-10 ``enqueued_at <= failed_at`` gate applied at the
-  call site), ``fingerprint_file`` (done via ``done_clause(FINGERPRINT) OR skipped_clause(FINGERPRINT)``
-  -- a FAILED fingerprint still auto-retries, the intentional analyze/fingerprint asymmetry D-01 encodes,
-  but an operator-force-SKIPPED fingerprint is excluded so recovery never re-drives a skipped stage
-  [phase-87 behavior 5]), and ``push_file`` (done
+  call site), and ``push_file`` (done
   via ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` -- D-07, no backend-kind
   resolution needed because a ``push_file`` ledger row implies compute).
-- live-keys-only (everything else): ``scan_live_set`` (Plan 02's terminal ack clears its ledger row
-  on EVERY outcome, so any surviving row is genuinely orphaned -- no domain predicate) plus the four
-  controller stages (``generate_proposals`` / ``search_tracklist`` / ``scrape_and_store_tracklist``
-  / ``match_tracklist_to_discogs``; Plan 01's after_process clears them on every terminal status).
+- live-keys-only (everything else): the four controller stages (``generate_proposals`` /
+  ``search_tracklist`` / ``scrape_and_store_tracklist`` / ``match_tracklist_to_discogs``; Plan 01's
+  after_process clears them on every terminal status).
 
 All done-sets are LEDGER-SCOPED (D-06): recovery only ever asks about files that appear in the ledger,
 so every done-set query binds the ledger's file-ids as a SINGLE Postgres array (``= ANY(:ids)``), never
@@ -104,7 +100,7 @@ from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
-from phaze.services.stage_status import domain_completed_clause, done_clause, skipped_clause
+from phaze.services.stage_status import domain_completed_clause, skipped_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
 
 
@@ -131,27 +127,25 @@ logger = structlog.get_logger(__name__)
 # reconcile can NEVER double the queue (the Phase-32 doubling class is closed). Every enqueue
 # goes strictly through the keyed producers (never a raw random-key queue.enqueue).
 #
-# The FOUR agent stages whose ledger clear is NOT reliable on every terminal outcome get an
-# explicit domain-completed predicate; the other five are live-keys-only (their clear IS
-# reliable). The classification is TOTAL: predicate-covered XOR live-keys-only, asserted in a
+# The THREE agent stages whose ledger clear is NOT reliable on every terminal outcome get an
+# explicit domain-completed predicate; the four controller stages are live-keys-only (their clear
+# IS reliable). The classification is TOTAL: predicate-covered XOR live-keys-only, asserted in a
 # test against _KEY_BUILDERS so no stage is silently undefined (T-45-17).
 _DOMAIN_COMPLETED_STAGES: frozenset[str] = frozenset(
     {
         "process_file",  # analyze: domain_completed_clause(ANALYZE) == done OR terminal-failed
         "extract_file_metadata",  # domain_completed_clause(METADATA) + the D-10 enqueued_at gate at the call site
-        "fingerprint_file",  # done_clause(FINGERPRINT) OR skipped_clause -- failed auto-retries (D-01), force-skip excluded
         "push_file",  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
     }
 )
 """Keyed functions that carry a per-stage domain-completed predicate (the SECONDARY exclusion).
 
-EVERY other keyed function (``scan_live_set`` + the four controller stages) is live-keys-only --
-its ledger row is reliably cleared on every terminal outcome (scan via Plan 02's ack; controllers
-via Plan 01's after_process), so any surviving row IS genuinely orphaned and needs no domain net.
+EVERY other keyed function (the four controller stages) is live-keys-only -- its ledger row is
+reliably cleared on every terminal outcome (Plan 01's after_process), so any surviving row IS
+genuinely orphaned and needs no domain net.
 Phase 80 (READ-03) cut every predicate over to the derived layer -- ``process_file`` /
-``extract_file_metadata`` / ``fingerprint_file`` / ``push_file`` are now derived from the per-stage
-output tables via the LOCKED ``done_clause`` / ``domain_completed_clause`` builders, with ZERO
-``FileRecord.state`` reads (the old FileState-derived "done" is gone).
+``extract_file_metadata`` / ``push_file`` are now derived from the per-stage output tables via the
+LOCKED ``domain_completed_clause`` builder, with ZERO ``FileRecord.state`` reads (the old FileState-derived "done" is gone).
 Kept in sync with ``deterministic_key._KEY_BUILDERS`` by a totality test in test_recovery.py.
 """
 
@@ -177,7 +171,6 @@ class _DoneSets:
     metadata_domain_completed: set[str]  # domain_completed_clause(METADATA): done OR skipped OR failed (D-10 gate refines the failed-only subset)
     metadata_failed_at: dict[str, datetime]  # failed_clause(METADATA) rows -> failed_at (D-10 gate)
     metadata_skipped: set[str]  # skipped_clause(METADATA) alone: force-skip is domain-complete UNCONDITIONALLY, never gated
-    fingerprint_done: set[str]  # done_clause(FINGERPRINT) OR skipped_clause: failed auto-retries, force-skip excluded
     push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
 
 
@@ -240,14 +233,8 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
       gate -- a force-skipped file that ALSO carries a stale ``failed_at`` (the force-skip writer's
       additive-only contract, T-87-20, never clears it) must stay domain-complete UNCONDITIONALLY,
       never re-subjected to the failed-only ``enqueued_at`` comparison (phaze-3m5n).
-    - ``fingerprint_done``: ``done_clause(FINGERPRINT) OR skipped_clause(FINGERPRINT)`` -- a FAILED
-      fingerprint still auto-retries (it is NOT domain-complete: the analyze/fingerprint asymmetry D-01
-      encodes, FAILURE_IS_TERMINAL[fingerprint] is False), but an operator-force-SKIPPED fingerprint is
-      excluded so ``recover_orphaned_work`` never re-drives a stage the operator explicitly skipped
-      (phase-87 behavior 5). NOT ``domain_completed_clause`` -- that would couple recovery to the
-      terminality axis and obscure the FAIL-04 auto-retry intent (here it collapses to the same set).
     - ``push_done``: ``cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)`` (D-07). A
-      ``push_file`` ledger row implies compute (``_enqueue_push_file`` is its only producer), so no
+      ``push_file`` ledger row implies compute (``ComputeAgentBackend.dispatch`` is its only producer), so no
       backend-kind resolution is needed: SUCCEEDED covers the landed-but-not-yet-analyzed window and
       ``domain_completed(analyze)`` covers the onward advance; a SUBMITTED / AWAITING / no-row file is
       NOT push-done and re-drives.
@@ -257,7 +244,7 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
     (:func:`_fids_scope`). An empty ledger short-circuits to empty sets (no pointless round-trips).
     """
     if not fids:
-        return _DoneSets(set(), set(), {}, set(), set(), set())
+        return _DoneSets(set(), set(), {}, set(), set())
 
     analyze_done = {str(fid) for fid in (await session.scalars(_select_done_analyze_ids(fids))).all()}
     metadata_domain_completed = {
@@ -278,14 +265,6 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
     metadata_skipped = {
         str(fid) for fid in (await session.scalars(select(FileRecord.id).where(_fids_scope(fids, "ms_ids"), skipped_clause(Stage.METADATA)))).all()
     }
-    fingerprint_done = {
-        str(fid)
-        for fid in (
-            await session.scalars(
-                select(FileRecord.id).where(_fids_scope(fids, "f_ids"), or_(done_clause(Stage.FINGERPRINT), skipped_clause(Stage.FINGERPRINT)))
-            )
-        ).all()
-    }
     push_done = {str(fid) for fid in (await session.scalars(_select_done_push_ids(fids))).all()}
 
     return _DoneSets(
@@ -293,7 +272,6 @@ async def _build_done_sets(session: AsyncSession, fids: list[uuid.UUID]) -> _Don
         metadata_domain_completed=metadata_domain_completed,
         metadata_failed_at=metadata_failed_at,
         metadata_skipped=metadata_skipped,
-        fingerprint_done=fingerprint_done,
         push_done=push_done,
     )
 
@@ -316,7 +294,7 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
     """Build the ledger-scoped SELECT for file ids whose push stage is done (D-07, sidecar-derived).
 
     ``push_done = cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)``. A ``push_file``
-    ledger row is created ONLY by ``ComputeAgentBackend.dispatch`` -> ``_enqueue_push_file``, so a
+    ledger row is created ONLY by ``ComputeAgentBackend.dispatch``'s parked enqueue, so a
     push_file row IMPLIES the compute lane (kueue never enqueues push_file); on that lane SUCCEEDED
     means "pushed and analyzing" and SUBMITTED means "still pushing". This is behavior-identical to the
     retired ``state IN (PUSHED, ANALYZED, ANALYSIS_FAILED)``: SUCCEEDED covers PUSHED (the
@@ -333,11 +311,10 @@ def _select_done_push_ids(fids: list[uuid.UUID]) -> Select[tuple[uuid.UUID]]:
 # recovery owner for these rows (the backend reconcile/`/pushed` callback for in-flight, the
 # stage_cloud_window drain for awaiting), and CLOUDROUTE-02 for process_file (a held long file is never
 # routed to a fileserver for LOCAL analysis). Because ``_natural_id`` is function-AGNOSTIC (it returns
-# ``payload['file_id']`` for EVERY file-keyed row -- fingerprint_file / extract_file_metadata /
-# scan_live_set / search_tracklist included), an UNSCOPED cloud exclusion silently dropped those
-# unrelated stages' recovery for any file that merely happened to also have a cloud_job. The cloud
-# callback/drain re-drives ONLY these four; fingerprint/metadata/scan/tracklist have no cloud second
-# owner, so scoping the two exclusions to this set lets their orphaned rows recover normally.
+# ``payload['file_id']`` for EVERY file-keyed row -- extract_file_metadata / search_tracklist
+# included), an UNSCOPED cloud exclusion silently dropped those unrelated stages' recovery for any
+# file that merely happened to also have a cloud_job. The cloud callback/drain re-drives ONLY these
+# four; metadata/tracklist have no cloud second owner, so scoping the two exclusions to this set lets their orphaned rows recover normally.
 _CLOUD_OWNED_FUNCTIONS: frozenset[str] = frozenset({"process_file", "push_file", "s3_upload", "submit_cloud_job"})
 
 
@@ -396,9 +373,9 @@ def _natural_id(row: SchedulingLedger) -> str | None:
 def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     """Return True only for a predicate-covered row whose file is DOMAIN-COMPLETE for that stage.
 
-    ALWAYS False for the five live-keys-only functions (scan_live_set + the four controller
-    stages): their ledger clear is reliable on every terminal outcome, so the live-key filter is
-    the sole exclusion and any surviving row is genuinely orphaned. For the four predicate-covered
+    ALWAYS False for the four live-keys-only controller functions: their ledger clear is reliable
+    on every terminal outcome, so the live-key filter is the sole exclusion and any surviving row
+    is genuinely orphaned. For the three predicate-covered
     agent stages the derivation reads DIRECTLY from the done-sets (D-05 -- the double-negation cut:
     the enrich branches now test ``fid in done_set``, never ``fid not in pending_set``, so once
     Phase 82 redefines pending as ``NOT done AND NOT in_flight`` a genuinely-orphaned in-flight-ledger
@@ -406,8 +383,6 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
 
     - ``process_file``: file id in ``analyze_done`` (domain_completed(analyze) == done OR terminal-failed).
     - ``push_file``: file id in ``push_done`` (succeeded OR domain_completed(analyze), D-07).
-    - ``fingerprint_file``: file id in ``fingerprint_done`` (done OR skipped -- a failed fingerprint
-      auto-retries; an operator-force-SKIPPED fingerprint is excluded, phase-87 behavior 5).
     - ``extract_file_metadata``: skip-first, THEN the D-10 cell. A force-SKIPPED file (``metadata_skipped``)
       is domain-complete UNCONDITIONALLY and returns True BEFORE the D-10 gate is ever consulted
       (phaze-3m5n) -- the force-skip writer's additive-only contract (T-87-20) never clears
@@ -432,8 +407,6 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
         return fid in done_sets.analyze_done
     if function == "push_file":
         return fid in done_sets.push_done
-    if function == "fingerprint_file":
-        return fid in done_sets.fingerprint_done
     # extract_file_metadata -- force-skip is checked BEFORE the D-10 gate (phaze-3m5n): the gate must
     # refine ONLY the subset of metadata_domain_completed whose membership derives solely from the
     # failed disjunct, never a row that is ALSO domain-complete via the skipped disjunct.
@@ -500,7 +473,7 @@ async def _replay_agent_rows_by_owner(
     ``select_active_agent(kind="fileserver")`` and replayed every orphaned agent row onto it, so in
     a multi-fileserver deployment every recovered row landed on ONE agent's lanes regardless of the
     payload's real owner. That agent's mount lacks the other owners' paths, so ``process_file``
-    FileNotFounds into terminal ANALYSIS_FAILED and the fingerprint/meta lanes wedge on a
+    FileNotFounds into terminal ANALYSIS_FAILED and the meta lane wedges on a
     consumer-less key -- a silent misroute of everyone else's work.
 
     This mirrors phaze-c9w9's contract for the recovery path: group ``rows`` by their stored
@@ -611,7 +584,7 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 
         # phaze-fc2l: SCOPE the two cloud exclusions to the functions the cloud_job actually owns
         # (_CLOUD_OWNED_FUNCTIONS). _natural_id is function-agnostic, so an unscoped exclusion dropped an
-        # orphaned fingerprint_file / extract_file_metadata / scan_live_set / search_tracklist row for
+        # orphaned extract_file_metadata / search_tracklist row for
         # ANY file that merely also had an in-flight/awaiting cloud_job -- silently skipping recovery the
         # cloud callback/drain will never perform. A non-cloud-owned row for a cloud-busy file recovers
         # normally; process_file/push_file/s3_upload/submit_cloud_job still defer to their single owner.

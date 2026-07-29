@@ -82,8 +82,8 @@ async def test_metadata_failed_filter_returns_only_failed_rows(client: AsyncClie
 async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClient, session: AsyncSession) -> None:
     """A failed filter that matches nothing renders the failed-filter empty-state copy (Copywriting Contract).
 
-    Only a metadata failure is seeded, so filtering ``stage=fingerprint&bucket=failed`` matches zero rows --
-    the empty branch must show "No failed files in Fingerprint" / "Nothing is stuck in Fingerprint right now.",
+    Only a metadata failure is seeded, so filtering ``stage=analyze&bucket=failed`` matches zero rows --
+    the empty branch must show "No failed files in Analyze" / "Nothing is stuck in Analyze right now.",
     NOT the unfiltered "No files yet" copy.
     """
     failed = _make_file("failedmeta")
@@ -92,12 +92,12 @@ async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClien
     session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
     await session.commit()
 
-    resp = await client.get("/pipeline/files?stage=fingerprint&bucket=failed")
+    resp = await client.get("/pipeline/files?stage=analyze&bucket=failed")
     assert resp.status_code == 200
     body = resp.text
 
-    assert "No failed files in Fingerprint" in body
-    assert "Nothing is stuck in Fingerprint right now." in body
+    assert "No failed files in Analyze" in body
+    assert "Nothing is stuck in Analyze right now." in body
     # The unfiltered empty copy must NOT be what renders under an active failed filter.
     assert "No files yet" not in body
 
@@ -234,3 +234,69 @@ async def test_pager_absent_on_unfiltered_empty_first_page(client: AsyncClient, 
 
     assert "No files yet" in body
     assert 'aria-label="Files pagination"' not in body
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_full_page_hosts_record_target(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-7pjc / phaze-2och): the standalone /pipeline/files page must host a
+    #record-body target so every row's hx-target="#record-body" resolves.
+
+    files_table_view.html's rows dispatch `record:open` and hx-get into #record-body -- an id
+    that only shell/partials/record_host.html declares. base.html (which this page extends)
+    carried no record host, so a direct navigation, bookmark, reload, or history-restore of a
+    filtered /pipeline/files URL (phaze-2och's failure path, reached via the filter bar's
+    hx-push-url) left every row's click/Enter a silent htmx:targetError no-op. The fix includes
+    the same record_host.html the shell uses, plus its 404 opt-in for GET /record/{id}.
+    """
+    resp = await client.get("/pipeline/files?stage=metadata&bucket=failed")
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert 'id="record-body"' in body, "the record slide-in swap target must exist on this page"
+    assert "record:open.window" in body, "the record:open listener the rows dispatch to must be wired"
+    assert "d.target.id === 'record-body'" in body, "the 404 opt-in for GET /record/{id} must be present"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_files_history_restore_hosts_record_target(client: AsyncClient, session: AsyncSession) -> None:
+    """Regression (phaze-2och): a history-restore of a filtered URL still hosts #record-body.
+
+    This is the exact failure scenario the bead describes: filter on /s/files pushes
+    /pipeline/files?..., then Back after htmx's history cache evicts the snapshot re-fetches
+    this URL with HX-History-Restore-Request -- and lands on the SAME broken standalone page a
+    reload would. It must carry a working record host too, not just the plain-request path.
+    """
+    resp = await client.get(
+        "/pipeline/files?stage=metadata&bucket=failed",
+        headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.text
+
+    assert 'id="record-body"' in body, "history-restore must also land on a page with the record host"
+
+
+@pytest.mark.asyncio
+async def test_reload_after_status_filter_push_url_leaves_rows_clickable(client: AsyncClient, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+    """Regression (phaze-2och): the operator round-trip the bead describes, end to end.
+
+    On /s/files, `_status_filter_bar.html` hx-push-urls `/pipeline/files?stage=...&bucket=...`
+    (D-03's URL-carried lens). A plain reload/bookmark/history-restore of THAT exact pushed URL
+    used to serve pipeline/files.html with no #record-body host, so every row's hx-get="/record/
+    {id}" hx-target="#record-body" bound to a target that did not exist on the page -- a silent
+    htmx:targetError no-op. Assert the row's own hx-get and the page's own hx-target both survive
+    the round trip: the target the row names must actually be present in the same document.
+    """
+    file_record = await make_file()
+
+    resp = await client.get("/pipeline/files?stage=metadata&bucket=failed")
+    assert resp.status_code == 200
+    body = resp.text
+
+    # The row's hx-get is unconditional on any filter match, so a plain unfiltered fetch would
+    # normally carry it too -- refetch without the filter to get this seeded file's own row.
+    resp = await client.get("/pipeline/files")
+    body = resp.text
+    assert f'hx-get="/record/{file_record.id}"' in body, "the seeded file's row must still hx-get its record"
+    assert 'hx-target="#record-body"' in body, "the row's target must be #record-body, unchanged"
+    assert 'id="record-body"' in body, "and #record-body itself must exist in the SAME document the row is in"
