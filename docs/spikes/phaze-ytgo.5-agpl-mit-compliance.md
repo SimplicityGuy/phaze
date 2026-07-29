@@ -6,6 +6,12 @@
 - **Status:** investigation only. No product code, no `LICENSE` change, no `NOTICE` added, no
   `README` edit. Recommendations only.
 
+> **Post-dated note (2026-07-29).** Epic `phaze-0jpe` removed Panako from phaze on 2026-07-28
+> ([ADR-0002](../design/0002-fingerprint-removal.md)). No image built after that date conveys
+> AGPL-3.0 Panako, so the conveyance analysis below now applies **only to previously published
+> image tags**; deleting those historical GHCR tags is tracked as a separate ops bead. The
+> licence reasoning itself is unchanged and still governs any future AGPL dependency.
+
 > ## ⚠️ THIS IS NOT LEGAL ADVICE
 >
 > This is an **engineering compliance assessment** written by a software agent, not a lawyer. It

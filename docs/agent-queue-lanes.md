@@ -29,8 +29,16 @@ consumer (the lane worker settings) derive from it.
 | Lane          | Tasks                                                                                 | Bound by                        | Concurrency env                          | Default |
 |---------------|---------------------------------------------------------------------------------------|---------------------------------|------------------------------------------|---------|
 | `analyze`     | `process_file`                                                                        | Host CPU (in-process essentia)  | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | 4       |
-| `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`                   | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
+| `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
+
+**Sizing note — the `meta` default of 2 now covers interactive work.** phaze-6bkk (DIST-01)
+moved `write_file_tags`, `write_cue_sheet` and `read_companion_files` onto this lane, so the
+lane that was sized for background metadata extraction and scans now also carries
+operator-facing tag writes, CUE generation and companion-file reads. Those are the tasks a
+human is actively waiting on, and at concurrency 2 they queue behind a `scan_directory` walk.
+Raise `PHAZE_LANE_META_CONCURRENCY` if the Tag Write or CUE workspaces feel laggy — the lane is
+I/O-light, so it costs little against the CPU budget.
 
 ### Core-budget rationale
 
@@ -115,7 +123,15 @@ re-enqueue.
 Why not re-enqueue: re-driving an already-**active** multi-hour `process_file` onto a lane queue would
 duplicate a running job (deterministic-key dedup guards *queued* enqueues, not an *active* job on a
 different queue name). Finishing in place has no duplicate-active hazard, and any legitimate retry stays
-idempotent via the deterministic key (`s3_upload:<file_id>`, `push_file:<file_id>`, `process_file:<file_id>`).
+idempotent via the deterministic key (`s3_upload:<file_id>`, `push_file:<file_id>`, `process_file:<file_id>`,
+and — from phaze-6bkk — `write_file_tags:<log_id>`).
+
+> **`write_file_tags` is keyed on `log_id`, not `file_id`** (`tasks/_shared/deterministic_key.py`).
+> A duplicate dispatch of one operator click re-enqueues the same `TagWriteLog` id and dedups to
+> a no-op, while a genuinely new write — or an undo, which is a second write of the same file —
+> mints a new `log_id` and stays a distinct job. Keying on `file_id` would make an undo silently
+> collapse into the write it is reverting. The other two new meta tasks, `write_cue_sheet` and
+> `read_companion_files`, have **no** deterministic-key builder and are therefore not deduped.
 
 **Steps (homelab):**
 

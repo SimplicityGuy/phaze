@@ -5,7 +5,7 @@ branch's base and removed every reader/writer of ``fingerprint_results`` -- `mod
 the `agent_fingerprint`/`agent_tracklists` routers, `scan_live_set`, the audfprint/panako sidecars,
 and every Track-ID UI surface are already gone from `src/phaze`. This migration lands the schema
 half that was deliberately deferred so the code removal never landed a half-applied schema (see
-`docs/fingerprint-removal-inventory.md` sec. 4 and `tests/integration/test_migrations/
+`docs/design/0002-fingerprint-removal.md` and `tests/integration/test_migrations/
 test_baseline_schema.py`'s PENDING-MIGRATION block on `_FROZEN_AUTOGEN_DRIFT`).
 
 **What this migration drops (checked against ``src/phaze`` first -- nothing else in the schema

@@ -74,10 +74,27 @@ The repo ships three deployment compose files plus a dev overlay:
 |---------|---------------|---------|-------|------|
 | `api` | build `Dockerfile` | `uv run python -m phaze.entrypoint` | `${API_PORT:-8000}:8000` | FastAPI + admin UI behind TLS. Mounts `${CA_PATH:-./certs}:/certs:rw` for the cert bootstrap. |
 | `worker` | build `Dockerfile` | `uv run saq phaze.tasks.controller.settings` | — | Control-role SAQ worker (`PHAZE_ROLE=control`). Fileless; no volume mounts. |
-| `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7). Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
+| `postgres` | `postgres:18-alpine` | — | `${POSTGRES_BIND_IP:-127.0.0.1}:5432:5432` | Primary database. Loopback-only by default; set `POSTGRES_BIND_IP` to the app-server's private LAN IP in production so agents reach the SAQ broker (mirrors `REDIS_BIND_IP`). `POSTGRES_PASSWORD` is `${POSTGRES_PASSWORD:?}` — compose parse fails if unset (phaze-rnh7). `shm_size: "256m"` (phaze-knwk) — Docker's 64 MB `/dev/shm` default starves Postgres's parallel dynamic-shared-memory allocations, which surfaces as failed parallel queries and index builds rather than as an obvious out-of-memory; `justfile:21` mirrors the same value for the test container. Data on the `pgdata` named volume mounted at `/var/lib/postgresql`. |
 | `redis` | `redis:8-alpine` | `redis-server --requirepass ${REDIS_PASSWORD:?...}` | `${REDIS_BIND_IP:-127.0.0.1}:6379:6379` | Cache / rate-limit / counters (no longer the SAQ broker — Postgres is, via `PHAZE_QUEUE_URL`). `--requirepass` fails fast at compose-parse time if `REDIS_PASSWORD` is unset. |
 
 `api` and `worker` are built from the same `Dockerfile` and differ only by their `command`: `api` runs the cert-bootstrap entrypoint then uvicorn; `worker` runs the controller SAQ worker with `PHAZE_ROLE=control`.
+
+#### Bumping the Postgres tag
+
+The pinned Postgres image lives in **exactly three** places, and all three must move together:
+
+| # | Site | Form |
+|---|------|------|
+| 1 | `justfile:14` | `postgres_image := "postgres:18-alpine"` (test container) |
+| 2 | `docker-compose.yml:84` | `image: postgres:18-alpine` (production) |
+| 3 | `.github/workflows/tests.yml:48` | `image: postgres:18-alpine` (CI service) |
+
+`tests/agents/deployment/test_postgres_image_pin.py` fails the build if they disagree, so a
+partial bump is caught in CI rather than in production. This is the phaze-tcqq outcome: the tag
+was previously hardcoded in **10** places — four of them `echo` strings, so a partial bump would
+happily *print* the old tag while *running* the new one. That was consolidated to these three
+sites plus the guard test, not to a single source of truth, because Compose and GitHub Actions
+cannot read a `justfile` variable.
 
 ### File-server services (`docker-compose.agent.yml`)
 

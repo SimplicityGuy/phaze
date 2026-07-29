@@ -252,7 +252,11 @@ def acquire_exclusive_session_lock(dsn: str, *, connect_timeout: int = 5) -> psy
     * **Lock held** -> :class:`SharedTestDatabaseError`. Never a wait: a run that blocks for the
       length of somebody else's suite is a run nobody will diagnose correctly.
     """
-    if os.environ.get(ALLOW_SHARED_ENV_VAR):
+    # Exactly "1", never mere truthiness: `PHAZE_TEST_DB_ALLOW_SHARED=0` reads to a human as
+    # "sharing is OFF" while a bare truthiness check would treat the non-empty "0" as a request
+    # to DISABLE the guard -- silently handing back the corruption this lock exists to prevent.
+    # Symmetric with PHAZE_TEST_DB_FORCE_DOWN (justfile), which is also `= "1"`.
+    if os.environ.get(ALLOW_SHARED_ENV_VAR) == "1":
         return None
 
     import psycopg  # imported lazily: DB-free runs should not pay for it, and it is a test-only dep

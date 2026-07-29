@@ -330,5 +330,6 @@ tracklist attributed to a retired engine is not worth keeping as a record.
 - [design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) — the ADR for why
   audio fingerprinting was removed in full, including the evidence the volume-removal step above
   protects.
-- [fingerprint-removal-inventory.md](fingerprint-removal-inventory.md) — the removal epic's
-  file-by-file inventory, for the full list of what changed.
+
+The removal epic's file-by-file inventory was deleted on 2026-07-29 once the removal was
+complete: ADR-0002 and the git history of epic phaze-0jpe are the record of what changed.

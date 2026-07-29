@@ -1,5 +1,13 @@
 # D1 — audfprint fails on every file: per-file failure, or total engine outage?
 
+> **Historical (2026-07-29).** This outage was resolved by *removal, not repair*: epic
+> `phaze-0jpe` (2026-07-28) deleted audio fingerprinting from the product entirely
+> (see [ADR-0002](../design/0002-fingerprint-removal.md)). The follow-up fix bead
+> `phaze-p3hj.2` was never actioned, and the `phaze_audfprint_data` volume preserved below is
+> now cleanup material — see
+> [runbook.md → Removing fingerprint-era data](../runbook.md#removing-fingerprint-era-data-phaze-0jpe).
+> The diagnosis is kept as-is for the record.
+
 - **Bead:** `phaze-p3hj.1` (epic `phaze-p3hj` — audfprint fingerprinting fails on EVERY file
   while panako succeeds, latest release)
 - **Date:** 2026-07-28
