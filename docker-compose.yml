@@ -76,6 +76,11 @@ services:
 
   postgres:
     restart: unless-stopped  # phaze-ewpa: DB must come back after a reboot/blip (pgdata persists)
+    # phaze-tcqq: this is one of three places this exact tag is pinned (the justfile's
+    # `postgres_image` variable, this file, and .github/workflows/tests.yml's service
+    # container) -- Compose can't read a justfile variable, so this stays a literal pin.
+    # tests/agents/deployment/test_postgres_image_pin.py mechanically asserts all three agree;
+    # bump them together or the guard test fails and names the mismatch.
     image: postgres:18-alpine
     # phaze-rnh7 (D-05 / AUTH-03, mirrored from redis below): Postgres holds ALL of
     # the project's crown-jewel data (file metadata, proposals, tracklists, agent
