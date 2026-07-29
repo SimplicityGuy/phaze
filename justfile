@@ -645,7 +645,7 @@ docker-build:
 docker-validate:
     #!/usr/bin/env bash
     set -e
-    for df in Dockerfile services/audfprint/Dockerfile.audfprint services/panako/Dockerfile.panako; do
+    for df in Dockerfile; do
         echo "🔍 Validating ${df}..."
         docker run --rm -i hadolint/hadolint < "${df}"
         echo "✅ ${df} passed"
@@ -662,17 +662,12 @@ image-push:
     TAG="latest"
     declare -A IMAGES=(
         ["api"]="Dockerfile"
-        ["audfprint"]="services/audfprint/Dockerfile.audfprint"
-        ["panako"]="services/panako/Dockerfile.panako"
     )
     # Matches docker-publish.yml's image_suffix matrix (Phase 29 D-15): the api image
     # publishes BARE (ghcr.io/<owner>/<repo>:<tag>, no sub-path -- docker-compose.agent.yml's
-    # watcher/worker services pull exactly that reference), while the fingerprint sidecars get
-    # a /<service> sub-path.
+    # watcher/worker services pull exactly that reference).
     declare -A IMAGE_SUFFIX=(
         ["api"]=""
-        ["audfprint"]="/audfprint"
-        ["panako"]="/panako"
     )
     for SERVICE in "${!IMAGES[@]}"; do
         IMAGE="${REGISTRY}/${OWNER}/${REPO}${IMAGE_SUFFIX[$SERVICE]}:${TAG}"
@@ -873,28 +868,6 @@ perf-explain ITER='20':
 [group('models')]
 download-models:
     bash scripts/download-models.sh models
-
-[doc('Trigger fingerprint processing for all eligible files')]
-[group('fingerprint')]
-fingerprint:
-    curl -fsS --cacert {{api_ca_cert}} -X POST {{api_base}}/api/v1/fingerprint | uv run python -m json.tool
-
-[doc('Check fingerprint progress')]
-[group('fingerprint')]
-fingerprint-progress:
-    curl -fsS --cacert {{api_ca_cert}} {{api_base}}/api/v1/fingerprint/progress | uv run python -m json.tool
-
-[doc('Check audfprint container health (execs into the audfprint sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
-[group('fingerprint')]
-audfprint-health:
-    docker compose -f docker-compose.agent.yml exec audfprint \
-        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8001/health')), indent=2))"
-
-[doc('Check panako container health (execs into the panako sidecar itself via the standalone agent stack -- the worker image ships no curl, and audfprint/panako are not services in that compose project anyway)')]
-[group('fingerprint')]
-panako-health:
-    docker compose -f docker-compose.agent.yml exec panako \
-        uv run python -c "import json, urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:8002/health')), indent=2))"
 
 [doc('Update pre-commit hooks (with frozen SHAs)')]
 [group('maintenance')]

@@ -163,7 +163,7 @@ Follow the discogsography pattern:
 
 **Phaze**
 
-A music collection organizer that ingests music files (mp3, m4a, ogg) and concert video streams, fingerprints and analyzes them, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
+A music collection organizer that ingests music files (mp3, m4a, ogg) and concert video streams, analyzes them, uses AI to propose better filenames and destination paths, and provides an admin web UI to review and approve the renames/moves. Designed for a single user managing a large personal archive of music and live concert recordings (primarily full sets from events like Coachella).
 
 **Core Value:** Get messy music and concert files properly named, organized into logical folders, deduplicated, with rich metadata in Postgres — and provide a human-in-the-loop approval workflow so nothing moves without review.
 
@@ -198,8 +198,8 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 |---------|---------|---------|-----------------|
 | mutagen | >=1.47.0 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
 | essentia-tensorflow | >=2.1b6.dev1438 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
-| pyacoustid | *(not a pyproject.toml dependency — not currently used)* | Audio fingerprinting | Originally recommended for Chromaprint/AcoustID bindings; the shipped fingerprinting pipeline (`services/audfprint`, `services/panako`) does not depend on it. |
-| chromaprint (system) | latest | Fingerprint generation | C library (`libchromaprint`) required at runtime by essentia-tensorflow, not consumed via pyacoustid. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
+| pyacoustid | *(not a pyproject.toml dependency — never used)* | N/A — historical | Originally recommended for Chromaprint/AcoustID bindings. The audio-fingerprinting feature it would have served (the `audfprint`/Panako pipeline) was implemented independently of pyacoustid and removed from the product entirely 2026-07-28 (epic phaze-0jpe; see `docs/design/0002-fingerprint-removal.md`). pyacoustid remains unused. |
+| chromaprint (system) | latest | essentia-tensorflow runtime dependency | C library (`libchromaprint`) required at runtime by essentia-tensorflow's native extension — **not** for audio fingerprinting, which was removed (phaze-0jpe); this dependency is independent of that removal and stays. Install via system package manager or include in Docker image. Provides `fpcalc` binary. |
 | FFmpeg (system) | 8.x | Audio/video processing | Required for audio decoding and video stream metadata extraction via ffprobe. Install in Docker image. |
 ### Web UI
 | Technology | Version | Purpose | Why Recommended |
@@ -211,7 +211,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ### Task Processing
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| SAQ | >=0.26.4 (`saq[postgres]`) | Async task queue | Purpose-built for asyncio. Inspired by arq with active maintenance. Broker migrated from Redis to Postgres in Phase 36 (`PostgresQueue`, `saq_jobs` table). Perfect for file analysis jobs (BPM, fingerprinting, metadata extraction). Supports retries with backoff, job results, cron jobs, built-in web UI. Single-user app doesn't need Celery's complexity. |
+| SAQ | >=0.26.4 (`saq[postgres]`) | Async task queue | Purpose-built for asyncio. Inspired by arq with active maintenance. Broker migrated from Redis to Postgres in Phase 36 (`PostgresQueue`, `saq_jobs` table). Perfect for file analysis jobs (BPM, metadata extraction). Supports retries with backoff, job results, cron jobs, built-in web UI. Single-user app doesn't need Celery's complexity. |
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
@@ -271,7 +271,7 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
 | litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.85.6,<1.86.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
 | SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.0.0) is used for caching only now. |
-| chromaprint (system) | essentia-tensorflow | Not consumed via `pyacoustid` (unused) — `fpcalc`/`libchromaprint` is an essentia-tensorflow runtime dependency. Install `chromaprint-tools` in Docker. |
+| chromaprint (system) | essentia-tensorflow | Not consumed via `pyacoustid` (unused), and independent of the removed audio-fingerprinting feature (phaze-0jpe) — `fpcalc`/`libchromaprint` is purely an essentia-tensorflow runtime dependency. Install `chromaprint-tools` in Docker. |
 ## Confidence Assessment
 | Area | Confidence | Reasoning |
 |------|------------|-----------|
@@ -279,7 +279,6 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Database (SQLAlchemy + asyncpg + Alembic) | HIGH | Standard production stack, verified versions, extensive async documentation |
 | Audio metadata (mutagen) | HIGH | No real alternative for read+write. Stable, zero-dependency, widely used |
 | Audio analysis (essentia-tensorflow) | HIGH | Comprehensive MIR library with pre-trained models for BPM, key, mood, style classification |
-| Audio fingerprinting (pyacoustid) | MEDIUM | Library works but hasn't released since 2023. Stable API, low maintenance risk, but monitor |
 | Task queue (SAQ) | HIGH | Actively maintained, async-native, Redis-based. Drop-in replacement for arq with built-in web monitoring UI. |
 | LLM integration (litellm) | MEDIUM | Best abstraction layer but recent supply chain incident is concerning. Pin versions aggressively, verify checksums |
 | Web UI (HTMX + Jinja2) | HIGH | Well-proven pattern for Python admin tools. No build step, no JS framework complexity |

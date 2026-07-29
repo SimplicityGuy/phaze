@@ -2,7 +2,7 @@
 # 🚀 Quick Start
 
 Get Phaze running locally and walk a music file through the full pipeline — scan,
-fingerprint, analyze, propose, review, execute. This is the fuller companion to the
+metadata, analyze, propose, review, execute. This is the fuller companion to the
 short Setup block in the [README](../README.md).
 
 Every command below is a real `just` recipe (see `just --list`) or a verified shell
@@ -135,19 +135,10 @@ If you get a connection error, the containers may still be starting — check
 | 🖥️ **Web UI / API** | https://localhost:8000 | core (`just up`) | FastAPI app + HTMX admin UI. HTTPS with a self-signed internal CA — browsers warn until you trust `certs/phaze-ca.crt`; curl needs `--cacert ./certs/phaze-ca.crt`. Plain HTTP only under `just up-dev`. |
 | 🐘 **PostgreSQL** | `${POSTGRES_BIND_IP:-127.0.0.1}:5432` | core (`just up`) | user `POSTGRES_USER` (default `phaze`); `POSTGRES_PASSWORD` is **required** — compose fails to parse without it |
 | 🔴 **Redis** | `localhost:6379` | core (`just up`) | bound to `127.0.0.1` in dev; password from `REDIS_PASSWORD` |
-| 🎯 **audfprint** | `audfprint:8001` (internal) | agent (`just up-agent`) | landmark fingerprint sidecar |
-| 🎼 **panako** | `panako:8002` (internal) | agent (`just up-agent`) | tempo-robust fingerprint sidecar |
-
-> **About the fingerprint sidecars:** `audfprint` (8001) and `panako` (8002) live in
-> `docker-compose.agent.yml`, not the core stack. They are reachable on the internal
-> Docker network by service name (`http://audfprint:8001`, `http://panako:8002`) and do
-> not publish host ports. To run them on the same host for development, use
-> `just up-agent` (agent stack only) or `just up-all` (both stacks). Check their health
-> with `just audfprint-health` and `just panako-health`.
 
 ## 🔄 Your First Workflow
 
-A file advances through seven pipeline stages. There is no stored `files.state` column —
+A file advances through six pipeline stages. There is no stored `files.state` column —
 each stage's status (`not_started` / `in_flight` / `done` / `skipped` / `failed`) is derived
 on read from that stage's own output table (see [Database → Derived per-stage
 status](database.md#derived-per-stage-status)). The numbered steps below map 1:1 onto the
@@ -156,8 +147,7 @@ stages:
 ```mermaid
 flowchart LR
     D[discovered] --> M[metadata]
-    M --> F[fingerprint]
-    F --> A[analyze]
+    M --> A[analyze]
     A --> P[propose]
     P --> R[review]
     R --> E[apply]
@@ -199,8 +189,6 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
 3. **Run the pipeline stages.** From the DAG rail, open each stage workspace (`/s/<stage>`) and advance the discovered files through:
 
    - **Extract metadata** (mutagen) — `POST /pipeline/extract-metadata`
-   - **Fingerprint** (audfprint + panako) — `POST /pipeline/fingerprint`
-     (or `just fingerprint`; track progress with `just fingerprint-progress`)
    - **Analyze** (essentia: BPM, key, mood, style) — `POST /pipeline/analyze`
    - **Generate proposals** (LLM rename/path suggestions) — `POST /pipeline/proposals`
 
@@ -249,11 +237,6 @@ the DAG-centric console in the Web UI (`/` + the DAG rail; ⌘K to jump; `/s/<st
   or change the mapping — `API_PORT`, `POSTGRES_BIND_IP` (the 5432 publish, default
   `127.0.0.1`), and `REDIS_BIND_IP` are configurable in `.env`.
   Inspect what is running with `just docker-ps`.
-
-- **Fingerprint health checks fail.**
-  `audfprint`/`panako` live in the agent stack, not the core stack. If
-  `just audfprint-health` or `just panako-health` errors, start the sidecars with
-  `just up-agent` (or `just up-all`) first.
 
 ## ➡️ Next Steps
 
