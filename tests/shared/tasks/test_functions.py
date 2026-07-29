@@ -501,6 +501,27 @@ async def test_process_file_non_retryable_generic_error_reports_then_raises(mock
 
 
 @patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
+async def test_process_file_terminal_ack_failure_reraises_original_error(mock_pool: AsyncMock) -> None:
+    """WR-01 (phaze-ys4d): on the TERMINAL attempt, if report_analysis_failed ALSO raises (E2),
+    the ORIGINAL task error (E1) must propagate -- not the ack error. Mirrors the already-guarded
+    siblings (fingerprint.py, scan.py, metadata_extraction.py). The ack is awaited once, failure
+    swallowed by ``_report_terminal_failure``."""
+    mock_pool.side_effect = RuntimeError("boom")
+    api = AsyncMock()
+    api.put_analysis = AsyncMock()
+    api.report_analysis_failed = AsyncMock(side_effect=RuntimeError("ack POST failed"))
+    ctx = _make_ctx(api_client=api)
+    ctx["job"] = MagicMock(retryable=False)
+
+    # E1 (the analysis RuntimeError) propagates -- NOT E2 (the ack RuntimeError).
+    with pytest.raises(RuntimeError, match="boom"):
+        await process_file(ctx, **_make_payload_kwargs())
+
+    api.report_analysis_failed.assert_awaited_once()
+    api.put_analysis.assert_not_awaited()
+
+
+@patch("phaze.tasks.functions.run_analysis_subprocess", new_callable=AsyncMock)
 async def test_process_file_retryable_generic_error_raises_without_reporting(mock_pool: AsyncMock) -> None:
     """A generic error with retries left (``job.retryable is True``) re-raises WITHOUT reporting.
 

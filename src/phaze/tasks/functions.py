@@ -362,7 +362,13 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         # (retries=2) can re-verify and analyze it, then re-raise so SAQ records the failed attempt.
         job = ctx.get("job")
         if job is not None and not job.retryable:
-            await api.report_analysis_failed(
+            # phaze-ys4d (WR-01): delivery-guarded, like every sibling terminal ack (scan.py,
+            # fingerprint.py, metadata_extraction.py). An unguarded ack POST failure (E2) would
+            # propagate INSTEAD of the bare `raise` below, so SAQ's recorded traceback leads with
+            # the ack's own error rather than the real analysis failure (exc, E1) this handler
+            # exists to report. _report_terminal_failure already swallows + logs E2.
+            await _report_terminal_failure(
+                api,
                 payload.file_id,
                 AnalysisFailurePayload(reason="error", error=str(exc)[:_ERROR_DETAIL_MAX]),
             )
