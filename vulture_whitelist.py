@@ -26,8 +26,9 @@ genuinely-dead symbols — nothing was deleted. The false-positive categories ar
     `"AsyncScript | None"`) — vulture does not parse string annotations.
   * Test-covered, deployment-gated deferred-feature helpers (`list_inflight_jobs`,
     `get_analysis_failed_files`, `ensure_bucket_lifecycle_ttl`, `get_summary_counts`, `build_tree`,
-    `report_upload_failed`, `health_all`, `has_prev`/`has_next`) — exercised by the test suite and
-    part of v5.0/v6.0 deferred functionality; NOT dead.
+    `report_upload_failed`, `has_prev`/`has_next`) — exercised by the test suite and part of
+    v5.0/v6.0 deferred functionality; NOT dead. (`health_all` was the fingerprint sidecars'
+    per-engine health aggregator; it and its whole module went with phaze-0jpe.)
   * `heartbeat_tick` — an intentional back-compat shim (Phase 46 decoupled the heartbeat from the
     SAQ CronJob; the function is retained deliberately).
 
@@ -107,11 +108,7 @@ deepen_analysis  # unused function (src/phaze/routers/pipeline.py:846)
 trigger_proposals_ui  # unused function (src/phaze/routers/pipeline.py:903)
 trigger_metadata_extraction  # unused function (src/phaze/routers/pipeline.py:953)
 trigger_extraction_ui  # unused function (src/phaze/routers/pipeline.py:983)
-trigger_fingerprint  # unused function (src/phaze/routers/pipeline.py:1032)
-fingerprint_progress  # unused function (src/phaze/routers/pipeline.py:1061)
-trigger_fingerprint_ui  # unused function (src/phaze/routers/pipeline.py:1069)
 trigger_search_ui  # unused function (src/phaze/routers/pipeline.py:1120)
-trigger_scan_live_sets_ui  # unused function (src/phaze/routers/pipeline.py:1177)
 trigger_scrape_tracklists_ui  # unused function (src/phaze/routers/pipeline.py:1248)
 trigger_match_tracklists_ui  # unused function (src/phaze/routers/pipeline.py:1279)
 trigger_recover_ui  # unused function (src/phaze/routers/pipeline.py:1326)
@@ -187,7 +184,6 @@ _._check_failed_at_step_coupling  # unused method (src/phaze/schemas/agent_exec_
 source_path  # unused variable (src/phaze/schemas/agent_execution.py:34)
 sha256_verified  # unused variable (src/phaze/schemas/agent_execution.py:36)
 sha256_verified  # unused variable (src/phaze/schemas/agent_execution.py:55)
-cleared  # unused variable (src/phaze/schemas/agent_fingerprint.py:39)
 agent_version  # unused variable (src/phaze/schemas/agent_heartbeat.py:14)
 worker_pid  # unused variable (src/phaze/schemas/agent_heartbeat.py:15)
 cleared  # unused variable (src/phaze/schemas/agent_metadata.py:49)
@@ -208,9 +204,6 @@ _.enqueue_for_file  # unused method (src/phaze/services/agent_task_router.py:162
 _.infoActive  # unused attribute (src/phaze/services/analysis.py:118)
 _.warningActive  # unused attribute (src/phaze/services/analysis.py:119)
 build_tree  # unused function (src/phaze/services/collision.py:67)
-resolved_artist  # unused variable (src/phaze/services/fingerprint.py:50)
-resolved_title  # unused variable (src/phaze/services/fingerprint.py:51)
-_.health_all  # unused method (src/phaze/services/fingerprint.py:243)
 list_inflight_jobs  # unused function (src/phaze/services/kube_staging.py:264)
 get_analysis_failed_files  # unused function (src/phaze/services/pipeline.py:1053)
 _.has_prev  # unused property (src/phaze/services/proposal_queries.py:38)

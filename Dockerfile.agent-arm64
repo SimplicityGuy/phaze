@@ -113,13 +113,21 @@ ENV OMP_NUM_THREADS=1
 RUN mkdir -p /models
 
 # --- runtime native libs (the v4.0.9 / v4.1.1 crash-loop incident class, T-47-06) -----
-# These MUST be present in the final image or the agent crash-loops on import: essentia's
-# native _essentia extension links libatomic.so.1 (libatomic1); decode/fingerprint needs
-# ffmpeg + ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
-# (libchromaprint-tools — note: the source build above uses libchromaprint-DEV headers; the
-# runtime needs the -TOOLS fpcalc binary); libpq5 backs psycopg's SAQ PostgresQueue broker.
-# Kept here explicitly so a future multi-stage split that drops the -dev packages can't
-# regress the crash-loop. import-smoke validation owned by plan 47-02.
+# libatomic.so.1 (libatomic1) MUST be present or the agent crash-loops on import: essentia's
+# native _essentia extension links it -- confirmed by `ldd`. The decode toolchain needs
+# ffmpeg + ffprobe (ffmpeg) and libsndfile.so.1 (libsndfile1); libpq5 backs psycopg's SAQ
+# PostgresQueue broker.
+#
+# fpcalc + libchromaprint.so.1 (libchromaprint-tools) are kept but NOT verified necessary at
+# runtime (phaze-0jpe.6, 2026-07-28): on the x86 essentia-tensorflow wheel, `ldd` on the
+# shipped `_essentia` extension shows no chromaprint link and `import essentia` succeeds
+# without it, and no `phaze` source calls fpcalc/chromaprint/Chromaprinter/acoustid -- see
+# docs/design/0002-fingerprint-removal.md. That check was NOT separately repeated against
+# THIS image's from-source essentia build, which does compile against libchromaprint-DEV
+# headers above (the standard essentia build recipe) and so is plausibly more likely than
+# the x86 wheel to link it for real; treat this runtime package as unverified either way,
+# not confirmed unnecessary, until someone runs the same ldd/import-smoke check here.
+# import-smoke validation owned by plan 47-02.
 # DL3008: see the rationale on the source-build apt layer above (intentionally unpinned).
 # hadolint ignore=DL3008
 RUN apt-get update \

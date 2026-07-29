@@ -41,7 +41,7 @@ not duplicate that table.
 flowchart LR
   %% Tailscale tailnet (default-deny grants ACL)
   subgraph nox["nox (file server)"]
-    noxc["docker-compose.agent.yml<br/>(worker+watcher+fprint+media)"]
+    noxc["docker-compose.agent.yml<br/>(worker+watcher+media)"]
   end
   subgraph a1["OCI A1 (compute backend, rank R)"]
     a1c["docker-compose.cloud-agent.yml<br/>worker (kind=compute)<br/>no media, scratch volume<br/>-arm64 image"]
