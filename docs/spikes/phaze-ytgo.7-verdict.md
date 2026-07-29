@@ -8,6 +8,11 @@
 - **Status:** synthesis and decision only. **No measurement, no implementation, no product code.**
   The only artifact of this bead is this document.
 
+> **Post-dated note (2026-07-29).** Epic `phaze-0jpe` removed audio fingerprinting — including
+> AGPL-3.0 Panako — from phaze on 2026-07-28 ([ADR-0002](../design/0002-fingerprint-removal.md)).
+> Any verdict below that assumes fingerprinting is available reads against an expired premise;
+> see the post-decision note in [ADR-0001](../design/0001-audiomuse-ai-no-go.md).
+
 > ## Clean-room disclosure
 >
 > **No AudioMuse-AI source code, prose, documentation, model binary or repository listing was

@@ -2,9 +2,10 @@
 grx3 / e57w fixes are designed against.
 
 This is the SPIKE's CI-safe reproduction: it asserts, against the *installed* SAQ, the four
-load-bearing facts established empirically on prod (recorded in
-``scripts/parity/fingerprint_timeout_probe.sql`` -- a point-in-time calibration artifact from the
-fingerprint era, kept as the measurement of record -- and on beads qmc2.1 / grx3 / e57w):
+load-bearing facts established empirically on prod (originally recorded in
+``scripts/parity/fingerprint_timeout_probe.sql``, a point-in-time calibration artifact from the
+fingerprint era, deleted 2026-07-29 with the rest of the fingerprint surface -- see git history
+and beads qmc2.1 / grx3 / e57w):
 
 1. A claimed-but-unrun row (``attempts == 0``, ``started``/``touched`` frozen at dequeue) IS
    ``stuck`` once ``timeout`` elapses -- ``Job.stuck`` keys off ``started``, NOT off whether the

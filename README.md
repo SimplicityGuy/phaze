@@ -411,7 +411,7 @@ This project is licensed under the MIT License -- see the [LICENSE](LICENSE) fil
 ## 🙏 Acknowledgments
 
 - 🎼 [discogsography](https://github.com/SimplicityGuy/discogsography) for the CI/CD patterns, project conventions, and HTTP API integration target that shaped this project
-- 🎵 [Discogs](https://www.discogs.com/) and [AcoustID](https://acoustid.org/) for music identification services
+- 🎵 [Discogs](https://www.discogs.com/) for music identification services
 - 🎧 [1001Tracklists](https://www.1001tracklists.com/) for concert tracklist data
 - 🚀 [uv](https://github.com/astral-sh/uv) for blazing-fast package management
 - 🔥 [Ruff](https://github.com/astral-sh/ruff) for lightning-fast linting

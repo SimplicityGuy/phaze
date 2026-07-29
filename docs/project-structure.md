@@ -218,7 +218,7 @@ phaze/
 │   ├── perf_analyze_workspace.py # Baseline the Analyze-workspace slowdown at 200K scale
 │   ├── analyze_browser_soak.py #   Real-browser verification of the Analyze workspace at 200K scale
 │   ├── backfill_mojibake_filenames.py # One-shot operator backfill of files.original_filename_repaired (phaze-x4ux)
-│   └── parity/                 #   Fingerprint-engine parity fixtures (compare/dump analysis, reference.wav)
+│   └── parity/                 #   Essentia-analysis parity fixtures (compare/dump/generate analysis, reference.wav)
 ├── docker-compose.yml          # Service orchestration
 ├── docker-compose.dev.yml      # Local development overlay (opt-in: just up-dev; never auto-merged)
 ├── docker-compose.agent.yml    # Distributed file-server agent stack

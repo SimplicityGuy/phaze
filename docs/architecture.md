@@ -695,10 +695,13 @@ changed (REQUIREMENTS "logic unchanged" rule).
 ### Shell layout
 
 - **Left — DAG rail (navigation spine).** Every pipeline stage is a rail node with a live
-  count and status dot, grouped Discover → Enrich (Metadata · Fingerprint · Analyze) →
-  Identify (Track-ID · Tracklist) → Propose → Review & Apply (Rename · Tag write · Move ·
-  Dedupe · Cue). Below the line are plain links to the **Audit log** (`/audit/`) and the
-  **Agents/Compute** page (`/admin/agents`).
+  count and status dot, grouped Discover → Enrich · parallel (Metadata · Analyze) →
+  Identify (Tracklist) → Propose → Review & Apply (Rename / Path · Tag write · Move files ·
+  Dedupe · Cue sheets · Execute), above them the two plain nav nodes **Summary** and
+  **Files**. Below the line are plain links to the **Audit log** (`/audit/`) and the
+  **Agents/Compute** page (`/admin/agents`). The Enrich group lost its Fingerprint node and
+  the Identify group its Track-ID node when phaze-0jpe removed fingerprinting (2026-07-28);
+  the grouping above matches `templates/shell/partials/rail.html` as of 2026-07-29.
 - **Center — stage workspace.** The selected rail node's file queue / lane summary / approval
   diffs.
 - **Right — per-file pane** and, on demand, the full **record slide-in** overlay.
