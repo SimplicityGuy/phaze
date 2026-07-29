@@ -259,13 +259,17 @@ async def test_sort_click_swaps_only_the_list_and_reemits_no_container_id(
     gzrd / op6f / 7j50 shape, four on record). Returning the whole workspace would re-render the
     search input mid-keystroke and destroy focus and the caret -- which is why the header aims at
     the list container and not at the workspace.
+
+    phaze-xxp2: the filter tabs live INSIDE the list container now (moved there so a swap keeps
+    their active-tab state correct), so a sort swap DOES re-render them -- unlike the search box,
+    which stays outside the container specifically because a sort must not touch it.
     """
     await seed_pending_proposal(0.9, original_filename="a.mp3", proposed_filename="A.mp3")
     fragment = (await client.get("/s/propose?sort=confidence&order=desc", headers=_LIST_TARGET)).text
 
     assert f'id="{_CONTAINER}"' not in fragment, "the narrow swap must return the container's contents, never the container itself"
     assert 'name="q"' not in fragment, "a sort must not re-emit the search input; that swap would destroy focus mid-word"
-    assert 'aria-label="Status filter tabs"' not in fragment, "a sort swaps the list, not the whole workspace"
+    assert 'aria-label="Status filter tabs"' in fragment, "the tabs live inside the list container, so a sort swap must re-render them"
     assert "A.mp3" in fragment, "the narrow swap must still contain the rows"
 
 

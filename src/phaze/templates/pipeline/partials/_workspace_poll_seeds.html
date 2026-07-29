@@ -82,22 +82,23 @@
     <p id="proposals-files-ready" class="hidden"></p>
     <p id="agent-busy-seed" class="hidden"></p>
     <p id="controller-busy-seed" class="hidden"></p>
-    {# Phase 58 (58-04 live-UAT): silent sink for the Phase-44 #straggler-failed-card the poll
-       re-emits OOB (stats_bar.html, hx-swap-oob="true"). Its visible home is the legacy
-       dashboard; the v7.0 shell has no Analysis Health surface yet (Phase 61 observability),
-       but now that 58-01 rides the shared /pipeline/stats poll the card arrives every tick —
-       without a target htmx logs htmx:oobErrorNoTarget each 5s. The outerHTML OOB swap replaces
-       this element but it stays inside the hidden parent above, absorbing the card invisibly. #}
-    <section id="straggler-failed-card"></section>
 </div>
 {# Phase 58 (58-04 live-UAT): the shared /pipeline/stats poll also re-emits the SIX v6.0
    cloud-state cards OOB every tick (stats_bar.html). Only the Analyze workspace renders their
    real targets; on Discover/Metadata/Fingerprint they'd log htmx:oobErrorNoTarget every 5s.
    Sink them invisibly here (hidden parent absorbs each outerHTML OOB swap). Analyze passes
    `cloud_cards=true` → these sinks are skipped so its real cards keep the ids (a duplicate id
-   would steal the live swap). #}
+   would steal the live swap).
+
+   phaze-tyt3: the Phase-44 #straggler-failed-card (Analysis Health -- straggler + terminal
+   analysis-failed counts, plus its bulk Retry control) sinks HERE now too, under the SAME gate
+   as the six cloud cards, instead of unconditionally in the block above. analyze_workspace.html
+   now mounts the REAL card (see that file), so on Analyze (cloud_cards=true) this sink is
+   skipped and the real card keeps the id; every other stage still needs the hidden sink or htmx
+   logs htmx:oobErrorNoTarget each 5s. #}
 {% if not workspace_has_cloud_cards %}
 <div class="hidden" aria-hidden="true">
+    <section id="straggler-failed-card"></section>
     <section id="admission-state-card"></section>
     <section id="inadmissible-card"></section>
     <section id="localqueue-card"></section>

@@ -806,10 +806,10 @@ async def pipeline_stats_partial(
     # own lane snapshot rather than reading the `lanes` result below) -- so they now fan out
     # CONCURRENTLY via asyncio.gather, mirroring the Phase 92 get_stage_progress pattern exactly:
     # each read runs in its OWN AsyncSession via _read_in_own_session, bounded by the SAME
-    # _stats_fanout() cap (a fresh Semaphore(4) per poll in production; the test suite's
-    # _route_stats_fanout fixture overrides _STATS_FANOUT to Semaphore(1) and routes
-    # phaze.database.async_session onto the per-test connection, so this reuses that EXISTING
-    # test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
+    # _stats_fanout() cap (process-global cap-4, shared with every OTHER concurrently in-flight poll
+    # -- phaze-28wi; the test suite's _route_stats_fanout fixture overrides _STATS_FANOUT to
+    # Semaphore(1) and routes phaze.database.async_session onto the per-test connection, so this
+    # reuses that EXISTING test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
     # pure Redis read that already never raises), so it rides the SAME gather directly rather than
     # through _read_in_own_session.
     #

@@ -158,6 +158,11 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/duplicates/{group_hash}/undo", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/undo", "file_states"): _NOT_STORED,
     ("/duplicates/undo-all", "file_states"): _NOT_STORED,
+    # phaze-dpc5: the group hashes bulk resolve deleted cards for, echoed back so undo can restore
+    # them. Same posture as `file_states` beside it -- a control value, never a column write. It is
+    # a READ key only: find_duplicate_groups_by_hashes binds it into a parameterised
+    # `sha256_hash IN (...)`, and an unknown hash simply selects no rows.
+    ("/duplicates/undo-all", "group_hashes"): _NOT_STORED,
     ("/pipeline/stats", "lane"): _WHITELIST,
     ("/pipeline/lanes/{backend_id}", "backend_id"): _WHITELIST,
     ("/pipeline/files", "stage"): _WHITELIST,
@@ -194,6 +199,13 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/scans/recent", "order"): _WHITELIST,
     ("/pipeline/scans/{batch_id}", "sort"): _WHITELIST,
     ("/pipeline/scans/{batch_id}", "order"): _WHITELIST,
+    # phaze-8f9j: `poll` rides the same two routes as those four and for a related reason -- the
+    # Discover workspace mounts recent_scans_table.html poll-free (WORK-05: one chrome poll), and
+    # the flag has to survive a re-sort or a delete or the loop returns one interaction later. It is
+    # a pure render toggle: the ONLY thing either route does with it is `poll != "0"`, a boolean the
+    # template branches on. It reaches no column, no query, no ORDER BY and no template path.
+    ("/pipeline/scans/recent", "poll"): _NOT_STORED,
+    ("/pipeline/scans/{batch_id}", "poll"): _NOT_STORED,
     # phaze-a6hm.3: same FILES_SORT contract wiring as the four pairs above (src/phaze/routers/pipeline.py).
     ("/pipeline/files", "sort"): _WHITELIST,
     ("/pipeline/files", "order"): _WHITELIST,

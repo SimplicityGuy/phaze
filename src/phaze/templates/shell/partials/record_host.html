@@ -25,14 +25,18 @@
 <div x-data="{
         open: false,
         opener: null,
+        // phaze-7yet: show() flips the panel visible synchronously (the Alpine `record:open`
+        // dispatch always wins the race against the async htmx GET /record/{id}), so the target
+        // #record-body still held whatever the PREVIOUS open left behind -- including live
+        // Approve / Skip / Force-skip controls wired to the old file's proposal ids. `loaded`
+        // starts false on every show() and is flipped true only by the after-swap handler below,
+        // once THIS fetch's response has actually landed -- so the panel shows a skeleton instead
+        // of a stale, clickable record for the duration of the fetch.
+        loaded: false,
         show(el) {
             this.opener = el || null;
+            this.loaded = false;
             this.open = true;
-            this.$nextTick(() => {
-                const panel = this.$refs.panel;
-                const heading = panel && panel.querySelector('h2');
-                if (heading) heading.focus();
-            });
         },
         // phaze-hltu: BOTH this host and cmdk_modal.html listen @keydown.escape.window, so with
         // both layers open a single Esc would close both. The palette is the upper layer (z-50 vs
@@ -70,6 +74,7 @@
         },
         hide() {
             this.open = false;
+            this.loaded = false;
             const target = this.opener || document.getElementById('stage-workspace');
             this.opener = null;
             // Defer to after Alpine tears the panel down (see cmdk_modal.html): a
@@ -98,14 +103,33 @@
              x-trap.inert.noscroll.noreturn="open"
              class="absolute inset-y-4 right-4 w-[760px] max-w-[94vw] overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-phaze-border dark:bg-phaze-bg">
 
-            {# #record-body — the HTMX innerHTML swap target for GET /record/{file_id}. After each
-               swap, re-init Alpine on the subtree (Pitfall 3) and refine the dialog aria-label to
-               the loaded file name (textContent is XSS-safe — no |e / no |tojson needed). #}
+            {# phaze-7yet: skeleton shown for the duration of the fetch (x-show="!loaded"), so the
+               panel never displays the previous file's record -- filename, stage pills,
+               force-skip dialogs, pending-approval Approve/Skip buttons -- while GET
+               /record/{file_id} is still in flight. #}
+            <div x-show="!loaded" x-cloak class="animate-pulse space-y-4 p-2" aria-hidden="true">
+                <div class="h-6 w-2/3 rounded bg-gray-200 dark:bg-phaze-border"></div>
+                <div class="h-4 w-1/2 rounded bg-gray-200 dark:bg-phaze-border"></div>
+                <div class="h-24 w-full rounded bg-gray-200 dark:bg-phaze-border"></div>
+            </div>
+
+            {# #record-body — the HTMX innerHTML swap target for GET /record/{file_id}. Hidden
+               (x-show="loaded") until the after-swap handler below flips `loaded` true, so it can
+               never be revealed still holding the previous open's content. After each swap,
+               re-init Alpine on the subtree (Pitfall 3), refine the dialog aria-label to the
+               loaded file name (textContent is XSS-safe — no |e / no |tojson needed) or reset it
+               to the generic default on a 404 (record_not_found.html has no <h2>, so the PREVIOUS
+               file's aria-label must not persist), flip `loaded`, and move focus to the new
+               heading (off whatever the panel showed before). #}
             <div id="record-body"
+                 x-show="loaded"
                  hx-on::after-swap="if (window.Alpine) Alpine.initTree(this);
                                     const h = this.querySelector('h2');
                                     const dialog = this.closest('[role=dialog]');
-                                    if (h && dialog) dialog.setAttribute('aria-label', 'File record: ' + h.textContent.trim());"></div>
+                                    if (h && dialog) { dialog.setAttribute('aria-label', 'File record: ' + h.textContent.trim()); }
+                                    else if (dialog) { dialog.setAttribute('aria-label', 'File record'); }
+                                    if (window.Alpine) Alpine.$data(this).loaded = true;
+                                    if (h) h.focus();"></div>
         </div>
     </div>
 </div>

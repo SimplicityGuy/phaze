@@ -110,6 +110,40 @@ async def test_status_filter_selects_the_matching_proposals(
 
 
 @pytest.mark.asyncio
+async def test_tab_click_updates_active_underline_and_aria_current(
+    client: AsyncClient,
+    session: AsyncSession,
+    seed_pending_proposal: Callable[..., Awaitable[RenameProposal]],
+) -> None:
+    """Regression (phaze-xxp2): a tab click's response reflects the NEWLY active tab, not the old one.
+
+    filter_tabs.html used to render in a sibling div OUTSIDE #propose-workspace-list, so the narrow
+    swap a tab click triggers (targeting the container) never re-rendered the tab bar at all -- the
+    clicked tab's response carried the PREVIOUS tab's aria-current="page" and underline classes,
+    actively telling a screen-reader user the wrong filter was active. The tabs now live inside the
+    swapped container, so the response to "click Approved" must itself say Approved is current.
+    """
+    await _seed_mixed(session, seed_pending_proposal)
+
+    approved = (await client.get("/s/propose?status=approved", headers=_LIST_TARGET)).text
+
+    # The response IS the swap that lands on screen, so its own markup must already show Approved
+    # active and every other tab inactive -- there is no second render coming to fix this up. Each
+    # <button>...</button> block names its OWN destination status in its hx-get, so split into
+    # per-tab blocks and match each block against the status it targets.
+    tabs_markup = approved.split("</nav>")[0]
+    assert tabs_markup.count('aria-current="page"') == 1, "exactly one tab may be announced current"
+    blocks = {block.split("status=")[1].split("&")[0]: block for block in tabs_markup.split("<button")[1:]}
+    assert set(blocks) == {"all", "pending", "approved", "rejected"}
+
+    assert 'aria-current="page"' in blocks["approved"], "the clicked (now-active) tab must be aria-current"
+    assert "border-b-2 border-blue-600" in blocks["approved"], "the clicked tab must carry the active underline"
+
+    assert 'aria-current="false"' in blocks["pending"], "the previously-active tab must be demoted"
+    assert "border-b-2 border-blue-600" not in blocks["pending"], "the previously-active tab's underline must be gone"
+
+
+@pytest.mark.asyncio
 async def test_search_narrows_within_the_active_filter(
     client: AsyncClient,
     session: AsyncSession,
@@ -240,7 +274,10 @@ async def test_narrow_swap_is_the_list_only_not_the_whole_workspace(
 
     narrow = (await client.get("/s/propose", headers=_LIST_TARGET)).text
     assert 'name="q"' not in narrow, "the search input must survive its own swap"
-    assert 'aria-label="Status filter tabs"' not in narrow
+    # phaze-xxp2: the tabs moved INTO the list container so a swap re-renders their active state
+    # (aria-current + underline) along with the rows -- the opposite of the search box, which must
+    # stay outside because it holds a focused input.
+    assert 'aria-label="Status filter tabs"' in narrow, "the tabs live inside the list container now, so a swap must re-render them"
     assert "GENERATE ALL" not in narrow
 
     rail = (await client.get("/s/propose", headers={"HX-Request": "true"})).text

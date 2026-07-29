@@ -8,6 +8,7 @@ import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any, cast as type_cast
+import weakref
 
 from saq.utils import now as saq_now
 from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
@@ -597,29 +598,61 @@ async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit:
 # Bounded fan-out for the get_stage_progress reads (CLEAN-01 / D-01/D-02/D-03). A single
 # AsyncSession (one asyncpg connection) CANNOT run concurrent statements -- SQLAlchemy 2.0 raises
 # IllegalStateChangeError ("another operation is in progress") -- so each concurrent read runs in
-# its OWN session. The semaphore caps the extra concurrent pool checkouts per 5s poll: cap 4 admits
-# all three heavy enrich-bucket reads at once (the serial-cost dominators) while leaving >=6 of the
+# its OWN session. The semaphore caps the extra concurrent pool checkouts: cap 4 admits all three
+# heavy enrich-bucket reads at once (the serial-cost dominators) while leaving >=6 of the
 # deliberately-lean 10-conn/worker pool (pool_size=5 + max_overflow=5, post-PgBouncer-exhaustion
 # incident) for the request's own session + other request traffic + the orphan refresher (RESEARCH
-# Pool Headroom, T-92-02-DoS).
+# Pool Headroom, T-92-02-DoS). That headroom invariant holds only if the cap is GLOBAL across
+# concurrently in-flight polls, not per-poll -- see phaze-28wi below.
 #
 # WHY NOT a module-level pre-constructed ``asyncio.Semaphore(4)``: an asyncio primitive binds to the
-# event loop of its FIRST use, so a module-singleton raises "bound to a different event loop" under
-# pytest's per-test loops and degrades every read (a real bug, not just a test artifact). Instead
-# :func:`_stats_fanout` builds a FRESH ``asyncio.Semaphore(4)`` per poll, bound to the running loop
-# (RESEARCH's cap is explicitly PER-POLL) -- unless the ``_STATS_FANOUT`` override below is set.
+# event loop of its FIRST use, so a single eager module-singleton raises "bound to a different event
+# loop" under pytest's per-test loops and degrades every read (a real bug, not just a test artifact).
+#
+# phaze-28wi: the ORIGINAL fix here built a FRESH ``asyncio.Semaphore(4)`` per poll to route around
+# that loop-binding hazard, but that makes the cap per-poll rather than process-global: two
+# concurrently in-flight polls each get their OWN cap-4 budget, so the ">=6 slots stay free"
+# invariant above only holds for a single in-flight render -- exactly the mismatch this bead fixes.
+# The cap is now bound to the CURRENT event loop lazily in a ``WeakKeyDictionary`` keyed by the
+# running loop (populated on first use, one entry reused for every subsequent poll on that loop):
+# production runs one loop for the process lifetime, so every poll shares the SAME semaphore and the
+# cap is truly global; each pytest loop still gets its own entry (preserving the original
+# loop-binding fix), and the weak key lets that entry drop once the loop is garbage-collected instead
+# of accumulating one leaked entry per test.
 #
 # PATCHABLE SEAM -- ``_STATS_FANOUT`` is the override 92-03 Task 2 sets (per-test, in the test loop)
 # to ``asyncio.Semaphore(1)`` so the fan-out SERIALIZES onto the single shared per-test connection
 # (concurrent reads on one connection would raise IllegalStateChangeError); it also monkeypatches
 # ``phaze.database.async_session`` to route the fan-out through that connection. Both are resolved at
-# CALL time (the deferred import + this module attribute) so the routing takes effect.
+# CALL time (the deferred import + this module attribute) so the routing takes effect, and take
+# priority over the loop-keyed cache below (checked first).
 _STATS_FANOUT: asyncio.Semaphore | None = None
+
+# Cap on concurrent extra pool checkouts a single fan-out read may hold (see the module comment
+# above for the arithmetic).
+_STATS_FANOUT_CAP = 4
+
+# Loop-keyed cache of the process-global fan-out semaphore (phaze-28wi). A ``WeakKeyDictionary`` so a
+# closed event loop's entry is collected instead of leaking one Semaphore per test loop.
+_STATS_FANOUT_CACHE: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 
 def _stats_fanout() -> asyncio.Semaphore:
-    """Return the fan-out bound to the CURRENT loop: the ``_STATS_FANOUT`` test override, else a fresh cap-4."""
-    return _STATS_FANOUT if _STATS_FANOUT is not None else asyncio.Semaphore(4)
+    """Return the process-global fan-out cap for the CURRENT loop (phaze-28wi).
+
+    The ``_STATS_FANOUT`` test override wins when set (routes onto the per-test connection, see the
+    module comment above). Otherwise returns the SAME cap-4 :class:`asyncio.Semaphore` for every call
+    on this event loop -- created lazily on first use and cached in :data:`_STATS_FANOUT_CACHE` -- so
+    the cap bounds ALL concurrently in-flight polls collectively, not just the reads within one poll.
+    """
+    if _STATS_FANOUT is not None:
+        return _STATS_FANOUT
+    loop = asyncio.get_running_loop()
+    fanout = _STATS_FANOUT_CACHE.get(loop)
+    if fanout is None:
+        fanout = asyncio.Semaphore(_STATS_FANOUT_CAP)
+        _STATS_FANOUT_CACHE[loop] = fanout
+    return fanout
 
 
 async def _read_in_own_session[T](fanout: asyncio.Semaphore, fn: Callable[[AsyncSession], Awaitable[T]], default: T) -> T:
@@ -744,8 +777,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # (never mutated -- only spread via {**bucket, "total": ...}).
     bucket_default: dict[str, int] = _empty_buckets()
 
-    # ONE semaphore shared across every read in THIS poll so the cap bounds them collectively (fresh
-    # per poll, bound to the running loop -- see _stats_fanout).
+    # ONE semaphore shared across every read in THIS poll -- and, since phaze-28wi, across every
+    # OTHER concurrently in-flight poll on the SAME running loop too, so the cap bounds them all
+    # collectively rather than per-poll (see _stats_fanout).
     fanout = _stats_fanout()
 
     # Fan out every independent read concurrently, each in its own session (D-01/D-02/D-03). The
