@@ -4,19 +4,19 @@ Pure YAML-parse tests for the file-server-host compose file (no docker daemon).
 
 Covers five invariants for ``docker-compose.agent.yml``:
 
-1. Top-level ``services`` is exactly ``{worker, watcher, audfprint, panako}``.
+1. Top-level ``services`` is exactly ``{worker, watcher}`` (each split into its
+   lane workers below).
 2. No agent service declares ``DATABASE_URL`` or a ``depends_on`` reference to
    postgres (DIST-04 invariant — agents reach Postgres ONLY via the HTTP API).
 3. ``worker`` service has ``PHAZE_ROLE=agent`` in its environment.
-4. WARNING-3: Every ``SCAN_PATH`` volume mount across all 4 services uses the
+4. WARNING-3: Every ``SCAN_PATH`` volume mount across all services uses the
    fail-fast ``${VAR:?MESSAGE}`` operator (catches a future YAML drift to
    ``${SCAN_PATH:-/data/music}`` loose-default form which would silently let
    ``docker compose up`` succeed on a misconfigured host).
-5. All four agent services pull a ``ghcr.io/simplicityguy/phaze`` image pinned
-   via ``${PHAZE_IMAGE_TAG...}`` — ``worker``/``watcher`` from the bare repo and
-   ``audfprint``/``panako`` from the ``/audfprint`` + ``/panako`` sub-paths. This
-   guards against a regression back to a local ``build:`` block on the sidecars
-   (a service with only ``build:`` and no ``image:`` fails the guard).
+5. All agent services pull a ``ghcr.io/simplicityguy/phaze`` image pinned
+   via ``${PHAZE_IMAGE_TAG...}`` — ``worker``/``watcher`` from the bare repo. This
+   guards against a regression back to a local ``build:`` block (a service with
+   only ``build:`` and no ``image:`` fails the guard).
 
 A sixth test (WARNING-4) parses ``.github/workflows/docker-publish.yml`` and
 asserts the ``docker/metadata-action`` step emits BOTH a ``:latest`` tag and a
@@ -60,16 +60,16 @@ def _env_to_strs(env: Any) -> list[str]:
     return []
 
 
-# quick-260707-dh1: the single `worker` is split into four lane workers + a transitional drain.
-_LANE_WORKERS = {"worker-analyze", "worker-fingerprint", "worker-meta", "worker-io"}
+# quick-260707-dh1: the single `worker` is split into lane workers + a transitional drain.
+_LANE_WORKERS = {"worker-analyze", "worker-meta", "worker-io"}
 _ALL_WORKERS = _LANE_WORKERS | {"worker-drain"}
 
 
 def test_agent_compose_service_list() -> None:
-    """D-15 + quick-260707-dh1: 4 lane workers + drain + watcher + audfprint + panako."""
+    """D-15 + quick-260707-dh1: lane workers + drain + watcher."""
     data = _load_agent_compose()
-    assert set(data["services"].keys()) == _ALL_WORKERS | {"watcher", "audfprint", "panako"}, (
-        f"agent compose services must be the 4 lane workers + worker-drain + {{watcher, audfprint, panako}}; got {sorted(data['services'].keys())!r}"
+    assert set(data["services"].keys()) == _ALL_WORKERS | {"watcher"}, (
+        f"agent compose services must be the lane workers + worker-drain + {{watcher}}; got {sorted(data['services'].keys())!r}"
     )
 
 
@@ -78,7 +78,6 @@ def test_lane_workers_carry_their_lane_and_concurrency() -> None:
     data = _load_agent_compose()
     expected = {
         "worker-analyze": ("analyze", "PHAZE_LANE_ANALYZE_CONCURRENCY"),
-        "worker-fingerprint": ("fingerprint", "PHAZE_LANE_FINGERPRINT_CONCURRENCY"),
         "worker-meta": ("meta", "PHAZE_LANE_META_CONCURRENCY"),
         "worker-io": ("io", "PHAZE_LANE_IO_CONCURRENCY"),
     }
@@ -89,7 +88,7 @@ def test_lane_workers_carry_their_lane_and_concurrency() -> None:
 
 
 def test_lane_workers_share_one_image_and_command() -> None:
-    """quick-260707-dh1: all 4 lane workers + drain run the SAME image + command (env-only difference)."""
+    """quick-260707-dh1: all lane workers + drain run the SAME image + command (env-only difference)."""
     data = _load_agent_compose()
     commands = {str(data["services"][svc].get("command")) for svc in _ALL_WORKERS}
     image_vals = {data["services"][svc].get("image") for svc in _ALL_WORKERS}
@@ -99,9 +98,9 @@ def test_lane_workers_share_one_image_and_command() -> None:
 
 
 def test_cpu_lanes_pin_threads_single_threaded() -> None:
-    """quick-260707-dh1: the CPU lanes (analyze+fingerprint) pin essentia/TF to one thread."""
+    """quick-260707-dh1: the CPU lanes (analyze) pin essentia/TF to one thread."""
     data = _load_agent_compose()
-    for svc_name in ("worker-analyze", "worker-fingerprint", "worker-drain"):
+    for svc_name in ("worker-analyze", "worker-drain"):
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
         for pin in ("OMP_NUM_THREADS=1", "TF_NUM_INTRAOP_THREADS=1", "TF_NUM_INTEROP_THREADS=1"):
             assert pin in env, f"{svc_name} must pin {pin} (honest core budget); got {env!r}"
@@ -126,7 +125,7 @@ def test_unlaned_drain_worker_does_not_heartbeat() -> None:
     """worker-drain stays heartbeat=false because it is UNLANED (phaze-30fo).
 
     An untagged beat is persisted verbatim by the handler, which would wipe the per-lane
-    `lanes` breakdown the four lane workers maintain. Not a style rule -- a data hazard.
+    `lanes` breakdown the lane workers maintain. Not a style rule -- a data hazard.
     """
     data = _load_agent_compose()
     env = _env_to_strs(data["services"]["worker-drain"].get("environment", []))
@@ -163,7 +162,7 @@ def test_agent_compose_has_no_postgres_env() -> None:
 
 
 def test_worker_service_has_phaze_role_agent() -> None:
-    """D-17: every worker service (all 4 lanes + drain) runs under PHAZE_ROLE=agent."""
+    """D-17: every worker service (all lanes + drain) runs under PHAZE_ROLE=agent."""
     data = _load_agent_compose()
     for svc_name in _ALL_WORKERS:
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
@@ -190,27 +189,23 @@ def test_all_scan_path_mounts_use_failfast_syntax() -> None:
 
 
 def test_all_agent_services_pull_from_ghcr() -> None:
-    """All four agent services pull a GHCR image pinned via PHAZE_IMAGE_TAG.
+    """All agent services pull a GHCR image pinned via PHAZE_IMAGE_TAG.
 
-    Guards against a regression where a sidecar reverts to a local ``build:``
+    Guards against a regression where a service reverts to a local ``build:``
     block (and drops ``image:``), which would force every file-server host to
-    carry the full phaze source context just to build the fingerprint sidecars.
+    carry the full phaze source context just to build the image.
 
-    ``worker``/``watcher`` pull the bare repo (``ghcr.io/simplicityguy/phaze``);
-    ``audfprint``/``panako`` pull the ``/audfprint`` + ``/panako`` sub-paths
-    (matching the docker-publish.yml matrix ``image_suffix`` values). ``yaml.safe_load``
-    does not interpolate, so the raw ``${PHAZE_IMAGE_TAG...}`` token is visible.
+    ``worker``/``watcher`` pull the bare repo (``ghcr.io/simplicityguy/phaze``).
+    ``yaml.safe_load`` does not interpolate, so the raw ``${PHAZE_IMAGE_TAG...}``
+    token is visible.
     """
     data = _load_agent_compose()
     expected_image_paths = {
         "worker-analyze": "ghcr.io/simplicityguy/phaze",
-        "worker-fingerprint": "ghcr.io/simplicityguy/phaze",
         "worker-meta": "ghcr.io/simplicityguy/phaze",
         "worker-io": "ghcr.io/simplicityguy/phaze",
         "worker-drain": "ghcr.io/simplicityguy/phaze",
         "watcher": "ghcr.io/simplicityguy/phaze",
-        "audfprint": "ghcr.io/simplicityguy/phaze/audfprint",
-        "panako": "ghcr.io/simplicityguy/phaze/panako",
     }
     for svc_name, expected_path in expected_image_paths.items():
         svc = data["services"][svc_name]
@@ -223,7 +218,7 @@ def test_all_agent_services_pull_from_ghcr() -> None:
 def _extract_api_metadata_action_step(workflow_data: dict[str, Any]) -> dict[str, Any] | None:
     """Locate a docker/metadata-action step whose `images:` output points at the api image.
 
-    docker-publish.yml uses a matrix over {api, audfprint, panako}; the same
+    docker-publish.yml uses a matrix over its published images; the same
     metadata-action step runs for each matrix value with an interpolated
     `images:` URL. The agent.yml's worker+watcher pull from the *api* image
     URL (bare-repo, no sub-path), so this helper specifically looks for the

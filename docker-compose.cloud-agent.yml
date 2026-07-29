@@ -7,7 +7,7 @@
 #
 # Service split — ONLY the agent-side analysis worker lives here. Unlike
 # docker-compose.agent.yml (file-server), this stack has NO media-bound
-# sidecars (no watcher/audfprint/panako) and NO local media mount: a compute
+# sidecars (no watcher) and NO local media mount: a compute
 # agent owns no scan roots and receives each long file pushed to an ephemeral
 # scratch volume over rsync-SSH-over-Tailscale (Phase 50), analyzes it, and
 # deletes it.
@@ -20,7 +20,7 @@
 # and no published port — the agent is a pure outbound consumer over the tailnet.
 #
 # Invariants (asserted by tests/agents/deployment/test_cloud_agent_compose.py):
-#   - Exactly one service: worker (no watcher/audfprint/panako).
+#   - Exactly one service: worker (no watcher).
 #   - No DATABASE_URL / POSTGRES_* on any service and no postgres/redis service
 #     (DIST-04: the compute agent reaches Postgres ONLY via PHAZE_QUEUE_URL for
 #     saq_jobs + the application server's HTTP API — never the app ORM).
@@ -72,7 +72,7 @@ services:
       - PHAZE_AGENT_KIND=compute
       # quick-260707-dh1: the compute agent is media-less and analysis-only -- its ONLY task is
       # process_file, so it consumes the SINGLE analyze lane (phaze-agent-<id>-analyze). It is
-      # NOT a 4-service split: the fingerprint/meta/io lanes would be permanently empty on a
+      # NOT a multi-service split: the meta/io lanes would be permanently empty on a
       # compute host, and the head-of-line / I/O-starvation problems the lane split solves are
       # file-server-only. Single lane = single heartbeat (PHAZE_AGENT_HEARTBEAT left unset/true).
       - PHAZE_AGENT_LANE=analyze
