@@ -138,7 +138,12 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
 
     Re-scan-safe: a re-scan creates a NEW completed batch for the same agent, so summing ALL
     completed batches would double-count. Instead a window function ranks each agent's completed
-    batches by ``created_at`` DESC and only ``rn == 1`` (the most recent) is summed.
+    batches by ``created_at`` DESC, ``ScanBatch.id`` DESC and only ``rn == 1`` (the most recent) is
+    summed. The ``id`` tiebreaker (phaze-imih) matters because ``ScanBatch.created_at`` carries no
+    uniqueness constraint (``TimestampMixin``'s ``server_default=func.now()`` is transaction-time
+    constant): two completed batches for one agent can share ``created_at``, and without the
+    tiebreaker the ``rn == 1`` pick on a tie is executor-arbitrary -- matching the corrected window
+    in :func:`get_agent_reconciliations` (phaze-n2d2) so the two sums can never disagree.
 
     Returns None (NOT 0) both when there are no completed batches and on any DB error: None is the
     "hide the reconciliation" sentinel, distinct from a genuine scanned total of 0. Mirrors the
@@ -155,7 +160,7 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
             ranked = (
                 select(
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc())).label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
