@@ -21,7 +21,7 @@ import uuid
 import pytest
 
 from phaze.schemas.agent_tasks import ProcessFilePayload
-from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
+from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from tests._queue_fakes import FakeQueue
 
 
@@ -153,3 +153,49 @@ async def test_enqueue_policy_survives_apply_project_job_defaults() -> None:
 
     assert job.timeout == 7200
     assert job.retries == 2
+
+
+# ---------------------------------------------------------------------------
+# phaze-ewen: classify_process_file_collision -- distinguishing a genuinely in-flight
+# deterministic-key collision from one held by a dead/stuck job.
+# ---------------------------------------------------------------------------
+
+
+def _stub_job(status: str, *, stuck: bool = False) -> SimpleNamespace:
+    """A saq.Job stand-in exposing only the two attributes the classifier reads."""
+    return SimpleNamespace(status=status, stuck=stuck)
+
+
+def test_classify_collision_none_job_is_in_flight() -> None:
+    """An unlookupable row (queue.job returned None) degrades to in_flight -- never cries wolf."""
+    assert classify_process_file_collision(None) == "in_flight"
+
+
+@pytest.mark.parametrize("status", ["aborting", "failed", "aborted"])
+def test_classify_collision_dead_status_is_blocked(status: str) -> None:
+    """A dead/dying status is BLOCKED regardless of the (irrelevant) stuck flag."""
+    assert classify_process_file_collision(_stub_job(status)) == "blocked"
+
+
+@pytest.mark.parametrize("status", ["queued", "active", "new"])
+def test_classify_collision_live_status_not_stuck_is_in_flight(status: str) -> None:
+    """A live, non-stuck status is genuinely in_flight."""
+    assert classify_process_file_collision(_stub_job(status, stuck=False)) == "in_flight"
+
+
+def test_classify_collision_stuck_active_is_blocked() -> None:
+    """An 'active' row past its timeout/heartbeat (stuck) is BLOCKED -- a claimed corpse, not live work."""
+    assert classify_process_file_collision(_stub_job("active", stuck=True)) == "blocked"
+
+
+def test_classify_collision_unknown_status_degrades_to_in_flight() -> None:
+    """An unrecognized status value is not in the blocked allowlist -- degrade to in_flight, not crash."""
+    assert classify_process_file_collision(_stub_job("complete")) == "in_flight"
+
+
+def test_classify_collision_reads_enum_value_not_the_enum_object() -> None:
+    """A real saq.job.Status enum member (not a bare string) classifies identically via .value."""
+    from saq.job import Status
+
+    assert classify_process_file_collision(_stub_job(Status.ABORTING)) == "blocked"
+    assert classify_process_file_collision(_stub_job(Status.QUEUED)) == "in_flight"

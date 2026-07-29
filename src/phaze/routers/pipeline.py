@@ -18,8 +18,8 @@ import uuid  # noqa: TC003
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, exists, select, tuple_, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import ARRAY, String, bindparam, delete, exists, func, select, tuple_, update
+from sqlalchemy.dialects.postgresql import UUID as PGUUID, insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
 
@@ -42,7 +42,7 @@ from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
-from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
+from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
@@ -369,11 +369,31 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(tags=["pipeline"])
 
-# Hold references to background enqueue tasks to prevent GC (same pattern as scan.py)
-_background_tasks: set[asyncio.Task[None]] = set()
+# Hold references to background enqueue tasks to prevent GC (same pattern as scan.py). Typed
+# `Task[Any]` (not `Task[None]`) because `_enqueue_analysis_jobs` returns `list[uuid.UUID]`
+# (phaze-4ter) while every other producer here returns `None`.
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
-async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> None:
+def _analysis_file_ids_scope(file_ids: list[uuid.UUID], name: str) -> Any:
+    """``AnalysisResult.file_id = ANY(:name)`` -- ONE Postgres array bind, never a bare ``.in_(file_ids)``.
+
+    phaze-r7j9: mirrors ``tasks/reenqueue.py::_fids_scope``, the repo's established idiom for this
+    exact problem. A bare ``.in_(file_ids)`` expands to one bind parameter per element, and asyncpg's
+    Bind message caps a statement at 32767 parameters -- this module's own docstrings cite ~44.5K-file
+    failure sets as the incident scale the bulk retry / cloud-backfill paths were hardened for, well
+    past that ceiling. Binding the whole id list as ONE ``uuid[]`` array parameter sidesteps the
+    ceiling regardless of list size, and is a single (cheaper) round trip besides.
+    """
+    return AnalysisResult.file_id == func.any(bindparam(name, value=file_ids, type_=ARRAY(PGUUID(as_uuid=True))))
+
+
+def _ledger_keys_scope(keys: list[str], name: str) -> Any:
+    """``SchedulingLedger.key = ANY(:name)`` -- the same array-bind idiom, string keys (phaze-r7j9)."""
+    return SchedulingLedger.key == func.any(bindparam(name, value=keys, type_=ARRAY(String())))
+
+
+async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: str, models_path: str) -> list[uuid.UUID]:
     """Background coroutine to enqueue process_file jobs for a list of files.
 
     Delegates each enqueue to the FastAPI-free shared producer
@@ -391,9 +411,88 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     All process_file trigger endpoints (``/api/v1/analyze`` + the HTMX
     ``/pipeline/analyze``) funnel through this one helper, so the key + policy are
     applied identically at every enqueue site.
+
+    phaze-4ter: each file's enqueue is now individually contained -- a raised exception
+    (e.g. a transient queue-pool error) is logged and the file's id is collected into the
+    returned list instead of propagating, so ONE failure can no longer abort every
+    remaining enqueue in the group. Returns the ids that failed to enqueue (empty when every
+    file succeeded) so a caller that already cleared a durable failure marker BEFORE
+    backgrounding this call (:func:`retry_analysis_failed`) can restore it for exactly the
+    files that never got a replacement job, instead of the marker and the job both vanishing.
+
+    phaze-ewen: a ``None`` return (deterministic-key collision) is not logged as anything --
+    including the case where the key is held by a DEAD job (aborting/failed/stuck), which means
+    this file was silently OMITTED from a bulk run the dashboard reports as "N enqueued". This
+    does not change behavior (still no retry, and a blocked file is deliberately NOT added to
+    ``failed_ids`` -- restoring its ``failed_at`` would be wrong, because the file's marker
+    state is whatever the dead key-holder left, and un-wedging the key is the aborting-reaper's
+    job, not this loop's), just makes a blocked file visible in logs.
     """
+    failed_ids: list[uuid.UUID] = []
     for f in files:
-        await enqueue_process_file(queue, f, agent_id, models_path)
+        try:
+            job = await enqueue_process_file(queue, f, agent_id, models_path)
+        except Exception:
+            logger.exception("enqueue_analysis_jobs: failed to enqueue process_file job", file_id=str(f.id))
+            failed_ids.append(f.id)
+            continue
+        if job is None and classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked":
+            logger.warning(
+                "_enqueue_analysis_jobs: deterministic key held by a dead job -- file omitted from this run",
+                file_id=str(f.id),
+                key=process_file_job_key(f.id),
+            )
+    return failed_ids
+
+
+async def _retry_analysis_group(queue: Any, group: list[FileRecord], agent_id: str, models_path: str) -> None:
+    """Background: enqueue one routed group's ``process_file`` jobs for the bulk retry (phaze-4ter).
+
+    :func:`retry_analysis_failed` clears + commits ``analysis.failed_at`` for the WHOLE routed set
+    BEFORE backgrounding this call (RESEARCH Pitfall 3 -- the red count must drop regardless of the
+    enqueue outcome). That is safe only if a per-file enqueue failure can never be lost: previously
+    the background task's done-callback was a bare ``_background_tasks.discard`` that never called
+    ``task.result()``, so the FIRST raised enqueue both aborted every remaining file in the group
+    (``_enqueue_analysis_jobs`` had no per-file containment) and vanished without a log correlated to
+    this request -- the marker was gone, no job was ever enqueued, and nothing recorded that the file
+    had ever failed.
+
+    ``_enqueue_analysis_jobs`` now contains each enqueue individually and returns the ids that
+    failed; this wrapper re-stamps ``failed_at`` for exactly those ids (a fresh ``async_session`` --
+    the request session that cleared the marker is closed by the time this background task runs), so
+    a transient enqueue error degrades to "still shows failed, retryable" instead of a silent,
+    permanent loss of both the job and the failure record. Any exception this coroutine itself raises
+    (e.g. the restore write failing too) is caught and logged here rather than left for a bare
+    discard callback to swallow.
+    """
+    try:
+        failed_ids = await _enqueue_analysis_jobs(queue, group, agent_id, models_path)
+        if not failed_ids:
+            return
+        # Deferred import (services/pipeline.py::_read_in_own_session precedent): re-reads
+        # `phaze.database.async_session` at CALL time rather than binding this module's
+        # import-time reference, so a test that monkeypatches the source attribute onto a
+        # per-test connection (`tests/conftest.py::_route_stats_fanout`) is honored here too.
+        from phaze.database import async_session  # noqa: PLC0415
+
+        async with async_session() as restore_session:
+            await restore_session.execute(
+                update(AnalysisResult)
+                .where(_analysis_file_ids_scope(failed_ids, "restore_ids"))
+                .values(failed_at=func.now(), error_message="retry_analysis_failed: enqueue error, see agent logs (phaze-4ter)"),
+            )
+            await restore_session.commit()
+        logger.error(
+            "retry_analysis_failed: restored failed_at marker after enqueue error",
+            count=len(failed_ids),
+            file_ids=[str(fid) for fid in failed_ids],
+        )
+    except Exception:
+        # phaze-4ter: this coroutine runs detached (asyncio.create_task + a `_background_tasks.discard`
+        # done-callback, which never calls `task.result()`) -- an exception escaping here would
+        # otherwise surface only via asyncio's uncorrelated "Task exception was never retrieved" GC-time
+        # log, never structlog, never tied to this request. Contain and log explicitly instead.
+        logger.exception("retry_analysis_failed: background retry group failed")
 
 
 async def _route_discovered_by_duration(
@@ -1441,10 +1540,15 @@ async def trigger_backfill_cloud(
     # ``_route_discovered_by_duration`` flushes ALL THREE mutations atomically. Every backfill candidate
     # is long (the query filters ``duration >= threshold``) and cloud is enabled here, so the router
     # ALWAYS holds >=1 file and therefore ALWAYS commits -- the staged strips can never be left dangling.
+    # phaze-r7j9: both id/key lists below are array-bound as ONE Postgres array parameter
+    # (`_analysis_file_ids_scope` / `_ledger_keys_scope`) rather than a bare `.in_(...)`, which
+    # SQLAlchemy expands to one bind parameter per element and exceeds asyncpg's 32767-parameter
+    # cap on a large enough candidate set (same failure mode as `retry_analysis_failed`'s marker
+    # clear, lower reachability here since candidates are duration-gated).
     candidate_ids = [file.id for file, _ in candidates]
     if candidate_ids:
         await session.execute(
-            update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
+            update(AnalysisResult).where(_analysis_file_ids_scope(candidate_ids, "candidate_ids")).values(failed_at=None, error_message=None),
         )
         # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
         # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
@@ -1474,7 +1578,7 @@ async def trigger_backfill_cloud(
         # next backfill click. See the ADR for the full two-pool analysis.
         ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
         observed_ledger_rows = (
-            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(SchedulingLedger.key.in_(ledger_keys)))
+            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(_ledger_keys_scope(ledger_keys, "ledger_keys")))
         ).all()
         if observed_ledger_rows:
             await session.execute(
@@ -1539,6 +1643,14 @@ async def retry_analysis_failed(
       above already moved every file off the red bucket, so a client/proxy timeout cancelling this
       HTTP request can no longer leave the tail of a large failed set with its marker cleared but
       no job ever enqueued.
+    - phaze-r7j9: the marker-clearing UPDATE binds the routed id list as ONE ``uuid[]`` array
+      parameter (:func:`_analysis_file_ids_scope`) instead of a bare ``.in_(...)``, which expands to
+      one bind parameter per id and exceeds asyncpg's 32767-parameter cap at the ~44.5K-file incident
+      scale this docstring cites -- that used to make the bulk retry itself deterministically 500 at
+      the exact scale it exists for.
+    - phaze-4ter: :func:`_retry_analysis_group` contains each background enqueue individually and
+      restores the marker for any file whose enqueue failed, so a transient queue error can no longer
+      silently drop a file off the red bucket with no job and no trace that it ever failed.
     """
     files = await get_analysis_failed_files(session)
     if not files:
@@ -1576,8 +1688,14 @@ async def retry_analysis_failed(
     # `analysis_completed_at IS NULL` on a failed row). phaze-c9w9: cleared ONLY for the files that
     # actually route -- clearing a skipped (owner-offline) file's marker would drop it off the red
     # bucket with no job ever enqueued.
+    #
+    # phaze-r7j9: array-bind the whole routed id list as ONE `uuid[]` parameter
+    # (`_analysis_file_ids_scope`) rather than a bare `.in_(...)`, which SQLAlchemy expands to one
+    # bind parameter per id -- past asyncpg's 32767-parameter wire cap at the ~44.5K-file incident
+    # scale this handler is documented to be hardened for.
+    routed_file_ids = [f.id for f in routed_files]
     await session.execute(
-        update(AnalysisResult).where(AnalysisResult.file_id.in_([f.id for f in routed_files])).values(failed_at=None, error_message=None),
+        update(AnalysisResult).where(_analysis_file_ids_scope(routed_file_ids, "retry_ids")).values(failed_at=None, error_message=None),
     )
     await session.commit()
 
@@ -1593,9 +1711,11 @@ async def retry_analysis_failed(
     #
     # NORMAL caps: NO fine_cap/coarse_cap override -- a retry is a fresh re-analysis, not a deepen.
     # The single funnel (_enqueue_analysis_jobs -> enqueue_process_file) guarantees the full payload
-    # + deterministic dedup key.
+    # + deterministic dedup key. phaze-4ter: routed through `_retry_analysis_group`, which contains
+    # per-file enqueue failures and restores `failed_at` for any file that never got a replacement
+    # job, instead of the marker cleared above and the job both silently vanishing.
     for routed, group in routed_groups:
-        task = asyncio.create_task(_enqueue_analysis_jobs(routed.queue, group, cast("str", routed.agent_id), settings.models_path))
+        task = asyncio.create_task(_retry_analysis_group(routed.queue, group, cast("str", routed.agent_id), settings.models_path))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
@@ -2226,6 +2346,15 @@ async def deepen_analysis(
     - Dedup: ``enqueue_process_file`` uses the deterministic ``process_file:<file_id>`` key, so a
       re-deepen of a file with a live in-flight job dedups to a no-op (D-05); re-deepening an
       already-ANALYZED file with no live job is a fresh enqueue.
+    - Collision classification (phaze-ewen): a ``None`` return is NOT unconditionally "already in
+      flight". SAQ's ``_enqueue`` upsert only overwrites a conflicting key whose status is in
+      ``('aborted', 'complete', 'failed')`` -- a dead ``aborting``/``failed``/``aborted`` row, or a
+      claimed-but-worker-dead ``active`` row past its timeout, holds the key forever without ever
+      processing the file. ``classify_process_file_collision`` (``services.analysis_enqueue``)
+      distinguishes the two so a BLOCKED collision renders an honest terminal fragment (and is
+      logged) instead of the unconditional "Queued — starting deepen…" + an eternal 2s poll that
+      will never see a matching ``analysis_completed_at``/``failed_at`` (the file's frozen
+      sampled-run counters never satisfy ``deepen_progress``'s non-terminal branches either).
 
     The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
     id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
@@ -2240,6 +2369,8 @@ async def deepen_analysis(
 
     not_found = file is None
     no_active_agent = False
+    already_in_flight = False
+    blocked = False
 
     if file is not None:
         try:
@@ -2254,7 +2385,20 @@ async def deepen_analysis(
             agent_id = cast("str", routed.agent_id)
             # fine_cap=0 / coarse_cap=0 -> _stride_to_cap no-op -> analyze ALL windows (unbounded
             # deepen, D-04). The single funnel guarantees the full payload + deterministic key.
-            await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+            job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+            if job is None:
+                # Deterministic-key collision -- classify it rather than assuming "in flight"
+                # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
+                existing = await routed.queue.job(process_file_job_key(file.id))
+                if classify_process_file_collision(existing) == "blocked":
+                    blocked = True
+                    logger.warning(
+                        "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
+                        file_id=str(file.id),
+                        key=process_file_job_key(file.id),
+                    )
+                else:
+                    already_in_flight = True
 
     return templates.TemplateResponse(
         request=request,
@@ -2263,8 +2407,11 @@ async def deepen_analysis(
             "request": request,
             "not_found": not_found,
             "no_active_agent": no_active_agent,
-            # Consumed ONLY by the success branch's bootstrap poller (guards/branches above
-            # are unchanged). since is a numeric float threaded into the poll URL.
+            "already_in_flight": already_in_flight,
+            "blocked": blocked,
+            # Consumed ONLY by the success/already-in-flight branches' bootstrap poller
+            # (guards/branches above are unchanged). since is a numeric float threaded into the
+            # poll URL.
             "file_id": file_id,
             "since": since,
         },
@@ -2658,8 +2805,22 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     safety net, D-05) -- it never bypasses the per-item deterministic-key dedup, so a forced
     reconcile over a live queue collapses every still-in-flight item to a skipped no-op and
     can NEVER double the backlog (Phase-32 doubling class is closed).
+
+    Per-row failures inside ``recover_orphaned_work`` are already isolated and tallied under
+    ``errored`` (phaze-o1xx) rather than raising, so this normally just logs the final tally. The
+    ``try/except`` here is the LAST line of defense for a failure the producer itself cannot
+    isolate (e.g. the session/DETECT-gate read at the top of the function): the previous
+    fire-and-forget ``asyncio.create_task`` had no done-callback and no `except`, so that exception
+    was never retrieved -- the operator's HTMX response already said "recovery started" and nothing
+    else ever surfaced the failure. Log it here so a failed forced recovery is at least visible in
+    the controller logs instead of silently vanishing.
     """
-    await recover_orphaned_work(ctx, force=True)
+    try:
+        result = await recover_orphaned_work(ctx, force=True)
+    except Exception:
+        logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced (phaze-o1xx)")
+        return
+    logger.info("manual recovery trigger complete", detected_loss=result["detected_loss"], stages=result["stages"])
 
 
 @router.post("/pipeline/recover", response_class=HTMLResponse)

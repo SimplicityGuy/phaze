@@ -176,7 +176,7 @@ class _DoneSets:
 
 def _zero() -> dict[str, int]:
     """Return a fresh zero per-stage tally."""
-    return {"reenqueued": 0, "skipped": 0}
+    return {"reenqueued": 0, "skipped": 0, "errored": 0}
 
 
 def _ledger_fids(rows: Sequence[SchedulingLedger]) -> list[uuid.UUID]:
@@ -458,6 +458,34 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
         tally["reenqueued"] += 1
 
 
+async def _replay_row_isolated(queue: Any, row: SchedulingLedger, stages: dict[str, dict[str, int]]) -> None:
+    """Replay one row via :func:`_replay_row`, isolating any failure to THIS row's tally (phaze-o1xx).
+
+    The pre-fix loop ran every orphaned row through ``_replay_row`` with zero per-row error
+    handling: a single transient failure -- a Postgres blip on ``queue.enqueue``, a per-agent lane
+    ``connect()`` failure -- propagated out of :func:`recover_orphaned_work` and killed the ENTIRE
+    replay after an arbitrary prefix had already been enqueued. Re-populating ``saq_jobs`` with that
+    prefix then defers the next boot's DETECT gate (``count_inflight_jobs == 0``) until the drained
+    prefix idles out, silently stranding the un-replayed suffix in the meantime (see the module's
+    "Degrade-safe" contract, which previously covered ONLY an offline owning agent).
+
+    ``stages.setdefault(row.function, _zero())`` also guards a legacy ledger row whose ``function``
+    was since renamed/removed (not currently reachable -- every keyed row's function is a member of
+    :data:`_ALL_KEYED_FUNCTIONS` by construction -- but a poison row here must never abort the run
+    either, so the guard costs nothing and closes the latent gap).
+    """
+    tally = stages.setdefault(row.function, _zero())
+    try:
+        await _replay_row(queue, row, tally)
+    except Exception:
+        logger.exception(
+            "recover_orphaned_work: row replay failed -- row skipped this run, ledger entry remains for the next pass",
+            key=row.key,
+            function=row.function,
+        )
+        tally["errored"] += 1
+
+
 async def _replay_agent_rows_by_owner(
     session: AsyncSession,
     task_router: Any,
@@ -517,8 +545,20 @@ async def _replay_agent_rows_by_owner(
         # quick-260707-dh1: derive the LANE per row via lane_for_task(row.function) (push_file -> io;
         # process_file -> analyze; ...). An unmapped function raises loudly (never a bad queue).
         for row in owned:
-            agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
-            await _replay_row(agent_queue, row, stages[row.function])
+            try:
+                agent_queue = task_router.queue_for(agent.id, lane_for_task(row.function))
+            except Exception:
+                # phaze-o1xx: routing itself (an unmapped legacy function) must not abort the whole
+                # replay -- isolate it exactly like a failed _replay_row and move to the next row.
+                logger.exception(
+                    "recover_orphaned_work: agent row lane routing failed -- row skipped this run, ledger entry remains for the next pass",
+                    key=row.key,
+                    function=row.function,
+                    agent_id=owner_id,
+                )
+                stages.setdefault(row.function, _zero())["errored"] += 1
+                continue
+            await _replay_row_isolated(agent_queue, row, stages)
 
 
 async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
@@ -542,14 +582,18 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
        resolved via :func:`select_agent_by_id`. An offline / non-fileserver owner (cold boot, D-05)
        has its rows SKIPPED with a WARNING (zero counts) -- never rerouted onto another agent -- while
        the controller rows still replay. Each producer's ``None`` return (deterministic-key dedup)
-       counts as ``skipped``, otherwise ``reenqueued``.
+       counts as ``skipped``, otherwise ``reenqueued``. A row whose replay RAISES (a transient
+       ``queue.enqueue``/``connect()`` failure, or a routing failure for a legacy row) is isolated
+       via :func:`_replay_row_isolated` -- logged, tallied under ``errored``, and the loop continues
+       with the NEXT row rather than aborting the whole run (phaze-o1xx).
 
     ``force=True`` bypasses ONLY the no-op DETECT gate (the manual-button path) -- it never bypasses
     the per-item deterministic-key dedup, so a forced reconcile over a live queue is still idempotent.
 
     Returns ``{"detected_loss": bool, "forced": bool, "stages": {<function>: {"reenqueued": N,
-    "skipped": M}, ...}}`` keyed per keyed function (all eight initialized to zero so the shape is
-    total). Degrade-safe: agent-stage absence skips rather than raises.
+    "skipped": M, "errored": K}, ...}}`` keyed per keyed function (all eight initialized to zero so
+    the shape is total). Degrade-safe: agent-stage absence skips rather than raises, and (phaze-o1xx)
+    a per-row replay failure is isolated rather than aborting the remaining rows.
     """
     # Control-only task: get_settings() returns the ControlSettings in the controller role, so the
     # cast safely narrows BaseSettings -> ControlSettings (kept for parity with the control-side
@@ -617,9 +661,11 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         push_rows = [r for r in agent_rows if r.function == "push_file"]
         other_agent_rows = [r for r in agent_rows if r.function != "push_file"]
 
-        # Controller rows replay regardless of agent presence (D-05).
+        # Controller rows replay regardless of agent presence (D-05). phaze-o1xx: each row is
+        # isolated -- one row's failure (transient enqueue error) is tallied under "errored" and the
+        # loop continues, instead of the whole replay aborting after an arbitrary prefix.
         for row in controller_rows:
-            await _replay_row(ctx["queue"], row, stages[row.function])
+            await _replay_row_isolated(ctx["queue"], row, stages)
 
         # Phase 50 (D-10): push_file re-drives route to a FILESERVER (the media-mount owner that runs
         # the rsync); an offline owner skips with a WARNING (the next staging-cron tick / a later

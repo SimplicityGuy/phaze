@@ -176,6 +176,34 @@ async def test_ttl_cache_collapses_repeat_reads() -> None:
     assert pool.read_count[0] == 1
 
 
+async def test_clear_stage_control_cache_forces_a_fresh_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-uqyn: clear_stage_control_cache drops the whole TTL window, not just one stage.
+
+    The resume/pause endpoints call this right after their commit so a job enqueued in THE SAME
+    process, right after, does not serve the up-to-5s-stale cached value that a bare TTL window
+    would otherwise still return -- exactly the gap that let a resumed stage's freshly-enqueued
+    jobs re-park at SENTINEL forever (the phaze-uqyn failure scenario).
+    """
+    pool = _FakePool((False, 42))
+    queue = SimpleNamespace(pool=pool)
+    j1 = _stage_job("process_file")
+    j1.queue = queue
+    await apply_stage_control(j1)
+    assert pool.read_count[0] == 1
+
+    # Flip the underlying (durable) state -- models a resume commit that happened between reads.
+    pool._row = (True, 42)
+    stage_control.clear_stage_control_cache()
+
+    j2 = _stage_job("process_file")
+    j2.queue = queue
+    await apply_stage_control(j2)
+
+    # A fresh read happened (not served from the pre-clear cache) and picked up the new state.
+    assert pool.read_count[0] == 2
+    assert j2.scheduled == SENTINEL
+
+
 # ----------------------------------------------------------------------------------------
 # phaze-geuq: enforce_stage_pause_on_process (before_process) / repark_if_stage_paused
 # (after_process) -- covers SAQ's `_retry` before_enqueue bypass.

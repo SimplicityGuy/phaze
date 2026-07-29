@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.services.bulk_insert import chunk_rows
 from phaze.services.stage_status import dedup_resolved_clause
 
 
@@ -398,7 +399,13 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     # (agent_analysis.py:204 precedent). resolved_at rides its server_default.
     if files:
         rows = [{"id": uuid_mod.uuid4(), "file_id": f.id, "canonical_file_id": canonical_id} for f in files]
-        await session.execute(pg_insert(DedupResolution).values(rows).on_conflict_do_nothing(index_elements=["file_id"]))
+        # phaze-p3qr: chunk_rows guards the same 32767-bind-parameter cap as the companion.py
+        # sibling finding, even though a realistic byte-identical-duplicate group is nowhere near
+        # the >10,922-row break in practice; the guard is one line, so it costs nothing to apply
+        # here too rather than leave the shape unchunked (bulk_insert.py's atomicity rule holds --
+        # every chunk lands on this session, and the caller still owns the single commit/flush).
+        for chunk in chunk_rows(rows):
+            await session.execute(pg_insert(DedupResolution).values(chunk).on_conflict_do_nothing(index_elements=["file_id"]))
 
     await session.flush()
     return len(file_states), file_states
