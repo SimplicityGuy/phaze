@@ -383,11 +383,9 @@ test-db:
         docker logs "$redis_container" >&2 || true
         exit 1
     fi
-    docker exec "$container" psql -U phaze -d phaze_test -tc \
-        "SELECT 1 FROM pg_database WHERE datname = 'phaze_migrations_test'" \
-        | grep -q 1 \
-        || docker exec "$container" psql -U phaze -d phaze_test \
-            -c "CREATE DATABASE phaze_migrations_test OWNER phaze;" >/dev/null
+    # phaze-hk8r: tolerate a lost create race against a concurrent `test-db`/`test-db-for`/
+    # `check` invocation -- see scripts/ensure-pg-database.sh's header.
+    bash scripts/ensure-pg-database.sh "$container" phaze_migrations_test
     echo "✅ ${container} ready on localhost:${port} (phaze_test + phaze_migrations_test)"
     echo "✅ ${redis_container} ready on localhost:${redis_port}"
 
@@ -405,16 +403,11 @@ test-db-for name:
     port="{{test_db_port}}"
     main_db="phaze_{{name}}_test"
     migrations_db="phaze_{{name}}_migrations_test"
-    for db in "$main_db" "$migrations_db"; do
-        if docker exec "$container" psql -U phaze -d phaze_test -tc \
-            "SELECT 1 FROM pg_database WHERE datname = '${db}'" | grep -q 1; then
-            echo "🐘 ${db} already exists"
-        else
-            docker exec "$container" psql -U phaze -d phaze_test \
-                -c "CREATE DATABASE ${db} OWNER phaze;" >/dev/null
-            echo "✅ created ${db}"
-        fi
-    done
+    # phaze-hk8r: ensure-pg-database.sh tolerates a lost create race -- see its header for why
+    # a plain SELECT-then-CREATE is a check-then-act TOCTOU that used to kill this recipe under
+    # `set -e` when a concurrent invocation (e.g. a dispatcher and an agent both recovering
+    # exports for one worktree at once) won the CREATE first.
+    bash scripts/ensure-pg-database.sh "$container" "$main_db" "$migrations_db"
     # Redis isolation. Postgres-only isolation was the phaze-fwo7 defect: every worktree landed on
     # the same logical Redis DB 0, where fixtures run global `scan_iter`+`delete` sweeps over
     # `exec:*` / `tracklist_req:*` and assertions count the global keyspace. One seat's cleanup then
@@ -587,11 +580,10 @@ integration-test:
         docker logs "$redis_container" >&2 || true
         exit 1
     fi
-    docker exec "$container" psql -U phaze -d phaze_test -tc \
-        "SELECT 1 FROM pg_database WHERE datname = 'phaze_migrations_test'" \
-        | grep -q 1 \
-        || docker exec "$container" psql -U phaze -d phaze_test \
-            -c "CREATE DATABASE phaze_migrations_test OWNER phaze;" >/dev/null
+    # phaze-hk8r: tolerate a lost create race -- see scripts/ensure-pg-database.sh's header.
+    # This container is per-invocation-unique, so the race is only theoretical here, but the
+    # ensure step stays consistent with the other two provisioning sites.
+    bash scripts/ensure-pg-database.sh "$container" phaze_migrations_test
     export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_test"
     export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:${port}/phaze_migrations_test"
     export PHAZE_REDIS_URL="redis://localhost:${redis_port}/0"

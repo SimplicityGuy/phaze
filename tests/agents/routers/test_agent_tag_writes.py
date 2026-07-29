@@ -215,3 +215,144 @@ async def test_unknown_body_field_is_rejected(session: AsyncSession, seed_test_a
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body(unexpected="x"))
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# phaze-sit4: concurrent duplicate PATCHes must not corrupt the ``before_tags`` undo anchor.
+#
+# The hermetic ``session`` fixture binds every session to ONE connection inside a single
+# uncommitted outer transaction, so it cannot exercise a real row lock between two genuinely
+# concurrent transactions. This test therefore stands up a dedicated NullPool engine against the
+# same isolated test database, commits a ``queued`` row, and races two endpoint calls -- each on
+# its OWN connection -- both reporting a terminal status but with DIFFERENT ``before_tags``
+# snapshots (mirroring an agent's tenacity retry firing while the first callback is still in
+# flight server-side). With the ``SELECT ... FOR UPDATE`` load the two PATCHes serialize on the
+# row lock: the loser blocks until the winner commits, then re-reads the now-terminal status and
+# takes the no-op ``applied=False`` branch, leaving ``before_tags`` exactly as the winner wrote it.
+# With the old plain ``select(...)`` both transactions read the same stale ``queued`` row and the
+# last commit silently overwrites the undo anchor -- the regression this bead closes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_callbacks_do_not_clobber_before_tags(async_engine) -> None:  # type: ignore[no-untyped-def]
+    """Two concurrent duplicate PATCHes on one ``queued`` row: exactly one ``applied=true``, one ``before_tags`` write (phaze-sit4).
+
+    Takes the session-scoped ``async_engine`` fixture purely so the schema exists on the isolated
+    test database (this test builds its own committed rows on that same NullPool engine so the two
+    racing PATCHes run on genuinely separate connections -- the hermetic ``session`` fixture binds
+    everything to ONE connection and cannot exercise a real row lock).
+    """
+    import asyncio
+    import hashlib
+    import secrets
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from phaze.models.agent import Agent
+    from phaze.routers.agent_tag_writes import router as _router
+
+    engine = async_engine
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    raw_token = "phaze_agent_" + secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    agent_id = "sit4-conc-agent"
+    file_id = uuid.uuid4()
+    log_id = uuid.uuid4()
+
+    # get_session override: a FRESH session (and, under NullPool, a fresh connection) per request
+    # so the two racing PATCHes run in genuinely separate transactions.
+    async def _override_session():  # type: ignore[no-untyped-def]
+        async with factory() as s:
+            yield s
+
+    app = FastAPI(title="conc-agent-tag-writes", version="test")
+    app.include_router(_router)
+    app.dependency_overrides[get_session] = _override_session
+
+    async def _reset_to_queued() -> None:
+        async with factory() as s:
+            row = await s.get(TagWriteLog, log_id)
+            row.status = TagWriteStatus.QUEUED.value
+            row.before_tags = {}
+            row.error_message = None
+            await s.commit()
+
+    try:
+        # Seed committed prerequisites (own connection, real commit).
+        async with factory() as s:
+            s.add(Agent(id=agent_id, name=agent_id, token_hash=token_hash, scan_roots=["/test/music"]))
+            s.add(
+                FileRecord(
+                    id=file_id,
+                    agent_id=agent_id,
+                    sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                    original_path=f"/test/conc-{file_id}.mp3",
+                    original_filename="conc.mp3",
+                    current_path=f"/test/conc-{file_id}.mp3",
+                    file_type="mp3",
+                    file_size=1234,
+                )
+            )
+            await s.flush()
+            s.add(
+                TagWriteLog(
+                    id=log_id,
+                    file_id=file_id,
+                    before_tags={},
+                    after_tags={"artist": "New Artist"},
+                    source="proposal",
+                    status=TagWriteStatus.QUEUED.value,
+                )
+            )
+            await s.commit()
+
+        headers = {"Authorization": f"Bearer {raw_token}"}
+        # Repeat rounds to make a stale-read interleaving overwhelmingly likely if the lock is absent.
+        for _ in range(15):
+            await _reset_to_queued()
+            async with (
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_a,
+                AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as ac_b,
+            ):
+                url = f"/api/internal/agent/tag-writes/{log_id}"
+                before_tags_a = {"artist": "Original A"}
+                before_tags_b = {"artist": "Original B"}
+                r_a, r_b = await asyncio.gather(
+                    ac_a.patch(url, json=_body(before_tags=before_tags_a)),
+                    ac_b.patch(url, json=_body(before_tags=before_tags_b)),
+                    return_exceptions=False,
+                )
+
+            assert r_a.status_code == 200
+            assert r_b.status_code == 200
+            applied_flags = {r_a.json()["applied"], r_b.json()["applied"]}
+            assert applied_flags == {True, False}, f"exactly one callback must apply the write, the other must be a no-op: {r_a.json()}, {r_b.json()}"
+
+            # Whichever call's ``applied=True`` response won the race, ITS ``before_tags`` snapshot
+            # (not the response body, which carries no ``before_tags`` field -- only the persisted
+            # row does) must be the one persisted, never overwritten by the loser.
+            winner_before_tags = before_tags_a if r_a.json()["applied"] else before_tags_b
+
+            async with factory() as s:
+                row = await s.get(TagWriteLog, log_id)
+                assert row.before_tags == winner_before_tags, (
+                    f"undo anchor corrupted under concurrency: before_tags={row.before_tags!r} (a stale-read PATCH overwrote the winner's snapshot)"
+                )
+    finally:
+        # Clean up the committed rows so no residue survives into the rest of the suite.
+        async with factory() as s:
+            log = await s.get(TagWriteLog, log_id)
+            if log is not None:
+                await s.delete(log)
+            fr = await s.get(FileRecord, file_id)
+            if fr is not None:
+                await s.delete(fr)
+            ag = await s.get(Agent, agent_id)
+            if ag is not None:
+                await s.delete(ag)
+            await s.commit()
+        # NOTE: do NOT dispose ``engine`` -- it is the session-scoped ``async_engine`` fixture,
+        # owned (and disposed) by conftest.

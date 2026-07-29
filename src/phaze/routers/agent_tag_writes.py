@@ -60,7 +60,17 @@ async def patch_tag_write(
             detail="tag-write callback must report a terminal status, not 'queued'",
         )
 
-    result = await session.execute(select(TagWriteLog).where(TagWriteLog.id == log_id))
+    # Row-level write lock (SELECT ... FOR UPDATE), not a plain PK SELECT: the engine runs at
+    # PostgreSQL's default READ COMMITTED and this row carries no `version_id_col`, so a bare read
+    # here is a TOCTOU -- two CONCURRENT duplicate PATCHes for the same log_id (e.g. an agent's
+    # tenacity retry firing while the first request is still in flight server-side) can both
+    # observe `queued`, both pass the guard below, and the second commit overwrites `before_tags`
+    # with a snapshot taken AFTER the first write landed -- corrupting the undo anchor the
+    # docstring above warns about. FOR UPDATE serializes the two: the second PATCH blocks on the
+    # row lock until the first commits, then re-reads the now-terminal status and takes the no-op
+    # branch. Same shape as agent_execution.py's patch_execution_log (D-15 / phaze-6zxs) and the
+    # phaze-v0iy resolve_group fix.
+    result = await session.execute(select(TagWriteLog).where(TagWriteLog.id == log_id).with_for_update())
     log_entry = result.scalar_one_or_none()
     if log_entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tag write log not found")
