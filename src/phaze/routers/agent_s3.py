@@ -171,11 +171,22 @@ async def report_uploaded(
     # Idempotent flip guarded on the CURRENT status so a concurrent duplicate that also passed the
     # pre-check above does not double-flip. An UPDATE returns a CursorResult at runtime (exposing
     # rowcount); the async stubs type it as the base Result, so cast to read the affected-row count.
+    #
+    # phaze-p8h3: ALSO pin the CAS to the SAME upload_id captured above. complete_multipart_upload
+    # swallows NoSuchUpload as "already assembled" (the documented retry-after-DB-failure case), but
+    # NoSuchUpload is ambiguous -- it is also what S3 returns for an ABORTED upload. Nothing locks the
+    # row between the pre-check and this CAS (the transaction was committed above precisely to avoid
+    # pinning a connection across the S3 round-trip), so a concurrent under-cap /failed re-drive
+    # (cloud_staging.redrive_upload) can abort THIS upload_id and stamp a fresh one while keeping
+    # cloud_job UPLOADING. Without the upload_id predicate, complete's silent "success" on the aborted
+    # upload would still flip the row to UPLOADED (status alone still matches) for an object that was
+    # never assembled. Requiring the row's upload_id to still equal the one we just completed makes a
+    # concurrent re-drive's fresh upload_id fail the CAS instead -- a clean no-op mirroring a lost race.
     res = cast(
         "CursorResult[Any]",
         await session.execute(
             update(CloudJob)
-            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.UPLOADING.value)
+            .where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.UPLOADING.value, CloudJob.upload_id == upload_id)
             .values(status=CloudJobStatus.UPLOADED.value)
         ),
     )
