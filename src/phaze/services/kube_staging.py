@@ -52,6 +52,16 @@ if TYPE_CHECKING:
 # config knob; consistent with the fixed */5 cron, D-03).
 JOB_TTL_SECONDS = 900
 
+# phaze-4xks: the one-shot analyze pod is ALWAYS a "compute" agent (it owns no scan roots -- it
+# analyzes exactly the one file named by PHAZE_JOB_FILE_ID and calls back, it never walks a
+# filesystem). AgentSettings.kind defaults to "fileserver" (config.py), and
+# _enforce_required_agent_fields raises unless kind == "compute" or scan_roots is set; the
+# one-shot pod has neither a compensating ENV in Dockerfile.job nor an .env file, so nothing else
+# supplies this. Code-injecting the literal here (never operator-configurable, never per-job)
+# guarantees every analyze pod passes settings validation regardless of what the operator's
+# documented phaze-agent-env ConfigMap (docs/k8s-burst.md §6) does or does not carry.
+_ANALYZE_AGENT_KIND = "compute"
+
 _QUEUE_NAME_LABEL = "kueue.x-k8s.io/queue-name"
 _MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 _MANAGED_BY_VALUE = "phaze"
@@ -292,10 +302,16 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
                             "name": "analyze",
                             "image": kube.job_image,
                             # Two env sources with distinct lifecycles (JOB-ENV-CONTRACT):
-                            #   - `env`: the PER-JOB PHAZE_JOB_FILE_ID, code-injected here because it
-                            #     varies per submit and CANNOT come from a static ConfigMap/Secret.
-                            #     job_runner reads it and sys.exit(EXIT_CONFIG)=20 if it is absent.
-                            #     (PHAZE_AGENT_CA_FILE stays here too -- it points at the mounted CA.)
+                            #   - `env`: code-injected literals CANNOT come from a static
+                            #     ConfigMap/Secret -- PHAZE_JOB_FILE_ID varies per submit;
+                            #     PHAZE_AGENT_CA_FILE points at the mounted CA; PHAZE_AGENT_KIND is
+                            #     a fixed "compute" (phaze-4xks) because every one-shot analyze pod
+                            #     IS a compute agent and AgentSettings.kind defaults to "fileserver"
+                            #     -- without it _enforce_required_agent_fields raises before the pod
+                            #     can call back. job_runner reads PHAZE_JOB_FILE_ID and
+                            #     sys.exit(EXIT_CONFIG)=20 if it is absent; a missing/wrong
+                            #     PHAZE_AGENT_KIND fails the same way, one layer up, in settings
+                            #     validation.
                             #   - `envFrom`: the STATIC-per-deployment agent env (PHAZE_ROLE=agent,
                             #     PHAZE_AGENT_API_URL, PHAZE_MODELS_DIR from the ConfigMap;
                             #     PHAZE_AGENT_TOKEN from the Secret) the pod entrypoint requires to
@@ -304,6 +320,7 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
                             "env": [
                                 {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"},
                                 {"name": "PHAZE_JOB_FILE_ID", "value": str(file_id)},
+                                {"name": "PHAZE_AGENT_KIND", "value": _ANALYZE_AGENT_KIND},
                             ],
                             "envFrom": [
                                 {"configMapRef": {"name": kube.env_configmap_name}},

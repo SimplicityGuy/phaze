@@ -274,6 +274,24 @@ def test_build_job_manifest_injects_env_contract() -> None:
     assert {"name": "PHAZE_AGENT_CA_FILE", "value": "/certs/phaze-ca.crt"} in container["env"]
 
 
+def test_build_job_manifest_injects_agent_kind_compute() -> None:
+    """phaze-4xks ACCEPTANCE: the analyze container ALWAYS carries PHAZE_AGENT_KIND=compute,
+    code-injected the same way as PHAZE_JOB_FILE_ID/PHAZE_AGENT_CA_FILE -- regardless of what the
+    operator's documented ``phaze-agent-env`` ConfigMap (docs/k8s-burst.md §6) does or does not carry.
+
+    ``AgentSettings.kind`` defaults to ``"fileserver"`` (config.py); every one-shot analyze pod is a
+    ``"compute"`` agent (it owns no scan roots), so without this env var
+    ``_enforce_required_agent_fields`` raises and the pod dies at settings validation before it can
+    call back at all -- the bug this test pins.
+    """
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube())
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+
+    assert {"name": "PHAZE_AGENT_KIND", "value": "compute"} in container["env"]
+    # Not sourced from the ConfigMap/Secret envFrom -- a fixed, code-injected literal.
+    assert kube_staging._ANALYZE_AGENT_KIND == "compute"
+
+
 def test_job_name_is_deterministic_and_file_id_scoped() -> None:
     """The Job name is the deterministic ``phaze-analyze-<file_id>`` (T-54-06: server UUID, DNS-1123)."""
     fid = uuid.uuid4()
