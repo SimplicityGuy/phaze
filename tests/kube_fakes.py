@@ -36,18 +36,63 @@ def fake_workload(*conditions: tuple[str, str, str], owner_uid: str | None = Non
     )
 
 
-def fake_job(succeeded: int = 0, failed: int = 0, suspend: bool = False, uid: str = "uid-1", name: str = "phaze-analyze-fake") -> SimpleNamespace:
+def fake_job(
+    succeeded: int = 0,
+    failed: int = 0,
+    suspend: bool = False,
+    uid: str = "uid-1",
+    name: str = "phaze-analyze-fake",
+    *,
+    active: int = 0,
+    start_time: str | None = None,
+) -> SimpleNamespace:
     """Return a canned batch/v1 Job stand-in.
 
     ``.status`` carries ``succeeded``/``failed`` counters (the primary terminal signals
     with ``backoffLimit: 0``); ``.spec["suspend"]`` reflects whether Kueue has un-gated the
     Job; ``.metadata`` exposes the ``uid`` (the Workload-discovery key) and ``name``.
+
+    phaze-202e adds the two fields the zero-pod wedge probe reads: ``active`` (pods in
+    Pending/Running -- a Job with a wedged ImagePullBackOff pod still reports ``active=1``)
+    and ``start_time`` (``status.startTime``, RFC3339, stamped when Kueue un-suspends the
+    Job). Both default to the "cannot prove anything" shape (0 / absent), so every existing
+    caller keeps producing a Job that the probe HOLDS rather than terminalizes.
     """
+    status: dict[str, object] = {"succeeded": succeeded, "failed": failed, "active": active}
+    if start_time is not None:
+        status["startTime"] = start_time
     return SimpleNamespace(
-        status={"succeeded": succeeded, "failed": failed},
+        status=status,
         spec={"suspend": suspend},
         metadata=SimpleNamespace(uid=uid, name=name),
     )
+
+
+def fake_pod(
+    phase: str = "Pending",
+    *,
+    waiting_reason: str | None = None,
+    init_waiting_reason: str | None = None,
+    unschedulable_since: str | None = None,
+    name: str = "phaze-analyze-fake-abcde",
+) -> SimpleNamespace:
+    """Return a canned v1 Pod stand-in for the phaze-202e pod-state wedge classifier.
+
+    ``phase`` is ``status.phase`` (``Running``/``Succeeded`` are the never-terminalize verdict);
+    ``waiting_reason`` / ``init_waiting_reason`` put a container into
+    ``state.waiting.reason`` (``ImagePullBackOff``, ``CreateContainerConfigError``, ...) on the
+    app or init container respectively; ``unschedulable_since`` stamps an RFC3339
+    ``PodScheduled=False/Unschedulable`` condition ``lastTransitionTime`` so the scheduling
+    probe can be exercised without patching a clock.
+    """
+    status: dict[str, object] = {"phase": phase}
+    if waiting_reason is not None:
+        status["containerStatuses"] = [{"name": "analyze", "state": {"waiting": {"reason": waiting_reason}}}]
+    if init_waiting_reason is not None:
+        status["initContainerStatuses"] = [{"name": "init", "state": {"waiting": {"reason": init_waiting_reason}}}]
+    if unschedulable_since is not None:
+        status["conditions"] = [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "lastTransitionTime": unschedulable_since}]
+    return SimpleNamespace(status=status, metadata=SimpleNamespace(name=name))
 
 
 def fake_local_queue(name: str = "phaze-lq", namespace: str = "phaze") -> SimpleNamespace:

@@ -29,9 +29,20 @@ confirm the re-submitted Job exists in the same transaction, since the actual ku
 the controller queue. The row's state model explicitly distinguishes three things a ``None`` Job read
 can mean, rather than collapsing them: **pending confirmation** (a resubmit was just enqueued and
 hasn't run yet -- recorded by clearing ``kueue_workload``, held quietly with NO attempt charged),
-**confirmed vanished** (pending confirmation that outlived the staleness bound with still no Job --
+**confirmed vanished** (pending confirmation that outlived the pending-submit bound with still no Job --
 NOW a genuine no-callback terminal), and **terminal** (a real Failed/Evicted signal from the Job or
 Workload itself). Only "confirmed vanished" and "terminal" burn a re-drive attempt.
+
+phaze-202e -- NO WALL CLOCK MAY KILL A RUN. There is no ``activeDeadlineSeconds`` on the Job by
+default and no age-based terminal for a Job-backed row anywhere in this file. A wedged row is found by
+POD STATE (:func:`_pod_wedge_reason` -> ``kube_staging.classify_job_pods``): a fatal container waiting
+reason, scheduling that has failed past a probe, or an un-suspended Job with no pod at all. A pod that
+is Running is NEVER terminalized, at any age. The one surviving age rule bounds SUBMIT machinery, not
+work: a row with no ``kueue_workload`` has no pod anywhere, so
+:data:`PENDING_SUBMIT_CONFIRMATION_SECONDS` can only reclaim bookkeeping, never kill an analyze. This
+reverses phaze-1b39's deadline-and-slack design, which killed every 2-6 h concert-set analyze at
+exactly 3h and burned each file's whole cloud attempt budget (incident 2026-07-28); the wedged-pod
+protection 1b39 wanted is preserved, the collateral damage is not.
 
 CONTROL-ONLY: needs PostgreSQL (``ctx["async_session"]``) + the controller queue (``ctx["queue"]``) for
 the re-drive enqueue, and the kube surface via ``kube_staging`` -- exactly like ``stage_cloud_window`` /
@@ -80,27 +91,34 @@ _TYPE_EVICTED = "Evicted"
 _REASON_PENDING = "Pending"
 _REASON_INADMISSIBLE = "Inadmissible"
 
-# phaze-1b39 defense-in-depth: how long past the Job's own ``activeDeadlineSeconds`` an in-flight row
-# may sit with no terminal signal before reconcile terminalizes it itself. The deadline is the PRIMARY
-# recovery mechanism (k8s fails the Job -> the existing no-callback-terminal path recovers it); this
-# slack window only covers the cases where that signal never arrives at all -- the kube API dropping the
-# Job, a Workload wedged Admitted with no pod, or a phantom row whose Job was never recorded. Generous
-# on purpose (15 min > 3 reconcile ticks) so a merely-slow terminal signal is never mistaken for a hang.
-RUNNING_STALENESS_SLACK_SECONDS = 900
+# phaze-202e: how long a row may sit with NO ``kueue_workload`` recorded -- the pending-confirmation
+# bound, and the ONLY remaining age-based rule in this file. It is NOT a bound on a run: a row with no
+# Job name has no pod anywhere doing work, so nothing can be killed by it. It bounds the SUBMIT
+# machinery (a submit that crashed between the row insert and the workload stamp, or a re-drive whose
+# freshly-enqueued ``submit_cloud_job`` never executed). Sized above the submit job's own SAQ budget
+# (worker_job_timeout 600s x the retry budget) so a merely-retrying submit is never stolen.
+PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
 
-
-def _staleness_cutoff_seconds(kube: KubeConfig) -> int:
-    """Age past which an in-flight row with no terminal signal is treated as hung (deadline + slack)."""
-    return kube.active_deadline_seconds + RUNNING_STALENESS_SLACK_SECONDS
+# phaze-202e: how long an UN-SUSPENDED, non-terminal Job may report zero pods before it counts as a
+# wedge. This is the "Workload wedged Admitted with no pod" shape phaze-1b39 also had to cover. Safe
+# without a run clock because it fires ONLY when the Job itself reports no active pod AND the pod list
+# is empty -- i.e. nothing is running to kill. Measured on the Job's ``status.startTime`` (when Kueue
+# un-gated it), never on how long an analysis has run. 15 min = 3x the */5 reconcile tick.
+NO_POD_PROBE_SECONDS = 900
 
 
 def _row_age_seconds(cloud_job: CloudJob) -> float:
-    """Seconds since the row's last state transition (``updated_at``), the in-flight staleness clock.
+    """Seconds since the row's last state transition (``updated_at``).
 
     ``updated_at`` carries ``onupdate=func.now()``, which fires ONLY on a real UPDATE -- and every
     in-flight branch below mutates only when a field actually changes -- so a row re-affirmed RUNNING
-    tick after tick keeps the timestamp of the transition INTO RUNNING. That is exactly the "how long
-    has this been running" clock we want; a genuinely progressing row re-stamps it on each transition.
+    tick after tick keeps the timestamp of the transition INTO RUNNING.
+
+    phaze-202e narrowed the ONE caller of this to the pending-confirmation (no ``kueue_workload``)
+    branch. It is deliberately NOT consulted for a row that has a Job: a Job-backed row's liveness is
+    decided by POD STATE (:func:`_pod_wedge_reason`), because a wall clock cannot tell a legitimate
+    2-6 h concert-set analyze from a hang -- and when phaze-1b39 asked it to, it killed every long
+    recording at exactly 3h.
 
     models/base.py declares the timestamp columns without ``timezone=True``, so ``create_all`` yields
     naive datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the row's
@@ -161,6 +179,46 @@ async def _job_gone(name: str | None, kube: KubeConfig) -> bool:
     except kr8s.NotFoundError:
         return True
     return job is None
+
+
+async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> str | None:
+    """Return a short reason when ``job``'s pod is PROVABLY dead-before-start, else None (phaze-202e).
+
+    THE REPLACEMENT FOR THE WALL CLOCK. phaze-1b39 answered "is this row wedged?" with
+    ``activeDeadlineSeconds + slack``, which cannot distinguish a 4h concert-set analyze from a hang --
+    so in production it killed every long recording at exactly 3h and burned the file's whole cloud
+    attempt budget (incident 2026-07-28). This asks the pod instead, and only ever terminalizes on
+    positive proof that no work is happening:
+
+    * a container waiting in a fatal reason (ImagePullBackOff / ErrImagePull / InvalidImageName /
+      CreateContainerConfigError -- a bad image, or the missing operator ConfigMap/Secret that was
+      1b39's motivating wedge);
+    * scheduling that has been failing past the scheduling probe (``PodScheduled=False/Unschedulable``);
+    * an un-suspended, non-terminal Job with NO pod at all past :data:`NO_POD_PROBE_SECONDS`.
+
+    **A Running pod returns None, always.** :func:`kube_staging.classify_job_pods` short-circuits on
+    ALIVE before it looks at any clock, so no age, no cluster, and no config can terminalize genuine
+    work through this path.
+
+    The zero-pod probe is guarded three ways so a pod-label drift cannot mass-terminalize a healthy
+    burst lane: the classifier must not have said ALIVE, ``list_pods_for_job`` must have returned
+    EMPTY (not merely un-alive), the Job must independently report ``status.active == 0``, must be
+    un-suspended, and must carry a readable ``status.startTime`` older than the probe. Any of those
+    being unreadable holds the row instead (an in-flight row that is merely un-observable is left for
+    a later tick -- the pre-1b39 behaviour, minus the permanence).
+    """
+    pods = await kube_staging.list_pods_for_job(name, kube)
+    verdict = kube_staging.classify_job_pods(pods)
+    if verdict is kube_staging.PodLiveness.ALIVE:
+        return None
+    if verdict in (kube_staging.PodLiveness.DEAD_BEFORE_START, kube_staging.PodLiveness.UNSCHEDULABLE):
+        return f"{verdict.value} ({kube_staging.describe_job_pods(pods)})"
+    if pods or _job_counter(job, "active") != 0 or kube_staging.job_is_suspended(job):
+        return None
+    started = kube_staging.job_started_at(job)
+    if started is None or (datetime.now(UTC) - started).total_seconds() <= NO_POD_PROBE_SECONDS:
+        return None
+    return "no_pod (job un-suspended with zero active pods past the probe)"
 
 
 async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -253,7 +311,7 @@ async def _handle_no_callback_terminal(
     the SAME phantom-row branch already built for "a submit that crashed between insert and workload
     stamp, or is mid-flight right now" (below) -- which holds quietly (no attempt charged) while fresh,
     and only escalates to ``_handle_no_callback_terminal`` again (a NEW, independently-charged attempt)
-    once the pending resubmit has been silent past the staleness cutoff, i.e. is now CONFIRMED vanished
+    once the pending resubmit has been silent past ``PENDING_SUBMIT_CONFIRMATION_SECONDS``, i.e. is now CONFIRMED vanished
     rather than merely pending. Once the enqueued ``submit_cloud_job`` actually runs, its upsert
     re-stamps ``kueue_workload`` to the fresh Job name (unchanged deterministic string) -- exiting the
     pending state and resuming the normal get_job read on the next tick. No new attempt is burned for
@@ -270,7 +328,7 @@ async def _handle_no_callback_terminal(
         # so the next drain tick's ``select_backend`` sees ``attempts >= cap`` and routes the file to local
         # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
-        # ``updated_at`` on the spill gives a fresh staleness clock (desirable).
+        # ``updated_at`` on the spill gives a fresh lane-entry clock (desirable).
         #
         # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
         # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
@@ -381,16 +439,16 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         # re-stamp a new one. Both are "pending confirmation", explicitly recorded by the cleared column
         # rather than inferred from elapsed time -- bound ONLY the "how long is too long" question by
         # age. Fresh -> hold quietly, so a live/pending submit is never stolen and NO attempt is charged
-        # for a submit that simply hasn't run yet. Past the staleness cutoff the pending resubmit is
+        # for a submit that simply hasn't run yet. Past the pending-submit bound the pending resubmit is
         # CONFIRMED VANISHED (not merely pending) -> terminalize through the SAME no-callback path
         # everything else uses (bounded re-drive under cap -- a NEW, independently-charged attempt --
         # spill to local at cap), which is what returns the cap slot without operator surgery.
-        if _row_age_seconds(cloud_job) <= _staleness_cutoff_seconds(kube):
+        if _row_age_seconds(cloud_job) <= PENDING_SUBMIT_CONFIRMATION_SECONDS:
             logger.warning("reconcile_cloud_jobs: cloud_job missing kueue_workload; skipping", cloud_job_id=str(cloud_job.id))
             await session.commit()  # WR-01: no mutation, but release the per-row advisory lock (Pitfall 2).
             return
         logger.warning(
-            "reconcile_cloud_jobs: cloud_job missing kueue_workload past staleness bound -- terminalizing phantom row",
+            "reconcile_cloud_jobs: cloud_job missing kueue_workload past the pending-submit bound -- terminalizing phantom row",
             cloud_job_id=str(cloud_job.id),
             file_id=str(cloud_job.file_id),
             age_seconds=int(_row_age_seconds(cloud_job)),
@@ -496,39 +554,37 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
     admitted_true = admitted is not None and admitted.get("status") == "True"
     quota_true = quota_reserved is not None and quota_reserved.get("status") == "True"
     if admitted_true or quota_true:
-        # phaze-1b39 defense-in-depth, BEFORE the RUNNING re-affirm. Admission state alone says nothing
+        # phaze-202e wedge detection, BEFORE the RUNNING re-affirm. Admission state alone says nothing
         # about progress: an admitted Workload whose pod never runs (ImagePullBackOff /
-        # CreateContainerConfigError from a missing operator ConfigMap/Secret, a hung analyze, a
-        # black-holed callback) leaves the Job non-terminal, so the branch below would stamp RUNNING and
-        # return -- every tick, forever -- while the row holds its burst-lane cap slot. The Job's own
-        # activeDeadlineSeconds is the PRIMARY fix (k8s marks it Failed, handled above); this is the
-        # backstop for when that signal never reaches us. Past deadline+slack with NO analysis result,
-        # treat the row as a no-callback terminal so the existing re-drive/spill path recovers the slot.
+        # CreateContainerConfigError from a missing operator ConfigMap/Secret) leaves the Job
+        # non-terminal, so the branch below would stamp RUNNING and return -- every tick, forever --
+        # while the row holds its burst-lane cap slot. That is the phaze-1b39 failure, and it is still
+        # covered here.
         #
-        # phaze-uui9: gate this bound on the row having already been OBSERVED RUNNING on a PRIOR tick
-        # (``cloud_job.status`` here is the value freshly loaded this tick -- KueueBackend.reconcile
-        # re-reads with ``populate_existing=True`` -- so it reflects the last tick's committed state,
-        # not anything this tick has done yet). ``updated_at`` is the "last real state transition"
-        # clock (onupdate=func.now(), mutates only on change), and D-07 designs a healthy Pending quota
-        # wait as indefinite -- the Pending branch above issues no UPDATE while waiting, so
-        # ``updated_at`` stays frozen at submit time for however long admission takes. Evaluating the
-        # bound against that frozen clock on the FIRST admitted tick would measure the queue wait, not
-        # the run time, and kill a just-admitted, healthily-running pod outright. Only a row that was
-        # ALREADY RUNNING/ADMITTED coming into this tick has a clock that means "time in this state";
-        # a row transitioning into that state for the first time this tick gets its own UPDATE below
-        # (the D-04 admission progression) to start that clock and is exempt from the bound until then.
-        if (
-            cloud_job.status == CloudJobStatus.RUNNING.value
-            and _row_age_seconds(cloud_job) > _staleness_cutoff_seconds(kube)
-            and not await _analysis_completed(session, cloud_job.file_id)
-        ):
+        # What changed is HOW. phaze-1b39 answered it with a wall clock (activeDeadlineSeconds + slack)
+        # and phaze-uui9 then had to bolt on a "only if already observed RUNNING" gate to stop that
+        # clock from killing a pod the instant it was admitted after a long healthy quota wait. Both
+        # were fighting the same unfixable ambiguity: elapsed time cannot distinguish a 2-6 h concert-set
+        # analyze from a hang. In production it resolved that ambiguity the wrong way -- every long
+        # recording SIGTERM'd at exactly 3h, the whole cloud attempt budget burned, 14 files permanently
+        # barred from Kueue (incident 2026-07-28).
+        #
+        # ``_pod_wedge_reason`` asks the POD instead. It returns a reason ONLY on positive proof that no
+        # work is happening (fatal container waiting reason, persistent unschedulable, or an un-suspended
+        # Job with no pod at all) and returns None for a Running pod at ANY age. No wall clock bounds a
+        # run, so the uui9 status gate is no longer needed and is GONE: pod state is equally valid on a
+        # row's first admitted tick and on its thousandth.
+        #
+        # The analysis-result guard stays: the callback (KSUBMIT-03) keys off file_id, so a row whose
+        # result already landed is finalized by the normal terminal paths, never re-driven.
+        wedge_reason = await _pod_wedge_reason(job, name, kube)
+        if wedge_reason is not None and not await _analysis_completed(session, cloud_job.file_id):
             logger.warning(
-                "reconcile_cloud_jobs: in-flight row exceeded activeDeadlineSeconds + slack with no terminal signal -- terminalizing",
+                "reconcile_cloud_jobs: in-flight Job's pod is provably dead-before-start -- terminalizing",
                 cloud_job_id=str(cloud_job.id),
                 file_id=str(cloud_job.file_id),
                 kueue_workload=name,
-                age_seconds=int(_row_age_seconds(cloud_job)),
-                cutoff_seconds=_staleness_cutoff_seconds(kube),
+                wedge_reason=wedge_reason,
             )
             await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
             return
