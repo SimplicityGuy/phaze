@@ -461,6 +461,39 @@ test-db-for name:
 test-db-down:
     #!/usr/bin/env bash
     set -euo pipefail
+    container="{{test_db_container}}"
+    # phaze-ieqg: this removes containers EVERY concurrent worktree shares, and the doc comment
+    # above has said so since phaze-20vd. A warning in `just --list` is read at leisure, not at
+    # the moment somebody types the command. On 2026-07-29 18:17 UTC a `test-db-down` (+ implicit
+    # recreate) mid-round destroyed 89 per-worktree databases AND the Redis DB-index allocation
+    # registry while five full suites were in flight. Every one of those suites went red with
+    # branch-unrelated failures that passed on isolated re-run -- the exact false-red signature
+    # this bead was opened to explain, and hours of the round were spent triaging it as a code
+    # regression. So: check for live seats instead of warning about them.
+    #
+    # A pytest session shows up here whether or not it is mid-query: `pytest_sessionstart` holds
+    # an advisory-lock connection to its own database for the whole run (tests/db_guard.py), so an
+    # idle-looking suite is still a visible `client backend` on a `phaze%test` database.
+    if [ "${PHAZE_TEST_DB_FORCE_DOWN:-}" != "1" ] && \
+       [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
+        busy="$(docker exec "$container" psql -U phaze -d postgres -tAc \
+            "SELECT string_agg(DISTINCT datname || '  (backend pid ' || pid || ', ' || coalesce(nullif(application_name, ''), 'unnamed client') || ')', chr(10) || '     ')
+               FROM pg_stat_activity
+              WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND datname LIKE 'phaze%test'" 2>/dev/null || true)"
+        if [ -n "$(printf '%s' "$busy" | tr -d '[:space:]')" ]; then
+            echo "❌ Refusing to remove the SHARED test harness: another seat is using it." >&2
+            echo "     ${busy}" >&2
+            echo "" >&2
+            echo "   Removing ${container} now would delete every per-worktree database and the Redis" >&2
+            echo "   DB-index registry out from under those runs. They would not fail cleanly -- they" >&2
+            echo "   would report branch-unrelated failures that pass on isolated re-run, which reads" >&2
+            echo "   as a code regression and costs a review round to disprove (phaze-ieqg)." >&2
+            echo "" >&2
+            echo "   Wait for those runs to finish, or PHAZE_TEST_DB_FORCE_DOWN=1 just test-db-down" >&2
+            echo "   if you know the connections are stale." >&2
+            exit 1
+        fi
+    fi
     docker rm -f "{{test_db_container}}" >/dev/null 2>&1 || true
     docker rm -f "{{test_redis_container}}" >/dev/null 2>&1 || true
     echo "🧹 Removed {{test_db_container}} + {{test_redis_container}}"
