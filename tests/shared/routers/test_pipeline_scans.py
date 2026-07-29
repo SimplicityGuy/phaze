@@ -378,7 +378,10 @@ async def test_post_scans_happy_path(
     assert call.kwargs["agent_id"] == "test-agent"
     assert call.kwargs["task_name"] == "scan_directory"
     payload = call.kwargs["payload"]
-    assert payload.scan_path == "/data/music/2026/"
+    # phaze-0wme: the trailing slash on the submitted subpath is canonicalized away before
+    # persisting/dispatching, so the joined path collapses to its canonical (no trailing
+    # slash) form.
+    assert payload.scan_path == "/data/music/2026"
     assert payload.agent_id == "test-agent"
     assert isinstance(payload.batch_id, uuid.UUID)
     # scan_directory is a long-running bulk walk: enqueue MUST disable the SAQ
@@ -391,7 +394,7 @@ async def test_post_scans_happy_path(
     # Exactly one new ScanBatch row.
     post_count = await _count_batches(session)
     assert post_count == pre_count + 1
-    new_batch = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026/"))).scalar_one()
+    new_batch = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026"))).scalar_one()
     assert new_batch.status == "running"
     assert new_batch.agent_id == "test-agent"
 
@@ -667,7 +670,7 @@ async def test_post_scans_enqueue_failure_marks_batch_failed(
 
     # The batch row survives but is FAILED with the documented error_message
     # so the operator sees what happened in Recent Scans.
-    rows = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026/"))).scalars().all()
+    rows = (await session.execute(select(ScanBatch).where(ScanBatch.scan_path == "/data/music/2026"))).scalars().all()
     assert len(rows) == 1
     assert rows[0].status == ScanStatus.FAILED.value
     assert rows[0].error_message == "controller could not enqueue scan to agent worker"
@@ -1778,6 +1781,45 @@ async def test_post_scans_duplicate_running_batch_is_a_swappable_alert(
     # Exactly one enqueue happened (the first submit); the second is refused before enqueue.
     mock_router.enqueue_for_agent.assert_awaited_once()
     # Exactly one new ScanBatch row -- the durable index refused the second insert.
+    post_count = await _count_batches(session)
+    assert post_count == pre_count + 1
+
+
+@pytest.mark.asyncio
+async def test_post_scans_duplicate_running_batch_survives_a_trailing_slash_respelling(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """phaze-0wme -- a differently-spelled resubmit of the SAME resolved path must still
+
+    collide with the running batch. Before the fix, `joined` was never canonicalized: a
+    first submit of `subpath="2026"` and a second of `subpath="2026/"` produced two
+    byte-different `scan_path` strings, both passed the `uq_scan_batches_agent_id_scan_path_running`
+    partial-unique index (migration 044), and a second full SHA-256 archive walk was
+    dispatched concurrently with the first. Canonicalizing `joined` with
+    `str(PurePosixPath(joined))` before it is persisted / compared collapses the trailing
+    slash so the second submit hits the same guard as a byte-identical resubmit.
+    """
+    ac, mock_router = smoke
+    pre_count = await _count_batches(session)
+
+    first = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026"},
+    )
+    assert first.status_code == 200, first.text
+    assert "RUNNING" in first.text
+    mock_router.enqueue_for_agent.assert_awaited_once()
+
+    second = await ac.post(
+        "/pipeline/scans",
+        data={"agent_id": "test-agent", "scan_root": "/data/music", "subpath": "2026/"},
+    )
+    _assert_swappable_alert(second, "already running")
+
+    # Exactly one enqueue happened -- the respelled resubmit must not dispatch a second
+    # concurrent full-archive walk.
+    mock_router.enqueue_for_agent.assert_awaited_once()
     post_count = await _count_batches(session)
     assert post_count == pre_count + 1
 
