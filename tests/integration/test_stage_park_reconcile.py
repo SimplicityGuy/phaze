@@ -137,3 +137,40 @@ async def test_reconcile_is_a_noop_on_a_healthy_backlog(
     assert healed == {}
     async with session_factory() as session:
         assert await _scheduled(session, key) != SENTINEL  # untouched -- never parked to begin with
+
+
+async def test_reconcile_isolates_one_stages_failure_from_the_others(
+    stage_env: tuple[PostgresQueue, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One stage's un-park blowing up is degraded (logged + skipped), never the whole sweep.
+
+    ``STAGE_TO_FUNCTION`` iterates metadata BEFORE analyze, so failing metadata's un-park proves
+    both halves of the degrade contract at once: the exception is contained to metadata's own
+    SAVEPOINT (lines the coverage floor flagged), and the session stays usable for analyze's heal
+    in the same tick.
+    """
+    from phaze.services.stage_control import resume_stage as real_resume_stage
+    from phaze.tasks import stage_park_reconcile as sut
+
+    queue, session_factory = stage_env
+    key = f"process_file:{uuid.uuid4()}"
+    await queue.enqueue("process_file", file_id=key.split(":", 1)[1])
+
+    async def _explode_on_metadata(session: AsyncSession, stage: str) -> int:
+        if stage == "metadata":
+            msg = "synthetic un-park failure (degrade-path test)"
+            raise RuntimeError(msg)
+        return await real_resume_stage(session, stage)
+
+    monkeypatch.setattr(sut, "resume_stage", _explode_on_metadata)
+
+    async with session_factory() as session:
+        await session.execute(_SET_SCHEDULED_SQL, {"s": SENTINEL, "k": key})
+        await session.commit()
+
+        healed = await reconcile_stale_stage_parks(_ctx(session_factory))
+
+        assert "metadata" not in healed  # its failure was contained, not raised
+        assert healed.get("analyze") == 1  # the later stage still healed in the same tick
+        assert await _scheduled(session, key) == 0
