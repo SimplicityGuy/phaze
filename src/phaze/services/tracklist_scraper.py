@@ -205,13 +205,37 @@ class TracklistScraper:
     _search_cache: ClassVar[_TTLCache[list[TracklistSearchResult]]] = _TTLCache(_CACHE_TTL_SECONDS)
     _tracklist_cache: ClassVar[_TTLCache[ScrapedTracklist]] = _TTLCache(_CACHE_TTL_SECONDS)
 
+    # phaze-wb1o: process-wide shared rate-limiter state. `_rate_limit` used to be a private
+    # per-coroutine sleep with no shared lock/timestamp -- since each search/scrape call site
+    # (tasks/tracklist.py) constructs a fresh TracklistScraper() per SAQ job, and the controller
+    # worker runs `worker_max_jobs` (default 8) jobs concurrently in ONE process, N concurrent
+    # jobs each slept their own independent 8-12s and then fired immediately, so the AGGREGATE
+    # request rate scaled ~Nx past the MIN_DELAY floor the module exists to honor. A `asyncio.Lock`
+    # + shared monotonic "next allowed slot" is sufficient (and correct) ONLY because every
+    # docker-compose*.yml in this repo runs a single `worker` container / single process for the
+    # controller role (no `replicas:`/`scale:`) -- this is a process-wide, not cross-host,
+    # serializer. If the controller is ever scaled to >1 replica this stops being sufficient and
+    # needs a Redis-backed limiter instead (the `cache_redis` handle already wired onto the
+    # controller queue -- see `check_rate_limit` in services/proposal.py for the existing
+    # atomic-Lua-script pattern this would follow).
+    _rate_limit_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
+    _next_request_at: ClassVar[float | None] = None
+
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         """Initialize scraper with optional httpx client."""
         if client is not None:
             self._client = client
             self._owns_client = False
         else:
-            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0)
+            # phaze-8ib8: httpx does NOT follow redirects by default. The bare apex host
+            # ("1001tracklists.com") is deliberately on _ALLOWED_HOSTS (phaze-k5zz) BECAUSE it
+            # redirects to "www" -- so every request to an apex source_url, and any server-side
+            # slug move, previously came back as an un-followed 301/302 that scrape_tracklist's
+            # non-200 guard (phaze-o8sy) turned into a permanently-retried HTTPStatusError. Follow
+            # redirects here; _is_allowed_url is re-checked against the FINAL response.url after
+            # every request (see search()/scrape_tracklist()) so this can't be used to smuggle a
+            # request off-host through a malicious/compromised redirect chain.
+            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0, follow_redirects=True)
             self._owns_client = True
 
     @staticmethod
@@ -243,9 +267,29 @@ class TracklistScraper:
         return parts.scheme == "https" and parts.hostname is not None and parts.hostname.lower() in cls._ALLOWED_HOSTS
 
     async def _rate_limit(self) -> None:
-        """Apply rate limiting delay between requests."""
+        """Serialize outbound requests process-wide, honoring the MIN_DELAY floor (phaze-wb1o).
+
+        Reserves the next allowed request "slot" under a shared ClassVar lock -- advancing the
+        shared ``_next_request_at`` timestamp and releasing the lock immediately, BEFORE sleeping
+        -- so concurrent callers never race each other into the same slot, but the actual
+        request/sleep still happens outside the lock (holding a lock across a 30s-timeout HTTP
+        call would turn the scraper into a hard serial bottleneck rather than merely floor its
+        rate). Each successive request's slot is at least MIN_DELAY-MAX_DELAY after the previous
+        one; a process that falls behind (e.g. after a slow request) catches up from "now" rather
+        than compounding a backlog of reservations into the future.
+        """
         delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311  # nosec B311
-        await asyncio.sleep(delay)
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            floor = now if self._next_request_at is None else max(self._next_request_at, now)
+            slot = floor + delay
+            # Mutate the CLASS attribute (never `self.x = ...`, which would shadow it with an
+            # instance attribute invisible to every other short-lived TracklistScraper instance).
+            TracklistScraper._next_request_at = slot
+
+        wait = slot - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
 
     async def search(self, query: str) -> list[TracklistSearchResult]:
         """Search 1001Tracklists for tracklists matching query.
@@ -253,7 +297,9 @@ class TracklistScraper:
         Returns empty list on 403, HTTP error, or genuinely no results. Raises
         SearchParseFailureError (NOT swallowed to []) when the results page contains candidate
         rows that none of them could be parsed from -- that is a stale-selector defect, and must
-        be distinguishable from a normal empty result (phaze-mk6y).
+        be distinguishable from a normal empty result (phaze-mk6y). Also raises
+        DisallowedScrapeHostError if the client's followed redirects land the request off the
+        1001Tracklists host allow-list (phaze-8ib8/phaze-k5zz).
         """
         cached = self._search_cache.get(query)
         if cached is not None:
@@ -274,6 +320,15 @@ class TracklistScraper:
         if response.status_code != 200:
             logger.info("Search returned status %d for: %s", response.status_code, query)
             return []
+
+        # phaze-8ib8: the client now follows redirects (see __init__), so a redirected search
+        # POST could otherwise land on an off-allow-list host and have its (attacker-controlled)
+        # HTML parsed as if it were a legitimate 1001Tracklists results page. Re-check the FINAL
+        # response.url the same way scrape_tracklist() does, so this can't be used to smuggle a
+        # search off-host through a malicious/compromised redirect chain (phaze-k5zz).
+        if not self._is_allowed_url(str(response.url)):
+            logger.warning("Refusing search result redirected to disallowed URL: %s", response.url)
+            raise DisallowedScrapeHostError(str(response.url))
 
         try:
             results = self._parse_search_results(response.text)
@@ -392,6 +447,15 @@ class TracklistScraper:
         except httpx.HTTPError:
             logger.warning("HTTP error scraping tracklist: %s", url)
             raise
+
+        # phaze-8ib8: the client above now follows redirects (previously an apex-host or
+        # slug-moved source_url deterministically raised on the un-followed 301/302). Re-check the
+        # FINAL response.url against the allow-list so a redirect chain can never be used to smuggle
+        # the request off-host -- this keeps the phaze-k5zz SSRF guard's invariant true even though
+        # httpx, not this method, now performs the follow.
+        if not self._is_allowed_url(str(response.url)):
+            logger.warning("Refusing scrape result redirected to disallowed URL: %s", response.url)
+            raise DisallowedScrapeHostError(str(response.url))
 
         # A blocked/challenge page (403/429/5xx) is served as HTML that parses to an empty
         # tracklist; without this guard the caller would treat that as a valid zero-track scrape

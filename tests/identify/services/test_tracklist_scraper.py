@@ -1,5 +1,6 @@
 """Tests for TracklistScraper service."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -107,19 +108,32 @@ SAMPLE_TRACKLIST_HTML = """
 """
 
 
-def _mock_response(status_code: int, text: str) -> httpx.Response:
-    """Create a mock httpx.Response."""
-    return httpx.Response(status_code=status_code, text=text, request=httpx.Request("GET", "https://example.com"))
+def _mock_response(status_code: int, text: str, url: str = "https://www.1001tracklists.com/") -> httpx.Response:
+    """Create a mock httpx.Response.
+
+    ``url`` defaults to an allowed host (phaze-8ib8): ``scrape_tracklist`` re-validates the
+    FINAL ``response.url`` against ``_ALLOWED_HOSTS`` after the client follows redirects, so a
+    response built against an arbitrary off-allow-list host (the previous default,
+    ``https://example.com``) would make every mocked scrape look like a disallowed redirect.
+    """
+    return httpx.Response(status_code=status_code, text=text, request=httpx.Request("GET", url))
 
 
 @pytest.fixture(autouse=True)
 def _clear_scraper_caches():
-    """Reset the process-wide TTL caches (phaze-hu8v) so tests never leak state via shared keys."""
+    """Reset process-wide TracklistScraper state (phaze-hu8v, phaze-wb1o) so tests never leak
+    state via shared ClassVars -- including the phaze-wb1o rate-limit slot allocator, which
+    would otherwise accumulate a ever-growing reserved slot across tests that mock out the
+    actual sleep (real wall-clock time never advances to "catch up" the way it would in
+    production).
+    """
     TracklistScraper._search_cache.clear()
     TracklistScraper._tracklist_cache.clear()
+    TracklistScraper._next_request_at = None
     yield
     TracklistScraper._search_cache.clear()
     TracklistScraper._tracklist_cache.clear()
+    TracklistScraper._next_request_at = None
 
 
 @pytest.fixture(autouse=True)
@@ -577,6 +591,169 @@ class TestTracklistScraperSsrfGuard:
         result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
         assert isinstance(result, ScrapedTracklist)
         assert result.external_id == "abc123"
+
+
+class TestTracklistScraperRedirects:
+    """Regression coverage for phaze-8ib8: httpx does not follow redirects by default, so a
+    301/302 (apex-host or slug-moved source_url) previously hit scrape_tracklist's non-200 guard
+    (phaze-o8sy) and raised forever instead of being followed. The owned client must be built
+    with ``follow_redirects=True``; a real ``httpx.MockTransport`` (not the injected-client
+    ``AsyncMock`` used elsewhere in this module) is required here because a constructor-only fix
+    is invisible to tests that mock ``client.get`` directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_owned_client_follows_redirects(self):
+        """The scraper's own httpx.AsyncClient (no injected client) is built with follow_redirects=True."""
+        scraper = TracklistScraper()
+        try:
+            assert scraper._client.follow_redirects is True
+        finally:
+            await scraper.close()
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_follows_apex_host_redirect(self):
+        """An apex-host source_url (301 -> www) is followed to a 200, not raised as HTTPStatusError."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "1001tracklists.com":
+                return httpx.Response(301, headers={"Location": "https://www.1001tracklists.com/tracklist/abc123/skrillex.html"})
+            return httpx.Response(200, text=SAMPLE_TRACKLIST_HTML)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        scraper = TracklistScraper(client=client)
+        try:
+            result = await scraper.scrape_tracklist("https://1001tracklists.com/tracklist/abc123/skrillex.html")
+        finally:
+            await client.aclose()
+        assert result.external_id == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_scrape_tracklist_rejects_redirect_off_allowlist(self):
+        """A redirect chain that ends off the allow-listed host is rejected, not silently followed.
+
+        This is the guard that keeps follow_redirects=True from re-opening the phaze-k5zz SSRF
+        surface: the FINAL response.url is re-checked even though the initial url passed the
+        pre-flight allow-list check.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "www.1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "https://evil.example.com/steal"})
+            return httpx.Response(200, text="stolen")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        scraper = TracklistScraper(client=client)
+        try:
+            with pytest.raises(DisallowedScrapeHostError):
+                await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
+        finally:
+            await client.aclose()
+
+
+class TestTracklistScraperSharedRateLimit:
+    """Regression coverage for phaze-wb1o: `_rate_limit` used to be a private per-coroutine
+    sleep with no shared lock/timestamp, so N concurrent instances (mirroring N concurrent SAQ
+    jobs -- the controller worker constructs a fresh TracklistScraper() per job) each slept
+    their own independent 8-12s and then fired immediately, multiplying the aggregate request
+    rate ~Nx past the MIN_DELAY floor instead of serializing onto a shared schedule.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_serializes_concurrent_callers(self):
+        """Concurrent callers must be staggered onto successive slots, not clustered together."""
+        scrapers = [TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient)) for _ in range(3)]
+        recorded_waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            recorded_waits.append(seconds)
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await asyncio.gather(*(s._rate_limit() for s in scrapers))
+
+        assert len(recorded_waits) == 3
+        recorded_waits.sort()
+        # The OLD behavior: three independent 8-12s sleeps that all land close to 8.0s -- the
+        # exact burst this bead exists to prevent. The FIXED behavior: each successive slot is
+        # pushed back by (at least, allowing a little scheduling slack) the sampled delay.
+        assert recorded_waits[1] >= recorded_waits[0] + 8.0 - 0.5
+        assert recorded_waits[2] >= recorded_waits[1] + 8.0 - 0.5
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_shared_across_distinct_instances(self):
+        """The slot allocator is a ClassVar -- a SECOND fresh instance (a new SAQ job's own
+        TracklistScraper()) must still be serialized behind the first instance's reservation,
+        not start its own independent schedule from zero.
+        """
+        first = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        second = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        recorded_waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            recorded_waits.append(seconds)
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await first._rate_limit()
+            await second._rate_limit()
+
+        assert len(recorded_waits) == 2
+        assert recorded_waits[1] >= recorded_waits[0] + 8.0 - 0.5
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_catches_up_instead_of_compounding_a_backlog(self):
+        """A caller arriving well after the previous reserved slot has elapsed schedules from
+        "now", rather than compounding an ever-growing backlog of reservations into the future.
+        """
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+
+        async def fake_sleep(seconds: float) -> None:
+            return None
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await scraper._rate_limit()
+            # Simulate real time having actually passed (e.g. a slow request took minutes) --
+            # the next reservation should NOT be measured from the stale past slot.
+            TracklistScraper._next_request_at -= 120
+            recorded_waits: list[float] = []
+
+            async def capturing_sleep(seconds: float) -> None:
+                recorded_waits.append(seconds)
+
+            with patch("phaze.services.tracklist_scraper.asyncio.sleep", new=capturing_sleep):
+                await scraper._rate_limit()
+
+        assert len(recorded_waits) == 1
+        assert recorded_waits[0] == pytest.approx(8.0, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_search_rejects_redirect_off_allowlist(self):
+        """search() must apply the SAME final-response.url allow-list recheck as
+        scrape_tracklist() (mirrored fix, still phaze-8ib8/phaze-k5zz). Missing this on the
+        search path would let a redirected search POST land the request off-host and have the
+        (attacker-controlled) response HTML parsed as a legitimate results page.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "www.1001tracklists.com":
+                return httpx.Response(302, headers={"Location": "https://evil.example.com/steal"})
+            return httpx.Response(200, text="stolen")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        scraper = TracklistScraper(client=client)
+        try:
+            with pytest.raises(DisallowedScrapeHostError):
+                await scraper.search("Skrillex Coachella")
+        finally:
+            await client.aclose()
 
 
 class TestTracklistScraperLifecycle:
