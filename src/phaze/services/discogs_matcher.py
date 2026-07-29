@@ -19,7 +19,7 @@ logger = structlog.get_logger(__name__)
 class DiscogsographyClient:
     """HTTP client adapter for the discogsography service.
 
-    Follows the same pattern as AudfprintAdapter/PanakoAdapter:
+    Follows the same HTTP-sidecar adapter pattern used elsewhere in the service layer:
     create with base_url, call async methods, close when done.
     """
 

@@ -9,8 +9,7 @@ Control role: runs the application server's SAQ worker pool. Fileless tasks only
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
   authoritative, current ``functions`` / ``cron_jobs`` list)
 
-This module does NOT import `phaze.services.fingerprint` or `phaze.tasks.pool`
-(those belong to the agent role per Phase 26 D-03). Cross-imports between
+This module does NOT import `phaze.tasks.pool` (that belongs to the agent role per Phase 26 D-03). Cross-imports between
 controller and agent_worker are forbidden -- the import-boundary test in
 Plan 10 enforces the symmetric invariant for agent_worker.
 
@@ -61,7 +60,7 @@ logger = structlog.get_logger(__name__)
 async def startup(ctx: dict[str, Any]) -> None:
     """Initialize shared resources for fileless tasks (SAQ startup hook).
 
-    Does NOT initialize: process pool, fingerprint orchestrator, models check.
+    Does NOT initialize: process pool, models check.
     Those belong to the agent role; the control role's worker never reads files.
     """
     cfg = get_settings()

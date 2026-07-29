@@ -166,9 +166,6 @@ async def test_agent_startup_invokes_ensure_models_present_after_whoami(tmp_path
     fake_client.whoami = fake_whoami
     fake_client.close = AsyncMock()
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
 
     def fake_ensure(models_path: Path) -> None:
         call_order.append("ensure_models_present")
@@ -206,9 +203,6 @@ async def test_agent_startup_propagates_ensure_models_present_failure(tmp_path: 
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     fake_client.close = AsyncMock()
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
 
     def boom(_models_path: Path) -> None:
         msg = "Model download failed: simulated network failure"
@@ -278,7 +272,7 @@ def test_docker_compose_has_agent_worker_consuming_agent_queue() -> None:
 
     Phase 29 D-15/D-17 split the compose surface in two:
       - docker-compose.yml          — application-server-only services (api, worker=control, postgres, redis).
-      - docker-compose.agent.yml    — file-server-only services (worker=agent, watcher, audfprint, panako).
+      - docker-compose.agent.yml    — file-server-only services (worker=agent, watcher).
     The agent-worker now lives in docker-compose.agent.yml; this test scans
     BOTH files so the Phase 27 UAT gap-13 invariant (an agent-side SAQ
     consumer exists somewhere in the deployment surface) stays codified.

@@ -41,7 +41,7 @@ class HeartbeatRequest(BaseModel):
     reaches a numeric cast -- unlike queue_depth this is defense-in-depth, not a required fix)."""
     queue_depth: int = Field(ge=0, le=QUEUE_DEPTH_MAX)
     lane: str | None = None
-    """Which lane worker sent this beat (phaze-30fo): analyze|fingerprint|meta|io.
+    """Which lane worker sent this beat (phaze-30fo): analyze|meta|io.
 
     OPTIONAL and defaulting to None on purpose. Every lane now heartbeats, but an agent
     running an older image (or in all-mode, where there is no lane split) posts without

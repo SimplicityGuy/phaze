@@ -55,10 +55,10 @@ from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths,
 from phaze.utils.humanize import relative_time
 
 
-# The six pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
-# OMITTED (the 7-stage -> 6-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
+# The five pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
+# OMITTED (the 6-stage -> 5-pill remap, RESEARCH Pitfall 3); REVIEW renders under "Appr" and APPLY under
 # "Exec" in the template. Ordered for the matrix's left-to-right column order.
-_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.FINGERPRINT, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
+_ACTIVITY_STAGES: tuple[Stage, ...] = (Stage.METADATA, Stage.ANALYZE, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
 
 
 # ``last_seen_at`` with NULL folded to the OLDEST representable instant, so a direction alone decides

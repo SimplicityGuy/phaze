@@ -77,8 +77,6 @@ def _hash_ids(file_ids: Any) -> str:
 _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "process_file": lambda k: str(k["file_id"]),
     "extract_file_metadata": lambda k: str(k["file_id"]),
-    "fingerprint_file": lambda k: str(k["file_id"]),
-    "scan_live_set": lambda k: str(k["file_id"]),
     "search_tracklist": lambda k: str(k["file_id"]),
     "scrape_and_store_tracklist": lambda k: str(k["tracklist_id"]),
     "match_tracklist_to_discogs": lambda k: str(k["tracklist_id"]),

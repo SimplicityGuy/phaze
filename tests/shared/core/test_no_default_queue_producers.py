@@ -193,7 +193,7 @@ async def test_every_agent_task_routes_to_its_lane_queue(session: AsyncSession) 
     """
     agent = await seed_active_agent(session)
     app_state = stub_app_state()
-    lane_re = re.compile(rf"^phaze-agent-{re.escape(agent.id)}-(analyze|fingerprint|meta|io)$")
+    lane_re = re.compile(rf"^phaze-agent-{re.escape(agent.id)}-(analyze|meta|io)$")
 
     for task_name in sorted(AGENT_TASKS):
         routed = await resolve_queue_for_task(task_name, app_state, session)
@@ -213,10 +213,8 @@ async def test_agent_tasks_route_to_expected_lanes(session: AsyncSession) -> Non
 
     expected = {
         "process_file": "analyze",
-        "fingerprint_file": "fingerprint",
         "extract_file_metadata": "meta",
         "scan_directory": "meta",
-        "scan_live_set": "meta",
         "execute_approved_batch": "meta",
         "s3_upload": "io",
         "push_file": "io",

@@ -155,7 +155,7 @@ async def test_passthrough_non_stage_job_untouched_and_no_read() -> None:
 
 
 async def test_best_effort_read_failure_leaves_defaults() -> None:
-    job = _stage_job("fingerprint_file")
+    job = _stage_job("extract_file_metadata")
     default_priority, default_scheduled = job.priority, job.scheduled
     job.queue = _queue_with(None, boom=True)
     await apply_stage_control(job)  # must NOT raise
@@ -242,7 +242,7 @@ async def test_enforce_stage_pause_on_process_noop_for_non_stage_function() -> N
 
 
 async def test_enforce_stage_pause_on_process_best_effort_on_read_failure() -> None:
-    job = _stage_job("fingerprint_file")
+    job = _stage_job("extract_file_metadata")
     job.queue = _queue_with(None, boom=True)
     ctx = _ctx_for(job)
     default_scheduled = job.scheduled

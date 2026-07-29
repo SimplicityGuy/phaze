@@ -68,9 +68,6 @@ async def test_startup_launches_heartbeat_background_task(monkeypatch: pytest.Mo
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_k: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_k: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_k: MagicMock(engines=[]))
     monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
 
     ctx: dict[str, Any] = {}
@@ -106,9 +103,6 @@ async def test_startup_skips_heartbeat_when_disabled(monkeypatch: pytest.MonkeyP
     fake_client = AsyncMock()
     fake_client.whoami = AsyncMock(return_value=fake_identity)
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_k: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_k: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_k: MagicMock(engines=[]))
     monkeypatch.setattr(aw, "ensure_models_present", lambda _p: None)
 
     ctx: dict[str, Any] = {}

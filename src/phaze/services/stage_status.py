@@ -17,10 +17,6 @@ Per-stage semantics (locked in 78-CONTEXT.md, mirrored 1:1 in :func:`phaze.enums
   row upserted at analysis START has ``completed_at`` NULL and is NOT done).
 - ``done(metadata)`` requires a row present AND ``failed_at IS NULL`` (D-03 -- a failure-only row is
   FAILED, not DONE).
-- ``done(fingerprint)`` is a 1:N aggregation -- one ``success``/``completed`` engine row wins over a
-  sibling ``failed`` engine (DERIV-05). Spelled ``status IN ('success','completed')`` which Postgres
-  renders ``= ANY (ARRAY[...])``, matching the Phase-59 WR-02 spelling and the ``ix_fprint_success``
-  partial index.
 - ``done(apply)`` joins ``execution_log`` through ``proposals`` on ``proposal_id`` (``execution_log``
   has NO ``file_id``) and requires a ``completed`` execution row. This is DISTINCT from apply
   *eligibility* (ELIG-02: an APPROVED proposal exists) -- see the ``inflight_clause`` /
@@ -127,7 +123,6 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -145,11 +140,6 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-# DERIV-05: a fingerprint engine row in either of these states counts the stage done. Mirrors the
-# Phase-59 WR-02 spelling and the ``ix_fprint_success`` partial index (renders ``= ANY (ARRAY[...])``).
-_DONE_FP: tuple[str, ...] = ("success", "completed")
-
-
 def dedup_resolved_clause() -> ColumnElement[bool]:
     """Return the correlated ``dedup-resolved`` predicate for a file (a ``ColumnElement[bool]``).
 
@@ -160,7 +150,7 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     identical in body to the Phase-90-retired ``shadow_compare._dedup_exists`` migration-verification
     helper (the module was removed with ``files.state`` in Phase 90's writer-removal cleanup). Marker-row
     existence means resolved; ``~dedup_resolved_clause()`` therefore means "not resolved" (the shape the Wave-2
-    dedup readers and ``get_fingerprint_progress``'s denominator consume).
+    dedup readers consume).
 
     It is deliberately kept OUT of the ``Stage`` dispatch ladders (:func:`done_clause` /
     :func:`failed_clause` / :func:`inflight_clause` / :func:`domain_completed_clause` /
@@ -168,9 +158,9 @@ def dedup_resolved_clause() -> ColumnElement[bool]:
     drift-locked to the Python resolver by ``tests/integration/test_stage_status_equivalence.py`` (D-13).
     A non-``Stage`` clause must not touch that test.
 
-    Both consumers import this predicate from here (the single-source predicate module, Phase 78):
-    ``services/dedup.py`` at module level, ``services/fingerprint.py`` **inside** its function (the
-    agent-worker import boundary, D-00e).
+    Consumers import this predicate from here (the single-source predicate module, Phase 78) --
+    ``services/dedup.py`` does so at module level. A consumer that sits on the agent side of the
+    import boundary must import it INSIDE its function instead (D-00e).
     """
     return exists(select(DedupResolution.id).where(DedupResolution.file_id == FileRecord.id))
 
@@ -240,9 +230,6 @@ def done_clause(stage: Stage) -> ColumnElement[bool]:
     if stage is Stage.METADATA:
         # D-03: a row present AND not a failure-only row.
         return exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.is_(None)))
-    if stage is Stage.FINGERPRINT:
-        # DERIV-05: any engine success wins. `.in_((...))` renders `= ANY (ARRAY[...])` (Phase-59 WR-02).
-        return exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id, FingerprintResult.status.in_(_DONE_FP)))
     if stage is Stage.TRACKLIST:
         return exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id))
     if stage in (Stage.PROPOSE, Stage.REVIEW):
@@ -267,10 +254,10 @@ def skipped_clause(stage: Stage) -> ColumnElement[bool]:
     never an outer-join-null / negated-membership anti-pattern. Every operand is an ORM column or the
     bound ``stage.value`` param (T-87-05: never f-string SQL).
 
-    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
+    Defined ONLY for the two enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
     mirroring :func:`eligible_clause`'s enrich-only guard: force-skip is an enrich-only affordance (D-10),
     so reaching for it on a downstream stage raises ``ValueError`` (T-87-06). The ``stage_skip`` table's
-    own ``CHECK(stage IN ('metadata','analyze','fingerprint'))`` is the storage-side twin of this guard.
+    own ``CHECK(stage IN ('metadata','analyze'))`` is the storage-side twin of this guard.
     """
     if stage not in ELIGIBLE_AFTER_FAILURE:
         # Mirrors the Python twin's guard, including the raw-`str` stage case (see enums/stage.py).
@@ -290,12 +277,6 @@ def failed_clause(stage: Stage) -> ColumnElement[bool]:
         return exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id, AnalysisResult.failed_at.isnot(None)))
     if stage is Stage.METADATA:
         return exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id, FileMetadata.failed_at.isnot(None)))
-    if stage is Stage.FINGERPRINT:
-        # ELIG-04: failed iff NO engine succeeded AND at least one engine failed (~exists anti-join).
-        return and_(
-            ~exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id, FingerprintResult.status.in_(_DONE_FP))),
-            exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id, FingerprintResult.status == "failed")),
-        )
     if stage is Stage.TRACKLIST:
         return false()  # no failure marker on tracklists
     if stage in (Stage.PROPOSE, Stage.REVIEW):
@@ -317,7 +298,7 @@ def inflight_clause(stage: Stage) -> ColumnElement[bool]:
     re-spelled key silently mismatches the real ledger PK). ``saq_jobs`` is NEVER consulted for the
     boolean (D-01/D-02).
 
-    Only the three file-keyed enrich stages have a per-file ledger key. ``propose`` is keyed on a
+    Only the two file-keyed enrich stages have a per-file ledger key. ``propose`` is keyed on a
     batch set-hash (``sha256(sorted file_ids)``), NOT per-file, so there is no per-file
     ``in_flight(propose)`` -- scoped OUT of Phase 78 (RESEARCH Pitfall 5 / OQ1). The downstream
     presence stages likewise have no file-keyed enqueue, so they return a constant ``false()``,
@@ -339,11 +320,13 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
     byte-equivalent to its ``ColumnElement`` siblings and the Python twin -- drift-locked by the
     equivalence test (``tests/integration/test_stage_status_equivalence.py``), D-17.
 
-    When ``FAILURE_IS_TERMINAL[stage]`` is ``False`` (fingerprint) the failure disjunct is dropped and
-    the clause collapses to ``or_(done_clause, skipped_clause)`` -- a FAILED fingerprint is NOT
-    domain-complete (it auto-retries, ELIG-04), but a force-skipped one still is.
+    When ``FAILURE_IS_TERMINAL[stage]`` is ``False`` the failure disjunct is dropped and the clause
+    collapses to ``or_(done_clause, skipped_clause)`` -- an auto-retrying stage is not domain-complete
+    on failure, but a force-skipped one still is. No surviving stage sets ``False`` (phaze-0jpe removed
+    the one that did, fingerprint); the gate stays TABLE-DRIVEN rather than being folded flat, because
+    the axis it encodes is a property of a stage's retry policy, not a constant of the pipeline.
 
-    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`),
+    Defined ONLY for the two enrich stages (the keys of :data:`~phaze.enums.stage.FAILURE_IS_TERMINAL`),
     matching the Python twin. Without this guard the bare subscript raised ``KeyError`` for the four
     downstream stages while the Python twin happily returned ``True`` for a ``DONE`` one -- a silent twin
     divergence on every non-failed downstream row.
@@ -370,7 +353,7 @@ def domain_completed_clause(stage: Stage) -> ColumnElement[bool]:
 
 
 def eligible_clause(stage: Stage) -> ColumnElement[bool]:
-    """SQL twin of :func:`phaze.enums.stage.eligible` for the three ENRICH stages only (READ-01).
+    """SQL twin of :func:`phaze.enums.stage.eligible` for the two ENRICH stages only (READ-01).
 
     Mirrors the Python truth (``enums/stage.py``, the enrich branch)::
 
@@ -383,7 +366,7 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
     force-skipped stage leaves the pending set). The FAILED carve-out is TABLE-DRIVEN off
     :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE` (NEVER an inline per-stage identity check):
 
-    - metadata / fingerprint (``ELIGIBLE_AFTER_FAILURE True`` -- ELIG-04 auto-retry): ``~inflight ∧ ~done``
+    - metadata (``ELIGIBLE_AFTER_FAILURE True`` -- ELIG-04 auto-retry): ``~inflight ∧ ~done``
       leaves a FAILED (and a NOT_STARTED) row eligible.
     - analyze (``ELIGIBLE_AFTER_FAILURE False`` -- ELIG-03 terminal, manual retry only): append
       ``~failed_clause(stage)`` so ONLY a NOT_STARTED analyze is eligible. This is the load-bearing
@@ -394,7 +377,7 @@ def eligible_clause(stage: Stage) -> ColumnElement[bool]:
     ``has_approved_proposal`` (an APPLY-only flag in the Python twin) is irrelevant here, so the
     signature stays a single ``stage`` param.
 
-    Defined ONLY for the three enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
+    Defined ONLY for the two enrich stages (the keys of :data:`~phaze.enums.stage.ELIGIBLE_AFTER_FAILURE`),
     matching the Python twin -- reaching for eligibility on a downstream stage via THIS builder is a
     question this layer deliberately does not answer, so it raises ``ValueError`` (same shape as
     :func:`domain_completed_clause`).
@@ -519,8 +502,8 @@ def running_clause(stage: Stage) -> ColumnElement[bool]:
     ``live_job_clause(stage) OR cloud_busy_clause()``: a live broker row, or a busy compute lane SAQ
     cannot see. The cloud disjunct is applied ONLY to the cloud-owned stage (analyze / ``process_file``),
     mirroring the ``_CLOUD_OWNED_FUNCTIONS`` scoping in ``_compute_stage_orphan_counts`` -- applying it to
-    every stage would let a cloud-busy file mask a genuinely lost ``fingerprint_file`` /
-    ``extract_file_metadata`` row that recovery DOES re-drive (phaze-fc2l).
+    every stage would let a cloud-busy file mask a genuinely lost ``extract_file_metadata`` row that
+    recovery DOES re-drive (phaze-fc2l).
     """
     if stage is Stage.ANALYZE:
         return or_(live_job_clause(stage), cloud_busy_clause())
@@ -539,7 +522,7 @@ def orphaned_clause(stage: Stage) -> ColumnElement[bool]:
     This is NOT a sixth :class:`~phaze.enums.stage.Status`. It is a REPORTING refinement carved out of
     the ``in_flight`` bucket: the derived per-file status, eligibility and recovery are all unchanged, so
     an orphaned file stays ineligible for auto-enqueue and stays in recovery's work set. Defined only for
-    the three enrich stages (``domain_completed_clause`` raises otherwise), and kept OUT of the ``Stage``
+    the two enrich stages (``domain_completed_clause`` raises otherwise), and kept OUT of the ``Stage``
     dispatch ladder (D-13).
     """
     return and_(inflight_clause(stage), not_(running_clause(stage)), not_(domain_completed_clause(stage)))
@@ -568,7 +551,7 @@ def stage_status_case(stage: Stage) -> ColumnElement[str]:
     The SQL twin of :func:`phaze.enums.stage.resolve_status`, locked equal by the DERIV-04
     equivalence test. Drop it into a ``SELECT`` correlated to :class:`~phaze.models.file.FileRecord`.
 
-    The three ENRICH stages (metadata/analyze/fingerprint) get a 5-way ladder with the
+    The two ENRICH stages (metadata/analyze) get a 5-way ladder with the
     ``skipped_clause`` branch inserted ``done ≻ skipped ≻ failed`` (D-08 force-skip marker). The four
     downstream stages have NO force-skip affordance (``skipped_clause`` raises on them, D-10), so they
     keep the original 4-way ladder. ``skipped ≻ failed`` is load-bearing: the force-skip writer is
@@ -641,7 +624,7 @@ STAGE_STATUS_DISPLAY_ORDER: tuple[Status, ...] = (
 def stage_status_sort_case(stage: Stage) -> ColumnElement[int]:
     """Compose the ORDER BY rank for ``stage``'s status column: the derived bucket mapped to its display rank.
 
-    The sortable-column expression behind the six stage headers on the Files matrix (phaze-cvn6.1).
+    The sortable-column expression behind the five stage headers on the Files matrix (phaze-cvn6.1).
     It wraps :func:`stage_status_case` VERBATIM rather than re-deriving the buckets (D-04: never a
     fresh ``CASE`` ladder), so the value this orders by is by construction the SAME value the
     ``_stage_pill`` cell renders -- an operator can never see one order and read another status.

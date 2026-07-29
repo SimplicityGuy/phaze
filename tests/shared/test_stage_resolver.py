@@ -5,8 +5,7 @@ NO Postgres, NO SQLAlchemy object construction — the resolver operates on plai
 Postgres-free compute / file-server agent can derive per-stage status with no DB round-trip.
 
 Covers DERIV-02 (precedence ``in_flight ≻ done ≻ failed ≻ not_started``), DERIV-03 (a partial
-analyze row with ``completed_at IS NULL`` is NOT done), DERIV-05 (a fingerprint file with one
-``success`` and one ``failed`` engine resolves to done), and D-03 (a metadata failure-only row
+analyze row with ``completed_at IS NULL`` is NOT done), and D-03 (a metadata failure-only row
 resolves to FAILED, not DONE). A subprocess banned-import guard proves ``phaze.enums.stage``
 never drags ``phaze.models`` / ``phaze.database`` / ``sqlalchemy`` into its import graph
 (mirrors ``tests/shared/core/test_task_split.py``).
@@ -80,32 +79,6 @@ def test_metadata_inflight_precedence() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# fingerprint — 1:N aggregation, DERIV-05 (one success beats a failed engine)
-# --------------------------------------------------------------------------------------
-def test_fingerprint_not_started_on_empty() -> None:
-    assert resolve_status(Stage.FINGERPRINT, {"engine_statuses": []}) is Status.NOT_STARTED
-
-
-def test_fingerprint_deriv05_success_wins_over_failed() -> None:
-    # DERIV-05: a file with one 'success' and one 'failed' engine resolves to done.
-    got = resolve_status(Stage.FINGERPRINT, {"engine_statuses": ["success", "failed"]})
-    assert got is Status.DONE
-
-
-def test_fingerprint_completed_alias_counts_as_done() -> None:
-    assert resolve_status(Stage.FINGERPRINT, {"engine_statuses": ["completed"]}) is Status.DONE
-
-
-def test_fingerprint_failed_only_is_failed() -> None:
-    assert resolve_status(Stage.FINGERPRINT, {"engine_statuses": ["failed"]}) is Status.FAILED
-
-
-def test_fingerprint_inflight_precedence() -> None:
-    got = resolve_status(Stage.FINGERPRINT, {"engine_statuses": ["failed"], "inflight": True})
-    assert got is Status.IN_FLIGHT
-
-
-# --------------------------------------------------------------------------------------
 # downstream presence stages -- every stage x 4 statuses coverage
 # --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("stage", [Stage.TRACKLIST, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY])
@@ -142,7 +115,7 @@ def test_inflight_wins_over_skipped() -> None:
     assert resolve_status(Stage.ANALYZE, {"inflight": True, "skipped": True}) is Status.IN_FLIGHT
 
 
-@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE, Stage.FINGERPRINT])
+@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE])
 def test_skipped_bucket_each_enrich_stage(stage: Stage) -> None:
     # Every enrich twin threads the skipped scalar (after done, before failed).
     assert resolve_status(stage, {"skipped": True}) is Status.SKIPPED
@@ -164,7 +137,7 @@ def test_downstream_stage_ignores_skipped_scalar() -> None:
     assert resolve_status(Stage.PROPOSE, {"row_present": True, "skipped": True}) is Status.DONE
 
 
-@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE, Stage.FINGERPRINT])
+@pytest.mark.parametrize("stage", [Stage.METADATA, Stage.ANALYZE])
 def test_skipped_clause_builds_for_enrich_stages(stage: Stage) -> None:
     # SQL twin guard: `skipped_clause` builds a ColumnElement for each enrich stage. Function-local import
     # keeps this module's DB-free top-level contract (the subprocess guard below) intact.

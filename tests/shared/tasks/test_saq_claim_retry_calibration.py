@@ -3,7 +3,8 @@ grx3 / e57w fixes are designed against.
 
 This is the SPIKE's CI-safe reproduction: it asserts, against the *installed* SAQ, the four
 load-bearing facts established empirically on prod (recorded in
-``scripts/parity/fingerprint_timeout_probe.sql`` and on beads qmc2.1 / grx3 / e57w):
+``scripts/parity/fingerprint_timeout_probe.sql`` -- a point-in-time calibration artifact from the
+fingerprint era, kept as the measurement of record -- and on beads qmc2.1 / grx3 / e57w):
 
 1. A claimed-but-unrun row (``attempts == 0``, ``started``/``touched`` frozen at dequeue) IS
    ``stuck`` once ``timeout`` elapses -- ``Job.stuck`` keys off ``started``, NOT off whether the
@@ -38,7 +39,7 @@ def _claimed_but_unrun_job(*, timeout: int = 600, retries: int = 4) -> Job:
     """A row as SAQ leaves it right after ``_dequeue``: ACTIVE, started==touched==dequeue, attempts=0."""
     dequeued = now() - (timeout + 120) * 1000  # ms; comfortably past the timeout
     return Job(
-        function="fingerprint_file",
+        function="process_file",
         kwargs={"file_id": "11111111-1111-1111-1111-111111111111"},
         status=Status.ACTIVE,
         timeout=timeout,
@@ -112,5 +113,5 @@ async def test_queue_update_bumps_touched_regardless_of_progress() -> None:
     await Queue.update(cast("Queue", stub), job, status=Status.ABORTING)
 
     assert job.status == Status.ABORTING
-    assert job.touched > frozen  # bumped by the update itself, not by any fingerprint heartbeat
+    assert job.touched > frozen  # bumped by the update itself, not by any task heartbeat
     assert job.attempts == 0  # ...while attempts is still 0: no genuine execution happened

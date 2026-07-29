@@ -94,7 +94,7 @@ async def test_files_headers_are_sortable_and_announce_state(client: AsyncClient
 
     # Every whitelisted header is a real server-side sort control aimed at this table's own endpoint.
     assert 'hx-get="/pipeline/files?' in head
-    for key in ("file", "type", "metadata", "fingerprint", "analyze", "propose", "review", "apply"):
+    for key in ("file", "type", "metadata", "analyze", "propose", "review", "apply"):
         assert f"sort={key}" in head, f"header for sort={key} is not a sort control"
     # Rule 5: the ACTIVE column (default_key="file") announces its direction; the caret is decorative.
     assert 'aria-sort="ascending"' in head
@@ -141,7 +141,7 @@ async def test_stage_header_labels_match_the_stage_matrix_cells(client: AsyncCli
 
     stage_columns = [column for column in FILES_SORT.columns if column.key not in {"file", "type"}]
     assert [column.key for column in stage_columns] == [stage.value for stage in _FILES_PAGE_STAGES]
-    assert [column.label for column in stage_columns] == ["Meta", "FP", "Analyze", "Prop", "Appr", "Exec"]
+    assert [column.label for column in stage_columns] == ["Meta", "Analyze", "Prop", "Appr", "Exec"]
     # And the header row actually rendered them in that order (each label immediately precedes its
     # own decorative caret span, which is how a label is anchored rather than matched loosely).
     positions = [head.index(f"{column.label}<span") for column in stage_columns]

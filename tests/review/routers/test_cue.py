@@ -506,7 +506,7 @@ async def test_get_eligible_tracklist_query_respects_sql_limit(session: AsyncSes
 @pytest.mark.asyncio
 async def test_eligibility_scoped_to_latest_version_not_any_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
     """phaze-dboy: a tracklist whose ONLY timestamped track lives on an OLDER version (a
-    re-scrape/re-fingerprint created a newer ``latest_version_id`` with no timestamps) must be
+    a re-scrape created a newer ``latest_version_id`` with no timestamps) must be
     excluded from the eligible set -- generation only ever reads ``latest_version_id``, so
     counting "any version" produced an always-failing "eligible" row.
     """

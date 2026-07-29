@@ -6,22 +6,25 @@ surface up front:
 
 * The two **foundation** tests are FILLED here (they pass against the ``_STAGE_PLACEHOLDER``
   fragments today and guard the contract Plans 02/03 must preserve):
-    - ``test_identify_fragments_are_bare``       -> R-5    (``/s/trackid`` & ``/s/tracklist`` HX
-      responses are bare fragments -- no ``<html>``/``<head>`` document wrapper).
+    - ``test_identify_fragments_are_bare``       -> R-5    (the ``/s/tracklist`` HX response is a
+      bare fragment -- no ``<html>``/``<head>`` document wrapper).
     - ``test_identify_single_poll_discipline``   -> WORK-05 / R-2 (the shell fires EXACTLY ONE
       ``/pipeline/stats`` poll; neither new fragment starts a second ``hx-trigger="every"`` /
       ``setInterval`` loop).
 
-* The four **workspace** behavior tests are ``xfail`` stubs that COLLECT cleanly now and are
-  converted to real assertions by their owning plan/task (Plans 59-02 / 59-03):
-    - ``test_trackid_table_signals``             -> IDENT-01 (Plan 59-02)
-    - ``test_trackid_success_renders_done``      -> IDENT-01 neg / Pitfall 1 (Plan 59-02)
+* The **workspace** behavior tests were ``xfail`` stubs converted to real assertions by their
+  owning plan/task (Plan 59-03):
     - ``test_tracklist_step_cards_and_triggers`` -> IDENT-02 (Plan 59-03)
     - ``test_tracklist_per_set_coverage``        -> IDENT-02 (Plan 59-03)
 
+  phaze-0jpe removed the Track-ID workspace along with audio fingerprinting -- its whole purpose was
+  per-engine audfprint/panako match status -- so its two tests (``test_trackid_table_signals`` /
+  ``test_trackid_success_renders_done``) are gone with it. The paging- and sort-contract wiring they
+  shared with the Tracklist surface is still covered below, exercised through
+  ``/pipeline/tracklist-sets``.
+
 The module-level ``_seed_*`` helpers below are test fixtures (ORM inserts only -- never a backend
-change). Plans 59-02/03 use them to seed the fingerprint + tracklist rows the two workspaces
-render. They live here (not conftest) because they are Phase-59-specific shapes; ``conftest.py``
+change). Plan 59-03 uses them to seed the tracklist rows the workspace renders. They live here (not conftest) because they are Phase-59-specific shapes; ``conftest.py``
 already seeds the legacy agent so a bare ``FileRecord`` satisfies its NOT NULL + FK ``agent_id``
 default.
 """
@@ -36,16 +39,12 @@ from sqlalchemy import update
 from sqlalchemy.dialects import postgresql
 
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from phaze.services.pipeline import (
-    _trackid_linked_conf_subq,
-    _trackid_page_stmt,
     _tracklist_sets_page_stmt,
     get_match_pending_tracklists,
     get_scrape_pending_tracklists,
-    get_trackid_files_page,
     get_tracklist_sets_page,
     get_untracked_files,
 )
@@ -56,9 +55,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# The two redesigned Identify workspace stages whose HX fragments must ride the ONE chrome poll
+# The redesigned Identify workspace stage whose HX fragment must ride the ONE chrome poll
 # (no per-fragment ``hx-trigger="every"`` / ``setInterval``).
-_WORKSPACE_STAGES = ["trackid", "tracklist"]
+_WORKSPACE_STAGES = ["tracklist"]
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +75,7 @@ async def _seed_file(
 ) -> FileRecord:
     """Insert one FileRecord (legacy-agent default) and return it.
 
-    The parent row every ``_seed_fingerprint_result`` / ``_seed_tracklist`` FK points at.
+    The parent row every ``_seed_tracklist`` FK points at.
     """
     file_id = uuid.uuid4()
     record = FileRecord(
@@ -95,36 +94,19 @@ async def _seed_file(
     return record
 
 
-async def _seed_fingerprint_result(
-    session: AsyncSession,
-    file_id: uuid.UUID,
-    engine: str,
-    status: str,
-) -> FingerprintResult:
-    """Insert one per-engine ``fingerprint_results`` row for ``file_id``.
-
-    ``engine`` is the PERSISTED lowercase vocab (``"audfprint"`` / ``"panako"``); ``status`` is
-    the PERSISTED vocab (``"success"`` / ``"failed"`` -- never ``"completed"``, Pitfall 1). The
-    unique ``(file_id, engine)`` index means at most one row per file per engine (absence = pending).
-    """
-    row = FingerprintResult(id=uuid.uuid4(), file_id=file_id, engine=engine, status=status)
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    return row
-
-
 async def _seed_tracklist(
     session: AsyncSession,
     *,
     file_id: uuid.UUID | None = None,
     match_confidence: int | None = None,
     external_id: str | None = None,
+    artist: str | None = None,
 ) -> Tracklist:
     """Insert one ``tracklists`` row.
 
     ``file_id`` non-NULL models a LINKED ("matched") tracklist (D-04); NULL models a candidate.
-    ``match_confidence`` is the rapidfuzz int surfaced as the Track-ID confidence.
+    ``match_confidence`` is the rapidfuzz int surfaced as the per-set confidence. ``artist`` is the
+    ``Set`` column the sortable-column contract orders by (``TRACKLIST_SETS_SORT``, default key).
     """
     tl = Tracklist(
         id=uuid.uuid4(),
@@ -132,6 +114,7 @@ async def _seed_tracklist(
         source_url="https://example.test/tracklist",
         file_id=file_id,
         match_confidence=match_confidence,
+        artist=artist,
     )
     session.add(tl)
     await session.commit()
@@ -188,7 +171,7 @@ async def _seed_tracklist_track(
 
 @pytest.mark.asyncio
 async def test_identify_fragments_are_bare(client: AsyncClient) -> None:
-    """R-5 -- the ``/s/trackid`` & ``/s/tracklist`` HX responses are bare fragments.
+    """R-5 -- the ``/s/tracklist`` HX response is a bare fragment.
 
     Mirrors ``test_enrich_analyze_workspaces.py::test_stage_fragment_is_bare``: a swapped
     workspace fragment NEVER carries ``<html>``/``<head>`` (no duplicate landmarks/skip-links).
@@ -229,70 +212,6 @@ async def test_identify_single_poll_discipline(client: AsyncClient) -> None:
 # Workspace tests -- xfail stubs converted to real assertions by their owning plan/task.
 # (names + reasons per 59-VALIDATION.md / 59-RESEARCH.md Test Map)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_trackid_table_signals(client: AsyncClient, session: AsyncSession) -> None:
-    """IDENT-01 / D-01 / D-03 / D-04 -- one combined Track-ID table of per-file identity signals.
-
-    Seeds a LINKED file (audfprint ``success`` + panako ``failed`` + a linked ``Tracklist``) and a
-    CANDIDATE-only file (audfprint ``success``, no linked tracklist, but a system-wide unlinked
-    candidate exists), then asserts the ``/s/trackid`` fragment renders ONE combined table (D-03)
-    whose rows carry the per-engine status words (done/failed/pending, D-01), the tracklist
-    match-state words (matched/candidate, D-04), and the linked confidence as a percent (D-02 -- not
-    a fabricated fingerprint score) -- with inert (no ``hx-get``) rows.
-    """
-    matched = await _seed_file(session, original_filename="matched.mp3")
-    await _seed_fingerprint_result(session, matched.id, "audfprint", "success")
-    await _seed_fingerprint_result(session, matched.id, "panako", "failed")
-    await _seed_tracklist(session, file_id=matched.id, match_confidence=90)
-
-    candidate = await _seed_file(session, original_filename="candidate.mp3")
-    await _seed_fingerprint_result(session, candidate.id, "audfprint", "success")
-    await _seed_tracklist(session, file_id=None, match_confidence=77)
-
-    # phaze-1wvb: the rows live in the BOUNDED fragment now -- /s/trackid ships an empty host div.
-    resp = await client.get("/pipeline/trackid-files")
-    assert resp.status_code == 200
-    body = resp.text
-    # D-03: exactly ONE combined per-file table (not two sub-sections).
-    assert body.count('id="trackid-file-table"') == 1
-    tbl = body[body.index('id="trackid-file-table"') :]
-    # D-01: per-engine status words -- matched file -> audfprint "done" + panako "failed"; the
-    # candidate file's panako has no row -> "pending" (absence == pending, Pitfall 2).
-    assert "done" in tbl
-    assert "failed" in tbl
-    assert "pending" in tbl
-    # D-04: tracklist match-state words for the linked + candidate files.
-    assert "matched" in tbl
-    assert "candidate" in tbl
-    # D-02/D-04: the linked tracklist confidence renders as a percent, not a fabricated score.
-    assert "90%" in tbl
-    # R-1 / D-06: ROWS are inert -- scoped to <tbody> because phaze-a6hm.1 gave the <thead> its own
-    # hx-get sort buttons (the sortable-column contract). An unscoped "hx-get" not in tbl would now
-    # be asserting that the table is UNSORTABLE, which is the opposite of what this test means.
-    assert "hx-get" not in tbl[tbl.index("<tbody") :]
-
-
-@pytest.mark.asyncio
-async def test_trackid_success_renders_done(client: AsyncClient, session: AsyncSession) -> None:
-    """IDENT-01 (neg) / Pitfall 1 -- a ``status="success"`` row renders "done" (NOT "pending").
-
-    Guards the Pitfall-1 vocabulary trap -- the done badge must key on ``FingerprintResult.status
-    == "success"`` (the value the engine adapters actually write), NOT on ``"completed"`` (which
-    ``get_stage_progress`` filters and which is never persisted here). Both engines are seeded
-    ``success`` so a regression that maps success -> pending makes "done" vanish and "pending"
-    appear; with no tracklist the only other cells are "no match" + "—", so the table carries no
-    "pending" word when the mapping is correct.
-    """
-    file = await _seed_file(session, original_filename="done.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
-    await _seed_fingerprint_result(session, file.id, "panako", "success")
-    resp = await client.get("/pipeline/trackid-files")
-    assert resp.status_code == 200
-    tbl = resp.text[resp.text.index('id="trackid-file-table"') :]
-    assert "done" in tbl
-    assert "pending" not in tbl
 
 
 @pytest.mark.asyncio
@@ -392,79 +311,6 @@ class _ExplodingSession:
 
 
 @pytest.mark.asyncio
-async def test_get_trackid_files_page_shape(session: AsyncSession) -> None:
-    """IDENT-01 / D-01 / D-04 -- the Track-ID row carries per-engine badges + tracklist match/conf.
-
-    A file with audfprint ``success`` + panako ``failed`` + a LINKED tracklist (match_confidence)
-    yields one dict: audfprint_status "done", panako_status "failed", tracklist_state "matched",
-    confidence = the linked value.
-    """
-    file = await _seed_file(session, original_filename="full.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
-    await _seed_fingerprint_result(session, file.id, "panako", "failed")
-    await _seed_tracklist(session, file_id=file.id, match_confidence=90)
-
-    rows = (await get_trackid_files_page(session)).rows
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["filename"] == "full.mp3"
-    assert row["path"] == "/test/music/full.mp3"
-    assert row["audfprint_status"] == "done"
-    assert row["panako_status"] == "failed"
-    assert row["tracklist_state"] == "matched"
-    assert row["confidence"] == 90
-
-
-@pytest.mark.asyncio
-async def test_get_trackid_files_page_success_renders_done(session: AsyncSession) -> None:
-    """Pitfall 1 (the load-bearing guard) -- a ``status="success"`` row maps to "done", NOT "pending".
-
-    Guards against keying the done badge on ``"completed"`` (which ``get_stage_progress`` filters and
-    which is NEVER persisted by the engine adapter path) -- that bug would render every engine pending.
-    """
-    file = await _seed_file(session, original_filename="success.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
-
-    rows = (await get_trackid_files_page(session)).rows
-    assert len(rows) == 1
-    assert rows[0]["audfprint_status"] == "done"
-    # panako has no row -> pending (Pitfall 2: absence == pending).
-    assert rows[0]["panako_status"] == "pending"
-
-
-@pytest.mark.asyncio
-async def test_get_trackid_files_page_candidate_and_no_match(session: AsyncSession) -> None:
-    """D-04 -- the candidate fallback + the no-match branch.
-
-    A file with only a fingerprint and NO linked tracklist surfaces "candidate" + the system-wide
-    best candidate confidence when an unlinked candidate exists; with no candidate at all it is
-    "no match" + None.
-    """
-    # No-match: a fingerprinted file, no tracklists anywhere.
-    nomatch = await _seed_file(session, original_filename="nomatch.mp3")
-    await _seed_fingerprint_result(session, nomatch.id, "audfprint", "success")
-    rows = (await get_trackid_files_page(session)).rows
-    assert len(rows) == 1
-    assert rows[0]["tracklist_state"] == "no match"
-    assert rows[0]["confidence"] is None
-
-    # Introduce an unlinked candidate tracklist -> the fingerprinted file now reads "candidate".
-    await _seed_tracklist(session, file_id=None, match_confidence=77)
-    rows = (await get_trackid_files_page(session)).rows
-    by_name = {r["filename"]: r for r in rows}
-    assert by_name["nomatch.mp3"]["tracklist_state"] == "candidate"
-    assert by_name["nomatch.mp3"]["confidence"] == 77
-
-
-@pytest.mark.asyncio
-async def test_get_trackid_files_page_degrades_to_empty() -> None:
-    """T-59-DOS / paging contract rule 6 -- a DB error degrades to an EMPTY Page, never raises."""
-    page = await get_trackid_files_page(_ExplodingSession())  # type: ignore[arg-type]
-    assert page.rows == []
-    assert page.has_next is False
-
-
-@pytest.mark.asyncio
 async def test_get_tracklist_sets_page_shape(session: AsyncSession) -> None:
     """IDENT-02 / D-07 -- the per-set row carries N/M track coverage + match state.
 
@@ -555,10 +401,7 @@ def test_identify_page_statements_carry_a_sql_limit() -> None:
     outside. This was verified by mutation: removing ``paged_stmt`` from the reader left every
     row-count assertion green. So compile the statements and assert on the emitted SQL.
     """
-    stmts = {
-        "trackid": _trackid_page_stmt(_trackid_linked_conf_subq(), page=3, page_size=DEFAULT_PAGE_SIZE),
-        "tracklist": _tracklist_sets_page_stmt(page=3, page_size=DEFAULT_PAGE_SIZE),
-    }
+    stmts = {"tracklist": _tracklist_sets_page_stmt(page=3, page_size=DEFAULT_PAGE_SIZE)}
     for name, stmt in stmts.items():
         sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
         assert "LIMIT" in sql.upper(), f"the {name} render read has NO SQL LIMIT -- it is a whole-corpus read"
@@ -569,30 +412,6 @@ def test_identify_page_statements_carry_a_sql_limit() -> None:
         # rule 4: the ORDER BY must end on the unique primary-key tiebreaker, not just created_at.
         order_by = sql.upper().rsplit("ORDER BY", 1)[-1]
         assert ".ID DESC" in order_by, f"the {name} read lost its unique tiebreaker -- paging can skip/duplicate rows"
-
-
-@pytest.mark.asyncio
-async def test_trackid_page_is_bounded_regardless_of_corpus_size(session: AsyncSession) -> None:
-    """phaze-1wvb -- a backlog larger than one page does NOT grow the Track-ID read.
-
-    The pre-fix ``get_trackid_stage_files`` returned EVERY signal-bearing file, so this seeding would
-    have yielded ``_OVER_A_PAGE`` rows. The bounded read returns exactly ``page_size`` rows and flags
-    ``has_next`` off the +1 sentinel -- never a whole-corpus COUNT (paging contract rule 2).
-    """
-    for i in range(_OVER_A_PAGE):
-        file = await _seed_file(session, original_filename=f"corpus-{i:03d}.mp3")
-        await _seed_fingerprint_result(session, file.id, "audfprint", "success")
-
-    page = await get_trackid_files_page(session)
-    assert len(page.rows) == DEFAULT_PAGE_SIZE, "the render read must be bounded to one page"
-    assert page.has_next is True
-    assert page.has_prev is False
-
-    # The tail is reachable, and the page size itself is capped (rule 3) -- asking for more than
-    # MAX_PAGE_SIZE cannot widen the read back out to the corpus.
-    tail = await get_trackid_files_page(session, page=2, page_size=MAX_PAGE_SIZE * 10)
-    assert len(tail.rows) <= MAX_PAGE_SIZE
-    assert tail.has_next is False
 
 
 @pytest.mark.asyncio
@@ -648,53 +467,44 @@ async def test_identify_pages_clamp_instead_of_raising(session: AsyncSession) ->
     assert beyond.has_next is False
 
     # Page size clamps into [MIN, MAX] at both extremes.
-    assert (await get_trackid_files_page(session, page_size=-5)).page_size >= 1
-    assert (await get_trackid_files_page(session, page_size=100_000)).page_size <= MAX_PAGE_SIZE
+    assert (await get_tracklist_sets_page(session, page_size=-5)).page_size >= 1
+    assert (await get_tracklist_sets_page(session, page_size=100_000)).page_size <= MAX_PAGE_SIZE
 
 
 @pytest.mark.asyncio
 async def test_identify_workspaces_server_render_zero_rows(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-1wvb -- neither Identify workspace server-renders a file row inline any more.
+    """phaze-1wvb -- the Identify workspace does not server-render a file row inline any more.
 
-    The workspace fragments ship an EMPTY host div that hx-gets the bounded fragment on load (the
-    same shape phaze-5462 gave the analyze/metadata/fingerprint tabs). This is the structural guard:
-    a regression that re-inlines the row loop puts the table markup back into the workspace response
+    The workspace fragment ships an EMPTY host div that hx-gets the bounded fragment on load (the
+    same shape phaze-5462 gave the analyze/metadata tabs). This is the structural guard: a
+    regression that re-inlines the row loop puts the table markup back into the workspace response
     and fails here even before the payload grows.
     """
     file = await _seed_file(session, original_filename="inline-check.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
     await _seed_tracklist(session, file_id=file.id, match_confidence=95)
-
-    trackid = await client.get("/s/trackid", headers={"HX-Request": "true"})
-    assert trackid.status_code == 200
-    assert 'id="trackid-files-view"' in trackid.text
-    assert 'hx-get="/pipeline/trackid-files"' in trackid.text
-    assert 'id="trackid-file-table"' not in trackid.text, "rows must NOT be server-rendered inline"
-    assert "inline-check.mp3" not in trackid.text
 
     tracklist = await client.get("/s/tracklist", headers={"HX-Request": "true"})
     assert tracklist.status_code == 200
     assert 'id="tracklist-sets-view"' in tracklist.text
     assert 'hx-get="/pipeline/tracklist-sets"' in tracklist.text
     assert 'id="tracklist-set-table"' not in tracklist.text, "rows must NOT be server-rendered inline"
+    assert "inline-check.mp3" not in tracklist.text
 
 
 @pytest.mark.asyncio
 async def test_identify_render_payload_does_not_grow_with_the_corpus(client: AsyncClient, session: AsyncSession) -> None:
     """phaze-1wvb -- the DoS regression proper: a large backlog must not grow the response.
 
-    Renders the Track-ID surface (workspace + its bounded fragment) at a small corpus, then adds
-    ``_OVER_A_PAGE`` more signal-bearing files and renders again. Pre-fix, the second response
-    carried every extra row; post-fix the fragment is capped at one page, so the payload is flat.
+    Renders the Tracklist per-set fragment at a small corpus, then adds ``_OVER_A_PAGE`` more
+    tracklists and renders again. Pre-fix, the second response carried every extra row; post-fix the
+    fragment is capped at one page, so the payload is flat.
     """
-    seed = await _seed_file(session, original_filename="baseline.mp3")
-    await _seed_fingerprint_result(session, seed.id, "audfprint", "success")
-    small = (await client.get("/pipeline/trackid-files")).text
+    await _seed_tracklist(session, file_id=None, match_confidence=1, external_id="baseline")
+    small = (await client.get("/pipeline/tracklist-sets")).text
 
     for i in range(_OVER_A_PAGE):
-        file = await _seed_file(session, original_filename=f"flood-{i:03d}.mp3")
-        await _seed_fingerprint_result(session, file.id, "audfprint", "success")
-    large_resp = await client.get("/pipeline/trackid-files")
+        await _seed_tracklist(session, file_id=None, match_confidence=i, external_id=f"flood-{i:03d}")
+    large_resp = await client.get("/pipeline/tracklist-sets")
     assert large_resp.status_code == 200
     large = large_resp.text
 
@@ -720,7 +530,7 @@ async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSes
         await _seed_file(session, original_filename=f"untracked-{i:03d}.mp3")
 
     # The RENDER read is bounded...
-    render_page = await get_trackid_files_page(session)
+    render_page = await get_tracklist_sets_page(session)
     assert len(render_page.rows) <= DEFAULT_PAGE_SIZE
 
     # ...while the ENQUEUE read still covers every pending file (no LIMIT, ever).
@@ -739,53 +549,56 @@ async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSes
 # WIRING: that a header click actually reorders the SET (not the page), that the whitelist holds at
 # the HTTP boundary, and that the header announces itself. Without these, a contract with perfect
 # unit tests could still be connected to nothing.
+#
+# phaze-0jpe: these were authored against ``/pipeline/trackid-files`` and moved to
+# ``/pipeline/tracklist-sets`` when the Track-ID workspace was removed with fingerprinting. The
+# ``SortContract`` under test is the sibling of the one they were written for, wired through the same
+# shared ``_file_table.html`` header machinery, so the wiring they guard is unchanged.
 
 
 @pytest.mark.asyncio
-async def test_trackid_headers_are_sortable_and_announce_state(client: AsyncClient, session: AsyncSession) -> None:
+async def test_tracklist_headers_are_sortable_and_announce_state(client: AsyncClient, session: AsyncSession) -> None:
     """The shared _file_table renders a sort button + aria-sort for a whitelisted header (rules 1/5).
 
-    ``File`` is whitelisted on the Track-ID contract; ``Panako`` is not. Asserting BOTH is what makes
-    this a test of the label-recognition mechanism rather than of "the template emits buttons" -- a
-    partial that made every header sortable would pass a one-sided check and then 500 on click.
+    ``Set`` is whitelisted on the Tracklist-sets contract; ``Tracks`` is not. Asserting BOTH is what
+    makes this a test of the label-recognition mechanism rather than of "the template emits buttons"
+    -- a partial that made every header sortable would pass a one-sided check and then 500 on click.
     """
-    file = await _seed_file(session, original_filename="a.mp3")
-    await _seed_fingerprint_result(session, file.id, "audfprint", "success")
+    await _seed_tracklist(session, file_id=None, artist="a", external_id="hdr-0")
 
-    body = (await client.get("/pipeline/trackid-files")).text
+    body = (await client.get("/pipeline/tracklist-sets")).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # The whitelisted header is a real server-side sort control aimed at its own endpoint.
-    assert 'hx-get="/pipeline/trackid-files?' in head
-    assert "sort=filename" in head
+    assert 'hx-get="/pipeline/tracklist-sets?' in head
+    assert "sort=artist" in head
     # Rule 5: the ACTIVE column announces its direction; the caret is decorative only.
     assert 'aria-sort="ascending"' in head
     assert 'aria-hidden="true"' in head
     # A non-whitelisted header stays plain text -- no button, no aria-sort.
-    panako = head[head.index("Panako") - 200 : head.index("Panako")]
-    assert "hx-get" not in panako
+    tracks = head[head.index("Tracks") - 200 : head.index("Tracks")]
+    assert "hx-get" not in tracks
 
 
 @pytest.mark.asyncio
-async def test_trackid_sort_reorders_the_set_server_side(client: AsyncClient, session: AsyncSession) -> None:
+async def test_tracklist_sort_reorders_the_set_server_side(client: AsyncClient, session: AsyncSession) -> None:
     """Rule 1: the ORDER BY lands in SQL, so asc and desc return genuinely different row orders.
 
     Seeded out of alphabetical order so a handler that ignored ``sort`` entirely (returning
     insertion/newest-first order) fails at least one of the two direction assertions.
     """
-    for name in ("banana.mp3", "apple.mp3", "cherry.mp3"):
-        seeded = await _seed_file(session, original_filename=name)
-        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+    for index, name in enumerate(("banana", "apple", "cherry")):
+        await _seed_tracklist(session, file_id=None, artist=name, external_id=f"sort-{index}")
 
-    asc = (await client.get("/pipeline/trackid-files?sort=filename&order=asc")).text
-    desc = (await client.get("/pipeline/trackid-files?sort=filename&order=desc")).text
+    asc = (await client.get("/pipeline/tracklist-sets?sort=artist&order=asc")).text
+    desc = (await client.get("/pipeline/tracklist-sets?sort=artist&order=desc")).text
 
     def order_of(body: str) -> list[str]:
         rows = body[body.index("<tbody") :]
-        return sorted(("apple.mp3", "banana.mp3", "cherry.mp3"), key=rows.index)
+        return sorted(("apple", "banana", "cherry"), key=rows.index)
 
-    assert order_of(asc) == ["apple.mp3", "banana.mp3", "cherry.mp3"]
-    assert order_of(desc) == ["cherry.mp3", "banana.mp3", "apple.mp3"]
+    assert order_of(asc) == ["apple", "banana", "cherry"]
+    assert order_of(desc) == ["cherry", "banana", "apple"]
 
 
 @pytest.mark.asyncio
@@ -805,14 +618,13 @@ async def test_unwhitelisted_sort_is_rejected_at_the_http_boundary(client: Async
 
     Rule 3: this degrades rather than 422-ing, matching every other render-path allowlist in phaze.
     """
-    for name in ("banana.mp3", "apple.mp3"):
-        seeded = await _seed_file(session, original_filename=name)
-        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+    for index, name in enumerate(("banana", "apple")):
+        await _seed_tracklist(session, file_id=None, artist=name, external_id=f"hostile-{index}")
 
-    resp = await client.get(f"/pipeline/trackid-files?sort={hostile}&order=asc")
+    resp = await client.get(f"/pipeline/tracklist-sets?sort={hostile}&order=asc")
     assert resp.status_code == 200
     rows = resp.text[resp.text.index("<tbody") :]
-    assert rows.index("apple.mp3") < rows.index("banana.mp3")  # the default (filename asc) order
+    assert rows.index("apple") < rows.index("banana")  # the default (artist asc) order
     assert f"sort={hostile}" not in resp.text
 
 
@@ -824,10 +636,9 @@ async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(cli
     and only misbehaves once the operator scrolls, which is exactly when they are relying on it.
     """
     for index in range(12):
-        seeded = await _seed_file(session, original_filename=f"file-{index:02d}.mp3")
-        await _seed_fingerprint_result(session, seeded.id, "audfprint", "success")
+        await _seed_tracklist(session, file_id=None, artist=f"artist-{index:02d}", external_id=f"view-{index:02d}")
 
-    body = (await client.get("/pipeline/trackid-files?sort=filename&order=desc&page_size=10")).text
+    body = (await client.get("/pipeline/tracklist-sets?sort=artist&order=desc&page_size=10")).text
     head = body[body.index("<thead") : body.index("<tbody")]
 
     # A header click re-emits page_size, and resets to page 1 rather than holding a stale offset.
@@ -836,5 +647,5 @@ async def test_sorting_preserves_view_state_and_the_pager_preserves_the_sort(cli
 
     # The pager carries the ACTIVE sort forward, so Next stays inside the chosen order.
     pager = body[body.index("</table>") :]
-    assert "sort=filename" in pager
+    assert "sort=artist" in pager
     assert "order=desc" in pager

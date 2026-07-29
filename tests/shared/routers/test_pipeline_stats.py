@@ -6,7 +6,7 @@ file locks the router-side contract:
 
 * ``build_dashboard_context`` seeds a derived ``stats`` dict whose seven keys equal the mapped
   ``get_stage_progress`` values (discovered->discovery.done, metadata_extracted->metadata.done,
-  fingerprinted->fingerprint.done, analyzed->analyze.done, proposal_generated->proposals.done,
+  analyzed->analyze.done, proposal_generated->proposals.done,
   approved->execute.total, executed->execute.done).
 * ``_build_dag_context`` sets ``notYetEnriched = max(metadata.total - metadata.done, 0)`` (D-05) --
   NOT the old ``discovered - metadata_extracted`` (which read ``FileRecord.state``).
@@ -100,7 +100,6 @@ async def test_dashboard_context_stats_derived_from_stage_progress(client: Async
 
     assert stats["discovered"] == int(progress["discovery"]["done"] or 0)
     assert stats["metadata_extracted"] == int(progress["metadata"]["done"] or 0)
-    assert stats["fingerprinted"] == int(progress["fingerprint"]["done"] or 0)
     assert stats["analyzed"] == int(progress["analyze"]["done"] or 0)
     assert stats["proposal_generated"] == int(progress["proposals"]["done"] or 0)
     assert stats["approved"] == int(progress["execute"]["total"] or 0)
@@ -135,7 +134,7 @@ async def test_pipeline_stats_partial_emits_stable_oob_store_ids(client: AsyncCl
     # The three OOB store-write anchors + their stable $store.pipeline.* target keys.
     assert 'id="analyze-files-ready"' in body
     assert "$store.pipeline.discovered =" in body
-    assert 'id="fingerprint-files-ready"' in body
+    assert 'id="metadata-files-ready"' in body
     assert "$store.pipeline.metadataExtracted =" in body
     assert 'id="proposals-files-ready"' in body
     assert "$store.pipeline.analyzed =" in body
@@ -154,5 +153,5 @@ async def test_pipeline_stats_partial_renders_derived_card_labels(client: AsyncC
     response = await client.get("/pipeline/stats")
     assert response.status_code == 200
     body = response.text
-    for label in ("Discovered", "Fingerprinted", "Analyzed", "Proposed", "Approved", "Executed"):
+    for label in ("Discovered", "Analyzed", "Proposed", "Approved", "Executed"):
         assert label in body

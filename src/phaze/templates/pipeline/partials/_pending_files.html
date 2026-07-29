@@ -1,19 +1,20 @@
-{# phaze-5462: the BOUNDED, paged pending-set table shared by the Metadata and Fingerprint workspaces.
+{# phaze-5462: the BOUNDED, paged pending-set table an enrich workspace renders.
 
-   Both workspaces used to render their ENTIRE pending set inline (shell._render_stage ->
-   get_metadata_pending_files / get_fingerprint_pending_files, neither of which has a LIMIT). They
-   measured a harmless ~70 KB with zero rows only because those backlogs happen to be EMPTY in
-   production today -- a metadata stall would have reproduced the Analyze tab's 12.7 MB payload
-   verbatim. The bead's premise that these two "already page" did not survive checking.
+   The workspace used to render its ENTIRE pending set inline (shell._render_stage ->
+   get_metadata_pending_files, which has no LIMIT). It measured a harmless ~70 KB with zero rows only
+   because that backlog happens to be EMPTY in production today -- a metadata stall would have
+   reproduced the Analyze tab's 12.7 MB payload verbatim. The bead's premise that it "already pages"
+   did not survive checking.
 
-   Now they ship an empty host div that hx-gets GET /pipeline/pending-files on load, exactly like
+   Now it ships an empty host div that hx-gets GET /pipeline/pending-files on load, exactly like
    #analyze-files-view -- the SAME paging contract (phaze.services.pagination), the same page size,
    the same Prev/Next affordance, the same empty and loading states.
 
    Context contract:
      * pending_page  -- phaze.services.pagination.Page[FileRecord] (rows/page/page_size/has_next).
-     * stage         -- "metadata" | "fingerprint" (validated against the router allowlist; carried
+     * stage         -- the enrich stage key (validated against the router allowlist; carried
                         ONLY as an autoescaped query value, never spliced into a template path).
+                        "metadata" is the only stage today; the branch below is the per-stage seam.
      * host_id       -- the id of the host div this fragment is swapped into (hx-target for the pager).
 #}
 {% set _is_metadata = stage == "metadata" %}
@@ -23,10 +24,10 @@
     {% set empty_body = "Every discovered file already has extracted metadata." %}
     {% set row_id_prefix = "metadata-row" %}
 {% else %}
-    {% set columns = ["File", "Duration", "Chromaprint", "AcoustID"] %}
-    {% set empty_heading = "Nothing to fingerprint" %}
-    {% set empty_body = "All discovered files have a chromaprint fingerprint." %}
-    {% set row_id_prefix = "fingerprint-row" %}
+    {% set columns = ["File"] %}
+    {% set empty_heading = "Nothing pending" %}
+    {% set empty_body = "Every discovered file has already been through this stage." %}
+    {% set row_id_prefix = "pending-row" %}
 {% endif %}
 <div>
     {% set ns = namespace(rows=[]) %}

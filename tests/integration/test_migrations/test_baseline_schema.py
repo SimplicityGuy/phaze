@@ -15,6 +15,10 @@ durable value against the one baseline that replaced it:
   42-entry drift (ORM-less ``files_state_archive``, generated ``search_vector`` columns,
   trgm/partial/functional indexes, timestamp-typing nuances), so ANY change to the set
   (new drift, or silently resolved drift) fails and forces a deliberate update here.
+  phaze-0jpe added three PENDING-MIGRATION entries (``fingerprint_results`` + its two
+  indexes): the ORM model is gone with the feature, the baseline still creates the table,
+  and bead phaze-0jpe.4 owns the ``DROP TABLE`` that resolves them. See the block comment
+  on those entries below before touching them.
 
 Runs on the 5433 migrations harness (``MIGRATIONS_TEST_DATABASE_URL``, conftest.py).
 """
@@ -156,6 +160,21 @@ _FROZEN_AUTOGEN_DRIFT = frozenset(
         ("remove_index", "ix_tracklists_artist_trgm"),
         ("remove_index", "ix_tracklists_search_vector"),
         ("remove_table", "files_state_archive"),
+        # phaze-0jpe -- PENDING MIGRATION, not a permanent nuance like the entries above.
+        #
+        # The fingerprint feature was removed in phaze-0jpe.2, taking `models/fingerprint.py` with
+        # it, so `fingerprint_results` is no longer on `Base.metadata` -- while migration 039 still
+        # creates the table and its two partial indexes. That is a genuine ORM<->schema divergence
+        # and it is REAL: an operator's database still has the table.
+        #
+        # The `DROP TABLE fingerprint_results` belongs to bead phaze-0jpe.4 (the schema half of the
+        # molecule), deliberately kept out of the code-removal bead so the code change never lands a
+        # half-applied schema. These three entries are the honest record of that gap. When .4 lands,
+        # this test goes RED on the "drift silently resolved" arm -- which is the intended signal to
+        # DELETE these three lines, not to widen the set.
+        ("remove_table", "fingerprint_results"),
+        ("remove_index", "ix_fprint_file_engine"),
+        ("remove_index", "ix_fprint_success"),
     }
 )
 
