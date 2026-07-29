@@ -1463,10 +1463,15 @@ async def trigger_backfill_cloud(
         # candidate's row visibly changes). It does NOT close the narrower "ledger already committed,
         # the matching saq_jobs row insert still pending" interleaving the live_keys snapshot can also
         # miss -- that shape is indistinguishable from a genuine stale orphan by ANY read of this row's
-        # own content (its enqueued_at never changes), and closing it fully would require an advisory
-        # lock shared with the SAQ before_enqueue chokepoint every process_file producer goes through.
-        # Deliberately out of scope here (P3, self-limiting, single-user deployment -- see the bead's
-        # verifier notes); a complete close is tracked as follow-up work, not silently accepted as fixed.
+        # own content (its enqueued_at never changes).
+        #
+        # phaze-8xbv (ADR-0003, docs/design/0003-backfill-ledger-race-residual-window.md): this
+        # residual window is a PERMANENT, DELIBERATE acceptance, not open follow-up work. Closing it
+        # would require intercepting SAQ's PostgresQueue.enqueue() to hold one advisory lock across
+        # its before_enqueue hook chain (our asyncpg ledger write) AND its internal job insert (SAQ's
+        # own psycopg3 pool) as a single unit -- a third-party-library-internals intrusion to close a
+        # window that is one DB round trip wide, never causes double-dispatch, and self-heals on the
+        # next backfill click. See the ADR for the full two-pool analysis.
         ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
         observed_ledger_rows = (
             await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(SchedulingLedger.key.in_(ledger_keys)))
