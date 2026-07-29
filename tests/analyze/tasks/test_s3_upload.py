@@ -87,6 +87,67 @@ async def test_upload_puts_each_part_and_reports_etags(agent_env, tmp_path):  # 
 
 
 @respx.mock
+async def test_report_upload_complete_failure_calls_report_upload_failed(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """phaze-jsrt: a failure DELIVERING the completion callback must still notify control.
+
+    Every byte is transferred by the time ``report_upload_complete`` runs -- a 5xx / 409 / DB error
+    on that call used to bypass ``report_upload_failed`` entirely (the guard covered only the
+    transfer loop) and go terminal with ``S3_UPLOAD_SAQ_RETRIES = 0`` and NO callback at all,
+    stranding ``cloud_job`` UPLOADING until the 6h reaper discards the fully-uploaded object.
+    """
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"A" * 6)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(200, headers={"ETag": '"etag-1"'}))
+
+    class _CompleteFailsApi(_FakeApiClient):
+        async def report_upload_complete(self, file_id, parts):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise RuntimeError("control 5xx on CompleteMultipartUpload")
+
+    api = _CompleteFailsApi()
+    file_id = uuid.uuid4()
+    with pytest.raises(RuntimeError, match="control 5xx"):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert len(api.failed_calls) == 1
+    assert api.failed_calls[0][0] == file_id
+
+
+@respx.mock
+async def test_report_upload_complete_cancellation_reraised_without_callback(agent_env, tmp_path):  # type: ignore[no-untyped-def]
+    """A SAQ job-net cancellation racing the completion callback re-raises without a premature report."""
+    from phaze.tasks.s3_upload import upload_file_s3
+
+    src = _write_file(tmp_path, b"A" * 6)
+    url1 = "https://s3.test/bucket/key?partNumber=1"
+    respx.put(url1).mock(return_value=httpx.Response(200, headers={"ETag": '"etag-1"'}))
+
+    class _CompleteCancelsApi(_FakeApiClient):
+        async def report_upload_complete(self, file_id, parts):  # type: ignore[no-untyped-def]  # noqa: ARG002 -- stub raises, args unused
+            raise asyncio.CancelledError
+
+    api = _CompleteCancelsApi()
+    file_id = uuid.uuid4()
+    with pytest.raises(asyncio.CancelledError):
+        await upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(src),
+            part_urls=[url1],
+            part_size_bytes=64,
+            agent_id="fileserver-1",
+        )
+    assert api.failed_calls == []
+
+
+@respx.mock
 async def test_non_2xx_part_raises_runtimeerror_no_callback(agent_env, tmp_path):  # type: ignore[no-untyped-def]
     """A non-2xx part PUT raises RuntimeError (SAQ retry) and never reports completion."""
     from phaze.tasks.s3_upload import upload_file_s3
