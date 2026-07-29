@@ -43,14 +43,15 @@ down_revision = "047"
 branch_labels = None
 depends_on = None
 
-# Static string-literal DDL -- no interpolation, no user input reaches this SQL.
-_INDEX_NAME = "ix_files_original_filename_id"
-_CREATE_INDEX = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_INDEX_NAME} ON public.files USING btree (original_filename, id)"
-_DROP_INDEX = f"DROP INDEX CONCURRENTLY IF EXISTS public.{_INDEX_NAME}"
+# Static string-literal DDL -- no interpolation, no user input reaches this SQL. Keep all three
+# statements as PLAIN literals (the index name spelled out in each): an f-string here, even one
+# interpolating a module-level constant, trips semgrep's formatted-sql-query /
+# sqlalchemy-execute-raw-query blocking rules in CI.
+_CREATE_INDEX = "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_files_original_filename_id ON public.files USING btree (original_filename, id)"
+_DROP_INDEX = "DROP INDEX CONCURRENTLY IF EXISTS public.ix_files_original_filename_id"
 # to_regclass(...) is NULL when the index doesn't exist yet, and the WHERE comparison against a
 # NULL indexrelid then matches no pg_index row -- so this returns NULL (falsy), not an error, on
 # a first-ever run. Only an existing-but-INVALID index (an interrupted CONCURRENTLY build) is truthy.
-# Static string literal (matches _INDEX_NAME above) -- not an f-string, so ruff's S608 doesn't flag it.
 _CHECK_INVALID = "SELECT NOT indisvalid FROM pg_index WHERE indexrelid = to_regclass('public.ix_files_original_filename_id')"
 
 
