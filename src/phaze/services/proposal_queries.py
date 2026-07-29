@@ -111,6 +111,29 @@ class ProposalStats:
     avg_confidence: float | None
 
 
+async def count_pending_above_confidence(session: AsyncSession, threshold: float = 0.9) -> int:
+    """Count PENDING proposals with confidence >= threshold -- read-only, mirrors the EXACT
+    predicate :func:`approve_pending_above_confidence` bulk-approves (phaze-rw14).
+
+    The Rename/Move workspaces' bulk-approve confirm dialog used to quote the RENDERED row count
+    (``rename_proposals | length``, capped at 200 and unfiltered by confidence) as the number of
+    proposals the action was about to approve. That is wrong on two axes at once: it is the
+    render cap, not the true match count, and the render is ordered confidence-ASC, so the visible
+    200 can hold zero rows meeting the threshold while the server-side predicate approves
+    thousands. This gives the confirm dialog the real number instead.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(RenameProposal)
+        .where(
+            RenameProposal.status == ProposalStatus.PENDING.value,
+            RenameProposal.confidence >= threshold,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
 async def get_proposal_stats(session: AsyncSession) -> ProposalStats:
     """Get aggregate proposal statistics in a single query."""
     stmt = select(

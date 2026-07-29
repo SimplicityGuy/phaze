@@ -17,6 +17,7 @@ from phaze.services.proposal_queries import (
     ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
+    count_pending_above_confidence,
     get_proposal_stats,
     get_proposal_with_file,
     get_proposals_page,
@@ -498,6 +499,36 @@ async def test_approve_pending_above_confidence_reads_latest_confidence(session:
     refetched = await session.get(RenameProposal, proposal.id)
     assert refetched is not None
     assert refetched.status == ProposalStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# count_pending_above_confidence (phaze-rw14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_pending_above_confidence_matches_approve_predicate(session: AsyncSession) -> None:
+    """The count mirrors EXACTLY what approve_pending_above_confidence would approve right now --
+    PENDING only, confidence >= threshold, NULL confidence excluded.
+    """
+    await _create_proposal(session, original_filename="hc1.mp3", confidence=0.95)
+    await _create_proposal(session, original_filename="hc2.mp3", confidence=0.91)
+    await _create_proposal(session, original_filename="lc.mp3", confidence=0.5)
+    await _create_proposal(session, original_filename="null_conf.mp3", confidence=None)
+    await _create_proposal(session, original_filename="hc_approved.mp3", confidence=0.99, status=ProposalStatus.APPROVED)
+
+    count = await count_pending_above_confidence(session, threshold=0.9)
+    assert count == 2
+
+    # And it agrees with what actually gets approved for the same threshold.
+    approved_ids = await approve_pending_above_confidence(session, threshold=0.9)
+    assert len(approved_ids) == 2
+
+
+@pytest.mark.asyncio
+async def test_count_pending_above_confidence_zero_when_nothing_matches(session: AsyncSession) -> None:
+    await _create_proposal(session, original_filename="lc.mp3", confidence=0.2)
+    assert await count_pending_above_confidence(session, threshold=0.9) == 0
 
 
 # ---------------------------------------------------------------------------
