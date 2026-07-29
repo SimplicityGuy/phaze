@@ -515,6 +515,42 @@ class TestExtractTagsDurationBitrate:
         assert result.duration is None
         assert result.bitrate is None
 
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_cd_quality_wav_bitrate_stored_unclamped(self, mock_file):
+        """phaze-iw2k: a stereo CD-quality-or-better WAV/AIFF bitrate is well over 1,000,000.
+
+        mutagen reports bitrate in BITS per second for every format (wave.py: ``channels *
+        bits_per_sample * sample_rate``). 44100 Hz / 16-bit / stereo = 1,411,200 bps -- extract_tags
+        must store the raw bps value unchanged (the wire contract's bound is what widened to
+        accommodate it, not this extraction boundary).
+        """
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 180.0
+        mock_audio.info.bitrate = 1_411_200
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.wav")
+
+        assert result.bitrate == 1_411_200
+
+    @patch("phaze.services.metadata.mutagen.File")
+    def test_24bit_hires_flac_bitrate_stored_unclamped(self, mock_file):
+        """phaze-iw2k: 24-bit/96kHz hi-res FLAC/ALAC bitrate (~2-4 Mbps) is also well over 1,000,000."""
+        mock_audio = MagicMock()
+        mock_audio.tags = None
+        mock_audio.info = MagicMock()
+        mock_audio.info.length = 200.0
+        mock_audio.info.bitrate = 3_000_000
+
+        mock_file.return_value = mock_audio
+
+        result = extract_tags("/fake/path.flac")
+
+        assert result.bitrate == 3_000_000
+
 
 class TestStripsNulBytes:
     """Regression tests: NUL bytes (U+0000) must never leave the agent.
