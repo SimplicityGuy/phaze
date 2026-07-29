@@ -18,7 +18,7 @@ import uuid  # noqa: TC003
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import delete, exists, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
@@ -445,6 +445,10 @@ async def _route_discovered_by_duration(
     local_candidates: list[FileRecord] = []
     skipped = 0
     held = 0
+    # phaze-e8kv: tallied separately from `skipped` -- the local-routing block below UNCONDITIONALLY
+    # reassigns `skipped` (never accumulates into it), so a count folded into `skipped` inside this
+    # loop would be silently discarded before the function returns.
+    deleted_before_hold = 0
 
     for file, duration in files_with_duration:
         # Phase 51 (D-02): when cloud-burst is OFF nothing is "long" -- every file falls to the
@@ -458,7 +462,25 @@ async def _route_discovered_by_duration(
             # that violated the hard shadow invariant AWAITING_CLOUD => cloud_job(status='awaiting')
             # on every held file since migration 032. The helper dual-writes file.state (D-00c) and
             # NEVER commits; the existing post-loop commit below is the hold's own commit boundary.
-            await hold_awaiting_cloud(session, file)
+            #
+            # phaze-e8kv: hold_awaiting_cloud's INSERT carries a NOT NULL FK to files.id, and this
+            # candidate list was read well before this loop reaches it (a loop over potentially
+            # hundreds of files) -- a concurrent delete_scan cascade (services/scan_deletion.py) can
+            # remove the FileRecord in that window and FK-violate the INSERT. Mirror force_skip_stage's
+            # two-layer discipline (rule 4/5): run the hold inside a SAVEPOINT and treat a caught
+            # IntegrityError as "file concurrently deleted -- skip and count it", so one vanished row
+            # costs one skipped file instead of an unhandled 500 aborting the whole run (and every
+            # earlier hold in the same transaction along with it).
+            try:
+                async with session.begin_nested():
+                    await hold_awaiting_cloud(session, file)
+            except IntegrityError:
+                logger.info(
+                    "route_discovered_by_duration: file deleted before hold could commit; skipping",
+                    file_id=str(file.id),
+                )
+                deleted_before_hold += 1
+                continue
             held += 1
         else:
             local_candidates.append(file)
@@ -502,7 +524,7 @@ async def _route_discovered_by_duration(
         "local": local,
         "cloud": 0,
         "awaiting": held,
-        "skipped": skipped,
+        "skipped": skipped + deleted_before_hold,
         "no_active_agent": int(no_active_agent),
     }
 
@@ -1424,9 +1446,35 @@ async def trigger_backfill_cloud(
         await session.execute(
             update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
         )
-        await session.execute(
-            delete(SchedulingLedger).where(SchedulingLedger.key.in_([process_file_job_key(fid) for fid in candidate_ids])),
-        )
+        # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
+        # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
+        # this point, so a concurrent process_file enqueue (deepen_analysis / retry_analysis_failed's
+        # background loop) for one of these EXACT candidates can land in the gap between that snapshot
+        # and this statement (each such gap is a single DB round trip wide). ``upsert_ledger_entry`` --
+        # the SAQ before_enqueue write hook every process_file producer shares -- refreshes
+        # ``enqueued_at`` on EVERY re-enqueue of a still-existing key, including that race. Conditioning
+        # the delete on the value just read here means a concurrent re-enqueue's ledger commit landing in
+        # that gap changes the row this DELETE is looking for, so it can never remove a ledger row a live
+        # producer has claimed -- the row survives, the file stays correctly in-flight, and this
+        # candidate is silently left for a later backfill click instead of being double-dispatched to
+        # local AND cloud.
+        #
+        # This closes the window where the CONCURRENT enqueue's ledger write itself lands here (the
+        # candidate's row visibly changes). It does NOT close the narrower "ledger already committed,
+        # the matching saq_jobs row insert still pending" interleaving the live_keys snapshot can also
+        # miss -- that shape is indistinguishable from a genuine stale orphan by ANY read of this row's
+        # own content (its enqueued_at never changes), and closing it fully would require an advisory
+        # lock shared with the SAQ before_enqueue chokepoint every process_file producer goes through.
+        # Deliberately out of scope here (P3, self-limiting, single-user deployment -- see the bead's
+        # verifier notes); a complete close is tracked as follow-up work, not silently accepted as fixed.
+        ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
+        observed_ledger_rows = (
+            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(SchedulingLedger.key.in_(ledger_keys)))
+        ).all()
+        if observed_ledger_rows:
+            await session.execute(
+                delete(SchedulingLedger).where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_ledger_rows)),
+            )
 
     counts = await _route_discovered_by_duration(
         request.app.state,
