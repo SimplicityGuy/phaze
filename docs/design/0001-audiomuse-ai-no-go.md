@@ -14,9 +14,12 @@
 > no longer true — "Dedup and rename continue to rest on the existing fingerprinting engines"
 > (Consequences → Accepted) — because there are no longer any fingerprinting engines to rest
 > on. Per operator decision 2026-07-29 the **NO-GO stands as written**: nothing in this ADR's
-> cost, licence or feasibility analysis changed. What *is* re-opened is the narrower question
-> of how phaze should detect near-duplicates now that fingerprinting is gone; that is tracked
-> as its own decision bead and is not decided here.
+> cost, licence or feasibility analysis changed. The narrower question of how phaze should
+> detect near-duplicates now that fingerprinting is gone was decided the same day (decision
+> bead `phaze-pw7v.6`): **permanent NO-GO — sha256 exact-match is phaze's dedup, deliberately.**
+> The measurement bar ytgo.7 set for acoustic near-dup (≥ 50 operator-labelled real pairs) was
+> judged not worth the labeling cost for a single-user archive; any future change is a new
+> decision, not a reopening.
 
 ______________________________________________________________________
 
