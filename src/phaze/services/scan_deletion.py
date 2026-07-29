@@ -36,7 +36,6 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch
@@ -79,7 +78,7 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
     # phaze-q1ow: lock the batch's file rows FOR UPDATE before running any of the child
     # deletes. Every FK below is a bare `ForeignKey("files.id")` with NO `ondelete` (see the
     # module docstring), so the FINAL `DELETE FROM files` (step 15 below) runs Postgres' normal
-    # RI NO-ACTION check -- and a still-running pipeline worker (fingerprint/metadata/analysis/
+    # RI NO-ACTION check -- and a still-running pipeline worker (metadata/analysis/
     # proposal) can legitimately commit a NEW child row referencing one of these files AFTER an
     # earlier step here deletes that table's existing rows but BEFORE the files delete runs,
     # leaving a freshly-committed row referencing a file this transaction is about to delete.
@@ -115,7 +114,6 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         (Tracklist.__tablename__, delete(Tracklist).where(Tracklist.file_id.in_(files_of_batch))),
         (ExecutionLog.__tablename__, delete(ExecutionLog).where(ExecutionLog.proposal_id.in_(proposals_of_batch))),
         (RenameProposal.__tablename__, delete(RenameProposal).where(RenameProposal.file_id.in_(files_of_batch))),
-        (FingerprintResult.__tablename__, delete(FingerprintResult).where(FingerprintResult.file_id.in_(files_of_batch))),
         (AnalysisResult.__tablename__, delete(AnalysisResult).where(AnalysisResult.file_id.in_(files_of_batch))),
         (FileMetadata.__tablename__, delete(FileMetadata).where(FileMetadata.file_id.in_(files_of_batch))),
         (TagWriteLog.__tablename__, delete(TagWriteLog).where(TagWriteLog.file_id.in_(files_of_batch))),

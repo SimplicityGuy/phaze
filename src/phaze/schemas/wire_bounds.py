@@ -19,8 +19,8 @@ That is one instance of a class, not a one-off. Seven sibling defects share the 
 value crosses the boundary without a constraint matching the storage type it lands in, Postgres
 raises (``StringDataRightTruncation`` / ``NumericValueOutOfRange`` / a cast failure), the
 transaction aborts, and a 500 escapes. The convention that prevents it already existed and was
-applied exactly (``agent_files.py`` ``max_length=10`` <-> ``String(10)``; ``agent_fingerprint.py``
-``max_length=20`` <-> ``String(20)``) -- it was simply never written down, so it was possible to
+applied exactly (``agent_files.py`` ``max_length=10`` <-> ``String(10)``) -- it was simply never
+written down, so it was possible to
 deviate silently. This module writes it down and the paired test enforces it.
 
 THE CONTRACT
@@ -28,8 +28,7 @@ THE CONTRACT
 
 1. A STRING FIELD'S ``max_length`` EQUALS ITS MAPPED ``String(N)`` WIDTH.
    Not less (you would reject values the column accepts), not more (you would hand Postgres a
-   value it must truncate-or-raise). Exactly N. This is the rule ``agent_files`` and
-   ``agent_fingerprint`` already follow.
+   value it must truncate-or-raise). Exactly N. This is the rule ``agent_files`` already follows.
 
 2. A ``Text`` COLUMN NEEDS NO ``max_length``.
    ``Text`` is unbounded in Postgres, so a cap would invent a limit the storage does not have and
@@ -92,7 +91,7 @@ Bound a string to its column width, and an integer to its domain::
 
     from phaze.schemas.wire_bounds import INT32_MAX
 
-    status: str = Field(min_length=1, max_length=20)   # -> fingerprints.status String(20), rule 1
+    status: str = Field(min_length=1, max_length=20)   # -> some_table.status String(20), rule 1
     notes: str | None = None                            # -> Text, unbounded, rule 2
     confidence: int = Form(ge=0, le=100)                # 0-100 score, domain bound beats int32, rule 3
     window_index: int = Field(ge=0, le=INT32_MAX)       # no domain bound known -> column bound, rule 3

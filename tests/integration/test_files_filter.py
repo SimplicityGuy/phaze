@@ -82,8 +82,8 @@ async def test_metadata_failed_filter_returns_only_failed_rows(client: AsyncClie
 async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClient, session: AsyncSession) -> None:
     """A failed filter that matches nothing renders the failed-filter empty-state copy (Copywriting Contract).
 
-    Only a metadata failure is seeded, so filtering ``stage=fingerprint&bucket=failed`` matches zero rows --
-    the empty branch must show "No failed files in Fingerprint" / "Nothing is stuck in Fingerprint right now.",
+    Only a metadata failure is seeded, so filtering ``stage=analyze&bucket=failed`` matches zero rows --
+    the empty branch must show "No failed files in Analyze" / "Nothing is stuck in Analyze right now.",
     NOT the unfiltered "No files yet" copy.
     """
     failed = _make_file("failedmeta")
@@ -92,12 +92,12 @@ async def test_failed_filter_empty_renders_failed_filter_copy(client: AsyncClien
     session.add(FileMetadata(file_id=failed.id, failed_at=datetime.now(UTC), error_message="boom"))
     await session.commit()
 
-    resp = await client.get("/pipeline/files?stage=fingerprint&bucket=failed")
+    resp = await client.get("/pipeline/files?stage=analyze&bucket=failed")
     assert resp.status_code == 200
     body = resp.text
 
-    assert "No failed files in Fingerprint" in body
-    assert "Nothing is stuck in Fingerprint right now." in body
+    assert "No failed files in Analyze" in body
+    assert "Nothing is stuck in Analyze right now." in body
     # The unfiltered empty copy must NOT be what renders under an active failed filter.
     assert "No files yet" not in body
 

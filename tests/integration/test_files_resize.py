@@ -5,7 +5,7 @@ base.html/shell.html next to the theme store) and cannot be exercised from a ser
 response -- there is no browser here. What CAN and MUST be pinned server-side is the contract the
 JS depends on:
 
-* every one of the eight headers (the two real ``FileRecord`` columns plus the six stage-matrix
+* every one of the seven headers (the two real ``FileRecord`` columns plus the five stage-matrix
   columns, phaze-cvn6.1's single header loop) carries exactly one resize handle, keyed to its own
   column label via ``data-col-resize-handle`` -- "a resize handle goes in one place" (cvn6.1's
   header-loop rule) extended to resizability: it is decided ONCE, after both the sortable and
@@ -21,7 +21,7 @@ JS depends on:
   (the full, un-truncated path, always present so a screen reader / hover always has it) but no
   longer carries a fixed ``max-w-md`` -- that Tailwind cap would fight the operator's drag instead
   of enabling it, since the column's rendered width now comes from the resizable ``<colgroup>``;
-* the six stage ``<td>``s keep cvn6.2's ``whitespace-nowrap`` no-wrap contract -- resizing must not
+* the five stage ``<td>``s keep cvn6.2's ``whitespace-nowrap`` no-wrap contract -- resizing must not
   reopen the two-line wrapping bug that bead fixed.
 """
 
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-_ALL_COLUMNS = ["File", "Type", "Meta", "FP", "Analyze", "Prop", "Appr", "Exec"]
+_ALL_COLUMNS = ["File", "Type", "Meta", "Analyze", "Prop", "Appr", "Exec"]
 
 
 def _make_file(current_path: str) -> FileRecord:
@@ -63,7 +63,7 @@ def _make_file(current_path: str) -> FileRecord:
 
 @pytest.mark.asyncio
 async def test_every_header_carries_exactly_one_resize_handle(client: AsyncClient, session: AsyncSession) -> None:
-    """All eight headers -- sortable and (if ever unsortable) plain alike -- get one handle each.
+    """Every header -- sortable and (if ever unsortable) plain alike -- gets one handle each.
 
     Asserted against ``FILES_SORT`` rather than a hardcoded list so this test and
     ``test_every_rendered_header_label_is_whitelisted_and_vice_versa`` share the same anti-drift
@@ -77,7 +77,7 @@ async def test_every_header_carries_exactly_one_resize_handle(client: AsyncClien
 
     handles = re.findall(r'data-col-resize-handle="([^"]+)"', head)
     assert handles == [column.label for column in FILES_SORT.columns]
-    assert len(handles) == len(set(handles)) == 8
+    assert len(handles) == len(set(handles)) == 7
 
 
 @pytest.mark.asyncio
@@ -150,5 +150,5 @@ async def test_stage_cells_keep_the_no_wrap_contract_after_resize_wiring(client:
     body = (await client.get("/pipeline/files")).text
     row = body[body.index("<tbody") :]
 
-    # Six stage cells, each still carrying the no-wrap contract cvn6.2 introduced.
-    assert row.count("px-6 py-3 whitespace-nowrap") == 6
+    # Five stage cells, each still carrying the no-wrap contract cvn6.2 introduced.
+    assert row.count("px-6 py-3 whitespace-nowrap") == 5

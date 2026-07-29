@@ -1,6 +1,6 @@
 # Test Bucket Mapping (Phase 63-02)
 
-The single source of truth for the 9 bucket **names** is `tests/buckets.json`.
+The single source of truth for the bucket **names** is `tests/buckets.json`.
 This file records the explicit file->bucket assignment for the reorg, plus the
 pre-reorg baseline the reorg must preserve (CI-03).
 
@@ -34,21 +34,28 @@ The post-reorg full suite MUST report the same **2566 passed** (no test lost, no
 |--------|-----------|
 | discovery | 19 |
 | metadata | 3 |
-| fingerprint | 6 |
-| analyze | 29 |
+| analyze | 31 |
 | identify | 12 |
 | review | 24 |
 | agents | 38 |
 | integration | 21 |
 | shared | 61 |
 
-> **Post-reorg addition (phaze-uciu.1):** a tenth bucket `services` was added to
+> **Post-reorg addition (phaze-uciu.1):** a further bucket `services` was added to
 > `tests/buckets.json` to home `tests/services/` — regression tests for the top-level
 > `services/` FastAPI sidecars (audfprint, panako), which live OUTSIDE `src/phaze` and so
 > were previously outside every bucket and the whole pytest testpath. It rides the same
 > matrix-shard → coverage-combine → single Codecov upload flow as every other bucket
 > (`just test-bucket services`, `--cov=phaze`); the sidecars' own code stays out of the
 > `source=["phaze"]` coverage gates by design.
+
+> **Removal (phaze-0jpe):** the `fingerprint` bucket (6 files) is gone — audio fingerprinting was
+> removed from the product, so the code those tests covered no longer exists. Two files that lived
+> under `tests/fingerprint/` were NOT fingerprint tests: `test_queue_introspection.py` (the SAQ
+> `active` breakdown, phaze-grx3) and `test_aborting_reaper.py` (the zombie-`aborting` reaper,
+> phaze-e57w) both exercise shared broker machinery and merely used a fingerprint task name in their
+> fixtures. They moved to `tests/analyze/services/` and `tests/analyze/tasks/` re-keyed to
+> `process_file`, which is why `analyze` reads 31 above rather than 29.
 
 ## File -> bucket assignment
 
@@ -84,12 +91,6 @@ to `queue_fakes_test.py` on move so it reads as the test file it is.
 | tests/test_routers/test_agent_metadata.py | metadata | tests/metadata/routers/test_agent_metadata.py |
 | tests/test_services/test_metadata.py | metadata | tests/metadata/services/test_metadata.py |
 | tests/test_tasks/test_metadata_extraction.py | metadata | tests/metadata/tasks/test_metadata_extraction.py |
-| tests/test_models/test_fingerprint.py | fingerprint | tests/fingerprint/models/test_fingerprint.py |
-| tests/test_routers/test_agent_fingerprint.py | fingerprint | tests/fingerprint/routers/test_agent_fingerprint.py |
-| tests/test_routers/test_pipeline_fingerprint.py | fingerprint | tests/fingerprint/routers/test_pipeline_fingerprint.py |
-| tests/test_services/test_fingerprint.py | fingerprint | tests/fingerprint/services/test_fingerprint.py |
-| tests/test_services/test_fingerprint_locality.py | fingerprint | tests/fingerprint/services/test_fingerprint_locality.py |
-| tests/test_tasks/test_fingerprint.py | fingerprint | tests/fingerprint/tasks/test_fingerprint.py |
 | tests/test_deterministic_key.py | analyze | tests/analyze/core/test_deterministic_key.py |
 | tests/test_job_runner.py | analyze | tests/analyze/core/test_job_runner.py |
 | tests/test_models/test_analysis_window.py | analyze | tests/analyze/models/test_analysis_window.py |

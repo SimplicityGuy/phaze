@@ -9,7 +9,7 @@ lane can run -- ~3449 observed against lane concurrency 2 -- and those extra row
 ``started``/``touched`` frozen at dequeue until the sweep eventually retries them.
 
 So a raw ``SELECT count(*) ... WHERE status='active'`` is a TRAP: "active: 3449" reads as "3449 files
-fingerprinting" when the real figure is 2. This helper splits that count using the reliable
+being processed" when the real figure is 2. This helper splits that count using the reliable
 discriminator established empirically in spike phaze-qmc2.1:
 
 - ``attempts >= 1`` (the ``attempts`` key present in the JSON blob -- SAQ ``to_dict`` omits it when 0)
@@ -19,7 +19,7 @@ discriminator established empirically in spike phaze-qmc2.1:
   executed -- a claim, not a run.
 
 ``touched`` is deliberately NOT used to judge "running": SAQ's sweeper bumps ``touched`` on every
-abort pass, and the fingerprint task has no heartbeat, so ``touched`` distinguishes nothing here.
+abort pass, and the tasks measured here have no heartbeat, so ``touched`` distinguishes nothing.
 
 A claimed-but-unrun row is NOT lost: once it passes ``timeout`` the sweep aborts it, and because
 ``attempts`` is still 0 it is ``retry()``'d back to ``queued`` (not aborted) WITHOUT burning retry

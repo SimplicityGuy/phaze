@@ -268,7 +268,7 @@ async def test_queue_depths_degrade_to_zero_without_app_state(session: AsyncSess
 
     result = await get_lane_queue_depths(session, _BareState(), "compute-x", "compute")
     assert result.depths is not None
-    assert set(result.depths) == {"analyze", "fingerprint", "meta", "io"}
+    assert set(result.depths) == {"analyze", "meta", "io"}
     assert all(v == 0 for v in result.depths.values())
 
 
@@ -317,14 +317,12 @@ async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(session: As
     router = FakeTaskRouter()
     # Seed depths on the agent_ref's lanes -- the queues real dispatch actually writes to.
     router.set_counts("compute-agent-01", lane="analyze", queued=3, active=2)
-    router.set_counts("compute-agent-01", lane="fingerprint", queued=1, active=0)
     app_state = SimpleNamespace(task_router=router)
 
     result = await get_lane_queue_depths(session, app_state, "oci-a1", "compute")
 
     assert result.depths is not None
     assert result.depths["analyze"] == 5, "a saturated agent_ref lane must not read as idle (all zeros)"
-    assert result.depths["fingerprint"] == 1
     assert result.depths["meta"] == 0
     assert result.depths["io"] == 0
     assert result.agent_id == "compute-agent-01"
@@ -337,7 +335,7 @@ async def test_queue_depths_resolve_compute_agent_ref_not_backend_id(session: As
 # phaze-2u8v.1: the SAME class of bug that phaze-tbps closed for COMPUTE lanes was left
 # open for the two kinds the operator actually runs. A registry of [local, kueue "vox"]
 # built ``phaze-agent-local-*`` / ``phaze-agent-vox-*`` -- queues no producer writes and
-# no worker consumes -- so both lane panels rendered "analyze 0 · fingerprint 0 · meta 0 ·
+# no worker consumes -- so both lane panels rendered "analyze 0 · meta 0 ·
 # io 0" while the SAME work read 2075 on the fileserver agent's own detail pane.
 #
 # A local lane's work is enqueued by ``LocalBackend.dispatch`` to the LIVE FILESERVER
@@ -405,7 +403,6 @@ async def test_queue_depths_local_lane_reads_the_live_fileserver_agent(session: 
     assert result.depths is not None
     assert result.depths["analyze"] == 2075, "the local lane must report the fileserver agent's real analyze depth"
     assert result.depths["io"] == 8
-    assert result.depths["fingerprint"] == 0
     assert result.depths["meta"] == 0
     assert set(router.queue_for_calls) == {"nox"}, "the registry id must never be used as a queue key"
 
@@ -484,7 +481,7 @@ async def test_lane_identity_maps_to_the_real_saq_queue_names(session: AsyncSess
     # a broker, and must not touch the worktree's own Postgres/Redis.
     router = AgentTaskRouter(queue_url="postgresql://never-connected/never-connected", cache_redis_url="redis://never-connected")
     names = [router.queue_for(local.agent_id, lane).name for lane in LANES]
-    assert names == ["phaze-agent-nox-analyze", "phaze-agent-nox-fingerprint", "phaze-agent-nox-meta", "phaze-agent-nox-io"]
+    assert names == ["phaze-agent-nox-analyze", "phaze-agent-nox-meta", "phaze-agent-nox-io"]
 
     kueue = await resolve_lane_queue_agent(session, "vox", "kueue")
     assert kueue.agent_id is None, "a kueue lane must resolve to NO agent queue -- there is none to name"
@@ -608,7 +605,7 @@ async def test_lane_detail_template_renders_real_depths_and_names_the_agent() ->
     body = _render_lane_detail(
         lane=lane,
         recent_completions=[],
-        queue_depths={"analyze": 2075, "fingerprint": 0, "meta": 0, "io": 8},
+        queue_depths={"analyze": 2075, "meta": 0, "io": 8},
         queue_depths_agent="nox",
         queue_depths_note=None,
         refreshed_at=None,
@@ -623,7 +620,7 @@ async def test_lane_detail_template_renders_real_depths_and_names_the_agent() ->
 
 @pytest.mark.asyncio
 async def test_lane_detail_template_renders_the_note_instead_of_a_zero_row() -> None:
-    """``queue_depths is None`` -> the reason, NEVER "analyze 0 · fingerprint 0 · meta 0 · io 0".
+    """``queue_depths is None`` -> the reason, NEVER "analyze 0 · meta 0 · io 0".
 
     This is the exact string the operator reported on both lane panels. A kueue lane has no SAQ
     agent queue at all, so printing zeros there is a fabricated measurement, not a degraded one.
@@ -643,7 +640,7 @@ async def test_lane_detail_template_renders_the_note_instead_of_a_zero_row() -> 
     assert "Queue depth" in body
     assert KUEUE_NO_SAQ_QUEUE_NOTE in body
     assert "analyze 0" not in body
-    assert "fingerprint 0" not in body
+    assert "meta 0" not in body
 
 
 @pytest.mark.asyncio

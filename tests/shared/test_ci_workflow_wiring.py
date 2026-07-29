@@ -192,7 +192,8 @@ def test_setup_job_reads_the_canonical_buckets_json() -> None:
 
     # And that source of truth must actually be the canonical bucket list the matrix and
     # `just test-bucket` both key off of (drift-proofing the drift-proofer): the nine Plan 01
-    # buckets plus `services` (phaze-uciu.1), which homes the top-level services/ sidecar tests.
+    # buckets, minus `fingerprint` (phaze-0jpe removed the feature and its whole test tree), plus
+    # `services` (phaze-uciu.1), which homes the top-level services/ sidecar tests.
     assert _BUCKETS_JSON.is_file(), f"missing canonical bucket list: {_BUCKETS_JSON}"
     canonical_buckets = json.loads(_BUCKETS_JSON.read_text(encoding="utf-8"))
-    assert len(canonical_buckets) == 10
+    assert len(canonical_buckets) == 9

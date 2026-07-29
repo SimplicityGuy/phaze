@@ -1,6 +1,6 @@
 {# Phase 87 (87-06, UI-04 / D-08/D-09/D-10): the enrich-only force-skip control + confirm dialog.
 
-   Rendered ONCE per ENRICH stage (metadata / fingerprint / analyze) from the record slide-in right
+   Rendered ONCE per ENRICH stage (metadata / analyze) from the record slide-in right
    pane — propose/review/apply NEVER include this partial (the approval-bypass hazard, D-10). A
    self-contained Alpine island: the "Force complete / skip" trigger + an x-trap focus-trap modal
    (the record-slide-in / ⌘K idiom) with a REQUIRED reason textarea. Submit POSTs to the Task-1
@@ -8,7 +8,7 @@
    tick (not optimistic), and the writer's success ack is an aria-live toast (hx-swap-oob).
 
    Params (set via {% with %} before the include):
-     * stage_value -- the enrich stage: 'metadata' | 'fingerprint' | 'analyze'.
+     * stage_value -- the enrich stage: 'metadata' | 'analyze'.
      * stage_label -- the pill label (Meta / FP / Analyze) — informational only.
      * file_id     -- the file UUID (path scope for the writer).
 

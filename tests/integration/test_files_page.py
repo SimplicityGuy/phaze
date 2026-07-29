@@ -5,12 +5,11 @@ DoS-relevant anti-features:
 
 * **Bounded, no whole-corpus COUNT per poll** (T-87-11): the emitted SQL is LIMIT-bounded and contains
   NO ``COUNT(`` -- ``has_next`` rides a ``LIMIT page_size + 1`` sentinel row, not a count.
-* **Correlated per-page derivation**: each row's six buckets come from the correlated ``stage_status_case``
+* **Correlated per-page derivation**: each row's buckets come from the correlated ``stage_status_case``
   CASE columns (evaluated for the page rows only), matching the seeded marker rows.
 * **Partial indexes are usable** (PERF-01): an ``EXPLAIN`` of the bounded statement (with ``enable_seqscan``
   off, so the planner must reveal which indexes it CAN use on the tiny harness corpus) names the Phase-77
-  partial indexes ``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed`` /
-  ``ix_fprint_success``.
+  partial indexes ``ix_metadata_failed`` / ``ix_analysis_completed`` / ``ix_analysis_failed``.
 * **SAVEPOINT degrade-safe** (T-87-12 / INFLIGHT-02): a forced build error degrades to a safe empty page,
   never a raise.
 
@@ -35,7 +34,6 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.base import Base
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.services.pipeline import _files_page_stmt, get_files_page
 
@@ -167,15 +165,13 @@ async def test_files_page_last_page_has_no_next(db_env: tuple[AsyncSession, Asyn
 
 @pytest.mark.asyncio
 async def test_per_row_buckets_match_seeded_markers(db_env: tuple[AsyncSession, AsyncEngine]) -> None:
-    """Each row's six derived buckets match its seeded output rows (metadata/analyze/fingerprint markers)."""
+    """Each row's derived buckets match its seeded output rows (metadata/analyze markers)."""
     session, _engine = db_env
 
     meta_failed = await _new_file(session)
     session.add(FileMetadata(file_id=meta_failed, failed_at=datetime.now(UTC)))
     analyze_done = await _new_file(session)
     session.add(AnalysisResult(file_id=analyze_done, analysis_completed_at=datetime.now(UTC)))
-    fp_done = await _new_file(session)
-    session.add(FingerprintResult(file_id=fp_done, engine="chromaprint", status="success"))
     plain = await _new_file(session)
     await session.flush()
 
@@ -184,7 +180,6 @@ async def test_per_row_buckets_match_seeded_markers(db_env: tuple[AsyncSession, 
 
     assert by_id[meta_failed][Stage.METADATA.value] == "failed"
     assert by_id[analyze_done][Stage.ANALYZE.value] == "done"
-    assert by_id[fp_done][Stage.FINGERPRINT.value] == "done"
     # A plain discovered file derives not_started across every stage.
     assert set(by_id[plain].values()) == {"not_started"}
 
@@ -206,8 +201,6 @@ async def test_explain_uses_partial_indexes(db_env: tuple[AsyncSession, AsyncEng
     session.add(AnalysisResult(file_id=analyze_done, analysis_completed_at=datetime.now(UTC)))
     analyze_failed = await _new_file(session)
     session.add(AnalysisResult(file_id=analyze_failed, failed_at=datetime.now(UTC)))
-    fp_done = await _new_file(session)
-    session.add(FingerprintResult(file_id=fp_done, engine="chromaprint", status="success"))
     await session.flush()
 
     stmt = _files_page_stmt(page=1, page_size=25, stage=None, bucket=None)
@@ -219,7 +212,7 @@ async def test_explain_uses_partial_indexes(db_env: tuple[AsyncSession, AsyncEng
     rows = (await session.execute(text(f"EXPLAIN {compiled}"))).all()
     plan = "\n".join(r[0] for r in rows)
 
-    for index_name in ("ix_metadata_failed", "ix_analysis_completed", "ix_analysis_failed", "ix_fprint_success"):
+    for index_name in ("ix_metadata_failed", "ix_analysis_completed", "ix_analysis_failed"):
         assert index_name in plan, f"{index_name} not used in EXPLAIN plan:\n{plan}"
 
 

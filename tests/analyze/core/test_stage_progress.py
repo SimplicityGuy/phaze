@@ -21,7 +21,6 @@ from phaze.models.analysis import AnalysisResult
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
@@ -52,7 +51,7 @@ async def test_empty_db_returns_zeros_and_scan_search_has_no_denominator(session
     """An empty DB yields done=0 everywhere and scan_search.total stays None (em-dash sentinel)."""
     progress = await get_stage_progress(session)
 
-    for node in ("discovery", "metadata", "fingerprint", "analyze", "scan_search", "scrape", "match", "proposals", "execute"):
+    for node in ("discovery", "metadata", "analyze", "scan_search", "scrape", "match", "proposals", "execute"):
         assert progress[node]["done"] == 0, node
 
     # The tracklist head node never fabricates a denominator.
@@ -81,36 +80,8 @@ async def test_analyzed_but_no_metadata_counts_independently(session: AsyncSessi
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_done_counts_success_status(session: AsyncSession):
-    """fingerprint.done counts DISTINCT file_id whose fingerprint_results row is in a done state.
-
-    Regression for WR-02: the engine adapters persist ``status="success"`` via ``put_fingerprint``
-    (``fingerprint.py``); ``"completed"`` is NEVER written on that path. Counting only
-    ``status == "completed"`` therefore made ``fingerprint.done`` permanently 0 in production.
-    done now counts the real ``"success"`` value (and tolerates the defensive ``"completed"``,
-    matching ``_trackid_engine_badge``); ``"failed"`` and ``"pending"`` must NOT count.
-    """
-    success_file = _make_file(1)  # the value production actually writes
-    completed_file = _make_file(2)  # defensively tolerated
-    failed_file = _make_file(3)
-    pending_file = _make_file(4)
-    session.add_all([success_file, completed_file, failed_file, pending_file])
-    await session.flush()
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=success_file.id, engine="chromaprint", status="success"))
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=completed_file.id, engine="chromaprint", status="completed"))
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed_file.id, engine="chromaprint", status="failed"))
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=pending_file.id, engine="chromaprint", status="pending"))
-    await session.commit()
-
-    progress = await get_stage_progress(session)
-
-    # success + completed both count; failed + pending are excluded.
-    assert progress["fingerprint"]["done"] == 2
-
-
-@pytest.mark.asyncio
 async def test_metadata_denominator_is_music_video_count(session: AsyncSession):
-    """metadata/fingerprint/analyze share the music+video file count as their denominator."""
+    """metadata/analyze share the music+video file count as their denominator."""
     music = _make_file(1, file_type="mp3")
     video = _make_file(2, file_type="mp4")
     companion = _make_file(3, file_type="cue")  # not music/video -> excluded from the denominator
@@ -120,7 +91,6 @@ async def test_metadata_denominator_is_music_video_count(session: AsyncSession):
     progress = await get_stage_progress(session)
 
     assert progress["metadata"]["total"] == 2
-    assert progress["fingerprint"]["total"] == 2
     assert progress["analyze"]["total"] == 2
 
 
@@ -224,10 +194,10 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
 
     Post-CLEAN-01, ``get_stage_progress`` no longer reads the passed ``session`` -- every independent
     read runs in its OWN ``async_session`` via ``_read_in_own_session``. So the degrade is exercised at
-    the fan-out seam: force the FINGERPRINT enrich-bucket read to RAISE (simulating a mid-read/
+    the fan-out seam: force the METADATA enrich-bucket read to RAISE (simulating a mid-read/
     acquisition failure that escapes ``_safe_bucket_counts``) and assert ``_read_in_own_session`` catches
-    it -> fingerprint degrades to the all-zero bucket (``done == 0``) while the independently-sessioned
-    metadata/analyze reads stay correct (no cross-node poisoning; the poll never raises).
+    it -> metadata degrades to the all-zero bucket (``done == 0``) while the independently-sessioned
+    analyze read stays correct (no cross-node poisoning; the poll never raises).
     """
     f = _make_file(1)
     session.add(f)
@@ -235,16 +205,15 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
     session.add(FileMetadata(id=uuid.uuid4(), file_id=f.id))
     # analysis_completed_at required for done(analyze) under the canonical derivation layer (DERIV-03 / Phase 82).
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=f.id, bpm=120.0, analysis_completed_at=datetime.now(UTC)))
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=f.id, engine="chromaprint", status="completed"))
     await session.commit()
 
     orig_buckets = pipeline_mod._safe_bucket_counts
 
     async def failing_buckets(read_session, stage):  # type: ignore[no-untyped-def]
-        # Force ONLY the fingerprint enrich-bucket read to fail. The raise escapes _safe_bucket_counts
+        # Force ONLY the metadata enrich-bucket read to fail. The raise escapes _safe_bucket_counts
         # and must be caught by _read_in_own_session's acquisition-degrade belt (RESEARCH Pitfall 2).
-        if stage is Stage.FINGERPRINT:
-            raise RuntimeError("forced fingerprint source error")
+        if stage is Stage.METADATA:
+            raise RuntimeError("forced metadata source error")
         return await orig_buckets(read_session, stage)
 
     monkeypatch.setattr(pipeline_mod, "_safe_bucket_counts", failing_buckets)
@@ -252,10 +221,10 @@ async def test_single_source_db_error_degrades_to_zero(session: AsyncSession, mo
     progress = await get_stage_progress(session)
 
     # The poisoned source degrades to its all-zero bucket (done=0) without raising...
-    assert progress["fingerprint"]["done"] == 0
+    assert progress["metadata"]["done"] == 0
     # ...while sibling stages in their OWN sessions stay correct.
-    assert progress["metadata"]["done"] == 1
     assert progress["analyze"]["done"] == 1
+    assert progress["discovery"]["done"] == 1
 
 
 async def test_safe_count_swallows_begin_nested_failure() -> None:

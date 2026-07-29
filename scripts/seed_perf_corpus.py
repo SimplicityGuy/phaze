@@ -1,7 +1,7 @@
 """Seed a synthetic ~200K-file corpus for the PERF-02 /pipeline/stats latency measurement (Phase 82, D-06).
 
 Standalone ``uv run`` script (``scripts/coverage_floor.py`` shape) that bulk-inserts ~N music/video
-:class:`~phaze.models.file.FileRecord` rows plus output-table rows (metadata / fingerprint / analysis /
+:class:`~phaze.models.file.FileRecord` rows plus output-table rows (metadata / analysis /
 cloud_job / dedup_resolution / scheduling_ledger) distributed to the D-06 mid-pipeline selectivity profile,
 so the derived read queries (the three enrich pending sets + the four-bucket ``GROUP BY stage_status_case``
 counts + the full ``/pipeline/stats`` endpoint) can be EXPLAIN-ANALYZEd at realistic scale against a DB that
@@ -20,12 +20,11 @@ contains ``perf`` (mirrors the ``*_test`` destructive-DB guard) so it can never 
 Distribution (D-06, fractions of N, deterministic by ``i % 100`` so a re-run reproduces the same corpus):
 
 * ~70% carry a ``metadata`` row; ~2% of those are failure-only (``failed_at`` set -> metadata FAILED bucket).
-* ~55% carry a ``fingerprint_results`` success row; ~2% are failure-only (``status='failed'``, no success).
 * ~40% carry an ``analysis`` row with ``analysis_completed_at`` set (DONE); ~5% are ``failed_at`` (terminal).
   The two are DISJOINT so the ``analysis_completed_xor_failed`` CHECK (migration 033) always holds.
 * ~1% carry a ``cloud_job`` row cycling the active statuses; ~2% carry a ``dedup_resolution`` marker.
 * A few-thousand ``scheduling_ledger`` in-flight rows keyed ``"<function>:<file_id>"`` (process_file /
-  extract_file_metadata / fingerprint_file) -> those files read IN_FLIGHT for that stage.
+  extract_file_metadata) -> those files read IN_FLIGHT for that stage.
 * ~3% get a non-media ``file_type`` (``txt``) so the ``file_type IN MUSIC_VIDEO_TYPES`` scope is exercised.
 
 Idempotency: row ids are deterministic ``uuid5`` values and every INSERT is ``ON CONFLICT DO NOTHING``, so a
@@ -63,10 +62,10 @@ _DEFAULT_DSN = "postgresql://phaze:phaze@localhost:5433/phaze_perf82"
 
 # Stage label -> SAQ function name for the scheduling_ledger in-flight key prefix. MUST match
 # phaze.tasks._shared.stage_control.STAGE_TO_FUNCTION (the real ledger PK builder).
-_STAGE_FUNCS = ("extract_file_metadata", "process_file", "fingerprint_file")
+_STAGE_FUNCS = ("extract_file_metadata", "process_file")
 
 # Tables the --reseed TRUNCATE clears (children first is unnecessary under CASCADE, listed for clarity).
-_SEED_TABLES = ("scheduling_ledger", "dedup_resolution", "cloud_job", "analysis", "metadata", "fingerprint_results", "files")
+_SEED_TABLES = ("scheduling_ledger", "dedup_resolution", "cloud_job", "analysis", "metadata", "files")
 
 _BATCH = 10_000
 
@@ -90,8 +89,6 @@ class _Plan:
         "bucket",
         "cloud",
         "dedup",
-        "fp_failed",
-        "fp_success",
         "is_media",
         "ledger_stage",
         "metadata_failed",
@@ -104,8 +101,6 @@ class _Plan:
         self.is_media = b not in (95, 96, 97)  # ~3% non-media
         self.metadata_present = b < 70  # ~70%
         self.metadata_failed = b in (68, 69)  # ~2%, within the metadata_present band
-        self.fp_success = b < 55  # ~55%
-        self.fp_failed = b in (55, 56)  # ~2%, failure-only (no success row)
         self.analysis_completed = b < 40  # ~40%
         self.analysis_failed = b in (40, 41, 42, 43, 44)  # ~5%, DISJOINT from completed (XOR safe)
         self.cloud = b == 50  # ~1%
@@ -166,7 +161,6 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
 
         files: list[tuple] = []
         metadata: list[tuple] = []
-        fingerprints: list[tuple] = []
         analyses: list[tuple] = []
         cloud_jobs: list[tuple] = []
         dedups: list[tuple] = []
@@ -181,10 +175,6 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
 
             if p.metadata_present:
                 metadata.append((_rid("md", i), fid, 210.5, "failed extraction" if p.metadata_failed else None))
-            if p.fp_success:
-                fingerprints.append((_rid("fp", i), fid, "chromaprint", "success", None))
-            elif p.fp_failed:
-                fingerprints.append((_rid("fp", i), fid, "chromaprint", "failed", "engine error"))
             if p.analysis_completed:
                 analyses.append((_rid("an", i), fid, 128.0, None, "done"))
             elif p.analysis_failed:
@@ -214,13 +204,6 @@ async def seed(dsn: str, n: int, *, reseed: bool) -> dict[str, int]:
         )
         # Stamp metadata.failed_at for the failure-only rows (error_message carries the marker text).
         await conn.execute("UPDATE metadata SET failed_at = now() WHERE error_message IS NOT NULL AND failed_at IS NULL")
-        counts["fingerprint_results"] = await _copy_unnest(
-            conn,
-            "fingerprint_results",
-            ["id", "file_id", "engine", "status", "error_message"],
-            ["uuid", "uuid", "text", "text", "text"],
-            fingerprints,
-        )
         # analysis: 5th arg is a tag ('done'|'failed'); translate to completed_at / failed_at post-insert.
         counts["analysis"] = await _copy_unnest(
             conn,

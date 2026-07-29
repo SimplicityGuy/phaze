@@ -8,12 +8,12 @@ land between the cascade's child-delete steps and its ``DELETE FROM files``. Thi
 their OWN pool connection and race for real.
 
 The scenario mirrors the bug report exactly: a worker session has ALREADY sent (flushed, not yet
-committed) an INSERT of a new ``fingerprint_results`` row for one of the batch's files -- an in-flight
-insert that, per Postgres FK enforcement, holds an implicit ``FOR KEY SHARE`` lock on the referenced file
-row for the lifetime of the worker's transaction. ``delete_scan_cascade`` is launched concurrently on its
+committed) an INSERT of a new ``analysis`` row for one of the batch's files -- an in-flight insert
+that, per Postgres FK enforcement, holds an implicit ``FOR KEY SHARE`` lock on the referenced file row
+for the lifetime of the worker's transaction. ``delete_scan_cascade`` is launched concurrently on its
 own connection.
 
-* Pre-fix (no upfront lock): the cascade runs its first 14 child-delete steps unobstructed (none of them
+* Pre-fix (no upfront lock): the cascade runs its child-delete steps unobstructed (none of them
   touch the file row itself), then blocks at its OWN LAST statement -- ``DELETE FROM files`` -- which
   needs a lock incompatible with the worker's held ``FOR KEY SHARE``. When the worker finally commits,
   the blocked ``DELETE FROM files`` wakes up, Postgres re-validates the FK and discovers the row the
@@ -24,8 +24,8 @@ own connection.
 * Fixed (this test's expectation): the cascade's FIRST statement is ``SELECT ... FOR UPDATE`` on the
   batch's file rows -- incompatible with the worker's ``FOR KEY SHARE`` -- so the cascade blocks
   IMMEDIATELY, before running any child-delete step. Once the worker commits its insert, the cascade's
-  lock acquisition succeeds and it proceeds through all 16 steps INCLUDING the ``fingerprint_results``
-  delete, which now runs AFTER the worker's row was committed and therefore sweeps it up along with
+  lock acquisition succeeds and it proceeds through every step INCLUDING the ``analysis`` delete,
+  which now runs AFTER the worker's row was committed and therefore sweeps it up along with
   everything else -- the whole cascade commits cleanly, with zero ForeignKeyViolation.
 
 A blocked waiter is observed via ``pg_locks`` (deterministic), not guessed via a sleep duration -- the
@@ -45,8 +45,8 @@ import pytest
 from sqlalchemy import select, text
 
 from phaze.models.agent import Agent
+from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.services.scan_deletion import delete_scan_cascade
 
@@ -121,7 +121,7 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
     """A worker's uncommitted-but-flushed child insert must serialize the cascade, not FK-violate it.
 
     Reproduces the bug's own root mechanism: a still-running pipeline worker has already sent (but not
-    yet committed) an INSERT of a new ``fingerprint_results`` row for one of the batch's files -- which,
+    yet committed) an INSERT of a new ``analysis`` row for one of the batch's files -- which,
     per Postgres FK enforcement, holds an implicit ``FOR KEY SHARE`` lock on the file row for the
     lifetime of the worker's open transaction. ``delete_scan_cascade`` must block on that lock (via its
     own upfront ``FOR UPDATE``) rather than racing past it and discovering the conflict only at its own
@@ -134,11 +134,11 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
         batch_id, file_id = await _seed_batch_with_one_file(seed_session)
 
     # The "in-flight pipeline writer": an uncommitted transaction that has ALREADY flushed (sent, not
-    # yet committed) an INSERT referencing the batch's file -- exactly the fingerprint-result write the
-    # bug describes landing mid-cascade. The flush alone is enough to acquire the implicit FOR KEY SHARE
+    # yet committed) an INSERT referencing the batch's file -- exactly the shape of the child-row write
+    # the bug describes landing mid-cascade. The flush alone is enough to acquire the implicit FOR KEY SHARE
     # lock; committing only happens once the cascade is observed blocked on it below.
     holder_session = session_factory()
-    holder_session.add(FingerprintResult(id=uuid.uuid4(), file_id=file_id, engine="chromaprint", status="completed"))
+    holder_session.add(AnalysisResult(id=uuid.uuid4(), file_id=file_id))
     await holder_session.flush()
 
     async def _release_after_waiter() -> None:
@@ -156,13 +156,13 @@ async def test_cascade_blocks_on_in_flight_worker_write_then_sweeps_it_instead_o
     finally:
         await holder_session.close()
 
-    # The cascade's OWN fingerprint_results delete step -- which runs AFTER the lock is granted, i.e.
+    # The cascade's OWN analysis delete step -- which runs AFTER the lock is granted, i.e.
     # AFTER the worker's row is committed -- sweeps it up too: the row is never orphaned, and the
     # files DELETE never sees a dangling reference.
-    assert counts["fingerprint_results"] == 1
+    assert counts["analysis"] == 1
 
     async with session_factory() as session:
         assert await session.get(ScanBatch, batch_id) is None
         assert await session.get(FileRecord, file_id) is None
-        remaining = (await session.execute(select(FingerprintResult).where(FingerprintResult.file_id == file_id))).scalars().all()
+        remaining = (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == file_id))).scalars().all()
         assert remaining == []

@@ -1,13 +1,4 @@
-"""SAQ tasks: scan_live_set + scan_directory -- HTTP-only agent-side scanning (Phase 26 D-05, D-27 + Phase 27 D-11..D-14).
-
-scan_live_set
-    Fingerprint-query a live-set file and POST the resolved tracklist via the
-    agent HTTP boundary. Idempotency (phaze-y07u): a stable
-    uuid5(NAMESPACE_URL, "phaze-scan-{file_id}-{scan_run_id}") request_id collapses SAQ
-    retries of ONE run to one tracklist on the controller side, while distinct runs
-    (each enqueue stamps a fresh scan_run_id nonce) get distinct request_ids -- so a
-    deliberate re-scan within the server's 1h idempotency window is never answered
-    with the previous run's cached response.
+"""SAQ task: scan_directory -- HTTP-only agent-side directory scanning (Phase 27 D-11..D-14).
 
 scan_directory (Phase 27 D-11..D-14)
     Walk a directory on the agent host, SHA-256 each known-extension file, POST
@@ -33,7 +24,6 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any
 import unicodedata
-import uuid
 
 import structlog
 
@@ -41,16 +31,13 @@ from phaze.config import AgentSettings, get_settings
 from phaze.constants import EXTENSION_MAP, FileCategory
 from phaze.schemas.agent_files import FileUpsertChunk, FileUpsertRecord
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
-from phaze.schemas.agent_tasks import ScanDirectoryPayload, ScanLiveSetPayload
-from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistTrackPayload
+from phaze.schemas.agent_tasks import ScanDirectoryPayload
 from phaze.services.agent_client import AgentApiServerError
-from phaze.services.fingerprint import FingerprintQueryUnavailableError
 from phaze.services.hashing import compute_sha256
 
 
 if TYPE_CHECKING:
     from phaze.services.agent_client import PhazeAgentClient
-    from phaze.services.fingerprint import FingerprintOrchestrator
 
 
 logger = structlog.get_logger(__name__)
@@ -115,110 +102,6 @@ def _resolve_chunk_size() -> int:
     if isinstance(cfg, AgentSettings):
         return cfg.scan_chunk_size
     return _DEFAULT_SCAN_CHUNK_SIZE
-
-
-async def scan_live_set(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-    """Run fingerprint-query against a live-set file; POST tracklist via HTTP."""
-    payload = ScanLiveSetPayload.model_validate(kwargs)
-
-    api: PhazeAgentClient = ctx["api_client"]
-    orchestrator: FingerprintOrchestrator = ctx["fingerprint_orchestrator"]
-
-    try:
-        matches = await orchestrator.combined_query(payload.original_path)
-    except FingerprintQueryUnavailableError:
-        # phaze-z7yw: a TOTAL engine outage (every sidecar down or 5xx-ing) is NOT a no-match.
-        # Re-raise for SAQ retry/backoff WITHOUT acking report_scan_terminal, so the
-        # scan_live_set:<file_id> ledger row survives and recovery re-enqueues the file once
-        # the outage ends. Acking here would convert the outage into a permanent,
-        # success-looking 'no_matches' verdict -- the query-path twin of the phaze-ds1z
-        # ingest-drain bug.
-        logger.warning("scan_live_set: all fingerprint engines unavailable; leaving ledger row for retry", file_id=str(payload.file_id))
-        raise
-    if not matches:
-        # A genuine no-match: combined_query raises on a total engine outage (phaze-z7yw), so
-        # an empty result here means at least one HEALTHY engine answered and found nothing.
-        #
-        # No-match COMPLETE: this scan run has NO tracklist callback, so it must ack the
-        # control side directly to clear scan_live_set:<file_id> -- otherwise a legitimate
-        # no-match scan would re-enqueue on EVERY recovery (Phase 45 Blocker 2 / T-45-16).
-        #
-        # Guard the ack exactly like the match-failure handler at the bottom of this function
-        # (and functions.py:179-189): re-raise on a RETRYABLE attempt so SAQ retries and the
-        # row survives for the real retry; on the TERMINAL attempt the ack is best-effort --
-        # swallow + log so the no_matches COMPLETE still returns (CR-01 / T-45-16). The one
-        # difference from the match path: a no-match is a clean COMPLETE, so the terminal-ack
-        # failure does NOT re-raise -- blocking the return would leak the ledger row forever.
-        try:
-            await api.report_scan_terminal(payload.file_id)
-        except Exception:
-            job = ctx.get("job")
-            if job is not None and not job.retryable:
-                logger.warning("scan_live_set no-match terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
-            else:
-                raise  # retryable (or job absent): let SAQ retry; the row survives for the real retry
-        return {"file_id": str(payload.file_id), "status": "no_matches"}
-
-    # Build the wire payload. Idempotency key = stable UUID per (file_id, scan_run_id) so SAQ
-    # retries of the SAME job collapse to one tracklist (the server's Redis cache catches the
-    # replay -- retries rerun with the identical kwargs, hence the identical scan_run_id), while
-    # a NEW scan run (fresh nonce stamped at enqueue) gets a fresh request_id. phaze-y07u: keyed
-    # on file_id alone this was deterministic per FILE forever, so a deliberate re-scan within
-    # the server's 1h idempotency window got the CACHED response back -- the freshly computed
-    # (better) match set was silently discarded and the task still reported status='scanned'
-    # with the stale tracklist_id/version. A pre-upgrade in-flight job carries no scan_run_id
-    # (None): keep the legacy per-file key so ITS retries still dedupe against the original POST.
-    if payload.scan_run_id is not None:
-        request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}-{payload.scan_run_id}")
-    else:
-        request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"phaze-scan-{payload.file_id}")
-    external_id = f"fp-{payload.file_id.hex[:12]}"
-
-    tracks = [
-        TracklistTrackPayload(
-            position=i + 1,
-            artist=None,  # metadata-join skipped on agent; controller can enrich
-            title=None,
-            timestamp=match.timestamp,
-            confidence=match.confidence,
-        )
-        for i, match in enumerate(matches)
-    ]
-
-    try:
-        response = await api.create_tracklist(
-            TracklistCreatePayload(
-                file_id=payload.file_id,
-                source="fingerprint",
-                external_id=external_id,
-                tracks=tracks,
-                request_id=request_id,
-            ),
-        )
-    except Exception:
-        # A terminal failure of the MATCH path (e.g. the tracklist POST exhausting retries):
-        # ack ONLY on the retries-exhausted attempt (mirrors functions.py:183-189) so the
-        # ledger row is cleared exactly once, then re-raise so SAQ records the failed attempt.
-        # A retryable attempt re-raises silently so the row survives for the real retry
-        # (Phase 45 T-45-06). The successful match clears via create_tracklist -- no double-ack.
-        job = ctx.get("job")
-        if job is not None and not job.retryable:
-            # The terminal ack is best-effort: if it ALSO raises (E2) while we are handling the
-            # original failure (E1), swallow + log E2 so the bare `raise` below always re-raises
-            # E1 -- SAQ must record the real task error, not the ack error (WR-01). The ledger row
-            # may leak on this one ack failure, but reconcile sweeps it; masking E1 is worse.
-            try:
-                await api.report_scan_terminal(payload.file_id)
-            except Exception:
-                logger.warning("scan_live_set match-failure terminal-ack failed", file_id=str(payload.file_id), exc_info=True)
-        raise
-
-    return {
-        "file_id": str(payload.file_id),
-        "status": "scanned",
-        "tracklist_id": str(response.tracklist_id),
-        "version": response.version,
-    }
 
 
 async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:

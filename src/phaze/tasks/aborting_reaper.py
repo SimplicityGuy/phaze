@@ -12,8 +12,8 @@ worker that owns it to finalize the abort (``finish(ABORTED)``). When that worke
 never actually ran the job (a claimed-but-buffered row, spike phaze-qmc2.1) -- NOTHING ever
 completes the ``aborting -> aborted`` transition and the row sticks in ``aborting`` forever.
 
-That zombie is not merely cosmetic. ``apply_deterministic_key`` stamps every fingerprint job
-``key = 'fingerprint_file:<file_id>'``, and SAQ's ``_enqueue`` upsert only overwrites a conflicting
+That zombie is not merely cosmetic. ``apply_deterministic_key`` stamps every file-keyed job
+``key = '<function>:<file_id>'`` (e.g. ``process_file:<file_id>``), and SAQ's ``_enqueue`` upsert only overwrites a conflicting
 key whose status is in ``('aborted','complete','failed')`` (saq/queue/postgres.py). ``'aborting'``
 is NOT in that allowlist, so while the zombie holds the key EVERY re-enqueue of that file collapses
 to a ``None`` return -- the file is silently un-requeueable by any path, including the recovery CLI

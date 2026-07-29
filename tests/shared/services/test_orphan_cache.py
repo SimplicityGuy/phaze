@@ -11,7 +11,7 @@ process-local cache contract for the per-enrich-stage orphan count that plan 91-
 * **degrade never poisons (D-03)** -- when the compute core raises, ``refresh_stage_orphan_counts``
   propagates the error (the background loop, not this function, swallows it) AND the cache keeps its
   last-good value -- it is NEVER stamped back to all-zeros.
-* **fresh seed** -- before any successful refresh, the cache reads ``{metadata,analyze,fingerprint}: 0``.
+* **fresh seed** -- before any successful refresh, the cache reads ``{metadata,analyze}: 0``.
 
 The module is imported at top level so collection succeeds, but every new symbol
 (``get_cached_stage_orphan_counts`` / ``refresh_stage_orphan_counts`` / ``_orphan_cache`` /
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-_ALL_ZEROS = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+_ALL_ZEROS = {"metadata": 0, "analyze": 0}
 
 
 class _FakeSession:
@@ -69,7 +69,7 @@ def _isolate_orphan_cache() -> Iterator[None]:
 
 def test_cached_read_returns_a_distinct_copy() -> None:
     """``get_cached_stage_orphan_counts`` returns an equal-but-distinct copy; mutating it never leaks (D-04)."""
-    seed = {"metadata": 3, "analyze": 5, "fingerprint": 7}
+    seed = {"metadata": 3, "analyze": 5}
     pipeline._orphan_cache = dict(seed)
 
     first = pipeline.get_cached_stage_orphan_counts()
@@ -85,7 +85,7 @@ async def test_refresh_updates_the_cached_value(monkeypatch: pytest.MonkeyPatch)
     pipeline._orphan_cache = dict(_ALL_ZEROS)
     monkeypatch.setattr("phaze.database.async_session", _fake_async_session)
 
-    computed = {"metadata": 1, "analyze": 2, "fingerprint": 4}
+    computed = {"metadata": 1, "analyze": 2}
 
     async def _fake_compute(_session: object) -> dict[str, int]:
         return dict(computed)
@@ -99,7 +99,7 @@ async def test_refresh_updates_the_cached_value(monkeypatch: pytest.MonkeyPatch)
 
 async def test_degraded_refresh_keeps_last_good_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """A raising compute core propagates the error AND leaves the last-good cache intact -- never all-zeros (D-03)."""
-    good = {"metadata": 2, "analyze": 0, "fingerprint": 9}
+    good = {"metadata": 2, "analyze": 0}
     pipeline._orphan_cache = dict(good)
     monkeypatch.setattr("phaze.database.async_session", _fake_async_session)
 

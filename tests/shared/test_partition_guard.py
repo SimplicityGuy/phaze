@@ -72,13 +72,11 @@ def test_buckets_json_is_the_source_of_truth() -> None:
     """KNOWN_BUCKETS is loaded from tests/buckets.json (not hardcoded) and non-empty."""
     assert _BUCKETS_JSON.is_file(), f"missing single-source-of-truth bucket list: {_BUCKETS_JSON}"
     assert KNOWN_BUCKETS, "buckets.json parsed to an empty set"
-    # The canonical buckets: the nine Plan 01 froze plus `services` (phaze-uciu.1) -- the
-    # top-level services/ sidecar tests (tests/services/) needed a home bucket so they run in
-    # the CI matrix. A rename/add here must be a deliberate json edit.
-    assert (
-        frozenset({"discovery", "metadata", "fingerprint", "analyze", "identify", "review", "agents", "integration", "shared", "services"})
-        == KNOWN_BUCKETS
-    )
+    # The canonical buckets: the nine Plan 01 froze, MINUS `fingerprint` (phaze-0jpe removed the
+    # feature and its whole test tree), PLUS `services` (phaze-uciu.1) -- the top-level services/
+    # sidecar tests (tests/services/) needed a home bucket so they run in the CI matrix. A
+    # rename/add/remove here must be a deliberate json edit.
+    assert frozenset({"discovery", "metadata", "analyze", "identify", "review", "agents", "integration", "shared", "services"}) == KNOWN_BUCKETS
 
 
 def test_every_collected_test_lives_in_a_known_bucket() -> None:

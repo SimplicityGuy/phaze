@@ -3,7 +3,7 @@
 Renders ``shell/partials/rail.html`` through FastAPI's ``Jinja2Templates`` (the SAME safe wrapper
 Phaze uses in production) and asserts the two ambient enrich-node additions:
 
-* **PRIO-01** — every enrich stage (metadata / fingerprint / analyze) carries a ``▲``/``▼`` priority
+* **PRIO-01** — every enrich stage (metadata / analyze) carries a ``▲``/``▼`` priority
   stepper posting to the LIVE ``POST /pipeline/stages/{stage}/priority`` endpoint with a ``delta`` of
   ``-10`` (▲, raise = lower number) / ``+10`` (▼), plus a pause→``/pause`` and resume→``/resume``
   toggle. Each control carries an explicit ``aria-label`` (not tooltip-only) AND the D-11 clarifying
@@ -29,7 +29,7 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "phaze" 
 
 _templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-_ENRICH_STAGES = ("metadata", "fingerprint", "analyze")
+_ENRICH_STAGES = ("metadata", "analyze")
 
 # The D-11 clarifying tooltip copy (UI-SPEC Copywriting) — ▲ raises priority = lowers the number.
 _D11_TOOLTIP = "▲ Higher priority runs sooner (lowers the queue number). ▼ lowers priority."
@@ -158,7 +158,7 @@ def test_orphan_badge_is_amber_and_role_status(stage: str) -> None:
 def test_enrich_numeral_renders_done_over_total(stage: str) -> None:
     """Every enrich-stage grey numeral renders done/total from the SAME measure (Done), never a bare count.
 
-    Before this fix, metadata/fingerprint bound ``{stage}Done`` (files DONE) while analyze bound
+    Before this fix, metadata bound ``{stage}Done`` (files DONE) while analyze bound
     ``analyzeActive`` (files IN FLIGHT) -- three identically-styled numerals reading as three
     different measures. All three now agree on done/total.
     """
@@ -170,7 +170,7 @@ def test_enrich_numeral_renders_done_over_total(stage: str) -> None:
     if stage == "analyze":
         assert 'x-text="$store.pipeline.analyzeActive"' not in html, (
             "the analyze rail numeral must no longer bind analyzeActive (in-flight) -- it must "
-            "agree with metadata/fingerprint on analyzeDone (done), per phaze-nebh"
+            "agree with metadata on analyzeDone (done), per phaze-nebh"
         )
 
 

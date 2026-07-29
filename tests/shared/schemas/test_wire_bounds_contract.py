@@ -44,21 +44,16 @@ from phaze.models import (
     ExecutionLog,
     FileMetadata,
     FileRecord,
-    FingerprintResult,
     RenameProposal,
     ScanBatch,
-    Tracklist,
-    TracklistTrack,
 )
 from phaze.schemas.agent_analysis import AnalysisWindowPayload, AnalysisWritePayload
 from phaze.schemas.agent_execution import ExecutionLogCreate, ExecutionLogPatch
 from phaze.schemas.agent_files import FileUpsertRecord
-from phaze.schemas.agent_fingerprint import FingerprintWriteRequest
 from phaze.schemas.agent_heartbeat import HeartbeatRequest
 from phaze.schemas.agent_metadata import MetadataWriteRequest
 from phaze.schemas.agent_proposals import ProposalStatePatch
 from phaze.schemas.agent_scan_batches import ScanBatchPatch
-from phaze.schemas.agent_tracklists import TracklistCreatePayload, TracklistTrackPayload
 from phaze.schemas.wire_bounds import INT16_MAX, INT16_MIN, INT32_MAX, INT32_MIN, INT64_MAX, INT64_MIN
 from tests._route_introspection import iter_effective_routes
 
@@ -69,14 +64,11 @@ from tests._route_introspection import iter_effective_routes
 SCHEMA_BINDINGS: dict[type[BaseModel], type] = {
     FileUpsertRecord: FileRecord,
     MetadataWriteRequest: FileMetadata,
-    FingerprintWriteRequest: FingerprintResult,
     ExecutionLogCreate: ExecutionLog,
     ExecutionLogPatch: ExecutionLog,
     HeartbeatRequest: Agent,
     AnalysisWritePayload: AnalysisResult,
     AnalysisWindowPayload: AnalysisWindow,
-    TracklistCreatePayload: Tracklist,
-    TracklistTrackPayload: TracklistTrack,
     ProposalStatePatch: RenameProposal,
     ScanBatchPatch: ScanBatch,
 }
@@ -172,8 +164,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # never getattr, never text() interpolation. See tests/shared/routers/test_column_sort.py.
     ("/pipeline/pending-files", "sort"): _WHITELIST,
     ("/pipeline/pending-files", "order"): _WHITELIST,
-    ("/pipeline/trackid-files", "sort"): _WHITELIST,
-    ("/pipeline/trackid-files", "order"): _WHITELIST,
     ("/pipeline/tracklist-sets", "sort"): _WHITELIST,
     ("/pipeline/tracklist-sets", "order"): _WHITELIST,
     # phaze-a6hm.4 wired the same contract into the /admin/agents table (AGENTS_SORT). Identical

@@ -324,7 +324,7 @@ async def test_get_accepted_discogs_link_confidence_tie_is_deterministic(session
 async def test_get_tracklist_for_file_tolerates_multiple_links(session: AsyncSession) -> None:
     """phaze-1am9: a file with TWO linked tracklists must not raise MultipleResultsFound.
 
-    ``tracklists.file_id`` has only a non-unique index and mainline paths (>=90 auto-link, fingerprint
+    ``tracklists.file_id`` has only a non-unique index and mainline paths (>=90 auto-link, a re-scrape
     re-scan) create multiple tracklists per file. The helper must pick the highest-confidence link
     deterministically instead of crashing (which used to 500 the legacy /tags/ list and silently
     empty the tagwrite queue).

@@ -3,7 +3,7 @@
 Before this module, ``_FakeQueue`` / ``_FakeTaskRouter`` / ``_seed_active_agent`` /
 ``_stub_app_state`` / ``_wire_fakes`` were copy-pasted across six test modules
 (``test_enqueue_router``, ``test_no_default_queue_producers``, ``test_pipeline``,
-``test_pipeline_fingerprint``, ``test_tracklists``, ``test_scan``). Any change to
+``test_pipeline``, ``test_tracklists``, ``test_scan``). Any change to
 the fake queue interface meant chasing all six copies. They are consolidated here.
 
 Two distinct shapes are provided, matching how the production code reads app state:

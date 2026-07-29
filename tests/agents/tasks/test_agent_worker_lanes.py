@@ -73,7 +73,6 @@ def _registered_names(mod: ModuleType) -> set[str]:
     ("lane", "expected_concurrency_attr"),
     [
         ("analyze", "lane_analyze_concurrency"),
-        ("fingerprint", "lane_fingerprint_concurrency"),
         ("meta", "lane_meta_concurrency"),
         ("io", "lane_io_concurrency"),
     ],
@@ -98,20 +97,20 @@ def test_io_lane_keeps_s3_upload_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_all_mode_preserves_todays_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PHAZE_AGENT_LANE unset -> base queue, all 8 functions, worker_max_jobs concurrency."""
+    """PHAZE_AGENT_LANE unset -> base queue, every agent function, worker_max_jobs concurrency."""
     mod = _reload_worker(monkeypatch, lane=None)
     from phaze.config import get_settings
 
     assert mod.settings["queue"].name == "phaze-agent-nox"
     assert _registered_names(mod) == set(AGENT_TASKS)
-    assert len(mod.settings["functions"]) == 8
+    assert len(mod.settings["functions"]) == len(AGENT_TASKS)
     assert mod.settings["concurrency"] == get_settings().worker_max_jobs
 
 
 def test_union_of_lane_functions_equals_agent_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The union of the four lanes' registered SAQ names == AGENT_TASKS (mirror contract)."""
+    """The union of the lanes' registered SAQ names == AGENT_TASKS (mirror contract)."""
     union: set[str] = set()
-    for lane in ("analyze", "fingerprint", "meta", "io"):
+    for lane in ("analyze", "meta", "io"):
         union |= _registered_names(_reload_worker(monkeypatch, lane=lane))
         sys.modules.pop("phaze.tasks.agent_worker", None)
     assert union == set(AGENT_TASKS)
