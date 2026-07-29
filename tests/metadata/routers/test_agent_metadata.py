@@ -449,7 +449,7 @@ async def test_metadata_put_writes_marker_without_touching_state(
 ) -> None:
     """Phase 90 (D-09): a metadata PUT writes the ``metadata`` marker (the derived progress authority --
     done(metadata) = EXISTS metadata WHERE failed_at IS NULL, so the marker is what unblocks the
-    fingerprint stage) and NO LONGER writes files.state.
+    metadata stage) and NO LONGER writes files.state.
 
     Before PR-B this callback advanced files.state DISCOVERED -> METADATA_EXTRACTED under a CAS guard.
     PR-B removed that write; the derived marker is the sole authority.

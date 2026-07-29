@@ -7,7 +7,7 @@ The v7.0 shell fires ONE ``/pipeline/stats`` poll from chrome; each tick emits h
 1. every ``$store.pipeline`` key seeded in ``base.html`` MUST have a matching
    ``dag-seed-<key>`` placeholder in ``_workspace_poll_seeds.html`` — otherwise that seed
    no-ops on EVERY workspace and the bound badge sticks at its initial 0 (this is exactly how
-   the Phase-87 ``metadataOrphan``/``analyzeOrphan``/``fingerprintOrphan`` badges were dead), and
+   the Phase-87 ``metadataOrphan``/``analyzeOrphan`` badges were dead), and
 2. every workspace mounted into ``#stage-workspace`` (including the Phase-87 ``/s/files``
    workspace) MUST host that seed placeholder block, or the poll's OOB swaps log
    ``htmx:oobErrorNoTarget`` every 5s and none of the chrome-driven counts update on that page.
@@ -63,7 +63,7 @@ def test_every_store_key_has_a_poll_seed_target() -> None:
 def test_orphan_seed_targets_present() -> None:
     """Explicit lock on the three Phase-87 (UI-05) orphan seeds the live UAT found missing."""
     targets = _seed_target_keys()
-    for key in ("metadataOrphan", "fingerprintOrphan", "analyzeOrphan"):
+    for key in ("metadataOrphan", "analyzeOrphan"):
         assert key in targets, f"dag-seed-{key} placeholder missing from _workspace_poll_seeds.html"
 
 
@@ -85,7 +85,7 @@ async def test_files_workspace_hosts_poll_seeds_but_filter_fragment_does_not(cli
     workspace = (await client.get("/s/files")).text
     fragment = (await client.get("/pipeline/files")).text
 
-    assert 'id="dag-seed-fingerprintOrphan"' in workspace, "/s/files workspace must host the orphan seed target"
+    assert 'id="dag-seed-analyzeOrphan"' in workspace, "/s/files workspace must host the orphan seed target"
     assert 'id="dag-seed-metadataDone"' in workspace, "/s/files workspace must host the poll-seed block"
     assert 'id="dag-seed-computeLanesActive"' in workspace, "/s/files workspace must host the computeLanesActive seed target"
-    assert 'id="dag-seed-fingerprintOrphan"' not in fragment, "the /pipeline/files filter fragment must NOT re-emit seed targets"
+    assert 'id="dag-seed-analyzeOrphan"' not in fragment, "the /pipeline/files filter fragment must NOT re-emit seed targets"

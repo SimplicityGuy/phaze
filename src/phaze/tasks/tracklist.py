@@ -360,12 +360,15 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     Per D-10: find tracklists where file_id IS NULL (unresolved) or updated_at < 90 days ago (stale).
     Per TL-04: add randomized jitter between scrapes (60-300 seconds).
 
-    phaze-p1vy: restricted to ``source == "1001tracklists"``. Fingerprint-sourced tracklists
-    (``source="fingerprint"``, ``source_url=""`` -- routers/agent_tracklists.py creates them with
-    no known source URL) are structurally un-rescrapeable: ``TracklistScraper.scrape_tracklist("")``
-    always raises before storing anything, so ``updated_at`` never advances and, without this
-    filter, every such row re-enters the stale arm on every monthly run forever -- each futile
-    attempt still paying the scraper's rate-limit delay plus this loop's 60-300s jitter sleep.
+    phaze-p1vy: restricted to ``source == "1001tracklists"``. HISTORICAL rows with
+    ``source="fingerprint"`` and ``source_url=""`` may still exist: the retired audio-fingerprint
+    scan path (phaze-0jpe removed it, and no writer produces such a row any more) stored them with
+    no known source URL. They are structurally un-rescrapeable --
+    ``TracklistScraper.scrape_tracklist("")`` always raises before storing anything, so
+    ``updated_at`` never advances and, without this filter, every such surviving row re-enters the
+    stale arm on every monthly run forever, each futile attempt still paying the scraper's
+    rate-limit delay plus this loop's 60-300s jitter sleep. The filter is a positive allowlist on
+    ``"1001tracklists"``, so it stays correct whether or not those rows are ever purged.
     """
     # phaze-xpzp: bind a NAIVE threshold. ``tracklists.updated_at`` (TimestampMixin) is a
     # ``TIMESTAMP WITHOUT TIME ZONE`` column; asyncpg's naive-timestamp codec raises DataError

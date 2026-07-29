@@ -1,7 +1,7 @@
 """Phase 93 (CONSOLE-01): the record slide-in's Stage-Eligibility pills carry the REAL derived status.
 
-Before this phase the six trace-trigger pills were status-blind — a file whose Files-matrix row
-showed Meta=done / Analyze=in-flight rendered six identical plain pills. Now each stage row ALSO
+Before this phase the trace-trigger pills were status-blind — a file whose Files-matrix row
+showed Meta=done / Analyze=in-flight rendered identical plain pills. Now each stage row ALSO
 renders the shared five-bucket ``_stage_pill.html`` token (the exact partial the Files matrix
 renders), fed by the SAME ``stage_status_case`` derivation via ``get_file_stage_buckets`` — one
 status source, no divergent second derivation (D-00a honesty).
@@ -86,13 +86,13 @@ async def test_record_pills_show_mixed_derived_statuses(client: AsyncClient, ses
 
 
 @pytest.mark.asyncio
-async def test_record_pills_render_all_six_stage_statuses(client: AsyncClient, session: AsyncSession) -> None:
-    """Every one of the six matrix stages carries a derived status token (none left status-blind)."""
-    file_id = await _seed_file(session)  # untouched file -> all six not_started
+async def test_record_pills_render_every_stage_status(client: AsyncClient, session: AsyncSession) -> None:
+    """Every matrix stage carries a derived status token (none left status-blind)."""
+    file_id = await _seed_file(session)  # untouched file -> every stage not_started
 
     body = (await client.get(f"/record/{file_id}")).text
 
-    for label in ("Meta", "FP", "Analyze", "Prop", "Appr", "Exec"):
+    for label in ("Meta", "Analyze", "Prop", "Appr", "Exec"):
         assert f'aria-label="{label}: not started"' in body, f"{label} pill is status-blind (no derived token)"
 
 

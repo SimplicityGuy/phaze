@@ -1,7 +1,7 @@
 """phaze-30fo — per-lane heartbeats so one stalled lane cannot paint a busy agent DEAD.
 
 The 2026-07-18 nox incident: /admin/agents showed "nox DEAD, queue 762" while nox's
-fingerprint lane was completing a job every ~2.6 seconds. Liveness came from the analyze
+meta lane was completing a job every ~2.6 seconds. Liveness came from the analyze
 worker alone, and `Agent.last_seen_at` is not just a display field -- it is the key
 `enqueue_router.select_active_agent` orders by, so the busiest machine in the fleet also
 lost work routing.
@@ -57,7 +57,7 @@ async def test_busy_lane_keeps_agent_alive_while_analyze_is_stopped(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
 ) -> None:
-    """THE acceptance scenario: analyze stopped long ago, fingerprint still working -> NOT dead.
+    """THE acceptance scenario: analyze stopped long ago, meta still working -> NOT dead.
 
     Before phaze-30fo only the analyze worker beat, so `last_seen_at` would still be the
     stale timestamp below and classify() would return "dead" while the agent was busy.
@@ -71,8 +71,8 @@ async def test_busy_lane_keeps_agent_alive_while_analyze_is_stopped(
     await session.refresh(agent)
     assert classify(agent, datetime.now(UTC)) == "dead", "precondition: agent reads DEAD on the analyze beat alone"
 
-    # The fingerprint lane is alive and working -- it now beats on its own behalf.
-    assert await _post(session, token, _beat("fingerprint", 11290)) == 204
+    # The meta lane is alive and working -- it now beats on its own behalf.
+    assert await _post(session, token, _beat("meta", 11290)) == 204
 
     await session.refresh(agent)
     assert classify(agent, datetime.now(UTC)) == "alive", "a working lane must keep the agent alive (phaze-30fo)"
@@ -88,17 +88,16 @@ async def test_queue_depth_is_summed_across_lanes(seed_test_agent: tuple[Agent, 
     agent, token = seed_test_agent
 
     assert await _post(session, token, _beat("analyze", 762)) == 204
-    assert await _post(session, token, _beat("fingerprint", 11290)) == 204
-    assert await _post(session, token, _beat("meta", 3)) == 204
-    assert await _post(session, token, _beat("io", 0)) == 204
+    assert await _post(session, token, _beat("meta", 11290)) == 204
+    assert await _post(session, token, _beat("io", 3)) == 204
 
     await session.refresh(agent)
     assert agent.last_status is not None
     assert agent.last_status["queue_depth"] == 762 + 11290 + 3, "top-level depth must be the cross-lane SUM"
     # Per-lane breakdown is retained so an operator can see WHICH lane holds the backlog.
     assert agent.last_status["lanes"]["analyze"]["queue_depth"] == 762
-    assert agent.last_status["lanes"]["fingerprint"]["queue_depth"] == 11290
-    assert set(agent.last_status["lanes"]) == {"analyze", "fingerprint", "meta", "io"}
+    assert agent.last_status["lanes"]["meta"]["queue_depth"] == 11290
+    assert set(agent.last_status["lanes"]) == {"analyze", "meta", "io"}
 
 
 @pytest.mark.asyncio
@@ -107,14 +106,14 @@ async def test_relaying_one_lane_does_not_drop_the_others(seed_test_agent: tuple
     agent, token = seed_test_agent
 
     assert await _post(session, token, _beat("analyze", 100)) == 204
-    assert await _post(session, token, _beat("fingerprint", 200)) == 204
-    # Analyze drains; fingerprint's entry must survive.
+    assert await _post(session, token, _beat("io", 200)) == 204
+    # Analyze drains; io's entry must survive.
     assert await _post(session, token, _beat("analyze", 0)) == 204
 
     await session.refresh(agent)
     assert agent.last_status is not None
     assert agent.last_status["lanes"]["analyze"]["queue_depth"] == 0
-    assert agent.last_status["lanes"]["fingerprint"]["queue_depth"] == 200
+    assert agent.last_status["lanes"]["io"]["queue_depth"] == 200
     assert agent.last_status["queue_depth"] == 200
 
 

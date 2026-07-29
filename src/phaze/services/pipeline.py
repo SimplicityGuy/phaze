@@ -12,7 +12,6 @@ import weakref
 
 from saq.utils import now as saq_now
 from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
-from sqlalchemy.orm import aliased
 import structlog
 
 from phaze.config import get_settings
@@ -24,7 +23,6 @@ from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -64,7 +62,7 @@ logger = structlog.get_logger(__name__)
 
 
 # Music + video file types -- the shared denominator for the per-file parallel
-# stages (Metadata/Fingerprint/Analyze). Mirrors the filter the trigger endpoints
+# stages (Metadata/Analyze). Mirrors the filter the trigger endpoints
 # use at routers/pipeline.py:318-319 so the dashboard denominator matches the set
 # of files those stages are actually enqueued for.
 MUSIC_VIDEO_TYPES = [ext.lstrip(".") for ext, cat in EXTENSION_MAP.items() if cat in (FileCategory.MUSIC, FileCategory.VIDEO)]
@@ -97,7 +95,7 @@ _ACTIVE_CLOUD_STATUSES: tuple[str, ...] = (
 # (``routers/pipeline.py`` ``_build_dag_context`` / ``build_dashboard_context`` /
 # ``pipeline_stats_partial``) now derive the seven consumed keys from :func:`get_stage_progress`'s
 # output-table counts (``discovered→discovery.done``, ``metadata_extracted→metadata.done``,
-# ``fingerprinted→fingerprint.done``, ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
+# ``analyzed→analyze.done``, ``proposal_generated→proposals.done``,
 # ``approved→execute.total``, ``executed→execute.done``). Phase 90 (MIG-04) then removed the
 # ``FileState`` enum + ``files.state`` column entirely, so the former linear ``PIPELINE_STAGES`` list
 # (which enumerated the enum members) is gone -- stage membership derives from the output tables.
@@ -538,12 +536,12 @@ _AGENT_RECENT_SCANS_N = 10
 
 
 async def get_agent_lane_depths(app_state: Any, agent_id: str) -> dict[str, int]:
-    """Return the agent's per-lane in-flight depth ``{analyze, fingerprint, meta, io}``, degrade-safe (D-05 / D-00b).
+    """Return the agent's per-lane in-flight depth ``{analyze, meta, io}``, degrade-safe (D-05 / D-00b).
 
-    Sums ``count("queued") + count("active")`` across each of the agent's four
+    Sums ``count("queued") + count("active")`` across each of the agent's three
     :data:`phaze.services.enqueue_router.LANES` queues (the same ``all_lane_queues`` seam
     :func:`get_queue_activity` uses), keyed by lane name so the agent pane can render
-    ``analyze N · fingerprint N · meta N · io N``. The legacy base queue is deliberately EXCLUDED
+    ``analyze N · meta N · io N``. The legacy base queue is deliberately EXCLUDED
     here -- this pane shows the live per-lane split, not the migration-drain total.
 
     Failure isolation mirrors :func:`get_queue_activity`: a missing ``app.state.task_router`` (the test
@@ -688,20 +686,18 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     The single-valued linear ``FileRecord.state`` (one enum per file) STRUCTURALLY cannot report
     parallel-stage done-counts; this query instead counts each stage's OUTPUT table. A file that is
-    both fingerprinted AND analyzed contributes to BOTH ``fingerprint.done`` and ``analyze.done``
+    both metadata-extracted AND analyzed contributes to BOTH ``metadata.done`` and ``analyze.done``
     here -- impossible to express through the single-valued state enum (RESEARCH Q5). Phase 82
     (READ-02, D-05) removed the former state-grouped ``get_pipeline_stats`` entirely; the stats path
     now derives its seven keys from THIS function (no ``FileRecord.state`` read).
 
-    Returns a dict keyed by DAG node. The three ENRICH nodes carry the FIVE-BUCKET shape
+    Returns a dict keyed by DAG node. The two ENRICH nodes carry the FIVE-BUCKET shape
     ``{not_started, in_flight, done, skipped, failed, total}`` (Phase 82 + Phase-87 ``skipped``); every OTHER node keeps
     ``{"done": int, "total": int | None}``:
 
     - ``discovery``   -- done = COUNT(files); total = itself (bar is always 100%)
     - ``metadata``    -- FIVE-BUCKET via ``stage_status_case(METADATA)`` over music/video files
       (:func:`_safe_bucket_counts`); ``done`` = row present + ``failed_at`` NULL; total = music/video count
-    - ``fingerprint`` -- FIVE-BUCKET via ``stage_status_case(FINGERPRINT)``; ``done`` = any engine row in
-      ('success','completed'); ``failed`` = failed-only (no success); total = music/video count
     - ``analyze``     -- FIVE-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
       ``analysis_completed_at`` NOT NULL (a partial in-flight row is ``in_flight``, not done); total = music/video count
     - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
@@ -792,7 +788,6 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         discovery_done,
         convergence_total,
         metadata_b,
-        fingerprint_b,
         analyze_b,
         scan_search_done,
         scrape_done,
@@ -805,14 +800,13 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # NOTE: typing.cast is aliased type_cast -- the bare `cast` name is sqlalchemy's SQL cast (used
         # elsewhere in this module).
     ) = type_cast(
-        "tuple[int, int, int, int, dict[str, int], dict[str, int], dict[str, int], int, int, int, int, int, int]",
+        "tuple[int, int, int, int, dict[str, int], dict[str, int], int, int, int, int, int, int]",
         await asyncio.gather(
             _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, discovery_stmt, node="discovery"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.METADATA), bucket_default),
-            _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.FINGERPRINT), bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_count(s, scan_search_stmt, node="scan_search"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, scrape_stmt, node="scrape"), 0),
@@ -825,13 +819,12 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
     return {
         "discovery": {"done": discovery_done, "total": discovery_done},
-        # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the three enrich nodes are FIVE-BUCKET
+        # Phase 82 (READ-02, D-04/D-05) + Phase 87 (skipped): the two enrich nodes are FIVE-BUCKET
         # ({not_started, in_flight, done, skipped, failed} + total) via one GROUP BY stage_status_case(stage)
         # each -- so the DAG surfaces a VISIBLE failed count per enrich stage and the five buckets sum
         # to music_video_total on a healthy query. `total` stays music_video_total; `done` (still read
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
         "metadata": {**metadata_b, "total": music_video_total},
-        "fingerprint": {**fingerprint_b, "total": music_video_total},
         "analyze": {**analyze_b, "total": music_video_total},
         "scan_search": {
             "done": scan_search_done,
@@ -857,22 +850,22 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
 
 
 # Per-stage pause/priority defaults (Phase 38, REQ-38-4). Mirror the Phase 37 control-table
-# semantics for the three agent stages: unpaused, mid-range priority 50. Returned verbatim
+# semantics for the two agent stages: unpaused, mid-range priority 50. Returned verbatim
 # whenever the control table is unreadable/absent so the 5s /pipeline/stats poll degrades to a
 # sane default instead of 500ing (T-38-DEGRADE — identical discipline to _safe_count above).
-_DEFAULT_CONTROLS: dict[str, dict[str, int | bool]] = {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+_DEFAULT_CONTROLS: dict[str, dict[str, int | bool]] = {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze")}
 
 
 async def get_stage_controls(session: AsyncSession) -> dict[str, dict[str, int | bool]]:
-    """Read the 3 ``pipeline_stage_control`` rows, degrading to defaults so the 5s poll never 500s.
+    """Read the ``pipeline_stage_control`` rows, degrading to defaults so the 5s poll never 500s.
 
-    Returns ``{metadata, analyze, fingerprint}`` each mapping to ``{"paused": bool, "priority": int}``.
+    Returns ``{metadata, analyze}`` each mapping to ``{"paused": bool, "priority": int}``.
     On the happy path each present stage row overlays its ``paused`` / ``priority`` onto a fresh copy
     of :data:`_DEFAULT_CONTROLS`; unknown ``stage`` values are ignored (guarded by ``if r.stage in out``).
 
     Failure isolation mirrors :func:`_safe_count` / :func:`get_queue_activity`: the
     ``pipeline_stage_control`` table may be absent (pre-migration env) or a DB hiccup may occur, and
-    EITHER must degrade to the three-stage defaults rather than raise into the hot 5s poll path
+    EITHER must degrade to the two-stage defaults rather than raise into the hot 5s poll path
     (T-38-DEGRADE). The read runs inside a SAVEPOINT (``session.begin_nested()``) so ANY exception
     rolls back the NESTED scope ALONE -- recovering the aborted transaction WITHOUT expiring the
     caller's already-loaded ``agents`` / ``recent_scans`` ORM objects (``_build_dag_context`` runs
@@ -911,13 +904,13 @@ _BUSY_FUNCTION_TO_STAGE: dict[str, str] = {fn: stage for stage, fn in STAGE_TO_F
 
 
 async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
-    """Return the per-agent-stage in-flight job count ``{metadata, analyze, fingerprint}``.
+    """Return the per-agent-stage in-flight job count ``{metadata, analyze}``.
 
     Counts ``saq_jobs`` rows with ``status IN ('queued', 'active')`` whose deterministic key prefix
-    maps to one of the three agent stages. This REPLACES the single global ``agentBusy`` gate
-    (queued+active summed across ALL agent queues) that locked all three agent stages together --
-    each stage now gates on ITS OWN in-flight count, so Metadata, Analyze and Fingerprint run in
-    parallel (running one no longer blocks the other two).
+    maps to one of the agent stages. This REPLACES the single global ``agentBusy`` gate
+    (queued+active summed across ALL agent queues) that locked every agent stage together --
+    each stage now gates on ITS OWN in-flight count, so Metadata and Analyze run in parallel
+    (running one no longer blocks the other).
 
     A paused stage's parked rows (status still ``queued``, ``scheduled = SENTINEL``) DO count as busy
     -- an accepted, documented behavior consistent with the prior global ``agentBusy`` meaning of
@@ -931,7 +924,7 @@ async def get_stage_busy_counts(session: AsyncSession) -> dict[str, int]:
     lazy load) and WITHOUT poisoning later queries. The function then logs a warning and returns
     all-zeros -- it NEVER raises into the hot 5s /pipeline/stats poll.
     """
-    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    out: dict[str, int] = {"metadata": 0, "analyze": 0}
     try:
         async with session.begin_nested():
             rows = (await session.execute(_STAGE_BUSY_SQL)).all()
@@ -989,9 +982,9 @@ async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     done clauses here, so the amber rail badge can never drift from what recovery does (phaze-w0yr:
     the ``_awaiting_cloud_job_ids`` fourth exclusion was added to match recovery's 83-06 filter).
 
-    Returns ``{metadata, analyze, fingerprint}`` -> int (the three :data:`STAGE_TO_FUNCTION` enrich
-    functions ``extract_file_metadata`` / ``process_file`` / ``fingerprint_file``); ``push_file`` /
-    ``scan_live_set`` / the controller functions are NOT part of the per-enrich badge.
+    Returns ``{metadata, analyze}`` -> int (the two :data:`STAGE_TO_FUNCTION` enrich functions
+    ``extract_file_metadata`` / ``process_file``); ``push_file`` / the controller functions are NOT
+    part of the per-enrich badge.
 
     No staleness threshold is used, so the naive-``enqueued_at`` footgun (Pitfall 4, project memory)
     never bites here -- the only naive/aware comparison is the D-10 metadata cell inside
@@ -1015,13 +1008,13 @@ async def get_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         return await _compute_stage_orphan_counts(session)
     except Exception:
         logger.warning("stage_orphan_counts_degraded", exc_info=True)
-        return {"metadata": 0, "analyze": 0, "fingerprint": 0}
+        return {"metadata": 0, "analyze": 0}
 
 
 async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     """Raising core of :func:`get_stage_orphan_counts` (HYG-01, D-03/D-05).
 
-    Returns the same ``{metadata, analyze, fingerprint}`` dict the wrapper returns on success, but
+    Returns the same ``{metadata, analyze}`` dict the wrapper returns on success, but
     RAISES on ANY DB error (it does NOT swallow) -- so the off-request refresher
     (:func:`refresh_stage_orphan_counts`) can distinguish a real success from a degrade and thereby
     keep the last-good cache value on failure instead of poisoning it with all-zeros (D-03).
@@ -1044,7 +1037,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     keeping the last-good one (D-03). ``get_live_job_keys`` itself is UNCHANGED and stays the right
     call for its degrade-tolerant consumers (the recovery producer).
     """
-    out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
+    out: dict[str, int] = {"metadata": 0, "analyze": 0}
     async with session.begin_nested():
         # Function-local import (see docstring): break the reenqueue<->pipeline import cycle and
         # preserve the control-only boundary (tests/test_task_split.py).
@@ -1074,12 +1067,12 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         for row in rows:
             stage = _BUSY_FUNCTION_TO_STAGE.get(row.function)
             if stage is None:
-                continue  # push_file / scan_live_set / controller rows are not enrich badges
+                continue  # push_file / controller rows are not enrich badges
             # phaze-fc2l: SCOPE both cloud exclusions to the functions the cloud_job owns
-            # (_CLOUD_OWNED_FUNCTIONS) -- of the three badge stages only ``process_file`` (analyze) is
+            # (_CLOUD_OWNED_FUNCTIONS) -- of the two badge stages only ``process_file`` (analyze) is
             # cloud-owned. Applying them unscoped over the function-agnostic ``_natural_id`` under-counted
-            # the fingerprint/metadata badge for a cloud-busy file, whose lost fingerprint/metadata rows
-            # recovery DOES re-drive (no cloud second owner). Keeps the badge in parity with recovery.
+            # the metadata badge for a cloud-busy file, whose lost metadata rows recovery DOES re-drive
+            # (no cloud second owner). Keeps the badge in parity with recovery.
             cloud_excluded = row.function in _CLOUD_OWNED_FUNCTIONS and (_natural_id(row) in in_flight or _natural_id(row) in awaiting)
             if row.key in live or is_domain_completed(row, done_sets) or cloud_excluded:
                 continue
@@ -1096,7 +1089,7 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
 # dict rebind (``_orphan_cache = ...``) between awaits is atomic -- readers see either the old dict or
 # the new one, never a torn partial (per RESEARCH "Don't Hand-Roll" -- no manual locking).
 _ORPHAN_TTL_SECONDS: float = 4.0  # D-01 discretion: < the 5s poll so the cache is at most one tick stale
-_orphan_cache: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}  # seeded safe until first success
+_orphan_cache: dict[str, int] = {"metadata": 0, "analyze": 0}  # seeded safe until first success
 _orphan_cache_expires_at: float = 0.0
 
 
@@ -1130,8 +1123,8 @@ async def refresh_stage_orphan_counts() -> dict[str, int]:
 
 
 # Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
-# NOT one of the three agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
-# {metadata,analyze,fingerprint} contract (that function + its tests stay untouched). The
+# NOT one of the agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
+# {metadata,analyze} contract (that function + its tests stay untouched). The
 # deterministic key is "search_tracklist:<file_id>" (Phase 35), so the in-flight count is the
 # bucket whose key prefix == "search_tracklist". Reuses the SAME static _STAGE_BUSY_SQL grouped
 # scan (no operator input is interpolated -- the only literals are split_part, the status
@@ -1162,45 +1155,6 @@ async def get_search_busy_count(session: AsyncSession) -> int:
         return 0
     for row in rows:
         if row[0] == _SEARCH_BUSY_FUNCTION:
-            return int(row[1])
-    return 0
-
-
-# Fingerprint-scan in-flight gate (Phase 40, REQ-40-3). scan_live_set is a PER-AGENT task --
-# NOT one of the three agent stages tracked by get_stage_busy_counts (that function + its tests
-# stay untouched) -- but its jobs live in the SAME saq_jobs table (Postgres backend), so the same
-# key-prefix scan works. The deterministic key is "scan_live_set:<file_id>" (Phase 35), so the
-# in-flight count is the bucket whose key prefix == "scan_live_set". Reuses the SAME static
-# _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
-# split_part, the status allowlist, and the function-name constant below; T-40-01, mirroring the
-# Phase-37/t7k/Phase-39 static-SQL discipline).
-_SCAN_BUSY_FUNCTION = "scan_live_set"
-
-
-async def get_scan_busy_count(session: AsyncSession) -> int:
-    """Return the in-flight ``scan_live_set`` job count (``queued`` + ``active``), degrade-safe.
-
-    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``scan_live_set`` (status
-    ``IN ('queued', 'active')``). This drives the DAG Fingerprint-Scan node's "Scan busy" gate so a
-    second bulk scan cannot be launched while one batch is in flight. A paused/parked scan job
-    (status still ``queued``) counts as busy -- the same accepted semantics as
-    :func:`get_search_busy_count`.
-
-    Failure isolation (T-40-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
-    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
-    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
-    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
-    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
-    it NEVER raises into the hot 5s /pipeline/stats poll.
-    """
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
-    except Exception:
-        logger.warning("scan_busy_degraded", exc_info=True)
-        return 0
-    for row in rows:
-        if row[0] == _SCAN_BUSY_FUNCTION:
             return int(row[1])
     return 0
 
@@ -1312,9 +1266,8 @@ async def count_active_agents(session: AsyncSession, kind: str | None = None) ->
     Counts agents matching :func:`phaze.services.enqueue_router.select_active_agent`'s EXACT
     liveness definition (CONTEXT decision 2 -- do NOT invent a new liveness rule): a revoked agent
     (``revoked_at`` set) and a never-seen agent (``last_seen_at`` None) are both excluded. This drives
-    the DAG Fingerprint-Scan node's "Needs agent" gate -- ``scan_live_set`` is a per-agent task and
-    raises ``NoActiveAgentError`` when no agent is online, so the button must stay disabled until one
-    is.
+    the DAG nodes' "Needs agent" gates -- a per-agent task raises ``NoActiveAgentError`` when no
+    agent is online, so those buttons must stay disabled until one is.
 
     Phase 58 (58-04, WORK-03): when ``kind`` is given (``"compute"`` / ``"fileserver"``) the count is
     scoped to agents of that ``Agent.kind`` -- the SAME liveness predicate, restricted to the kind.
@@ -1553,7 +1506,7 @@ async def get_analyze_working_set(
     NEVER the whole corpus". That was FALSE in production and is the entire bug: a file joins the
     working set merely by having a ``scheduling_ledger`` row OR a partial/failed ``analysis`` row, and
     ORPHANED work never leaves it on its own. With a large stuck backlog the branch rendered 10,132
-    rows / 12.7 MB inline -- ~180x the sibling metadata/fingerprint tabs. The prior fix (phaze-zqvh)
+    rows / 12.7 MB inline -- ~180x the sibling metadata tab. The prior fix (phaze-zqvh)
     bounded only the completions window and trusted this assertion for the other half. An assumption
     is not a bound; the LIMIT below is.
 
@@ -1695,120 +1648,28 @@ def analyze_lanes_content_hash(lanes: list[dict[str, Any]], selected_lane: str |
 # both degrade to ``[]`` inside a SAVEPOINT on any error, mirroring :func:`get_analyze_working_set`
 # -- they ride the hot render/poll path and must NEVER 500 the page.
 
-# The PERSISTED lowercase engine vocab (RESEARCH Pitfall 1, traced adapter -> API -> DB write):
-# AudfprintAdapter.name / PanakoAdapter.name. The UI label is "Panako" but the stored value is
-# lowercase "panako". Used as the per-engine join keys for the Track-ID badges.
-_TRACKID_ENGINE_AUDFPRINT = "audfprint"
-_TRACKID_ENGINE_PANAKO = "panako"
-
-
-def _trackid_engine_badge(status: str | None) -> str:
-    """Map a persisted ``FingerprintResult.status`` to the D-01 per-engine badge word.
-
-    done <=> ``status == "success"`` (the value the engine adapters actually write via
-    ``put_fingerprint``; ``"completed"`` is tolerated defensively but is NEVER written by that
-    path -- RESEARCH Pitfall 1); failed <=> ``"failed"``; pending <=> no row for ``(file, engine)``
-    (a missing join -> ``status is None`` -- RESEARCH Pitfall 2).
-    """
-    if status in ("success", "completed"):
-        return "done"
-    if status == "failed":
-        return "failed"
-    return "pending"
-
-
-# phaze-1wvb: BOTH Identify reads below are BOUNDED at the source, on the paging contract
-# (:mod:`phaze.services.pagination`). As authored in Phase 59 they were whole-corpus reads: the
-# Track-ID read selected EVERY music/video file carrying any ``FingerprintResult`` OR a linked
-# ``Tracklist``, and the Tracklist read one row per ``Tracklist`` -- neither with a LIMIT, both
-# materialised with ``.all()`` and server-rendered inline into one HTML table by
-# ``shell._render_stage``. That is the identical cliff phaze-5462 fixed on the Analyze tab (10,132
-# rows / 12.7 MB, and 92,335 rows / ~105 MB HTML at the seeded 200K scale). As the archive converges
-# -- most music/video files fingerprinted, many tracklists -- the Track-ID predicate approaches the
-# WHOLE corpus, so "the signal-bearing subset" was never a bound. An assumption is not a bound.
+# phaze-1wvb: the Identify per-set Tracklist read below is BOUNDED at the source, on the paging
+# contract (:mod:`phaze.services.pagination`). As authored in Phase 59 it was a whole-corpus read --
+# one row per ``Tracklist``, no LIMIT, materialised with ``.all()`` and server-rendered inline into
+# one HTML table by ``shell._render_stage``. That is the identical cliff phaze-5462 fixed on the
+# Analyze tab (10,132 rows / 12.7 MB, and 92,335 rows / ~105 MB HTML at the seeded 200K scale).
+# (phaze-0jpe: the sibling Track-ID reader bounded here alongside it is gone with the fingerprint
+# feature -- its whole reason for existing was per-engine audio-match status.)
 #
-# RULE 7 DETERMINATION (paging contract rule 7 -- do this BEFORE bounding anything): both readers are
-# RENDER-ONLY. Verified by call graph -- their ONLY callers were ``shell._render_stage``
-# (``trackid_files`` / ``tracklist_sets``), both flowing straight into ``_file_table.html``; neither
-# feeds an enqueue, a trigger, or any bulk action. The Identify workspace's bulk actions read
-# DIFFERENT, deliberately UNBOUNDED sets: SEARCH ALL -> :func:`get_untracked_files`, SCRAPE ALL ->
-# :func:`get_scrape_pending_tracklists`, MATCH ALL -> :func:`get_match_pending_tracklists`. None of
-# those three is touched here, so there is no shared reader to split and no way for this change to
-# under-enqueue the backlog: bounding these two bounds ONLY pixels. Do NOT ever point a bulk trigger
-# at a ``*_page`` reader.
-
-
-def _trackid_linked_conf_subq() -> Any:
-    """Per-file best LINKED tracklist confidence (the D-04 "matched" branch)."""
-    return (
-        select(
-            Tracklist.file_id.label("file_id"),
-            func.max(Tracklist.match_confidence).label("conf"),
-        )
-        .where(Tracklist.file_id.is_not(None))
-        .group_by(Tracklist.file_id)
-        .subquery()
-    )
-
-
-def _trackid_files_select(linked_conf_subq: Any) -> Select[Any]:
-    """The Track-ID row SELECT: the display columns + the per-engine and linked-tracklist LEFT joins.
-
-    No ORDER BY / LIMIT here -- :func:`_trackid_page_stmt` composes those through :func:`paged_stmt`
-    so the bound and the mandatory unique tiebreaker live in exactly one place.
-    """
-    audfprint = aliased(FingerprintResult)
-    panako = aliased(FingerprintResult)
-    return (
-        select(
-            FileRecord.original_filename,
-            FileRecord.original_path,
-            audfprint.status,
-            panako.status,
-            linked_conf_subq.c.file_id,
-            linked_conf_subq.c.conf,
-        )
-        .select_from(FileRecord)
-        .outerjoin(audfprint, and_(audfprint.file_id == FileRecord.id, audfprint.engine == _TRACKID_ENGINE_AUDFPRINT))
-        .outerjoin(panako, and_(panako.file_id == FileRecord.id, panako.engine == _TRACKID_ENGINE_PANAKO))
-        .outerjoin(linked_conf_subq, linked_conf_subq.c.file_id == FileRecord.id)
-        .where(
-            FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-            or_(
-                exists(select(FingerprintResult.id).where(FingerprintResult.file_id == FileRecord.id)),
-                exists(select(Tracklist.id).where(Tracklist.file_id == FileRecord.id)),
-            ),
-        )
-    )
-
-
-def _trackid_page_stmt(linked_conf_subq: Any, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
-    """Build the BOUNDED Track-ID page SELECT (phaze-1wvb).
-
-    Extracted (like :func:`_pending_page_stmt`) so the bound is assertable at the SQL level: a test
-    can compile this and check it carries a ``LIMIT``. That matters because :func:`split_sentinel`
-    truncates in PYTHON -- a page whose row COUNT looks right can still be sitting on an unbounded
-    whole-corpus DB read, which is the memory/DB half of the bug this bead fixes. Asserting only on
-    ``len(page.rows)`` does NOT catch a missing LIMIT.
-
-    Newest-first display order with the MANDATORY unique ``FileRecord.id`` tiebreaker (contract
-    rule 4 -- ``created_at`` alone ties for every row written in one transaction).
-    """
-    return paged_stmt(
-        _trackid_files_select(linked_conf_subq),
-        page=page,
-        page_size=page_size,
-        # phaze-a6hm.1 sortable-column contract -- see _pending_page_stmt.
-        order_by=sort.order_by() if sort is not None else (FileRecord.created_at.desc(),),
-        tiebreaker=(FileRecord.id.desc(),),
-    )
+# RULE 7 DETERMINATION (paging contract rule 7 -- do this BEFORE bounding anything): the reader is
+# RENDER-ONLY. Verified by call graph -- its ONLY caller was ``shell._render_stage``
+# (``tracklist_sets``), flowing straight into ``_file_table.html``; it feeds no enqueue, no trigger
+# and no bulk action. The Identify workspace's bulk actions read DIFFERENT, deliberately UNBOUNDED
+# sets: SEARCH ALL -> :func:`get_untracked_files`, SCRAPE ALL -> :func:`get_scrape_pending_tracklists`,
+# MATCH ALL -> :func:`get_match_pending_tracklists`. None of those three is touched here, so there is
+# no shared reader to split and no way for this change to under-enqueue the backlog: bounding this one
+# bounds ONLY pixels. Do NOT ever point a bulk trigger at a ``*_page`` reader.
 
 
 def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
     """Build the BOUNDED per-set Tracklist page SELECT (phaze-1wvb).
 
-    Extracted for the same reason as :func:`_trackid_page_stmt`: the LIMIT must be assertable in the
-    EMITTED SQL, not merely inferred from the length of the returned list. Newest-first with the
+    Extracted so the LIMIT is assertable in the EMITTED SQL, not merely inferred from the length of the returned list. Newest-first with the
     MANDATORY unique ``Tracklist.id`` tiebreaker (contract rule 4).
     """
     track_counts_subq = (
@@ -1840,92 +1701,6 @@ def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | No
         order_by=sort.order_by() if sort is not None else (Tracklist.created_at.desc(),),
         tiebreaker=(Tracklist.id.desc(),),
     )
-
-
-async def get_trackid_files_page(
-    session: AsyncSession, *, page: int = 1, page_size: int = DEFAULT_PAGE_SIZE, sort: SortState | None = None
-) -> Page[dict[str, Any]]:
-    """Return ONE BOUNDED page of the Track-ID identity-signal rows (IDENT-01), degrade-safe.
-
-    The membership is UNCHANGED from Phase 59 -- music/video files that carry at least one
-    ``FingerprintResult`` row OR a linked ``Tracklist`` (RESEARCH Open-Q2) -- and so is the per-row
-    dict shape, so the Track-ID table renders exactly as before. What changed (phaze-1wvb) is that
-    the read now carries a LIMIT: it is served as bounded OFFSET pages with a ``page_size + 1``
-    sentinel for ``has_next``, NEVER a whole-corpus COUNT (paging contract rule 2 / the T-87-11 DoS
-    mitigation). ``page`` / ``page_size`` are CLAMPED inside :func:`paged_stmt`, and a page past the
-    end is an EMPTY page, not a 422 (rule 5).
-
-    Ordering: newest-first display order with the MANDATORY unique ``FileRecord.id`` tiebreaker
-    (rule 4). ``created_at`` ALONE is not a valid tiebreaker in phaze -- Postgres timestamp defaults
-    are transaction-time constant, so every file inserted in one transaction ties exactly and OFFSET
-    paging could silently skip or duplicate rows between pages.
-
-    RENDER READ ONLY (rule 7): this feeds the Track-ID table and nothing else. The Track-ID workspace
-    has NO bulk trigger of its own, and the Tracklist workspace's SEARCH/SCRAPE/MATCH ALL buttons
-    enqueue their own UNBOUNDED sets (:func:`get_untracked_files` /
-    :func:`get_scrape_pending_tracklists` / :func:`get_match_pending_tracklists`). Never enqueue from
-    a page.
-
-    Per-engine badge (D-01, Pitfall 1/2): two aliased LEFT joins keyed on the lowercase persisted
-    ``engine`` values map ``status == "success"`` -> ``"done"``, ``"failed"`` -> ``"failed"``, and a
-    missing row -> ``"pending"`` (see :func:`_trackid_engine_badge`).
-
-    Tracklist match-state (D-04): a tracklist LINKED to this file (``Tracklist.file_id == files.id``)
-    -> ``"matched"`` + that linked tracklist's best ``match_confidence``; else, if any unlinked
-    candidate tracklist exists, ``"candidate"`` + the global best candidate ``match_confidence``;
-    else ``"no match"`` with confidence ``None``. NOTE: with the current schema a candidate
-    (``file_id IS NULL``) is not tied to a specific file, so the candidate fallback surfaces the
-    system-wide best candidate -- the literal D-04 reading. Both candidate probes are themselves
-    bounded (``LIMIT 1`` / ``EXISTS``), so no part of this read scales with the corpus.
-
-    Degrade-safe via a SAVEPOINT returning an EMPTY :class:`Page` on any error (rule 6): rolling back
-    only the nested scope keeps the outer request transaction usable for the rest of the workspace.
-    """
-    page = clamp_page(page)
-    page_size = clamp_page_size(page_size)
-    try:
-        async with session.begin_nested():
-            # D-04 fallback: the system-wide best unlinked candidate (highest match_confidence).
-            best_candidate = (
-                await session.execute(
-                    select(Tracklist.match_confidence)
-                    .where(Tracklist.file_id.is_(None))
-                    .order_by(Tracklist.match_confidence.desc().nulls_last())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            has_candidate = bool((await session.execute(select(exists(select(Tracklist.id).where(Tracklist.file_id.is_(None)))))).scalar())
-
-            # Per-file best LINKED tracklist confidence (D-04 "matched" branch).
-            stmt = _trackid_page_stmt(_trackid_linked_conf_subq(), page=page, page_size=page_size, sort=sort)
-            raw = (await session.execute(stmt)).all()
-    except Exception:
-        logger.warning("trackid_files_page_degraded", page=page, page_size=page_size, exc_info=True)
-        return Page(rows=[], page=page, page_size=page_size, has_next=False)
-
-    sentinel_rows, has_next = split_sentinel(raw, page_size)
-    files: list[dict[str, Any]] = []
-    for filename, path, af_status, pk_status, linked_file_id, linked_conf in sentinel_rows:
-        if linked_file_id is not None:
-            tracklist_state = "matched"
-            confidence = linked_conf
-        elif has_candidate:
-            tracklist_state = "candidate"
-            confidence = best_candidate
-        else:
-            tracklist_state = "no match"
-            confidence = None
-        files.append(
-            {
-                "filename": filename,
-                "path": path,
-                "audfprint_status": _trackid_engine_badge(af_status),
-                "panako_status": _trackid_engine_badge(pk_status),
-                "tracklist_state": tracklist_state,
-                "confidence": confidence,
-            }
-        )
-    return Page(rows=files, page=page, page_size=page_size, has_next=has_next)
 
 
 async def get_tracklist_sets_page(
@@ -2379,10 +2154,10 @@ async def get_metadata_pending_files(session: AsyncSession) -> list[FileRecord]:
 
 
 def _pending_page_stmt(stage: Stage, *, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
-    """Build the bounded pending-set page SELECT shared by the metadata and fingerprint workspaces.
+    """Build the bounded pending-set page SELECT for an enrich workspace's pending set.
 
-    The SAME membership predicate the unbounded enqueue readers use
-    (:func:`get_metadata_pending_files` / :func:`get_fingerprint_pending_files`), wrapped in the
+    The SAME membership predicate the unbounded enqueue reader uses
+    (:func:`get_metadata_pending_files`), wrapped in the
     :mod:`phaze.services.pagination` contract: newest-first display order with the MANDATORY unique
     ``FileRecord.id`` tiebreaker (``created_at`` ties -- Postgres timestamp defaults are
     transaction-time constant), OFFSET paging, and a ``page_size + 1`` sentinel instead of a COUNT.
@@ -2403,17 +2178,16 @@ async def get_pending_files_page(
 ) -> Page[FileRecord]:
     """Return ONE bounded page of ``stage``'s pending set -- the RENDER read for the enrich workspaces.
 
-    phaze-5462: the metadata and fingerprint workspaces used to render
-    :func:`get_metadata_pending_files` / :func:`get_fingerprint_pending_files` in full, inline and
-    UNBOUNDED -- exactly the cliff phaze-5462 fixed on the Analyze tab. They measured a harmless
-    ~70 KB with zero rows only because those backlogs happen to be EMPTY in production today; a
-    metadata stall would have reproduced the 12.7 MB Analyze payload verbatim. This is the bounded
-    read those two surfaces render instead.
+    phaze-5462: the metadata workspace used to render :func:`get_metadata_pending_files` in full,
+    inline and UNBOUNDED -- exactly the cliff phaze-5462 fixed on the Analyze tab. It measured a
+    harmless ~70 KB with zero rows only because that backlog happens to be EMPTY in production today;
+    a metadata stall would have reproduced the 12.7 MB Analyze payload verbatim. This is the bounded
+    read that surface renders instead.
 
-    CRITICAL (paging contract rule 7): this is the RENDER read ONLY. The bulk EXTRACT ALL /
-    FINGERPRINT ALL triggers keep calling the UNBOUNDED ``get_*_pending_files`` readers, because
-    enqueuing only the first page would silently under-enqueue the backlog -- a far worse bug than a
-    long table. Do NOT "unify" these two readers.
+    CRITICAL (paging contract rule 7): this is the RENDER read ONLY. The bulk EXTRACT ALL trigger
+    keeps calling the UNBOUNDED ``get_metadata_pending_files`` reader, because enqueuing only the
+    first page would silently under-enqueue the backlog -- a far worse bug than a long table. Do NOT
+    "unify" the two readers.
 
     SAVEPOINT degrade-safe: returns an EMPTY page on any error rather than 500ing the workspace.
     """
@@ -2448,38 +2222,10 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
     return list(result.scalars().all())
 
 
-async def get_fingerprint_pending_files(session: AsyncSession) -> list[FileRecord]:
-    """Return the DERIVED fingerprint pending set -- music/video files eligible for fingerprinting (READ-01).
-
-    The EXACT set the manual ``trigger_fingerprint`` / ``trigger_fingerprint_ui`` endpoints and the
-    Phase-42 recovery producer enqueue. READ-01 cutover: DERIVED from ``eligible_clause(FINGERPRINT)`` in
-    a SINGLE ``.where(...)`` -- the prior ``get_files_by_state(METADATA_EXTRACTED)`` UNION with the
-    failed-retry sub-select AND the manual de-dup-by-id loop are COLLAPSED. This loses no coverage:
-    ``ELIGIBLE_AFTER_FAILURE[FINGERPRINT]`` is True, so ``eligible_clause`` is ``~inflight ∧ ~done``
-    (it drops the ``~failed`` conjunct), which subsumes the old failed-retry set -- a failed-only
-    fingerprint (DERIV-05: no engine ``success``/``completed``) is NOT ``done`` and therefore stays
-    eligible (ELIG-04 auto-retry). A single ``.where`` cannot emit a duplicate row, so the de-dup loop is
-    unnecessary. Dedup-resolved files are excluded. Pure ORM / bound params, NO interpolated operator
-    input (T-42-03).
-    UNBOUNDED BY DESIGN (paging contract rule 7, phaze.services.pagination). This is the ENQUEUE set
-    -- the exact membership the bulk trigger and the recovery producer must schedule -- so it must
-    NEVER be paged or LIMITed; doing so would silently under-enqueue the backlog. The WORKSPACE
-    renders the bounded :func:`get_pending_files_page` instead. Keep the two readers separate.
-    """
-    stmt = select(FileRecord).where(
-        FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),
-        eligible_clause(Stage.FINGERPRINT),
-        ~dedup_resolved_clause(),
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
 async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
     """Return music/video FileRecords with NO ``Tracklist`` row -- the search/scan pending set.
 
-    The EXACT set BOTH the Phase-39 name-search trigger (``trigger_search_ui``) and the
-    Phase-40 fingerprint-scan trigger (``trigger_scan_live_sets_ui``) enqueue: a music/video
+    The EXACT set the Phase-39 name-search trigger (``trigger_search_ui``) enqueues: a music/video
     file that does not yet have a ``Tracklist`` (already-matched files are skipped so re-runs
     are cheap and idempotent). Pure ORM ``~exists(...)`` with NO interpolated operator input
     (T-42-03).
@@ -2687,17 +2433,16 @@ async def get_straggler_count(session: AsyncSession, threshold_sec: int) -> int:
 # anti-feature table and BOTH are honoured here: (1) "rendering raw internal status strings" -- every
 # per-stage cell is the DERIVED stage_status_case bucket, never FileRecord.state; (2) "a stats poll
 # that scans the whole corpus" -- the query is LIMIT-bounded, keyset/offset-paginated, and NEVER emits
-# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The six correlated
+# an unbounded whole-corpus COUNT (the +1 sentinel below computes has_next instead). The five correlated
 # stage_status_case CASE columns evaluate for the N page rows ONLY (they correlate to FileRecord), so
 # the per-page derivation cost is O(page_size), never O(corpus) -- the T-87-11 DoS mitigation.
 # --------------------------------------------------------------------------------------------------
 
-# The six pills the UI shows, in matrix order. The 7-stage -> 6-pill remap LANDMINE lives HERE and in
+# The five pills the UI shows, in matrix order. The 6-stage -> 5-pill remap LANDMINE lives HERE and in
 # _stage_matrix.html: tracklist is omitted; Appr = REVIEW, Exec = APPLY. `.value` keys the row dict so
 # the template reads buckets.review for the Appr pill and buckets.apply for the Exec pill.
 _FILES_PAGE_STAGES: tuple[Stage, ...] = (
     Stage.METADATA,
-    Stage.FINGERPRINT,
     Stage.ANALYZE,
     Stage.PROPOSE,
     Stage.REVIEW,
@@ -2707,7 +2452,7 @@ _FILES_PAGE_STAGES: tuple[Stage, ...] = (
 
 @dataclass
 class FilesPageRow:
-    """One rendered file row: the ORM record + its six DERIVED per-stage buckets (keyed by Stage value)."""
+    """One rendered file row: the ORM record + its five DERIVED per-stage buckets (keyed by Stage value)."""
 
     file: FileRecord
     buckets: dict[str, str]
@@ -2731,7 +2476,7 @@ def _files_page_stmt(*, page: int, page_size: int, stage: Stage | None, bucket: 
     ``sort`` (phaze-a6hm.3) -- or, absent a resolved sort, the ``FileRecord.id`` PK index -- and LIMITed
     to ``page_size + 1`` (the sentinel that yields ``has_next`` with NO COUNT). Each ``stage_status_case``
     is a correlated CASE over the Phase-77 partial indexes (``ix_metadata_failed`` / ``ix_analysis_completed``
-    / ``ix_analysis_failed`` / ``ix_fprint_success``), so the derivation touches only the page rows. The
+    / ``ix_analysis_failed``), so the derivation touches only the page rows. The
     optional ``stage``+``bucket`` filter is applied as ``stage_status_case(stage) == bucket`` -- a pure
     ORM bound-param comparison (never f-string SQL, T-87-14); the caller validates ``stage``/``bucket``
     against the ``Stage``/``Status`` allowlists.
@@ -2768,9 +2513,8 @@ async def get_files_page(
     runs it inside a ``begin_nested()`` SAVEPOINT so ANY error (a DB hiccup, an aborted transaction, a
     build-time raise) rolls back the nested scope ALONE, logs a warning, and returns a safe EMPTY page --
     it NEVER 500s the poll (INFLIGHT-02 / D-00c / T-87-12). ``has_next`` is derived from the LIMIT+1
-    sentinel row, so pagination costs no COUNT. The six correlated ``stage_status_case`` columns are read
-    back into each row's ``buckets`` dict keyed by ``Stage`` value (metadata/fingerprint/analyze/propose/
-    review/apply) -- the derived buckets the ``_stage_pill`` cells render (never ``FileRecord.state``).
+    sentinel row, so pagination costs no COUNT. The five correlated ``stage_status_case`` columns are read
+    back into each row's ``buckets`` dict keyed by ``Stage`` value (metadata/analyze/propose/review/apply) -- the derived buckets the ``_stage_pill`` cells render (never ``FileRecord.state``).
 
     ``stage``+``bucket`` are accepted NOW (plumbed straight through to the filter) so Plan 05 -- which
     wires the status filter bar -- is templates-only. Passing only one of the pair is a no-op filter.

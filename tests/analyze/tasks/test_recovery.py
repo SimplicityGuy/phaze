@@ -14,9 +14,8 @@ cannot recur. It must still:
   - exclude a row whose key is a live saq_jobs key (still in flight),
   - exclude the predicate-covered agent stages when the file is domain-completed
     (analyze: state in {ANALYZED, ANALYSIS_FAILED}; push: state in {PUSHED, ANALYZED,
-    ANALYSIS_FAILED}; metadata/fingerprint: NOT in the stage's pending set),
-  - leave the FIVE live-keys-only stages (scan_live_set + 4 controller stages) to the
-    live-key filter alone,
+    ANALYSIS_FAILED}; metadata: NOT in the stage's pending set),
+  - leave the FOUR live-keys-only controller stages to the live-key filter alone,
   - dedup an in-flight deterministic key to a ``skipped`` no-op (idempotency backstop),
   - skip agent-routed rows with a WARNING when no agent is online (cold boot),
   - honor ``force=True`` (bypass ONLY the no-op gate, never the per-item dedup).
@@ -41,7 +40,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.stage_skip import StageSkip
@@ -172,12 +170,6 @@ async def _seed_analysis(session: AsyncSession, file_id: uuid.UUID, *, completed
 async def _seed_metadata(session: AsyncSession, file_id: uuid.UUID, *, failed_at: datetime | None = None) -> None:
     """Seed the ``metadata`` row Phase-80 derives metadata done (failed_at NULL) / failed (failed_at set) from."""
     session.add(FileMetadata(id=uuid.uuid4(), file_id=file_id, failed_at=failed_at))
-    await session.commit()
-
-
-async def _seed_fingerprint(session: AsyncSession, file_id: uuid.UUID, *, status: str = "success", engine: str = "chromaprint") -> None:
-    """Seed one ``fingerprint_results`` engine row (status='success' => fingerprint done, DERIV-05)."""
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=file_id, engine=engine, status=status))
     await session.commit()
 
 
@@ -487,57 +479,6 @@ async def test_metadata_pending_row_replays(
     assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0}
 
 
-@pytest.mark.asyncio
-async def test_fingerprint_done_row_is_excluded(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fingerprint_file row whose file has a successful fingerprint engine row is excluded.
-
-    Phase 80 (D-05): fingerprint done is now DERIVED DIRECTLY via ``done_clause(FINGERPRINT)`` -- a
-    ``success``/``completed`` engine row (DERIV-05) -- not the retired "absent from the pending set".
-    """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox")
-    f_done = _make_file()
-    session.add(f_done)
-    await session.commit()
-    await _seed_fingerprint(session, f_done.id, status="success")  # a success engine -> fingerprint done
-    await _seed_ledger(session, function="fingerprint_file", file_id=f_done.id)
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
-
-    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
-
-
-@pytest.mark.asyncio
-async def test_fingerprint_pending_row_replays(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A fingerprint_file row whose file IS METADATA_EXTRACTED (pending) replays (not done)."""
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox")
-    f = _make_file()  # in fingerprint pending set
-    session.add(f)
-    await session.commit()
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
-
-    assert result["stages"]["fingerprint_file"] == {"reenqueued": 1, "skipped": 0}
-
-
 # --- CR-02 regression: the terminal-failure clear (not the predicate) closes the loop -------
 
 
@@ -572,38 +513,6 @@ async def test_cleared_metadata_row_is_not_reenqueued(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
-    assert controller_queue.captured == []
-    assert router.queues == {}
-
-
-@pytest.mark.asyncio
-async def test_cleared_fingerprint_row_is_not_reenqueued(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CR-02: a terminally-failed fingerprint file whose ledger row was CLEARED is NOT re-enqueued.
-
-    The file is METADATA_EXTRACTED -- it IS in get_fingerprint_pending_files, so the predicate
-    can never mark it done. After the /failed terminal-ack clears fingerprint_file:<file_id>,
-    the absent row keeps recover_orphaned_work from replaying it. The CLEAR is what stops the loop.
-    """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox")
-    f = _make_file()  # still in fingerprint pending set
-    session.add(f)
-    await session.commit()
-    key = await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
-    await clear_ledger_entry(session, key)
-    await session.commit()
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
-
-    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -755,62 +664,33 @@ async def test_force_skipped_metadata_with_stale_failed_at_is_excluded_from_reco
 
 
 @pytest.mark.asyncio
-async def test_skipped_fingerprint_row_is_excluded_from_recovery(
+async def test_controller_row_is_live_keys_only(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A force-SKIPPED fingerprint file is excluded from recovery (phase-87 behavior 5).
+    """A controller row has NO domain predicate: an ANALYZED file (a "done"-looking state) still replays.
 
-    ``_build_done_sets`` now derives ``fingerprint_done`` from
-    ``or_(done_clause(FINGERPRINT), skipped_clause(FINGERPRINT))``: a FAILED-but-not-skipped fingerprint
-    still auto-retries, but an operator-force-SKIPPED fingerprint whose ``fingerprint_file`` ledger row
-    survives a crash/restart is NOT re-enqueued -- recovery never re-drives a stage the operator skipped.
-    (Regression guard for the 87-03 gap; previously a strict-xfail tripwire, made GREEN by the 87-03 fix.)
+    ``search_tracklist`` is live-keys-only -- its ledger row is cleared by Plan 01's after_process on
+    every terminal outcome, so any row that reaches recovery IS orphaned. The domain-completed
+    predicate must NOT apply to it (no scalar-state/pending-set exclusion), so even an ANALYZED file
+    replays. (Authored against ``scan_live_set``, moved to its sibling live-keys-only stage when
+    phaze-0jpe removed the fingerprint-scan task; the classification under test is identical.)
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
-    f = _make_file()  # in fingerprint pending set absent the marker
+    f = _make_file()  # would be "done" for analyze, but irrelevant to the controller stage
     session.add(f)
     await session.commit()
-    await _seed_stage_skip(session, f.id, stage="fingerprint")
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+    await _seed_ledger(session, function="search_tracklist", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
-
-
-@pytest.mark.asyncio
-async def test_scan_row_is_live_keys_only(
-    async_engine: AsyncEngine,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A scan_live_set row has NO domain predicate: an ANALYZED file (a "done"-looking state) still replays.
-
-    scan_live_set is live-keys-only -- its ledger row is cleared by Plan 02's terminal ack on every
-    outcome, so any row that reaches recovery IS orphaned. The domain-completed predicate must NOT
-    apply to it (no scalar-state/pending-set exclusion), so even an ANALYZED file replays.
-    """
-    _patch_settings(monkeypatch)
-    _patch_inflight(monkeypatch, 0)
-    _patch_live_keys(monkeypatch, set())
-    await seed_active_agent(session, agent_id="nox")
-    f = _make_file()  # would be "done" for analyze, but irrelevant to scan
-    session.add(f)
-    await session.commit()
-    await _seed_ledger(session, function="scan_live_set", file_id=f.id)
-
-    router = DedupFakeTaskRouter()
-    controller_queue = DedupFakeQueue("controller")
-    result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
-
-    assert result["stages"]["scan_live_set"] == {"reenqueued": 1, "skipped": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0}
 
 
 # --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
@@ -981,10 +861,10 @@ async def test_non_held_process_file_row_still_routes_to_any_agent(
 
 # --- phaze-mits: other_agent_rows are fileserver-local -> scope the agent pick to kind="fileserver" ----
 #
-# The non-push agent partition (process_file / extract_file_metadata / fingerprint_file / scan_live_set /
-# s3_upload) is ALL fileserver-local. An UNSCOPED select_active_agent(session) orders by last_seen_at DESC
+# The non-push agent partition (process_file / extract_file_metadata / s3_upload) is ALL
+# fileserver-local. An UNSCOPED select_active_agent(session) orders by last_seen_at DESC
 # across ALL kinds, so in a mixed deployment (fileserver + heartbeating compute agent) a per-run heartbeat
-# race could pick the compute agent -- parking fingerprint/meta rows on consumer-less compute lanes and
+# race could pick the compute agent -- parking meta rows on consumer-less compute lanes and
 # FileNotFounding local process_file into terminal ANALYSIS_FAILED. This mirrors the already-hardened LIVE
 # enqueue path (phaze-5r8f: enqueue_router.resolve_queue_for_task pins kind="fileserver").
 
@@ -999,9 +879,9 @@ async def test_orphaned_agent_rows_route_to_fileserver_not_a_racing_compute_agen
 
     Mixed deployment: a fileserver AND a compute agent are both online, with the compute agent the single
     most-recently-seen non-revoked agent (an unscoped ``last_seen_at DESC`` pick would choose it). The
-    ``other_agent_rows`` partition (here fingerprint_file + process_file, both fileserver-local) must route
-    to the FILESERVER's lanes regardless of the heartbeat race -- never onto the media-less compute agent's
-    consumer-less ``fingerprint`` lane or its FileNotFound-ing ``analyze`` lane.
+    ``other_agent_rows`` partition (here extract_file_metadata + process_file, both fileserver-local) must
+    route to the FILESERVER's lanes regardless of the heartbeat race -- never onto the media-less compute
+    agent's consumer-less ``meta`` lane or its FileNotFound-ing ``analyze`` lane.
     MUTATION: dropping the ``kind="fileserver"`` scope re-routes onto ``cloud-*`` -> RED.
     """
     _patch_settings(monkeypatch)
@@ -1014,11 +894,11 @@ async def test_orphaned_agent_rows_route_to_fileserver_not_a_racing_compute_agen
     session.add(compute)
     await session.commit()
 
-    fp_file = _make_file()
+    meta_file = _make_file()
     proc_file = _make_file()
-    session.add_all([fp_file, proc_file])
+    session.add_all([meta_file, proc_file])
     await session.commit()
-    await _seed_ledger(session, function="fingerprint_file", file_id=fp_file.id)
+    await _seed_ledger(session, function="extract_file_metadata", file_id=meta_file.id)
     await _seed_ledger(session, function="process_file", file_id=proc_file.id)
 
     router = DedupFakeTaskRouter()
@@ -1026,10 +906,10 @@ async def test_orphaned_agent_rows_route_to_fileserver_not_a_racing_compute_agen
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # Both fileserver-local rows land on the FILESERVER's lanes; the compute agent is NEVER addressed.
-    assert "nox-fingerprint" in router.queues
+    assert "nox-meta" in router.queues
     assert "nox-analyze" in router.queues
     assert not any(name.startswith("cloud") for name in router.queues)
-    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
     assert result["stages"]["process_file"]["reenqueued"] == 1
 
 
@@ -1044,7 +924,7 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
     The kind-scoped pick raises ``NoActiveAgentError`` when only a compute agent heartbeats, so the rows
     are left for a later recovery once a fileserver returns -- exactly the cold-boot skip posture, never a
     silent enqueue onto a consumer-less compute lane.
-    MUTATION: dropping the ``kind="fileserver"`` scope enqueues onto ``cloud-fingerprint`` -> RED.
+    MUTATION: dropping the ``kind="fileserver"`` scope enqueues onto ``cloud-meta`` -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1053,7 +933,7 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
     f = _make_file()
     session.add(f)
     await session.commit()
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
@@ -1061,7 +941,7 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
 
     # No fileserver -> the row is skipped (no queue touched), never routed to the compute agent.
     assert router.queues == {}
-    assert result["stages"]["fingerprint_file"] == {"reenqueued": 0, "skipped": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0}
 
 
 # --- phaze-fjii: recovery routes EACH agent row to its OWNING fileserver (not one shared pick) --------
@@ -1091,8 +971,8 @@ async def test_agent_rows_route_to_each_rows_owning_fileserver(
     """phaze-fjii: with TWO owning fileservers online, each orphaned row lands on ITS OWNER's lanes.
 
     Two live fileservers (``fs-a``, ``fs-b``); one orphaned ``process_file`` row owned by ``fs-a`` and one
-    orphaned ``fingerprint_file`` row owned by ``fs-b``. Each must replay onto its OWNER's lane -- the
-    process_file onto ``fs-a-analyze`` and the fingerprint onto ``fs-b-fingerprint`` -- and NEITHER may
+    orphaned ``extract_file_metadata`` row owned by ``fs-b``. Each must replay onto its OWNER's lane -- the
+    process_file onto ``fs-a-analyze`` and the metadata onto ``fs-b-meta`` -- and NEITHER may
     cross-route onto the other owner (whose media mount lacks the path).
     MUTATION: reverting to one shared ``select_active_agent(kind="fileserver")`` pick lands BOTH rows on the
     single most-recently-seen fileserver (``fs-b``) -> ``fs-b-analyze`` present, ``fs-a-analyze`` absent -> RED.
@@ -1115,7 +995,10 @@ async def test_agent_rows_route_to_each_rows_owning_fileserver(
         session, function="process_file", file_id=file_a.id, payload=_agent_payload_owned_by("process_file", file_a.id, agent_id="fs-a")
     )
     await _seed_ledger(
-        session, function="fingerprint_file", file_id=file_b.id, payload=_agent_payload_owned_by("fingerprint_file", file_b.id, agent_id="fs-b")
+        session,
+        function="extract_file_metadata",
+        file_id=file_b.id,
+        payload=_agent_payload_owned_by("extract_file_metadata", file_b.id, agent_id="fs-b"),
     )
 
     router = DedupFakeTaskRouter()
@@ -1124,14 +1007,14 @@ async def test_agent_rows_route_to_each_rows_owning_fileserver(
 
     # Each row lands on ITS OWNER's lane; neither cross-routes onto the other fileserver.
     assert "fs-a-analyze" in router.queues
-    assert "fs-b-fingerprint" in router.queues
+    assert "fs-b-meta" in router.queues
     assert "fs-b-analyze" not in router.queues  # fs-a's process_file never lands on fs-b
-    assert "fs-a-fingerprint" not in router.queues  # fs-b's fingerprint never lands on fs-a
+    assert "fs-a-meta" not in router.queues  # fs-b's metadata never lands on fs-a
     assert result["stages"]["process_file"]["reenqueued"] == 1
-    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
     # Exactly one enqueue landed on each owner's queue.
     assert [payload["file_id"] for _, payload in router.queues["fs-a-analyze"].captured] == [str(file_a.id)]
-    assert [payload["file_id"] for _, payload in router.queues["fs-b-fingerprint"].captured] == [str(file_b.id)]
+    assert [payload["file_id"] for _, payload in router.queues["fs-b-meta"].captured] == [str(file_b.id)]
 
 
 @pytest.mark.asyncio
@@ -1186,17 +1069,16 @@ def test_every_keyed_function_is_predicate_covered_xor_live_keys_only(function: 
     """Each keyed function is EITHER domain-predicate-covered XOR live-keys-only.
 
     No function may be both (double-classified) or neither (silently undefined). The
-    predicate-covered functions are process_file/extract_file_metadata/fingerprint_file plus
-    the Phase-50 push_file stage.
+    predicate-covered functions are process_file/extract_file_metadata plus the Phase-50 push_file stage.
     """
     covered = function in _DOMAIN_COMPLETED_STAGES
     live_keys_only = function not in _DOMAIN_COMPLETED_STAGES
     assert covered != live_keys_only  # exclusive-or: exactly one is true
 
 
-def test_domain_completed_stages_are_exactly_the_four_agent_stages() -> None:
-    """The predicate-covered set is exactly process_file/extract_file_metadata/fingerprint_file/push_file."""
-    assert {"process_file", "extract_file_metadata", "fingerprint_file", "push_file"} == _DOMAIN_COMPLETED_STAGES
+def test_domain_completed_stages_are_exactly_the_three_agent_stages() -> None:
+    """The predicate-covered set is exactly process_file/extract_file_metadata/push_file."""
+    assert {"process_file", "extract_file_metadata", "push_file"} == _DOMAIN_COMPLETED_STAGES
     # And every covered stage is a real keyed function (no typos / drift from _KEY_BUILDERS).
     assert set(_KEY_BUILDERS) >= _DOMAIN_COMPLETED_STAGES
 
@@ -1214,7 +1096,6 @@ def test_is_domain_completed_replays_a_predicate_row_with_no_file_id() -> None:
         metadata_domain_completed=set(),
         metadata_failed_at={},
         metadata_skipped=set(),
-        fingerprint_done=set(),
         push_done=set(),
     )
     assert is_domain_completed(row, empty) is False
@@ -1639,7 +1520,7 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
 #
 # ``_natural_id`` is function-agnostic (payload['file_id'] for EVERY file-keyed row), so the SCHED-05
 # in-flight and 83-06 awaiting exclusions -- built as file-id sets -- were silently dropping an orphaned
-# fingerprint_file / extract_file_metadata / scan_live_set / search_tracklist row for any file that merely
+# extract_file_metadata / search_tracklist row for any file that merely
 # also carried a cloud_job. The cloud callback/drain re-drives ONLY process_file/push_file/s3_upload/
 # submit_cloud_job; the other stages have no cloud second owner, so scoping the exclusions to
 # ``_CLOUD_OWNED_FUNCTIONS`` restores their recovery while keeping the analyze/push single-owner + the
@@ -1647,16 +1528,16 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
 
 
 @pytest.mark.asyncio
-async def test_in_flight_cloud_job_does_not_block_fingerprint_recovery(
+async def test_in_flight_cloud_job_does_not_block_metadata_recovery(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phaze-fc2l: a file with an in-flight cloud_job still recovers its orphaned fingerprint_file row.
+    """phaze-fc2l: a file with an in-flight cloud_job still recovers its orphaned extract_file_metadata row.
 
-    The in-flight cloud_job owns only the analyze/push re-drive; fingerprint has no cloud second owner, so
-    its lost row MUST recover (onto the fileserver's fingerprint lane) -- the exclusion must not over-reach.
-    MUTATION: reverting to the unscoped exclusion drops the fingerprint row -> reenqueued 0 -> RED.
+    The in-flight cloud_job owns only the analyze/push re-drive; metadata has no cloud second owner, so
+    its lost row MUST recover (onto the fileserver's meta lane) -- the exclusion must not over-reach.
+    MUTATION: reverting to the unscoped exclusion drops the metadata row -> reenqueued 0 -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1666,28 +1547,28 @@ async def test_in_flight_cloud_job_does_not_block_fingerprint_recovery(
     session.add(f)
     await session.commit()
     await _seed_cloud_job(session, f.id, status=CloudJobStatus.SUBMITTED)  # in-flight analyze/push owner
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # The fingerprint row recovers onto the fileserver's fingerprint lane despite the in-flight cloud_job.
-    assert "nox-fingerprint" in router.queues
-    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    # The metadata row recovers onto the fileserver's meta lane despite the in-flight cloud_job.
+    assert "nox-meta" in router.queues
+    assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
 
 
 @pytest.mark.asyncio
-async def test_awaiting_cloud_job_does_not_block_fingerprint_recovery(
+async def test_awaiting_cloud_job_does_not_block_metadata_recovery(
     async_engine: AsyncEngine,
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phaze-fc2l: a file HELD awaiting cloud still recovers its orphaned fingerprint_file row.
+    """phaze-fc2l: a file HELD awaiting cloud still recovers its orphaned extract_file_metadata row.
 
-    The stage_cloud_window drain owns only the held file's analyze re-drive; a lost fingerprint has no
+    The stage_cloud_window drain owns only the held file's analyze re-drive; a lost metadata row has no
     cloud owner and MUST recover. The companion of the in-flight case for the awaiting set.
-    MUTATION: reverting to the unscoped awaiting exclusion drops the fingerprint row -> reenqueued 0 -> RED.
+    MUTATION: reverting to the unscoped awaiting exclusion drops the metadata row -> reenqueued 0 -> RED.
     """
     _patch_settings(monkeypatch)
     _patch_inflight(monkeypatch, 0)
@@ -1697,14 +1578,14 @@ async def test_awaiting_cloud_job_does_not_block_fingerprint_recovery(
     session.add(f)
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)  # held long file -> drain owns ONLY its analyze re-drive
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert "nox-fingerprint" in router.queues
-    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    assert "nox-meta" in router.queues
+    assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
 
 
 @pytest.mark.asyncio
@@ -1717,7 +1598,7 @@ async def test_awaiting_cloud_job_still_excludes_the_process_file_row(
 
     process_file IS a cloud-owned function, so the CLOUDROUTE-02 / single-owner guarantee is unchanged:
     a held awaiting-cloud file's process_file row is still excluded (the drain owns local analyze), never
-    routed to the fileserver -- co-seeded here alongside a fingerprint row that DOES recover, proving the
+    routed to the fileserver -- co-seeded here alongside a metadata row that DOES recover, proving the
     per-function scoping splits the two correctly.
     """
     _patch_settings(monkeypatch)
@@ -1729,17 +1610,17 @@ async def test_awaiting_cloud_job_still_excludes_the_process_file_row(
     await session.commit()
     await _seed_awaiting_cloud_job(session, f.id)
     await _seed_ledger(session, function="process_file", file_id=f.id)  # cloud-owned -> excluded
-    await _seed_ledger(session, function="fingerprint_file", file_id=f.id)  # not cloud-owned -> recovers
+    await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)  # not cloud-owned -> recovers
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    # process_file stays drain-owned (never analyzed locally); fingerprint recovers.
+    # process_file stays drain-owned (never analyzed locally); metadata recovers.
     assert "nox-analyze" not in router.queues
     assert result["stages"]["process_file"]["reenqueued"] == 0
-    assert "nox-fingerprint" in router.queues
-    assert result["stages"]["fingerprint_file"]["reenqueued"] == 1
+    assert "nox-meta" in router.queues
+    assert result["stages"]["extract_file_metadata"]["reenqueued"] == 1
 
 
 # --- Phase 80 (READ-03): SC-2 / SC-3 / D-10 both-cells / D-11 regression cases ----------------------

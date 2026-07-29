@@ -1,9 +1,8 @@
 # phaze — .dockerignore
 #
-# ONE build context for FOUR images: every Dockerfile is built with `context: .`
+# ONE build context for every image: every Dockerfile is built with `context: .`
 # (docker-compose.yml, .github/workflows/docker-{validate,publish}.yml), so this
-# single file governs the api/worker image, the arm64 agent image, and both
-# fingerprint sidecars.
+# single file governs the api/worker image and the arm64 agent image.
 #
 # ALLOWLIST, not denylist. The previous denylist had drifted badly — .beads/
 # (Dolt store + .beads-credential-key), .repowise/, .worktrees/, .bv/, .mcp.json,
@@ -17,9 +16,6 @@
 #   Dockerfile ................ assets/ src/ alembic/ alembic.ini pyproject.toml uv.lock
 #   Dockerfile.agent-arm64 .... src/ alembic/ alembic.ini pyproject.toml uv.lock
 #   Dockerfile.job ............ (none — FROM ${BASE_IMAGE} only)
-#   services/audfprint ........ services/audfprint/{pyproject.toml,uv.lock,app.py}
-#   services/panako ........... services/panako/{pyproject.toml,uv.lock,app.py}
-#     (its builder stage clones Panako at PANAKO_REF; nothing from the context)
 
 # Exclude everything...
 *
@@ -29,13 +25,12 @@
 !alembic.ini
 !assets/
 !pyproject.toml
-!services/
 !src/
 !uv.lock
 
 # Derived and machine-local junk that lives *inside* the re-included trees.
-# Without these, services/*/.venv/ and the per-package __pycache__/ dirs would
-# ride back in through `!services/` and `!src/`.
+# Without these, the per-package __pycache__/ dirs would ride back in through
+# `!src/`.
 **/__pycache__/
 **/*.py[codz]
 **/.venv/

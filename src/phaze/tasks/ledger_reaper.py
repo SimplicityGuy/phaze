@@ -44,9 +44,9 @@ THREE GUARDS, all load-bearing:
 - **Liveness is required to be ABSENT, and it counts BOTH substrates.** ``cloud_job`` busy-ness is
   checked alongside ``saq_jobs`` because compute dispatch has no controller-side broker row at all; on
   ``saq_jobs`` alone every dispatched file would look reapable mid-flight.
-- **Scoped to the three enrich stages.** ``resolved_ledger_clause`` is only defined where a per-file
-  ledger key and a domain-completion predicate both exist. ``push_file`` / ``s3_upload`` /
-  ``scan_live_set`` / the controller functions are deliberately untouched.
+- **Scoped to the enrich stages.** ``resolved_ledger_clause`` is only defined where a per-file
+  ledger key and a domain-completion predicate both exist. ``push_file`` / ``s3_upload`` / the
+  controller functions are deliberately untouched.
 
 IDEMPOTENT by construction: the predicate is a pure function of committed state and the action is a
 DELETE of the rows it matched, so a second pass over an unchanged database matches nothing and returns

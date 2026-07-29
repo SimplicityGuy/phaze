@@ -10,7 +10,7 @@ shutdown calls ``close()`` to disconnect every cached queue.
 Phase 26 D-18 + quick-260707-dh1: queue name format is
 ``phaze-agent-<agent_id>-<lane>`` where ``agent_id`` is the kebab-case slug from
 Phase 24 D-01 (regex ``^[a-z0-9]+(-[a-z0-9]+)*$``) and ``<lane>`` is one of
-``analyze`` / ``fingerprint`` / ``meta`` / ``io`` (``enqueue_router.LANES``). The
+``analyze`` / ``meta`` / ``io`` (``enqueue_router.LANES``). The
 slug + lowercase lane guarantee Redis-safe key chars; no escaping needed.
 
 This module is opted into mypy strict checking via the

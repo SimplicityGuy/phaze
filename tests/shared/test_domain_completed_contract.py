@@ -27,7 +27,7 @@ from phaze.enums.stage import FAILURE_IS_TERMINAL, Stage, Status, domain_complet
 from phaze.services.stage_status import domain_completed_clause
 
 
-ENRICH_STAGES = (Stage.METADATA, Stage.ANALYZE, Stage.FINGERPRINT)
+ENRICH_STAGES = (Stage.METADATA, Stage.ANALYZE)
 DOWNSTREAM_STAGES = (Stage.TRACKLIST, Stage.PROPOSE, Stage.REVIEW, Stage.APPLY)
 
 
@@ -110,10 +110,13 @@ def test_raw_failed_analyze_is_not_eligible() -> None:
     assert domain_completed({Stage.ANALYZE: "failed"}, Stage.ANALYZE) is True
 
 
-def test_raw_failed_fingerprint_stays_eligible() -> None:
-    """And the mirror: a raw-string FAILED fingerprint stays ELIGIBLE for auto-retry (ELIG-04)."""
-    assert eligible({Stage.FINGERPRINT: "failed"}, Stage.FINGERPRINT) is True
-    assert domain_completed({Stage.FINGERPRINT: "failed"}, Stage.FINGERPRINT) is False
+def test_raw_failed_metadata_stays_eligible() -> None:
+    """And the mirror: a raw-string FAILED metadata stays ELIGIBLE for auto-retry (ELIG-04)."""
+    assert eligible({Stage.METADATA: "failed"}, Stage.METADATA) is True
+    # metadata failures ARE terminal (FAILURE_IS_TERMINAL), so recovery treats them as
+    # domain-complete even though the pending set still offers them -- the two axes are orthogonal
+    # (D-15), and this pair is what pins that.
+    assert domain_completed({Stage.METADATA: "failed"}, Stage.METADATA) is True
 
 
 @pytest.mark.parametrize("bogus", ["Done", "DONE", "", "unknown", "fail"])

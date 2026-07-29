@@ -61,10 +61,17 @@ WORKDIR /app
 
 # Audio pipeline native system deps. Must run as root, so it stays before
 # `USER phaze` below. essentia-tensorflow's native `_essentia` extension links
-# libatomic.so.1 (libatomic1); the decode/fingerprint toolchain needs ffmpeg +
-# ffprobe (ffmpeg), libsndfile.so.1 (libsndfile1), and fpcalc + libchromaprint.so.1
-# (libchromaprint-tools). Without these, `import essentia` fails at runtime and
-# every analysis job dead-letters.
+# libatomic.so.1 (libatomic1) -- confirmed by `ldd` on the built extension; without
+# it, `import essentia` fails at runtime and every analysis job dead-letters. The
+# decode toolchain needs ffmpeg + ffprobe (ffmpeg) and libsndfile.so.1 (libsndfile1).
+# fpcalc + libchromaprint.so.1 (libchromaprint-tools) are kept but have NO VERIFIED
+# CONSUMER in this codebase (phaze-0jpe.6, 2026-07-28): `ldd` on the shipped
+# `_essentia` extension shows no chromaprint link, `import essentia` succeeds
+# without it, and no `phaze` source calls fpcalc/chromaprint/Chromaprinter/acoustid.
+# It plausibly dates from the original pyacoustid/AcoustID fingerprinting plan
+# that was superseded by the audfprint/Panako pipeline (itself removed, epic
+# phaze-0jpe) and never cleaned up. Left installed pending a separate operator
+# decision to drop it -- see docs/design/0002-fingerprint-removal.md.
 # libpq5 (v4.1.1): provides libpq.so.5 for psycopg's SAQ PostgresQueue broker (Phase 36).
 # psycopg[binary] bundles its own libpq, but libpq5 is a belt-and-suspenders fallback for
 # the pure-Python psycopg path — without a libpq backend, `import phaze.main` crash-loops

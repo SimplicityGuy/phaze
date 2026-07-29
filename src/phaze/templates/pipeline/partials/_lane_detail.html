@@ -12,7 +12,7 @@
                             too), so [] only means "genuinely none yet" or a degraded read -> the "No
                             completions in the last N" empty state. label is a filename (never a bare
                             hash/id -- phaze-2u8v.3); completed_at is the TRUE completion instant.
-     * queue_depths      -- per-lane-tier {analyze,fingerprint,meta,io} depth; each degrades to 0 (D-00b).
+     * queue_depths      -- per-lane-tier {analyze,meta,io} depth; each degrades to 0 (D-00b).
                             None (phaze-2u8v.1) when the lane has NO SAQ agent queue -> render the note.
      * queue_depths_agent -- the agent id whose SAQ lanes those depths were counted from, or None.
      * queue_depths_note -- why there is no per-tier figure (kueue lane / no live fileserver agent).
@@ -97,7 +97,7 @@
            phaze-2u8v.1: `queue_depths` is None (NOT {}) when the lane has no SAQ agent queue at all --
            a kueue lane (its work is a k8s Job, which consumes no queue) or a local lane with no live
            fileserver agent. Render `queue_depths_note` in that case. A fabricated "analyze 0 ·
-           fingerprint 0 · meta 0 · io 0" row is indistinguishable from a genuinely idle agent, which is
+           meta 0 · io 0" row is indistinguishable from a genuinely idle agent, which is
            exactly how a lane holding 2075 queued jobs read as idle on this panel. `queue_depths_agent`
            names the agent the figures were read from so the panel can never again silently count a
            queue nobody writes to. #}

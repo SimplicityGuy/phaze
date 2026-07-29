@@ -36,14 +36,22 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/cue", tags=["cue"])
 
 
-# The CUE list's display order (phaze-hdho): fingerprint-sourced tracklists first (D-02 / CUE-01
-# preference), then alphabetically by artist/event. BOTH ``Tracklist.artist`` and ``Tracklist.event``
+# The CUE list's display order (phaze-hdho): alphabetically by artist/event.
+#
+# phaze-0jpe: the leading conjunct used to be ``(Tracklist.source == "fingerprint").desc()`` -- the
+# D-02 / CUE-01 preference for putting audio-fingerprint-sourced tracklists first, because they
+# carried per-track timestamps that scraped 1001tracklists rows often lacked. Fingerprinting is gone
+# and no code path creates a ``source='fingerprint'`` row any more, so that conjunct now sorts on a
+# constant and only obscures the real order. Whether the historical rows themselves are purged is a
+# data question deliberately left to the removal runbook, NOT settled here -- and either answer
+# leaves this ordering correct.
+#
+# BOTH ``Tracklist.artist`` and ``Tracklist.event``
 # are nullable ``Text`` (models/tracklist.py), so a set of tracklists sharing a source and the same
 # -- or NULL -- artist/event forms a tie group. This tuple alone is NOT a unique sort key; every
 # caller MUST append a ``Tracklist.id`` tiebreaker (directly, or via :func:`paged_stmt`) before
 # relying on it for anything that slices or pages the result set (paging contract rule 4).
 _ELIGIBLE_DISPLAY_ORDER: tuple[Any, ...] = (
-    (Tracklist.source == "fingerprint").desc(),
     Tracklist.artist,
     Tracklist.event,
 )
@@ -60,7 +68,7 @@ def _eligible_tracklist_stmt() -> Select[Any]:
     phaze-dboy: the timestamp-existence check is scoped to ``Tracklist.latest_version_id`` --
     NOT "any version ever" -- because that is the ONLY version actual generation ever reads
     (``_build_cue_tracks(session, tracklist.latest_version_id)`` in ``generate_cue``). A
-    re-scrape/re-fingerprint can create a newer ``latest_version_id``
+    re-scrape can create a newer ``latest_version_id``
     whose tracks carry no timestamps while an OLDER version still has them; scoping this
     predicate to "any version" previously listed that tracklist as eligible with a Generate
     button that could never succeed (always "No tracks have timestamps"), permanently
@@ -223,14 +231,14 @@ async def generate_cue(
 
     # Build CUE tracks
     if not tracklist.latest_version_id:
-        toast_msg = "No tracks have timestamps. CUE sheets require track timing data from fingerprinting or 1001Tracklists."
+        toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     cue_tracks = await _build_cue_tracks(session, tracklist.latest_version_id)
 
     # Validate at least one track has timestamps
     if not any(t.timestamp_seconds is not None for t in cue_tracks):
-        toast_msg = "No tracks have timestamps. CUE sheets require track timing data from fingerprinting or 1001Tracklists."
+        toast_msg = "No tracks have timestamps. CUE sheets require per-track timing data from the tracklist source."
         return await _render_generate_error(request, session, tracklist, file_record, toast_msg)
 
     # Generate and write CUE file

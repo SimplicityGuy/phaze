@@ -19,8 +19,6 @@ jobs:
       matrix:
         package:
           - phaze
-          - phaze/audfprint
-          - phaze/panako
           - phaze/job
       fail-fast: false
 

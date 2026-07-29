@@ -121,14 +121,14 @@ async def test_duplicate_force_skip_is_idempotent_not_500(client: AsyncClient, s
     """
     file_id = await _seed_file(session)
 
-    first = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "first reason"})
-    second = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "second reason"})
+    first = await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "first reason"})
+    second = await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "second reason"})
 
     assert first.status_code == 200
     assert second.status_code == 200  # would be 500 with a bare INSERT
 
     # Exactly one row survives (scalar_one_or_none raises MultipleResultsFound if the conflict duplicated).
-    marker = await _read_skip(file_id, "fingerprint")
+    marker = await _read_skip(file_id, "analyze")
     assert marker is not None
     assert marker.reason == "first reason"  # do-nothing keeps the original, does not overwrite
 
@@ -154,10 +154,10 @@ async def test_nul_in_reason_is_sanitized_and_round_trips(client: AsyncClient, s
     """A NUL byte is stripped before persist (no PG txn abort) and the sanitized text round-trips (T-87-19)."""
     file_id = await _seed_file(session)
 
-    response = await client.post(f"/pipeline/files/{file_id}/skip/fingerprint", data={"reason": "corrupt\x00source"})
+    response = await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "corrupt\x00source"})
 
     assert response.status_code == 200
-    marker = await _read_skip(file_id, "fingerprint")
+    marker = await _read_skip(file_id, "analyze")
     assert marker is not None
     assert marker.reason == "corruptsource"  # NUL removed; no lost text around it
 
@@ -295,7 +295,7 @@ async def test_oob_pill_id_is_unique_in_the_composed_record(client: AsyncClient,
     record = (await client.get(f"/record/{file_id}")).text
     assert record.count(marker) == 1, "the OOB target id must be unique in the composed record document"
     # ... and no OTHER stage on the same record reuses it (the id is per (file, stage), not per file).
-    for stage_value in ("metadata", "fingerprint", "propose", "review", "apply"):
+    for stage_value in ("metadata", "propose", "review", "apply"):
         assert record.count(f'id="stage-pill-{stage_value}-{file_id}"') == 1
 
     ack = (await client.post(f"/pipeline/files/{file_id}/skip/analyze", data={"reason": "corrupt source file"})).text

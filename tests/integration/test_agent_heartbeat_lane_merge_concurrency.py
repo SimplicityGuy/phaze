@@ -15,7 +15,7 @@ so this lives on the real-PG ``committed_db`` fixture, following the established
 
 ``test_concurrent_lane_beats_do_not_clobber_each_other`` is THE regression: session A merges the
 ``analyze`` lane but does not commit yet (holding the row lock); session B starts merging the
-``fingerprint`` lane concurrently and must genuinely block on A's lock (asserted via a timeout
+``meta`` lane concurrently and must genuinely block on A's lock (asserted via a timeout
 window) rather than racing ahead against a stale snapshot. Only after A commits does B proceed
 via EvalPlanQual -- against the FIXED SQL, B's direct ``agents.last_status`` column references are
 re-evaluated against the just-committed row, so BOTH lanes survive.
@@ -72,7 +72,7 @@ async def test_concurrent_lane_beats_do_not_clobber_each_other(
         # and B's snapshot (taken once B's statement starts) predates A's eventual commit.
         await _merge_lane(session_a, "analyze", 100)
 
-        task_b = asyncio.create_task(_merge_lane(session_b, "fingerprint", 200))
+        task_b = asyncio.create_task(_merge_lane(session_b, "meta", 200))
         await asyncio.sleep(0.3)
         assert not task_b.done(), (
             "B must genuinely block on A's held row lock -- if it finished immediately, A's lock "
@@ -89,11 +89,11 @@ async def test_concurrent_lane_beats_do_not_clobber_each_other(
     async with session_factory() as session:
         agent = (await session.execute(select(Agent).where(Agent.id == _AGENT_ID))).scalar_one()
         assert agent.last_status is not None
-        assert set(agent.last_status["lanes"]) == {"analyze", "fingerprint"}, (
+        assert set(agent.last_status["lanes"]) == {"analyze", "meta"}, (
             "both lanes must survive the race -- a lost lane here is exactly the phaze-gtd3 clobber"
         )
         assert agent.last_status["lanes"]["analyze"]["queue_depth"] == 100
-        assert agent.last_status["lanes"]["fingerprint"]["queue_depth"] == 200
+        assert agent.last_status["lanes"]["meta"]["queue_depth"] == 200
         assert agent.last_status["queue_depth"] == 300, "the cross-lane SUM must reflect both committed lanes"
 
 

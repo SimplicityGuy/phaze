@@ -104,7 +104,7 @@ This module MUST NOT import `phaze.database`, `phaze.tasks.session`, `sqlalchemy
 
 ## Compose layout (post-Phase-29)
 
-Phase 27 originally landed the watcher in the root `docker-compose.yml` alongside `worker`, `audfprint`, and `panako`. Phase 29 moved all four to `docker-compose.agent.yml` and stripped them from the root compose (which is now application-server-only). The watcher module itself did not change.
+Phase 27 originally landed the watcher in the root `docker-compose.yml` alongside `worker` and the fingerprint sidecars. Phase 29 moved them all to `docker-compose.agent.yml` and stripped them from the root compose (which is now application-server-only); phaze-0jpe later removed the fingerprint sidecars entirely. The watcher module itself did not change.
 
 ## Operational notes
 

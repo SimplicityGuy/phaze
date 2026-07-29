@@ -93,7 +93,7 @@ async def test_missing_saq_jobs_table_degrades_to_no_op() -> None:
     ("blob", "expected"),
     [
         (b'{"function": "process_file", "key": "process_file:1"}', {"function": "process_file", "key": "process_file:1"}),
-        ('{"function": "scan_live_set"}', {"function": "scan_live_set"}),
+        ('{"function": "search_tracklist"}', {"function": "search_tracklist"}),
         ({"function": "already_a_dict"}, {"function": "already_a_dict"}),  # pre-decoded passthrough
         (b"\xff\xfenot json", None),  # not JSON -> None
         (b'"a json string but not a dict"', None),  # JSON, not a dict -> None
@@ -166,7 +166,7 @@ async def test_backfill_loop_seeds_keyed_skips_everything_else() -> None:
     """
     fid_a, fid_b, fid_c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     key_a = f"process_file:{fid_a}"
-    key_b = f"fingerprint_file:{fid_b}"  # blob omits "function" -> key-prefix fallback
+    key_b = f"extract_file_metadata:{fid_b}"  # blob omits "function" -> key-prefix fallback
     key_random = f"some_unkeyed:{uuid.uuid4().hex}"
 
     rows: list[tuple[object, object]] = [
@@ -208,8 +208,8 @@ async def test_backfill_carries_timeout_and_retries_from_blob() -> None:
 async def test_backfill_loop_tolerates_non_dict_kwargs() -> None:
     """A keyed row whose ``kwargs`` is not a dict is seeded with empty kwargs (defensive)."""
     fid = uuid.uuid4()
-    key = f"scan_live_set:{fid}"
-    rows: list[tuple[object, object]] = [(json.dumps({"function": "scan_live_set", "key": key, "kwargs": "oops"}).encode(), key)]
+    key = f"extract_file_metadata:{fid}"
+    rows: list[tuple[object, object]] = [(json.dumps({"function": "extract_file_metadata", "key": key, "kwargs": "oops"}).encode(), key)]
     session = _SeededSession(rows)
 
     tally = await backfill_ledger_from_saq_jobs(session)  # type: ignore[arg-type]
@@ -260,7 +260,7 @@ async def test_backfill_seeds_keyed_skips_random_is_idempotent_and_no_overwrite(
     keyed_complete_id = uuid.uuid4()
     keyed_queued_key = f"process_file:{keyed_queued_id}"
     keyed_active_key = f"extract_file_metadata:{keyed_active_id}"
-    keyed_complete_key = f"fingerprint_file:{keyed_complete_id}"
+    keyed_complete_key = f"extract_file_metadata:{keyed_complete_id}"
     random_key = f"some_unkeyed_task:{uuid.uuid4().hex}"
     bad_blob_key = f"process_file:{uuid.uuid4()}"
 
@@ -309,7 +309,7 @@ async def test_backfill_seeds_keyed_skips_random_is_idempotent_and_no_overwrite(
             rows = [
                 (keyed_queued_key, _blob("process_file", keyed_queued_key, keyed_queued_id).encode(), queue_name, "queued"),
                 (keyed_active_key, _blob("extract_file_metadata", keyed_active_key, keyed_active_id).encode(), queue_name, "active"),
-                (keyed_complete_key, _blob("fingerprint_file", keyed_complete_key, keyed_complete_id).encode(), queue_name, "complete"),
+                (keyed_complete_key, _blob("extract_file_metadata", keyed_complete_key, keyed_complete_id).encode(), queue_name, "complete"),
                 (random_key, _blob("some_unkeyed_task", random_key, uuid.uuid4()).encode(), queue_name, "queued"),
                 (bad_blob_key, b"\xff\xfenot json at all", queue_name, "queued"),
             ]

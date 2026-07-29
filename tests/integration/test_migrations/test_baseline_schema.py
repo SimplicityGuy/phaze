@@ -12,9 +12,12 @@ durable value against the one baseline that replaced it:
 * ``upgrade`` from empty + ``downgrade base`` round-trips cleanly;
 * the ORM<->schema ``--autogenerate`` drift equals the FROZEN pre-flatten set -- the
   flatten's fidelity gate proved the chain and the baseline carry this exact same
-  42-entry drift (ORM-less ``files_state_archive``, generated ``search_vector`` columns,
+  drift (ORM-less ``files_state_archive``, generated ``search_vector`` columns,
   trgm/partial/functional indexes, timestamp-typing nuances), so ANY change to the set
   (new drift, or silently resolved drift) fails and forces a deliberate update here.
+  phaze-0jpe.4's migration 046 dropped ``fingerprint_results`` (+ its two partial/unique
+  indexes) and narrowed ``stage_skip``'s CHECK, resolving the three PENDING-MIGRATION
+  drift entries that used to sit here -- see migration 046's module docstring.
 
 Runs on the 5433 migrations harness (``MIGRATIONS_TEST_DATABASE_URL``, conftest.py).
 """
@@ -53,7 +56,6 @@ _EXPECTED_TABLES = frozenset(
         "file_companions",
         "files",
         "files_state_archive",
-        "fingerprint_results",
         "metadata",
         "pipeline_stage_control",
         "proposals",
@@ -84,7 +86,6 @@ _EXPECTED_PARTIAL_INDEXES = frozenset(
         "ix_analysis_completed",
         "ix_analysis_failed",
         "ix_cloud_job_awaiting",
-        "ix_fprint_success",
         "ix_metadata_failed",
         "uq_proposals_file_id_pending",
         "uq_scan_batches_agent_id_live",
@@ -199,8 +200,9 @@ def test_baseline_is_the_only_migration() -> None:
     scheduling_ledger.redrive_attempt column; 043 (phaze-gl1k) lands the partial
     UNIQUE(track_id) WHERE status='accepted' on discogs_links; 044 (phaze-1a71) lands the partial
     UNIQUE(agent_id, scan_path) WHERE status='running' on scan_batches; 045 (phaze-x4ux) lands the
-    nullable files.original_filename_repaired mojibake-repair column. Any other resurrected 0xx
-    chain file is a regression.
+    nullable files.original_filename_repaired mojibake-repair column; 046 (phaze-0jpe.4) drops
+    fingerprint_results and narrows stage_skip's CHECK. Any other resurrected 0xx chain file is a
+    regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -211,6 +213,7 @@ def test_baseline_is_the_only_migration() -> None:
         "043_discogs_link_one_accepted_per_track.py",
         "044_scan_batches_no_duplicate_running.py",
         "045_files_original_filename_repaired.py",
+        "046_drop_fingerprint_schema.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -219,10 +222,10 @@ def test_baseline_is_the_only_migration() -> None:
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (045: + original_filename_repaired)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (046: fingerprint schema drop)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "045"
+    assert version == "046"
 
 
 @pytest.mark.asyncio
@@ -358,11 +361,12 @@ async def test_expected_tables_present(migrated_engine: AsyncEngine) -> None:
 
 @pytest.mark.asyncio
 async def test_seed_rows_present(migrated_engine: AsyncEngine) -> None:
-    """020's pipeline_stage_control seed + 031's route_control singleton survive the flatten."""
+    """020's pipeline_stage_control seed (minus 046's dropped 'fingerprint' row) + 031's route_control
+    singleton survive the flatten."""
     async with migrated_engine.connect() as conn:
         stages = (await conn.execute(text("SELECT stage, paused, priority FROM pipeline_stage_control ORDER BY stage"))).all()
         route = (await conn.execute(text("SELECT id, force_local FROM route_control"))).all()
-    assert [(s, p, prio) for s, p, prio in stages] == [("analyze", False, 50), ("fingerprint", False, 50), ("metadata", False, 50)]
+    assert [(s, p, prio) for s, p, prio in stages] == [("analyze", False, 50), ("metadata", False, 50)]
     assert route == [("global", False)]
 
 
@@ -491,7 +495,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "045"
+        assert version == "046"
     finally:
         if engine is not None:
             await engine.dispose()
@@ -591,6 +595,122 @@ async def test_migration_041_dedupes_preexisting_duplicate_versions() -> None:
         assert by_id[fallback_winner_id] == 5, "with no latest_version_id match in the group, the lowest id keeps its version_number"
         assert by_id[loser_id] != 2, "the loser is renumbered off the colliding version_number"
         assert loser_track_count == 1, "the loser's tracklist_tracks row must survive untouched (no ON DELETE CASCADE)"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+@pytest.mark.asyncio
+async def test_migration_046_drops_fingerprint_results_and_narrows_stage_skip_check() -> None:
+    """046 (phaze-0jpe.4): upgrade discards fingerprint_results (with any existing rows), deletes
+    stray ``stage='fingerprint'`` rows from ``stage_skip``/``pipeline_stage_control`` before/while
+    narrowing the enforced stage sets, and downgrade restores the schema (not the discarded data).
+
+    Seeds a pre-046 database (upgraded only to 045) with one row in each of the three affected
+    tables/constraints, then drives upgrade -> 046 and asserts every fingerprint-only fragment is
+    gone and the surviving rows/constraints are untouched. Then downgrades back to 045 and asserts
+    the schema (table + indexes + FK + seed row + widened CHECK) is restored -- the module docstring
+    on migration 046 is explicit that only the DATA is unrecoverable, not the schema.
+    """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "045")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        agent_id, file_id = "mig046-agent", uuid.uuid4()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO agents (id, name, kind, created_at, updated_at) VALUES (:id, :id, 'fileserver', NOW(), NOW())"),
+                {"id": agent_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO files (id, sha256_hash, original_path, original_filename, current_path, file_type, file_size, agent_id) "
+                    "VALUES (:id, 'mig046-hash', '/x/b.mp3', 'b.mp3', '/x/b.mp3', 'mp3', 1, :agent_id)"
+                ),
+                {"id": file_id, "agent_id": agent_id},
+            )
+            # A pre-existing fingerprint_results row -- must be discarded by the DROP TABLE.
+            await conn.execute(
+                text(
+                    "INSERT INTO fingerprint_results (id, file_id, engine, status, created_at, updated_at) "
+                    "VALUES (:id, :file_id, 'audfprint', 'success', NOW(), NOW())"
+                ),
+                {"id": uuid.uuid4(), "file_id": file_id},
+            )
+            # A pre-existing stage='fingerprint' force-skip row -- must be deleted before the CHECK narrows.
+            await conn.execute(
+                text(
+                    "INSERT INTO stage_skip (id, file_id, stage, reason, skipped_at, created_at, updated_at) "
+                    "VALUES (:id, :file_id, 'fingerprint', 'pre-046 residual', NOW(), NOW(), NOW())"
+                ),
+                {"id": uuid.uuid4(), "file_id": file_id},
+            )
+            # A surviving metadata skip row -- must NOT be touched by 046.
+            await conn.execute(
+                text(
+                    "INSERT INTO stage_skip (id, file_id, stage, reason, skipped_at, created_at, updated_at) "
+                    "VALUES (:id, :file_id, 'metadata', 'unrelated skip', NOW(), NOW(), NOW())"
+                ),
+                {"id": uuid.uuid4(), "file_id": file_id},
+            )
+        await engine.dispose()
+        engine = None
+
+        # The regression this bead's acceptance covers: upgrade must not raise on a database that
+        # actually has the residual rows the narrowed CHECK would otherwise reject.
+        await asyncio.to_thread(upgrade_to, cfg, "046")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            tables = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
+            stage_control_stages = (await conn.execute(text("SELECT stage FROM pipeline_stage_control ORDER BY stage"))).scalars().all()
+            skip_rows = (await conn.execute(text("SELECT stage FROM stage_skip ORDER BY stage"))).scalars().all()
+        assert "fingerprint_results" not in tables, "046 must drop fingerprint_results"
+        assert stage_control_stages == ["analyze", "metadata"], "046 must delete the seeded 'fingerprint' pipeline_stage_control row"
+        assert skip_rows == ["metadata"], "046 must delete stray stage='fingerprint' stage_skip rows and leave others untouched"
+
+        # The narrowed CHECK now rejects a fresh stage='fingerprint' insert.
+        with pytest.raises(IntegrityError, match="ck_stage_skip_enrich_only"):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO stage_skip (id, file_id, stage, reason, skipped_at, created_at, updated_at) "
+                        "VALUES (:id, :file_id, 'fingerprint', 'post-046 write attempt', NOW(), NOW(), NOW())"
+                    ),
+                    {"id": uuid.uuid4(), "file_id": file_id},
+                )
+        await engine.dispose()
+        engine = None
+
+        # Downgrade restores the schema (table + indexes + FK + seed row + widened CHECK) -- not
+        # the discarded data, per migration 046's module docstring.
+        await asyncio.to_thread(downgrade_to, cfg, "045")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            tables = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
+            stage_control_stages = (await conn.execute(text("SELECT stage FROM pipeline_stage_control ORDER BY stage"))).scalars().all()
+            fprint_row_count = (await conn.execute(text("SELECT COUNT(*) FROM fingerprint_results"))).scalar_one()
+        assert "fingerprint_results" in tables, "downgrade must recreate fingerprint_results"
+        assert stage_control_stages == ["analyze", "fingerprint", "metadata"], "downgrade must restore the 'fingerprint' seed row"
+        assert fprint_row_count == 0, "downgrade restores schema only -- the discarded row data is gone for good"
+
+        # The widened CHECK accepts 'fingerprint' again post-downgrade.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO stage_skip (id, file_id, stage, reason, skipped_at, created_at, updated_at) "
+                    "VALUES (:id, :file_id, 'fingerprint', 'post-downgrade write', NOW(), NOW(), NOW())"
+                ),
+                {"id": uuid.uuid4(), "file_id": file_id},
+            )
     finally:
         if engine is not None:
             await engine.dispose()

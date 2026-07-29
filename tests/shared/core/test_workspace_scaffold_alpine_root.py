@@ -13,7 +13,7 @@ of ancestry, but a FULL-DOCUMENT render (any direct navigation, reload, or bookm
 back up to find an ancestor ``x-data``, and ``<html>``/``<body>`` carry none either. So on reload
 every store-bound directive the header/actions slot renders was permanently inert: the sub-count's
 bare ``x-text`` (no fallback text) rendered blank forever, and the R-4 double-enqueue busy-gate
-``:disabled="$store.pipeline.<stage>Busy > 0"`` never disabled its EXTRACT ALL / FINGERPRINT ALL /
+``:disabled="$store.pipeline.<stage>Busy > 0"`` never disabled its EXTRACT ALL /
 etc. button — the exact double-enqueue hazard the busy-gate exists to prevent.
 
 The fix makes the root unconditional: ``<section x-data="{{ x_data or '{}' }}">`` — a bare ``{}``
@@ -53,12 +53,10 @@ def _strip_comments(text: str) -> str:
 _STANDALONE_CALLERS = [
     "pipeline/partials/analyze_workspace.html",
     "pipeline/partials/dedupe_workspace.html",
-    "pipeline/partials/trackid_workspace.html",
     "pipeline/partials/tagwrite_workspace.html",
     "pipeline/partials/cue_workspace.html",
     "pipeline/partials/rename_workspace.html",
     "pipeline/partials/metadata_workspace.html",
-    "pipeline/partials/fingerprint_workspace.html",
     "pipeline/partials/move_workspace.html",
     "shell/partials/summary_placeholder.html",
 ]

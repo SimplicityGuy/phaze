@@ -86,7 +86,7 @@
             });
             // Pipeline dashboard single-source-of-truth for the live "files ready"
             // counts AND the live queue-busy gates. Both the count text and the four
-            // pipeline-action button :disabled bindings (Run Analysis / Fingerprint /
+            // pipeline-action button :disabled bindings (Run Analysis /
             // Extract Metadata / Generate Proposals) read this store; the 5s
             // /pipeline/stats poll pushes fresh values via x-init on its OOB count +
             // busy-seed paragraphs so the buttons un-disable the instant a scan
@@ -105,8 +105,7 @@
             // and are refreshed by the OOB x-init seeds in stats_bar.html on each 5s
             // poll. The Phase-34 keys (discovered/analyzed/metadataExtracted/agentBusy/
             // controllerBusy) are PRESERVED — the existing button :disabled gating reads
-            // them. Topology note (UI-SPEC L243): Fingerprint gates on `discovered`, not
-            // `metadataExtracted`; the store keeps both, the gating swap lands in 35-05.
+            // them.
             Alpine.store('pipeline', {
                 discovered: 0, analyzed: 0, metadataExtracted: 0, agentBusy: 0, controllerBusy: 0,
                 // Phase 58 (58-02, WORK-01): Discover "not yet enriched" backlog (discovered −
@@ -116,13 +115,13 @@
                 // t7k FIX2: per-stage in-flight busy counts replace the single global agentBusy
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
                 // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.
-                metadataBusy: 0, analyzeBusy: 0, fingerprintBusy: 0,
+                metadataBusy: 0, analyzeBusy: 0,
                 // Phase 39 (REQ-39-3): search_tracklist in-flight count gates the DAG Search node
                 // "busy" — rides the same dag.items() seed/OOB poll as the agent busy counts.
                 searchBusy: 0,
-                // Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight count ("Scan busy") + online-agent
-                // count ("Needs agent" when 0) gate the DAG Fingerprint-Scan node — same seed/OOB poll.
-                scanBusy: 0, agentOnline: 0,
+                // Phase 40 (REQ-40-3): online-agent count ("Needs agent" when 0) gates the per-agent
+                // DAG nodes — same seed/OOB poll.
+                agentOnline: 0,
                 // Phase 58 (58-04, WORK-03): the Analyze A1 lane "compute online" capacity numeral
                 // (kind="compute" online-agent count). A read-only derived int seeded onto the dag
                 // dict server-side; rides the existing dag.items() OOB loop onto dag-seed-computeOnline.
@@ -135,7 +134,6 @@
                 // counts gate the DAG Scrape/Match trigger nodes ("Scraping…" / "Matching…") — same seed/OOB poll.
                 scrapeBusy: 0, matchBusy: 0,
                 metadataDone: 0, metadataTotal: 0,
-                fingerprintDone: 0, fingerprintTotal: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
                 tracklistDone: 0,
                 scrapeDone: 0, scrapeTotal: 0,
@@ -148,12 +146,11 @@
                 // the dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
                 metadataPaused: 0, metadataPriority: 0,
                 analyzePaused: 0, analyzePriority: 0,
-                fingerprintPaused: 0, fingerprintPriority: 0,
                 // Phase 87 (87-08, UI-05 / D-05): per-enrich-stage orphaned/stuck
                 // (recovery-candidate) count. Seeded to int 0 so the amber rail badge's
                 // x-show reads a number (never undefined) before the first poll; the
                 // dag.items() OOB loop in stats_bar.html pushes the real values each 5s.
-                metadataOrphan: 0, analyzeOrphan: 0, fingerprintOrphan: 0
+                metadataOrphan: 0, analyzeOrphan: 0
             });
             // phaze-cvn6.3: pipeline files-table column widths. A page-level singleton (mirrors the
             // theme store's localStorage shape above) is what lets a dragged width survive every
