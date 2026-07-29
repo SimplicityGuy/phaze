@@ -1,6 +1,6 @@
 {# phaze-mft5: Prev/Next only -- NO "page X of Y", because that needs the whole-corpus COUNT the
    paging contract forbids (rule 2). ``pagination`` is a phaze.services.pagination.Page
-   (rows/page/page_size/has_next), the same shape the Analyze/metadata/fingerprint pagers use.
+   (rows/page/page_size/has_next), the same shape the Analyze/metadata pagers use.
 
    phaze-a6hm.5 / column_sort.py contract rule 4, the easy-to-forget direction: the PAGER carries the
    active sort forward via sort.query_state(), so Prev/Next stays inside the operator's chosen order

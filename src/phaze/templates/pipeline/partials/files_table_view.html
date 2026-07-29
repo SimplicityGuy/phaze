@@ -34,13 +34,12 @@
 
    NO self-poll: no hx-trigger / setInterval here. Pagination clicks are user-initiated navigation.
 #}
-{# The 7-stage -> 6-pill remap LANDMINE, single-sourced here for the header + cell loop:
+{# The 6-stage -> 5-pill remap LANDMINE, single-sourced here for the header + cell loop:
    Appr reads the `review` bucket, Exec reads the `apply` bucket; tracklist is never shown.
    The LABELS (element 0) are also the strings FILES_SORT whitelists, so the header row derives them
    from here rather than restating them -- see the header loop below. #}
 {% set _stage_cols = [
     ('Meta', 'metadata'),
-    ('FP', 'fingerprint'),
     ('Analyze', 'analyze'),
     ('Prop', 'propose'),
     ('Appr', 'review'),
@@ -50,14 +49,15 @@
    -- a Prev/Next click that dropped the operator's chosen order would silently reset it mid-scan. #}
 {% set _qs = '&page_size=' ~ files_page.page_size ~ (('&stage=' ~ active_stage) if active_stage else '') ~ (('&bucket=' ~ active_bucket) if active_bucket else '') ~ (sort.query_state() if sort else '') %}
 {# Human stage name for the filter-aware empty-state copy (the Copywriting Contract's {stage} token). #}
-{% set _stage_names = {'metadata': 'Metadata', 'fingerprint': 'Fingerprint', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Approve', 'apply': 'Execute'} %}
+{% set _stage_names = {'metadata': 'Metadata', 'analyze': 'Analyze', 'propose': 'Propose', 'review': 'Approve', 'apply': 'Execute'} %}
 {% set _stage_display = _stage_names.get(active_stage, active_stage) %}
 {# Per-file retry affordance (87-07, UI-02 / D-04): the URL SEGMENT of the scoped variant of the
    already-live bulk endpoints, keyed by stage. Only the two MANUALLY-retried enrich stages are here:
      * metadata -> POST /pipeline/files/{id}/metadata-failed/retry
      * analyze  -> POST /pipeline/files/{id}/analysis-failed/retry  (manual-only, terminal-analyze guard)
-   fingerprint is DELIBERATELY absent: a failed fingerprint self-retries via the eligible_clause
-   pending set (ELIG-04), so it has NO manual retry backend and NO per-row/bulk control (RESEARCH). #}
+   The mapping stays a dict rather than being inlined: it is the per-stage seam, and an enrich stage
+   with no manual retry backend simply has no entry (as the retired fingerprint stage had none, since
+   a failed fingerprint self-retried via the eligible_clause pending set). #}
 {% set _retry_endpoints = {'metadata': 'metadata-failed', 'analyze': 'analysis-failed'} %}
 {# phaze-mrhq: this fragment deliberately carries NO id on its own. The HOST (files_workspace.html,
    the STAGE_PARTIALS entry for the /s/files rail workspace) owns id="files-table-view", and every
@@ -98,7 +98,7 @@
     {# Bulk "Retry all failed · {stage}" (87-07, UI-02 / D-04): one primary (accent) button on the
        failed-filter view of a MANUALLY-retried enrich stage (metadata/analyze). Posts to the already-live,
        Phase-30-hardened bulk endpoint; the ack swaps into the result span (ints/bools only -- no operator
-       free-text). fingerprint self-retries, so it gets no bulk control. #}
+       free-text). A stage absent from _retry_endpoints gets no bulk control. #}
     {% if active_bucket == 'failed' and active_stage in _retry_endpoints %}
     <div class="flex items-center gap-2 px-6 pt-2 pb-1">
         <button type="button"
@@ -224,7 +224,7 @@
                         <div class="flex flex-nowrap items-center gap-2">
                         {% with stage_label=stage_label, bucket=row.buckets[key] %}{% include "pipeline/partials/_stage_pill.html" %}{% endwith %}
                         {# Per-row Retry (D-04): renders ONLY on a failed cell of a MANUALLY-retried enrich stage
-                           (metadata/analyze -- never fingerprint, which self-retries). HTMX POST to the scoped
+                           (metadata/analyze). HTMX POST to the scoped
                            per-file variant; the ack swaps into this cell's result span. @click.stop keeps the
                            click off the row's record-slide-in hx-get. The failed pill clears on the NEXT poll
                            tick (not optimistic). aria-label per the Copywriting Contract.

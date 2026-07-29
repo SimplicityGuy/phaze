@@ -6,7 +6,14 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
-import uuid  # runtime import: FastAPI path-param annotations + the phaze-y07u scan_run_id nonce
+
+# The suppression below is deliberate (runtime import, NOT type-only): this module carries
+# `from __future__ import annotations`,
+# so ruff offers to move `uuid` into the TYPE_CHECKING block. FastAPI resolves route annotations at
+# RUNTIME via get_type_hints, so a `file_id: uuid.UUID` path param would raise NameError on import.
+# (Before phaze-0jpe this import also had a plain runtime use -- `uuid.uuid4()` for the scan_live_set
+# nonce -- which masked the rule; the annotation requirement is the real reason it must stay here.)
+import uuid  # noqa: TC003
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -23,7 +30,6 @@ from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -33,7 +39,7 @@ from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
 from phaze.routers.response_shape import wants_fragment
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, ScanLiveSetPayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
 from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
@@ -45,8 +51,6 @@ from phaze.services.backends import (
     get_lane_recent_completions,
     hold_awaiting_cloud,
 )
-from phaze.services.fingerprint import get_fingerprint_progress
-from phaze.services.fingerprint_requeue import enqueue_fingerprint_jobs
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.pipeline import (
@@ -67,7 +71,6 @@ from phaze.services.pipeline import (
     get_discovered_files_with_duration,
     get_file_stage_buckets,
     get_files_page,
-    get_fingerprint_pending_files,
     get_global_reconciliation,
     get_inadmissible_count,
     get_live_job_keys,
@@ -81,7 +84,6 @@ from phaze.services.pipeline import (
     get_pushed_count,
     get_pushing_count,
     get_queue_activity,
-    get_scan_busy_count,
     get_scrape_busy_count,
     get_scrape_pending_tracklists,
     get_search_busy_count,
@@ -89,7 +91,6 @@ from phaze.services.pipeline import (
     get_stage_controls,
     get_stage_progress,
     get_straggler_count,
-    get_trackid_files_page,
     get_tracklist_sets_page,
     get_untracked_files,
     queue_progress_percent,
@@ -132,9 +133,8 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number.
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
-    "fingerprint": ("fingerprint_file",),
     "analyze": ("process_file",),
-    "scan_search": ("scan_live_set", "search_tracklist"),
+    "scan_search": ("search_tracklist",),
     "scrape": ("scrape_and_store_tracklist",),
     "match": ("match_tracklist_to_discogs",),
 }
@@ -186,8 +186,8 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
     an emptied corpus must not render its pre-delete completion history) degrades to
     ``stage_done`` — already known to be 0 from the guard above — rather than the misleading
     ceiling value. This also covers ``scan_search``, whose ``total`` the DB layer documents as
-    ALWAYS ``None`` -> 0 (``get_stage_progress``), so its summed ``scan_live_set`` +
-    ``search_tracklist`` counters can never render as a phantom double-counted ``done``.
+    ALWAYS ``None`` -> 0 (``get_stage_progress``), so its ``search_tracklist``
+    counter can never render as a phantom ``done``.
     """
     if stage_done > 0:
         return stage_done
@@ -204,8 +204,7 @@ def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str,
 
     The stats path no longer reads the raw ``files.state`` column: each of the seven keys ``stats_bar.html``
     consumes maps to a derived :func:`get_stage_progress` output-table count --
-    ``discovered→discovery.done``, ``metadata_extracted→metadata.done``, ``fingerprinted→fingerprint.done``,
-    ``analyzed→analyze.done``, ``proposal_generated→proposals.done``, ``approved→execute.total``,
+    ``discovered→discovery.done``, ``metadata_extracted→metadata.done``, ``analyzed→analyze.done``, ``proposal_generated→proposals.done``, ``approved→execute.total``,
     ``executed→execute.done``. The key NAMES are preserved so ``stats_bar.html``'s six visible cards +
     three OOB ``x-init`` store writes need NO template change (the Alpine ``$store.pipeline.*`` keys stay
     stable, Pitfall 4 -- only the server-side source changes). ``queue_progress_percent`` consumes the
@@ -213,8 +212,8 @@ def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str,
 
     SEMANTIC SHIFT (this is the deadlock dissolving, not a regression): ``metadata_extracted`` now counts
     every music/video file whose metadata is done (a ``metadata`` row with ``failed_at`` NULL), NOT the
-    transient linear ``METADATA_EXTRACTED`` state (which a file leaves on advancing to
-    FINGERPRINTED/ANALYZED). These numbers legitimately differ post-cutover.
+    transient linear ``METADATA_EXTRACTED`` state (which a file left on advancing onward).
+    These numbers legitimately differ post-cutover.
     """
 
     def done(node: str) -> int:
@@ -223,7 +222,6 @@ def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str,
     return {
         "discovered": done("discovery"),
         "metadata_extracted": done("metadata"),
-        "fingerprinted": done("fingerprint"),
         "analyzed": done("analyze"),
         "proposal_generated": done("proposals"),
         "approved": int(stage_progress["execute"]["total"] or 0),
@@ -266,8 +264,6 @@ async def _build_dag_context(
     dag: dict[str, int] = {
         "metadataDone": done("metadata"),
         "metadataTotal": total("metadata"),
-        "fingerprintDone": done("fingerprint"),
-        "fingerprintTotal": total("fingerprint"),
         "analyzeDone": done("analyze"),
         "analyzeTotal": total("analyze"),
         # Phase 93 (CONSOLE-02): the DERIVED in-flight count — the same stage_status_case bucket the
@@ -294,7 +290,7 @@ async def _build_dag_context(
     # NO try/except is added here. paused is coerced to int 0/1 — never a Python bool — to keep
     # every dag value a server-computed int safe to interpolate into x-init (Pitfall 3 / T-35-11).
     controls = await get_stage_controls(session)
-    for stage_name in ("metadata", "analyze", "fingerprint"):
+    for stage_name in ("metadata", "analyze"):
         dag[f"{stage_name}Paused"] = int(controls[stage_name]["paused"])
         dag[f"{stage_name}Priority"] = int(controls[stage_name]["priority"])
 
@@ -308,30 +304,25 @@ async def _build_dag_context(
     orphans = get_cached_stage_orphan_counts()
     dag["metadataOrphan"] = int(orphans["metadata"])
     dag["analyzeOrphan"] = int(orphans["analyze"])
-    dag["fingerprintOrphan"] = int(orphans["fingerprint"])
 
     # t7k FIX2 (REQ-260613-t7k-FIX2): per-stage in-flight busy counts REPLACE the single global
-    # agentBusy gate so the three agent enqueue buttons gate independently (run in parallel).
+    # agentBusy gate so the agent enqueue buttons gate independently (run in parallel).
     # get_stage_busy_counts owns the never-500 degrade (all-zeros on any DB error), so NO try/except
     # is added here; these ints ride the same dag.items() seed + OOB loop with no stats_bar.html edit.
     busy = await get_stage_busy_counts(session)
     dag["metadataBusy"] = int(busy["metadata"])
     dag["analyzeBusy"] = int(busy["analyze"])
-    dag["fingerprintBusy"] = int(busy["fingerprint"])
 
     # Phase 39 (REQ-39-3): the search_tracklist in-flight count gates the DAG Search node "busy".
-    # search_tracklist is a controller task, so it is NOT part of get_stage_busy_counts's three
+    # search_tracklist is a controller task, so it is NOT part of get_stage_busy_counts's
     # agent stages -- get_search_busy_count owns its own never-500 SAVEPOINT degrade (returns 0 on
     # any DB error), so NO try/except is added here; the int rides the same dag.items() seed + OOB loop.
     dag["searchBusy"] = int(await get_search_busy_count(session))
 
-    # Phase 40 (REQ-40-2/REQ-40-3): the Fingerprint-Scan node gates on both an in-flight scan_live_set
-    # count ("Scan busy") and an online-agent signal ("Needs agent"). scan_live_set is a per-agent task,
-    # so it is NOT part of get_stage_busy_counts's three agent stages -- get_scan_busy_count + count_
-    # active_agents each own their own never-500 SAVEPOINT degrade (return 0 on any DB error), so NO
-    # try/except is added here; the ints ride the same dag.items() seed + OOB loop. count_active_agents
-    # is a count where 0 == "no online agent" (fail-safe default that leaves the node blocked).
-    dag["scanBusy"] = int(await get_scan_busy_count(session))
+    # Phase 40 (REQ-40-3): the per-agent DAG nodes gate on an online-agent signal ("Needs agent").
+    # count_active_agents owns its own never-500 SAVEPOINT degrade (returns 0 on any DB error), so NO
+    # try/except is added here; the int rides the same dag.items() seed + OOB loop. It is a count where
+    # 0 == "no online agent" (fail-safe default that leaves the node blocked).
     dag["agentOnline"] = int(await count_active_agents(session))
 
     # Phase 58 (58-04, WORK-03): the Analyze A1 lane's "compute online" capacity numeral -- a
@@ -726,7 +717,7 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
 
     # phaze-5462: the Analyze workspace no longer server-renders ANY file rows inline. It used to seed
     # `analyze_files` here from get_analyze_working_set, whose "active working set" branch was UNBOUNDED
-    # (10,132 rows / 12.7 MB in prod -- ~180x the metadata/fingerprint tabs, which render a ~70 KB shell
+    # (10,132 rows / 12.7 MB in prod -- ~180x the metadata tab, which renders a ~70 KB shell
     # with zero rows). phaze-zqvh bounded only the completions window and trusted a docstring assertion
     # for the other half. The list now loads exactly like its siblings: the workspace ships an empty
     # #analyze-files-view that hx-gets GET /pipeline/analyze-files on load, which serves the BOUNDED,
@@ -1028,8 +1019,10 @@ _VALID_BUCKETS: frozenset[str] = frozenset(s.value for s in Status)
 # never name anything else (rule 2). Every `target` is the table's EXISTING host container: this
 # feature adds no OOB fragment and no new element id, so it cannot introduce a duplicate one.
 
-# The Metadata and Fingerprint workspaces share /pipeline/pending-files but render DIFFERENT column
-# labels, so they need one contract each -- labels are how the shared partial recognises a header.
+# The pending-files fragment is shared machinery keyed by stage; each stage renders its own column
+# labels, so each needs its own contract -- labels are how the shared partial recognises a header.
+# Only ``metadata`` remains a pending-set workspace (phaze-0jpe removed the fingerprint one), but the
+# dict shape is kept because it IS the per-stage seam, not a two-entry convenience.
 _PENDING_SORTS: dict[str, SortContract] = {
     "metadata": SortContract(
         endpoint="/pipeline/pending-files",
@@ -1041,20 +1034,7 @@ _PENDING_SORTS: dict[str, SortContract] = {
         ),
         default_key="filename",
     ),
-    "fingerprint": SortContract(
-        endpoint="/pipeline/pending-files",
-        target="#fingerprint-files-view",
-        columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
-        default_key="filename",
-    ),
 }
-
-TRACKID_SORT = SortContract(
-    endpoint="/pipeline/trackid-files",
-    target="#trackid-files-view",
-    columns=(SortableColumn(key="filename", label="File", expression=FileRecord.original_filename),),
-    default_key="filename",
-)
 
 TRACKLIST_SETS_SORT = SortContract(
     endpoint="/pipeline/tracklist-sets",
@@ -1066,14 +1046,14 @@ TRACKLIST_SETS_SORT = SortContract(
     default_key="artist",
 )
 
-# The Files matrix (:func:`pipeline_files`) -- ALL EIGHT rendered columns (phaze-cvn6.1).
+# The Files matrix (:func:`pipeline_files`) -- ALL SEVEN rendered columns (phaze-cvn6.1).
 #
 # `key="file"` orders by the SAME column the File cell renders (`FileRecord.current_path`, the full
 # path -- this table has no separate filename-only column), matching the sibling tables' "sort what
 # you show" precedent.
 #
-# phaze-cvn6.1 -- WHY THE SIX STAGE COLUMNS ARE HERE NOW. phaze-a6hm ("make every data table
-# sortable") shipped this table with File + Type only; child phaze-a6hm.3 recorded the six stage
+# phaze-cvn6.1 -- WHY THE STAGE COLUMNS ARE HERE NOW. phaze-a6hm ("make every data table
+# sortable") shipped this table with File + Type only; child phaze-a6hm.3 recorded the stage
 # columns as "per-page DERIVED stage_status_case CASE expressions, not stable columns a SQL ORDER BY
 # can address". That is a GAP, not a regression -- the columns were never sortable and nothing was
 # lost -- but the stated reason does not hold: `_files_page_stmt` has ORDERED nothing by them, yet has
@@ -1083,12 +1063,12 @@ TRACKLIST_SETS_SORT = SortContract(
 # nothing. `stage_status_sort_case` supplies that order -- see STAGE_STATUS_DISPLAY_ORDER in
 # `services/stage_status.py` for the ladder and its cost note.
 #
-# The six labels below MUST stay identical to `_stage_cols` in `files_table_view.html` -- a label is
+# The five stage labels below MUST stay identical to `_stage_cols` in `files_table_view.html` -- a label is
 # how the template recognises a header as sortable, so a typo degrades the header to plain text
 # rather than erroring. `tests/integration/test_files_sort.py` asserts the two agree, in both
 # directions, so the pair cannot drift silently.
 #
-# The 7-stage -> 6-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
+# The 6-stage -> 5-pill remap LANDMINE applies to the KEYS too: `Appr` reads the `review` bucket and
 # `Exec` reads `apply`. The wire keys are the canonical `Stage` values rather than the header words,
 # so the URL names the model's vocabulary and no third naming scheme is invented.
 FILES_SORT = SortContract(
@@ -1098,7 +1078,6 @@ FILES_SORT = SortContract(
         SortableColumn(key="file", label="File", expression=FileRecord.current_path),
         SortableColumn(key="type", label="Type", expression=FileRecord.file_type),
         SortableColumn(key="metadata", label="Meta", expression=stage_status_sort_case(Stage.METADATA)),
-        SortableColumn(key="fingerprint", label="FP", expression=stage_status_sort_case(Stage.FINGERPRINT)),
         SortableColumn(key="analyze", label="Analyze", expression=stage_status_sort_case(Stage.ANALYZE)),
         SortableColumn(key="propose", label="Prop", expression=stage_status_sort_case(Stage.PROPOSE)),
         SortableColumn(key="review", label="Appr", expression=stage_status_sort_case(Stage.REVIEW)),
@@ -1225,7 +1204,7 @@ async def analyze_files_fragment(
 # phaze-5462: the stage allowlist for the shared pending-files fragment. Validated as a SET so an
 # unknown value can NEVER reach SQL or a template path (T-57-01 / T-87-14) -- it degrades to
 # "metadata", never a 422 into the render.
-_PENDING_STAGES: dict[str, Stage] = {"metadata": Stage.METADATA, "fingerprint": Stage.FINGERPRINT}
+_PENDING_STAGES: dict[str, Stage] = {"metadata": Stage.METADATA}
 
 
 @router.get("/pipeline/pending-files", response_class=HTMLResponse)
@@ -1238,18 +1217,18 @@ async def pending_files_fragment(
     order: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Render ONE bounded page of the Metadata / Fingerprint pending set (phaze-5462).
+    """Render ONE bounded page of an enrich workspace's pending set (phaze-5462).
 
     The sibling of :func:`analyze_files_fragment`, on the SAME paging contract
     (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a ``page_size + 1`` sentinel
     for ``has_next`` (never a whole-corpus COUNT), and the mandatory unique tiebreaker. Both enrich
-    workspaces hx-get this on load into their empty host div, so neither server-renders a file row
-    inline any more.
+    enrich workspaces hx-get this on load into their empty host div, so none server-renders a file
+    row inline any more.
 
     ``stage`` is validated against :data:`_PENDING_STAGES` (unknown -> metadata) and is carried into
     the template only as an autoescaped query value -- never a template path (T-57-01).
 
-    NOTE: this is the RENDER read. The EXTRACT ALL / FINGERPRINT ALL buttons still enqueue the
+    NOTE: this is the RENDER read. The EXTRACT ALL button still enqueues the
     UNBOUNDED pending set (paging contract rule 7) -- paging the enqueue would silently drop work.
     """
     stage_key = stage if stage in _PENDING_STAGES else "metadata"
@@ -1271,37 +1250,6 @@ async def pending_files_fragment(
     )
 
 
-@router.get("/pipeline/trackid-files", response_class=HTMLResponse)
-async def trackid_files_fragment(
-    request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE),
-    sort: str | None = Query(None),
-    order: str | None = Query(None),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """Render ONE bounded page of the Track-ID identity table (phaze-1wvb).
-
-    The sibling of :func:`analyze_files_fragment` / :func:`pending_files_fragment`, on the SAME
-    paging contract (:mod:`phaze.services.pagination`): shared page size, OFFSET paging, a
-    ``page_size + 1`` sentinel for ``has_next`` (never a whole-corpus COUNT), and the mandatory
-    unique tiebreaker. The Track-ID workspace hx-gets this into its empty host div on load, so it no
-    longer server-renders a single identity row inline.
-
-    NOTE (paging contract rule 7): there is no enqueue behind this read to under-serve -- the
-    Track-ID workspace is READ-ONLY (it has no trigger at all), and the neighbouring Tracklist
-    workspace's bulk triggers keep reading their own UNBOUNDED pending sets.
-    """
-    # phaze-a6hm.1 sortable-column contract -- see :func:`pending_files_fragment`.
-    sort_state = TRACKID_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
-    trackid_page = await get_trackid_files_page(session, page=page, page_size=page_size, sort=sort_state)
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/_trackid_files.html",
-        context={"trackid_page": trackid_page, "host_id": "trackid-files-view", "sort": sort_state},
-    )
-
-
 @router.get("/pipeline/tracklist-sets", response_class=HTMLResponse)
 async def tracklist_sets_fragment(
     request: Request,
@@ -1313,7 +1261,7 @@ async def tracklist_sets_fragment(
 ) -> HTMLResponse:
     """Render ONE bounded page of the per-set Tracklist coverage table (phaze-1wvb).
 
-    Same paging contract as :func:`trackid_files_fragment`. The Tracklist workspace hx-gets this into
+    Same paging contract as :func:`pending_files_fragment`. The Tracklist workspace hx-gets this into
     the empty host div BELOW its three step cards; the step cards themselves (and their SEARCH /
     SCRAPE / MATCH ALL triggers, which enqueue the UNBOUNDED pending sets -- rule 7) are untouched
     and still server-rendered by the shell.
@@ -1902,7 +1850,7 @@ async def force_skip_stage(
     ``pipeline_stages._validate_stage``):
 
     - ENRICH-ONLY (D-10, T-87-18): ``stage`` must be in :data:`STAGE_TO_FUNCTION`
-      (metadata/analyze/fingerprint) — a ``propose``/``review``/``apply`` skip is an approval-bypass
+      (metadata/analyze) — a ``propose``/``review``/``apply`` skip is an approval-bypass
       hazard and returns 422 BEFORE any write, backstopped by the Plan-01 DB CHECK.
     - REASON REQUIRED (D-09, T-87-22): a blank/whitespace reason returns the inline validation fragment
       with NO write.
@@ -1989,7 +1937,7 @@ async def force_skip_stage(
 # The record pane enrich stage labels (the stage loop in record_body.html) — informational text inside the
 # pill's aria-label only. Enrich-only, mirroring STAGE_TO_FUNCTION, because non-enrich stages are
 # rejected 422 before this is ever reached (D-10).
-_ENRICH_STAGE_LABELS = {"metadata": "Meta", "fingerprint": "FP", "analyze": "Analyze"}
+_ENRICH_STAGE_LABELS = {"metadata": "Meta", "analyze": "Analyze"}
 
 
 def _stage_pill_oob(file_id: uuid.UUID, stage: str, bucket: str) -> str:
@@ -2055,11 +2003,10 @@ def _force_skip_no_op_toast(stage: str) -> HTMLResponse:
 # unmet blocker keeping a stage out of the pending set.
 # --------------------------------------------------------------------------------------------------
 
-# Display label per stage for the six-pill matrix + trace verdict (the 7->6 remap: tracklist is
+# Display label per stage for the five-pill matrix + trace verdict (the 6->5 remap: tracklist is
 # omitted; review renders as Appr, apply as Exec). Mirrors the _stage_matrix partial pill order.
 _STAGE_TRACE_LABELS: dict[Stage, str] = {
     Stage.METADATA: "Meta",
-    Stage.FINGERPRINT: "FP",
     Stage.ANALYZE: "Analyze",
     Stage.PROPOSE: "Prop",
     Stage.REVIEW: "Appr",
@@ -2090,9 +2037,6 @@ async def _one_stage_scalars(session: AsyncSession, stage: Stage, file_id: uuid.
     if stage is Stage.METADATA:
         mrow = (await session.execute(select(FileMetadata.failed_at).where(FileMetadata.file_id == file_id))).first()
         return {"row_present": mrow is not None, "failed_at": mrow[0] if mrow else None, "inflight": inflight, "skipped": await _skipped()}
-    if stage is Stage.FINGERPRINT:
-        rows = (await session.execute(select(FingerprintResult.status).where(FingerprintResult.file_id == file_id))).all()
-        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight, "skipped": await _skipped()}
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
         return {"row_present": present, "failed": False, "inflight": inflight}
@@ -2555,124 +2499,6 @@ async def trigger_extraction_ui(
     )
 
 
-# --- Fingerprint endpoints (Phase 16, D-14, D-15) ---
-
-
-async def _enqueue_fingerprint_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
-    """Background coroutine wrapper over the shared fingerprint enqueue funnel.
-
-    The funnel itself now lives in :func:`phaze.services.fingerprint_requeue.enqueue_fingerprint_jobs`
-    so the recovery CLI (``phaze fingerprint requeue``, phaze-rf04.1) enqueues through the
-    IDENTICAL payload construction. Keeping two copies is how the payload shape drifts and
-    one producer starts dead-lettering; there is exactly one now.
-    """
-    result = await enqueue_fingerprint_jobs(queue, files, agent_id)
-    # phaze-e57w: this HTTP path is fire-and-forget (no operator response to carry counts), but a
-    # BLOCKED collision -- a file whose deterministic key is held by a dead 'aborting'/failed row --
-    # must not vanish silently. Surface it in the logs (the aborting-reaper frees the key).
-    if result.blocked:
-        logger.warning(
-            "fingerprint enqueue: files BLOCKED by a dead job row (not in flight)",
-            blocked=result.blocked,
-            blocked_keys=list(result.blocked_keys),
-        )
-    # phaze-rkpi: enqueue_fingerprint_jobs now isolates a per-file broker error instead of raising
-    # out of the loop, so this task no longer dies mid-batch -- but that isolation must not become
-    # its own silent failure mode. The done-callback only discards the task (its result/exception is
-    # never retrieved), so an errored count is surfaced here, at ERROR, or an operator who believes
-    # the whole batch was accepted has no way to learn otherwise. The next /api/v1/fingerprint (or
-    # /pipeline/fingerprint) trigger re-selects these files -- they are not lost, just delayed.
-    if result.errored:
-        logger.error(
-            "fingerprint enqueue: per-file errors isolated -- files NOT enqueued this pass",
-            errored=result.errored,
-            errored_file_ids=list(result.errored_file_ids),
-        )
-
-
-@router.post("/api/v1/fingerprint")
-async def trigger_fingerprint(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    """Enqueue fingerprint_file jobs for eligible files (per D-14; READ-01 cutover).
-
-    Eligible: music/video files not yet fingerprinted, plus files with a failed fingerprint result
-    (auto-retry eligible), minus dedup-resolved files -- see :func:`get_fingerprint_pending_files`
-    (derived via ``eligible_clause(Stage.FINGERPRINT)``; no longer a ``METADATA_EXTRACTED``
-    file-state filter).
-    """
-    # Shared pending-set helper (D-03 anti-drift): METADATA_EXTRACTED + failed-retry, deduped by id.
-    all_files = await get_fingerprint_pending_files(session)
-
-    if not all_files:
-        return {"enqueued": 0, "message": "No files eligible for fingerprinting"}
-
-    try:
-        # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick
-        # for the whole set (owner-offline files are skipped, not rerouted).
-        routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("fingerprint_file", request.app.state, session, all_files)
-    except enqueue_router.NoActiveAgentError:
-        return {"enqueued": 0, "message": _NO_ACTIVE_AGENT_MESSAGE}
-
-    for routed, group in routed_groups:
-        task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, group, cast("str", routed.agent_id)))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-
-    enqueued = sum(len(group) for _, group in routed_groups)
-    message = f"Enqueued {enqueued} files for fingerprinting"
-    if skipped_files:
-        message += f" ({len(skipped_files)} skipped: owning agent offline)"
-    return {"enqueued": enqueued, "message": message}
-
-
-@router.get("/api/v1/fingerprint/progress")
-async def fingerprint_progress(
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, int]:
-    """Return fingerprint progress counts (per D-15)."""
-    return await get_fingerprint_progress(session)
-
-
-@router.post("/pipeline/fingerprint", response_class=HTMLResponse)
-async def trigger_fingerprint_ui(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: trigger fingerprinting and return response fragment.
-
-    Phase 42: now reads the shared :func:`get_fingerprint_pending_files` helper, so this HTMX
-    endpoint is ALIGNED with the ``/api/v1/fingerprint`` endpoint and recovery -- it GAINS the
-    failed-fingerprint-retry scope (D-03 anti-drift). Previously it queried ONLY
-    ``METADATA_EXTRACTED``; the broadened, deduped pending set is the intended consistency fix.
-    """
-    files = await get_fingerprint_pending_files(session)
-    count = 0
-    no_active_agent = False
-
-    if files:
-        try:
-            # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick.
-            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("fingerprint_file", request.app.state, session, files)
-        except enqueue_router.NoActiveAgentError:
-            no_active_agent = True
-        else:
-            if skipped_files:
-                logger.warning("trigger_fingerprint_ui: owning agent offline -- files skipped", skipped=len(skipped_files))
-            for routed, group in routed_groups:
-                count += len(group)
-                task = asyncio.create_task(_enqueue_fingerprint_jobs(routed.queue, group, cast("str", routed.agent_id)))
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "fingerprinting", "count": count, "no_active_agent": no_active_agent},
-    )
-
-
 # --- Tracklist name-search endpoint (Phase 39, REQ-39-1) ---
 
 
@@ -2719,79 +2545,6 @@ async def trigger_search_ui(
         request=request,
         name="pipeline/partials/trigger_response.html",
         context={"request": request, "action": "tracklist search", "count": count, "no_active_agent": False},
-    )
-
-
-# --- Tracklist fingerprint-scan endpoint (Phase 40, REQ-40-1) ---
-
-
-async def _enqueue_scan_jobs(queue: Any, files: list[FileRecord], agent_id: str) -> None:
-    """Background coroutine to enqueue ``scan_live_set`` jobs with the COMPLETE payload (T-40-DL).
-
-    ``ScanLiveSetPayload`` (``extra="forbid"``) requires file_id, original_path AND agent_id; a
-    ``file_id``-only enqueue dead-letters EVERY job -- the v4.0.8 payload-incident class. The buggy
-    single-file ``tracklists.trigger_scan`` (which enqueues only ``file_id``) is deliberately NOT
-    copied; this mirrors the CORRECT full-payload producer ``_enqueue_fingerprint_jobs`` (identical
-    field set) instead. Build the complete payload and serialize via ``model_dump(mode="json")`` so
-    the UUID is sent as a string the worker's ``model_validate`` accepts. The deterministic key
-    (``scan_live_set:<file_id>``) is applied centrally by the ``before_enqueue`` hook (Phase 35), so a
-    double-click/refresh dedups in flight (T-40-02) -- no explicit ``key=`` is set here.
-    Background-enqueued to avoid HTTP timeout on a large eligible archive (Pitfall 2).
-    """
-    for f in files:
-        payload = ScanLiveSetPayload(
-            file_id=f.id,
-            original_path=f.original_path,
-            agent_id=agent_id,
-            # phaze-y07u: fresh per-enqueue nonce scoping the worker's idempotency request_id to
-            # THIS run -- SAQ retries replay these exact kwargs (same nonce -> retries collapse),
-            # while a later deliberate re-scan gets a new nonce and is never answered with a
-            # previous run's cached create-tracklist response.
-            scan_run_id=uuid.uuid4(),
-        )
-        await queue.enqueue("scan_live_set", **payload.model_dump(mode="json"))
-
-
-@router.post("/pipeline/scan-live-sets", response_class=HTMLResponse)
-async def trigger_scan_live_sets_ui(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: bulk-trigger agent-side fingerprint scan over eligible files (Phase 40).
-
-    Eligible = music/video files that do NOT already have a tracklist (skip already-matched files so
-    re-runs are cheap and idempotent), the SAME query the Phase-39 Search trigger uses. ``scan_live_set``
-    is a PER-AGENT task, routed via :func:`enqueue_router.resolve_queue_for_task` to the active agent's
-    queue (``phaze-agent-<id>``, Phase-30 rule) -- NEVER the consumer-less default queue. With eligible
-    files but no online agent the resolve raises ``NoActiveAgentError``; that is caught, nothing is
-    enqueued, and the no-active-agent empty-state renders (status 200, never 500). Manual only -- NO
-    auto-trigger (automatic enqueue is reserved for the Phase-42 recovery pass).
-    """
-    # Shared pending-set helper (D-03 anti-drift): the SAME untracked-files set the Phase-39 search
-    # trigger and Phase-42 recovery read.
-    files = await get_untracked_files(session)
-    count = 0
-    no_active_agent = False
-
-    if files:
-        try:
-            # phaze-c9w9: group by each file's OWNING agent -- never one most-recently-seen pick.
-            routed_groups, skipped_files = await enqueue_router.resolve_queues_for_owned_files("scan_live_set", request.app.state, session, files)
-        except enqueue_router.NoActiveAgentError:
-            no_active_agent = True
-        else:
-            if skipped_files:
-                logger.warning("trigger_scan_live_sets_ui: owning agent offline -- files skipped", skipped=len(skipped_files))
-            for routed, group in routed_groups:
-                count += len(group)
-                task = asyncio.create_task(_enqueue_scan_jobs(routed.queue, group, cast("str", routed.agent_id)))
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "fingerprint scan", "count": count, "no_active_agent": no_active_agent},
     )
 
 

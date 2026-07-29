@@ -109,13 +109,20 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
 
 The final image **must** carry these runtime native libs or the agent crash-loops on
 import (the v4.0.9 / v4.1.1 incident class): `libatomic1` (essentia's `_essentia` links
-`libatomic.so.1`), `ffmpeg` (decode + `ffprobe`), `libsndfile1`, `libchromaprint-tools`
-(the runtime `fpcalc` binary — the source build uses the `-dev` headers, the runtime
-needs the `-tools` binary), and `libpq5` (backs psycopg's SAQ `PostgresQueue` broker).
-They are installed explicitly so a future multi-stage split that drops the `-dev`
-packages can't silently regress the crash-loop. Models (frozen TF1 graphs,
-arch-independent) are **mounted at `/models` at runtime, never baked** — keeping the
-build independent of the flaky `essentia.upf.edu` download.
+`libatomic.so.1` — confirmed by `ldd`), `ffmpeg` (decode + `ffprobe`), `libsndfile1`, and
+`libpq5` (backs psycopg's SAQ `PostgresQueue` broker). `libchromaprint-tools` (the runtime
+`fpcalc` binary, paired with the `-dev` headers the source build links against above) is
+also installed, but **not confirmed** to belong in the "or it crash-loops" list:
+phaze-0jpe.6 (2026-07-28) found no chromaprint link and a clean `import essentia` on the
+x86 essentia-tensorflow wheel via the same `ldd` check, with no `phaze` source calling
+`fpcalc`/`chromaprint`/`Chromaprinter`/`acoustid` — see
+`docs/design/0002-fingerprint-removal.md`. That check was not separately repeated against
+this image's from-source build, so treat `libchromaprint-tools` here as unverified rather
+than proven necessary or unnecessary. They are installed explicitly so a future
+multi-stage split that drops the `-dev` packages can't silently regress the confirmed
+`libatomic1` crash-loop. Models (frozen TF1 graphs, arch-independent) are **mounted at
+`/models` at runtime, never baked** — keeping the build independent of the flaky
+`essentia.upf.edu` download.
 
 ---
 

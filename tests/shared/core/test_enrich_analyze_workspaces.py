@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 # The four redesigned workspace stages whose HX fragments must ride the ONE chrome poll
 # (no per-fragment ``hx-trigger="every"`` / ``setInterval``).
-_WORKSPACE_STAGES = ["discover", "metadata", "fingerprint", "analyze"]
+_WORKSPACE_STAGES = ["discover", "metadata", "analyze"]
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ async def test_workspaces_sink_cloud_card_oob_fragments(client: AsyncClient) -> 
     """WORK-05 -- every workspace has exactly one target for each cloud-state OOB card.
 
     The shared `/pipeline/stats` poll re-emits the six v6.0 cloud-state cards OOB every tick.
-    Only the Analyze workspace renders their REAL targets; Discover/Metadata/Fingerprint must
+    Only the Analyze workspace renders their REAL targets; Discover/Metadata must
     carry a hidden sink for each or htmx logs `htmx:oobErrorNoTarget` 6x/poll (found in 58-04
     live UAT). Analyze must have EXACTLY ONE of each id (the real card) -- the sink is skipped
     there via `cloud_cards=true` so a duplicate id can't steal the live swap.
@@ -237,7 +237,7 @@ async def test_workspaces_sink_cloud_card_oob_fragments(client: AsyncClient) -> 
         "analyzing-cloud-card",
         "staged-pushing-card",
     ]
-    for stage in ("discover", "metadata", "fingerprint", "analyze"):
+    for stage in ("discover", "metadata", "analyze"):
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200
         for cid in cloud_ids:
@@ -250,14 +250,14 @@ async def test_workspaces_sink_analyze_lanes_oob_grid(client: AsyncClient) -> No
     """BEUI-01 -- every workspace has exactly one target for the #analyze-lanes N-lane grid OOB swap.
 
     The shared `/pipeline/stats` poll re-emits the BEUI-01 N-lane grid OOB every tick (stats_bar.html,
-    `oob=True`). Its REAL host lives only in analyze_workspace.html; Discover/Metadata/Fingerprint (and
+    `oob=True`). Its REAL host lives only in analyze_workspace.html; Discover/Metadata (and
     the first-run empty state) must carry a hidden sink or htmx logs `htmx:oobErrorNoTarget` every 5s
     (found in 71 live UAT -- the same class as the six cloud-state cards above). Analyze must have
     EXACTLY ONE (the real grid) -- the sink is skipped there via `cloud_cards=true` so a duplicate id
     can't steal the live swap. With no files seeded the analyze fragment is the empty-state guide, which
     still carries the sink; either way the count is exactly one.
     """
-    for stage in ("discover", "metadata", "fingerprint", "analyze"):
+    for stage in ("discover", "metadata", "analyze"):
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200
         count = frag.text.count('id="analyze-lanes"')
@@ -307,11 +307,15 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
 async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(client: AsyncClient) -> None:
     """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
 
-    Only Analyze renders the real card; Discover/Metadata/Fingerprint must still carry the
+    Only Analyze renders the real card; the other enrich-rail stages must still carry the
     hidden `#straggler-failed-card` sink (gated the same way as the six cloud cards) or the
     shared 5s poll's OOB re-push logs `htmx:oobErrorNoTarget`.
+
+    phaze-0jpe: `fingerprint` was dropped from this sweep with the stage itself -- `/s/fingerprint`
+    now 404s, so asserting a sink on it would pin a route that no longer exists rather than the
+    OOB-target invariant this test is guarding.
     """
-    for stage in ("discover", "metadata", "fingerprint"):
+    for stage in ("discover", "metadata"):
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200
         body = frag.text
@@ -364,13 +368,14 @@ async def test_discover_workspace(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
-    """WORK-02 / D-01 / D-02 -- Metadata + Fingerprint ALL buttons post to the EXISTING endpoints.
+    """WORK-02 / D-01 / D-02 -- the Metadata ALL button posts to the EXISTING endpoint.
 
-    Each enrich workspace is a sibling fragment: a single ALL-only bulk trigger wired VERBATIM to
-    its existing endpoint (D-01: ``POST /pipeline/extract-metadata`` / ``POST /pipeline/fingerprint``)
-    with the R-4 guard (hx-confirm + a ``:disabled`` busy-gate). D-02: there is NO ``EXTRACT SELECTED``
-    button and NO per-row checkbox/selection state anywhere. WORK-05: neither fragment starts a second
-    poll loop -- live values ride the single chrome poll.
+    The enrich workspace carries a single ALL-only bulk trigger wired VERBATIM to its existing
+    endpoint (D-01: ``POST /pipeline/extract-metadata``) with the R-4 guard (hx-confirm + a
+    ``:disabled`` busy-gate). D-02: there is NO ``EXTRACT SELECTED`` button and NO per-row
+    checkbox/selection state anywhere. WORK-05: the fragment starts no second poll loop -- live
+    values ride the single chrome poll. (phaze-0jpe: the sibling Fingerprint workspace this test
+    also covered is gone with the feature.)
     """
     # --- Metadata workspace (D-01 verbatim endpoint + R-4 guard) ---
     md = await client.get("/s/metadata", headers={"HX-Request": "true"})
@@ -392,22 +397,6 @@ async def test_metadata_trigger_all_wired(client: AsyncClient) -> None:
     # WORK-05 / R-2: no second poll loop.
     assert 'hx-trigger="every' not in md_body
     assert "setInterval" not in md_body
-
-    # --- Fingerprint workspace (the sibling) ---
-    fp = await client.get("/s/fingerprint", headers={"HX-Request": "true"})
-    assert fp.status_code == 200
-    fp_body = fp.text
-    assert fp_body.count('tabindex="-1"') == 1
-    assert 'hx-post="/pipeline/fingerprint"' in fp_body
-    assert "FINGERPRINT ALL" in fp_body
-    assert 'id="fingerprint-trigger-response"' in fp_body
-    assert "hx-confirm" in fp_body
-    assert "$store.pipeline.fingerprintBusy" in fp_body
-    # D-02: no selection affordance on the sibling either.
-    assert 'type="checkbox"' not in fp_body
-    # WORK-05 / R-2: no second poll loop.
-    assert 'hx-trigger="every' not in fp_body
-    assert "setInterval" not in fp_body
 
 
 @pytest.mark.asyncio

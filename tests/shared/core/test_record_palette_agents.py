@@ -201,13 +201,20 @@ async def test_distinct_artists_query(session: AsyncSession, seed_distinct_artis
 
 @pytest.mark.asyncio
 async def test_cmdk_commands_and_artist_nav(client: AsyncClient, seed_distinct_artists) -> None:  # type: ignore[no-untyped-def]
-    """RECORD-02: Scan command posts /pipeline/scan-live-sets; artist row re-searches with q= param."""
+    """RECORD-02: the palette renders its navigation commands; an artist row re-searches with q=.
+
+    phaze-0jpe: the one state-changing command (Scan for new live sets -> POST
+    /pipeline/scan-live-sets) went with the fingerprint-scan task, so the commands group is now
+    navigation-only. ``test_cmdk_palette_default_option.py`` still enforces, by role and htmx verb,
+    that any command added back is confirmed and never row 0.
+    """
     await seed_distinct_artists()
     r = await client.get("/search/", params={"q": "bonobo"}, headers={"HX-Request": "true"})
     assert r.status_code == 200
     body = r.text
-    # ⌘K "Scan" is the PARAMETERLESS fingerprint scan (correct for the palette; Pitfall 2).
-    assert "/pipeline/scan-live-sets" in body
+    # The navigation commands are always present so the roving nav has selectable targets (D-03).
+    assert 'id="cmdk-cmd-stage"' in body
+    assert 'id="cmdk-cmd-agents"' in body
     # An Artist option must re-search with q= (WR-03): search_page only runs a query when q is
     # truthy, so an artist= only URL would return an empty palette. The artist row carries q=.
     assert 'hx-get="/search/?q=' in body
@@ -259,9 +266,8 @@ async def test_empty_state_agent_roots_scan(client: AsyncClient, seed_test_agent
     # It lists each agent and its scan_roots.
     assert agent.id in frag
     assert "/test/music" in frag
-    # "Scan {agent}" posts the DISCOVERY scan (agent_id + scan_root), NOT the parameterless
-    # fingerprint scan (Pitfall 2). Scoped to the bare fragment so the palette's scan-live-sets
-    # command (which lives in shell chrome, not this fragment) cannot leak in.
+    # "Scan {agent}" posts the DISCOVERY scan (agent_id + scan_root), never a parameterless
+    # whole-corpus re-scan (Pitfall 2). Scoped to the bare fragment.
     assert "/pipeline/scans" in frag
     assert "scan-live-sets" not in frag
     # D-08: no new free-text path input surface.

@@ -46,9 +46,6 @@ async def test_agent_worker_startup_logs_role_banner_with_token_preview(
     # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
     # Patch agent_worker's local binding (imported via `from ... import construct_agent_client`).
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
 
     # Patch models-dir check so we don't need real .pb files mounted.
     monkeypatch.setattr(pathlib.Path, "is_dir", lambda _self: True)
@@ -108,9 +105,6 @@ async def test_agent_worker_startup_raises_on_queue_token_mismatch(
     fake_client.close = AsyncMock()
     # Phase 27 D-17: client construction moved to phaze.tasks._shared.agent_bootstrap.
     monkeypatch.setattr(aw, "construct_agent_client", lambda _cfg: fake_client)
-    monkeypatch.setattr(aw, "AudfprintAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "PanakoAdapter", lambda *_a, **_kw: MagicMock())
-    monkeypatch.setattr(aw, "FingerprintOrchestrator", lambda **_kw: MagicMock(engines=[]))
     monkeypatch.setattr(pathlib.Path, "is_dir", lambda _self: True)
     # Phase 29 CR-03: ensure_models_present now compares against an expected
     # weight-file count (34), so the prior "glob returns one fake .pb" trick
@@ -165,29 +159,25 @@ async def test_startup_raises_when_role_is_not_agent(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_shutdown_closes_engines_and_client() -> None:
-    """shutdown() must close each orchestrator engine and the api_client.
+async def test_shutdown_closes_the_api_client() -> None:
+    """shutdown() must close the api_client.
 
     Phase 101: the pebble process pool (and its stop()/join() teardown) is retired —
     analysis children are per-file subprocesses reaped by the driver, so there is no
-    long-lived pool object left for shutdown to own.
+    long-lived pool object left for shutdown to own. phaze-0jpe: the fingerprint
+    orchestrator's per-engine close loop went with the fingerprint feature, so the api_client
+    is the last closable startup resource shutdown owns.
     """
     import phaze.tasks.agent_worker as aw
 
-    engine_a = MagicMock()
-    engine_a.close = AsyncMock()
-    engine_b_no_close = MagicMock(spec=[])  # no .close attr -- exercise hasattr() False branch
-    orchestrator = MagicMock(engines=[engine_a, engine_b_no_close])
     api_client = AsyncMock()
     api_client.close = AsyncMock()
 
     ctx: dict[str, Any] = {
-        "fingerprint_orchestrator": orchestrator,
         "api_client": api_client,
     }
     await aw.shutdown(ctx)
 
-    engine_a.close.assert_awaited_once()
     api_client.close.assert_awaited_once()
 
 

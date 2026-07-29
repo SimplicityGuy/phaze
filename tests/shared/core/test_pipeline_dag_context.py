@@ -37,8 +37,6 @@ _BASE_HTML = Path(__file__).resolve().parent.parent.parent.parent / "src" / "pha
 _NEW_STORE_KEYS = (
     "metadataDone",
     "metadataTotal",
-    "fingerprintDone",
-    "fingerprintTotal",
     "analyzeDone",
     "analyzeTotal",
     "analyzeActive",
@@ -58,22 +56,18 @@ _NEW_STORE_KEYS = (
     "metadataPriority",
     "analyzePaused",
     "analyzePriority",
-    "fingerprintPaused",
-    "fingerprintPriority",
     # t7k FIX2: per-stage in-flight busy counts (replace the single global agentBusy gate). One
     # edit drives the store-literal seed test, the int-key context test, AND the OOB-seed test.
     "metadataBusy",
     "analyzeBusy",
-    "fingerprintBusy",
     # Phase 39 (REQ-39-3): search_tracklist in-flight busy count. Rides the same dag.items()
     # seed/OOB loop so the Search node gate reacts live on every 5s poll. One edit drives the
     # store-literal seed test, the int-key context test, AND the OOB-seed test.
     "searchBusy",
-    # Phase 40 (REQ-40-2/REQ-40-3): scan_live_set in-flight busy count ("Scan busy") + online-agent
-    # count ("Needs agent" when 0). Both ride the same dag.items() seed/OOB loop so the Fingerprint-
+    # Phase 40 (REQ-40-3): the online-agent count ("Needs agent" when 0) rides the same
+    # dag.items() seed/OOB loop so the per-agent
     # Scan node gate reacts live on every 5s poll. One edit drives the store-literal seed test, the
     # int-key context test, AND the OOB-seed test.
-    "scanBusy",
     "agentOnline",
     # Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight busy
     # counts gating the DAG Scrape/Match trigger nodes. Both ride the same dag.items() seed/OOB loop
@@ -369,7 +363,7 @@ def test_reconciled_done_caps_unconditionally_at_stage_total_zero() -> None:
     """
     from phaze.routers.pipeline import _reconciled_done
 
-    counters = {"scan_live_set": {"completed": 40}, "search_tracklist": {"completed": 60}}
+    counters = {"search_tracklist": {"completed": 60}, "scrape_and_store_tracklist": {"completed": 40}}
     assert _reconciled_done("scan_search", stage_done=0, stage_total=0, counters=counters) == 0
     # DB-truth still wins outright whenever stage_done > 0, unaffected by this fix.
     assert _reconciled_done("scan_search", stage_done=7, stage_total=0, counters=counters) == 7
@@ -500,7 +494,7 @@ async def test_get_stage_controls_degrades_on_db_error() -> None:
             raise RuntimeError('relation "pipeline_stage_control" does not exist')
 
     controls = await get_stage_controls(_ExplodingSession())  # type: ignore[arg-type]
-    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze")}
 
 
 @pytest.mark.asyncio
@@ -516,7 +510,6 @@ async def test_get_stage_controls_overlays_present_rows(session: AsyncSession) -
     controls = await get_stage_controls(session)
     assert controls["analyze"] == {"paused": True, "priority": 20}
     assert controls["metadata"] == {"paused": False, "priority": 50}
-    assert controls["fingerprint"] == {"paused": False, "priority": 50}
 
 
 @pytest.mark.asyncio
@@ -547,7 +540,7 @@ async def test_get_stage_controls_degrade_preserves_caller_loaded_rows(session: 
     controls = await get_stage_controls(session)
     monkeypatch.setattr(session, "execute", real_execute)  # restore for the assertion query
 
-    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze", "fingerprint")}
+    assert controls == {s: {"paused": False, "priority": 50} for s in ("metadata", "analyze")}
     assert await session.get(Agent, "cr01-stage-controls-agent") is not None
 
 

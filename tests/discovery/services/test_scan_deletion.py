@@ -10,7 +10,7 @@ same uncommitted transaction.
 
 Coverage:
 - Full-graph delete: a batch seeded with files + metadata + analysis +
-  fingerprint_results + proposals + execution_log + tracklists -> versions ->
+  proposals + execution_log + tracklists -> versions ->
   tracks -> discogs_links + tag_write_log + file_companions is 100% removed, and
   the returned counts dict matches the seeded cardinality.
 - No collateral deletion: a SECOND independent full-graph batch is 100% intact.
@@ -35,7 +35,6 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scan_batch import ScanBatch, ScanStatus
@@ -59,7 +58,6 @@ _EXPECTED_COUNTS = {
     "tracklists": 1,
     "execution_log": 1,
     "proposals": 1,
-    "fingerprint_results": 1,
     "analysis": 1,
     "metadata": 1,
     "tag_write_log": 1,
@@ -96,7 +94,7 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
     """Seed one batch with the full descendant FK graph; return the batch id.
 
     Builds: 1 ScanBatch -> 2 files (media + companion). The media file carries
-    metadata + analysis + fingerprint_results + tag_write_log + a proposal (which
+    metadata + analysis + tag_write_log + a proposal (which
     carries an execution_log) + a tracklist -> version -> track -> discogs_link.
     The two files are joined by one file_companions row.
     """
@@ -118,7 +116,6 @@ async def _seed_full_graph(session: AsyncSession) -> uuid.UUID:
 
     session.add(FileMetadata(id=uuid.uuid4(), file_id=media.id, artist="A", title="T"))
     session.add(AnalysisResult(id=uuid.uuid4(), file_id=media.id, bpm=128.0))
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=media.id, engine="chromaprint", status="completed"))
     session.add(
         TagWriteLog(
             id=uuid.uuid4(),
@@ -197,7 +194,6 @@ async def test_cascade_removes_full_graph_and_returns_counts(session: AsyncSessi
         Tracklist,
         ExecutionLog,
         RenameProposal,
-        FingerprintResult,
         AnalysisResult,
         FileMetadata,
         TagWriteLog,
@@ -221,7 +217,6 @@ async def test_cascade_does_not_touch_sibling_batch(session: AsyncSession) -> No
     assert await _count(session, FileRecord) == _EXPECTED_COUNTS["files"]
     assert await _count(session, FileMetadata) == _EXPECTED_COUNTS["metadata"]
     assert await _count(session, AnalysisResult) == _EXPECTED_COUNTS["analysis"]
-    assert await _count(session, FingerprintResult) == _EXPECTED_COUNTS["fingerprint_results"]
     assert await _count(session, TagWriteLog) == _EXPECTED_COUNTS["tag_write_log"]
     assert await _count(session, RenameProposal) == _EXPECTED_COUNTS["proposals"]
     assert await _count(session, ExecutionLog) == _EXPECTED_COUNTS["execution_log"]

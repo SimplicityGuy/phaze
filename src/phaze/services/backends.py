@@ -1396,7 +1396,7 @@ async def get_lane_recent_completions(session: AsyncSession, backend_id: str, ki
 
 
 # phaze-2u8v.1: the operator-facing copy for each way a lane can legitimately have NO per-tier SAQ
-# figure. These are rendered INSTEAD of "analyze 0 · fingerprint 0 · meta 0 · io 0" -- a fabricated
+# figure. These are rendered INSTEAD of "analyze 0 · meta 0 · io 0" -- a fabricated
 # zero row is indistinguishable from a genuinely idle agent, which is precisely how a saturated lane
 # came to read as idle on every panel. Say WHY there is no number; never invent one.
 KUEUE_NO_SAQ_QUEUE_NOTE = "Not applicable — a Kueue lane runs k8s Jobs, not SAQ agent-queue work."
@@ -1432,7 +1432,7 @@ async def resolve_lane_queue_agent(session: AsyncSession, backend_id: str, kind:
     bound ``agent_ref``) but deliberately left local/kueue passing the raw ``backend_id`` through -- so a
     registry of ``[local, kueue vox]`` built ``phaze-agent-local-*`` and ``phaze-agent-vox-*``, queues no
     producer writes and no worker consumes. SAQ's ``count`` returns 0 for a queue that does not exist
-    (not an error), so BOTH lane panels rendered "analyze 0 · fingerprint 0 · meta 0 · io 0" while the
+    (not an error), so BOTH lane panels rendered "analyze 0 · meta 0 · io 0" while the
     agent-detail aggregate over the SAME work read the real figure off ``phaze-agent-<fileserver>-*``.
     A fully saturated lane was indistinguishable from an idle one.
 
@@ -1492,7 +1492,7 @@ async def resolve_lane_queue_agent(session: AsyncSession, backend_id: str, kind:
 
 
 async def get_lane_queue_depths(session: AsyncSession, app_state: Any, backend_id: str, kind: str) -> LaneQueueDepths:
-    """Return per-lane-tier queue depth ``{analyze, fingerprint, meta, io}`` for a lane's backing agent.
+    """Return per-lane-tier queue depth ``{analyze, meta, io}`` for a lane's backing agent.
 
     Mirrors the ``get_queue_activity`` idiom (services/pipeline.py): each tier's depth is
     ``count("queued") + count("active")`` on the ``phaze-agent-<agent_id>-<lane>`` Queue of the agent

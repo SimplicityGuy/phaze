@@ -3,7 +3,7 @@
    The Tracklist workspace used to render one row per Tracklist inline and unbounded
    (shell._render_stage -> get_tracklist_set_rows, no LIMIT). It now ships an empty host div below
    the three step cards that hx-gets this fragment on load -- the SAME paging contract
-   (phaze.services.pagination) as #analyze-files-view / #metadata-files-view / #trackid-files-view.
+   (phaze.services.pagination) as #analyze-files-view / #metadata-files-view.
 
    IMPORTANT (paging contract rule 7): ONLY the table moved. The three step cards above it, and their
    SEARCH / SCRAPE / MATCH ALL triggers, stay server-rendered by the shell and keep enqueuing their

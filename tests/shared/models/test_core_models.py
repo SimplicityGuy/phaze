@@ -17,7 +17,6 @@ def test_all_tables_defined() -> None:
         "execution_log",
         "scan_batches",
         "file_companions",
-        "fingerprint_results",
         "tracklists",
         "tracklist_versions",
         "tracklist_tracks",

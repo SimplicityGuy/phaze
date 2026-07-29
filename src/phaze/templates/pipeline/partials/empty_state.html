@@ -8,8 +8,8 @@
    endpoint. Each "Scan {agent}" reuses the DISCOVERY scan `POST /pipeline/scans`
    (agent_id + scan_root Form fields, validated against agent.scan_roots at
    pipeline_scans.py:366/377 — prefix + `..`-traversal check, T-27-03). This is the CORRECT
-   0-files trigger (Pitfall 2): the parameterless fingerprint scan is wrong here because with
-   0 files there is nothing to fingerprint.
+   0-files trigger (Pitfall 2): a parameterless re-scan of an already-known corpus is wrong here
+   because with 0 files there is nothing to re-scan.
 
    T-61-01 — every `agent`/`scan_roots` value crosses the DB→HTML boundary through Jinja2
    autoescape; NEVER `| safe`.
@@ -88,17 +88,12 @@
         {# The scan-submit result host (progress card lands here on submit). #}
         <div id="empty-state-scan-result" class="w-full" aria-live="polite"></div>
 
-        {# Live scan progress — rides the EXISTING /pipeline/stats poll via $store.pipeline
-           (SP-6). Shown only while a scan is in flight (scanBusy > 0). NO second poll loop. #}
-        <div x-show="$store.pipeline.scanBusy > 0" x-cloak
-             class="w-full rounded-xl bg-white dark:bg-phaze-panel border border-gray-200 dark:border-phaze-border p-4 text-left">
-            <div class="h-1.5 w-full rounded-full bg-gray-100 dark:bg-white/5 overflow-hidden mb-2">
-                <div class="h-1.5 bg-blue-400 rounded-full animate-pulse w-1/2"></div>
-            </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">
-                Scanning… · found <span x-text="$store.pipeline.discovered"></span> · de-duping against existing…
-            </p>
-        </div>
+        {# phaze-0jpe: the "Scanning…" progress card that sat here bound to $store.pipeline.scanBusy,
+           which counted in-flight `scan_live_set` (audio fingerprint-scan) jobs — NOT the discovery
+           scan the buttons above launch. With fingerprinting removed that key is gone, and an
+           x-show over an undefined key is permanently false: the card would have been dead markup.
+           It is removed rather than rebound; the scan the buttons DO start already reports through
+           #empty-state-scan-result above, which is the submit response's own progress card. #}
     </div>
 
     {# The empty state renders where the Analyze dashboard normally sits, so the shell's single

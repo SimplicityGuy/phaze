@@ -10,7 +10,7 @@ The reproduction seeds a queue with 2 running + N claimed-but-unrun ``active`` r
 breakdown reports ``running == 2`` -- NOT ``total_active``. It FAILS on pre-fix code, which had no
 such splitter and would let ``active: N+2`` masquerade as the running count.
 
-ctx/session wiring mirrors tests/fingerprint/tasks/test_aborting_reaper.py.
+ctx/session wiring mirrors tests/analyze/tasks/test_aborting_reaper.py.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ _CREATE_SAQ_JOBS = text(
     """
 )
 
-_QUEUE = "phaze-agent-nox-fingerprint"
+_QUEUE = "phaze-agent-nox-analyze"
 
 
 def _now_ms() -> int:
@@ -54,7 +54,7 @@ def _now_ms() -> int:
 
 
 async def _seed(session: AsyncSession, *, key: str, status: str, blob: dict[str, object]) -> None:
-    payload = json.dumps({"function": "fingerprint_file", "status": status, **blob}).encode("utf-8")
+    payload = json.dumps({"function": "process_file", "status": status, **blob}).encode("utf-8")
     await session.execute(
         text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:key, :job, :queue, :status, 0)"),
         {"key": key, "job": payload, "queue": _QUEUE, "status": status},
@@ -67,11 +67,11 @@ async def test_breakdown_separates_running_from_claimed_unrun(session: AsyncSess
     now = _now_ms()
     # Genuinely running: attempts key present (SAQ omits it only when 0).
     for i in range(2):
-        await _seed(session, key=f"fingerprint_file:run-{i}", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
+        await _seed(session, key=f"process_file:run-{i}", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
     # Claimed-but-unrun: no attempts key; two of them are past the 600s timeout (sweep-eligible).
-    await _seed(session, key="fingerprint_file:buf-fresh", status="active", blob={"started": now, "timeout": 600})
-    await _seed(session, key="fingerprint_file:buf-old-1", status="active", blob={"started": now - 900_000, "timeout": 600})
-    await _seed(session, key="fingerprint_file:buf-old-2", status="active", blob={"started": now - 900_000, "timeout": 600})
+    await _seed(session, key="process_file:buf-fresh", status="active", blob={"started": now, "timeout": 600})
+    await _seed(session, key="process_file:buf-old-1", status="active", blob={"started": now - 900_000, "timeout": 600})
+    await _seed(session, key="process_file:buf-old-2", status="active", blob={"started": now - 900_000, "timeout": 600})
     await session.commit()
 
     breakdown = await summarize_active_jobs(session, _QUEUE)
@@ -91,10 +91,10 @@ async def test_breakdown_scopes_to_the_named_queue(session: AsyncSession) -> Non
     """Active rows on OTHER queues are not counted -- the split is per-queue."""
     await session.execute(_CREATE_SAQ_JOBS)
     now = _now_ms()
-    await _seed(session, key="fingerprint_file:mine", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
+    await _seed(session, key="process_file:mine", status="active", blob={"attempts": 1, "started": now, "timeout": 600})
     await session.execute(
         text("INSERT INTO saq_jobs (key, job, queue, status, scheduled) VALUES (:k, :j, :q, 'active', 0)"),
-        {"k": "fingerprint_file:other", "j": json.dumps({"attempts": 1, "started": now}).encode("utf-8"), "q": "phaze-agent-other-fingerprint"},
+        {"k": "process_file:other", "j": json.dumps({"attempts": 1, "started": now}).encode("utf-8"), "q": "phaze-agent-other-analyze"},
     )
     await session.commit()
 

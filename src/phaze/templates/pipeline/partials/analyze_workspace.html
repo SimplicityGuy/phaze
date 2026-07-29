@@ -102,7 +102,7 @@
     {# (c) the per-file lane + window table -- BOUNDED, PAGED and LAZY-LOADED (phaze-5462).
 
        This workspace used to render the table inline off get_analyze_working_set, whose active branch
-       was UNBOUNDED: 10,132 rows / 12.7 MB in prod, ~180x the metadata/fingerprint tabs. phaze-zqvh
+       was UNBOUNDED: 10,132 rows / 12.7 MB in prod, ~180x the metadata tab. phaze-zqvh
        bounded only the completions window and left the other half to an assumption. The host div below
        now ships EMPTY and pulls GET /pipeline/analyze-files on load, which serves the paged working set
        (active-first, with the completions window on the final page) and the status-filter lenses.
@@ -114,7 +114,7 @@
        poll, so the operator's filter/page state survives every tick. #}
     <div class="border-t border-gray-200 p-6 dark:border-phaze-border">
         {# phaze-5462: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the paged
-           fragment on load, exactly like the metadata/fingerprint tabs -- which is what makes the
+           fragment on load, exactly like the metadata tab -- which is what makes the
            initial /s/analyze payload ~70 KB instead of 12.7 MB. Do NOT reintroduce an inline
            {% include %} of _analyze_files.html on this path: the include is what made the whole
            (unbounded) working set land in the first response. #analyze-files-view remains a SIBLING

@@ -1,7 +1,7 @@
 """PipelineStageControl model - durable per-stage pause/priority operator intent (Phase 37).
 
 A standalone app table (NOT part of SAQ's auto-managed ``saq_jobs``) holding one row per
-agent pipeline stage (``metadata`` / ``analyze`` / ``fingerprint``). Each row records whether
+agent pipeline stage (``metadata`` / ``analyze``). Each row records whether
 the stage is paused and its dequeue priority. The before-enqueue hook (Plan 37-02) stamps new
 jobs from this table, and the control endpoints (Plan 37-04) mutate it alongside the live
 ``saq_jobs`` backlog UPDATE.
@@ -24,7 +24,7 @@ from phaze.models.base import Base, TimestampMixin
 
 
 class PipelineStageControl(TimestampMixin, Base):
-    """Per-stage pause/priority control row (metadata|analyze|fingerprint)."""
+    """Per-stage pause/priority control row (metadata|analyze)."""
 
     __tablename__ = "pipeline_stage_control"
 

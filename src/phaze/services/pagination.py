@@ -9,7 +9,7 @@ WHY THIS EXISTS
 ---------------
 phaze-5462 found the Analyze workspace server-rendering its ENTIRE working set inline (10,132 rows
 / 12.7 MB, ~180x its sibling tabs) behind a docstring that merely ASSERTED the set was "naturally
-bounded". Nothing enforced it. The same latent cliff sat under the metadata and fingerprint
+bounded". Nothing enforced it. The same latent cliff sat under the metadata
 workspaces, whose pending-set reads are likewise unbounded and render zero rows today only because
 those backlogs happen to be empty. An assumption is not a bound. A bound is a ``LIMIT``.
 

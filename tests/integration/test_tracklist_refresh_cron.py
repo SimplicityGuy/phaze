@@ -116,7 +116,7 @@ async def test_refresh_tracklists_skips_fingerprint_sourced_stale_rows(
 ) -> None:
     """phaze-p1vy: a stale ``source='fingerprint'`` tracklist is never selected for re-scrape.
 
-    Fingerprint-sourced tracklists (routers/agent_tracklists.py) are created with
+    HISTORICAL rows from the retired fingerprint-scan path (phaze-0jpe removed its writer) carry
     ``source_url=""`` -- structurally un-rescrapeable, ``TracklistScraper.scrape_tracklist("")``
     always raises before storing anything, so ``updated_at`` never advances. Before the source
     filter, such a row aged past the 90-day stale threshold re-entered EVERY monthly run forever,

@@ -252,17 +252,12 @@ class BaseSettings(PydanticBaseSettings):
     worker_max_jobs: int = 8
     # Per-lane agent-worker concurrency knobs (quick-260707-dh1). Only the agent lane
     # worker reads these (via PHAZE_AGENT_LANE); they live on BaseSettings so both roles
-    # parse cleanly. CPU-bound lanes (analyze 4 + fingerprint 2) sum to 6 of nox's 8 cores,
-    # leaving headroom for the fast meta lane + sidecars + OS; io is network-bound (off CPU).
+    # parse cleanly. The one CPU-bound lane (analyze 4) takes 4 of nox's 8 cores, leaving
+    # headroom for the fast meta lane + OS; io is network-bound (off CPU).
     lane_analyze_concurrency: int = Field(
         default=4,
         validation_alias=AliasChoices("PHAZE_LANE_ANALYZE_CONCURRENCY", "lane_analyze_concurrency"),
         description="Concurrency of the analyze lane worker (process_file; in-process essentia, CPU-bound).",
-    )
-    lane_fingerprint_concurrency: int = Field(
-        default=2,
-        validation_alias=AliasChoices("PHAZE_LANE_FINGERPRINT_CONCURRENCY", "lane_fingerprint_concurrency"),
-        description="Concurrency of the fingerprint lane worker (fingerprint_file; via panako/audfprint, CPU-bound).",
     )
     lane_meta_concurrency: int = Field(
         default=2,
@@ -275,12 +270,12 @@ class BaseSettings(PydanticBaseSettings):
         description="Concurrency of the io lane worker (s3_upload/push_file; network-bound, off CPU budget).",
     )
     # phaze-30fo: EVERY lane worker heartbeats, each beat tagged with its own lane. Compose sets
-    # this true on all four lane workers; last_seen_at is inherently max(last_seen) across them and
+    # this true on all three lane workers; last_seen_at is inherently max(last_seen) across them and
     # the control plane keeps a per-lane depth breakdown. This REPLACES the former quick-260707-dh1
-    # convention (true on exactly the analyze worker, false on the other three): that pinned the
+    # convention (true on exactly the analyze worker, false on the others): that pinned the
     # agent's whole liveness signal -- and its work-routing rank, via select_active_agent's
     # ORDER BY last_seen_at DESC -- to ONE process, so a stalled analyze worker marked the agent
-    # DEAD and cost it routing while its other three lanes were busy. Only the transitional
+    # DEAD and cost it routing while its other lanes were busy. Only the transitional
     # all-mode worker-drain sets this false: it is unlaned, and an untagged beat would wipe the
     # per-lane breakdown. All-mode (no lane) still defaults to True.
     agent_heartbeat_enabled: bool = Field(
@@ -295,7 +290,7 @@ class BaseSettings(PydanticBaseSettings):
     worker_keep_result: int = 3600
     # phaze-e57w: age bound (seconds since the job's frozen `started`) past which a SAQ row
     # stuck in status='aborting' is reaped -- deleted so its deterministic key
-    # (fingerprint_file:<file_id>) is released and the file becomes re-queueable. A legitimate
+    # (e.g. process_file:<file_id>) is released and the file becomes re-queueable. A legitimate
     # abort completes in seconds (the worker calls finish(ABORTED)), so a row still 'aborting'
     # this far past `started` is a zombie the owning worker will never finalize. The bound is on
     # `started` (frozen), NOT `touched` -- SAQ's sweeper bumps `touched` on every abort->ABORTING
@@ -357,38 +352,6 @@ class BaseSettings(PydanticBaseSettings):
         validation_alias=AliasChoices("PHAZE_DISPATCH_QUEUE_MAX_SIZE", "dispatch_queue_max_size"),
         description="psycopg3 max_size for each control-side per-(agent,lane) dispatch queue (quick-260707-ryn). Default 2 caps the enqueue burst.",
     )
-
-    # Fingerprint service URLs (Docker service names)
-    audfprint_url: str = "http://audfprint:8001"
-    panako_url: str = "http://panako:8002"
-
-    @field_validator("audfprint_url", "panako_url")
-    @classmethod
-    def _enforce_localhost_only(cls, value: str) -> str:
-        """Phase 28 D-12 / TASK-04: fingerprint sidecars MUST be local to the file server.
-
-        Per XAGENT-01 (deferred): cross-file-server fingerprint matching is not
-        supported in v4.0. Each file server's audfprint+panako indices contain
-        only that file server's files. Reject any URL whose host isn't
-        127.0.0.1 / localhost / a Docker-compose service name on the agent's
-        private network. The Docker-compose defaults (`http://audfprint:8001`,
-        `http://panako:8002`) are accepted because they resolve via the agent
-        container's compose network — never cross-host.
-
-        Lives on `BaseSettings` so both `ControlSettings` and `AgentSettings`
-        inherit the guard at construction time.
-        """
-        parsed = urlparse(value)
-        allowed_hosts = {"localhost", "127.0.0.1", "audfprint", "panako"}
-        if parsed.hostname not in allowed_hosts:
-            msg = (
-                f"audfprint_url/panako_url must point to a host on the agent's "
-                f"local Compose network (got host={parsed.hostname!r}; allowed="
-                f"{sorted(allowed_hosts)}). Cross-file-server fingerprint matching "
-                f"is not supported in v4.0 -- see XAGENT-01."
-            )
-            raise ValueError(msg)
-        return value
 
     # Discogsography service URL (shared base; concurrency-tunable on Control)
     discogsography_url: str = "http://discogsography:8000"

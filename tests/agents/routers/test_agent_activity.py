@@ -40,7 +40,6 @@ from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.stage_skip import StageSkip
@@ -88,15 +87,13 @@ async def smoke(session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     session.add(Agent(id=_AGENT_ID, name="ActivityBox", scan_roots=["/data/music"], last_seen_at=datetime.now(UTC), kind="fileserver"))
     await session.flush()
 
-    # metadata: 1 done + 1 failed; analyze: 1 done; fingerprint: 1 done. (Downstream stays not_started.)
+    # metadata: 1 done + 1 failed; analyze: 1 done. (Downstream stays not_started.)
     f = await _file(session)
     session.add(FileMetadata(file_id=f.id, failed_at=None))
     f = await _file(session)
     session.add(FileMetadata(file_id=f.id, failed_at=datetime.now(UTC)))
     f = await _file(session)
     session.add(AnalysisResult(file_id=f.id, analysis_completed_at=datetime.now(UTC)))
-    f = await _file(session)
-    session.add(FingerprintResult(file_id=f.id, engine="audfprint", status="success"))
     await session.flush()
 
     app = _make_smoke_app(session)
@@ -127,8 +124,8 @@ async def test_known_agent_returns_activity_fragment(smoke: AsyncClient) -> None
     assert 'aria-label="Kind: file server"' in body
     assert 'aria-label="Status: alive"' in body
     assert "Last seen" in body
-    # (2) The 6-stage matrix — all six remapped column/row labels present.
-    for label in (">Meta<", ">FP<", ">Analyze<", ">Prop<", ">Appr<", ">Exec<"):
+    # (2) The stage matrix — every remapped column/row label present.
+    for label in (">Meta<", ">Analyze<", ">Prop<", ">Appr<", ">Exec<"):
         assert label in body, f"missing stage row label {label}"
     # (3) Per-lane queue depths.
     assert "Queue depth by lane" in body
@@ -157,9 +154,8 @@ async def test_seeded_counts_visible(smoke: AsyncClient) -> None:
     # metadata seeded 1 done + 1 failed (the other 2 files are not_started for metadata).
     assert 'aria-label="Meta done: 1"' in body
     assert 'aria-label="Meta failed: 1"' in body
-    # analyze + fingerprint each seeded 1 done.
+    # analyze seeded 1 done.
     assert 'aria-label="Analyze done: 1"' in body
-    assert 'aria-label="FP done: 1"' in body
 
 
 @pytest.mark.asyncio

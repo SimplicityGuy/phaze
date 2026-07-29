@@ -15,11 +15,9 @@ from phaze.schemas.agent_tasks import (
     ExecuteApprovedBatchPayload,
     ExecuteBatchProposalItem,
     ExtractMetadataPayload,
-    FingerprintFilePayload,
     ProcessFilePayload,
     PushFilePayload,
     ScanDirectoryPayload,
-    ScanLiveSetPayload,
 )
 
 
@@ -248,49 +246,6 @@ def test_extract_metadata_payload_rejects_unknown_field() -> None:
                 "models_path": "/m",  # not allowed on this payload
             },
         )
-
-
-# -----------------------
-# FingerprintFilePayload
-# -----------------------
-
-
-def test_fingerprint_file_payload_minimal_valid() -> None:
-    """FingerprintFilePayload has NO file_type or models_path (sidecar adapter handles)."""
-    p = FingerprintFilePayload(
-        file_id=uuid.uuid4(),
-        original_path="/x",
-        agent_id="a",
-    )
-    assert p.agent_id == "a"
-
-
-def test_fingerprint_file_payload_field_set() -> None:
-    """Confirm minimal field set per D-22."""
-    fields = FingerprintFilePayload.model_fields
-    assert set(fields.keys()) == {"file_id", "original_path", "agent_id"}
-
-
-# -----------------------
-# ScanLiveSetPayload
-# -----------------------
-
-
-def test_scan_live_set_payload_minimal_valid() -> None:
-    p = ScanLiveSetPayload(
-        file_id=uuid.uuid4(),
-        original_path="/x",
-        agent_id="a",
-    )
-    assert p.original_path == "/x"
-
-
-def test_scan_live_set_payload_field_set() -> None:
-    fields = ScanLiveSetPayload.model_fields
-    # phaze-y07u: scan_run_id is the per-enqueue nonce scoping the idempotency request_id to one
-    # run; optional (default None) so pre-upgrade in-flight jobs still validate.
-    assert set(fields.keys()) == {"file_id", "original_path", "agent_id", "scan_run_id"}
-    assert fields["scan_run_id"].default is None
 
 
 # -----------------------
@@ -524,8 +479,6 @@ def test_no_current_path_field_anywhere() -> None:
     payload_classes = (
         ProcessFilePayload,
         ExtractMetadataPayload,
-        FingerprintFilePayload,
-        ScanLiveSetPayload,
         ScanDirectoryPayload,
         ExecuteApprovedBatchPayload,
         ExecuteBatchProposalItem,
@@ -538,8 +491,6 @@ def test_only_process_file_payload_has_models_path() -> None:
     """D-22 invariant: models_path is unique to ProcessFilePayload."""
     assert "models_path" in ProcessFilePayload.model_fields
     assert "models_path" not in ExtractMetadataPayload.model_fields
-    assert "models_path" not in FingerprintFilePayload.model_fields
-    assert "models_path" not in ScanLiveSetPayload.model_fields
     assert "models_path" not in ScanDirectoryPayload.model_fields
     assert "models_path" not in ExecuteApprovedBatchPayload.model_fields
     assert "models_path" not in ExecuteBatchProposalItem.model_fields

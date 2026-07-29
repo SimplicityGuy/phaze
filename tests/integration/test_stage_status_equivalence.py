@@ -14,8 +14,6 @@ and asserts ``sql_status == py_status == expected``. The matrix covers every sta
 
 * analyze partial row (``analysis_completed_at`` NULL) -> ``not_started`` (DERIV-03);
 * analyze ``failed_at`` set + a scheduling-ledger row -> ``in_flight`` (precedence proof);
-* fingerprint ``[success, failed]`` -> ``done`` (DERIV-05 1:N aggregation);
-* fingerprint ``[failed]``-only -> ``failed`` NOT ``done`` (ELIG-04 -- stays eligible);
 * metadata failure-only row -> ``failed`` NOT ``done`` (D-03).
 
 A separate ``savepoint_degrade`` test proves the corroborating ``saq_jobs`` read is
@@ -51,7 +49,6 @@ from phaze.models.base import Base
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.execution import ExecutionLog
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import RenameProposal
 from phaze.models.scheduling_ledger import SchedulingLedger
@@ -253,64 +250,6 @@ async def seed_metadata_skipped(session: AsyncSession) -> uuid.UUID:
     return fid
 
 
-async def seed_fp_none(session: AsyncSession) -> uuid.UUID:
-    return await _new_file(session)
-
-
-async def seed_fp_success(session: AsyncSession) -> uuid.UUID:
-    fid = await _new_file(session)
-    session.add(FingerprintResult(file_id=fid, engine="audfprint", status="success"))
-    await session.flush()
-    return fid
-
-
-async def seed_fp_success_and_failed(session: AsyncSession) -> uuid.UUID:
-    """DERIV-05: one success engine wins over a sibling failed engine -> done."""
-    fid = await _new_file(session)
-    session.add(FingerprintResult(file_id=fid, engine="audfprint", status="success"))
-    session.add(FingerprintResult(file_id=fid, engine="panako", status="failed"))
-    await session.flush()
-    return fid
-
-
-async def seed_fp_failed_only(session: AsyncSession) -> uuid.UUID:
-    """ELIG-04: a failed-only fingerprint is NOT done, so it stays eligible for auto-retry."""
-    fid = await _new_file(session)
-    session.add(FingerprintResult(file_id=fid, engine="audfprint", status="failed"))
-    await session.flush()
-    return fid
-
-
-async def seed_fp_failed_both_engines(session: AsyncSession) -> uuid.UUID:
-    """phaze-p3hj.3: DERIV-05 aggregation must not report ``done`` when NO engine succeeded,
-    even with BOTH engine rows present and failed -- the systematic-single-dead-engine shape
-    (phaze-p3hj.1) makes every ``audfprint`` row carry the same ``engine_error``, and a second
-    dead sibling must not flip the anti-join to done by sheer row count. ``seed_fp_failed_only``
-    above covers a single row; this closes the two-row (both engines answered, both failed)
-    cell that DERIV-05's rule -- "no engine succeeded AND at least one failed" -- promises to
-    handle identically regardless of how many failed rows exist.
-    """
-    fid = await _new_file(session)
-    session.add(FingerprintResult(file_id=fid, engine="audfprint", status="failed"))
-    session.add(FingerprintResult(file_id=fid, engine="panako", status="failed"))
-    await session.flush()
-    return fid
-
-
-async def seed_fp_inflight(session: AsyncSession) -> uuid.UUID:
-    fid = await _new_file(session)
-    await _seed_ledger(session, Stage.FINGERPRINT, fid)
-    return fid
-
-
-async def seed_fp_skipped(session: AsyncSession) -> uuid.UUID:
-    """D-08: a ``stage_skip(fingerprint)`` marker on an otherwise not-started file derives SKIPPED."""
-    fid = await _new_file(session)
-    session.add(StageSkip(file_id=fid, stage="fingerprint", reason="operator force-skip"))
-    await session.flush()
-    return fid
-
-
 async def seed_tracklist_none(session: AsyncSession) -> uuid.UUID:
     return await _new_file(session)
 
@@ -376,8 +315,7 @@ async def seed_apply_done(session: AsyncSession) -> uuid.UUID:
 
 
 # (stage, seed_fn, expected_status) -- one row per matrix cell. Covers every stage across the four
-# statuses plus the required edge cells (analyze partial/precedence, fingerprint DERIV-05 + ELIG-04,
-# metadata D-03).
+# statuses plus the required edge cells (analyze partial/precedence, metadata D-03).
 CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] = [
     # analyze
     (Stage.ANALYZE, seed_analysis_none, "not_started"),
@@ -392,14 +330,6 @@ CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], str]] =
     (Stage.METADATA, seed_metadata_failed_only, "failed"),  # D-03 failure-only != done
     (Stage.METADATA, seed_metadata_inflight, "in_flight"),
     (Stage.METADATA, seed_metadata_skipped, "skipped"),  # D-08 force-skip marker
-    # fingerprint
-    (Stage.FINGERPRINT, seed_fp_none, "not_started"),
-    (Stage.FINGERPRINT, seed_fp_success, "done"),
-    (Stage.FINGERPRINT, seed_fp_success_and_failed, "done"),  # DERIV-05 aggregation
-    (Stage.FINGERPRINT, seed_fp_failed_only, "failed"),  # ELIG-04 not-done
-    (Stage.FINGERPRINT, seed_fp_failed_both_engines, "failed"),  # phaze-p3hj.3: 2 failed rows, still not done
-    (Stage.FINGERPRINT, seed_fp_inflight, "in_flight"),
-    (Stage.FINGERPRINT, seed_fp_skipped, "skipped"),  # D-08 force-skip marker
     # tracklist (downstream presence)
     (Stage.TRACKLIST, seed_tracklist_none, "not_started"),
     (Stage.TRACKLIST, seed_tracklist_done, "done"),
@@ -459,9 +389,6 @@ async def load_scalars(session: AsyncSession, stage: Stage, file_id: uuid.UUID) 
             "inflight": inflight,
             "skipped": await _skipped_marker(session, stage, file_id),
         }
-    if stage is Stage.FINGERPRINT:
-        rows = (await session.execute(select(FingerprintResult.status).where(FingerprintResult.file_id == file_id))).all()
-        return {"engine_statuses": [r[0] for r in rows], "inflight": inflight, "skipped": await _skipped_marker(session, stage, file_id)}
     if stage is Stage.TRACKLIST:
         present = (await session.execute(select(Tracklist.id).where(Tracklist.file_id == file_id))).first() is not None
         return {"row_present": present, "failed": False, "inflight": inflight}
@@ -519,11 +446,11 @@ async def test_sql_equals_python(
 # 44.5K over-enqueue guard rests on the two agreeing).
 #
 # SCOPE: the two ``domain_completed`` twins are LEDGER-AGNOSTIC by design -- ``domain_completed_clause``
-# is ``or_(done_clause, failed_clause)`` (terminal) / ``done_clause`` (fingerprint), with NO
+# is ``or_(done_clause, failed_clause)`` (terminal), with NO
 # ``inflight_clause`` disjunct; the Python ``domain_completed`` reads a resolved status but never treats
 # IN_FLIGHT as complete. in_flight precedence is layered separately at the ``resolve_status`` / ``eligible``
 # level, so the equivalence holds ONLY for non-in-flight rows. These cells therefore reuse the enrich-stage
-# seed fns EXCLUDING the ``*_inflight`` seeds. ``FAILURE_IS_TERMINAL`` is defined only for the three enrich
+# seed fns EXCLUDING the ``*_inflight`` seeds. ``FAILURE_IS_TERMINAL`` is defined only for the enrich
 # stages (D-15), so only enrich cells are exercised.
 #
 # D-11 REJECTED-OPTION RATIONALE (Phase 80, READ-03 -- why this test is NOT the lock, and what the
@@ -573,13 +500,6 @@ DOMAIN_COMPLETED_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uui
     (Stage.METADATA, seed_metadata_done, True),
     (Stage.METADATA, seed_metadata_failed_only, True),  # metadata failure is TERMINAL
     (Stage.METADATA, seed_metadata_skipped, True),  # D-08: skipped is domain-complete
-    # fingerprint -- NON-terminal failure: DONE completes, a failed-only row does NOT (auto-retries).
-    (Stage.FINGERPRINT, seed_fp_none, False),
-    (Stage.FINGERPRINT, seed_fp_success, True),
-    (Stage.FINGERPRINT, seed_fp_success_and_failed, True),  # DERIV-05: success wins -> done -> complete
-    (Stage.FINGERPRINT, seed_fp_failed_only, False),  # FAIL-04: fingerprint failure is NOT terminal
-    (Stage.FINGERPRINT, seed_fp_failed_both_engines, False),  # phaze-p3hj.3: 2 failed rows, still not terminal
-    (Stage.FINGERPRINT, seed_fp_skipped, True),  # D-08: skipped is domain-complete even though FP failure is not terminal
 ]
 
 
@@ -627,8 +547,6 @@ DOMAIN_COMPLETED_INFLIGHT_CASES: list[tuple[Stage, Callable[[AsyncSession], Awai
     (Stage.METADATA, seed_metadata_inflight, "in_flight", False, False),
     # analyze: failed + ledger -> SQL sees the terminal failure (True), Python resolves IN_FLIGHT (False).
     (Stage.ANALYZE, seed_analysis_failed_inflight, "in_flight", True, False),
-    # fingerprint: ledger-only -> both False (a FAILED fingerprint is not terminal anyway, FAILURE_IS_TERMINAL False).
-    (Stage.FINGERPRINT, seed_fp_inflight, "in_flight", False, False),
 ]
 
 
@@ -684,7 +602,7 @@ async def test_domain_completed_inflight_twins_are_defined_on_different_inputs(
 #
 # The single load-bearing anti-drift cell is ``(Stage.ANALYZE, seed_analysis_failed, False)``: it goes
 # RED if a future edit drops the analyze ``~failed_clause`` conjunct (the ELIG-03 44.5K over-enqueue
-# guard). METADATA/FINGERPRINT keep their FAILED rows eligible (ELIGIBLE_AFTER_FAILURE True -- ELIG-04
+# guard). METADATA keeps its FAILED rows eligible (ELIGIBLE_AFTER_FAILURE True -- ELIG-04
 # auto-retry). Reuses the enrich-stage seed fns verbatim -- no new fixtures.
 ELIGIBLE_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]], bool]] = [
     # metadata: eligible when NOT_STARTED or FAILED; not when DONE or IN_FLIGHT (ELIG-01/04).
@@ -693,14 +611,6 @@ ELIGIBLE_CASES: list[tuple[Stage, Callable[[AsyncSession], Awaitable[uuid.UUID]]
     (Stage.METADATA, seed_metadata_failed_only, True),  # ELIGIBLE_AFTER_FAILURE True -> stays eligible
     (Stage.METADATA, seed_metadata_inflight, False),
     (Stage.METADATA, seed_metadata_skipped, False),  # D-08: a skipped stage leaves the pending set
-    # fingerprint: same shape (ELIG-04 -- a failed-only fingerprint stays eligible for auto-retry).
-    (Stage.FINGERPRINT, seed_fp_none, True),
-    (Stage.FINGERPRINT, seed_fp_success, False),
-    (Stage.FINGERPRINT, seed_fp_success_and_failed, False),  # DERIV-05 success wins -> done -> ineligible
-    (Stage.FINGERPRINT, seed_fp_failed_only, True),  # ELIG-04 failed-only stays eligible
-    (Stage.FINGERPRINT, seed_fp_failed_both_engines, True),  # phaze-p3hj.3: 2 failed rows, still eligible for retry
-    (Stage.FINGERPRINT, seed_fp_inflight, False),
-    (Stage.FINGERPRINT, seed_fp_skipped, False),  # D-08: a skipped stage leaves the pending set
     # analyze: eligible ONLY when NOT_STARTED -- a FAILED analyze is TERMINAL (ELIG-03, 44.5K guard).
     (Stage.ANALYZE, seed_analysis_none, True),
     (Stage.ANALYZE, seed_analysis_partial, True),  # completed_at NULL -> not_started -> eligible
@@ -732,15 +642,6 @@ async def test_eligible_sql_equals_python(
     py_status = resolve_status(stage, await load_scalars(db_session, stage, file_id))
     py_eligible = eligible({stage: py_status}, stage)
     assert sql_eligible == py_eligible == expected
-
-
-async def test_failed_fingerprint_stays_eligible(db_session: AsyncSession) -> None:
-    """ELIG-04: a failed-only fingerprint is NOT done, so ``eligible()`` keeps it eligible for retry."""
-    file_id = await seed_fp_failed_only(db_session)
-    sql_status = await eval_sql_status(db_session, Stage.FINGERPRINT, file_id)
-    assert sql_status == "failed"
-    status_map = {Stage.FINGERPRINT: resolve_status(Stage.FINGERPRINT, await load_scalars(db_session, Stage.FINGERPRINT, file_id))}
-    assert eligible(status_map, Stage.FINGERPRINT) is True
 
 
 async def _eval_inflight(session: AsyncSession, stage: Stage, file_id: uuid.UUID) -> bool:

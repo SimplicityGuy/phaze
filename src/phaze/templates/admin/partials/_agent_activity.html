@@ -11,7 +11,7 @@
      (1) liveness header  — kind badge + status pill + last-seen
      (2) 6-stage COUNT matrix — per-agent GROUP BY stage_status_case counts (D-04), one NUMERAL cell
          per (stage × bucket) with the _stage_pill.html color token + WORD + GLYPH + aria-label
-     (3) per-lane queue depths — analyze · fingerprint · meta · io
+     (3) per-lane queue depths — analyze · meta · io
      (4) recent scan batches — newest-first, bounded
 
    D-03 own-tick: the root carries its OWN bounded hx-trigger="every 5s" re-fetching this endpoint
@@ -50,7 +50,6 @@
 {# The 6-pill stage order + Appr=review / Exec=apply remap (from _stage_matrix.html:29-36). #}
 {% set _matrix_stages = [
     ('Meta', buckets.metadata),
-    ('FP', buckets.fingerprint),
     ('Analyze', buckets.analyze),
     ('Prop', buckets.propose),
     ('Appr', buckets.review),
@@ -126,7 +125,7 @@
         {% endif %}
     </div>
 
-    {# (3) Per-lane queue depths (D-05). analyze · fingerprint · meta · io — degrade-safe to 0. #}
+    {# (3) Per-lane queue depths (D-05). analyze · meta · io — degrade-safe to 0. #}
     <div>
         <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">Queue depth by lane</h3>
         <p class="text-sm text-gray-700 dark:text-gray-300">

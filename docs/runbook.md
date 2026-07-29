@@ -13,6 +13,9 @@ legacy `GET /pipeline/` 302-redirects there):
   backends by rank and cap.
 - **[Per-backend `_FILE` secrets](#per-backend-_file-secrets)** — where backend credentials live and
   the one rule: never print a secret value.
+- **[Removing fingerprint-era data (phaze-0jpe)](#removing-fingerprint-era-data-phaze-0jpe)** — a
+  one-time, manual, post-deployment cleanup of the retired `audfprint`/Panako sidecars' on-host
+  volumes and published images. Not part of routine operation.
 
 For the **config model** behind all of this — the `backends.toml` registry, the `[[backends]]` /
 `[[buckets]]` schema, and the trivial `cloud_target`→`backends` mapping — see
@@ -210,6 +213,80 @@ does **not** restate the field table.
 > Phaze masks `SecretStr` fields in logs and reprs and logs the resolved registry as a secret-free
 > `{id, kind, rank, cap}` projection at boot; keep that discipline in everything you write down.
 
+## Removing fingerprint-era data (phaze-0jpe)
+
+> **Manual, operator-approved, post-deployment only.** Nothing in this section is automated and
+> no agent runs it. It is a one-time cleanup to perform **after** the fingerprint-removal epic
+> (`phaze-0jpe`) has been deployed to the file server and application server and confirmed
+> healthy — not before, and not as part of that deployment. Until you have verified the new
+> images are running cleanly, leave everything below in place.
+
+**Why this waits for an explicit go.** The on-host `audfprint_data`/`panako_data` Docker volumes
+and the historical `fingerprint_results` investigation records are the **only surviving
+evidence** for two things this repo needed to make its removal decision: the two production
+outages (`phaze-p3hj`'s zero-byte audfprint database, `phaze-iq65`'s Panako silently storing 19
+of 11,411 files), and the capacity measurements in
+[docs/design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) that the deferred
+spike molecule `phaze-oof3` depends on if fingerprinting is ever reconsidered. Deleting this data
+early destroys evidence that cannot be reconstructed. Do not delete it as a matter of tidiness —
+delete it only once you, the operator, have decided it is no longer needed.
+
+### 1. Remove the on-host `audfprint_data` / `panako_data` volumes
+
+On the file-server host, **after** confirming the redeployed agent stack (no `audfprint`/`panako`
+sidecar services left in `docker-compose.agent.yml`) has been running healthily for a while:
+
+```bash
+docker volume ls | grep -E 'audfprint_data|panako_data'   # confirm exactly what's there first
+docker volume rm audfprint_data panako_data                # or the compose-project-prefixed names
+                                                            # docker volume ls actually reports
+```
+
+This is destructive and irreversible. If you have any doubt about whether the outage
+investigation or a future `phaze-oof3` capacity re-check might still need this data, **do not run
+it** — keep the volumes until you are certain.
+
+### 2. Prune the published sidecar images
+
+The CI matrix that built and published `ghcr.io/simplicityguy/phaze/audfprint` and
+`ghcr.io/simplicityguy/phaze/panako` was removed along with the sidecars themselves (`phaze-0jpe`,
+infra removal). Existing tags already pushed to GHCR are not deleted automatically. Once you no
+longer need them for rollback or forensics:
+
+1. In the repository's GitHub Packages UI (or via `gh api`/the GHCR API), list the tags under
+   each of `ghcr.io/simplicityguy/phaze/audfprint` and `ghcr.io/simplicityguy/phaze/panako`.
+2. Delete the tags/versions, then delete the now-empty packages if GHCR does not do so
+   automatically. There is no `just` recipe for this — it is a registry-console action, not a
+   repo operation.
+3. Keep at least the last known-good tag of each until you are confident you will not need to
+   stand up the sidecars again for a comparison or a rollback.
+
+### 3. Historical `tracklists.source = 'fingerprint'` rows — purged by the migration
+
+Migration `046_drop_fingerprint_schema.py` **purges** `Tracklist` rows with `source = 'fingerprint'`
+(the historical output of the retired audio-fingerprint scan path, `scan_live_set`), together with
+their `tracklist_versions`, `tracklist_tracks`, and any `discogs_links` attached to those tracks.
+**There is nothing for an operator to do here** — it happens automatically when `046` runs.
+
+Two things worth knowing if you are reviewing that migration or debugging a restore:
+
+- **The delete runs child-first, and has to.** No foreign key in the chain
+  (`discogs_links` → `tracklist_tracks` → `tracklist_versions` → `tracklists`) declares
+  `ON DELETE CASCADE`; they are all `NO ACTION`. A bare `DELETE FROM tracklists WHERE
+  source = 'fingerprint'` raises a foreign-key violation in exactly the environments that still
+  hold rows. The migration issues four statements leaf-to-root for that reason, each re-deriving
+  its own scope from `tracklists.source` so the sequence is idempotent.
+- **In production this is a no-op.** Measured 2026-07-29: `tracklists` held **0 rows of any
+  source**, and `tracklist_versions` / `tracklist_tracks` were empty too — consistent with both
+  engines having been dead for weeks before removal. The purge is written defensively for a
+  restored backup or a developer database predating the outage, where the rows *can* exist and
+  the ordering *does* matter.
+
+Note this reverses the migration's original recorded decision to leave the rows in place; that
+earlier reasoning (they are inert, since `refresh_tracklists` permanently excludes them from
+re-scrape via the `phaze-p1vy` guard) still holds on the facts. The operator's call was that a
+tracklist attributed to a retired engine is not worth keeping as a record.
+
 ## See also
 
 - [configuration.md → Backend registry](configuration.md#backend-registry-backendstoml) — the
@@ -218,3 +295,8 @@ does **not** restate the field table.
   `cloud_target` selector and the 1:1 `cloud_target`→`backends` equivalence.
 - [cloud-burst.md](cloud-burst.md) — provisioning an OCI A1 `compute` backend.
 - [k8s-burst.md](k8s-burst.md) — provisioning a `kueue` backend + its cluster-admin objects.
+- [design/0002-fingerprint-removal.md](design/0002-fingerprint-removal.md) — the ADR for why
+  audio fingerprinting was removed in full, including the evidence the volume-removal step above
+  protects.
+- [fingerprint-removal-inventory.md](fingerprint-removal-inventory.md) — the removal epic's
+  file-by-file inventory, for the full list of what changed.

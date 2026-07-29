@@ -98,16 +98,16 @@ def test_task_sets_are_disjoint_frozensets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_lanes_order_is_analyze_fingerprint_meta_io() -> None:
+def test_lanes_order_is_analyze_meta_io() -> None:
     """LANES is the canonical lane ordering (insertion order of LANE_TASKS)."""
-    assert LANES == ("analyze", "fingerprint", "meta", "io")
+    assert LANES == ("analyze", "meta", "io")
 
 
 def test_lane_tasks_totality_union_equals_agent_tasks() -> None:
-    """The union of the four lane frozensets EXACTLY equals AGENT_TASKS (no orphan)."""
+    """The union of the lane frozensets EXACTLY equals AGENT_TASKS (no orphan)."""
     union = frozenset().union(*LANE_TASKS.values())
     assert union == AGENT_TASKS
-    assert len(AGENT_TASKS) == 8  # the eight file-touching agent tasks
+    assert len(AGENT_TASKS) == 6  # the six file-touching agent tasks
 
 
 def test_lane_tasks_no_task_in_two_lanes() -> None:
@@ -117,17 +117,15 @@ def test_lane_tasks_no_task_in_two_lanes() -> None:
         overlap = seen & tasks
         assert not overlap, f"task(s) in more than one lane: {overlap}"
         seen |= tasks
-    # The per-lane counts sum to the whole (a duplicate would make the sum exceed 8).
+    # The per-lane counts sum to the whole (a duplicate would make the sum exceed len(AGENT_TASKS)).
     assert sum(len(t) for t in LANE_TASKS.values()) == len(AGENT_TASKS)
 
 
 def test_lane_for_task_maps_each_task_to_its_lane() -> None:
     """lane_for_task returns the design's task->lane assignment for every agent task."""
     assert lane_for_task("process_file") == "analyze"
-    assert lane_for_task("fingerprint_file") == "fingerprint"
     assert lane_for_task("extract_file_metadata") == "meta"
     assert lane_for_task("scan_directory") == "meta"
-    assert lane_for_task("scan_live_set") == "meta"
     assert lane_for_task("execute_approved_batch") == "meta"
     assert lane_for_task("s3_upload") == "io"
     assert lane_for_task("push_file") == "io"
@@ -288,7 +286,7 @@ async def test_resolve_agent_task_returns_per_agent_queue(session: AsyncSession)
 async def test_resolve_agent_task_ignores_more_recent_compute_agent(session: AsyncSession) -> None:
     """phaze-5r8f: an AGENT_TASKS pick lands on a FILESERVER agent even when a compute agent is newer.
 
-    Fileserver-local tasks (scan_live_set/process_file/...) run against the media mount; a media-less
+    Fileserver-local tasks (process_file/extract_file_metadata/...) run against the media mount; a media-less
     compute agent that merely heartbeated most recently must NOT win the pick.
     """
     now = datetime.now(UTC)
@@ -297,7 +295,7 @@ async def test_resolve_agent_task_ignores_more_recent_compute_agent(session: Asy
     await _seed_agent(session, agent_id="compute-burst", last_seen_at=now, kind="compute")
     app_state = stub_app_state()
 
-    routed = await resolve_queue_for_task("scan_live_set", app_state, session)
+    routed = await resolve_queue_for_task("extract_file_metadata", app_state, session)
 
     assert routed.agent_id == "fileserver-01"
 
@@ -309,7 +307,7 @@ async def test_resolve_agent_task_raises_when_only_compute_online(session: Async
     app_state = stub_app_state()
 
     with pytest.raises(NoActiveAgentError):
-        await resolve_queue_for_task("scan_live_set", app_state, session)
+        await resolve_queue_for_task("extract_file_metadata", app_state, session)
 
 
 @pytest.mark.asyncio
@@ -390,7 +388,7 @@ async def test_resolve_with_agent_id_wrong_kind_raises(session: AsyncSession) ->
     app_state = stub_app_state()
 
     with pytest.raises(NoActiveAgentError):
-        await resolve_queue_for_task("scan_live_set", app_state, session, agent_id="compute-burst")
+        await resolve_queue_for_task("extract_file_metadata", app_state, session, agent_id="compute-burst")
 
 
 @pytest.mark.asyncio
@@ -431,7 +429,7 @@ async def test_resolve_owned_files_skips_offline_owner_files(session: AsyncSessi
     app_state = stub_app_state()
     live_file, dead_file = _owned("fileserver-live"), _owned("fileserver-dead")
 
-    routed_groups, skipped = await resolve_queues_for_owned_files("fingerprint_file", app_state, session, [live_file, dead_file])
+    routed_groups, skipped = await resolve_queues_for_owned_files("extract_file_metadata", app_state, session, [live_file, dead_file])
 
     assert skipped == [dead_file]
     assert len(routed_groups) == 1

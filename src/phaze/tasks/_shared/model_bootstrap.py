@@ -12,7 +12,7 @@ Race avoidance (Phase 29 WARNING-7, superseded for multi-worker by phaze-mb8d):
     phaze.agent_watcher.__main__ does NOT -- the watcher does file discovery
     only and cannot dispatch analysis jobs until the worker is up anyway.
     Since quick-260707-dh1 the "worker" is FOUR lane containers
-    (worker-analyze/fingerprint/meta/io) booting concurrently against the same
+    (worker-analyze/meta/io) booting concurrently against the same
     rw /models mount, so single-owner is no longer a topology guarantee.
     Cross-process serialization is now explicit: ensure_models_present takes a
     blocking exclusive ``fcntl.flock`` on ``.models.download.lock`` inside

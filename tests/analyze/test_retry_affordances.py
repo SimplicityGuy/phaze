@@ -15,7 +15,7 @@ the consumer-less default). This suite pins:
 - the Phase-30 no-agent guard survives on BOTH the per-file and bulk paths (amber ack, no mutation,
   no default-queue fallthrough);
 - the render half of Task 2 (a per-row Retry appears only on a failed cell; the bulk button on the
-  failed-filter view; no manual fingerprint retry control) — see ``-k render``.
+  failed-filter view) — see ``-k render``.
 
 Uses the operator ``client`` fixture (tests/conftest.py) + the fake named-queue capture harness
 (tests/_queue_fakes.py), mirroring the bulk retry tests. Independent-session reads verify commits
@@ -102,15 +102,14 @@ def test_analyze_failure_is_never_auto_eligible() -> None:
     ``ELIGIBLE_AFTER_FAILURE[ANALYZE]`` is False, so ``eligible()`` excludes a FAILED analyze from the
     pending set — the ONLY enrich carve-out. This is the invariant the manual retry endpoint is the
     deliberate counterpart to; without it, re-driving the failed set would recreate the 44.5K
-    over-enqueue class. Contrast: metadata/fingerprint failures DO stay auto-eligible.
+    over-enqueue class. Contrast: a metadata failure DOES stay auto-eligible.
     """
     assert ELIGIBLE_AFTER_FAILURE[Stage.ANALYZE] is False
     assert eligible({Stage.ANALYZE: Status.FAILED}, Stage.ANALYZE) is False
-    # The manual retry re-drives from FINGERPRINTED/not_started, which IS eligible.
+    # The manual retry re-drives from not_started, which IS eligible.
     assert eligible({Stage.ANALYZE: Status.NOT_STARTED}, Stage.ANALYZE) is True
-    # Contrast — the other two enrich stages auto-retry a failure (ELIGIBLE_AFTER_FAILURE True).
+    # Contrast — the sibling enrich stage auto-retries a failure (ELIGIBLE_AFTER_FAILURE True).
     assert eligible({Stage.METADATA: Status.FAILED}, Stage.METADATA) is True
-    assert eligible({Stage.FINGERPRINT: Status.FAILED}, Stage.FINGERPRINT) is True
 
 
 # --------------------------------------------------------------------------------------------------
@@ -276,7 +275,6 @@ def _render_files_table(*, bucket: str, active_stage: str | None = None, active_
     file = _make_file()
     buckets = {
         "metadata": bucket,
-        "fingerprint": bucket,
         "analyze": bucket,
         "propose": "not_started",
         "review": "not_started",
@@ -330,13 +328,6 @@ def test_render_per_row_retry_button_stops_keyboard_bubbling() -> None:
     assert "@keyup.stop" in button_tag, "keyboard Enter's keyup phase must be stopped from reaching the row's htmx trigger"
 
 
-def test_render_no_manual_fingerprint_retry_control() -> None:
-    """Fingerprint failures self-retry via the pending set — NO manual fingerprint retry control (RESEARCH)."""
-    failed = _render_files_table(bucket="failed", active_stage="fingerprint", active_bucket="failed")
-    assert "fingerprint-failed/retry" not in failed
-    assert "fingerprint/retry" not in failed
-
-
 def test_render_bulk_retry_all_button_on_failed_filter_view() -> None:
     """The bulk "Retry all failed · {stage}" renders on the failed-filter view for an enrich stage (UI-02)."""
     analyze = _render_files_table(bucket="failed", active_stage="analyze", active_bucket="failed")
@@ -349,10 +340,3 @@ def test_render_bulk_retry_all_button_on_failed_filter_view() -> None:
     # No bulk retry button on an unfiltered / non-failed view.
     unfiltered = _render_files_table(bucket="done")
     assert "Retry all failed" not in unfiltered
-
-
-def test_render_no_bulk_fingerprint_retry_button() -> None:
-    """Even on the fingerprint failed-filter view there is NO bulk fingerprint retry (self-retrying stage)."""
-    fp = _render_files_table(bucket="failed", active_stage="fingerprint", active_bucket="failed")
-    assert "fingerprint-failed/retry" not in fp
-    assert "Retry all failed" not in fp

@@ -4,10 +4,11 @@ A ``(file_id, stage)`` sidecar recording that an operator has *force-skipped* an
 file. Marker-row existence = skipped; undo = DELETE the row (the derive-don't-store principle -- status
 stays derived, this is the sole *stored* fact).
 
-Why a sidecar (not a ``skipped_at`` column, unlike the Phase-81 failure markers): fingerprint has no
-1:1 output table (``fingerprint_results`` is 1:N), so the "add a column to the output table" shape
-cannot cover all three enrich stages uniformly. A ``(file_id, stage)`` sidecar is the only uniform
-enrich-wide shape (RESEARCH sec 1).
+Why a sidecar (not a ``skipped_at`` column, unlike the Phase-81 failure markers): at design time one
+enrich stage (the retired fingerprint stage, phaze-0jpe) had no 1:1 output table, so the "add a column
+to the output table" shape could not cover every enrich stage uniformly. A ``(file_id, stage)`` sidecar
+was the only uniform enrich-wide shape (RESEARCH sec 1), and it is kept -- it is stage-agnostic by
+construction, so adding an enrich stage never needs a schema shape decision again.
 
 Mirrors the ``dedup_resolution`` sidecar precedent (imports, ``TimestampMixin + Base``, UUID PK,
 FK-to-``files.id``, ``server_default=func.now()`` timestamp). The one structural delta: uniqueness is on
@@ -19,11 +20,16 @@ empty-autogenerate-diff contract):
 
 * ``uq_stage_skip_file_stage`` UNIQUE(file_id, stage) -- the <=1-row-per-(file, stage) invariant (D-13a,
   T-87-03). A plain b-tree UNIQUE avoids the ``= ANY(ARRAY[...])`` reserialization trap (Pitfall 5).
-* ``ck_stage_skip_enrich_only`` CHECK -- ``stage IN ('metadata','analyze','fingerprint')`` (D-10, OQ-3,
-  T-87-02): approval/execute can never carry a skip marker at the schema layer. The bare ``name`` here is
-  the ``%(constraint_name)s`` token; the ``ck_%(table_name)s_%(constraint_name)s`` convention prepends
-  ``ck_stage_skip_``, rendering ``ck_stage_skip_enrich_only`` -- matching the ``op.f(...)`` name in 037
-  (mirror the ``analysis.py`` bare-name CheckConstraint discipline).
+* ``ck_stage_skip_enrich_only`` CHECK -- ``stage IN ('metadata','analyze')`` (D-10, OQ-3, T-87-02):
+  approval/execute can never carry a skip marker at the schema layer. The CHECK used to also admit
+  the residual ``'fingerprint'`` value (phaze-0jpe removed that stage; ``skipped_clause``,
+  services/stage_status.py, already rejected it, so nothing could write one) -- migration 046
+  (phaze-0jpe.4) narrowed the DB CHECK to match, after first deleting any surviving
+  ``stage='fingerprint'`` rows, and this ORM constraint is updated in the same commit to keep the
+  empty-autogenerate-diff contract intact. The bare ``name`` here is the ``%(constraint_name)s``
+  token; the ``ck_%(table_name)s_%(constraint_name)s`` convention prepends ``ck_stage_skip_``,
+  rendering ``ck_stage_skip_enrich_only`` -- matching the ``op.f(...)`` name in 037 (mirror the
+  ``analysis.py`` bare-name CheckConstraint discipline).
 """
 
 from datetime import datetime
@@ -44,7 +50,7 @@ class StageSkip(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # NOT unique on its own -- uniqueness is the composite (file_id, stage) constraint below.
     file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=False)
-    # The enrich value 'metadata' | 'analyze' | 'fingerprint' (guarded by the CHECK constraint, D-10).
+    # The enrich value 'metadata' | 'analyze' (guarded by the CHECK constraint, D-10).
     stage: Mapped[str] = mapped_column(String, nullable=False)
     # D-09: a reason is required (nullable=False) -- force-skip is a deliberate, justified operator action.
     reason: Mapped[str] = mapped_column(Text, nullable=False)
@@ -52,5 +58,5 @@ class StageSkip(TimestampMixin, Base):
 
     __table_args__ = (
         UniqueConstraint("file_id", "stage", name="uq_stage_skip_file_stage"),
-        CheckConstraint("stage IN ('metadata','analyze','fingerprint')", name="enrich_only"),
+        CheckConstraint("stage IN ('metadata','analyze')", name="enrich_only"),
     )

@@ -63,10 +63,9 @@ def test_scan_stall_seconds_default() -> None:
 
 
 def test_lane_concurrency_defaults() -> None:
-    """Per-lane concurrency defaults: analyze 4, fingerprint 2, meta 2, io 4 (design table)."""
+    """Per-lane concurrency defaults: analyze 4, meta 2, io 4 (design table)."""
     s = Settings()
     assert s.lane_analyze_concurrency == 4
-    assert s.lane_fingerprint_concurrency == 2
     assert s.lane_meta_concurrency == 2
     assert s.lane_io_concurrency == 4
 
@@ -80,13 +79,11 @@ def test_agent_heartbeat_enabled_default() -> None:
 def test_lane_knobs_read_env_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     """The documented PHAZE_LANE_*_CONCURRENCY + PHAZE_AGENT_HEARTBEAT env aliases parse."""
     monkeypatch.setenv("PHAZE_LANE_ANALYZE_CONCURRENCY", "6")
-    monkeypatch.setenv("PHAZE_LANE_FINGERPRINT_CONCURRENCY", "3")
     monkeypatch.setenv("PHAZE_LANE_META_CONCURRENCY", "5")
     monkeypatch.setenv("PHAZE_LANE_IO_CONCURRENCY", "7")
     monkeypatch.setenv("PHAZE_AGENT_HEARTBEAT", "false")
     s = Settings()
     assert s.lane_analyze_concurrency == 6
-    assert s.lane_fingerprint_concurrency == 3
     assert s.lane_meta_concurrency == 5
     assert s.lane_io_concurrency == 7
     assert s.agent_heartbeat_enabled is False

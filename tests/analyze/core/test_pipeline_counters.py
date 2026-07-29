@@ -36,9 +36,9 @@ async def test_incr_enqueued_bumps_namespaced_key() -> None:
 
 async def test_incr_completed_bumps_namespaced_key() -> None:
     redis = FakeRedis()
-    await incr_completed(redis, "fingerprint_file")
-    assert redis.store["phaze:pipeline:completed:fingerprint_file"] == 1
-    assert "phaze:pipeline:enqueued:fingerprint_file" not in redis.store
+    await incr_completed(redis, "extract_file_metadata")
+    assert redis.store["phaze:pipeline:completed:extract_file_metadata"] == 1
+    assert "phaze:pipeline:enqueued:extract_file_metadata" not in redis.store
 
 
 async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
@@ -61,6 +61,6 @@ async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
 async def test_read_counters_covers_all_functions() -> None:
     redis = FakeRedis()
     counters = await read_counters(redis)
-    assert len(counters) == len(PIPELINE_FUNCTIONS) == 9
+    assert len(counters) == len(PIPELINE_FUNCTIONS) == 7
     for fn in PIPELINE_FUNCTIONS:
         assert counters[fn] == {"enqueued": 0, "completed": 0}

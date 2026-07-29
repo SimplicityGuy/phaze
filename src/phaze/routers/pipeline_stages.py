@@ -1,7 +1,7 @@
 """Per-stage control-plane router -- operator pause / resume / priority endpoints (Phase 37).
 
-Three POST endpoints let an operator steer the three agent pipeline stages
-(``metadata`` / ``analyze`` / ``fingerprint``) at runtime:
+Three POST endpoints let an operator steer the agent pipeline stages
+(``metadata`` / ``analyze``) at runtime:
 
 - ``POST /pipeline/stages/{stage}/priority`` -- apply a clamped delta to the stage priority
   and reorder the queued backlog (LOWER dequeues sooner);

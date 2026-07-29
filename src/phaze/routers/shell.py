@@ -97,21 +97,15 @@ STAGE_PARTIALS: dict[str, str] = {
     # Phase 58 (58-02, WORK-01): the first real workspace -- a static literal (T-57-01: `stage`
     # is never spliced into a template path). Supersedes-in-place; legacy templates stay until CUT-02.
     "discover": "pipeline/partials/discover_workspace.html",
-    # Phase 58 (58-03, WORK-02): the Metadata + Fingerprint enrich workspaces -- static literals
+    # Phase 58 (58-03, WORK-02): the Metadata enrich workspace -- a static literal
     # (T-57-01: `stage` is never spliced into a template path). Supersede-in-place; legacy templates
     # stay until CUT-02.
     "metadata": "pipeline/partials/metadata_workspace.html",
-    "fingerprint": "pipeline/partials/fingerprint_workspace.html",
     # Phase 58 (58-04, WORK-03/04): the real Analyze workspace (3 lane cards + reused cloud cards +
     # per-file lane/window table) supersedes the bridged dag_canvas.html -- a static literal (T-57-01:
     # `stage` is never spliced into a template path). dag_canvas.html stays reachable via the legacy
     # dashboard.html until CUT-02 (Phase 62), so the dead-template guard stays green (supersede-in-place).
     "analyze": "pipeline/partials/analyze_workspace.html",
-    # Phase 59 (59-02, IDENT-01): the real Track-ID workspace (one combined per-file identity table
-    # surfacing existing audfprint + Panako fingerprint state + tracklist match/confidence) supersedes
-    # the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced into a template
-    # path). Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
-    "trackid": "pipeline/partials/trackid_workspace.html",
     # Phase 59 (59-03, IDENT-02): the real Tracklist workspace (three Search/Scrape/Match step cards
     # with per-step ALL triggers over the existing bulk endpoints + a per-set N/M track-coverage
     # table) supersedes the placeholder -- a STATIC string literal (T-57-01: `stage` is never spliced
@@ -412,18 +406,12 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # exclude kind="compute" (media-less burst backends) from the picker.
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
         context["agents"] = (await session.execute(agents_stmt)).scalars().all()
-    # phaze-5462: the metadata and fingerprint stages deliberately get NO file-list context here any
-    # more. They used to seed `metadata_files` / `fingerprint_files` from get_*_pending_files, which
-    # are UNBOUNDED (no LIMIT, no ORDER BY) -- the same latent cliff that made the Analyze tab ship
-    # 12.7 MB. Those two tabs measured a harmless ~70 KB only because their backlogs happen to be
-    # empty in production today, NOT because they were paged. Both workspaces now hx-get the bounded
-    # GET /pipeline/pending-files fragment on load instead, so there is no file read on this path.
-    # phaze-1wvb: the trackid stage deliberately gets NO file-list context here any more. It used to
-    # seed `trackid_files` from get_trackid_stage_files, which was UNBOUNDED -- every music/video file
-    # carrying any fingerprint row or a linked tracklist, `.all()`-materialised and server-rendered
-    # into one table. As the archive converges that predicate approaches the WHOLE corpus, i.e. the
-    # exact cliff phaze-5462 fixed on the Analyze tab. The workspace now hx-gets the bounded
-    # GET /pipeline/trackid-files fragment on load, so there is no file read on this path at all.
+    # phaze-5462: the metadata stage deliberately gets NO file-list context here any more. It used
+    # to seed `metadata_files` from get_metadata_pending_files, which is UNBOUNDED (no LIMIT, no
+    # ORDER BY) -- the same latent cliff that made the Analyze tab ship 12.7 MB. That tab measured a
+    # harmless ~70 KB only because its backlog happens to be empty in production today, NOT because
+    # it was paged. The workspace now hx-gets the bounded GET /pipeline/pending-files fragment on
+    # load instead, so there is no file read on this path.
     elif stage == "tracklist":
         # Phase 59 (59-03, IDENT-02): the Tracklist workspace renders three Search/Scrape/Match step
         # cards (server-rendered done/total + pending counts) over the per-step ALL triggers, plus the

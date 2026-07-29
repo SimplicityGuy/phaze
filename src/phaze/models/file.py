@@ -2,7 +2,7 @@
 
 Phase 90 (MIG-04): the ``FileState`` StrEnum, the ``files.state`` column, and the
 ``ix_files_state`` index were removed. A file's stage/status is now DERIVED entirely from its
-output tables (``analysis`` / ``metadata`` / ``fingerprint_results`` / ``proposals`` markers, the
+output tables (``analysis`` / ``metadata`` / ``proposals`` markers, the
 ``cloud_job`` sidecar, and the ``dedup_resolution`` marker) via ``services/stage_status.py``. The
 irreversible column drop shipped in migration ``039_drop_files_state_column``.
 """

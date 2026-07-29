@@ -270,22 +270,6 @@ async def test_put_metadata_uses_path_id_and_parses_response(client):  # type: i
     assert route.call_count == 1
 
 
-@respx.mock
-async def test_put_fingerprint_includes_engine_in_url_and_parses_response(client):  # type: ignore[no-untyped-def]
-    from phaze.schemas.agent_fingerprint import FingerprintWriteRequest, FingerprintWriteResponse
-
-    file_id = uuid.uuid4()
-    engine = "audfprint"
-    route = respx.put(f"{_BASE_URL}/api/internal/agent/fingerprints/{file_id}/{engine}").mock(
-        return_value=httpx.Response(200, json={"agent_id": "a1", "file_id": str(file_id), "engine": engine}),
-    )
-    resp = await client.put_fingerprint(file_id, engine, FingerprintWriteRequest(status="success"))
-    assert isinstance(resp, FingerprintWriteResponse)
-    assert resp.agent_id == "a1"
-    assert resp.engine == engine
-    assert route.call_count == 1
-
-
 # ---------------------------------------------------------------------------
 # request_download_url -- presign-download client method (Phase 52, KJOB-02).
 # The SERVER side (POST /api/internal/agent/files/{file_id}/presign-download)

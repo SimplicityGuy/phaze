@@ -15,13 +15,12 @@ from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, Loca
 from phaze.models.analysis import AnalysisResult
 from phaze.models.cloud_job import CloudJob, CloudJobStatus, CloudPhase
 from phaze.models.file import FileRecord
-from phaze.models.fingerprint import FingerprintResult
 from phaze.models.metadata import FileMetadata
 from phaze.models.route_control import RouteControl
 from phaze.models.scan_batch import ScanBatch, ScanStatus
 from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tracklist import Tracklist
-from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload, ScanLiveSetPayload
+from phaze.schemas.agent_tasks import ExtractMetadataPayload, ProcessFilePayload
 from tests._queue_fakes import (
     DedupFakeQueue,
     DedupFakeTaskRouter,
@@ -1639,8 +1638,8 @@ async def test_deepen_malformed_file_id_returns_422(client: AsyncClient) -> None
 # POST /pipeline/analysis-failed/retry re-drives EVERY ANALYSIS_FAILED file through the SAME
 # guarded funnel deepen uses (per-agent routing -> NoActiveAgentError guard -> enqueue_process_file
 # full payload + deterministic key), but with NORMAL caps (fine_cap/coarse_cap None, NOT the deepen
-# sentinel 0). Each file flips ANALYSIS_FAILED -> FINGERPRINTED (committed before enqueue) so it
-# leaves the red bucket immediately. recover_orphaned_work / _select_done_analyze_ids stay unchanged.
+# sentinel 0). Each file leaves the red bucket immediately (the retired ``files.state`` flip that
+# accompanied this is gone since Phase 90). recover_orphaned_work / _select_done_analyze_ids stay unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -2080,113 +2079,6 @@ async def test_search_tracklists_no_eligible_files_returns_200(client: AsyncClie
     response = await client.post("/pipeline/search-tracklists")
     assert response.status_code == 200
     assert "No files ready for tracklist search" in response.text
-
-    await _drain_background()
-    assert capture == []
-
-
-# ---------------------------------------------------------------------------
-# Phase 40 (REQ-40-1/REQ-40-4): bulk fingerprint-scan trigger routes per-agent with the
-# COMPLETE ScanLiveSetPayload (never default/controller), surfaces a no-agent empty-state.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_scan_live_sets_routes_to_per_agent_queue_with_complete_payload(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/scan-live-sets enqueues scan_live_set on the PER-AGENT queue (never default/controller).
-
-    scan_live_set is a PER-AGENT task (Phase-30 rule). The capture must be exactly
-    {("phaze-agent-nox","scan_live_set")} — a routing regression that sent it to the consumer-less
-    default queue (or the controller queue) is caught here (T-40-04). Every enqueue must carry the
-    COMPLETE ScanLiveSetPayload (file_id, original_path, agent_id) so no job dead-letters on the
-    extra="forbid" validation (T-40-DL, the v4.0.8 payload-incident class).
-    """
-    files = [_make_file() for _ in range(3)]
-    session.add_all(files)
-    await session.commit()
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/scan-live-sets")
-    assert response.status_code == 200
-    assert "fingerprint scan" in response.text
-
-    await _drain_background()
-    assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-meta", "scan_live_set")}
-    assert all(q != "default" for q, _, _ in capture)
-    assert all(q != "controller" for q, _, _ in capture)
-    # Every enqueue carries the COMPLETE payload — model_validate (extra="forbid") must accept it.
-    for _q, _t, kwargs in capture:
-        ScanLiveSetPayload.model_validate(kwargs)
-    assert {c[2]["file_id"] for c in capture} == {str(f.id) for f in files}
-
-
-@pytest.mark.asyncio
-async def test_scan_live_sets_stamps_a_fresh_scan_run_id_per_enqueue(client: AsyncClient, session: AsyncSession) -> None:
-    """phaze-y07u: the bulk scan trigger stamps a fresh scan_run_id nonce on every enqueue.
-
-    The nonce scopes the worker's idempotency request_id to one RUN, so a deliberate re-scan
-    within the controller's 1h idempotency window is never answered with the cached response.
-    """
-    files = [_make_file() for _ in range(2)]
-    session.add_all(files)
-    await session.commit()
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    assert (await client.post("/pipeline/scan-live-sets")).status_code == 200
-    await _drain_background()
-
-    run_ids = [kwargs["scan_run_id"] for _q, _t, kwargs in capture]
-    assert len(run_ids) == 2
-    assert None not in run_ids
-    assert len(set(run_ids)) == 2  # unique per enqueue
-
-
-@pytest.mark.asyncio
-async def test_scan_live_sets_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
-    """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
-    matched = _make_file()
-    unmatched = _make_file()
-    session.add_all([matched, unmatched])
-    await session.flush()
-    session.add(_link_tracklist(matched))
-    await session.commit()
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/scan-live-sets")
-    assert response.status_code == 200
-
-    await _drain_background()
-    # Only the unmatched file is enqueued; the matched file is excluded.
-    assert len(capture) == 1
-    assert capture[0][2]["file_id"] == str(unmatched.id)
-
-
-@pytest.mark.asyncio
-async def test_scan_live_sets_no_active_agent_renders_empty_state(client: AsyncClient, session: AsyncSession) -> None:
-    """Eligible files but NO online agent → 200, nothing enqueued, no-active-agent copy (never 500)."""
-    session.add_all([_make_file() for _ in range(2)])
-    await session.commit()
-    capture = wire_fakes(client)  # no active agent seeded
-
-    response = await client.post("/pipeline/scan-live-sets")
-    assert response.status_code == 200
-    assert "No active agent available" in response.text
-
-    await _drain_background()
-    assert capture == []
-
-
-@pytest.mark.asyncio
-async def test_scan_live_sets_no_eligible_files_returns_200(client: AsyncClient) -> None:
-    """A zero-eligible POST returns 200, enqueues nothing, and never resolves a queue (no agent needed)."""
-    capture = wire_fakes(client)
-    response = await client.post("/pipeline/scan-live-sets")
-    assert response.status_code == 200
-    assert "No files ready for fingerprint scan" in response.text
 
     await _drain_background()
     assert capture == []
@@ -2684,74 +2576,6 @@ async def test_trigger_extraction_ui_no_files(client: AsyncClient) -> None:
     assert "text/html" in response.headers["content-type"]
 
 
-@pytest.mark.asyncio
-async def test_trigger_fingerprint_ui_with_files(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/fingerprint enqueues fingerprint_file onto phaze-agent-nox."""
-    session.add_all([_make_file() for _ in range(2)])
-    await session.commit()
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/fingerprint")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "fingerprinting" in response.text
-
-    await _drain_background()
-    assert len(capture) == 2
-    assert {(q, t) for q, t, _ in capture} == {("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")}
-
-
-@pytest.mark.asyncio
-async def test_trigger_fingerprint_ui_enqueues_failed_retry_file(client: AsyncClient, session: AsyncSession) -> None:
-    """Phase 42: /pipeline/fingerprint now ALSO enqueues a failed-fingerprint-retry file (D-03 align).
-
-    Previously trigger_fingerprint_ui queried ONLY METADATA_EXTRACTED; routing it through the shared
-    get_fingerprint_pending_files helper aligns it with the API endpoint -- it GAINS the failed-retry
-    scope. A file in ANALYZED state (NOT METADATA_EXTRACTED, NOT FINGERPRINTED) carrying a failed
-    FingerprintResult must now be enqueued. This locks the intended consistency fix.
-    """
-    failed = _make_file()
-    session.add(failed)
-    await session.flush()
-    session.add(FingerprintResult(id=uuid.uuid4(), file_id=failed.id, engine="audfprint", status="failed"))
-    await session.commit()
-    await make_agent_live(session)
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/fingerprint")
-    assert response.status_code == 200
-
-    await _drain_background()
-    assert len(capture) == 1
-    queue_name, task_name, payload = capture[0]
-    assert (queue_name, task_name) == ("phaze-agent-test-fileserver-fingerprint", "fingerprint_file")
-    assert payload["file_id"] == str(failed.id)
-
-
-@pytest.mark.asyncio
-async def test_trigger_fingerprint_ui_no_active_agent(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/fingerprint with files but no active agent renders the empty-state."""
-    session.add_all([_make_file() for _ in range(2)])
-    await session.commit()
-    capture = wire_fakes(client)  # no active agent seeded
-
-    response = await client.post("/pipeline/fingerprint")
-    assert response.status_code == 200
-    assert "No active agent available" in response.text
-
-    await _drain_background()
-    assert capture == []
-
-
-@pytest.mark.asyncio
-async def test_trigger_fingerprint_ui_no_files(client: AsyncClient) -> None:
-    """POST /pipeline/fingerprint with no eligible files returns HTML with zero count."""
-    response = await client.post("/pipeline/fingerprint")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-
-
 # ---------------------------------------------------------------------------
 # PR4: dashboard activity indicator (green pulse / amber "stalled?")
 # ---------------------------------------------------------------------------
@@ -2875,9 +2699,9 @@ async def test_pipeline_stats_surfaces_agent_busy(client: AsyncClient, session: 
     assert response.status_code == 200
     assert "$store.pipeline.agentBusy = 5" in response.text
     assert "$store.pipeline.controllerBusy = 2" in response.text
-    # The Fingerprint button's ready-count gate (metadataExtracted) must ALSO re-seed on
-    # each poll like discovered/analyzed, so it un-disables live instead of only on full reload.
-    assert 'id="fingerprint-files-ready" hx-swap-oob="true"' in response.text
+    # The metadataExtracted ready-count gate must ALSO re-seed on each poll like
+    # discovered/analyzed, so its button un-disables live instead of only on full reload.
+    assert 'id="metadata-files-ready" hx-swap-oob="true"' in response.text
     assert "$store.pipeline.metadataExtracted = 0" in response.text
 
 

@@ -3,8 +3,8 @@
 phaze-30fo: liveness used to be pinned to ONE lane. Compose set PHAZE_AGENT_HEARTBEAT=true
 on exactly the analyze-lane worker, so `agents.last_seen_at` -- the ONLY liveness signal --
 came from a single process. When that process stalled, the agent was classified DEAD after
-300s while its other three lanes were actively processing work. Observed live on
-2026-07-18: /admin/agents showed "nox DEAD, queue 762" while nox's fingerprint lane was
+300s while its other lanes were actively processing work. Observed live on
+2026-07-18: /admin/agents showed "nox DEAD, queue 762" while another of nox's lanes was
 completing a job every ~2.6s.
 
 That was never only a display bug. `Agent.last_seen_at` is also the WORK-ROUTING key --

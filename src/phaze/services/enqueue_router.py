@@ -19,8 +19,8 @@ respectively. A task missing from both sets is unroutable and
 :func:`resolve_queue_for_task` raises ``ValueError`` (fail loud, never silently
 default).
 
-Per-lane routing (quick-260707-dh1): agent tasks are further partitioned into four
-lanes (``analyze`` / ``fingerprint`` / ``meta`` / ``io``) by :data:`LANE_TASKS`,
+Per-lane routing (quick-260707-dh1): agent tasks are further partitioned into three
+lanes (``analyze`` / ``meta`` / ``io``) by :data:`LANE_TASKS`,
 the SINGLE source of truth for task->lane membership. ``AGENT_TASKS`` is the derived
 union of every lane's frozenset, so existing membership checks are unchanged.
 :func:`lane_for_task` is the reverse lookup every agent-queue producer MUST call to
@@ -39,8 +39,8 @@ simplest deterministic rule; round-robin / least-loaded dispatch is deferred. Th
 ``legacy-application-server`` (its ``revoked_at`` equals its ``created_at``).
 
 Ownership affinity (phaze-c9w9): the most-recently-seen rule is a LIVENESS pick, not a
-placement policy. Every file-keyed agent task (``process_file`` / ``extract_file_metadata`` /
-``fingerprint_file`` / ``scan_live_set``) runs against a path on ONE specific fileserver's
+placement policy. Every file-keyed agent task (``process_file`` / ``extract_file_metadata``)
+runs against a path on ONE specific fileserver's
 media mount -- the agent recorded on ``FileRecord.agent_id`` (the composite unique key
 ``(agent_id, original_path)`` explicitly models the same path existing under two different
 agents as two different files). With two live fileservers the most-recently-seen winner flaps
@@ -92,14 +92,11 @@ operator-enqueued) so it is intentionally omitted from the routable set.
 LANE_TASKS: dict[str, frozenset[str]] = {
     # CPU-bound in-process essentia analysis (host CPU budget).
     "analyze": frozenset({"process_file"}),
-    # CPU-bound via the panako/audfprint sidecars (same finite core budget).
-    "fingerprint": frozenset({"fingerprint_file"}),
     # Light / fast control-and-metadata tasks.
     "meta": frozenset(
         {
             "extract_file_metadata",
             "scan_directory",
-            "scan_live_set",
             "execute_approved_batch",
         }
     ),
@@ -120,7 +117,7 @@ Add a lane -> add its frozenset here; add a task -> put it in exactly one lane.
 """
 
 LANES: tuple[str, ...] = tuple(LANE_TASKS)
-"""Ordered lane names (``analyze``, ``fingerprint``, ``meta``, ``io``) -- the insertion
+"""Ordered lane names (``analyze``, ``meta``, ``io``) -- the insertion
 order of :data:`LANE_TASKS`. ``all_lane_queues`` iterates this so depth readers and the
 compose split enumerate lanes deterministically."""
 
@@ -272,7 +269,7 @@ async def resolve_queue_for_task(
             msg = f"resolving per-agent task {task_name!r} requires a database session"
             raise ValueError(msg)
         # phaze-5r8f: scope the pick to the FILESERVER kind. Every task routed through this branch
-        # (scan_live_set, process_file, extract_file_metadata, fingerprint_file) runs against the
+        # (process_file, extract_file_metadata) runs against the
         # fileserver's local media mount, so it MUST land on a fileserver agent. Phase 48/49 compute
         # agents heartbeat through the same endpoint and run the same worker module, so an unscoped
         # pick (any kind, most-recently-seen) could route a fileserver-local task to a media-less

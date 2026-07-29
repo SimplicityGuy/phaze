@@ -109,10 +109,9 @@ Only the agent lane worker (started with `PHAZE_AGENT_LANE` set) reads these; th
 | Variable                       | Required | Default | Description                                          |
 |--------------------------------|----------|---------|------------------------------------------------------|
 | `PHAZE_LANE_ANALYZE_CONCURRENCY` (or `lane_analyze_concurrency`) | No | `4` | Concurrency of the analyze lane worker (`process_file`; in-process essentia, CPU-bound). |
-| `PHAZE_LANE_FINGERPRINT_CONCURRENCY` (or `lane_fingerprint_concurrency`) | No | `2` | Concurrency of the fingerprint lane worker (`fingerprint_file`; via panako/audfprint, CPU-bound). |
 | `PHAZE_LANE_META_CONCURRENCY` (or `lane_meta_concurrency`) | No | `2` | Concurrency of the meta lane worker (extract/scan/execute; light/fast). |
 | `PHAZE_LANE_IO_CONCURRENCY` (or `lane_io_concurrency`) | No | `4` | Concurrency of the io lane worker (`s3_upload`/`push_file`; network-bound, off CPU budget). |
-| `PHAZE_AGENT_HEARTBEAT` (or `agent_heartbeat_enabled`) | No | `true` | Whether this agent worker launches the liveness heartbeat background task. Compose sets this `true` on exactly one lane worker (analyze) and `false` on the other three, so an agent reports one authoritative `last_seen`, never N duplicate heartbeats. |
+| `PHAZE_AGENT_HEARTBEAT` (or `agent_heartbeat_enabled`) | No | `true` | Whether this agent worker launches the liveness heartbeat background task. Compose sets this `true` on exactly one lane worker (analyze) and `false` on the other two, so an agent reports one authoritative `last_seen`, never N duplicate heartbeats. |
 
 ### Database connection pool tuning (all roles)
 
@@ -299,19 +298,10 @@ workers (control + agent), the watcher, and the CLI/scripts.
 | `PHAZE_LOG_JSON`  | No       | auto (JSON when stdout is not a TTY) | `true` = one JSON object per line (production / Docker); `false` = human-friendly console; unset = auto. |
 
 INFO proves work is happening — model downloads, scans (`scan started` / `scan progress` /
-`scan completed`), fingerprints, metadata extraction, executions, Discogs/tracklist matching,
+`scan completed`), metadata extraction, executions, Discogs/tracklist matching,
 and per-agent task enqueues all emit at INFO. `DEBUG` adds per-file (`file discovered`,
 `model ok`) and intermediate detail; the 30-second agent heartbeat background task stays at
 DEBUG so it never floods INFO. To watch a running scan in detail: `PHAZE_LOG_LEVEL=DEBUG`.
-
-## Fingerprint service settings (all roles)
-
-The fingerprint sidecars are validated to live on the agent's local Compose network only — `audfprint_url`/`panako_url` must resolve to `localhost`, `127.0.0.1`, `audfprint`, or `panako`. Cross-file-server fingerprint matching is not supported in v4.0.
-
-| Variable        | Required | Default                 | Description                            |
-|-----------------|----------|-------------------------|----------------------------------------|
-| `AUDFPRINT_URL` | No       | `http://audfprint:8001` | Audfprint fingerprint service endpoint.|
-| `PANAKO_URL`    | No       | `http://panako:8002`    | Panako fingerprint service endpoint.   |
 
 ## Internal agent API settings (all roles)
 
@@ -462,7 +452,6 @@ Almost every field has a safe default so a fresh clone runs with `docker compose
 
 - **Agent role (`PHAZE_ROLE=agent`)** — `PHAZE_AGENT_API_URL`, `PHAZE_AGENT_TOKEN`, and `PHAZE_AGENT_SCAN_ROOTS` are all required. The `_enforce_required_agent_fields` model validator raises `ValueError` at construction if any is empty.
 - **Redis password (Compose)** — `REDIS_PASSWORD` must be set or `docker compose` aborts at parse time (`${REDIS_PASSWORD:?REDIS_PASSWORD required}`).
-- **Fingerprint URLs** — `AUDFPRINT_URL` / `PANAKO_URL` are rejected unless their host is `localhost`, `127.0.0.1`, `audfprint`, or `panako`.
 
 ## Defaults
 

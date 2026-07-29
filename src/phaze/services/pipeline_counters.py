@@ -33,8 +33,6 @@ _NAMESPACE = "phaze:pipeline"
 PIPELINE_FUNCTIONS: tuple[str, ...] = (
     "process_file",
     "extract_file_metadata",
-    "fingerprint_file",
-    "scan_live_set",
     "search_tracklist",
     "scrape_and_store_tracklist",
     "match_tracklist_to_discogs",

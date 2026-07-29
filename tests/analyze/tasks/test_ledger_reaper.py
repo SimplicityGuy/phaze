@@ -20,7 +20,7 @@ The line these tests defend is the one that separates a reconciler from a data-l
 
 ``saq_jobs`` is created locally (SAQ owns it at runtime; ``Base.metadata.create_all`` does not know
 it) so the liveness probe has something real to read -- the same idiom as
-``tests/fingerprint/tasks/test_aborting_reaper.py``.
+``tests/analyze/tasks/test_aborting_reaper.py``.
 """
 
 from __future__ import annotations

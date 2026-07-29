@@ -6,7 +6,7 @@
 # - Python version across all project files (root + services)
 # - Python package dependencies via uv (all version types)
 # - Dependency floors in pyproject.toml, raised to match the locked versions
-# - Service dependencies (audfprint, panako)
+# - Service dependencies (any sub-project under services/ with its own pyproject.toml)
 # - Node.js dependencies (any package.json; no-op while phaze is CDN-based)
 # - uv binary pin in Dockerfiles + setup-uv action SHA pin in workflows
 # - Pre-commit hooks to latest versions (with frozen SHAs)
@@ -73,11 +73,10 @@ EMOJI_VERIFY="🔍"
 EMOJI_SERVICE="🔧"
 EMOJI_GIT="🔀"
 
-# Service directories with their own dependencies
-SERVICE_DIRS=(
-  "services/audfprint"
-  "services/panako"
-)
+# Service directories with their own dependencies (none currently — the
+# audfprint/panako sidecars that used to live here were removed in full,
+# epic phaze-0jpe).
+SERVICE_DIRS=()
 
 # Print colored output with emojis
 print_info() {

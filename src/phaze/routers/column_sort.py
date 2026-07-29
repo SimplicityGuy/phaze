@@ -10,7 +10,7 @@ WHY THIS EXISTS
 phaze-a6hm found that exactly ONE table in the repo sorts -- ``proposals/partials/proposal_table.html``
 -- and that the table is in the UNREACHABLE legacy family, so in practice no operator-facing table in
 phaze sorts at all. Meanwhile ``pipeline/partials/_file_table.html`` is included by NINE workspaces
-(discover, fingerprint, propose, trackid, analyze, pending, tracklist_sets, files_table_view), every
+(discover, propose, analyze, pending, tracklist_sets, files_table_view), every
 one of them a paginated list the operator must scan by eye.
 
 Two failure modes were waiting on the obvious fixes:
@@ -129,24 +129,24 @@ Wiring a new table is three edits. First, declare the contract next to the handl
 
     from phaze.routers.column_sort import SortableColumn, SortContract
 
-    TRACKID_SORT = SortContract(
-        endpoint="/pipeline/trackid-files",
-        target="#trackid-files-view",
+    TRACKLIST_SETS_SORT = SortContract(
+        endpoint="/pipeline/tracklist-sets",
+        target="#tracklist-sets-view",
         columns=(
-            SortableColumn(key="file", label="File", expression=FileRecord.original_filename),
-            SortableColumn(key="confidence", label="Confidence", expression=FingerprintResult.confidence),
+            SortableColumn(key="artist", label="Set", expression=Tracklist.artist),
+            SortableColumn(key="event", label="Tracklist", expression=Tracklist.event),
         ),
-        default_key="file",
+        default_key="artist",
     )
 
 Second, resolve it in the handler and hand the state to the template::
 
-    sort_state = TRACKID_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
-    page = await get_trackid_files_page(session, page=page, page_size=page_size, sort=sort_state)
+    sort_state = TRACKLIST_SETS_SORT.resolve(sort=sort, order=order, view_state={"page_size": page_size})
+    page = await get_tracklist_sets_page(session, page=page, page_size=page_size, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
-        name="pipeline/partials/_trackid_files.html",
-        context={"trackid_page": page, "host_id": "trackid-files-view", "sort": sort_state},
+        name="pipeline/partials/_tracklist_sets.html",
+        context={"sets_page": page, "host_id": "tracklist-sets-view", "sort": sort_state},
     )
 
 Third, spend the state in the query -- one argument, inside the existing paging call::

@@ -1,19 +1,15 @@
 {# Phase 82 (D-05, READ-02): ``stats`` is now the DERIVED seven-key dict from
    ``routers/pipeline._derive_stats`` (off ``get_stage_progress``'s output-table counts), NOT the
-   removed ``FileRecord.state``-grouped ``get_pipeline_stats``. The key NAMES are preserved so the six
+   removed ``FileRecord.state``-grouped ``get_pipeline_stats``. The key NAMES are preserved so the five
    visible cards below + the three OOB ``x-init`` store writes read the SAME ``stats.<key>`` and the
    Alpine ``$store.pipeline.discovered / .metadataExtracted / .analyzed`` keys stay stable (Pitfall 4) --
    only the server-side source changed. ``stats.metadata_extracted`` now counts every music/video file
    with a done metadata row (not the transient linear METADATA_EXTRACTED state): these numbers
    legitimately differ post-cutover -- the cross-stage deadlock dissolving, not a regression. #}
-<div class="grid grid-cols-6 gap-4">
+<div class="grid grid-cols-5 gap-4">
     <div class="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-blue-700 dark:text-blue-400">{{ stats.discovered }}</p>
         <p class="text-sm text-blue-600 dark:text-blue-400">Discovered</p>
-    </div>
-    <div class="bg-cyan-50 rounded-lg p-4 text-center">
-        <p class="text-2xl font-bold text-cyan-700">{{ stats.fingerprinted }}</p>
-        <p class="text-sm text-cyan-600">Fingerprinted</p>
     </div>
     <div class="bg-yellow-50 rounded-lg p-4 text-center">
         <p class="text-2xl font-bold text-yellow-700 dark:text-yellow-400">{{ stats.analyzed }}</p>
@@ -53,11 +49,11 @@
    "files ready" text node (kept hidden) for backward-compatible polling assertions. #}
 {% if oob_counts %}
 <p id="analyze-files-ready" hx-swap-oob="true" x-init="$store.pipeline.discovered = {{ stats.discovered }}" class="hidden">{{ stats.discovered }} files ready</p>
-<p id="fingerprint-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted }} files ready</p>
+<p id="metadata-files-ready" hx-swap-oob="true" x-init="$store.pipeline.metadataExtracted = {{ stats.metadata_extracted }}" class="hidden">{{ stats.metadata_extracted }} files ready</p>
 <p id="proposals-files-ready" hx-swap-oob="true" x-init="$store.pipeline.analyzed = {{ stats.analyzed }}" class="hidden">{{ stats.analyzed }} files ready</p>
 {# Live queue-depth seeds: on each 5s poll, re-push the agent/controller busy counts into
-   $store.pipeline so the trigger :disabled bindings (agentBusy gates Metadata/Analyze/
-   Fingerprint; controllerBusy gates Proposals) react to in-flight work. Hidden (no visible
+   $store.pipeline so the trigger :disabled bindings (agentBusy gates Metadata/Analyze;
+   controllerBusy gates Proposals) react to in-flight work. Hidden (no visible
    text) — their sole job is the x-init store write. The ids agent-busy-seed /
    controller-busy-seed are the same-id contract with the in-place store anchors the DAG
    canvas seeds on the initial full-page render; kept inside the oob_counts gate so they
