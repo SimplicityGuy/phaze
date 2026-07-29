@@ -209,6 +209,26 @@ async def test_stage_fragment_is_bare(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_rail_stage_carries_exactly_one_focus_heading(client: AsyncClient) -> None:
+    """Regression (phaze-t0b8) -- every STAGE_PARTIALS value renders exactly one <h1 tabindex="-1">.
+
+    The shell's htmx:afterSwap / htmx:historyRestore handler (``shell.html``'s
+    ``_focusStageHeading``) moves keyboard focus to ``#stage-workspace``'s first ``<h1>`` after
+    every rail swap; with none present the handler silently no-ops, stranding keyboard/screen-
+    reader operators on the rail. files_workspace.html (the /s/files host) was the ONE stage that
+    skipped this: it hand-rolled its own body instead of composing ``_workspace_scaffold.html``
+    like every sibling, so it carried no heading at all. This guards the whole class, not just
+    that one stage, the way the bead's own fix hint asked: every navigable rail node must have
+    exactly one focus-landing heading, not zero and not two.
+    """
+    for stage in _RAIL_STAGES:
+        frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
+        assert frag.status_code == 200, f"/s/{stage} must render"
+        count = len(re.findall(r'<h1\b[^>]*\btabindex="-1"', frag.text))
+        assert count == 1, f'/s/{stage} must carry exactly one <h1 tabindex="-1"> focus target (found {count})'
+
+
+@pytest.mark.asyncio
 async def test_unknown_stage_404(client: AsyncClient) -> None:
     """SHELL-02 (negative) -- an unknown stage 404s (D-02 whitelist; `stage` is never a template path)."""
     response = await client.get("/s/does-not-exist")

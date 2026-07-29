@@ -1,10 +1,15 @@
 {# Primary response: empty div removes the card #}
 <div id="group-{{ group_hash }}" style="display:none;"></div>
 
-{# OOB: update stats header #}
-<div id="stats-header" hx-swap-oob="true">
-    {% include "duplicates/partials/stats_header.html" %}
-</div>
+{# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE, along with
+   duplicates/partials/stats_header.html itself. Its sole host, the legacy duplicates/list.html,
+   was deleted in the Phase-62 cutover (the same sweep toast.html:10-12 documents for
+   #duplicates-list), so htmx found no `#stats-header` in the document, fired
+   htmx:oobErrorNoTarget and discarded the fragment on EVERY resolve/undo/bulk-resolve -- after
+   the router had paid three whole-corpus aggregates (get_duplicate_stats) to render it. The v7
+   Dedupe workspace shows no stats surface at all, so nothing was stale on screen; the numbers
+   were simply computed and thrown away. Do NOT reintroduce the OOB block without first giving
+   dedupe_workspace.html a real, live stats host. #}
 
 {# OOB: inject toast #}
 <div hx-swap-oob="beforeend:#toast-container">

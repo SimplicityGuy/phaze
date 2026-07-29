@@ -25,7 +25,6 @@ from phaze.services.proposal_queries import (
     ProposalTransitionError,
     approve_pending_above_confidence,
     bulk_update_status,
-    get_proposal_stats,
     get_proposal_with_file,
     update_proposal_fields,
     update_proposal_status,
@@ -92,7 +91,7 @@ async def _guarded_status_update(
 _V7_ROW_FACETS: dict[str, str] = {"rename-row": "filename", "record-row": "filename", "move-row": "path"}
 
 # phaze-71hi: bulk_approve_high_confidence has no proposal_id in its URL, so it can't reuse
-# _v7_row_target's "{prefix}-{proposal_id}" match. Instead its two callers (rename_workspace.html /
+# _row_target's "{prefix}-{proposal_id}" match. Instead its two callers (rename_workspace.html /
 # move_workspace.html) each hx-target their own small status div by a FIXED id -- map that id
 # straight to the (row_id_prefix, facet) pair _diff_row_context needs for the OOB row fragments.
 _BULK_HIGH_CONFIDENCE_TARGETS: dict[str, tuple[str, str]] = {
@@ -112,13 +111,30 @@ _ROW_STATE_FOR_STATUS: dict[ProposalStatus, str] = {
 }
 
 
-def _v7_row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str] | None:
-    """Return (row_id_prefix, facet) when the request came from a v7 diff-row workspace, else None."""
+def _row_target(request: Request, proposal_id: uuid.UUID) -> tuple[str, str]:
+    """Return the (row_id_prefix, facet) pair to render this mutation's response row with.
+
+    phaze-vvmh: this used to return ``None`` for a request that named no v7 row, and every mutation
+    route had a second, LEGACY branch for that case rendering ``approve_response.html`` /
+    ``undo_response.html`` / ``proposal_row.html``. Those responses were unreachable in the product
+    and actively wrong if they ever HAD been reached: each carried an OOB fragment addressed to
+    ``#stats-bar``, an id whose only host (the legacy proposals list page) the Phase-62 cutover
+    deleted, so htmx would have discarded it with ``htmx:oobErrorNoTarget``; and the ``<tr>``-shaped
+    ``proposal_row.html`` would have dropped table-row markup into a ``<div>`` list. Every live
+    approve / reject / undo / edit control in the app is a ``pipeline/partials/_diff_row.html`` whose
+    ``hx-target`` is exactly one of the three prefixes below, so the fallback existed only for
+    hand-made requests -- and it was the last thing keeping the Execute Approved button's dead host
+    chain reachable by the template guard.
+
+    A caller that names no known row now gets the SAME shared ``_diff_row.html`` under the default
+    (rename / filename) shape rather than a differently-shaped legacy response: one response shape
+    for one route, which is the property the two deleted branches lacked.
+    """
     hx_target = request.headers.get("HX-Target", "")
     for prefix, facet in _V7_ROW_FACETS.items():
         if hx_target == f"{prefix}-{proposal_id}":
             return prefix, facet
-    return None
+    return "rename-row", "filename"
 
 
 def _diff_row_context(proposal: RenameProposal, row_id_prefix: str, facet: str, row_state: str, *, oob: bool = False) -> dict[str, object]:
@@ -264,26 +280,12 @@ async def approve_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Approve a proposal and return the updated row with OOB stats and toast."""
+    """Approve a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
     proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.APPROVED, _APPROVE_REJECT_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    v7 = _v7_row_target(request, proposal_id)
-    if v7 is not None:
-        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="approved")
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/approve_response.html",
-        context={
-            "request": request,
-            "proposal": proposal,
-            "stats": stats,
-            "action_label": "approved",
-            "toast_message": "Proposal approved.",
-            "is_bulk": False,
-        },
-    )
+    row_id_prefix, facet = _row_target(request, proposal_id)
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="approved")
 
 
 @router.patch("/{proposal_id}/reject", response_class=HTMLResponse)
@@ -292,26 +294,12 @@ async def reject_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Reject a proposal and return the updated row with OOB stats and toast."""
+    """Reject a proposal and return the updated row (phaze-vvmh: one response shape, no OOB stats)."""
     proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.REJECTED, _APPROVE_REJECT_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    v7 = _v7_row_target(request, proposal_id)
-    if v7 is not None:
-        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="skipped")
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/approve_response.html",
-        context={
-            "request": request,
-            "proposal": proposal,
-            "stats": stats,
-            "action_label": "rejected",
-            "toast_message": "Proposal rejected.",
-            "is_bulk": False,
-        },
-    )
+    row_id_prefix, facet = _row_target(request, proposal_id)
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="skipped")
 
 
 @router.patch("/{proposal_id}/undo", response_class=HTMLResponse)
@@ -320,23 +308,12 @@ async def undo_proposal(
     proposal_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Revert a proposal to pending status and return updated row with OOB stats."""
+    """Revert a proposal to pending status and return the updated row (phaze-vvmh: no OOB stats)."""
     proposal = await _guarded_status_update(session, proposal_id, ProposalStatus.PENDING, _UNDO_FROM)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    v7 = _v7_row_target(request, proposal_id)
-    if v7 is not None:
-        return _diff_row_response(request, proposal, v7[0], v7[1], row_state="pending")
-    stats = await get_proposal_stats(session)
-    return templates.TemplateResponse(
-        request=request,
-        name="proposals/partials/undo_response.html",
-        context={
-            "request": request,
-            "proposal": proposal,
-            "stats": stats,
-        },
-    )
+    row_id_prefix, facet = _row_target(request, proposal_id)
+    return _diff_row_response(request, proposal, row_id_prefix, facet, row_state="pending")
 
 
 @router.get("/{proposal_id}/detail", response_class=HTMLResponse)
@@ -498,18 +475,19 @@ async def bulk_approve_high_confidence(
             },
         )
 
-    stats = await get_proposal_stats(session)
+    # phaze-vvmh: no legacy fork. A caller that names neither v7 status div gets the SAME
+    # bulk-response shape (toast, no OOB rows -- there is no row prefix to key them to). The branch
+    # this replaces rendered approve_response.html with proposal=None, i.e. nothing but an OOB
+    # fragment aimed at the deleted `#stats-bar` id: a response whose entire payload the browser
+    # would have discarded.
     return templates.TemplateResponse(
         request=request,
-        name="proposals/partials/approve_response.html",
+        name="proposals/partials/_bulk_approve_high_confidence_response.html",
         context={
             "request": request,
-            "proposal": None,
-            "stats": stats,
-            "action_label": "approved",
             "toast_message": toast_message,
             "is_bulk": True,
-            "bulk_ids": [],
+            "approved_rows": [],
         },
     )
 
@@ -551,13 +529,9 @@ async def edit_proposal(
     # PENDING with the edited "after" value), not the legacy <tr> proposal_row.html.
     # phaze-3tj4: derive row_state from the real status rather than hardcoding "pending" so a row is
     # never re-rendered with pending affordances it no longer has.
-    v7 = _v7_row_target(request, proposal_id)
-    if v7 is not None:
-        return _diff_row_response(request, proposal, v7[0], v7[1], row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending"))
-    return templates.TemplateResponse(  # nosemgrep: python.fastapi.web.tainted-direct-response-fastapi.tainted-direct-response-fastapi -- Jinja2 TemplateResponse is autoescaped; the validated proposed value renders escaped (no raw/`| safe`), so this is not a direct tainted response.
-        request=request,
-        name="proposals/partials/proposal_row.html",
-        context={"request": request, "proposal": proposal},
+    row_id_prefix, facet = _row_target(request, proposal_id)
+    return _diff_row_response(
+        request, proposal, row_id_prefix, facet, row_state=_ROW_STATE_FOR_STATUS.get(ProposalStatus(proposal.status), "pending")
     )
 
 
