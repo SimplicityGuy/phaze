@@ -9,7 +9,11 @@
    (REVIEW-05 -- undo reconstructs prior state FROM that blob, not a fresh query). The keeper copy is
    emerald-tinted with a KEEP text tag; the others are the neutral surface with a muted archive text tag
    (text tags, NEVER hue-only -- WCAG 1.4.1). Every DB-sourced file name/quality autoescapes (T-60-XSS).
-   NO hx-swap-oob on the card (R-2 counts-only); NO | safe. #}
+   The card carries no hx-swap-oob of its own (R-2 counts-only), but it IS addressed by id from two
+   OOB fragments (phaze-dpc5): bulk_resolve_response.html deletes `#dupe-group-{hash}` for every group
+   the operator was shown, and bulk_undo_response.html appends this same card back into
+   `#dedupe-group-list`. Keep the id stable -- both sides of that reversal contract key on it.
+   NO | safe. #}
 <div id="dupe-group-{{ group.sha256_hash }}" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
     <div class="mb-2 font-jura text-[11px] font-medium uppercase tracking-wider text-gray-700 dark:text-gray-200">
         {{ group.group_name }} <span class="normal-case text-gray-500 dark:text-gray-500">· {{ group.count }} copies</span>

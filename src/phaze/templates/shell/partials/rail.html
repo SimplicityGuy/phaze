@@ -9,11 +9,11 @@
                              · analyze (analyzeActive, blue-pulse, one click away at /s/analyze)
       group Identify: trackid (STATIC label — no store key) · tracklist (tracklistDone)
       propose (proposalsDone)
-      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue (all STATIC)
+      group Review & Apply (AMBER): rename · tagwrite · move · dedupe · cue · apply (all STATIC)
       below-the-line (border-t): audit → /audit/ , agents → /admin/agents (plain links)
 
   Live-vs-static rule (locked): an x-text count renders ONLY for a node whose key already
-  exists in $store.pipeline (base.html:106-136). summary + trackid + the five Review & Apply
+  exists in $store.pipeline (base.html:106-136). summary + trackid + the six Review & Apply
   items carry NO count. Counts are numeric server/store values only.
 
   Phase 87 (87-08) ambient enrich-node additions (each rides the SAME #pipeline-stats OOB
@@ -48,7 +48,8 @@
     • each node  → native title="{label}" (same text as the visible/sr-only label)
   Active-state (aria-[current=page] tint + inset bar) and the focus-visible ring are
   preserved verbatim in BOTH states. The Review & Apply group is unrolled from its former
-  {% for %} into five explicit buttons so each can carry its own distinct glyph.
+  {% for %} into explicit buttons (five at CUT-04, six since phaze-vvmh added Execute) so each
+  can carry its own distinct glyph.
   The compiled CSS (src/phaze/static/css/app.css) is GITIGNORED and rebuilt by
   `just tailwind` / at Docker image-build via the @source template scan in assets/src/app.css.
 #}
@@ -366,8 +367,9 @@
         </button>
 
         {# 5 — Review & Apply (AMBER group · all items STATIC, no store keys in 57).
-           CUT-04: the former {% for %} is unrolled to five explicit buttons so each carries
-           its own distinct heroicons glyph (a single loop body cannot emit per-item SVGs). #}
+           CUT-04: the former {% for %} is unrolled to explicit buttons so each carries its own
+           distinct heroicons glyph (a single loop body cannot emit per-item SVGs). phaze-vvmh
+           appended a sixth, Execute -- the group's terminal node. #}
         <div class="mx-2 mt-1.5 rounded-lg border bg-amber-500/[0.06] border-amber-500/25 px-2 py-1.5 max-lg:mx-0 max-lg:border-transparent max-lg:bg-transparent max-lg:px-0 max-lg:py-0 max-lg:mt-0">
             <div class="font-jura text-[10px] uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400/80 px-1.5 mb-1 max-lg:hidden">Review &amp; Apply</div>
 
@@ -424,6 +426,24 @@
                     class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="m9 9 10.5-3m0 6.553v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 1 1-.99-3.467l2.31-.66a2.25 2.25 0 0 0 1.632-2.163Zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 0 1-.99-3.467l2.31-.66A2.25 2.25 0 0 0 9 15.553Z"/></svg>
                 <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Cue sheets</span>
+            </button>
+
+            {# 5f — Execute (phaze-vvmh). The group's terminal node and the ONLY in-product trigger for
+               POST /execution/start. Its predecessor lived in proposals/partials/stats_bar.html, which
+               the v7 cutover left renderable ONLY as an OOB fragment aimed at the deleted `#stats-bar`
+               id -- so from that cutover until this node landed, approving proposals was possible and
+               applying them was not, from anywhere in the UI. Wired identically to every navigable
+               node; STATIC label with no count (locked live-vs-static rule -- the approved/pending
+               numbers live in the workspace itself, where they are labelled). heroicons v2 outline
+               "play". #}
+            <button type="button"
+                    data-rail-stage="apply"
+                    hx-get="/s/apply" hx-target="#stage-workspace" hx-swap="innerHTML" hx-push-url="true"
+                    title="Execute"
+                    {% if stage == 'apply' %}aria-current="page"{% endif %}
+                    class="rail-node w-full rounded-md px-2.5 py-1.5 flex items-center gap-2.5 text-left transition-colors hover:bg-amber-500/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 aria-[current=page]:bg-blue-500/10 aria-[current=page]:shadow-[inset_3px_0_0_var(--color-blue-500)] max-lg:justify-center max-lg:px-0">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 shrink-0" aria-hidden="true"><path d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 0 1 0 1.971l-11.54 6.347a1.125 1.125 0 0 1-1.667-.985V5.653Z"/></svg>
+                <span class="flex-1 text-sm text-amber-700 dark:text-amber-300 max-lg:sr-only">Execute</span>
             </button>
         </div>
     </nav>

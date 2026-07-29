@@ -1,7 +1,25 @@
 {# Phase 27 Component 4 (UI-SPEC lines 331-403): the Recent Scans mini-table.
 
-   Rendered into the dashboard's #recent-scans section. Last 10 non-LIVE
-   ScanBatches sorted by created_at desc. The dashboard handler pre-attaches
+   HOSTING (phaze-8f9j). This partial's original host, pipeline/dashboard.html, was deleted by the
+   Phase-62 cutover, and the Discover workspace that replaced it rendered recent scans through the
+   text-only _file_table.html instead -- so from that commit until this one NOTHING mounted
+   `id="recent-scans"`. Everything below hung off a document that no longer existed: the per-row
+   delete control (the ONLY caller of DELETE /pipeline/scans/{id}), the failed-row error_message,
+   the PR4 stall indicator, the reconciliation hint, and the entire phaze-a6hm.6 sortable-header
+   contract -- which was added 18 days AFTER the orphaning, to a partial nobody could see. An
+   operator whose scan failed saw the bare word "failed" with no reason and no way to delete the
+   half-ingested batch short of curl or psql. The Discover workspace now mounts THIS table again.
+
+   `scans_poll` (phaze-8f9j) is what made re-mounting possible. The 5s self-poll below was the
+   stated reason Phase 58 refused to reuse this partial: a second poll loop violates WORK-05 / R-2
+   (one chrome poll, shed on visibilitychange). It is now opt-OUT rather than unconditional -- the
+   workspace renders with `scans_poll=False`, and passes `poll=0` through the sort contract's
+   view_state so a header click's re-render (and the delete re-render, which appends the flag
+   explicitly) comes back poll-free too. Any other host keeps the poll by simply not passing the
+   flag. Progress on an in-flight scan is already live via scan_progress_card.html's own 2s poll,
+   so the workspace loses nothing by holding still between interactions.
+
+   Last 10 non-LIVE ScanBatches sorted by created_at desc. The handler pre-attaches
    `_agent_name` and `_elapsed_seconds` to each batch (avoids N+1 in template).
 
    Failed rows render a second inline error <tr> with the batch.error_message
@@ -24,12 +42,16 @@
 
    The `if sort` fallback keeps the partial renderable by any future caller that passes no sort
    state, exactly as _file_table.html degrades to plain headers. #}
+{# `scans_poll` is opt-OUT: an undefined flag polls, exactly as every pre-phaze-8f9j caller did.
+   Only the Discover workspace passes False, and it propagates that choice through every URL this
+   table can be re-requested by, so the poll cannot sneak back in one interaction later. #}
+{% set _poll = scans_poll is not defined or scans_poll %}
 <section aria-labelledby="recent-scans-heading"
          id="recent-scans"
-         hx-get="{{ sort.poll_url() if sort else '/pipeline/scans/recent' }}"
+         {% if _poll %}hx-get="{{ sort.poll_url() if sort else '/pipeline/scans/recent' }}"
          hx-trigger="every 5s"
          hx-swap="outerHTML"
-         class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
+         {% endif %}class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <h2 id="recent-scans-heading" class="text-lg font-semibold mb-4">Recent Scans</h2>
     {% if not recent_scans %}
     <div class="text-center py-8">
@@ -112,7 +134,11 @@
                                    carries the active sort for the same reason the poll does --
                                    otherwise removing a row silently reverts the table to the
                                    default order (and the swapped-in copy polls sortlessly). #}
-                                hx-delete="/pipeline/scans/{{ batch.id }}{{ ('?' ~ sort.query_params()) if sort else '' }}"
+                                {# phaze-8f9j: `query_params()` carries the sort but deliberately NOT the
+                                   contract's view_state, so the no-poll flag is appended here by hand --
+                                   otherwise deleting a row inside the Discover workspace would swap in a
+                                   copy that starts polling, re-creating the second loop WORK-05 forbids. #}
+                                hx-delete="/pipeline/scans/{{ batch.id }}{{ ('?' ~ sort.query_params()) if sort else '' }}{{ ('&' if sort else '?') ~ 'poll=0' if not _poll else '' }}"
                                 hx-confirm="Delete this scan and all associated data? This cannot be undone."
                                 hx-target="#recent-scans"
                                 hx-swap="outerHTML"

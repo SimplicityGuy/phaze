@@ -2034,3 +2034,121 @@ def test_recent_scans_contract_is_wired_at_import_time() -> None:
     assert RECENT_SCANS_SORT.default_order == "desc"
     assert {column.label for column in RECENT_SCANS_SORT.columns} == {"Agent", "Path", "Status", "Files", "Started"}
     assert "Elapsed" not in {column.label for column in RECENT_SCANS_SORT.columns}
+
+
+# ---------------------------------------------------------------------------
+# phaze-8f9j: the SERVED page, not just the endpoint body.
+#
+# Every test above asserts on what an endpoint RETURNS. That is exactly why the orphaning went
+# unnoticed for a phase: `recent_scans_table.html` kept passing its own tests while no served
+# document mounted `id="recent-scans"`, so the delete control, the failed-row error_message, the
+# stall indicator and the whole sortable-header contract were unreachable in the product. These
+# tests assert on a page the operator can actually open.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_discover_workspace_mounts_the_recent_scans_table(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """GET /s/discover serves a document containing #recent-scans and its per-row delete control.
+
+    Without this mount, DELETE /pipeline/scans/{id} has no caller anywhere in the app: the control
+    exists only in this partial, and the Discover workspace rendered recent scans through the
+    text-only _file_table.html instead. An operator whose scan failed half-way through an ingest
+    had no in-product way to remove the batch and its partially-ingested FileRecords.
+    """
+    ac, _ = smoke
+    completed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/served-completed/",
+        status=ScanStatus.COMPLETED.value,
+        total_files=5,
+        processed_files=5,
+    )
+    session.add(completed)
+    await session.commit()
+    completed_id = completed.id
+
+    response = await ac.get("/s/discover", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    body = response.text
+
+    assert 'id="recent-scans"' in body, "no served document mounts the recent-scans table"
+    assert f'hx-delete="/pipeline/scans/{completed_id}' in body, "the served page carries no delete control"
+    assert "Delete this scan and all associated data?" in body
+    assert ">Actions</th>" in body
+
+
+@pytest.mark.asyncio
+async def test_discover_workspace_shows_a_failed_scans_error_message(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """A failed batch's error_message is readable on the served page, not just the bare word "failed".
+
+    scan_progress_card.html shows the reason live to whoever triggered the scan and stayed put; this
+    is the durable view -- after a reload, or for a scan the watcher (or an earlier session) started.
+    """
+    ac, _ = smoke
+    failed = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/served-failed/",
+        status=ScanStatus.FAILED.value,
+        total_files=10,
+        processed_files=3,
+        error_message="agent scan root not mounted",
+    )
+    session.add(failed)
+    await session.commit()
+
+    response = await ac.get("/s/discover", headers={"HX-Request": "true"})
+    assert response.status_code == 200
+    assert "agent scan root not mounted" in response.text, "a failed scan's reason is still invisible after a reload"
+
+
+@pytest.mark.asyncio
+async def test_discover_workspace_recent_scans_table_starts_no_second_poll(
+    smoke: tuple[AsyncClient, AsyncMock],
+    session: AsyncSession,
+) -> None:
+    """WORK-05 survives the re-mount: the workspace copy polls not at all, and says so in its URLs.
+
+    The self-poll was the stated reason Phase 58 refused to reuse this partial. It is now opt-out,
+    and the opt-out has to SURVIVE an interaction -- a header click or a delete re-requests the
+    section, and if that response armed the loop the workspace would acquire a second poll one click
+    after landing. Both re-render URLs therefore carry poll=0, and the endpoints honour it.
+    """
+    ac, _ = smoke
+    batch = ScanBatch(
+        id=uuid.uuid4(),
+        agent_id="test-agent",
+        scan_path="/data/music/served-nopoll/",
+        status=ScanStatus.COMPLETED.value,
+        total_files=1,
+        processed_files=1,
+    )
+    session.add(batch)
+    await session.commit()
+
+    body = (await ac.get("/s/discover", headers={"HX-Request": "true"})).text
+    assert 'hx-trigger="every' not in body, "the Discover workspace started a second poll loop"
+    # The flag rides every URL the section can be re-requested by.
+    assert "poll=0" in body
+
+    # A header re-sort from the workspace comes back poll-free too.
+    resorted = await ac.get("/pipeline/scans/recent?poll=0&sort=path&order=asc")
+    assert resorted.status_code == 200
+    assert 'hx-trigger="every' not in resorted.text, "the re-sorted copy re-armed the poll"
+    assert "poll=0" in resorted.text, "the re-sorted copy dropped the no-poll flag"
+
+    # ...and so does the delete re-render.
+    deleted = await ac.delete(f"/pipeline/scans/{batch.id}?poll=0")
+    assert deleted.status_code == 200
+    assert 'hx-trigger="every' not in deleted.text, "the post-delete copy re-armed the poll"
+
+    # Every OTHER caller is unchanged: absent flag still means poll.
+    assert 'hx-trigger="every 5s"' in (await ac.get("/pipeline/scans/recent")).text

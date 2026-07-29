@@ -36,7 +36,7 @@ from phaze.models.agent import Agent
 from phaze.models.file import FileRecord
 from phaze.models.proposal import APPROVE_REJECT_FROM
 from phaze.routers.pipeline import FILES_SORT
-from phaze.routers.pipeline_scans import build_recent_scans
+from phaze.routers.pipeline_scans import RECENT_SCANS_SORT, build_recent_scans
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.routers.response_shape import wants_fragment
 from phaze.routers.view_state import PAGE_SIZE_CHOICES, ListViewState
@@ -48,6 +48,7 @@ from phaze.services.pipeline import (
     get_stage_progress,
     get_untracked_files,
 )
+from phaze.services.proposal_queries import get_proposal_stats
 from phaze.services.review import (
     get_cue_review_cards,
     get_dedupe_groups,
@@ -140,6 +141,15 @@ STAGE_PARTIALS: dict[str, str] = {
     # a STATIC string literal (T-57-01). This is the LAST of the six Review workspaces; every placeholder
     # is now superseded. Supersede-in-place; the legacy template stays reachable until CUT-02 (Phase 62).
     "cue": "pipeline/partials/cue_workspace.html",
+    # phaze-vvmh: the Apply (Execute) stage -- the terminal node of "nothing moves without review,
+    # then execute", and the ONLY live caller of POST /execution/start. Its predecessor, the Execute
+    # Approved button in proposals/partials/stats_bar.html, rode inside an OOB fragment addressed to
+    # `#stats-bar`, an id the Phase-62 cutover deleted, so no served document has contained an
+    # execute trigger since. Approved proposals accumulated with no way to dispatch them from the UI.
+    # A STATIC string literal (T-57-01: `stage` is never spliced into a template path) that also acts
+    # as a dead-template-guard entry root. LAST key so the dict order matches the rail order: it
+    # closes the Review & Apply group, after the five review nodes it consumes the output of.
+    "apply": "pipeline/partials/apply_workspace.html",
 }
 
 
@@ -386,7 +396,18 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # the non-revoked agent list driving the reused Trigger Scan form. Both reads degrade-safe
         # at the service/ORM layer (no router try/except). oob_counts stays False on the stage
         # render (Pitfall 3); the live sub-count refreshes via the single chrome poll's OOB seeds.
-        context["recent_scans"] = await build_recent_scans(session)
+        # phaze-8f9j: the workspace mounts the REAL recent_scans_table.html now (delete control,
+        # failed-row error_message, stall indicator, sortable headers), so it needs that table's two
+        # context keys. `scans_poll=False` suppresses the partial's own 5s loop (WORK-05: one chrome
+        # poll), and `poll=0` rides in the sort contract's view_state so a header click re-requests
+        # GET /pipeline/scans/recent WITH the flag -- otherwise the copy swapped in by the re-sort
+        # would arm the loop the mount exists to avoid. Resolved with sort=None/order=None because
+        # this is the FIRST render: header clicks go straight to pipeline_scans, never back through
+        # the shell, so there is no operator-chosen order to carry here yet.
+        scans_sort = RECENT_SCANS_SORT.resolve(sort=None, order=None, view_state={"poll": "0"})
+        context["sort"] = scans_sort
+        context["scans_poll"] = False
+        context["recent_scans"] = await build_recent_scans(session, sort=scans_sort)
         # SER-01: only kind="fileserver" agents host media and can be scan targets;
         # exclude kind="compute" (media-less burst backends) from the picker.
         agents_stmt = select(Agent).where(Agent.revoked_at.is_(None), Agent.kind == "fileserver").order_by(Agent.name)
@@ -456,6 +477,13 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
         # NO enqueue, NO backend change) that returns [] on any DB error, so no router try/except is needed;
         # oob_counts stays False (Pitfall 5).
         context["cue_cards"] = await get_cue_review_cards(session)
+    elif stage == "apply":
+        # phaze-vvmh: the Apply workspace needs ONE read -- the aggregate proposal counts, in a single
+        # query (services/proposal_queries.get_proposal_stats). They drive the EXECUTE APPROVED
+        # button's enabled/disabled branch, its confirm copy, and the counter row that re-hosts the
+        # useful half of the deleted proposals/partials/stats_bar.html. No enqueue, no write, no new
+        # query path; oob_counts stays False (Pitfall 5) like every other review stage.
+        context["stats"] = await get_proposal_stats(session)
 
     if wants_fragment(request):
         # phaze-a6hm.2 / .9: a live htmx swap has TWO shapes on this route, distinguished by what the

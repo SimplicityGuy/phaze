@@ -77,28 +77,41 @@ async def create_test_proposal(
     return proposal
 
 
-_PROPOSAL_ROW_TEMPLATE = Path(phaze.__file__).parent / "templates" / "proposals" / "partials" / "proposal_row.html"
+_TEMPLATES_DIR = Path(phaze.__file__).parent / "templates"
 
 
-def test_proposal_row_badge_reads_status_not_file_state() -> None:
-    """Source-scan (D-04 / Pitfall 4): the badge branch reads ``proposal.status``; no ``file.state`` survives.
+def test_no_template_reads_the_removed_file_state_column() -> None:
+    """Source-scan (D-04 / Pitfall 4): no template reads ``file.state``; Phase 90 dropped that column.
 
-    Phase 90 drops ``files.state``; the last stray ``proposal.file.state`` reader must be gone so it
-    does not trip over the removed column.
+    phaze-vvmh generalised this. It used to scan exactly one file, ``proposals/partials/proposal_row.html``,
+    asserting that its status badge read ``proposal.status`` rather than ``proposal.file.state``. That
+    template is now deleted -- it was rendered only by ``edit_proposal``'s legacy fork, itself
+    unreachable because every live edit control is a ``_diff_row.html`` naming a v7 row target -- so the
+    single-file scan would have to go with it. Scanning the whole tree keeps the guarantee the test
+    existed for (nothing renders the removed column) and widens it, instead of deleting coverage.
     """
-    src = _PROPOSAL_ROW_TEMPLATE.read_text(encoding="utf-8")
-    assert 'proposal.status == "executed"' in src
-    assert "proposal.file.state" not in src
+    offenders = [
+        path.relative_to(_TEMPLATES_DIR).as_posix()
+        for path in sorted(_TEMPLATES_DIR.rglob("*.html"))
+        if "file.state" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"template(s) still read the removed files.state column: {offenders}"
 
 
 @pytest.mark.asyncio
 async def test_approve_proposal(client: AsyncClient, session: AsyncSession) -> None:
-    """PATCH /proposals/{id}/approve returns 200, updates DB status, includes stats-bar."""
+    """PATCH /proposals/{id}/approve returns 200, updates DB status, answers with the approved row.
+
+    phaze-vvmh: the response used to be ``approve_response.html``, whose payload was an OOB fragment
+    aimed at ``#stats-bar`` -- an id the v7 cutover deleted, so the browser discarded it. Every
+    mutation route now has ONE response shape, the shared ``_diff_row.html``.
+    """
     proposal = await create_test_proposal(session)
     response = await client.patch(f"/proposals/{proposal.id}/approve")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "stats-bar" in response.text
+    assert "stats-bar" not in response.text
+    assert f'id="rename-row-{proposal.id}"' in response.text
 
     # Verify DB state
     updated = await session.get(RenameProposal, proposal.id)
@@ -648,12 +661,21 @@ async def test_edit_on_pending_proposal_succeeds(client: AsyncClient, session: A
 
 
 @pytest.mark.asyncio
-async def test_approve_without_hx_target_returns_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
-    """The legacy proposals list (no v7 HX-Target) still gets approve_response.html with the stats-bar (phaze-3a2j)."""
+async def test_approve_without_hx_target_returns_the_shared_diff_row(client: AsyncClient, session: AsyncSession) -> None:
+    """A request naming no v7 row gets the SAME _diff_row.html shape, not a second legacy shape.
+
+    phaze-vvmh deleted the fallback. It rendered ``approve_response.html`` -> ``proposal_row.html``
+    (a ``<tr>``, which the v7 workspaces mount into a ``<div>`` list) plus an OOB fragment addressed
+    to the deleted ``#stats-bar`` -- a response that was both unreachable and wrong. There is no
+    legacy list left for it to serve, and keeping it was what held the dead Execute Approved button's
+    host chain reachable.
+    """
     proposal = await create_test_proposal(session)
     response = await client.patch(f"/proposals/{proposal.id}/approve")
     assert response.status_code == 200
-    assert "stats-bar" in response.text
+    assert "stats-bar" not in response.text
+    assert f'id="rename-row-{proposal.id}"' in response.text
+    assert "<tr" not in response.text, "the legacy table-row shape is back"
 
 
 # ---------------------------------------------------------------------------
@@ -739,12 +761,19 @@ async def test_bulk_approve_high_confidence_zero_matches_returns_toast_with_no_o
 
 
 @pytest.mark.asyncio
-async def test_bulk_approve_high_confidence_without_v7_target_returns_legacy_response(client: AsyncClient, session: AsyncSession) -> None:
-    """The legacy proposals list (no v7 HX-Target) keeps the original approve_response.html shape."""
+async def test_bulk_approve_high_confidence_without_v7_target_returns_the_toast_alone(client: AsyncClient, session: AsyncSession) -> None:
+    """A caller naming neither workspace status div gets the toast and NO OOB rows -- never a stats-bar.
+
+    phaze-vvmh: the deleted fallback rendered ``approve_response.html`` with ``proposal=None``, i.e.
+    a response whose entire payload was an OOB fragment aimed at an id no served document contains.
+    There is no row prefix to key OOB rows to here, so the honest answer is the toast by itself.
+    """
     await create_test_proposal(session, confidence=0.95)
     response = await client.patch("/proposals/bulk-approve-high-confidence")
     assert response.status_code == 200
-    assert "stats-bar" in response.text
+    assert "stats-bar" not in response.text
+    assert "1 proposals approved." in response.text
+    assert 'hx-swap-oob="true"' not in response.text
 
 
 # ---------------------------------------------------------------------------
