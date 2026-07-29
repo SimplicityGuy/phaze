@@ -405,3 +405,43 @@ async def test_part_reads_run_off_loop(agent_env, tmp_path, monkeypatch):  # typ
     # Both part reads (6 bytes, then the final 4 bytes exhausting the source) were
     # offloaded via to_thread rather than run on the event loop.
     assert offloaded_names.count("read") == 2
+    # phaze-2yjf: the source open() and close() must ALSO be off-loop -- phaze-1lvp only
+    # off-loaded the reads, leaving open()'s lookup/open RPCs against the media mount free
+    # to wedge the loop on a stalled/hung mount, same as an on-loop read would.
+    assert offloaded_names.count("open") == 1
+    assert offloaded_names.count("close") == 1
+
+
+@respx.mock
+async def test_source_open_offloaded_even_when_missing(agent_env, tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """phaze-2yjf: the missing-source open() attempt is also dispatched via asyncio.to_thread.
+
+    ``test_missing_original_path_is_terminal`` already covers the outcome (TERMINAL,
+    RuntimeError, report_upload_failed); this asserts the offload discipline specifically.
+    """
+    import phaze.tasks.s3_upload as s3_mod
+
+    real_to_thread = asyncio.to_thread
+    offloaded_names: list[str] = []
+
+    async def _spy(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        offloaded_names.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(s3_mod.asyncio, "to_thread", _spy)
+
+    api = _FakeApiClient()
+    file_id = uuid.uuid4()
+    missing = tmp_path / "does-not-exist.mp3"
+
+    with pytest.raises(RuntimeError, match="cannot read original_path"):
+        await s3_mod.upload_file_s3(
+            {"api_client": api},
+            file_id=str(file_id),
+            original_path=str(missing),
+            part_urls=["https://s3.test/bucket/key?partNumber=1"],
+            part_size_bytes=6,
+            agent_id="fileserver-1",
+        )
+
+    assert offloaded_names.count("open") == 1

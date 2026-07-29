@@ -694,14 +694,23 @@ class KueueBackend(_BaseBackend):
         **The callback path stays PRIMARY -- this only catches LOST callbacks.** Three mechanisms enforce
         that, and all are load-bearing:
 
-        0. **The broker-liveness gate (phaze-31q3).** BEFORE the age bound, skip any row whose
-           ``s3_upload:<file_id>`` job is still ``queued``/``active`` in ``saq_jobs`` (the same
-           :func:`get_live_job_keys` probe recovery uses). The age bound alone CANNOT tell a lost callback
+        0. **The broker-liveness gate (phaze-31q3, status-keyed since phaze-1k0i).** BEFORE the age bound,
+           skip any row whose CURRENT-status-owning broker key is still ``queued``/``active`` in
+           ``saq_jobs`` (the same :func:`get_live_job_keys` probe recovery uses). The owning key depends on
+           ``observed_status``: an UPLOADING row is owned by ``s3_upload:<file_id>`` (``report_uploaded``'s
+           callback flips it to UPLOADED once that job runs); an UPLOADED row is owned by
+           ``submit_cloud_job:<file_id>`` -- ``report_uploaded`` enqueues that job in the SAME transaction as
+           the UPLOADED flip and the completed ``s3_upload`` job's key is swept from ``saq_jobs``, so checking
+           ONLY ``s3_upload:`` (the phaze-31q3 shape) leaves the UPLOADED half of :data:`STAGING` with no live
+           check at all: a ``submit_cloud_job`` queued behind a controller-queue backlog (or ``active`` against
+           a hung kube API -- kr8s sets no client-side timeout, see ``kube_staging.submit_job``) reads
+           UPLOADED with an ``updated_at`` frozen at the flip and gets reaped out from under the live submit,
+           deleting the fully staged object it still owns. The age bound alone CANNOT tell a lost callback
            from live work: ``updated_at`` bumps only at dispatch/re-stage, not mid-transfer, and NOT while a
-           job waits in the io-lane backlog -- so a multi-GB upload that legitimately transfers past the bound,
-           or a still-queued job whose SAQ clock has not even started, genuinely reads UPLOADING with an old
-           timestamp and would be reaped mid-flight. A live broker key means the ``s3_upload`` job (and its
-           ``/uploaded`` /``/failed`` callback) still owns the row regardless of age; never reap it.
+           job waits in a queue backlog -- so a multi-GB upload that legitimately transfers past the bound,
+           or a still-queued job whose SAQ clock has not even started, genuinely reads its status with an old
+           timestamp and would be reaped mid-flight. A live broker key means the job (and its callback) still
+           owns the row regardless of age; never reap it.
         1. **The age bound.** A row is a candidate only when ``now - updated_at`` exceeds its per-status
            bound (:meth:`_staging_stale_bound_sec`). ``updated_at`` moves on EVERY live-path write (the
            initial stage stamp, and ``redrive_upload``'s re-stage -- phaze-2hv9), so an actively-progressing
@@ -770,11 +779,18 @@ class KueueBackend(_BaseBackend):
                     await session.rollback()
                     continue
                 observed_status = cloud_job.status
-                # phaze-31q3: broker-liveness gate BEFORE the age bound. A live ``s3_upload`` job means the
+                # phaze-31q3/phaze-1k0i: broker-liveness gate BEFORE the age bound, status-keyed. An
+                # UPLOADING row is owned by ``s3_upload:<file_id>``; an UPLOADED row's ``s3_upload`` job has
+                # already completed (its key is swept from saq_jobs) and ownership has moved to
+                # ``submit_cloud_job:<file_id>`` -- checking the UPLOADING key for an UPLOADED row would
+                # always miss and reap a row a queued/active submit still owns. Either live key means the
                 # callback path still owns this row -- never reap it, no matter how old ``updated_at`` looks
-                # (a legitimately hours-long transfer, or a job still waiting in the io-lane backlog, bumps no
+                # (a legitimately hours-long transfer, or a job still waiting in a queue backlog, bumps no
                 # timestamp). Skip via rollback (releasing the xact lock), exactly like the young-row skip.
-                if f"s3_upload:{cloud_job.file_id}" in live_keys:
+                live_key = (
+                    f"s3_upload:{cloud_job.file_id}" if observed_status == CloudJobStatus.UPLOADING.value else f"submit_cloud_job:{cloud_job.file_id}"
+                )
+                if live_key in live_keys:
                     await session.rollback()
                     continue
                 # ``updated_at`` is TIMESTAMP WITHOUT TIME ZONE, so asyncpg hands it back NAIVE in
@@ -839,7 +855,20 @@ class KueueBackend(_BaseBackend):
                     try:
                         if upload_id:
                             await s3_staging.abort_multipart_upload(file_id, upload_id, bucket)
-                        await s3_staging.delete_staged_object(file_id, bucket)
+                        # phaze-wa9x: re-read the row IMMEDIATELY before the delete, outside the lock we just
+                        # released. ``delete_staged_object`` is keyed only by file_id, and the bucket/key are
+                        # identical for every staging generation of this file -- once the row is 'awaiting', a
+                        # concurrent drain tick can re-dispatch it and stage a FRESH object at the SAME key
+                        # while this delete is still in flight (a stalled-but-eventually-successful S3 DELETE).
+                        # A new cycle always re-upserts status back to UPLOADING with a FRESH upload_id
+                        # (_stage_file_to_s3), so a row still 'awaiting' with the SAME upload_id we observed
+                        # proves no new cycle has claimed the key -- only then is the delete safe.
+                        current = (
+                            await session.execute(select(CloudJob.status, CloudJob.upload_id).where(CloudJob.id == cloud_job_id))
+                        ).one_or_none()
+                        await session.rollback()  # read-only probe; release its implicit tx either way
+                        if current is not None and current.status == CloudJobStatus.AWAITING.value and current.upload_id == upload_id:
+                            await s3_staging.delete_staged_object(file_id, bucket)
                     except Exception:
                         logger.warning(
                             "KueueBackend.reconcile: post-commit S3 cleanup of a reaped staging row failed "

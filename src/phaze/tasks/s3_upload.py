@@ -123,7 +123,12 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
     """
     src = Path(payload.original_path)
     try:
-        fh = src.open("rb")
+        # phaze-2yjf: open() off-loop too, not just the reads. open() against the media mount
+        # (typically NFS/SMB) issues lookup/open RPCs (plus any attribute revalidation) and can
+        # block just as long as a read on a stalled/hung mount -- phaze-1lvp only off-loaded
+        # fh.read, leaving this statement free to wedge the agent worker's event loop (and with
+        # it every co-scheduled lane task and the Phase-46 liveness heartbeat) indefinitely.
+        fh = await asyncio.to_thread(src.open, "rb")
     except OSError as exc:
         # Missing/unreadable source. TERMINAL -- NEVER fall back to a local copy (KSTAGE-02).
         msg = f"upload_file_s3: cannot read original_path {payload.original_path!r} for file_id={payload.file_id}: {exc}"
@@ -160,7 +165,10 @@ async def _transfer_parts(payload: UploadFileS3Payload, *, transport_timeout_sec
                 etag = response.headers.get("ETag", "").strip('"')
                 parts.append(UploadedPart(part_number=part_number, etag=etag))
     finally:
-        fh.close()
+        # close() on a read-only handle flushes nothing and is normally a local no-op, but
+        # off-load it too for symmetry with open/read -- cheap insurance against an NFS client
+        # that revalidates attributes on close.
+        await asyncio.to_thread(fh.close)
     return parts
 
 

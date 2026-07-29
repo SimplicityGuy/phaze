@@ -50,6 +50,7 @@ from urllib.parse import urlparse
 import uuid
 
 import httpx
+from pydantic import ValidationError
 import structlog
 
 from phaze.config import AgentSettings, get_settings
@@ -318,7 +319,19 @@ async def run() -> None:
     Never returns normally — every terminal path raises ``SystemExit`` (via
     ``sys.exit``) so the caller's process exit code carries the outcome.
     """
-    cfg = get_settings()
+    try:
+        cfg = get_settings()
+    except ValidationError as exc:
+        # AgentSettings._enforce_required_agent_fields raises here (e.g. missing
+        # PHAZE_AGENT_TOKEN / PHAZE_AGENT_API_URL) BEFORE the isinstance guard
+        # below ever runs. Left uncaught, asyncio.run(run()) propagates the raw
+        # pydantic traceback and the interpreter exits with the unclassified
+        # code 1 -- bypassing the structured log.error path every other
+        # startup failure in this module takes, and breaking the documented
+        # exit-code contract (module docstring) that reserves 20 for permanent
+        # misconfiguration.
+        log.error("job_runner_settings_invalid", errors=exc.errors())
+        sys.exit(EXIT_CONFIG)
     if not isinstance(cfg, AgentSettings):  # pragma: no cover - pod always runs PHAZE_ROLE=agent
         log.error("job_runner_requires_agent_role", got=type(cfg).__name__)
         sys.exit(EXIT_CONFIG)

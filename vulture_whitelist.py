@@ -25,9 +25,10 @@ genuinely-dead symbols — nothing was deleted. The false-positive categories ar
   * Imports used ONLY in string-form annotations/casts (`cast("CursorResult[Any]", ...)`,
     `"AsyncScript | None"`) — vulture does not parse string annotations.
   * Test-covered, deployment-gated deferred-feature helpers (`list_inflight_jobs`,
-    `get_analysis_failed_files`, `ensure_bucket_lifecycle_ttl`, `get_summary_counts`, `build_tree`,
-    `report_upload_failed`, `health_all`, `has_prev`/`has_next`) — exercised by the test suite and
-    part of v5.0/v6.0 deferred functionality; NOT dead.
+    `get_analysis_failed_files`, `get_summary_counts`, `build_tree`, `report_upload_failed`,
+    `health_all`, `has_prev`/`has_next`) — exercised by the test suite and part of v5.0/v6.0
+    deferred functionality; NOT dead. (`ensure_bucket_lifecycle_ttl` graduated off this list in
+    phaze-cws5: it is now wired into `phaze.tasks.controller.startup`, a real call site.)
   * `heartbeat_tick` — an intentional back-compat shim (Phase 46 decoupled the heartbeat from the
     SAQ CronJob; the function is retained deliberately).
 
@@ -215,7 +216,6 @@ list_inflight_jobs  # unused function (src/phaze/services/kube_staging.py:264)
 get_analysis_failed_files  # unused function (src/phaze/services/pipeline.py:1053)
 _.has_prev  # unused property (src/phaze/services/proposal_queries.py:38)
 _.has_next  # unused property (src/phaze/services/proposal_queries.py:43)
-ensure_bucket_lifecycle_ttl  # unused function (src/phaze/services/s3_staging.py:213)
 CursorResult  # unused import (src/phaze/services/scan_deletion.py:27)
 get_summary_counts  # unused function (src/phaze/services/search_queries.py:189)
 _.scheduled  # unused attribute (src/phaze/tasks/_shared/stage_control.py:141)
