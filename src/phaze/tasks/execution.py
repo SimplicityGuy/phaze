@@ -4,10 +4,15 @@ Reads file paths from payload (no DB lookup -- D-23 invariant). For each proposa
 1. Resolve `original_path` under its owning scan_root, then build the destination as
    ``owning_root/proposed_path/proposed_filename`` (``proposed_path`` is a RELATIVE dir;
    empty == rename in place) and containment-check it (T-26-11-S1 path-traversal guard).
-2. POST /execution-log with status='in_progress' (per-proposal audit row).
+2. POST /execution-log with status='in_progress' (per-proposal audit row). phaze-87ba: if that
+   POST fails it is retried once more immediately before the terminal PATCH, because PATCH is an
+   UPDATE that 404s on a missing row (and a 404 is never retried), which otherwise erased the
+   audit record of a move that actually happened.
 3. Optionally verify sha256 of `original_path` against `payload.sha256_hash`.
-4. Move `original_path` -> destination (os.replace when same-fs, else a bounded
-   streamed copy -- never load the whole file into RAM; concert videos are multi-GB).
+4. Move `original_path` -> destination (an atomic no-clobber os.link claim when same-fs, else a
+   bounded streamed copy published by the same claim -- never load the whole file into RAM;
+   concert videos are multi-GB). phaze-s0wu: the claim, not the caller's earlier exists-check, is
+   what actually guarantees no destination is ever overwritten.
 5. Delete the original (only needed on the cross-filesystem copy path).
 6. PATCH /execution-log/{id} with status='completed' (or 'failed').
 7. PATCH /proposals/{id}/state with proposal_state=executed, file_state=moved, current_path=proposed_path.
@@ -31,7 +36,12 @@ Phase 28 changes (Plan 28-05):
   the LAST item of a sub-batch sets ``sub_batch_terminal=True`` so the controller can detect
   ``subjobs_completed == subjobs_expected`` and promote the batch status.
 - Progress POST failures (after the agent_client's tenacity retries) log WARNING and do NOT
-  raise -- file ops are already committed via ``patch_proposal_state`` (D-16).
+  raise -- file ops are already committed via ``patch_proposal_state`` (D-16). phaze-j7u8 SPLITS
+  that rule by event kind: it holds for the telemetry HINCRBYs, but NOT for the
+  ``sub_batch_terminal=True`` POST, which is the sub-batch's non-reconstructible COMPLETION TOKEN
+  (the only writer of ``subjobs_completed``, hence the only trigger of the status promotion and
+  the ``exec:active`` sentinel release). A lost token re-raises
+  ``ExecBatchTerminalReportError`` so SAQ replays the job; see ``_report_progress_failure``.
 - The success-path ``patch_proposal_state`` (the 'report' step) is likewise guarded: the move
   is committed on disk before it runs, so a 5xx there is swallowed + logged and the proposal
   still counts as executed. Letting it raise would misattribute the failure to
@@ -93,6 +103,7 @@ Enforced by tests/shared/core/test_task_split.py (Plan 10).
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import shutil
@@ -122,6 +133,16 @@ logger = structlog.get_logger(__name__)
 # Literal type alias for the three terminal sub-steps tracked by _execute_one.
 # Matches ExecBatchProgressPayload.failed_at_step (Phase 28 D-06).
 FailedAtStep = Literal["copy", "verify", "delete"]
+
+
+class ExecBatchTerminalReportError(RuntimeError):
+    """The sub-batch COMPLETION TOKEN could not be delivered -- fail the job so SAQ replays it (phaze-j7u8).
+
+    Raised only from the ``sub_batch_terminal=True`` progress POST. Every other progress POST is
+    telemetry and stays fire-and-forget under D-16; this one is not telemetry, and the distinction
+    is the whole point (see :func:`_report_progress_failure`).
+    """
+
 
 # phaze-eycl: `_resolve_and_check_containment` now lives in `phaze.services.containment` (shared
 # with `services/proposal.py::load_companion_contents`, which needs the identical symlink-safe
@@ -272,12 +293,44 @@ def _streamed_copy(src: Path, dst: Path) -> None:
     shutil.copystat(src, dst)
 
 
+# phaze-s0wu: errnos meaning "this filesystem cannot make a hard link", as opposed to "the link
+# was refused for a reason that matters". Hard links are unavailable on FAT/exFAT, on some SMB and
+# FUSE mounts, and across a mount boundary; on those, the no-clobber claim degrades to the old
+# unconditional rename rather than failing an otherwise-valid move.
+_LINK_UNSUPPORTED_ERRNOS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK, errno.EXDEV})
+
+
+def _claim_destination_by_link(src: Path, dst: Path) -> bool:
+    """Atomically claim `dst` as a hard link to `src`. True if the claim landed, False if links are unsupported.
+
+    phaze-s0wu: this is the primitive that makes the no-clobber guard REAL. ``os.link`` fails with
+    EEXIST if anything already occupies `dst`, and it does that check and the create in ONE kernel
+    operation -- so unlike ``proposed.exists()`` followed later by a rename, there is no window in
+    which another actor can slip a file in between the test and the act. ``os.rename`` /
+    ``Path.replace`` cannot be used for this: POSIX rename is unconditionally clobbering, and
+    Python exposes no portable ``RENAME_NOREPLACE``.
+
+    Raises:
+        FileExistsError: `dst` is already occupied -- the caller must refuse the move, NOT overwrite.
+        OSError: any other link failure (permissions on the directory, ENOSPC, ...).
+    """
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+            return False
+        raise
+    return True
+
+
 def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
-    """Copy `src` -> `dst` across filesystems so `dst` appears atomically.
+    """Copy `src` -> `dst` across filesystems so `dst` appears atomically, without clobbering it.
 
     Streams `src` into a sibling temp file (``<dst><_COPY_TMP_SUFFIX>``), fsyncs
-    it durably, then ``os.replace``s the temp onto `dst` -- an atomic rename
-    within the destination filesystem. Because bytes never land at the final
+    it durably, then publishes the temp at `dst` -- within the destination
+    filesystem, so the publish is atomic. Because bytes never land at the final
     path incrementally, a mid-copy abort (ENOSPC on a multi-GB concert video, an
     I/O error on the destination mount, or a flush/fsync failure) can never leave
     a truncated/corrupt fragment at `dst`. On ANY failure the temp file is
@@ -287,18 +340,63 @@ def _atomic_cross_fs_copy(src: Path, dst: Path) -> None:
     ``dst.open("wb")`` and, on a raise partway through, left a partial file at the
     real destination that misled 'already moved' checks and consumed disk.
 
+    phaze-s0wu: the publish is a no-clobber ``os.link`` claim, NOT the unconditional
+    ``tmp.replace(dst)`` it used to be. That rename destroyed whatever sat at `dst`, and the
+    caller's ``proposed.exists()`` check is minutes stale by the time we get here -- this copy runs
+    for as long as a multi-GB concert video takes. Anything that appeared at `dst` during that
+    window was silently overwritten: a colliding proposal in a concurrent sub-batch (the meta lane
+    runs 2), whose own move was already committed and whose source was already deleted by its
+    rename, so its bytes were unrecoverable while BOTH proposals reported success -- or simply a
+    file the operator's own tooling wrote into the archive mid-copy, which needs no dispatch-time
+    gate miss at all. EEXIST now surfaces as the phaze-yu2e refusal instead: `src` is untouched, so
+    the move fails loudly and losslessly.
+
     The caller unlinks `src` only after this returns, so a crash between a
     successful copy and that unlink leaves BOTH a complete `dst` and `src` -- a
     recoverable state the executor's replay logic completes forward
     (phaze-q2lg / phaze-qx8z), never data loss.
+
+    Raises:
+        FileExistsError: `dst` was occupied by the time the copy completed.
     """
     tmp = dst.with_name(dst.name + _COPY_TMP_SUFFIX)
     try:
         _streamed_copy(src, tmp)
-        tmp.replace(dst)  # atomic within the destination filesystem
+        if _claim_destination_by_link(tmp, dst):
+            # The link IS the publish: dst and tmp now name one inode, so dropping tmp leaves the
+            # full, fsynced copy at dst and nothing orphaned.
+            tmp.unlink()
+        else:
+            # No hard links on this filesystem. Fall back to the original unconditional rename,
+            # which is still atomic -- it just cannot detect a late occupant. Documented, narrow,
+            # and strictly better than refusing to move files on such a mount at all.
+            tmp.replace(dst)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _atomic_same_fs_move(src: Path, dst: Path) -> None:
+    """Move `src` -> `dst` within one filesystem, refusing an occupant that appeared after the check.
+
+    phaze-s0wu: ``src.replace(dst)`` alone is unconditionally clobbering. In-process the same-fs
+    path is narrow -- there is no ``await`` between the caller's ``proposed.exists()`` check and
+    here, so two ``_execute_one`` coroutines cannot interleave through it -- but an EXTERNAL writer
+    (the operator's own tooling, another tool touching the archive) has no such constraint, and
+    neither does a cross-filesystem actor that publishes to this same destination. Claim the
+    destination with a link instead, so the create is the check.
+
+    A crash between the successful link and the source unlink leaves both paths on ONE inode. That
+    is recoverable and is handled by the caller: ``_is_same_file`` matches, and the extra link is
+    what tells a replay to complete forward rather than re-doing the move.
+
+    Raises:
+        FileExistsError: `dst` is occupied by a different file.
+    """
+    if _claim_destination_by_link(src, dst):
+        src.unlink()
+    else:
+        src.replace(dst)
 
 
 def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> FailedAtStep:
@@ -315,6 +413,97 @@ def _classify_failure_step(current_step: FailedAtStep, exc: BaseException) -> Fa
     if "sha256 mismatch" in text:
         return "verify"
     return current_step
+
+
+async def _ensure_start_log(api: PhazeAgentClient, start_log: ExecutionLogCreate, *, start_logged: bool) -> bool:
+    """Re-POST the write-ahead audit row if its original POST failed. Returns True if a row should now exist.
+
+    phaze-87ba: the two writers of an ExecutionLog row are asymmetric BY DESIGN, and that asymmetry
+    had a hole. CREATE is deliberately idempotent (``on_conflict_do_nothing(index_elements=["id"])``,
+    D-13) precisely so an agent can replay it. PATCH is a monotonic-ladder UPDATE (D-15) and
+    therefore assumes the row exists -- ``patch_execution_log`` 404s when it does not. A 404 is a
+    4xx, so ``PhazeAgentClient._should_retry`` returns False and it is never retried; it then
+    surfaces as ``AgentApiClientError`` and is swallowed like any other reporting failure.
+
+    So a single transient failure of the START POST permanently erased the audit record of a file
+    move that actually happened: the move committed, the proposal reached EXECUTED, and no row
+    ever existed for the terminal PATCH to update. The damage is not just a missing audit page row
+    -- ``services/pipeline``'s execute-stage progress counts DISTINCT proposals with a COMPLETED
+    ExecutionLog, so a missing row leaves that DAG node reading done < total FOREVER with no path
+    to parity, and the apply-stage eligibility probe reports the file as never-applied.
+
+    The fix is entirely agent-side and needs no controller change: this function is called
+    immediately before BOTH terminal PATCH sites, and when the start POST is known to have failed
+    it re-creates the row first. Safe by construction -- CREATE is ON CONFLICT DO NOTHING, so on
+    the ordinary path (or a SAQ replay) this is a no-op against the retry-stable
+    ``execution_log_id``.
+    """
+    if start_logged:
+        return True
+    try:
+        await api.post_execution_log(start_log)
+    except Exception as exc:
+        logger.error(
+            "execute_approved_batch: audit row for %s could not be created -- this committed move will have NO audit trail: %s",
+            start_log.proposal_id,
+            exc,
+        )
+        return False
+    logger.info(
+        "execute_approved_batch: recovered the missing audit row for %s before its terminal report",
+        start_log.proposal_id,
+    )
+    return True
+
+
+def _report_progress_failure(item: ExecuteBatchProposalItem, is_last: bool, exc: BaseException) -> None:
+    """Apply the D-16 swallow rule -- but ONLY to the telemetry half of the message (phaze-j7u8).
+
+    ``post_exec_batch_progress`` carries two semantically different things on one wire message:
+
+    * **Telemetry** -- the ``copied`` / ``verified`` / ``deleted`` / ``completed`` HINCRBYs. These
+      are progress reporting for a file op that has ALREADY committed (``patch_proposal_state``
+      landed before we got here), so losing one costs a wrong number on a progress bar. D-16's
+      swallow rule is correct for these, and they stay fire-and-forget.
+    * **The completion token** -- ``sub_batch_terminal=True``. This is the ONLY event that bumps
+      ``subjobs_completed``, and that counter reaching ``subjobs_expected`` is the ONLY thing that
+      promotes the batch to a terminal status and releases the ``exec:active`` single-dispatch
+      sentinel. It is not reconstructible: nothing else ever writes it, and once ``_execute_one``
+      returns nothing re-drives the POST. Swallowing it strands the batch at 'running' until the
+      24h TTL, holds the SSE stream open for that entire window, and refuses EVERY subsequent
+      Execute Approved with "a dispatch is already in progress" -- a stage-level outage caused by
+      a transient 502 during a batch whose work had entirely succeeded.
+
+    So the token re-raises, which fails the SAQ job and gets it replayed. The replay is safe by
+    construction: every downstream write on that path is idempotent -- the ExecutionLog INSERT is
+    ON CONFLICT DO NOTHING (D-13), the progress POST dedups on the retry-stable ``request_id``
+    held in the job meta (D-15), ``patch_proposal_state`` to the same state is a no-op, and the
+    phaze-ebpt already-moved detection skips the file op outright.
+
+    Contrast ``post_analysis_progress``, swallowed by the same D-16 rule at
+    ``agent_client.py`` and genuinely safe there: that path has a SECOND durable completion write
+    (``put_analysis`` writes the final count regardless). The exec-batch path has no second
+    writer, which is exactly what makes the identical swallow unsound here.
+
+    Raises:
+        ExecBatchTerminalReportError: when ``is_last`` -- i.e. the lost POST was the token.
+    """
+    if not is_last:
+        logger.warning(
+            "execute_approved_batch: progress POST failed for %s: %s",
+            item.proposal_id,
+            exc,
+        )
+        return
+    # Worded without the domain term "completion token": semgrep's logger-credential-disclosure
+    # rule pattern-matches "TOKEN" in a logged string and flags it as a potential secret.
+    logger.error(
+        "execute_approved_batch: sub-batch terminal completion event lost for %s: %s -- failing the job so SAQ replays it",
+        item.proposal_id,
+        exc,
+    )
+    msg = f"sub_batch_terminal progress POST failed for proposal {item.proposal_id}: {exc}"
+    raise ExecBatchTerminalReportError(msg) from exc
 
 
 async def _execute_one(
@@ -349,21 +538,25 @@ async def _execute_one(
     dest_display = f"{item.proposed_path.rstrip('/')}/{item.proposed_filename}" if item.proposed_path else item.proposed_filename
     # Always POST the in-progress audit row first -- this is the durable trail
     # that survives a crash mid-copy.
+    start_log = ExecutionLogCreate(
+        id=execution_log_id,
+        proposal_id=item.proposal_id,
+        operation="move",
+        source_path=item.original_path,
+        destination_path=dest_display,
+        sha256_verified=False,  # not yet verified at this point
+        status=ExecutionStatus.IN_PROGRESS,
+    )
+    # phaze-87ba: REMEMBER whether this landed. _execute_one is the only component that knows the
+    # POST failed, and discarding that knowledge here is what erased the audit row entirely -- see
+    # _ensure_start_log.
+    start_logged = True
     try:
-        await api.post_execution_log(
-            ExecutionLogCreate(
-                id=execution_log_id,
-                proposal_id=item.proposal_id,
-                operation="move",
-                source_path=item.original_path,
-                destination_path=dest_display,
-                sha256_verified=False,  # not yet verified at this point
-                status=ExecutionStatus.IN_PROGRESS,
-            ),
-        )
+        await api.post_execution_log(start_log)
     except Exception as exc:
         # If the audit log POST itself fails (network blip), still attempt the
         # file op so we don't leave the user with stalled state. Best-effort.
+        start_logged = False
         logger.warning("execute_approved_batch: could not record start log for %s: %s", item.proposal_id, exc)
 
     # Phase 28: track which sub-step is currently executing so the failure
@@ -431,13 +624,24 @@ async def _execute_one(
             current_step = "copy"
             proposed.parent.mkdir(parents=True, exist_ok=True)
             same_fs = _same_filesystem(original, proposed.parent)
-            # phaze-yu2e: refuse to clobber a pre-existing destination. Both move
-            # branches below silently destroy whatever sits at `proposed` -- os.replace
-            # atomically replaces it and the streamed copy truncates it. The
-            # dispatch-time collision gate cannot catch every case (NULL-path in-place
-            # renames, a destination already occupied by an earlier executed proposal, or
-            # an untracked on-disk file), so fail the copy step loudly rather than
-            # overwrite. ``_is_same_file`` exempts the no-op / case-only rename.
+            # phaze-yu2e: refuse to clobber a pre-existing destination. The
+            # dispatch-time collision gate cannot catch every case -- a destination already
+            # occupied by an earlier executed proposal, or an untracked on-disk file -- so fail
+            # the copy step loudly rather than overwrite. ``_is_same_file`` exempts the no-op /
+            # case-only rename.
+            #
+            # phaze-s0wu correction: this comment used to also list "NULL-path in-place renames"
+            # as a gate miss. That is FALSE and was itself the misleading evidence -- collision.py's
+            # ``_dest_key_columns`` was fixed for exactly that case (phaze-7czn) and for the
+            # mixed-namespace key (phaze-dqx8).
+            #
+            # phaze-s0wu: this check is necessary but NOT sufficient on its own, and must not be
+            # mistaken for the guarantee. It is a check-then-act whose "act" can be minutes later
+            # (a multi-GB cross-fs copy), so it cannot see an occupant that arrives during the
+            # move. The real no-clobber guarantee is the atomic ``os.link`` claim inside
+            # ``_atomic_cross_fs_copy`` / ``_atomic_same_fs_move``; this check survives because it
+            # fails fast and, crucially, because it is where the phaze-i7jo/qx8z resumable-residue
+            # detection lives.
             if proposed.exists() and not _is_same_file(original, proposed):
                 # phaze-qx8z: a distinct-inode `proposed` alongside a still-present
                 # `original` is ALSO the exact residue of this move's own prior
@@ -475,9 +679,24 @@ async def _execute_one(
                     msg = f"destination already exists, refusing to overwrite: {proposed}"
                     raise FileExistsError(msg)
             elif same_fs:
-                # Atomic rename also removes the original in one syscall -- the move
-                # IS the delete, so there is no separate delete step to fail.
-                original.replace(proposed)
+                if _is_same_file(original, proposed):
+                    # The destination IS the source: a no-op or case-only rename on a
+                    # case-insensitive filesystem. A link claim would (correctly) fail EEXIST here,
+                    # so this case keeps the plain rename -- there is nothing to clobber.
+                    # phaze-s0wu: unless the shared inode is this move's OWN crashed link claim
+                    # (an extra link exists at a genuinely different path). Renaming a link onto a
+                    # sibling link of the same inode is a POSIX no-op, so that residue would
+                    # otherwise survive forever with the source never removed. Complete forward.
+                    if original != proposed and original.stat().st_nlink > 1:
+                        current_step = "delete"
+                        original.unlink()
+                    else:
+                        original.replace(proposed)
+                else:
+                    # phaze-s0wu: a no-clobber claim, not a bare rename -- the exists-check above is
+                    # already stale by the time we act on it. The claim also removes the original in
+                    # the same primitive, so there is no separate delete step to fail.
+                    _atomic_same_fs_move(original, proposed)
             else:
                 # phaze-k23z: copy through a temp sibling + os.replace so the
                 # destination materializes atomically. A copy that aborts
@@ -507,7 +726,11 @@ async def _execute_one(
                 # job was to survive a crash between the two lines above; clean it up.
                 _committed_copy_marker_path(proposed, item.proposal_id).unlink(missing_ok=True)
 
-        # 6a. PATCH execution log to completed
+        # 6a. PATCH execution log to completed.
+        # phaze-87ba: heal the row first if its write-ahead POST never landed -- otherwise this
+        # PATCH 404s against a row that does not exist, is not retried (4xx), and is swallowed,
+        # leaving a committed move with no audit trail at all.
+        start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
         try:
             await api.patch_execution_log(
                 execution_log_id,
@@ -550,8 +773,8 @@ async def _execute_one(
             )
 
         # 7. Phase 28 D-03: per-proposal terminal progress POST (success path).
-        # Fire-and-forget: D-16 says swallow + log WARNING on failure because the
-        # file ops + per-proposal PATCH have already committed.
+        # D-16 swallow + log WARNING for telemetry; phaze-j7u8 re-raises the
+        # sub_batch_terminal completion token instead -- see _report_progress_failure.
         try:
             await api.post_exec_batch_progress(
                 payload.batch_id,
@@ -566,13 +789,16 @@ async def _execute_one(
                 ),
             )
         except Exception as progress_exc:
-            logger.warning(
-                "execute_approved_batch: progress POST failed for %s: %s",
-                item.proposal_id,
-                progress_exc,
-            )
+            _report_progress_failure(item, is_last, progress_exc)
 
         return True
+    except ExecBatchTerminalReportError:
+        # phaze-j7u8: a lost completion token must reach `execute_approved_batch` so SAQ replays the
+        # job. It must NOT fall into the generic handler below -- this proposal's move SUCCEEDED and
+        # its state is already reported; treating the undeliverable token as a per-proposal failure
+        # would flip an executed proposal to FAILED and post a `terminal_step="failed"` event for a
+        # file that is sitting correctly at its destination.
+        raise
     except Exception as exc:
         # Phase 28: classify the failure step BEFORE any PATCH so both the
         # error_message prefix (D-01) and the progress POST failed_at_step
@@ -588,6 +814,9 @@ async def _execute_one(
             exc_info=True,
         )
         # 6a-failed. PATCH execution log to failed (D-01 "<step>: <reason>" prefix).
+        # phaze-87ba: the FAILED audit row is lost exactly the same way as the completed one, so it
+        # gets the same heal. A failed move with no record of the attempt is, if anything, worse.
+        start_logged = await _ensure_start_log(api, start_log, start_logged=start_logged)
         try:
             await api.patch_execution_log(
                 execution_log_id,
@@ -637,11 +866,11 @@ async def _execute_one(
                 ),
             )
         except Exception as progress_exc:
-            logger.warning(
-                "execute_approved_batch: progress POST failed for %s: %s",
-                item.proposal_id,
-                progress_exc,
-            )
+            # phaze-j7u8: the twin site. A sub-batch whose LAST proposal legitimately FAILED carries
+            # its completion token on this POST, and loses it exactly the same way -- the batch is
+            # stranded and the sentinel held whether the final item succeeded or not. Same rule:
+            # telemetry is swallowed, the token re-raises (out of this handler, into the caller).
+            _report_progress_failure(item, is_last, progress_exc)
 
         return False
 

@@ -36,6 +36,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from redis.exceptions import ResponseError
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 import structlog
@@ -43,7 +44,14 @@ import structlog
 from phaze.database import get_session
 from phaze.models.agent import Agent
 from phaze.models.execution import ExecutionLog
-from phaze.routers.agent_exec_batches import ACTIVE_DISPATCH_KEY, _get_promote_status_script
+from phaze.routers.agent_exec_batches import (
+    ACTIVE_DISPATCH_KEY,
+    BATCH_KEY_PREFIX,
+    DISPATCH_CLAIM_TTL_SECONDS,
+    _get_claim_dispatch_script,
+    _get_promote_status_script,
+    _get_release_dispatch_script,
+)
 from phaze.routers.column_sort import DESCENDING, SortableColumn, SortContract
 from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -201,6 +209,60 @@ def _build_agents_view(
     ]
 
 
+async def _reconcile_undispatched(
+    redis_client: Redis,
+    batch_id: uuid.UUID,
+    enqueued_ok: int,
+    undispatched_by_agent: dict[str, int],
+) -> str:
+    """Reconcile ``subjobs_expected`` with what ACTUALLY landed, and settle the sentinel. Returns the render status.
+
+    phaze-kxsb: the hash is seeded with the PLANNED ``subjobs_expected`` before the enqueue loop.
+    A chunk that never landed will never POST its terminal event, so the promotion could never
+    fire and the batch would spin at 'running' until the 24h TTL reaped it. Lower
+    ``subjobs_expected`` to the count that landed and count the undispatched proposals as failed so
+    the operator sees them, then either promote to terminal directly (nothing landed -> no sub-job
+    will ever POST) or re-run the promote check (a landed sub-job may already have reported
+    terminal against the stale, higher expected count -- close that race here).
+
+    phaze-0t2c: extracted from ``start_execution`` so the FAILURE path can run the identical
+    settle. A crash mid-enqueue is the same situation as an enqueue exception -- some chunks
+    landed, some never will -- and it previously left the batch and the sentinel wedged precisely
+    because only the exception path knew how to reconcile.
+    """
+    key = f"{BATCH_KEY_PREFIX}{batch_id}"
+    undispatched_proposals = sum(undispatched_by_agent.values())
+    async with redis_client.pipeline(transaction=True) as pipe:
+        pipe.hset(key, "subjobs_expected", str(enqueued_ok))
+        # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
+        # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
+        # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
+        # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
+        # the last hincrby for callers that read it positionally.
+        for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
+            pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
+        pipe.hincrby(key, "failed", undispatched_proposals)
+        if enqueued_ok == 0:
+            pipe.hset(key, "status", "complete_with_errors")
+        await pipe.execute()
+
+    if enqueued_ok == 0:
+        # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job will ever
+        # POST to release the sentinel via the promote script, so release the claim now.
+        # phaze-0t2c: via the CAS release, NOT an unconditional DEL. On the crash path this can run
+        # long after the claim was taken, and an unconditional delete would happily drop a LATER
+        # dispatch's claim -- re-opening the double-move hazard the sentinel exists to close.
+        release = _get_release_dispatch_script(redis_client)
+        await release(keys=[ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
+        return "complete_with_errors"
+
+    promote_status = _get_promote_status_script(redis_client)
+    # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
+    # terminal, the promotion also releases the single-dispatch claim atomically.
+    await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
+    return "running"
+
+
 @router.post("/execution/start", response_class=HTMLResponse)
 async def start_execution(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     """Dispatch approved proposals as per-agent SAQ sub-jobs (Phase 28 D-09).
@@ -275,31 +337,64 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
         init_fields[f"agent:{agent_id}:failed"] = "0"
 
     redis_client = request.app.state.redis
+    key = f"exec:{batch_id}"
+
+    # 5b. phaze-0t2c: SEED FIRST, THEN CLAIM. The original order took the claim at the top and
+    # seeded immediately after, and those two commands are not one transaction: a transient Redis
+    # fault on the seed left the sentinel claimed against a batch whose hash never existed, so
+    # nothing could ever release it and every Execute Approved for the next 24h was refused. The
+    # asymmetry was that the claim was taken BEFORE the only two things that can make it releasable
+    # (the hash, and at least one landed sub-job). Seeding first removes that window entirely: a
+    # failed seed raises with no claim outstanding, and the orphaned hash is harmless -- its
+    # batch_id was never handed to anyone and it carries the same 24h TTL.
+    if groups:
+        # Only seed when there is at least one (agent, chunk) to dispatch. An
+        # empty hash with status="running" and TTL would mislead the SSE reader.
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.hset(key, mapping=init_fields)
+            pipe.expire(key, DISPATCH_CLAIM_TTL_SECONDS)
+            await pipe.execute()
 
     # phaze-fa2p: single-dispatch guard. Approved proposals stay APPROVED throughout dispatch --
     # they are only flipped to 'executed' asynchronously by the SAQ worker much later -- so a
     # second concurrent or repeated POST re-selects the SAME still-APPROVED rows and enqueues a
     # duplicate move job for every one of them (each dispatch mints its own batch_id, so SAQ never
-    # dedups). Atomically claim the ``exec:active`` sentinel with SET NX before seeding/enqueuing;
-    # a competing dispatch loses the claim and is refused until the active batch reaches a terminal
-    # status (the promote script releases the sentinel) or the 24h safety TTL elapses. Only guard
-    # when there is actually something to dispatch -- an empty dispatch enqueues nothing.
+    # dedups). Atomically claim the ``exec:active`` sentinel before enqueuing; a competing dispatch
+    # loses the claim and is refused until the active batch reaches a terminal status (the promote
+    # script releases the sentinel) or the 24h safety TTL elapses. Only guard when there is actually
+    # something to dispatch -- an empty dispatch enqueues nothing.
+    #
+    # phaze-j7u8: the claim goes through ``_CLAIM_DISPATCH_LUA`` rather than a bare SET NX, so the
+    # same call that claims also RECONCILES a sentinel left behind by a dispatch that can no longer
+    # release it (batch hash reaped, already terminal, or fully reported but never promoted). That
+    # is the shared net under all three exec:active wedges -- without it, one lost terminal event
+    # or one crash in the claim window costs the operator the whole execute stage for 24h.
     if groups:
-        claimed = await redis_client.set(ACTIVE_DISPATCH_KEY, str(batch_id), nx=True, ex=86400)
-        if not claimed:
+        claim_dispatch = _get_claim_dispatch_script(redis_client)
+        claim_result = int(
+            await claim_dispatch(
+                keys=[ACTIVE_DISPATCH_KEY],
+                args=[str(batch_id), str(DISPATCH_CLAIM_TTL_SECONDS), BATCH_KEY_PREFIX],
+                client=redis_client,
+            ),
+        )
+        if claim_result == 0:
+            # Refused. Drop the hash seeded above -- this batch_id is never returned to anyone, so
+            # the hash would otherwise sit unread for 24h and, worse, look like a live 'running'
+            # batch to anything that enumerates the namespace.
+            await redis_client.delete(key)
             return templates.TemplateResponse(
                 request=request,
                 name="execution/partials/dispatch_in_progress.html",
                 context={"request": request},
             )
-
-    if groups:
-        # Only seed when there is at least one (agent, chunk) to dispatch. An
-        # empty hash with status="running" and TTL would mislead the SSE reader.
-        async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.hset(f"exec:{batch_id}", mapping=init_fields)
-            pipe.expire(f"exec:{batch_id}", 86400)
-            await pipe.execute()
+        if claim_result == 2:
+            # Not routine. A previous dispatch leaked its claim, so surface it: the reconcile keeps
+            # the operator working, but the leak itself is a defect worth seeing in the logs.
+            logger.warning(
+                "dispatch: reconciled a stale exec:active sentinel before claiming batch_id=%s",
+                batch_id,
+            )
 
     # 6. Per-(agent, chunk) enqueue. Log-and-continue on individual failures
     # (PATTERNS S5) so a single bad enqueue does not kill the whole dispatch.
@@ -310,8 +405,14 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
     # that agent's row never reaches completed+failed == total and stays stuck on a RUNNING pill in
     # the final render even though the batch is terminal.
     undispatched_by_agent: dict[str, int] = {}
-    for agent_id, items in groups.items():
-        for chunk_index, chunk in enumerate(chunk_proposals(items)):
+    # phaze-0t2c: materialize the whole (agent, chunk) plan up front so a crash PART-WAY through the
+    # loop can still name the chunks that never landed. Without it the finally below could not tell
+    # "9 chunks planned, 3 landed" from "3 chunks planned, 3 landed", and would leave
+    # subjobs_expected at the planned figure -- a target the surviving sub-jobs can never reach.
+    pending = [(agent_id, chunk_index, chunk) for agent_id, items in groups.items() for chunk_index, chunk in enumerate(chunk_proposals(items))]
+    attempted = 0
+    try:
+        for agent_id, chunk_index, chunk in pending:
             try:
                 await task_router.enqueue_for_agent(
                     agent_id=agent_id,
@@ -332,44 +433,27 @@ async def start_execution(request: Request, session: AsyncSession = Depends(get_
                     batch_id,
                 )
                 undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
+            attempted += 1
+    except BaseException:
+        # phaze-0t2c: the loop spans many suspension points and real wall time on a large approved
+        # set, so a hard failure (or a cancellation) can land mid-way with the hash seeded for the
+        # PLANNED subjobs_expected and only some chunks enqueued. subjobs_completed could then never
+        # reach subjobs_expected, the promote would never fire, and the sentinel would be held for
+        # the full 24h. Settle it on the way out: the chunks we never reached are counted as
+        # undispatched, exactly as an enqueue exception would have counted them, and the same
+        # reconcile runs. BaseException (not Exception) so a CancelledError settles too; the settle
+        # itself is shielded so a cancellation already in flight cannot abort it half-done.
+        for agent_id, _chunk_index, chunk in pending[attempted:]:
+            undispatched_by_agent[agent_id] = undispatched_by_agent.get(agent_id, 0) + len(chunk)
+        if groups:
+            await asyncio.shield(_reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent))
+        raise
     undispatched_proposals = sum(undispatched_by_agent.values())
 
-    # 6b. phaze-kxsb: reconcile subjobs_expected with what ACTUALLY landed. The hash was seeded
-    # with the PLANNED subjobs_expected before the loop; a chunk that failed to enqueue will never
-    # POST its terminal event, so the promote's exact-equality (subjobs_completed ==
-    # subjobs_expected) could never fire and the batch would spin at 'running' until the 24h TTL
-    # reaped it. Lower subjobs_expected to the count that landed, count the undispatched proposals
-    # as failed so the operator sees them, then either promote-to-terminal directly (nothing landed
-    # -> no sub-job will ever POST) or re-run the promote check (a landed sub-job may already have
-    # reported terminal against the stale, higher expected count -- close that race here).
     render_status = "running"
     if groups and undispatched_proposals:
-        key = f"exec:{batch_id}"
-        async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.hset(key, "subjobs_expected", str(enqueued_ok))
-            # phaze-1h6j: roll each affected agent's undispatched proposals into that agent's
-            # per-agent failed counter (seeded at dispatch, still 0) so completed+failed reaches the
-            # agent's total and the row renders a terminal ERRORS/COMPLETE pill instead of freezing
-            # on RUNNING. Applied BEFORE the batch-level "failed" hincrby so the batch counter stays
-            # the last hincrby for callers that read it positionally.
-            for affected_agent_id, agent_undispatched in undispatched_by_agent.items():
-                pipe.hincrby(key, f"agent:{affected_agent_id}:failed", agent_undispatched)
-            pipe.hincrby(key, "failed", undispatched_proposals)
-            if enqueued_ok == 0:
-                pipe.hset(key, "status", "complete_with_errors")
-                # phaze-fa2p: nothing landed -> this batch is terminal right here and no sub-job
-                # will ever POST to release the sentinel via the promote script, so release the
-                # single-dispatch claim now. We just claimed it above, so it still names this batch.
-                pipe.delete(ACTIVE_DISPATCH_KEY)
-            await pipe.execute()
+        render_status = await _reconcile_undispatched(redis_client, batch_id, enqueued_ok, undispatched_by_agent)
         subjobs_expected = enqueued_ok
-        if enqueued_ok == 0:
-            render_status = "complete_with_errors"
-        else:
-            promote_status = _get_promote_status_script(redis_client)
-            # phaze-fa2p: pass the sentinel key + batch_id so, if a landed sub-job already reported
-            # terminal, the promotion also releases the single-dispatch claim atomically.
-            await promote_status(keys=[key, ACTIVE_DISPATCH_KEY], args=[str(batch_id)], client=redis_client)
 
     # 7. D-11 dispatch INFO log.
     logger.info(
@@ -443,6 +527,25 @@ def _agents_view_from_hash(
     return rows
 
 
+async def _hgetall_or_empty(redis_client: Redis, key: str) -> dict[str, str]:
+    """HGETALL ``key``, degrading a wrong-key-type reply to the empty state (phaze-c3j0).
+
+    Belt to the ``uuid.UUID`` parameter typing's braces. With the namespace split and the typed
+    parameter there is no longer a spelling of ``batch_id`` that can name a non-hash key, but this
+    is a read on the operator's live progress view: if some future key ever collides again, the
+    right failure is the empty-state render / terminal SSE close both call sites already handle for
+    a reaped batch -- not a 500 for one caller and a silently dead stream for the other.
+    """
+    try:
+        # The shared client is wired with decode_responses=True (main.lifespan, Phase 26 D-27), so
+        # this really is str->str; redis-py's own type is the undecoded union.
+        data: dict[str, str] = await redis_client.hgetall(key)  # type: ignore[assignment]
+    except ResponseError:
+        logger.warning("execution progress: %s is not a hash -- rendering the empty state", key)
+        return {}
+    return data
+
+
 def _render_partial(request: Request, name: str, context: dict[str, object]) -> str:
     """Render a Jinja partial through FastAPI's ``Jinja2Templates`` wrapper.
 
@@ -459,7 +562,7 @@ def _render_partial(request: Request, name: str, context: dict[str, object]) -> 
 
 
 @router.get("/execution/progress/{batch_id}")
-async def execution_progress(request: Request, batch_id: str) -> EventSourceResponse:
+async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSourceResponse:
     """Stream SSE events with real-time execution progress from Redis (D-04 + D-11).
 
     Event sequence per poll tick (1s cadence):
@@ -479,14 +582,22 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
     polling Redis every second until the client disconnects. After the cap the
     generator emits a terminal ``complete`` close event and returns so the stream
     always terminates on its own.
+
+    phaze-c3j0: ``batch_id`` is typed ``uuid.UUID``, matching the ``uuid.uuid4()`` the dispatcher
+    actually mints, so FastAPI 422s a malformed id before any Redis call. That is what closes the
+    key-aliasing defect: the parameter used to be a free-form ``str`` interpolated straight into
+    ``exec:{batch_id}``, so the literal value ``active`` reconstructed the ``exec:active`` STRING
+    sentinel and HGETALL against it raised WRONGTYPE from inside this generator -- before the first
+    yield, so the stream emitted nothing at all, never the terminal close event it documents.
     """
     redis_client = request.app.state.redis
+    batch_key = f"{BATCH_KEY_PREFIX}{batch_id}"
 
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
         first_connect = True
         empty_polls = 0
         while True:
-            data: dict[str, str] = await redis_client.hgetall(f"exec:{batch_id}")
+            data = await _hgetall_or_empty(redis_client, batch_key)
             if not data:
                 empty_polls += 1
                 if empty_polls >= _MAX_EMPTY_POLLS:
@@ -520,7 +631,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
             sort_state = EXEC_AGENTS_SORT.resolve(
                 sort=data.get("agents_sort"),
                 order=data.get("agents_order"),
-                view_state={"batch_id": batch_id},
+                view_state={"batch_id": str(batch_id)},
             )
 
             # First-connect dispatch_summary event (D-11 / UI-SPEC C1 step 2).
@@ -551,7 +662,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
             agents_html = _render_partial(
                 request,
                 "execution/partials/agents_table.html",
-                {"agents": _sort_agents_view(agents_view, sort_state), "sort": sort_state, "batch_id": batch_id},
+                {"agents": _sort_agents_view(agents_view, sort_state), "sort": sort_state, "batch_id": str(batch_id)},
             )
             yield {"event": "agents_table", "data": agents_html}
 
@@ -573,7 +684,7 @@ async def execution_progress(request: Request, batch_id: str) -> EventSourceResp
 @router.get("/execution/agents-table", response_class=HTMLResponse)
 async def execution_agents_table_sort(
     request: Request,
-    batch_id: str = Query(...),
+    batch_id: uuid.UUID = Query(...),
     sort: str | None = Query(None),
     order: str | None = Query(None),
 ) -> HTMLResponse:
@@ -594,11 +705,17 @@ async def execution_agents_table_sort(
     A batch that has already reaped (empty hash -- 24h TTL, or a stale/garbage-collected id) renders
     the same empty state ``agents_table.html`` already shows for zero agents, matching the SSE
     reader's own empty-hash handling; it does not 404 a poll for a batch that simply finished.
+
+    phaze-c3j0: ``batch_id`` is typed ``uuid.UUID`` for the same reason as the SSE route above --
+    a free-form ``str`` let ``?batch_id=active`` rebuild the ``exec:active`` STRING sentinel, and
+    the resulting WRONGTYPE escaped as an unhandled 500, contradicting the empty-state promise this
+    docstring makes. The write below is already gated behind ``if data:``, so the read failing shut
+    is enough; there was never a corruption path, only a wrong status code.
     """
     redis_client = request.app.state.redis
-    key = f"exec:{batch_id}"
-    data: dict[str, str] = await redis_client.hgetall(key)
-    sort_state = EXEC_AGENTS_SORT.resolve(sort=sort, order=order, view_state={"batch_id": batch_id})
+    key = f"{BATCH_KEY_PREFIX}{batch_id}"
+    data = await _hgetall_or_empty(redis_client, key)
+    sort_state = EXEC_AGENTS_SORT.resolve(sort=sort, order=order, view_state={"batch_id": str(batch_id)})
 
     agents_view: list[dict[str, object]] = []
     if data:
@@ -618,7 +735,7 @@ async def execution_agents_table_sort(
     return templates.TemplateResponse(
         request=request,
         name="execution/partials/agents_table.html",
-        context={"agents": agents_view, "sort": sort_state, "batch_id": batch_id},
+        context={"agents": agents_view, "sort": sort_state, "batch_id": str(batch_id)},
     )
 
 

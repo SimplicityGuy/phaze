@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from httpx import ASGITransport, AsyncClient
 import pytest
+from redis.exceptions import ResponseError
 from starlette.requests import Request
 
 from phaze.routers import execution
@@ -185,7 +186,7 @@ async def test_sse_emits_waiting_when_hash_absent(smoke_sse_app: tuple[FastAPI, 
     redis.hgetall = fake_hgetall  # AsyncMock-compatible: hgetall is an async def
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -203,7 +204,7 @@ async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI,
     redis.hgetall = AsyncMock(return_value={})
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/never-seeded") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -236,7 +237,7 @@ async def test_sse_falls_back_when_dispatch_summary_is_malformed_json(
     # Render through real Jinja but skip the sleep.
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 assert resp.status_code == 200
                 body = b""
                 async for chunk in resp.aiter_bytes():
@@ -269,7 +270,7 @@ async def test_sse_with_valid_dispatch_summary_succeeds(
     )
     with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            async with ac.stream("GET", "/execution/progress/batch-xyz") as resp:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
                 body = b""
                 async for chunk in resp.aiter_bytes():
                     body += chunk
@@ -333,7 +334,7 @@ def test_build_agents_view_empty_groups_returns_empty_list() -> None:
 
 
 @pytest.fixture
-def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
+def dispatch_app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock, MagicMock]:
     """Smoke FastAPI app with a mock task_router + redis pipeline for /execution/start."""
     from phaze.database import get_session
 
@@ -364,11 +365,20 @@ def dispatch_app() -> tuple[FastAPI, AsyncMock, MagicMock]:
     pipe.delete = MagicMock()
     pipe.execute = AsyncMock(return_value=None)
     redis_client.pipeline = MagicMock(return_value=pipe)
-    # phaze-fa2p: the single-dispatch guard claims ``exec:active`` via SET NX before seeding. Default
-    # to "claim won" so the enqueue-failure/reconcile tests exercise a live dispatch; the double-
-    # dispatch rejection is covered by its own test that overrides ``.set`` to return None.
     redis_client.set = AsyncMock(return_value=True)
+    redis_client.delete = AsyncMock(return_value=1)
     app.state.redis = redis_client
+    # phaze-fa2p / phaze-j7u8: the single-dispatch guard claims the sentinel, now via the
+    # claim-or-reconcile Lua rather than a bare SET NX. Default to 1 ("claimed outright") so the
+    # enqueue-failure/reconcile tests exercise a live dispatch; the refusal and stale-reconcile paths
+    # are covered by their own tests, which re-set ``claim.return_value``.
+    claim = AsyncMock(return_value=1)
+    redis_client.claim_dispatch_mock = claim
+    monkeypatch.setattr("phaze.routers.execution._get_claim_dispatch_script", MagicMock(return_value=claim))
+    # phaze-0t2c: the CAS release used when a dispatch ends before any sub-job lands.
+    release = AsyncMock(return_value=1)
+    redis_client.release_dispatch_mock = release
+    monkeypatch.setattr("phaze.routers.execution._get_release_dispatch_script", MagicMock(return_value=release))
     app.state.queue = MagicMock()
 
     return app, mock_router, redis_client
@@ -505,16 +515,16 @@ async def test_start_execution_skips_redis_seed_when_no_groups(
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
     # phaze-fa2p: an empty dispatch enqueues nothing, so it never claims the single-dispatch sentinel.
-    redis_client.set.assert_not_awaited()
+    redis_client.claim_dispatch_mock.assert_not_awaited()
 
 
 async def test_start_execution_rejected_when_dispatch_already_active(
     dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
 ) -> None:
-    """A losing SET NX on ``exec:active`` -> the dispatch is refused, nothing is seeded or enqueued (phaze-fa2p)."""
+    """A refused claim on the sentinel -> the dispatch is refused, nothing seeded or enqueued (phaze-fa2p)."""
     app, mock_router, redis_client = dispatch_app
-    # Simulate a concurrent/active dispatch already holding the sentinel: SET NX returns None.
-    redis_client.set = AsyncMock(return_value=None)
+    # Simulate a dispatch that is GENUINELY in flight: the claim script returns 0 (refused).
+    redis_client.claim_dispatch_mock.return_value = 0
     groups = {"agent-a": [_proposal("agent-a"), _proposal("agent-a")]}
 
     with (
@@ -527,10 +537,147 @@ async def test_start_execution_rejected_when_dispatch_already_active(
 
     assert resp.status_code == 200
     assert "Execution already in progress" in resp.text
-    # The guard fires BEFORE any seed or enqueue -- no double-dispatch.
-    redis_client.set.assert_awaited_once()
-    redis_client.pipeline.assert_not_called()
+    # The guard fires BEFORE any enqueue -- no double-dispatch. (phaze-0t2c moved the seed AHEAD of
+    # the claim to close the claimed-but-never-seeded window, so the seed pipeline HAS run by now;
+    # what matters is that no move job was dispatched.)
+    redis_client.claim_dispatch_mock.assert_awaited_once()
     mock_router.enqueue_for_agent.assert_not_awaited()
+    # ...and the hash seeded for this refused batch_id is dropped rather than left to rot for 24h.
+    redis_client.delete.assert_awaited_once()
+
+
+async def test_start_execution_reconciled_stale_sentinel_is_logged_and_proceeds(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A claim taken by RECONCILING a leaked sentinel proceeds -- and says so in the log (phaze-j7u8).
+
+    Return code 2 means the previous dispatch could never have released its own claim (its hash was
+    reaped, already terminal, or fully reported but unpromoted). The operator must not be locked out
+    for 24h over it, but the leak is still a defect worth a WARNING rather than a silent recovery.
+    """
+    app, mock_router, redis_client = dispatch_app
+    redis_client.claim_dispatch_mock.return_value = 2
+    groups = {"agent-a": [_proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        caplog.at_level("WARNING", logger="phaze.routers.execution"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post("/execution/start")
+
+    assert resp.status_code == 200
+    assert "Execution already in progress" not in resp.text
+    mock_router.enqueue_for_agent.assert_awaited()  # the dispatch really went ahead
+    assert any("stale exec:active sentinel" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# phaze-0t2c: the claim must never outlive the things that can release it --
+# it is taken AFTER the seed, and any failure before a sub-job lands settles it.
+# ---------------------------------------------------------------------------
+
+
+async def test_start_execution_seeds_the_hash_before_claiming_the_sentinel(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A failing seed must leave NO claim outstanding (phaze-0t2c).
+
+    The original order claimed first and seeded immediately after, and those are two separate
+    commands: a transient Redis fault on the seed left the sentinel naming a batch whose hash never
+    existed, so nothing could ever release it and every Execute Approved was refused for 24h.
+    """
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    pipe.execute = AsyncMock(side_effect=RuntimeError("redis hiccup on the seed"))
+    groups = {"agent-a": [_proposal("agent-a")]}
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        pytest.raises(RuntimeError, match="redis hiccup"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            await ac.post("/execution/start")
+
+    # The claim was never attempted, so there is nothing to leak and nothing to reap.
+    redis_client.claim_dispatch_mock.assert_not_awaited()
+    mock_router.enqueue_for_agent.assert_not_awaited()
+
+
+async def test_start_execution_crash_mid_enqueue_settles_the_sentinel(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A crash part-way through the enqueue loop with NOTHING landed releases the claim (phaze-0t2c).
+
+    The loop spans many suspension points and real wall time on a large approved set. Before this
+    fix a failure inside it left the hash seeded for the PLANNED subjobs_expected with fewer chunks
+    enqueued, so subjobs_completed could never reach it, the promotion never fired, and the sentinel
+    was held for its full 24h TTL.
+    """
+    app, mock_router, redis_client = dispatch_app
+    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")]}
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=BaseException("worker process died"))
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        pytest.raises(BaseException, match="worker process died"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            await ac.post("/execution/start")
+
+    # Nothing landed, so the claim is released via the CAS release rather than held to TTL.
+    redis_client.release_dispatch_mock.assert_awaited_once()
+
+
+async def test_start_execution_crash_mid_enqueue_lowers_expected_to_what_landed(
+    dispatch_app: tuple[FastAPI, AsyncMock, MagicMock],
+) -> None:
+    """A crash after SOME chunks landed lowers subjobs_expected to the landed count (phaze-0t2c).
+
+    The landed sub-jobs will POST their terminal events, so the batch must be given a target they
+    can actually reach -- otherwise the promotion (and the sentinel release it carries) is
+    unreachable by construction.
+    """
+    app, mock_router, redis_client = dispatch_app
+    pipe = redis_client.pipeline.return_value
+    groups = {"agent-a": [_proposal("agent-a")], "agent-b": [_proposal("agent-b")], "agent-c": [_proposal("agent-c")]}
+    calls = {"n": 0}
+
+    async def _enqueue(**_kw: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            msg = "broker died after the first chunk"
+            raise BaseException(msg)
+
+    mock_router.enqueue_for_agent = AsyncMock(side_effect=_enqueue)
+    promote = AsyncMock()
+
+    with (
+        patch("phaze.routers.execution.detect_collisions", AsyncMock(return_value=[])),
+        patch("phaze.routers.execution.get_approved_proposals_grouped_by_agent", AsyncMock(return_value=groups)),
+        patch("phaze.routers.execution.count_revoked_skipped_proposals", AsyncMock(return_value=0)),
+        patch("phaze.routers.execution._get_promote_status_script", MagicMock(return_value=promote)),
+        pytest.raises(BaseException, match="broker died"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            await ac.post("/execution/start")
+
+    hsets = _hset_calls(pipe)
+    assert any(len(a) >= 3 and a[1] == "subjobs_expected" and a[2] == "1" for a in hsets)
+    # One landed, so the claim is NOT released here -- that sub-job's terminal POST will do it. The
+    # promote check re-runs in case it already reported against the stale, higher expected count.
+    redis_client.release_dispatch_mock.assert_not_awaited()
+    promote.assert_awaited_once()
+    # The two chunks that were never reached are counted as failed, not silently dropped.
+    hincrbys = [c.args for c in pipe.hincrby.call_args_list]
+    assert any(len(a) >= 3 and a[1] == "failed" and a[2] == 2 for a in hincrbys)
 
 
 async def test_start_execution_returns_collision_block_when_destinations_collide(
@@ -550,3 +697,97 @@ async def test_start_execution_returns_collision_block_when_destinations_collide
     # Collision short-circuit means dispatch helpers should NEVER be touched.
     mock_router.enqueue_for_agent.assert_not_awaited()
     redis_client.pipeline.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# phaze-c3j0: batch_id is a UUID, and the sentinel no longer shares the
+# per-batch key namespace, so no batch-id spelling can alias a control key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def progress_read_app() -> tuple[FastAPI, MagicMock]:
+    """Smoke app exposing the two progress-READ routes with a fake Redis."""
+    app = FastAPI()
+    app.include_router(execution.router)
+    redis = MagicMock()
+    redis.hgetall = AsyncMock(return_value={})
+    app.state.redis = redis
+    app.state.task_router = MagicMock()
+    app.state.queue = MagicMock()
+    return app, redis
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/execution/progress/active",
+        "/execution/agents-table?batch_id=active",
+    ],
+)
+async def test_progress_routes_reject_the_sentinel_spelling_before_touching_redis(
+    progress_read_app: tuple[FastAPI, MagicMock],
+    url: str,
+) -> None:
+    """``batch_id=active`` is refused by validation, not by a WRONGTYPE traceback (phaze-c3j0).
+
+    Both routes used to take a free-form ``str`` and interpolate it into ``exec:{batch_id}``, so
+    the literal ``active`` rebuilt the ``exec:active`` STRING sentinel. HGETALL against a string
+    replies WRONGTYPE, which escaped as an unhandled 500 on the table route and killed the SSE
+    stream before its first yield on the other. Typing the parameter as ``uuid.UUID`` means FastAPI
+    422s it before Redis is touched at all.
+    """
+    app, redis = progress_read_app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get(url)
+
+    assert resp.status_code == 422
+    redis.hgetall.assert_not_called()
+
+
+def test_sentinel_lives_outside_the_per_batch_key_namespace() -> None:
+    """The structural half of the fix: no batch-id spelling can name the control key (phaze-c3j0).
+
+    Typing the parameter fixes the two known call sites; separating the namespaces means a future
+    route that accepts a looser batch_id cannot reintroduce the alias.
+    """
+    assert not execution.ACTIVE_DISPATCH_KEY.startswith(execution.BATCH_KEY_PREFIX)
+
+
+async def test_agents_table_wrong_key_type_degrades_to_the_empty_state(
+    progress_read_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """A WRONGTYPE read renders the documented empty state rather than a 500 (phaze-c3j0).
+
+    Defence in depth behind the typed parameter: this route's own docstring promises that a batch
+    which has already reaped renders an empty ``agents_table.html``, and a wrong key type should
+    not be the one input that contradicts it.
+    """
+    app, redis = progress_read_app
+    redis.hgetall = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get(f"/execution/agents-table?batch_id={uuid.uuid4()}")
+
+    assert resp.status_code == 200
+    # The write is gated behind ``if data:``, so a failed read must not reach the persist script.
+    assert "aria-sort" in resp.text or resp.text.strip()
+
+
+async def test_sse_wrong_key_type_still_emits_a_terminal_close(
+    progress_read_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """The SSE generator must always terminate with a close event, even on a bad key type (phaze-c3j0)."""
+    app, redis = progress_read_app
+    redis.hgetall = AsyncMock(side_effect=ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"))
+
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    # Degrades to the empty-hash path, which is bounded by _MAX_EMPTY_POLLS and closes the stream.
+    assert b"event: complete" in body

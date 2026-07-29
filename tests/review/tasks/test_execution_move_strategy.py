@@ -5,10 +5,15 @@ multi-GB concert videos and ``execute_approved_batch`` runs on the 'meta' lane
 (concurrency 2, no memory pin), so a whole-file read would MemoryError or get
 the worker OOM-killed. The move therefore:
 
-* prefers ``os.replace`` (atomic, O(1), constant memory) when source and
-  destination share a filesystem -- the move IS the delete; and
+* prefers an ``os.link`` claim + source unlink (atomic, O(1), constant memory)
+  when source and destination share a filesystem; and
 * falls back to a bounded ``shutil.copyfileobj`` stream + fsync + unlink across
   a filesystem boundary.
+
+phaze-s0wu: both branches publish through a NO-CLOBBER claim (``os.link`` fails
+EEXIST), not an unconditional rename. The exists-check in ``_execute_one`` runs
+once up front while the destructive act can be minutes later, so only an atomic
+claim at publish time can refuse an occupant that arrived in between.
 
 These tests cover BOTH branches plus the bounded-memory guarantee (the fallback
 must not call ``Path.read_bytes``) and the helper units.
@@ -16,9 +21,12 @@ must not call ``Path.read_bytes``) and the helper units.
 
 from __future__ import annotations
 
+import errno
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 import uuid
+
+import pytest
 
 from phaze.config import AgentSettings
 from phaze.schemas.agent_tasks import ExecuteApprovedBatchPayload, ExecuteBatchProposalItem
@@ -28,8 +36,6 @@ from phaze.tasks.execution import _same_filesystem, _streamed_copy, execute_appr
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _make_api_client_mock() -> AsyncMock:
@@ -57,8 +63,14 @@ def _item(orig: Path, proposed_path: str, filename: str) -> ExecuteBatchProposal
     )
 
 
-async def test_same_filesystem_move_uses_os_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same-fs move goes through os.replace (atomic) and never streams/read_bytes."""
+async def test_same_filesystem_move_is_o1_and_never_streams(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same-fs move is an O(1) constant-memory link claim -- it never streams or read_bytes.
+
+    phaze-s0wu: this used to assert ``os.replace`` specifically. The move is now an ``os.link``
+    claim plus a source unlink, which keeps every property the assertion was protecting (atomic,
+    O(1), no bytes read) and adds the one it could not express: the destination create is
+    no-clobber, so a file that appeared after the exists-check is refused rather than destroyed.
+    """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     orig = tmp_path / "orig" / "concert.mp4"
@@ -66,23 +78,21 @@ async def test_same_filesystem_move_uses_os_replace(tmp_path: Path, monkeypatch:
     content = b"a" * (3 * 1024 * 1024)
     orig.write_bytes(content)
 
-    from pathlib import Path as _Path
+    calls = {"link": 0, "stream": 0}
+    real_link = execmod.os.link
 
-    calls = {"replace": 0, "stream": 0}
-    real_replace = _Path.replace
+    def spy_link(src: object, dst: object) -> None:
+        calls["link"] += 1
+        real_link(src, dst)  # type: ignore[arg-type]
 
-    def spy_replace(self: _Path, target: object) -> object:
-        calls["replace"] += 1
-        return real_replace(self, target)
-
-    monkeypatch.setattr(_Path, "replace", spy_replace)
+    monkeypatch.setattr(execmod.os, "link", spy_link)
     monkeypatch.setattr(execmod, "_streamed_copy", lambda _s, _d: calls.__setitem__("stream", calls["stream"] + 1))
 
     payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "moved", "concert.mp4")])
     result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
 
     assert result["status"] == "completed"
-    assert calls["replace"] == 1
+    assert calls["link"] == 1
     assert calls["stream"] == 0
     dest = tmp_path / "moved" / "concert.mp4"
     assert dest.exists()
@@ -339,3 +349,125 @@ def test_streamed_copy_preserves_content_and_mtime(tmp_path: Path) -> None:
     with dst.open("rb") as fh:
         assert fh.read() == payload
     assert dst.stat().st_mtime == src.stat().st_mtime
+
+
+# ---------------------------------------------------------------------------
+# phaze-s0wu — the no-clobber guard must be ATOMIC, not check-then-act.
+#
+# The exists-check in _execute_one runs once, up front; the destructive act can
+# be minutes later (a multi-GB cross-fs copy). Anything that lands at the
+# destination inside that window was silently overwritten, and if the occupant
+# was a completed same-fs move its source was already gone -- so its bytes were
+# unrecoverable while BOTH proposals reported success.
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_fs_copy_refuses_a_destination_occupied_during_the_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file that appears at the destination DURING the copy must not be destroyed (phaze-s0wu).
+
+    This is the data-loss shape: the exists-check passed long ago, so only the publish step can
+    still catch the occupant. It needs no dispatch-time gate miss at all -- the occupant can be a
+    file the operator's own tooling wrote into the archive while the copy ran.
+    """
+    src = tmp_path / "src" / "<track-01>.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"the file being moved")
+    dst = tmp_path / "dst" / "<track-01>.mp3"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    real_streamed_copy = execmod._streamed_copy
+
+    def _copy_then_someone_else_lands_at_dst(s: Path, d: Path) -> None:
+        real_streamed_copy(s, d)
+        # Simulate the concurrent actor publishing to `dst` mid-copy.
+        dst.write_bytes(b"a DIFFERENT file's bytes, already committed elsewhere")
+
+    monkeypatch.setattr(execmod, "_streamed_copy", _copy_then_someone_else_lands_at_dst)
+
+    with pytest.raises(FileExistsError):
+        execmod._atomic_cross_fs_copy(src, dst)
+
+    # The occupant survives untouched -- that is the whole point.
+    assert dst.read_bytes() == b"a DIFFERENT file's bytes, already committed elsewhere"
+    # ...and this move lost nothing either: the source is intact and the temp file is cleaned up.
+    assert src.read_bytes() == b"the file being moved"
+    assert not (tmp_path / "dst" / f"<track-01>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+
+
+async def test_cross_fs_copy_publishes_to_a_free_destination(tmp_path: Path) -> None:
+    """The happy path still lands the full, fsynced copy and orphans no temp file."""
+    src = tmp_path / "src" / "<track-02>.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"payload" * 1000)
+    dst = tmp_path / "dst" / "<track-02>.mp3"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    execmod._atomic_cross_fs_copy(src, dst)
+
+    assert dst.read_bytes() == b"payload" * 1000
+    assert not (tmp_path / "dst" / f"<track-02>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+    assert src.exists()  # the caller owns the unlink, not this primitive
+
+
+async def test_cross_fs_copy_falls_back_when_the_filesystem_has_no_hard_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FAT/SMB/FUSE mounts cannot link -- the move must still work, via the documented fallback."""
+    src = tmp_path / "src" / "<track-03>.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"content")
+    dst = tmp_path / "dst" / "<track-03>.mp3"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def _no_links(_s: object, _d: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, "operation not supported")
+
+    monkeypatch.setattr(execmod.os, "link", _no_links)
+    execmod._atomic_cross_fs_copy(src, dst)
+
+    assert dst.read_bytes() == b"content"
+    assert not (tmp_path / "dst" / f"<track-03>.mp3{execmod._COPY_TMP_SUFFIX}").exists()
+
+
+async def test_same_fs_move_refuses_an_occupant_rather_than_clobbering_it(tmp_path: Path) -> None:
+    """The same-fs move is a no-clobber claim too -- an external writer cannot be overwritten."""
+    src = tmp_path / "src" / "<track-04>.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"mine")
+    dst = tmp_path / "dst" / "<track-04>.mp3"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(b"someone else's")
+
+    with pytest.raises(FileExistsError):
+        execmod._atomic_same_fs_move(src, dst)
+
+    assert dst.read_bytes() == b"someone else's"
+    assert src.read_bytes() == b"mine"
+
+
+async def test_same_fs_move_completes_a_crashed_link_claim_rather_than_no_op_renaming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between the link claim and the source unlink must complete forward (phaze-s0wu).
+
+    Both paths then name ONE inode. ``Path.replace`` between two links of the same inode is a
+    POSIX no-op, so a replay that fell through to the plain rename would leave the source in place
+    forever while reporting success. The extra link is the evidence that distinguishes this
+    residue from a genuine case-only rename.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    api = _make_api_client_mock()
+    orig = tmp_path / "orig" / "<track-05>.mp3"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_bytes(b"already claimed")
+    dest_dir = tmp_path / "moved"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    # The residue of a crashed claim: dst is a hard link to the still-present source.
+    execmod.os.link(orig, dest_dir / "<track-05>.mp3")
+    assert orig.stat().st_nlink == 2
+
+    payload = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="a", proposals=[_item(orig, "moved", "<track-05>.mp3")])
+    result = await execute_approved_batch({"api_client": api}, **payload.model_dump(mode="json"))
+
+    assert result["status"] == "completed"
+    assert (dest_dir / "<track-05>.mp3").read_bytes() == b"already claimed"
+    assert not orig.exists(), "the crashed claim must be completed forward, not left dangling"

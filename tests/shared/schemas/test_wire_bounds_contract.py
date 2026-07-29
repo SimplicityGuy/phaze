@@ -143,7 +143,11 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # for it would be rejected as stale by ``test_registries_have_no_stale_entries``. Its bound comes
     # from the same ``PROPOSE_SORT`` whitelist, asserted directly in
     # tests/shared/core/test_propose_workspace_sorting.py.
-    ("/execution/progress/{batch_id}", "batch_id"): _NOT_STORED,
+    # phaze-c3j0: /execution/progress/{batch_id} and /execution/agents-table used to declare
+    # batch_id as a free-form str and were classified _NOT_STORED here (a Redis hash KEY suffix,
+    # never a column). They are now typed uuid.UUID, so they are no longer string params at all
+    # and _param_cases() stops emitting them -- the bound is the type. Entries removed rather
+    # than reclassified; leaving them would fail the stale-entry check.
     ("/audit/", "status"): _WHITELIST,
     ("/duplicates/{group_hash}/compare", "group_hash"): _NOT_STORED,
     ("/duplicates/{group_hash}/resolve", "group_hash"): _NOT_STORED,
@@ -211,9 +215,6 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     # is itemgetter, not a SQLAlchemy column, but the equality-only resolve() gate is identical.
     ("/execution/agents-table", "sort"): _WHITELIST,
     ("/execution/agents-table", "order"): _WHITELIST,
-    # Same classification as /execution/progress/{batch_id}'s batch_id below: a Redis hash KEY
-    # suffix, never a column.
-    ("/execution/agents-table", "batch_id"): _NOT_STORED,
     ("/pipeline/files/{file_id}/skip/{stage}", "stage"): _WHITELIST,
     ("/pipeline/files/{file_id}/skip/{stage}", "reason"): _TEXT,
     ("/pipeline/files/{file_id}/trace/{stage}", "stage"): _WHITELIST,

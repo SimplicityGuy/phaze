@@ -68,14 +68,14 @@ async def redis_client() -> AsyncGenerator[redis_async.Redis]:
     Cleans up ``exec:*`` keys around each test so reruns do not collide.
     """
     client: redis_async.Redis = redis_async.Redis.from_url(_REDIS_URL, decode_responses=True)
-    for pattern in ("exec:*", "exec_progress_req:*"):
+    for pattern in ("exec:*", "exec_progress_req:*", "execdispatch:*"):
         keys = [k async for k in client.scan_iter(match=pattern, count=100)]
         if keys:
             await client.delete(*keys)
     try:
         yield client
     finally:
-        for pattern in ("exec:*", "exec_progress_req:*"):
+        for pattern in ("exec:*", "exec_progress_req:*", "execdispatch:*"):
             keys = [k async for k in client.scan_iter(match=pattern, count=100)]
             if keys:
                 await client.delete(*keys)
@@ -379,11 +379,11 @@ async def test_second_dispatch_rejected_while_active(
     for i in range(3):
         await _seed_approved_proposal(session, agent_id="agent-a", path_suffix=f"a-{i}")
 
-    # First dispatch claims exec:active and enqueues the sub-job.
+    # First dispatch claims the sentinel and enqueues the sub-job.
     first = await ac.post("/execution/start")
     assert first.status_code == 200, first.text
     assert mock_router.enqueue_for_agent.await_count == 1
-    assert await redis_client.get("exec:active") is not None
+    assert await redis_client.get(execution.ACTIVE_DISPATCH_KEY) is not None
 
     # The proposals are still APPROVED (no worker has run), so a second POST would re-select and
     # double-dispatch them -- but the sentinel is held, so it must be refused instead.
