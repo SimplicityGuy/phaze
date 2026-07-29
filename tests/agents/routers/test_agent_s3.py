@@ -547,6 +547,48 @@ async def test_uploaded_k8s_enqueues_submit_no_state_flip(
     assert job.status == CloudJobStatus.UPLOADED.value
 
 
+async def test_uploaded_k8s_commits_cas_before_enqueue_so_enqueue_failure_leaves_durable_state(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-0vuf: the UPLOADING->UPLOADED CAS COMMITS before the submit_cloud_job enqueue fires.
+
+    resolve_queue_for_task's controller queue enqueues on ITS OWN psycopg pool and commits the job
+    durably and immediately -- independent of this asyncpg session's commit boundary. Enqueuing before
+    the commit let a subsequent commit failure roll the UPLOADED flip back while a real Kueue Job was
+    already dispatched for it; submit_cloud_job's own upsert then reads the still-'uploading' row,
+    misses its CAS, and deletes the Job it just created -- a real k8s Job created and destroyed for
+    nothing, and the file stuck UPLOADING until the reaper spills it. With the commit moved first, a
+    failed enqueue can no longer corrupt control state: cloud_job is already durably UPLOADED and the
+    callback still returns a clean 200 (mirrors agent_push.py's report_pushed contract).
+    """
+    from phaze.routers import agent_s3
+
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, kind="kueue")
+    file_id = await _seed_file(session, agent.id)
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.UPLOADING)
+    monkeypatch.setattr(s3_staging, "complete_multipart_upload", AsyncMock())
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("controller queue pool unreachable")
+
+    # Patch the post-commit route+enqueue to fail; the CAS must already be committed by then.
+    monkeypatch.setattr(agent_s3, "resolve_queue_for_task", _boom)
+
+    body = {"parts": [{"part_number": 1, "etag": '"e1"'}]}
+    async with _make_client(session, FakeTaskRouter(), raw_token, controller_queue=FakeQueue("controller")) as ac:
+        r = await ac.post(f"/api/internal/agent/s3/{file_id}/uploaded", json=body)
+
+    # 200 (not 500): the durable control state is correct even though the enqueue failed.
+    assert r.status_code == 200, r.text
+    job = await _cloud_job(session, file_id)
+    assert job is not None
+    assert job.status == CloudJobStatus.UPLOADED.value, "the CAS must be committed BEFORE the failing enqueue"
+
+
 async def test_uploaded_two_kueue_enqueues_submit_no_state_flip(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,

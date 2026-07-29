@@ -174,26 +174,23 @@ async def hold_awaiting_cloud(
     return res.rowcount > 0
 
 
-async def _enqueue_push_file(
-    queue: Any,
+def _build_push_file_enqueue_kwargs(
     file: FileRecord,
     agent_id: str,
     *,
     dest_host: str,
     dest_scratch_dir: str,
     dest_ssh_user: str | None,
-) -> Any:
-    """Enqueue ONE ``push_file`` job with the deterministic key + the complete PushFilePayload.
+) -> dict[str, Any]:
+    """Build the ``queue.enqueue("push_file", **kwargs)`` kwargs -- PURE, no I/O (D-02/D-03 payload).
 
-    Relocated from ``release_awaiting_cloud`` in Wave 3 (68-04): this control-side enqueue leg is the
-    ``ComputeAgentBackend.dispatch`` body, so it now lives with the backend that owns it (the drain no
-    longer references it). Builds the four push-initiation ``PushFilePayload`` fields (the FileRecord's
-    ``id`` / ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) AND stamps the
+    Builds the four push-initiation ``PushFilePayload`` fields (the FileRecord's ``id`` /
+    ``original_path`` / ``file_type`` plus the resolved fileserver ``agent_id``) AND stamps the
     Phase-73 per-file destination (``dest_host`` / ``dest_scratch_dir`` / ``dest_ssh_user``, D-02: the
     dispatch-side record-don't-rederive stamp), then serializes via ``model_dump(mode="json")`` so the
-    UUID round-trips as a string under ``extra="forbid"``. Returns whatever ``queue.enqueue`` returns --
-    a ``saq.Job`` normally, or ``None`` when SAQ deduped the deterministic key (the file is already being
-    pushed) so the caller counts a ``None`` as skipped.
+    UUID round-trips as a string under ``extra="forbid"``. Split out from the old ``_enqueue_push_file``
+    (phaze-s5sz) so ``ComputeAgentBackend.dispatch`` can PARK these kwargs instead of firing the enqueue
+    inline -- see :func:`_park_push_file_enqueue`.
     """
     payload = PushFilePayload(
         file_id=file.id,
@@ -204,19 +201,92 @@ async def _enqueue_push_file(
         dest_scratch_dir=dest_scratch_dir,
         dest_ssh_user=dest_ssh_user,
     )
-    # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
-    await queue.connect()
     # WR-03: stamp an explicit SAQ job-net timeout strictly above the agent's asyncio outer guard so
     # a job-net cancellation can never fire before the guard reaps the rsync child. phaze-2qpn: scale
     # it with the file size (the guard is size-derived on the agent) so a healthy multi-GB push is not
     # cancelled by a fixed cap, and allow retries so a killed push resumes via rsync --partial.
-    return await queue.enqueue(
-        "push_file",
-        key=push_file_job_key(file.id),
-        timeout=push_file_saq_timeout_sec(file.file_size),
-        retries=PUSH_FILE_SAQ_RETRIES,
+    return {
+        "key": push_file_job_key(file.id),
+        "timeout": push_file_saq_timeout_sec(file.file_size),
+        "retries": PUSH_FILE_SAQ_RETRIES,
         **payload.model_dump(mode="json"),
-    )
+    }
+
+
+# phaze-s5sz: the session.info key under which ComputeAgentBackend.dispatch PARKS its push_file
+# enqueue until the drain has durably committed the cloud_job SUBMITTED row (mirrors
+# cloud_staging._PENDING_ENQUEUE_KEY / phaze-grzo's identical fix for the kueue s3_upload leg).
+# Enqueue-before-commit was the same dual-write ordering hole here: SAQ's PostgresQueue enqueues on
+# its OWN psycopg pool and commits the job durably + immediately, independent of THIS asyncpg
+# session, so a fast rsync push could POST /pushed and CAS the row (see report_pushed's
+# ``status == 'submitted'`` guard) before the drain's single post-loop commit landed it -- the
+# callback then saw the row still at its PREVIOUS committed status (typically 'awaiting'), matched
+# 0 rows, and took the idempotent-no-op hold FOREVER (nothing else owns recovery for an in-flight
+# cloud_job). Parking the enqueue removes it from the transaction entirely, so the worker-visible
+# job can never precede the committed row it reads.
+_PENDING_PUSH_FILE_ENQUEUE_KEY = "backends_pending_push_file_enqueues"
+
+
+@dataclasses.dataclass(frozen=True)
+class _PendingPushFileEnqueue:
+    """One deferred ``push_file`` enqueue: the resolved queue + the enqueue kwargs, flushed post-commit."""
+
+    queue: Any
+    enqueue_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+def _park_push_file_enqueue(session: AsyncSession, pending: _PendingPushFileEnqueue) -> None:
+    """Record a deferred ``push_file`` enqueue on the session, to be flushed AFTER the caller commits."""
+    session.info.setdefault(_PENDING_PUSH_FILE_ENQUEUE_KEY, []).append(pending)
+
+
+def drop_pending_push_file_enqueues(session: AsyncSession) -> None:
+    """Discard any parked ``push_file`` enqueues WITHOUT firing them (phaze-s5sz).
+
+    The caller MUST call this whenever the transaction that produced the parked enqueues is rolled
+    back: firing an enqueue whose ``cloud_job`` upsert was rolled back is the ORPHANING half of the
+    dual-write hole (a job runs against a row that never committed). Mirrors
+    ``cloud_staging.drop_pending_s3_enqueues``.
+    """
+    session.info.pop(_PENDING_PUSH_FILE_ENQUEUE_KEY, None)
+
+
+async def flush_pending_push_file_enqueues(session: AsyncSession) -> int:
+    """Fire every ``push_file`` enqueue parked on ``session`` and return the count fired (phaze-s5sz).
+
+    MUST be called ONLY after the caller has committed the ``cloud_job`` SUBMITTED row(s) the parked
+    jobs depend on, so the worker-visible side effect can never precede its committed row. Best-effort
+    per item: an enqueue failure leaves that file's row committed-but-SUBMITTED (a row a future
+    compute-lane safety net would need to reap; today's callback-only reconcile does not, matching
+    ``ComputeAgentBackend.reconcile``'s documented no-op), and must not block the remaining enqueues.
+    The list is popped up front so a partial flush never double-fires. Mirrors
+    ``cloud_staging.flush_pending_s3_enqueues``.
+    """
+    pending: list[_PendingPushFileEnqueue] = session.info.pop(_PENDING_PUSH_FILE_ENQUEUE_KEY, [])
+    fired = 0
+    for item in pending:
+        try:
+            # Phase 36: the PostgresQueue broker pool is built open=False; connect() is idempotent.
+            await item.queue.connect()
+            job = await item.queue.enqueue("push_file", **item.enqueue_kwargs)
+            if job is None:
+                # A deterministic-key dedup against a still-incomplete push_file:<file_id> job -- the
+                # file is already being pushed. Benign: the prior job's own callback owns the row.
+                logger.warning(
+                    "flush_pending_push_file_enqueues: push_file enqueue deduped against a still-incomplete job",
+                    key=item.enqueue_kwargs.get("key"),
+                )
+            else:
+                fired += 1
+        except Exception:
+            # A parked enqueue that fails leaves the committed SUBMITTED row for a future compute-lane
+            # recovery mechanism; never let one failed enqueue abort the rest of the flush.
+            logger.warning(
+                "flush_pending_push_file_enqueues: parked push_file enqueue failed",
+                key=item.enqueue_kwargs.get("key"),
+                exc_info=True,
+            )
+    return fired
 
 
 class Backend(Protocol):
@@ -379,8 +449,8 @@ class ComputeAgentBackend(_BaseBackend):
     """Cloud-compute (rsync/push over Tailscale) backend -- re-homes the ``push_file`` control-side enqueue leg.
 
     ``is_available`` re-homes GATE-1 (``release_awaiting_cloud`` L145-150): True iff a compute agent is
-    online. ``dispatch`` owns the ``FileState -> PUSHING`` flip AND a NEW in-txn ``cloud_job`` write
-    (Pitfall 1 / D-03) then re-homes the ``_enqueue_push_file`` leg. ``reconcile`` is a no-op --
+    online. ``dispatch`` owns a NEW in-txn ``cloud_job`` write (Pitfall 1 / D-03) then PARKS the
+    ``push_file`` enqueue (phaze-s5sz, :func:`_park_push_file_enqueue`). ``reconcile`` is a no-op --
     compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08).
     ``in_flight_count`` is inherited from :class:`_BaseBackend` (the D-02 substrate).
 
@@ -438,76 +508,73 @@ class ComputeAgentBackend(_BaseBackend):
         return True
 
     async def dispatch(self, file: FileRecord, session: AsyncSession, task_router: AgentTaskRouter) -> bool:
-        """Flip ``file`` to PUSHING + upsert its ``cloud_job`` row, THEN enqueue ``push_file`` -- one txn, no commit.
+        """Upsert the ``cloud_job`` row, THEN PARK the ``push_file`` enqueue -- one txn, no commit.
 
-        D-03 write ordering: the ``FileState -> PUSHING`` flip and the ``cloud_job`` upsert
-        (``backend_id`` set, ``s3_key`` NULL -- compute carries no S3 object, ``status=SUBMITTED``) land
-        in the SAME caller-passed session, before the enqueue, so a rollback leaves no limbo row (a
-        committed PUSHING without a reconcilable ``cloud_job`` row would silently strand the file). The
-        fileserver gate runs first so an absent agent is a clean hold with nothing mutated. NEVER commits
-        -- the drain owns the single post-loop commit so the ``pg_advisory_xact_lock`` survives the tick
-        (Landmine L1).
+        D-03 write ordering: the ``cloud_job`` upsert (``backend_id`` set, ``s3_key`` NULL -- compute
+        carries no S3 object, ``status=SUBMITTED``) lands in the caller-passed session; the fileserver
+        gate runs first so an absent agent is a clean hold with nothing mutated. NEVER commits -- the
+        drain owns the single post-loop commit so the ``pg_advisory_xact_lock`` survives the tick
+        (Landmine L1). Always returns ``True`` (a genuine stage) -- mirrors ``KueueBackend.dispatch``.
 
-        phaze-uciu.3: the upsert + enqueue run inside a ``session.begin_nested()`` SAVEPOINT. SAQ's
-        ``PostgresQueue`` enqueue uses its OWN psycopg pool -- an enqueue failure raises WITHOUT
-        poisoning this asyncpg session/transaction, so a bare (un-savepointed) upsert-then-raise would
-        leave the ``status=SUBMITTED``/``backend_id``-stamped row intact for the drain's post-loop
-        commit: a stranded row (unrecoverable -- reconcile/orphan-recovery both scope away from
-        in-flight cloud_jobs) that permanently consumes an ``in_flight_count`` cap slot. The SAVEPOINT
-        rolls back ONLY this upsert on a raise, restoring the row's prior (pre-dispatch) state --
-        typically ``status='awaiting'`` (D-01) -- while the outer transaction (and its
-        ``pg_advisory_xact_lock``) stays alive so the tick's other candidates are unaffected. The raise
-        itself still propagates to the caller (the drain's per-candidate ``except`` clauses).
+        phaze-s5sz (supersedes phaze-uciu.3): the ``push_file`` enqueue is PARKED
+        (:func:`_park_push_file_enqueue`), not fired inline. SAQ's ``PostgresQueue`` enqueue commits the
+        job durably + immediately on its OWN psycopg pool, independent of THIS asyncpg session's commit
+        boundary -- an inline enqueue made the job (and a FAST rsync push's own ``/pushed`` callback)
+        worker-visible BEFORE the drain's post-loop commit landed this SUBMITTED row. ``report_pushed``'s
+        ONLY guard is ``cloud_job.status == 'submitted'`` (SC#1/D-12); under READ COMMITTED that fast
+        callback saw the row's PREVIOUS committed status (typically 'awaiting'), matched 0 rows, and took
+        the idempotent-no-op hold FOREVER -- nothing else owns recovery for an in-flight cloud_job
+        (``ComputeAgentBackend.reconcile`` is a documented no-op; ``recover_orphaned_work`` excludes any
+        file carrying an in-flight ``cloud_job`` row on the premise that the ``/pushed`` callback owns
+        it). Parking the enqueue removes it from the transaction entirely, so the drain fires it via
+        ``flush_pending_push_file_enqueues`` ONLY AFTER the single post-loop commit -- the worker-visible
+        job can never precede the committed row it reads. Because the enqueue is no longer in the
+        transaction, the ``session.begin_nested()`` SAVEPOINT phaze-uciu.3 added to protect it is dead
+        weight and is dropped here (mirrors the kueue twin, phaze-grzo).
         """
         # Gate on the fileserver agent (the push initiator) BEFORE mutating: absent -> clean hold, nothing written.
         fileserver_agent = await select_active_agent(session, kind="fileserver")
 
-        async with session.begin_nested():
-            # D-03: upsert the cloud_job row in the SAME session, before the enqueue. Phase 90 (D-09):
-            # the paired PUSHING files.state dual-write was removed; the cloud_job (status=SUBMITTED) is
-            # authority.
-            stmt = pg_insert(CloudJob).values(
-                # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
-                id=uuid.uuid4(),
-                file_id=file.id,
-                backend_id=self.id,
-                s3_key=None,  # compute has no S3 object -> s3_key nullable (D-08)
-                status=CloudJobStatus.SUBMITTED.value,  # single compute in-flight status (D-10)
-            )
-            stmt = stmt.on_conflict_do_update(
-                # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
-                index_elements=["file_id"],
-                set_={
-                    "backend_id": stmt.excluded.backend_id,
-                    "status": stmt.excluded.status,
-                    # phaze-7634: CloudJob.updated_at is a client-side ``onupdate=func.now()``
-                    # (TimestampMixin) that SQLAlchemy does NOT inject into an ON CONFLICT SET (and
-                    # there is no DB trigger), so a re-dispatch would otherwise leave updated_at
-                    # frozen at the row's PREVIOUS write (same defect class as the hold-mode upsert
-                    # above / phaze-c8nz). Stamp it explicitly so a re-dispatch bumps the clock.
-                    "updated_at": func.now(),
-                },
-            )
-            await session.execute(stmt)
+        # D-03: upsert the cloud_job row in the caller's session. Phase 90 (D-09): the paired PUSHING
+        # files.state dual-write was removed; the cloud_job (status=SUBMITTED) is authority.
+        stmt = pg_insert(CloudJob).values(
+            # Stamp the PK explicitly (CR-01 defensive; mirrors cloud_staging.py:109).
+            id=uuid.uuid4(),
+            file_id=file.id,
+            backend_id=self.id,
+            s3_key=None,  # compute has no S3 object -> s3_key nullable (D-08)
+            status=CloudJobStatus.SUBMITTED.value,  # single compute in-flight status (D-10)
+        )
+        stmt = stmt.on_conflict_do_update(
+            # id is OUT of set_: the PK is immutable, so a re-dispatch keeps the existing row's id.
+            index_elements=["file_id"],
+            set_={
+                "backend_id": stmt.excluded.backend_id,
+                "status": stmt.excluded.status,
+                # phaze-7634: CloudJob.updated_at is a client-side ``onupdate=func.now()``
+                # (TimestampMixin) that SQLAlchemy does NOT inject into an ON CONFLICT SET (and
+                # there is no DB trigger), so a re-dispatch would otherwise leave updated_at
+                # frozen at the row's PREVIOUS write (same defect class as the hold-mode upsert
+                # above / phaze-c8nz). Stamp it explicitly so a re-dispatch bumps the clock.
+                "updated_at": func.now(),
+            },
+        )
+        await session.execute(stmt)
 
-            # Re-home the compute enqueue leg (_enqueue_push_file, now local to this module) + D-02:
-            # stamp THIS backend's destination onto the push payload (record-don't-rederive originates at
-            # dispatch; NO re-lookup via resolve_compute_backend here -- the bound self.config already
-            # holds it). A raise here (SAQ's own pool, e.g. connect()/enqueue() blowing up) rolls back
-            # ONLY the upsert above (phaze-uciu.3).
-            push_host, scratch_dir, ssh_user = self._destination()
-            push_queue = task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
-            job = await _enqueue_push_file(
-                push_queue,
-                file,
-                fileserver_agent.id,
-                dest_host=push_host,
-                dest_scratch_dir=scratch_dir,
-                dest_ssh_user=ssh_user,
-            )
-        # A deterministic-key dedup returns None (the file is already being pushed) -> the drain counts
-        # it as skipped, not staged (T-50-double-enqueue); a genuine enqueue returns a saq.Job -> staged.
-        return job is not None
+        # D-02: stamp THIS backend's destination onto the push payload (record-don't-rederive
+        # originates at dispatch; NO re-lookup via resolve_compute_backend here -- the bound
+        # self.config already holds it). PARK the enqueue rather than firing it (phaze-s5sz).
+        push_host, scratch_dir, ssh_user = self._destination()
+        push_queue = task_router.queue_for(fileserver_agent.id, lane_for_task("push_file"))
+        enqueue_kwargs = _build_push_file_enqueue_kwargs(
+            file,
+            fileserver_agent.id,
+            dest_host=push_host,
+            dest_scratch_dir=scratch_dir,
+            dest_ssh_user=ssh_user,
+        )
+        _park_push_file_enqueue(session, _PendingPushFileEnqueue(queue=push_queue, enqueue_kwargs=enqueue_kwargs))
+        return True
 
     async def reconcile(self, session: AsyncSession, ctx: dict[str, Any] | None = None) -> dict[str, int] | None:  # noqa: ARG002 -- protocol signature; compute terminalizes via the /pushed callback
         """No-op: compute terminalization is the existing ``/pushed`` callback path (§4.2, D-08), not a cron read."""

@@ -42,6 +42,10 @@ _FILE_TYPE_MAP: dict[str, str] = {
     "opus": "WAVE",
 }
 
+# C0 control characters (including CR/LF, the CUE record delimiter) plus DEL, matched for
+# stripping from any value interpolated into a CUE double-quoted field. See _cue_quote (phaze-4ea3).
+_CUE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
 
 def seconds_to_cue_timestamp(total_seconds: float) -> str:
     """Convert seconds to CUE MM:SS:FF format at 75 frames per second.
@@ -97,15 +101,23 @@ def parse_timestamp_string(ts: str | None) -> float | None:
 
 
 def _cue_quote(value: str) -> str:
-    """Sanitize a value for interpolation inside a CUE double-quoted field (phaze-oo35).
+    """Sanitize a value for interpolation inside a CUE double-quoted field (phaze-oo35, phaze-4ea3).
 
     CUE's quoted-string syntax has no escape mechanism, so an embedded ``"`` terminates the field
     early and leaves trailing garbage on the line (e.g. a track titled ``ID "Unreleased" Mix``
     would emit ``TITLE "ID "Unreleased" Mix"``, which most consumers either truncate or reject as
     malformed). Strip the literal quote the same way the filename was already handled (Pitfall 4)
     -- shared by every quoted CUE directive: FILE, TITLE, PERFORMER, and the REM fields.
+
+    CUE is also LINE-oriented: the double quote delimits the *field*, but ``\\n`` (and ``\\r``)
+    delimits the *record*. An unsanitized newline surviving inside a title/artist/genre/label lets
+    an agent- or scraper-supplied value terminate the current directive early and inject an
+    arbitrary new top-level CUE command on the next line -- including a second ``FILE`` directive
+    that redirects every subsequent TRACK/INDEX to a different audio file (phaze-4ea3). Replace
+    every control character (CR, LF, and the rest of the C0/DEL range) with a space so an injected
+    payload collapses onto the same line instead of starting a new one.
     """
-    return value.replace('"', "")
+    return _CUE_CONTROL_CHARS_RE.sub(" ", value).replace('"', "")
 
 
 def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTrackData]) -> str:
