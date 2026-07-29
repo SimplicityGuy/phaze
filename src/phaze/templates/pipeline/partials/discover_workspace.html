@@ -6,10 +6,16 @@
    a secondary-style action row + the body. The OOB seed-target host rides in via the scaffold.
 
    Body = the EXISTING recent-scans data (build_recent_scans, loaded by shell._render_stage)
-   rendered through the reusable _file_table.html. We do NOT reuse recent_scans_table.html
-   directly because it self-polls (`hx-trigger="every 5s"`) -- that would be a second poll loop
-   (A3 / Pitfall 4 / T-58-POLL). Rows are inert-but-present (D-06 / R-1): cursor-pointer + a
-   stable id, but no click binding in Phase 58.
+   rendered through recent_scans_table.html.
+
+   phaze-8f9j: this header used to read "We do NOT reuse recent_scans_table.html directly because it
+   self-polls -- that would be a second poll loop (A3 / Pitfall 4 / T-58-POLL)". The poll concern was
+   real; the conclusion drawn from it was not. Substituting the text-only _file_table.html left
+   `id="recent-scans"` unmounted in every served document, which silently killed the per-row delete
+   control (the sole caller of DELETE /pipeline/scans/{id}), the failed-row error_message, the PR4
+   stall indicator and the sortable-header contract. The poll is now opt-out (`scans_poll=False`,
+   propagated as `poll=0` through the sort URLs and the delete URL), so the workspace gets the whole
+   table and still starts no second loop.
 
    Actions (UI-SPEC Copywriting): SCAN (reveals the reused Trigger Scan form -> POST /pipeline/scans)
    and RECOVER (POST /pipeline/recover, the existing Phase-42 gated all-stages recovery). RECOVER
@@ -54,28 +60,14 @@
     <div id="discover-scan-form" x-show="scanOpen" x-cloak class="border-b border-gray-200 p-6 dark:border-phaze-border">
         {% include "pipeline/partials/trigger_scan_card.html" %}
     </div>
-    {# Recent scans rendered through the generic file table (self-poll stripped). #}
+    {# Recent scans (phaze-8f9j): the REAL recent_scans_table.html, mounted with its self-poll
+       switched off (shell._render_stage passes scans_poll=False and threads poll=0 through the
+       sort contract). This used to be a hand-rolled _file_table.html projection, whose cell
+       contract is text-only -- no Actions column, no failed-row error sub-row. The consequence was
+       not just a thinner table: `id="recent-scans"` then existed in NO served document, so
+       DELETE /pipeline/scans/{id} had no caller anywhere in the app, the failed-row error_message
+       was unreadable after a reload, and the whole sortable-header contract was dead markup. #}
     <div class="p-6">
-        {% set columns = ["Agent", "Path", "Status", "Files", "Started", "Elapsed"] %}
-        {% set ns = namespace(rows=[]) %}
-        {% for b in recent_scans %}
-            {% set status_word = {'completed': 'complete', 'running': 'running', 'failed': 'failed'}.get(b.status, b.status) %}
-            {% set status_color = {'completed': 'text-emerald-600 dark:text-emerald-300', 'running': 'text-blue-600 dark:text-blue-300', 'failed': 'text-rose-600 dark:text-rose-400'}.get(b.status, 'text-gray-500 dark:text-gray-400') %}
-            {% set files_cell = (b.processed_files | string) ~ ' / ' ~ ((b.total_files | string) if b.total_files else '—') %}
-            {% set elapsed_cell = ((b._elapsed_seconds | string) ~ 's') if b._elapsed_seconds is not none else '—' %}
-            {% set _ = ns.rows.append([
-                {'text': b._agent_name},
-                {'text': b.scan_path, 'mono': True, 'title': b.scan_path},
-                {'text': status_word, 'color': status_color},
-                {'text': files_cell, 'mono': True},
-                {'text': b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '—'},
-                {'text': elapsed_cell},
-            ]) %}
-        {% endfor %}
-        {% set rows = ns.rows %}
-        {% set empty_heading = "No scans yet" %}
-        {% set empty_body = "Trigger a scan to walk a directory on a registered agent." %}
-        {% set row_id_prefix = "discover-row" %}
-        {% include "pipeline/partials/_file_table.html" %}
+        {% include "pipeline/partials/recent_scans_table.html" %}
     </div>
 {% endcall %}

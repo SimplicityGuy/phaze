@@ -212,6 +212,7 @@ async def recent_scans_partial(
     session: Annotated[AsyncSession, Depends(get_session)],
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
+    poll: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """HTMX poll endpoint: re-render the Recent Scans mini-table.
 
@@ -235,13 +236,20 @@ async def recent_scans_partial(
 
     Both values are untrusted strings from the wire; ``resolve`` maps anything unrecognised to the
     contract default (rule 3) rather than 422-ing a poll that fires every five seconds.
+
+    phaze-8f9j: ``poll=0`` marks a caller that must NOT get a self-polling copy back -- the Discover
+    workspace, which mounts this table inside the v7 shell where WORK-05 allows exactly one poll.
+    The flag is re-emitted through the sort contract's ``view_state`` so it survives every header
+    click, for the same reason rule 4 makes the sort itself survive. Any other value (including
+    absent) polls, so no existing caller changes behaviour.
     """
-    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order)
+    polling = poll != "0"
+    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order, view_state={} if polling else {"poll": "0"})
     rows = await build_recent_scans(session, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows, "sort": sort_state},
+        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling},
     )
 
 
@@ -346,6 +354,7 @@ async def delete_scan(
     session: Annotated[AsyncSession, Depends(get_session)],
     sort: Annotated[str | None, Query()] = None,
     order: Annotated[str | None, Query()] = None,
+    poll: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     """Delete a terminal scan + all associated DB data, then re-render the table.
 
@@ -363,6 +372,17 @@ async def delete_scan(
     the poll, so it carries ``sort``/``order`` for the same reason (column_sort rule 4a) -- deleting
     a row must not silently re-sort the table underneath the operator, and the copy it swaps in
     must keep polling in the chosen order rather than reverting one tick later.
+
+    phaze-8f9j: it also carries ``poll`` for the mirror-image reason. The Discover workspace mounts
+    this table poll-free (WORK-05: one chrome poll in the v7 shell) and its delete control appends
+    ``poll=0``, so deleting a row there cannot swap in a copy that starts a second 5s loop. Absent
+    (every other caller) still means poll.
+
+    Until this bead this endpoint had NO caller: the delete control lives only in
+    ``recent_scans_table.html``, which no served document mounted between the Phase-62 cutover and
+    the workspace re-mount -- so this handler, ``delete_scan_cascade`` behind it, and the 404/409
+    guards above were reachable by curl alone, and an operator's only remediation for a
+    half-ingested failed scan was psql.
     """
     batch = await session.get(ScanBatch, batch_id)
     if batch is None:
@@ -376,12 +396,13 @@ async def delete_scan(
     await session.commit()
     logger.info("scan deleted", batch_id=str(batch_id), **counts)
 
-    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order)
+    polling = poll != "0"
+    sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order, view_state={} if polling else {"poll": "0"})
     rows = await build_recent_scans(session, sort=sort_state)
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows, "sort": sort_state},
+        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling},
     )
 
 
