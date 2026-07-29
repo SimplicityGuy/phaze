@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
@@ -1202,6 +1202,57 @@ async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClien
     assert await _analysis_failed_at(session, live_deepen.id) is not None
     assert len(await _process_file_ledger_rows(session, live_deepen.id)) == 1
     assert not await _is_awaiting_cloud(session, live_deepen.id)
+
+
+@pytest.mark.asyncio
+async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqueue(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-g31m: a concurrent process_file re-enqueue landing between the ledger snapshot and the
+    DELETE must not lose the live ledger row out from under it.
+
+    The l1km ``live_keys`` guard is a lock-free snapshot taken well before the ledger DELETE; a
+    concurrent enqueue (deepen_analysis / retry_analysis_failed's background loop) for this EXACT
+    candidate can land in that gap. ``upsert_ledger_entry`` -- the SAQ before_enqueue write hook every
+    process_file producer shares -- refreshes ``enqueued_at`` on every re-enqueue of a still-existing
+    key, so the ledger DELETE is CAS-guarded on the exact ``enqueued_at`` value observed immediately
+    before it runs. Simulated here by bumping the row's ``enqueued_at`` right after that snapshot read
+    (in the SAME transaction, standing in for the concurrent commit) -- the CAS's stale comparison value
+    no longer matches, so the DELETE misses the row instead of silently clobbering a live producer's claim.
+    """
+    (candidate,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    real_execute = session.execute
+    bumped = False
+    # A literal future value, NOT func.now(): Postgres's now()/CURRENT_TIMESTAMP is fixed at
+    # TRANSACTION start, and this whole test runs inside one begin/rollback-wrapped transaction
+    # (the shared ``session`` fixture), so a func.now() "bump" here would silently no-op back to the
+    # SAME value the row already carries -- masking the very race this test exists to prove closed.
+    future_enqueued_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
+
+    async def _bump_after_ledger_snapshot(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal bumped
+        result = await real_execute(statement, *args, **kwargs)
+        compiled = str(statement)
+        if not bumped and "scheduling_ledger" in compiled and "enqueued_at" in compiled and "DELETE" not in compiled.upper():
+            bumped = True
+            await real_execute(
+                update(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{candidate.id}").values(enqueued_at=future_enqueued_at),
+            )
+        return result
+
+    monkeypatch.setattr(session, "execute", _bump_after_ledger_snapshot)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    monkeypatch.undo()
+    assert bumped, "the ledger snapshot statement was never intercepted -- test is not exercising the race"
+    # The CAS-guarded delete missed the row (its enqueued_at no longer matched what was observed) -- the
+    # concurrently-refreshed ledger row survives instead of being removed out from under the live job.
+    assert len(await _process_file_ledger_rows(session, candidate.id)) == 1
 
 
 @pytest.mark.asyncio

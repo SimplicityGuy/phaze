@@ -11,7 +11,7 @@ import uuid  # runtime import: FastAPI path-param annotations + the phaze-y07u s
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import delete, exists, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 import structlog
@@ -1498,9 +1498,35 @@ async def trigger_backfill_cloud(
         await session.execute(
             update(AnalysisResult).where(AnalysisResult.file_id.in_(candidate_ids)).values(failed_at=None, error_message=None),
         )
-        await session.execute(
-            delete(SchedulingLedger).where(SchedulingLedger.key.in_([process_file_job_key(fid) for fid in candidate_ids])),
-        )
+        # phaze-g31m: CAS the ledger DELETE on the ``enqueued_at`` THIS transaction observes right here,
+        # not a bare key-membership DELETE. The live_keys snapshot above is a lock-free read taken before
+        # this point, so a concurrent process_file enqueue (deepen_analysis / retry_analysis_failed's
+        # background loop) for one of these EXACT candidates can land in the gap between that snapshot
+        # and this statement (each such gap is a single DB round trip wide). ``upsert_ledger_entry`` --
+        # the SAQ before_enqueue write hook every process_file producer shares -- refreshes
+        # ``enqueued_at`` on EVERY re-enqueue of a still-existing key, including that race. Conditioning
+        # the delete on the value just read here means a concurrent re-enqueue's ledger commit landing in
+        # that gap changes the row this DELETE is looking for, so it can never remove a ledger row a live
+        # producer has claimed -- the row survives, the file stays correctly in-flight, and this
+        # candidate is silently left for a later backfill click instead of being double-dispatched to
+        # local AND cloud.
+        #
+        # This closes the window where the CONCURRENT enqueue's ledger write itself lands here (the
+        # candidate's row visibly changes). It does NOT close the narrower "ledger already committed,
+        # the matching saq_jobs row insert still pending" interleaving the live_keys snapshot can also
+        # miss -- that shape is indistinguishable from a genuine stale orphan by ANY read of this row's
+        # own content (its enqueued_at never changes), and closing it fully would require an advisory
+        # lock shared with the SAQ before_enqueue chokepoint every process_file producer goes through.
+        # Deliberately out of scope here (P3, self-limiting, single-user deployment -- see the bead's
+        # verifier notes); a complete close is tracked as follow-up work, not silently accepted as fixed.
+        ledger_keys = [process_file_job_key(fid) for fid in candidate_ids]
+        observed_ledger_rows = (
+            await session.execute(select(SchedulingLedger.key, SchedulingLedger.enqueued_at).where(SchedulingLedger.key.in_(ledger_keys)))
+        ).all()
+        if observed_ledger_rows:
+            await session.execute(
+                delete(SchedulingLedger).where(tuple_(SchedulingLedger.key, SchedulingLedger.enqueued_at).in_(observed_ledger_rows)),
+            )
 
     counts = await _route_discovered_by_duration(
         request.app.state,
