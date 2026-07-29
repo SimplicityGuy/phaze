@@ -1,6 +1,24 @@
 # Phaze - Music alignment tool
 # Run `just` to see all available commands
 
+# phaze-tcqq: single source of truth for the pinned Postgres image used by every
+# justfile-launched Postgres container (test-db, integration-test, perf-db-up). Before
+# this variable existed the tag was hardcoded at 8 separate justfile sites (4 real
+# `docker run` arguments + 4 echo strings that only CLAIM the version), so a partial
+# bump could print the old tag while running the new one -- a divergence that survives
+# casual review because the log output looks right. docker-compose.yml and
+# .github/workflows/tests.yml cannot read a justfile variable, so they keep their own
+# literal pins; tests/agents/deployment/test_postgres_image_pin.py is the mechanical guard that
+# keeps all three in step -- bump this value AND the other two pins together, or the
+# guard test fails and names the mismatch.
+postgres_image := "postgres:18-alpine"
+# phaze-knwk: match production's docker-compose.yml `shm_size: "256m"` on every
+# justfile-launched Postgres container (test-db, integration-test, perf-db-up), so a
+# harness run cannot pass on a Postgres feature (a bigger parallel index build, a
+# manually-raised work_mem/maintenance_work_mem) that the 64 MB Docker default would
+# reject in production, or vice versa. See docker-compose.yml's `postgres.shm_size`
+# comment for the investigation and derivation.
+postgres_shm_size := "256m"
 # Host bind IP for every ephemeral/test-harness Postgres + Redis container this justfile
 # publishes (test-db, integration-test's pinned-port branches, perf-db-up). Defaults to
 # loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
@@ -296,14 +314,15 @@ test-db:
     if [ "$(docker inspect -f '{{{{.State.Running}}' "$container" 2>/dev/null || echo false)" = "true" ]; then
         echo "🐘 ${container} already running on port ${port}"
     else
-        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+        echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
         if ! docker start "$container" >/dev/null 2>&1; then
             run_or_yield "$container" "created" \
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
                 -e POSTGRES_DB=phaze_test \
+                --shm-size {{postgres_shm_size}} \
                 -p "{{test_db_bind_ip}}:${port}:5432" \
-                postgres:18-alpine
+                {{postgres_image}}
         fi
     fi
     redis_databases="{{test_redis_databases}}"
@@ -476,23 +495,25 @@ integration-test:
     fixed_redis_port="{{integration_redis_port}}"
     trap 'docker rm -f "$container" "$redis_container" >/dev/null 2>&1 || true' EXIT
     if [ "$fixed_db_port" = "0" ]; then
-        echo "🐘 Starting ${container} (postgres:18-alpine) on a dynamically-assigned host port..."
+        echo "🐘 Starting ${container} ({{postgres_image}}) on a dynamically-assigned host port..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
+            --shm-size {{postgres_shm_size}} \
             -p 127.0.0.1::5432 \
-            postgres:18-alpine >/dev/null
+            {{postgres_image}} >/dev/null
         port="$(docker port "$container" 5432/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
     else
         port="$fixed_db_port"
-        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port} (pinned via PHAZE_INTEGRATION_TEST_DB_PORT)..."
+        echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port} (pinned via PHAZE_INTEGRATION_TEST_DB_PORT)..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
+            --shm-size {{postgres_shm_size}} \
             -p "{{test_db_bind_ip}}:${port}:5432" \
-            postgres:18-alpine >/dev/null
+            {{postgres_image}} >/dev/null
     fi
     if [ "$fixed_redis_port" = "0" ]; then
         echo "🟥 Starting ${redis_container} (redis:7-alpine) on a dynamically-assigned host port..."
@@ -834,10 +855,11 @@ perf-db-up:
         echo "🐘 ${container} already running on port ${port}"
     else
         docker rm -f "$container" >/dev/null 2>&1 || true
-        echo "🐘 Starting ${container} (postgres:18-alpine) on host port ${port}..."
+        echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
-            -p "{{test_db_bind_ip}}:${port}:5432" postgres:18-alpine >/dev/null
+            --shm-size {{postgres_shm_size}} \
+            -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null
     fi
     for _ in $(seq 1 30); do
         if docker exec "$container" pg_isready -U phaze -d {{perf_db_name}} >/dev/null 2>&1; then
