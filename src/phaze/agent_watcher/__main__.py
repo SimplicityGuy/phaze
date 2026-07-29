@@ -2,11 +2,12 @@
 
 Standalone asyncio process -- NOT a SAQ worker. Boots with ``asyncio.run(main())``,
 calls ``/whoami`` with bounded retry to resolve the calling agent's identity,
-schedules one watchdog Observer per entry in ``identity.scan_roots``, sweeps the
-:class:`Debouncer` every ``watcher_sweep_interval_seconds`` and POSTs each
-settled path via :class:`Poster`. SIGINT / SIGTERM trigger graceful shutdown:
-sweep loop exits, observer.stop() + observer.join() drain the watchdog thread,
-and the HTTP client is closed.
+schedules one watchdog Observer per entry in ``identity.scan_roots`` (phaze-jzid: a
+dedicated observer instance per root so one root's start() failure cannot abort the
+others), sweeps the :class:`Debouncer` every ``watcher_sweep_interval_seconds`` and
+POSTs each settled path via :class:`Poster`. SIGINT / SIGTERM trigger graceful
+shutdown: sweep loop exits, every root observer's stop() + join() drain its watchdog
+thread, and the HTTP client is closed.
 
 Import-graph invariant (Pitfall 5 / D-22):
     This module MUST NOT import ``phaze.tasks.agent_worker``,
@@ -23,10 +24,14 @@ Startup sequence (D-16):
        token fails fast instead of spinning the container in restart loops.
     4. :class:`Debouncer` + :class:`Poster` constructed; ``asyncio.Event`` for
        shutdown; SIGINT/SIGTERM hooked to ``shutdown_event.set``.
-    5. :class:`watchdog.observers.Observer` constructed; one ``schedule(...)``
-       per ``identity.scan_roots`` entry; ``observer.start()`` spins the
-       watchdog thread. The watcher does NOT walk the existing tree on start
-       (D-04) -- only post-startup events flow through the bridge.
+    5. One :class:`watchdog.observers.Observer` PER ``identity.scan_roots`` entry;
+       each is scheduled against exactly one root and started independently. A
+       root whose ``start()`` raises ``OSError`` (missing/unmounted path,
+       inotify watch-limit exhaustion) is logged as a WARNING and skipped
+       WITHOUT aborting the remaining roots (phaze-jzid); the watcher only
+       fails hard if every root failed to start. The watcher does NOT walk the
+       existing tree on start (D-04) -- only post-startup events flow through
+       the bridge.
     6. ``_sweep_loop`` blocks until ``shutdown_event`` fires.
     7. ``finally``: ``observer.stop()`` + ``observer.join()`` + ``client.close()``.
 """
@@ -221,16 +226,49 @@ async def main() -> None:
         # — the native Observer never fires. PollingObserver works on any
         # filesystem at a modest CPU cost. Native Observer remains the default
         # for production Linux file servers where inotify is fully functional.
-        observer: BaseObserver
+        handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
+
+        # phaze-jzid: ONE watchdog.BaseObserver PER scan root, started independently,
+        # rather than a single shared Observer scheduled against every root. watchdog's
+        # BaseObserver.start() iterates all of its emitters and re-raises the first
+        # OSError it hits (e.g. FileNotFoundError for a root that does not exist inside
+        # this container -- registration/mount drift -- or ENOSPC/EMFILE from exceeding
+        # fs.inotify.max_user_watches) -- so scheduling every root on ONE observer means a
+        # single bad root aborts start() for ALL of them, taking down realtime ingestion
+        # on otherwise-healthy roots and crash-looping the whole watcher under compose's
+        # restart policy. Isolating each root behind its own observer instance means a
+        # per-root start() failure is caught and skipped without touching the others.
+        # Fail hard only if every single root failed to start (nothing left to watch).
         if cfg.watcher_polling_mode:
             logger.info("watcher: using PollingObserver (PHAZE_WATCHER_POLLING_MODE=true)")
-            observer = PollingObserver(timeout=cfg.watcher_sweep_interval_seconds)
-        else:
-            observer = Observer()
-        handler = WatcherEventHandler(loop=loop, debouncer_touch=debouncer.touch)
+
+        observers: list[tuple[str, BaseObserver]] = []
+        failed_roots: list[str] = []
         for root in identity.scan_roots:
-            observer.schedule(handler, path=root, recursive=True)
-        observer.start()
+            root_observer: BaseObserver = PollingObserver(timeout=cfg.watcher_sweep_interval_seconds) if cfg.watcher_polling_mode else Observer()
+            root_observer.schedule(handler, path=root, recursive=True)
+            try:
+                root_observer.start()
+            except OSError as exc:
+                failed_roots.append(root)
+                logger.warning(
+                    "watcher: failed to start observer for scan root %s; skipping it and continuing with the remaining root(s): %s",
+                    root,
+                    exc,
+                )
+                continue
+            observers.append((root, root_observer))
+
+        if not observers:
+            msg = f"watcher: no scan root could be watched (all {len(identity.scan_roots)} failed to start); aborting"
+            raise RuntimeError(msg)
+        if failed_roots:
+            logger.warning(
+                "watcher: started with %d/%d scan root(s); failed: %s",
+                len(observers),
+                len(identity.scan_roots),
+                failed_roots,
+            )
 
         try:
             await _sweep_loop(
@@ -248,11 +286,15 @@ async def main() -> None:
             # 10s matches the typical container-shutdown grace period and is
             # long enough for a healthy thread to drain. If the thread is still
             # alive after the timeout we log a warning and proceed -- the
-            # container's process supervisor handles the final SIGKILL.
-            observer.stop()
-            observer.join(timeout=10.0)
-            if observer.is_alive():
-                logger.warning("watcher: observer thread did not stop within 10s; abandoning")
+            # container's process supervisor handles the final SIGKILL. Every
+            # per-root observer gets its own bounded stop/join so one wedged
+            # root cannot delay shutdown of the others.
+            for _root, root_observer in observers:
+                root_observer.stop()
+            for root, root_observer in observers:
+                root_observer.join(timeout=10.0)
+                if root_observer.is_alive():
+                    logger.warning("watcher: observer thread for scan root %s did not stop within 10s; abandoning", root)
     finally:
         await client.close()
 
