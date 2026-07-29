@@ -822,13 +822,18 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     D-07: the reporter (seed_test_agent "test-agent-01") matches the recorded backend's agent_ref, so the
     re-drive proceeds. Landmine 1: the re-driven PushFilePayload carries dest_host / dest_scratch_dir /
     dest_ssh_user stamped from the recorded backend -- never a destination-less payload.
+
+    phaze-7lpe: seeds cloud_job at SUCCEEDED -- the REAL state /mismatch always observes in production
+    (report_pushed flips submitted -> succeeded before process_file, the sole /mismatch caller, can ever
+    run) -- and asserts the CAS re-arms it back to SUBMITTED so the re-driven push's own /pushed callback
+    can pass its CAS instead of silently no-op'ing forever.
     """
     agent, raw_token = seed_test_agent
     # Reporter registry: the compute backend's agent_ref == the reporting agent id so D-07 passes.
     _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
     file_id = await _seed_file(session, agent.id)
     await _seed_push_ledger(session, file_id, push_attempt=0)
-    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)  # backend_id="oci-a1", agent_ref="test-agent-01"
     fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
     fileserver_id = fileserver.id  # capture before any expire_all()
 
@@ -841,6 +846,12 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     assert body["file_id"] == str(file_id)
     assert body["status"] == "mismatch"
     assert body["cleared"] is False, "under the cap the push is re-driven, not cleared"
+
+    # phaze-7lpe: the CAS re-arms cloud_job succeeded -> submitted so the re-driven push's /pushed can
+    # re-enqueue process_file instead of hitting the idempotent no-op forever.
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUBMITTED.value
 
     # The file keeps its PUSHING slot (Open-Q1).
 
@@ -866,6 +877,67 @@ async def test_mismatch_under_cap_redrives_and_increments_counter(
     from phaze.tasks.push import PUSH_FILE_SAQ_TIMEOUT_SEC
 
     assert fileserver_queue.captured_policy[0]["timeout"] == PUSH_FILE_SAQ_TIMEOUT_SEC
+
+
+@pytest.mark.asyncio
+async def test_mismatch_under_cap_rearms_cas_so_repushed_pushed_reenqueues_process_file(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-7lpe: drive the REAL sequence (/pushed -> /mismatch -> /pushed), not a seeded 'submitted'.
+
+    report_pushed's ONLY guard is cloud_job.status == 'submitted' (SC#1/D-12); by the time /mismatch is
+    reachable (the compute agent's process_file already ran and found a sha256 mismatch) that CAS token
+    has ALREADY been consumed -- report_pushed flipped it to 'succeeded' first. Both CAS anchors in
+    report_push_mismatch used to key on that same consumed 'submitted' token, so the under-cap re-drive's
+    OWN /pushed callback matched 0 rows and never re-enqueued process_file -- the D-12 re-verify loop was
+    silently dead after exactly one re-push. This test drives the actual production sequence instead of
+    seeding an unreachable 'submitted' cloud_job at /mismatch time, and asserts the re-driven push's
+    /pushed DOES re-enqueue a SECOND process_file.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id)
+    await _seed_cloud_job(session, file_id)  # backend_id="oci-a1", agent_ref="test-agent-01"
+    await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        # 1) The fileserver's first push succeeds: cloud_job submitted -> succeeded, process_file #1 enqueued.
+        r1 = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+        assert r1.status_code == 200, r1.text
+        cloud_job = await _cloud_job_row(session, file_id)
+        assert cloud_job is not None
+        assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
+
+        # 2) The compute agent's process_file finds a sha256 mismatch and reports it -- the REAL state
+        #    reaching this handler is 'succeeded', never 'submitted'.
+        r2 = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["cleared"] is False, "under the cap the push is re-driven, not cleared"
+
+        # The re-arm must have flipped cloud_job BACK to 'submitted' so the re-driven push's /pushed can
+        # pass its CAS -- otherwise it is silently swallowed as an idempotent no-op forever.
+        cloud_job = await _cloud_job_row(session, file_id)
+        assert cloud_job is not None
+        assert cloud_job.status == CloudJobStatus.SUBMITTED.value, "cloud_job must be re-armed to 'submitted' before re-driving"
+
+        # 3) The re-driven push lands a good copy; its /pushed callback must NOT be an idempotent no-op --
+        #    it has to re-enqueue a SECOND process_file, or the file is silently stranded forever.
+        r3 = await ac.post(f"/api/internal/agent/push/{file_id}/pushed")
+        assert r3.status_code == 200, r3.text
+
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value
+
+    compute_queue = task_router.queues["test-agent-01-analyze"]
+    assert len([t for t, _ in compute_queue.captured if t == "process_file"]) == 2, (
+        "the re-pushed bytes must be re-verified: TWO process_file enqueues"
+    )
 
 
 @pytest.mark.asyncio
@@ -1062,7 +1134,7 @@ async def test_push_mismatch_over_cap_spill_restamps_cloud_job_to_awaiting(
 
 
 @pytest.mark.asyncio
-async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submitted(
+async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submitted_or_succeeded(
     seed_test_agent: tuple[Agent, str],
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -1070,19 +1142,19 @@ async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submit
 ) -> None:
     """SC#1/D-12 (T-83-PUSH-CLOBBER): a late/duplicate over-cap /mismatch whose cloud_job already advanced cannot spill.
 
-    After the anchor swap the over-cap spill CAS keys on ``cloud_job.status == 'submitted'``, NOT
-    ``FileRecord.state == PUSHING``. A file whose cloud_job has already advanced past ``submitted`` (here
-    ``succeeded``) must be a FULL no-op even if the dual-written ``FileRecord.state`` still reads ``PUSHING``
-    and the reporter passes the D-07 gate: the CAS matches 0 rows, so NO cloud_job re-stamp, NO FileRecord
-    AWAITING_CLOUD write, NO ledger clear, ``cleared=False``. The old ``state == PUSHING`` guard would
-    (wrongly) spill the already-advanced file.
+    phaze-7lpe: the over-cap spill CAS keys on ``cloud_job.status IN ('submitted', 'succeeded')`` --
+    widened from ``'submitted'``-only because ``succeeded`` is the REAL state /mismatch always observes
+    in production (report_pushed flips submitted -> succeeded before process_file, the sole /mismatch
+    caller, can ever run). A file whose cloud_job has ALREADY advanced past that pair (here ``awaiting``
+    -- a concurrent /mismatch already spilled it) must be a FULL no-op even if the reporter passes the
+    D-07 gate: the CAS matches 0 rows, so NO cloud_job re-stamp, NO ledger clear, ``cleared=False``.
     """
     agent, raw_token = seed_test_agent
     _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)  # D-07 passes (agent_ref test-agent-01)
     file_id = await _seed_file(session, agent.id)
     await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds the cap
-    # cloud_job already advanced to SUCCEEDED; the dual-written FileRecord still lags at PUSHING.
-    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)
+    # cloud_job already advanced past the mismatch-reachable pair (a concurrent spill already fired).
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.AWAITING)
 
     task_router = FakeTaskRouter()
     async with _make_client(session, task_router, raw_token) as ac:
@@ -1092,8 +1164,42 @@ async def test_push_mismatch_over_cap_does_not_clobber_when_cloud_job_not_submit
     assert r.json()["cleared"] is False, "the CAS matched 0 rows -> nothing cleared"
     cloud_job = await _cloud_job_row(session, file_id)
     assert cloud_job is not None
-    assert cloud_job.status == CloudJobStatus.SUCCEEDED.value, "the already-advanced cloud_job must be UNCHANGED"
+    assert cloud_job.status == CloudJobStatus.AWAITING.value, "the already-advanced cloud_job must be UNCHANGED"
     assert await _ledger_row(session, f"push_file:{file_id}") is not None, "the ledger row must NOT be cleared on the no-op"
+
+
+@pytest.mark.asyncio
+async def test_push_mismatch_over_cap_spills_when_cloud_job_succeeded(
+    seed_test_agent: tuple[Agent, str],
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    backends_toml_env: Any,
+) -> None:
+    """phaze-7lpe: the over-cap spill now fires from ``succeeded`` -- the REAL state /mismatch always sees.
+
+    Regression for the dead T-50-loop safety: before this fix a persistently corrupt/skewed push spilled
+    NOTHING at the cap (the CAS only matched an unreachable ``'submitted'``), so a file that keeps failing
+    sha256 verification was silently re-pushed forever instead of ever falling back to local.
+    """
+    agent, raw_token = seed_test_agent
+    _patch_settings(monkeypatch, backends_toml_env, registry=_COMPUTE_REPORTER_REGISTRY)
+    settings = ControlSettings()
+    file_id = await _seed_file(session, agent.id)
+    await _seed_push_ledger(session, file_id, push_attempt=3)  # next attempt (4) exceeds push_max_attempts=3
+    await _seed_cloud_job(session, file_id, status=CloudJobStatus.SUCCEEDED)  # the REAL state at /mismatch time
+
+    task_router = FakeTaskRouter()
+    async with _make_client(session, task_router, raw_token) as ac:
+        r = await ac.post(f"/api/internal/agent/push/{file_id}/mismatch")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] is True
+    cloud_job = await _cloud_job_row(session, file_id)
+    assert cloud_job is not None
+    assert cloud_job.status == CloudJobStatus.AWAITING.value, "D-03: the spill re-stamps to 'awaiting', NOT 'failed'"
+    assert cloud_job.attempts >= settings.cloud_submit_max_attempts, "cloud budget spent -> select_backend routes to local"
+    assert await _ledger_row(session, f"push_file:{file_id}") is None, "ledger row cleared behind the CAS"
+    assert task_router.queues == {}
 
 
 @pytest.mark.asyncio
