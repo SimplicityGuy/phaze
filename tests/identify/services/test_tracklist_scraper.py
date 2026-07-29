@@ -1,5 +1,6 @@
 """Tests for TracklistScraper service."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -120,12 +121,19 @@ def _mock_response(status_code: int, text: str, url: str = "https://www.1001trac
 
 @pytest.fixture(autouse=True)
 def _clear_scraper_caches():
-    """Reset the process-wide TTL caches (phaze-hu8v) so tests never leak state via shared keys."""
+    """Reset process-wide TracklistScraper state (phaze-hu8v, phaze-wb1o) so tests never leak
+    state via shared ClassVars -- including the phaze-wb1o rate-limit slot allocator, which
+    would otherwise accumulate a ever-growing reserved slot across tests that mock out the
+    actual sleep (real wall-clock time never advances to "catch up" the way it would in
+    production).
+    """
     TracklistScraper._search_cache.clear()
     TracklistScraper._tracklist_cache.clear()
+    TracklistScraper._next_request_at = None
     yield
     TracklistScraper._search_cache.clear()
     TracklistScraper._tracklist_cache.clear()
+    TracklistScraper._next_request_at = None
 
 
 @pytest.fixture(autouse=True)
@@ -549,6 +557,90 @@ class TestTracklistScraperRedirects:
                 await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
         finally:
             await client.aclose()
+
+
+class TestTracklistScraperSharedRateLimit:
+    """Regression coverage for phaze-wb1o: `_rate_limit` used to be a private per-coroutine
+    sleep with no shared lock/timestamp, so N concurrent instances (mirroring N concurrent SAQ
+    jobs -- the controller worker constructs a fresh TracklistScraper() per job) each slept
+    their own independent 8-12s and then fired immediately, multiplying the aggregate request
+    rate ~Nx past the MIN_DELAY floor instead of serializing onto a shared schedule.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_serializes_concurrent_callers(self):
+        """Concurrent callers must be staggered onto successive slots, not clustered together."""
+        scrapers = [TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient)) for _ in range(3)]
+        recorded_waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            recorded_waits.append(seconds)
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await asyncio.gather(*(s._rate_limit() for s in scrapers))
+
+        assert len(recorded_waits) == 3
+        recorded_waits.sort()
+        # The OLD behavior: three independent 8-12s sleeps that all land close to 8.0s -- the
+        # exact burst this bead exists to prevent. The FIXED behavior: each successive slot is
+        # pushed back by (at least, allowing a little scheduling slack) the sampled delay.
+        assert recorded_waits[1] >= recorded_waits[0] + 8.0 - 0.5
+        assert recorded_waits[2] >= recorded_waits[1] + 8.0 - 0.5
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_shared_across_distinct_instances(self):
+        """The slot allocator is a ClassVar -- a SECOND fresh instance (a new SAQ job's own
+        TracklistScraper()) must still be serialized behind the first instance's reservation,
+        not start its own independent schedule from zero.
+        """
+        first = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        second = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        recorded_waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            recorded_waits.append(seconds)
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await first._rate_limit()
+            await second._rate_limit()
+
+        assert len(recorded_waits) == 2
+        assert recorded_waits[1] >= recorded_waits[0] + 8.0 - 0.5
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_catches_up_instead_of_compounding_a_backlog(self):
+        """A caller arriving well after the previous reserved slot has elapsed schedules from
+        "now", rather than compounding an ever-growing backlog of reservations into the future.
+        """
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+
+        async def fake_sleep(seconds: float) -> None:
+            return None
+
+        with (
+            patch("phaze.services.tracklist_scraper.asyncio.sleep", new=fake_sleep),
+            patch("phaze.services.tracklist_scraper.random.uniform", return_value=8.0),
+        ):
+            await scraper._rate_limit()
+            # Simulate real time having actually passed (e.g. a slow request took minutes) --
+            # the next reservation should NOT be measured from the stale past slot.
+            TracklistScraper._next_request_at -= 120
+            recorded_waits: list[float] = []
+
+            async def capturing_sleep(seconds: float) -> None:
+                recorded_waits.append(seconds)
+
+            with patch("phaze.services.tracklist_scraper.asyncio.sleep", new=capturing_sleep):
+                await scraper._rate_limit()
+
+        assert len(recorded_waits) == 1
+        assert recorded_waits[0] == pytest.approx(8.0, abs=0.01)
 
     @pytest.mark.asyncio
     async def test_search_rejects_redirect_off_allowlist(self):
