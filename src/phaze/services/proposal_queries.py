@@ -47,6 +47,21 @@ class ProposalPendingConflictError(Exception):
         self.proposal_id = proposal_id
 
 
+class ProposalEditRefusedError(Exception):
+    """A field-edit write blocked because the row is no longer editable (phaze-3mru).
+
+    :func:`update_proposal_fields` has no "attempted status" -- an edit doesn't transition
+    ``status`` at all -- so reusing :class:`ProposalTransitionError` there meant passing the row's
+    CURRENT status as both the current and the attempted value, producing a self-contradictory 409
+    detail like "illegal transition approved -> approved". This carries only the current status and
+    names the refusal for what it is.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        super().__init__(f"edit refused: proposal is {current_status}, only PENDING rows are editable")
+        self.current_status = current_status
+
+
 @dataclass
 class Pagination:
     """Pagination metadata for a page of results."""
@@ -324,7 +339,12 @@ async def update_proposal_fields(
     concurrent approval silently rewrote the ``proposed_path`` an APPROVED row feeds straight into
     ``execution_dispatch`` -- redirecting a reviewed move to an unreviewed destination -- and edits
     to terminal EXECUTED/FAILED rows corrupted the historical record. With ``allowed_from`` the
-    edit refuses (``ProposalTransitionError`` -> 409) rather than mutating a non-editable row.
+    edit refuses (:class:`ProposalEditRefusedError` -> 409) rather than mutating a non-editable row.
+
+    phaze-3mru: the refusal raises :class:`ProposalEditRefusedError`, not
+    :class:`ProposalTransitionError`. An edit has no "attempted status" to name -- reusing the
+    status-transition error meant passing the row's current status as both arguments, producing a
+    409 detail like "illegal transition approved -> approved".
     """
     values: dict[str, Any] = {}
     if proposed_filename is not None:
@@ -346,7 +366,7 @@ async def update_proposal_fields(
         if proposal is None:
             return None
         if allowed_from is not None:
-            raise ProposalTransitionError(proposal.status, proposal.status)
+            raise ProposalEditRefusedError(proposal.status)
         return proposal
 
     # Re-fetch with selectinload to ensure the file relationship is available for the row render

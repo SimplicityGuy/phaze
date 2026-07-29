@@ -21,6 +21,7 @@ from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus
 # routers/shell.py does not import this module -- so there is no cycle.
 from phaze.routers.shell import build_propose_list_context
 from phaze.services.proposal_queries import (
+    ProposalEditRefusedError,
     ProposalPendingConflictError,
     ProposalTransitionError,
     approve_pending_above_confidence,
@@ -530,13 +531,13 @@ async def edit_proposal(
     # a concurrent approval rewrote the proposed_path an APPROVED row feeds into execution_dispatch,
     # redirecting a reviewed move to an unreviewed destination (and edits to terminal EXECUTED/FAILED
     # rows corrupted the historical record). update_proposal_fields now evaluates the from-state
-    # inside the UPDATE and raises ProposalTransitionError, which we translate to 409.
+    # inside the UPDATE and raises ProposalEditRefusedError (phaze-3mru), which we translate to 409.
     try:
         if is_path:
             proposal = await update_proposal_fields(session, proposal_id, proposed_path=value, allowed_from=_APPROVE_REJECT_FROM)
         else:
             proposal = await update_proposal_fields(session, proposal_id, proposed_filename=value, allowed_from=_APPROVE_REJECT_FROM)
-    except ProposalTransitionError as exc:
+    except ProposalEditRefusedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found")

@@ -12,6 +12,7 @@ from phaze.models.proposal import APPROVE_REJECT_FROM, UNDO_FROM, ProposalStatus
 from phaze.routers.proposal_sort import PROPOSE_SORT
 from phaze.services.proposal_queries import (
     Pagination,
+    ProposalEditRefusedError,
     ProposalStats,
     ProposalTransitionError,
     approve_pending_above_confidence,
@@ -499,8 +500,12 @@ async def test_get_proposal_with_file_not_found(session: AsyncSession) -> None:
 async def test_update_proposal_fields_refuses_non_pending_row(session: AsyncSession) -> None:
     """An edit against an APPROVED row is refused and does NOT rewrite the reviewed proposed_path."""
     proposal = await _create_proposal(session, status=ProposalStatus.APPROVED)
-    with pytest.raises(ProposalTransitionError):
+    with pytest.raises(ProposalEditRefusedError) as exc_info:
         await update_proposal_fields(session, proposal.id, proposed_path="Some/Other/Dir", allowed_from=APPROVE_REJECT_FROM)
+    # phaze-3mru: the message names the row's real (single) status, not a nonsensical
+    # "approved -> approved" transition invented by echoing the same value into both slots.
+    assert str(exc_info.value) == "edit refused: proposal is approved, only PENDING rows are editable"
+    assert exc_info.value.current_status == ProposalStatus.APPROVED
     refetched = await session.get(RenameProposal, proposal.id)
     assert refetched is not None
     assert refetched.status == ProposalStatus.APPROVED
