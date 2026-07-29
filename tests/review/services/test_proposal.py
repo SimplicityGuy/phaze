@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 import pytest
 
@@ -889,309 +890,164 @@ class TestStoreProposals:
 
 
 class TestLoadCompanionContents:
-    """Tests for load_companion_contents function."""
+    """Tests for load_companion_contents -- the CONTROL-PLANE half (phaze-6bkk).
+
+    The read itself moved to the owning agent. ``generate_proposals`` runs on the CONTROLLER worker,
+    which docker-compose.yml documents as "fileless -- never touches SCAN_PATH" (DIST-01), so its
+    ``open()`` on an agent-reported companion path could not succeed in any documented production
+    topology. It failed INVISIBLY: a bare ``except OSError: continue`` treated a permanent,
+    architectural failure exactly like one unreadable sidecar, so every proposal was silently built
+    with an empty companion context.
+
+    What is asserted here is the dispatch + the pure post-processing (cleaning, NUL sanitizing).
+    Containment, the bounded read, and the off-loop offload are asserted on the agent side, in
+    ``tests/review/tasks/test_companion_read.py``.
+    """
+
+    @staticmethod
+    def _router(contents: list[dict[str, str]] | Exception) -> MagicMock:
+        """A task-router double whose meta-lane queue ``apply`` returns ``contents`` (or raises)."""
+        queue = MagicMock()
+        queue.connect = AsyncMock()
+        if isinstance(contents, Exception):
+            queue.apply = AsyncMock(side_effect=contents)
+        else:
+            queue.apply = AsyncMock(return_value={"contents": contents})
+        router = MagicMock()
+        router.queue_for = MagicMock(return_value=queue)
+        router.queue = queue
+        return router
+
+    @staticmethod
+    def _session(companion_records: list[MagicMock]) -> AsyncMock:
+        """A session double: one FileCompanion query, then one FileRecord query per companion."""
+        session = AsyncMock()
+        companions_result = MagicMock()
+        companions_result.scalars.return_value.all.return_value = [MagicMock(companion_id=uuid.uuid4()) for _ in companion_records]
+        file_results = []
+        for rec in companion_records:
+            r = MagicMock()
+            r.scalar_one_or_none.return_value = rec
+            file_results.append(r)
+        session.execute.side_effect = [companions_result, *file_results]
+        return session
+
+    @staticmethod
+    def _companion_record(filename: str, path: str, agent_id: str = "test-agent") -> MagicMock:
+        rec = MagicMock()
+        rec.original_filename = filename
+        rec.current_path = path
+        rec.agent_id = agent_id
+        return rec
 
     @pytest.mark.asyncio
-    async def test_loads_and_cleans_companion_files(self, tmp_path):
-        from unittest.mock import AsyncMock, MagicMock
-        import uuid
-
+    async def test_dispatches_to_the_owning_agents_meta_lane(self):
+        """The read is a ``read_companion_files`` job on the OWNING agent's meta lane."""
         from phaze.services.proposal import load_companion_contents
 
-        session = AsyncMock()
-        media_id = uuid.uuid4()
+        rec = self._companion_record("info.nfo", "/data/music/<set-01>/info.nfo", agent_id="fileserver-02")
+        router = self._router([{"filename": "info.nfo", "content": "Artist: DJ Test\nVenue: Club"}])
 
-        companion_path = tmp_path / "info.nfo"
-        companion_path.write_text("Artist: DJ Test\nVenue: Club", encoding="utf-8")
+        result = await load_companion_contents(self._session([rec]), uuid.uuid4(), 3000, task_router=router)
 
-        # Mock FileCompanion query result
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
-
-        # Mock FileRecord query for companion
-        companion_record = MagicMock()
-        companion_record.original_filename = "info.nfo"
-        companion_record.current_path = str(companion_path)
-        companion_record.agent_id = "test-agent"
-
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        # phaze-eycl: containment check now loads the owning Agent's scan_roots.
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(tmp_path)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        result = await load_companion_contents(session, media_id, 3000)
+        router.queue_for.assert_called_once_with("fileserver-02", "meta")
+        task_name = router.queue.apply.await_args.args[0]
+        kwargs = router.queue.apply.await_args.kwargs
+        assert task_name == "read_companion_files"
+        assert kwargs["companions"] == [{"filename": "info.nfo", "path": "/data/music/<set-01>/info.nfo"}]
+        assert kwargs["max_chars"] == 3000
+        # A bounded wait: companion text is enrichment, so one unresponsive file server must never
+        # wedge a whole proposal batch.
+        assert kwargs["timeout"] > 0
 
         assert len(result) == 1
         assert result[0]["filename"] == "info.nfo"
         assert "Artist: DJ Test" in result[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_skips_unreadable_files(self):
-        from unittest.mock import AsyncMock, MagicMock
-        import uuid
-
+    async def test_cleans_and_truncates_the_returned_text(self):
+        """``clean_companion_content`` still runs control-side -- it is pure, and this is where the
+        value is persisted."""
         from phaze.services.proposal import load_companion_contents
 
-        session = AsyncMock()
-        media_id = uuid.uuid4()
+        rec = self._companion_record("huge.nfo", "/data/music/<set-01>/huge.nfo")
+        router = self._router([{"filename": "huge.nfo", "content": "x" * 1_000_000}])
 
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
-
-        companion_record = MagicMock()
-        companion_record.original_filename = "info.nfo"
-        companion_record.current_path = "/nonexistent/info.nfo"
-        companion_record.agent_id = "test-agent"
-
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        # phaze-eycl: scan_roots covers the (nonexistent) path so containment passes and the
-        # OSError from actually opening it is what makes this test's "skip" assertion meaningful.
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = ["/nonexistent"]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        result = await load_companion_contents(session, media_id, 3000)
-
-        assert len(result) == 0
-
-    @pytest.mark.asyncio
-    async def test_strips_nul_bytes_from_companion_content(self, tmp_path):
-        """A UTF-16-decoded .nfo full of U+0000 is sanitized at the read boundary (phaze-qj9e)."""
-        from unittest.mock import AsyncMock, MagicMock
-        import uuid
-
-        from phaze.services.proposal import load_companion_contents
-
-        session = AsyncMock()
-        media_id = uuid.uuid4()
-
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
-
-        # errors="replace" leaves raw 0x00 intact on decode -- U+0000 is valid UTF-8.
-        companion_path = tmp_path / "setinfo.nfo"
-        companion_path.write_text("A\x00r\x00t\x00i\x00s\x00t\x00:\x00 \x00D\x00J", encoding="utf-8")
-
-        companion_record = MagicMock()
-        companion_record.original_filename = "set\x00info.nfo"
-        companion_record.current_path = str(companion_path)
-        companion_record.agent_id = "test-agent"
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(tmp_path)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        result = await load_companion_contents(session, media_id, 3000)
+        result = await load_companion_contents(self._session([rec]), uuid.uuid4(), 100, task_router=router)
 
         assert len(result) == 1
-        assert "\x00" not in result[0]["content"]
-
-    @pytest.mark.asyncio
-    async def test_bounds_read_without_slurping_a_huge_companion_file(self, tmp_path):
-        """phaze-cycw: the read is bounded at the source -- a companion far larger than
-        max_chars must not be fully buffered into memory, and the result still respects
-        clean_companion_content's max_chars truncation.
-        """
-        from unittest.mock import AsyncMock, MagicMock
-        import uuid
-
-        from phaze.services.proposal import load_companion_contents
-
-        session = AsyncMock()
-        media_id = uuid.uuid4()
-
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
-
-        # Far larger than max_chars=100 -- a full read_text() would buffer all of this.
-        huge_path = tmp_path / "huge.nfo"
-        huge_path.write_text("x" * 1_000_000, encoding="utf-8")
-
-        companion_record = MagicMock()
-        companion_record.original_filename = "huge.nfo"
-        companion_record.current_path = str(huge_path)
-        companion_record.agent_id = "test-agent"
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(tmp_path)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        result = await load_companion_contents(session, media_id, 100)
-
-        assert len(result) == 1
-        # clean_companion_content truncates to max_chars and appends the truncation marker.
         assert result[0]["content"].endswith("[...truncated]")
         assert len(result[0]["content"]) < 200
 
     @pytest.mark.asyncio
-    async def test_read_companion_bounded_sync_offloaded_via_to_thread(self, tmp_path):
-        """phaze-cycw: the bounded read must run off the event loop via asyncio.to_thread."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-        import uuid
+    async def test_strips_nul_bytes_from_companion_content(self):
+        """phaze-qj9e: NUL/lone-surrogate stripping stays control-side, at the persist boundary.
 
-        from phaze.services import proposal as proposal_module
+        PostgreSQL jsonb rejects U+0000 outright, which would abort store_proposals for the WHOLE
+        batch and poison every retry with identical content.
+        """
         from phaze.services.proposal import load_companion_contents
 
-        session = AsyncMock()
-        media_id = uuid.uuid4()
+        rec = self._companion_record("set\x00info.nfo", "/data/music/<set-01>/setinfo.nfo")
+        router = self._router([{"filename": "set\x00info.nfo", "content": "A\x00r\x00t\x00i\x00s\x00t"}])
 
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
+        result = await load_companion_contents(self._session([rec]), uuid.uuid4(), 3000, task_router=router)
 
-        companion_path = tmp_path / "info.nfo"
-        companion_path.write_text("Artist: DJ Test", encoding="utf-8")
-
-        companion_record = MagicMock()
-        companion_record.original_filename = "info.nfo"
-        companion_record.current_path = str(companion_path)
-        companion_record.agent_id = "test-agent"
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(tmp_path)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
-            result = await load_companion_contents(session, media_id, 3000)
-
-        mock_to_thread.assert_called_once()
-        assert mock_to_thread.call_args.args[0] is proposal_module._read_companion_bounded_sync
         assert len(result) == 1
+        assert "\x00" not in result[0]["content"]
         assert "\x00" not in result[0]["filename"]
-        assert "Artist" in result[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_refuses_absolute_path_outside_scan_roots(self, tmp_path):
-        """phaze-eycl regression: an agent-supplied ``current_path`` pointed at an absolute
-        path outside every one of the owning agent's ``scan_roots`` (the ``/proc/self/environ``
-        shape from the bead) is refused -- never opened, never returned as companion content.
-        """
-        from unittest.mock import AsyncMock, MagicMock, patch
-        import uuid
+    async def test_offline_agent_degrades_to_no_companion_context(self):
+        """An offline agent / saturated lane / timeout must degrade the proposal, never block it.
 
-        from phaze.services import proposal as proposal_module
+        Same net behavior as the pre-move ``except OSError: continue``, but the failure is LOGGED
+        rather than silently indistinguishable from "this file has no sidecars".
+        """
         from phaze.services.proposal import load_companion_contents
 
-        session = AsyncMock()
-        media_id = uuid.uuid4()
+        rec = self._companion_record("info.nfo", "/data/music/<set-01>/info.nfo")
+        router = self._router(TimeoutError("agent did not respond"))
 
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
+        result = await load_companion_contents(self._session([rec]), uuid.uuid4(), 3000, task_router=router)
 
-        # A real, readable file OUTSIDE the agent's scan_roots stands in for the
-        # /proc/self/environ-style exfil target -- the point is it is readable but out of bounds.
-        outside_secret = tmp_path / "outside" / "environ"
-        outside_secret.parent.mkdir()
-        outside_secret.write_text("POSTGRES_PASSWORD=hunter2\nREDIS_URL=redis://default:hunter2@redis:6379/0", encoding="utf-8")
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-
-        companion_record = MagicMock()
-        companion_record.original_filename = "environ"
-        companion_record.current_path = str(outside_secret)
-        companion_record.agent_id = "test-agent"
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
-
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(archive_root)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
-
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
-
-        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
-            result = await load_companion_contents(session, media_id, 3000)
-
-        # Refused before the file is ever opened -- and definitely never returned to the caller
-        # (which would embed it in the LLM prompt and persist it to proposals.context_used).
-        mock_to_thread.assert_not_called()
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_refuses_traversal_escape_via_dotdot(self, tmp_path):
-        """phaze-eycl regression: a ``..``-laden ``current_path`` that RESOLVES outside the
-        agent's scan_roots is refused, even though a naive prefix-string check on the raw
-        (unresolved) string would see it as nested under the root.
-        """
-        from unittest.mock import AsyncMock, MagicMock, patch
-        import uuid
+    async def test_no_task_router_returns_empty_without_dispatching(self):
+        """No dispatcher available -> no companion context, and definitely no local ``open()``.
 
-        from phaze.services import proposal as proposal_module
+        This is the DIST-01 regression guard on the control side: the controller must never try to
+        read the archive itself, however it is called.
+        """
         from phaze.services.proposal import load_companion_contents
 
-        session = AsyncMock()
-        media_id = uuid.uuid4()
+        rec = self._companion_record("info.nfo", "/data/music/<set-01>/info.nfo")
 
-        companion = MagicMock()
-        companion.companion_id = uuid.uuid4()
-        mock_companions_result = MagicMock()
-        mock_companions_result.scalars.return_value.all.return_value = [companion]
+        assert await load_companion_contents(self._session([rec]), uuid.uuid4(), 3000) == []
 
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        secret = tmp_path / "secret.txt"
-        secret.write_text("LLM_API_KEY=sk-should-not-leak", encoding="utf-8")
+    @pytest.mark.asyncio
+    async def test_no_companions_dispatches_nothing(self):
+        """A media file with no sidecars costs zero agent round-trips."""
+        from phaze.services.proposal import load_companion_contents
 
-        # Looks like it's under archive_root as a raw string; resolves to a sibling of it.
-        traversal_path = str(archive_root / ".." / "secret.txt")
+        router = self._router([])
 
-        companion_record = MagicMock()
-        companion_record.original_filename = "secret.txt"
-        companion_record.current_path = traversal_path
-        companion_record.agent_id = "test-agent"
-        mock_file_result = MagicMock()
-        mock_file_result.scalar_one_or_none.return_value = companion_record
+        assert await load_companion_contents(self._session([]), uuid.uuid4(), 3000, task_router=router) == []
+        router.queue_for.assert_not_called()
 
-        mock_agent = MagicMock()
-        mock_agent.scan_roots = [str(archive_root)]
-        mock_agent_result = MagicMock()
-        mock_agent_result.scalar_one_or_none.return_value = mock_agent
+    @pytest.mark.asyncio
+    async def test_groups_companions_by_owning_agent(self):
+        """phaze-c9w9 affinity: each owner reads its OWN files -- a path only means anything on the
+        mount it was reported from."""
+        from phaze.services.proposal import load_companion_contents
 
-        session.execute.side_effect = [mock_companions_result, mock_file_result, mock_agent_result]
+        recs = [
+            self._companion_record("a.nfo", "/data/music/a.nfo", agent_id="fileserver-01"),
+            self._companion_record("b.nfo", "/data/music/b.nfo", agent_id="fileserver-02"),
+        ]
+        router = self._router([{"filename": "a.nfo", "content": "text"}])
 
-        with patch.object(proposal_module.asyncio, "to_thread", wraps=proposal_module.asyncio.to_thread) as mock_to_thread:
-            result = await load_companion_contents(session, media_id, 3000)
+        await load_companion_contents(self._session(recs), uuid.uuid4(), 3000, task_router=router)
 
-        mock_to_thread.assert_not_called()
-        assert result == []
+        assert [c.args[0] for c in router.queue_for.call_args_list] == ["fileserver-01", "fileserver-02"]

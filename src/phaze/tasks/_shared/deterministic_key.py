@@ -91,6 +91,12 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # already-submitting file to a no-op, mirroring s3_upload; the reconcile re-drive loop relies
     # on this key so a still-submitting file is never double-submitted.
     "submit_cloud_job": lambda k: str(k["file_id"]),
+    # phaze-6bkk: keyed on the pre-minted TagWriteLog id, NOT file_id. A re-enqueue of the SAME
+    # audit row (a duplicate dispatch of one operator click) dedups to a no-op; a genuinely new
+    # write -- or an undo, which is a second write of the same file -- mints a new log_id and is
+    # correctly a distinct job. Keying on file_id would make an undo silently collapse into the
+    # write it is reverting.
+    "write_file_tags": lambda k: str(k["log_id"]),
 }
 
 

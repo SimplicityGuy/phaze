@@ -1,4 +1,13 @@
-"""Integration tests for CUE management UI endpoints."""
+"""Integration tests for CUE management UI endpoints.
+
+phaze-6bkk: ``POST /cue/{id}/generate`` no longer writes the ``.cue`` file itself. Under DIST-01
+the api container mounts no media, so ``write_cue_file`` there could only ever raise
+``FileNotFoundError`` on a parent directory that does not exist in that container -- CUE generation
+was 100% non-functional in every documented bring-up, behind a toast telling the operator to check
+filesystem permissions. The route now renders the CUE text (pure string work) and dispatches the
+bytes to the OWNING agent's ``meta`` lane, so these tests assert the ENQUEUE, not a file on disk.
+The agent-side write is covered by ``tests/review/tasks/test_cue_write.py``.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +21,7 @@ from sqlalchemy import select
 from phaze.models.file import FileRecord
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from tests._queue_fakes import install_fake_queues
 
 
 if TYPE_CHECKING:
@@ -159,22 +169,33 @@ async def test_cue_list_stats(client: AsyncClient, session: AsyncSession) -> Non
 
 @pytest.mark.asyncio
 async def test_generate_cue_success(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/{id}/generate with valid tracklist generates CUE file."""
+    """POST /cue/{id}/generate with a valid tracklist DISPATCHES the CUE write to the owning agent.
+
+    phaze-6bkk: asserts the whole hand-off contract -- the right task, on the right agent's meta
+    lane, carrying the rendered CUE text and the audio path. The api writes nothing (it cannot).
+    """
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
 
-    # Use tmp_path for file paths
     audio_path = tmp_path / f"{file_record.original_filename}"
     audio_path.write_text("fake audio")
     file_record.current_path = str(audio_path)
     await session.commit()
 
+    _controller_queue, router = install_fake_queues(client)
     response = await client.post(f"/cue/{tracklist.id}/generate")
     assert response.status_code == 200
-    assert "CUE file generated" in response.text or "toast-container" in response.text
+    assert "queued" in response.text.lower() or "toast-container" in response.text
 
-    # Verify CUE file was written
-    cue_path = audio_path.with_suffix(".cue")
-    assert cue_path.exists()
+    # Exactly one job, on the OWNING agent's meta lane.
+    assert len(router.captures) == 1
+    queue_name, task_name, kwargs = router.captures[0]
+    assert queue_name == f"phaze-agent-{file_record.agent_id}-meta"
+    assert task_name == "write_cue_sheet"
+    assert kwargs["audio_path"] == str(audio_path)
+    assert kwargs["content"].startswith("REM ")
+
+    # And the api itself wrote nothing to the archive -- the DIST-01 regression guard.
+    assert not audio_path.with_suffix(".cue").exists()
 
 
 @pytest.mark.asyncio
@@ -194,10 +215,12 @@ async def test_generate_cue_admits_applied_file_not_executed_state(client: Async
     file_record.current_path = str(audio_path)
     await session.commit()
 
+    _controller_queue, router = install_fake_queues(client)
     response = await client.post(f"/cue/{tracklist.id}/generate")
     assert response.status_code == 200
-    assert "CUE file generated" in response.text or "toast-container" in response.text
-    assert audio_path.with_suffix(".cue").exists()
+    assert "queued" in response.text.lower() or "toast-container" in response.text
+    # phaze-6bkk: the guard admitted the file, so the write was DISPATCHED (the api never writes).
+    assert [t for _q, t, _k in router.captures] == ["write_cue_sheet"]
 
 
 @pytest.mark.asyncio
@@ -268,8 +291,15 @@ async def test_generate_cue_unparseable_timestamp_returns_friendly_toast_not_500
 
 
 @pytest.mark.asyncio
-async def test_generate_cue_regenerate_increments_version(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/{id}/generate twice creates versioned CUE files."""
+async def test_generate_cue_regenerate_dispatches_a_second_distinct_job(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
+    """POST /cue/{id}/generate twice dispatches TWO jobs -- a regenerate is not deduped away.
+
+    phaze-6bkk: the versioning itself moved to the agent (``next_cue_path_and_version``), so what
+    the api must guarantee is that a second generate actually reaches it. ``write_cue_sheet`` is a
+    documented ``_UNKEYED_TASKS`` exemption for exactly this reason: a deterministic key would
+    collapse the regenerate onto the first job and silently drop the ``.v2.cue`` the operator asked
+    for. Agent-side version selection is covered in ``tests/review/services/test_cue_generator.py``.
+    """
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
 
     audio_path = tmp_path / file_record.original_filename
@@ -277,17 +307,13 @@ async def test_generate_cue_regenerate_increments_version(client: AsyncClient, s
     file_record.current_path = str(audio_path)
     await session.commit()
 
-    # First generation
+    _controller_queue, router = install_fake_queues(client)
     response1 = await client.post(f"/cue/{tracklist.id}/generate")
     assert response1.status_code == 200
-    assert audio_path.with_suffix(".cue").exists()
-
-    # Second generation (regenerate)
     response2 = await client.post(f"/cue/{tracklist.id}/generate")
     assert response2.status_code == 200
-    # Should have v2 file
-    v2_path = audio_path.parent / f"{audio_path.stem}.v2.cue"
-    assert v2_path.exists()
+
+    assert [t for _q, t, _k in router.captures] == ["write_cue_sheet", "write_cue_sheet"]
 
 
 @pytest.mark.asyncio
@@ -327,8 +353,17 @@ async def test_generate_cue_not_approved(client: AsyncClient, session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_generate_cue_write_failure(client: AsyncClient, session: AsyncSession, tmp_path: Path) -> None:
-    """POST /cue/{id}/generate with write failure returns error toast."""
+async def test_generate_cue_dispatch_failure_toast_points_at_the_agent_not_permissions(
+    client: AsyncClient, session: AsyncSession, tmp_path: Path
+) -> None:
+    """A dispatch failure toasts an ACCURATE diagnosis (phaze-6bkk verifier correction (a)).
+
+    The old message -- "Failed to write CUE file: ... Check filesystem permissions on the
+    destination directory" -- was the wrong diagnosis for the failure that actually fired in
+    production: the directory was not mounted in the api container at all, so the operator was sent
+    hunting permissions on a path that did not exist. The only failure the api can still have here
+    is a control-plane one, and the toast must say so.
+    """
     tracklist, file_record = await _create_approved_tracklist_with_file(session)
 
     audio_path = tmp_path / file_record.original_filename
@@ -336,10 +371,13 @@ async def test_generate_cue_write_failure(client: AsyncClient, session: AsyncSes
     file_record.current_path = str(audio_path)
     await session.commit()
 
-    with patch("phaze.routers.cue.write_cue_file", side_effect=OSError("Permission denied")):
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(f"/cue/{tracklist.id}/generate")
     assert response.status_code == 200
-    assert "Failed to write CUE file" in response.text
+    assert "Could not queue the CUE write" in response.text
+    assert "broker unreachable" in response.text
+    assert "filesystem permissions" not in response.text
 
 
 @pytest.mark.asyncio
@@ -378,14 +416,15 @@ async def test_generate_cue_error_preserves_preview_card_on_cue_card_target(clie
     file_record.current_path = str(audio_path)
     await session.commit()
 
-    with patch("phaze.routers.cue.write_cue_file", side_effect=OSError("Permission denied")):
+    _controller_queue, router = install_fake_queues(client)
+    with patch.object(router, "enqueue_for_file", side_effect=RuntimeError("broker unreachable")):
         response = await client.post(
             f"/cue/{tracklist.id}/generate",
             headers={"HX-Target": f"cue-card-{tracklist.id}"},
         )
     assert response.status_code == 200
     assert f'id="cue-card-{tracklist.id}"' in response.text, "the preview card must survive the error, not be deleted"
-    assert "Failed to write CUE file" in response.text
+    assert "Could not queue the CUE write" in response.text
 
 
 @pytest.mark.asyncio

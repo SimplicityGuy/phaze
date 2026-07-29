@@ -73,6 +73,9 @@ if TYPE_CHECKING:
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
     from phaze.schemas.agent_scan_batches import ScanBatchPatch, ScanBatchPatchResponse
 
+    # phaze-6bkk tag-write result callback.
+    from phaze.schemas.agent_tag_writes import TagWriteResultPayload, TagWriteResultResponse
+
 
 logger = structlog.get_logger(__name__)
 
@@ -432,6 +435,24 @@ class PhazeAgentClient:
             **kwargs,
         )
         return MetadataFailureResponse.model_validate(response.json())
+
+    async def patch_tag_write(self, log_id: uuid.UUID, payload: TagWriteResultPayload) -> TagWriteResultResponse:
+        """PATCH /api/internal/agent/tag-writes/{log_id} -- terminal outcome of an on-agent tag write (phaze-6bkk).
+
+        The agent owns the mutagen write (DIST-01: the api container has no media mount) but never
+        the ``tag_write_log`` table, so this is how the audit row leaves its ``queued`` state. The
+        endpoint is idempotent on ``log_id``, so a SAQ retry that already landed its callback gets a
+        200 with ``applied=false`` rather than a duplicate row. ``log_id`` rides the path only
+        (AUTH-01). httpx-only -- NO database import, keeping the agent worker Postgres-free
+        (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_tag_writes import TagWriteResultResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "PATCH",
+            f"/api/internal/agent/tag-writes/{log_id}",
+            json=payload.model_dump(mode="json"),
+        )
+        return TagWriteResultResponse.model_validate(response.json())
 
     async def post_execution_log(self, payload: ExecutionLogCreate) -> ExecutionLogCreateResponse:
         """POST /api/internal/agent/execution-log -- INSERT-on-conflict-do-nothing."""

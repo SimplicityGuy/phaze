@@ -161,25 +161,32 @@ def generate_cue_content(audio_filename: str, file_type: str, tracks: list[CueTr
     return "\n".join(lines) + "\n"
 
 
-def next_cue_path(audio_path: Path) -> Path:
-    """Determine the next CUE file path with version suffix if needed.
+def next_cue_path_and_version(audio_path: Path) -> tuple[Path, int]:
+    """Determine the next CUE file path AND the version number that file will carry.
 
-    First CUE: "audio.cue"
-    Second: "audio.v2.cue"
-    Third: "audio.v3.cue"
+    First CUE: ``("audio.cue", 1)``
+    Second:    ``("audio.v2.cue", 2)``
+    Third:     ``("audio.v3.cue", 3)``
+
+    phaze-9dwb: the version is returned alongside the path because the caller needs BOTH and the
+    directory scan that computes them is the same scan. The previous shape returned only the Path
+    and the caller (``routers/cue.py::_get_cue_version``) re-ran an identical ``exists()`` +
+    ``iterdir()`` sweep of the archive directory microseconds later purely to recover the number it
+    had just thrown away -- doubling the syscall cost of every generate on a directory that, for a
+    concert archive, can hold thousands of siblings.
 
     Args:
         audio_path: Path to the audio file.
 
     Returns:
-        Path for the next CUE file.
+        ``(path, version)`` for the next CUE file.
     """
     base = audio_path.stem
     parent = audio_path.parent
     base_cue = parent / f"{base}.cue"
 
     if not base_cue.exists():
-        return base_cue
+        return base_cue, 1
 
     # Scan for existing versioned CUE files
     pattern = re.compile(rf"^{re.escape(base)}\.v(\d+)\.cue$")
@@ -190,22 +197,33 @@ def next_cue_path(audio_path: Path) -> Path:
         if m:
             max_version = max(max_version, int(m.group(1)))
 
-    return parent / f"{base}.v{max_version + 1}.cue"
+    return parent / f"{base}.v{max_version + 1}.cue", max_version + 1
 
 
-def write_cue_file(content: str, audio_path: Path) -> Path:
+def next_cue_path(audio_path: Path) -> Path:
+    """Path-only view of :func:`next_cue_path_and_version` (unchanged legacy shape)."""
+    return next_cue_path_and_version(audio_path)[0]
+
+
+def write_cue_file(content: str, audio_path: Path) -> tuple[Path, int]:
     """Write CUE content to filesystem with UTF-8 BOM encoding.
 
     Uses version suffix naming if a CUE file already exists.
+
+    DIST-01 / phaze-6bkk: this is agent-side code. The only caller is
+    ``phaze.tasks.cue_write.write_cue_sheet``, which runs on the file server's ``meta`` lane where
+    the archive is actually mounted. It must NEVER be called from the api or controller process --
+    neither has a media mount, so ``path.open("w")`` there raises ``FileNotFoundError`` on a parent
+    directory that does not exist in that container.
 
     Args:
         content: CUE sheet content string.
         audio_path: Path to the audio file (used to determine CUE path).
 
     Returns:
-        Path of the written CUE file.
+        ``(path, version)`` of the written CUE file.
     """
-    path = next_cue_path(audio_path)
+    path, version = next_cue_path_and_version(audio_path)
     with path.open("w", encoding="utf-8-sig") as f:
         f.write(content)
-    return path
+    return path, version

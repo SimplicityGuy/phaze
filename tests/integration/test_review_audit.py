@@ -3,13 +3,17 @@
 Runs against the real integration-test Postgres -- the whole ``tests/integration/`` package is
 auto-marked ``integration`` by the ``tests/conftest.py`` path rule, and these tests additionally
 consume the DB-backed ``client`` + ``session`` fixtures (which build tables on
-``TEST_DATABASE_URL``). The mutagen file writes are patched (there are no audio files on disk) so
-the DB audit trail -- the subject under test -- is exercised end-to-end while the on-disk write is
-stubbed to a COMPLETED result.
+``TEST_DATABASE_URL``). The SAQ queues are the shared fakes, so the DB audit trail -- the subject
+under test -- is exercised end-to-end while the dispatch is captured instead of delivered.
+
+phaze-6bkk: the on-disk write is no longer patched, because the api no longer performs one. Under
+DIST-01 it has no media mount, so both routes create the ``TagWriteLog`` row in ``queued`` and hand
+the write to the owning agent. The REVIEW-05 property under test is unchanged and is exactly what
+survives the move: ONE audit row per apply, append-only, carrying the payload a reversal replays.
 
 Proves REVIEW-05 over the EXISTING apply endpoints (no new audit/undo logic, D-04):
   (a) a single ``POST /tags/{id}/write`` produces exactly ONE ``TagWriteLog`` row;
-  (b) ``POST /tags/{id}/undo`` re-applies ``before_tags`` via ``execute_tag_write`` (append-only);
+  (b) ``POST /tags/{id}/undo`` re-applies ``before_tags`` via ``enqueue_tag_write`` (append-only);
   (c) a ``POST /duplicates/{hash}/resolve`` writes exactly one resolution and its undo round-trips
       the ``file_states`` blob.
 """
@@ -18,7 +22,6 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 import uuid
 
 import pytest
@@ -27,7 +30,8 @@ from sqlalchemy import func, select
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
 from phaze.models.proposal import ProposalStatus, RenameProposal
-from phaze.models.tag_write_log import TagWriteLog
+from phaze.models.tag_write_log import TagWriteLog, TagWriteStatus
+from tests._queue_fakes import install_fake_queues
 
 
 if TYPE_CHECKING:
@@ -89,45 +93,41 @@ async def _tag_log_count(session: AsyncSession, file_id: uuid.UUID) -> int:
 async def test_tag_write_produces_exactly_one_audit_row(client: AsyncClient, session: AsyncSession) -> None:
     """(a) A single ``POST /tags/{id}/write`` appends exactly one ``TagWriteLog`` row."""
     file = await _executed_file(session, artist="Old Artist")
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Old Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    install_fake_queues(client)
+    resp = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
     assert resp.status_code == 200
     assert await _tag_log_count(session, file.id) == 1
 
 
 @pytest.mark.asyncio
 async def test_tag_undo_reapplies_before_tags(client: AsyncClient, session: AsyncSession) -> None:
-    """(b) Undo re-applies the snapshot captured before the write via ``execute_tag_write``.
+    """(b) Undo re-applies the snapshot captured before the write, via ``enqueue_tag_write``.
 
-    The first write's ``before_tags`` snapshot ({"artist": "Old Artist"}) is what the undo must
-    re-apply. Undo appends a second audit row (append-only trail), proving reversibility over the
-    existing mutagen path -- no new undo logic.
+    phaze-6bkk: ``before_tags`` is captured on the AGENT (only it can read the file) and reaches the
+    audit row through the result callback, so this test drives the full round trip -- write ->
+    agent-reports-COMPLETED-with-snapshot -> undo -- rather than patching mutagen. That the undo
+    replays the recorded pre-write snapshot, and appends exactly one further row, is the REVIEW-05
+    property; it is unchanged by the move.
     """
     file = await _executed_file(session, artist="Old Artist")
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "Old Artist"}),
-        patch("phaze.services.tag_writer.write_tags"),
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        write = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
+    _controller_queue, router = install_fake_queues(client)
+    write = await client.post(f"/tags/{file.id}/write", data={"artist": "New Artist"})
     assert write.status_code == 200
 
-    with (
-        patch("phaze.services.tag_writer._extract_before_tags", return_value={"artist": "New Artist"}),
-        patch("phaze.services.tag_writer.write_tags") as mock_write,
-        patch("phaze.services.tag_writer.verify_write", return_value={}),
-    ):
-        undo = await client.post(f"/tags/{file.id}/undo")
+    # The agent reports back the snapshot it read off disk immediately before writing.
+    written_log = (await session.execute(select(TagWriteLog).where(TagWriteLog.file_id == file.id))).scalar_one()
+    written_log.status = TagWriteStatus.COMPLETED.value
+    written_log.before_tags = {"artist": "Old Artist"}
+    await session.commit()
+
+    router.captures.clear()
+    undo = await client.post(f"/tags/{file.id}/undo")
     assert undo.status_code == 200
 
-    # Undo re-applied the pre-write snapshot ("Old Artist"), reusing execute_tag_write.
-    mock_write.assert_called_once()
-    reapplied = mock_write.call_args[0][1]
-    assert reapplied.get("artist") == "Old Artist"
+    # Undo dispatched the pre-write snapshot ("Old Artist"), reusing enqueue_tag_write.
+    dispatched = [k for _q, t, k in router.captures if t == "write_file_tags"]
+    assert len(dispatched) == 1
+    assert dispatched[0]["tags"].get("artist") == "Old Artist"
     # Append-only: write + undo = two audit rows.
     assert await _tag_log_count(session, file.id) == 2
 
