@@ -6,7 +6,7 @@ daemon), mirroring ``tests/test_deployment/test_agent_compose.py``.
 Covers the cloud-agent invariants for ``docker-compose.cloud-agent.yml``:
 
 1. Top-level ``services`` is exactly ``{worker}`` — worker-only, no
-   ``watcher``/``audfprint``/``panako`` (a compute agent owns no media; D-06).
+   ``watcher`` (a compute agent owns no media; D-06).
 2. No service declares ``DATABASE_URL`` / ``POSTGRES_*`` or a ``depends_on``
    reference to postgres (DIST-04 — the compute agent reaches Postgres ONLY via
    ``PHAZE_QUEUE_URL`` for saq_jobs + the HTTP API, never the app ORM). T-51-04.
@@ -62,7 +62,7 @@ def _env_to_strs(env: Any) -> list[str]:
 def test_cloud_agent_compose_service_list() -> None:
     """D-06: cloud-agent compose declares exactly one service — worker.
 
-    No ``watcher``/``audfprint``/``panako`` media sidecars: a compute agent owns
+    No ``watcher`` media sidecar: a compute agent owns
     no scan roots and receives each long file pushed to its scratch volume.
     """
     data = _load_cloud_agent_compose()

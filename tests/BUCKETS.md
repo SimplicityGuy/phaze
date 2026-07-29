@@ -48,6 +48,11 @@ The post-reorg full suite MUST report the same **2566 passed** (no test lost, no
 > matrix-shard → coverage-combine → single Codecov upload flow as every other bucket
 > (`just test-bucket services`, `--cov=phaze`); the sidecars' own code stays out of the
 > `source=["phaze"]` coverage gates by design.
+>
+> **Removed (phaze-0jpe.3):** the `services` bucket and `tests/services/` were deleted
+> along with the `services/audfprint/` and `services/panako/` sidecars themselves — both
+> engines were removed from the product entirely (epic phaze-0jpe). `tests/buckets.json`
+> is back to 9 entries.
 
 > **Removal (phaze-0jpe):** the `fingerprint` bucket (6 files) is gone — audio fingerprinting was
 > removed from the product, so the code those tests covered no longer exists. Two files that lived
