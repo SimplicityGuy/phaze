@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import uuid
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -952,6 +952,52 @@ async def test_backfill_marker_clear_is_staged_before_routing_commit(
     assert await _is_awaiting_cloud(session, long_failed.id)
     assert await _analysis_failed_at(session, long_failed.id) is None
     assert await _process_file_ledger_rows(session, long_failed.id) == []
+
+
+@pytest.mark.asyncio
+async def test_route_discovered_by_duration_skips_a_file_deleted_before_its_hold(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-e8kv: a FileRecord deleted between the discovered-set SELECT and the hold's FK-bearing
+    INSERT must be skipped, never a 500 that aborts the whole run.
+
+    Mirrors ``force_skip_stage``'s SAVEPOINT + caught-``IntegrityError`` discipline for the identical
+    race (a concurrent ``delete_scan`` cascade removing the row). Two long candidates are routed: the
+    first is deleted out from under the loop right before its hold runs (simulating the cascade landing
+    mid-loop); the second is untouched. The FK violation on the first must cost exactly one skipped
+    file, not the second file's hold or the whole request.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+    from phaze.services.backends import hold_awaiting_cloud
+
+    doomed = _make_file()
+    survivor = _make_file()
+    session.add_all([doomed, survivor])
+    await session.commit()
+    doomed_id = doomed.id
+    survivor_id = survivor.id  # capture before expire_all() below
+
+    async def _delete_then_hold(sess: AsyncSession, file: FileRecord, **kwargs: object) -> bool:
+        if file.id == doomed_id:
+            await sess.execute(delete(FileRecord).where(FileRecord.id == doomed_id))
+        return await hold_awaiting_cloud(sess, file, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_mod, "hold_awaiting_cloud", _delete_then_hold)
+
+    counts = await pipeline_mod._route_discovered_by_duration(
+        app_state=None,
+        session=session,
+        files_with_duration=[(doomed, 999.0), (survivor, 999.0)],
+        threshold_sec=60,
+        cloud_enabled=True,
+        models_path="models",
+    )
+
+    assert counts["awaiting"] == 1  # only the survivor was held
+    assert counts["skipped"] == 1  # the doomed file is counted, not silently dropped
+    session.expire_all()
+    survivor_row = (await session.execute(select(CloudJob).where(CloudJob.file_id == survivor_id))).scalar_one()
+    assert survivor_row.status == CloudJobStatus.AWAITING.value
+    doomed_rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == doomed_id))).scalars().all()
+    assert doomed_rows == []  # no orphaned cloud_job row for the vanished file
 
 
 @pytest.mark.asyncio

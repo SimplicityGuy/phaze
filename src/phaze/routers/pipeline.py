@@ -454,6 +454,10 @@ async def _route_discovered_by_duration(
     local_candidates: list[FileRecord] = []
     skipped = 0
     held = 0
+    # phaze-e8kv: tallied separately from `skipped` -- the local-routing block below UNCONDITIONALLY
+    # reassigns `skipped` (never accumulates into it), so a count folded into `skipped` inside this
+    # loop would be silently discarded before the function returns.
+    deleted_before_hold = 0
 
     for file, duration in files_with_duration:
         # Phase 51 (D-02): when cloud-burst is OFF nothing is "long" -- every file falls to the
@@ -467,7 +471,25 @@ async def _route_discovered_by_duration(
             # that violated the hard shadow invariant AWAITING_CLOUD => cloud_job(status='awaiting')
             # on every held file since migration 032. The helper dual-writes file.state (D-00c) and
             # NEVER commits; the existing post-loop commit below is the hold's own commit boundary.
-            await hold_awaiting_cloud(session, file)
+            #
+            # phaze-e8kv: hold_awaiting_cloud's INSERT carries a NOT NULL FK to files.id, and this
+            # candidate list was read well before this loop reaches it (a loop over potentially
+            # hundreds of files) -- a concurrent delete_scan cascade (services/scan_deletion.py) can
+            # remove the FileRecord in that window and FK-violate the INSERT. Mirror force_skip_stage's
+            # two-layer discipline (rule 4/5): run the hold inside a SAVEPOINT and treat a caught
+            # IntegrityError as "file concurrently deleted -- skip and count it", so one vanished row
+            # costs one skipped file instead of an unhandled 500 aborting the whole run (and every
+            # earlier hold in the same transaction along with it).
+            try:
+                async with session.begin_nested():
+                    await hold_awaiting_cloud(session, file)
+            except IntegrityError:
+                logger.info(
+                    "route_discovered_by_duration: file deleted before hold could commit; skipping",
+                    file_id=str(file.id),
+                )
+                deleted_before_hold += 1
+                continue
             held += 1
         else:
             local_candidates.append(file)
@@ -511,7 +533,7 @@ async def _route_discovered_by_duration(
         "local": local,
         "cloud": 0,
         "awaiting": held,
-        "skipped": skipped,
+        "skipped": skipped + deleted_before_hold,
         "no_active_agent": int(no_active_agent),
     }
 
