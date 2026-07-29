@@ -16,7 +16,9 @@ manual verification (50-VALIDATION.md Manual-Only).
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import Any
 import uuid
@@ -507,26 +509,37 @@ def _import_agent_worker(monkeypatch: pytest.MonkeyPatch) -> Any:
     return aw
 
 
-def test_startup_janitor_sweep_removes_files_and_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # CLOUDPIPE-04: _sweep_scratch unlinks every file AND the .rsync-partial dir under the scratch
-    # dir, and tolerates a missing dir (no raise).
+def test_startup_janitor_sweep_removes_only_stale_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # phaze-8z4u: _sweep_scratch now only unlinks entries whose mtime is OLDER than
+    # min_age_sec. Since Phase 36 the SAQ broker is durable Postgres, so a queued/active
+    # process_file job's scratch_path SURVIVES a worker restart -- sweeping unconditionally
+    # deleted the copy a durable retry still needed. A recent (young) entry must be left
+    # alone; only an old (orphaned) one is swept.
     aw = _import_agent_worker(monkeypatch)
 
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    (scratch / "orphan-1.flac").write_bytes(b"a")
-    (scratch / "orphan-2.mp3").write_bytes(b"b")
-    partial = scratch / ".rsync-partial"
-    partial.mkdir()
-    (partial / "in-flight.flac.tmp").write_bytes(b"c")
+    stale_file = scratch / "orphan-1.flac"
+    stale_file.write_bytes(b"a")
+    fresh_file = scratch / "live-2.mp3"
+    fresh_file.write_bytes(b"b")
+    stale_partial = scratch / ".rsync-partial"
+    stale_partial.mkdir()
+    (stale_partial / "in-flight.flac.tmp").write_bytes(b"c")
 
-    aw._sweep_scratch(scratch)
+    old_mtime = time.time() - 10_000
+    os.utime(stale_file, (old_mtime, old_mtime))
+    os.utime(stale_partial, (old_mtime, old_mtime))
+    # fresh_file keeps its just-written (now) mtime.
 
-    assert list(scratch.iterdir()) == []
-    assert not partial.exists()
+    aw._sweep_scratch(scratch, min_age_sec=100.0)
+
+    assert not stale_file.exists(), "an entry older than min_age_sec must be swept"
+    assert not stale_partial.exists(), "an old .rsync-partial dir must be swept"
+    assert fresh_file.exists(), "an entry younger than min_age_sec must be left for a later sweep"
 
     # Missing dir is tolerated.
-    aw._sweep_scratch(tmp_path / "does-not-exist")
+    aw._sweep_scratch(tmp_path / "does-not-exist", min_age_sec=100.0)
 
 
 async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -534,12 +547,13 @@ async def test_startup_janitor_compute_only_gating(tmp_path: Path, monkeypatch: 
     # The fileserver agent runs the SAME module and must NOT sweep (it has no scratch dir).
     aw = _import_agent_worker(monkeypatch)
 
-    calls: list[Path] = []
-    monkeypatch.setattr(aw, "_sweep_scratch", calls.append)
+    calls: list[tuple[Path, float]] = []
+    monkeypatch.setattr(aw, "_sweep_scratch", lambda path, min_age_sec: calls.append((path, min_age_sec)))
 
     scratch = str(tmp_path / "scratch")
-    await aw._maybe_sweep_scratch(SimpleNamespace(kind="compute", cloud_scratch_dir=scratch))
-    assert calls == [Path(scratch)]
+    cfg = SimpleNamespace(kind="compute", cloud_scratch_dir=scratch, push_timeout_sec=600, analysis_inner_timeout_sec=6600)
+    await aw._maybe_sweep_scratch(cfg)
+    assert calls == [(Path(scratch), 7200.0)]
 
     calls.clear()
     await aw._maybe_sweep_scratch(SimpleNamespace(kind="fileserver", cloud_scratch_dir=scratch))
