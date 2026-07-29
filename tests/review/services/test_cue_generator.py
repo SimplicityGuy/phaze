@@ -226,6 +226,64 @@ class TestGenerateCueContent:
         assert 'REM GENRE "Deep House"' in content
         assert '""Deep" House"' not in content
 
+    def test_newline_in_title_cannot_inject_file_directive(self):
+        # phaze-4ea3: CUE is line-oriented -- an embedded newline must not terminate the TITLE
+        # field early and let the remainder of the payload start a new top-level CUE directive
+        # (e.g. a second FILE line that redirects playback to a different audio file). The
+        # injected payload text is still visible (sanitization is not redaction), but it must
+        # collapse onto the TITLE line rather than emit a real second FILE directive.
+        payload = 'ID\nFILE "../other-artist-set.mp3" MP3\n  TRACK 02 AUDIO\n    TITLE "x'
+        tracks = [CueTrackData(position=1, title=payload, artist=None, timestamp_seconds=0.0)]
+        content = generate_cue_content("real-audio.mp3", "mp3", tracks)
+
+        assert content.count('FILE "') == 1
+        assert 'FILE "real-audio.mp3" MP3' in content
+        # The line count must match a clean single-FILE, single-TRACK cue: REM COMMENT, FILE,
+        # TRACK, TITLE, INDEX. A successful injection would add extra lines from the payload.
+        assert content.count("\n") == 5
+        # No line in the output may itself start a bare FILE/TRACK directive originating from
+        # the payload -- everything from the payload must live inside the TITLE field's quotes.
+        title_line = next(line for line in content.splitlines() if line.strip().startswith("TITLE"))
+        assert "other-artist-set.mp3" in title_line
+
+    def test_carriage_return_in_title_cannot_inject_directive(self):
+        payload = 'x"\rFILE "other.mp3" MP3'
+        tracks = [CueTrackData(position=1, title=payload, artist=None, timestamp_seconds=0.0)]
+        content = generate_cue_content("real-audio.mp3", "mp3", tracks)
+
+        assert content.count('FILE "') == 1
+        assert content.count("\n") == 5
+
+    def test_newline_in_performer_cannot_inject_directive(self):
+        payload = 'DJ\nFILE "other.mp3" MP3'
+        tracks = [CueTrackData(position=1, title="Track", artist=payload, timestamp_seconds=0.0)]
+        content = generate_cue_content("real-audio.mp3", "mp3", tracks)
+
+        assert content.count('FILE "') == 1
+        assert content.count("\n") == 6
+
+    def test_newline_in_rem_label_cannot_inject_directive(self):
+        payload = 'Imprint\nFILE "other.mp3" MP3'
+        tracks = [CueTrackData(position=1, title="Track", artist=None, timestamp_seconds=0.0, label=payload)]
+        content = generate_cue_content("real-audio.mp3", "mp3", tracks)
+
+        assert content.count('FILE "') == 1
+        assert content.count("\n") == 6
+
+    def test_newline_in_rem_genre_cannot_inject_directive(self):
+        payload = 'House\nFILE "other.mp3" MP3'
+        tracks = [CueTrackData(position=1, title="Track", artist=None, timestamp_seconds=0.0, genre=payload)]
+        content = generate_cue_content("real-audio.mp3", "mp3", tracks)
+
+        assert content.count('FILE "') == 1
+        assert content.count("\n") == 6
+
+    def test_newline_in_filename_cannot_inject_directive(self):
+        content = generate_cue_content('real-audio.mp3\nFILE "other.mp3" MP3', "mp3", [])
+
+        assert content.count('FILE "') == 1
+        assert content.count("\n") == 2
+
     def test_trailing_newline(self):
         content = generate_cue_content("test.mp3", "mp3", [])
         assert content.endswith("\n")

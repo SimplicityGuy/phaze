@@ -609,6 +609,14 @@ async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
     (a byte-identical file sits at `proposed`) then died before
     ``original.unlink()``, so replay begins with BOTH files present on different
     filesystems. The recovery must delete `original` and report executed.
+
+    phaze-i7jo: content identity alone is no longer sufficient corroboration (an
+    archive full of exact duplicates means a byte-identical `proposed` could be a
+    DIFFERENT proposal's completed move) -- this proposal's own commit marker
+    (`_committed_copy_marker_path`) must ALSO be present, exactly as the real
+    ``_atomic_cross_fs_copy`` call site writes it right after landing the copy.
+    Seeding it here is what distinguishes "my own prior attempt" from the
+    phaze-i7jo bug this test predates.
     """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
@@ -623,13 +631,16 @@ async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
     proposed.parent.mkdir(parents=True, exist_ok=True)
     proposed.write_bytes(content)  # the prior attempt's committed, identical copy
 
+    proposal_id = uuid.uuid4()
+    execmod._committed_copy_marker_path(proposed, proposal_id).write_text(str(proposal_id))
+
     # Force the cross-filesystem branch: st_dev compare would say same-fs under one
     # tmp tree, but the crash residue only occurs across a mount boundary.
     monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
 
     proposals = [
         ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
+            proposal_id=proposal_id,
             file_id=uuid.uuid4(),
             original_path=str(original),
             proposed_path="new",
@@ -650,13 +661,19 @@ async def test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail(
     # The move is completed forward: original deleted, identical copy preserved.
     assert not original.exists()
     assert proposed.read_bytes() == content
+    # phaze-i7jo: the corroborating marker is cleaned up once the move completes.
+    assert not execmod._committed_copy_marker_path(proposed, proposal_id).exists()
 
 
 async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phaze-qx8z with a supplied sha256_hash: recovery verifies `proposed` against it."""
+    """phaze-qx8z with a supplied sha256_hash: recovery verifies `proposed` against it.
+
+    phaze-i7jo: also seeds this proposal's own commit marker -- see the docstring on
+    ``test_cross_fs_replay_committed_copy_completes_move_not_clobber_fail`` above.
+    """
     _patch_settings(monkeypatch, [str(tmp_path)])
     api = _make_api_client_mock()
     job = _make_job_mock()
@@ -671,11 +688,14 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
     proposed.parent.mkdir(parents=True, exist_ok=True)
     proposed.write_bytes(content)
 
+    proposal_id = uuid.uuid4()
+    execmod._committed_copy_marker_path(proposed, proposal_id).write_text(str(proposal_id))
+
     monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
 
     proposals = [
         ExecuteBatchProposalItem(
-            proposal_id=uuid.uuid4(),
+            proposal_id=proposal_id,
             file_id=uuid.uuid4(),
             original_path=str(original),
             proposed_path="new",
@@ -690,6 +710,7 @@ async def test_cross_fs_replay_committed_copy_with_hash_completes_move(
     assert result["error_count"] == 0
     assert api.patch_proposal_state.await_args.args[1].proposal_state == "executed"
     assert not original.exists()
+    assert not execmod._committed_copy_marker_path(proposed, proposal_id).exists()
 
 
 async def test_cross_fs_foreign_file_at_destination_still_refused(
@@ -736,6 +757,94 @@ async def test_cross_fs_foreign_file_at_destination_still_refused(
     # Neither file destroyed.
     assert original.read_bytes() == b"THE-REAL-SOURCE"
     assert proposed.read_bytes() == b"AN-UNRELATED-FILE"
+
+
+# ---------------------------------------------------------------------------
+# phaze-i7jo — a byte-identical DUPLICATE's own already-completed move must not be
+# mistaken for THIS proposal's residue. Reproduces the reported bug directly: two
+# distinct proposals (A and B) share a sha256 hash (a real dedup group) and the same
+# resolved destination; A's move already completed (no marker of B's own left behind
+# for that destination) when B's proposal executes. Content identity alone used to be
+# "proof enough" that `proposed` was B's own prior attempt -- it is not.
+# ---------------------------------------------------------------------------
+
+
+async def test_cross_fs_duplicates_own_already_completed_move_is_refused_not_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-i7jo: duplicate B must NOT delete its own original just because duplicate A already
+    moved a byte-identical copy to the same destination.
+
+    Before the fix: ``_destination_is_committed_copy`` sees `proposed` (A's completed move) is
+    byte-identical to B's `original`, treats it as B's own resumable residue, deletes B's
+    original, and reports B executed with `current_path` aliased onto A's file -- two
+    ``FileRecord``s now share one on-disk file with no dedup bookkeeping.
+
+    After the fix: B has no commit marker of its own for this destination (only A ever wrote
+    one, and A's own marker was cleaned up on A's successful completion), so the corroboration
+    check fails and B's proposal is refused via the phaze-yu2e ``FileExistsError`` -- loud,
+    recoverable, and B's original survives on disk.
+    """
+    _patch_settings(monkeypatch, [str(tmp_path)])
+    monkeypatch.setattr("phaze.tasks.execution._same_filesystem", lambda _s, _d: False)
+
+    content = b"duplicate-audio-bytes" * 4096
+    content_hash = hashlib.sha256(content).hexdigest()
+
+    # Duplicate A: a distinct source file, byte-identical to B, that already completed its
+    # move to the shared destination via the REAL code path (so its marker was written and
+    # then cleaned up exactly as production does).
+    original_a = tmp_path / "orig" / "a.mp3"
+    original_a.parent.mkdir(parents=True, exist_ok=True)
+    original_a.write_bytes(content)
+    proposed = tmp_path / "new" / "song.mp3"
+
+    proposals_a = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original_a),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload_a = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals_a)
+    result_a = await execute_approved_batch({"api_client": _make_api_client_mock(), "job": _make_job_mock()}, **payload_a.model_dump(mode="json"))
+    assert result_a["status"] == "completed"
+    assert not original_a.exists()
+    assert proposed.read_bytes() == content
+
+    # Duplicate B: a DIFFERENT source file with the SAME content/hash (a real dedup pair),
+    # whose proposal independently resolves to the SAME destination -- already occupied by
+    # A's completed move. B never attempted this destination before, so it holds no marker.
+    original_b = tmp_path / "orig" / "b.mp3"
+    original_b.write_bytes(content)
+
+    api_b = _make_api_client_mock()
+    proposals_b = [
+        ExecuteBatchProposalItem(
+            proposal_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            original_path=str(original_b),
+            proposed_path="new",
+            proposed_filename=proposed.name,
+            sha256_hash=content_hash,
+        ),
+    ]
+    payload_b = ExecuteApprovedBatchPayload(batch_id=uuid.uuid4(), agent_id="agent-a", proposals=proposals_b)
+    result_b = await execute_approved_batch({"api_client": api_b, "job": _make_job_mock()}, **payload_b.model_dump(mode="json"))
+
+    assert result_b["status"] == "completed_with_errors"
+    assert result_b["error_count"] == 1
+    assert api_b.patch_proposal_state.await_args.args[1].proposal_state == "failed"
+    assert api_b.patch_execution_log.await_args.args[1].error_message.startswith("copy:")
+    # B's original survives -- NOT deleted in favor of A's already-moved copy.
+    assert original_b.exists()
+    assert original_b.read_bytes() == content
+    # A's file at the shared destination is untouched.
+    assert proposed.read_bytes() == content
 
 
 # ---------------------------------------------------------------------------

@@ -20,8 +20,8 @@ an autocommit connection because ``files`` is the largest table in the deploymen
 upsert. ``IF NOT EXISTS`` makes a re-run after an interrupted build (which can leave the index
 INVALID) a no-op rather than an error; see the runbook note in ``downgrade``.
 
-Revision ID: 047
-Revises: 046
+Revision ID: 048
+Revises: 047
 Create Date: 2026-07-28
 """
 
@@ -29,8 +29,8 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision = "047"
-down_revision = "046"
+revision = "048"
+down_revision = "047"
 branch_labels = None
 depends_on = None
 

@@ -54,7 +54,7 @@ class FileRecord(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_files_sha256_hash", "sha256_hash"),
         Index("uq_files_agent_id_original_path", "agent_id", "original_path", unique=True),
-        # phaze-bto9 (migration 047): the ordered index the tag-write review keyset paging needs.
+        # phaze-bto9 (migration 048): the ordered index the tag-write review keyset paging needs.
         # ``services.review.get_tagwrite_review_page`` does ``ORDER BY original_filename, id`` plus a
         # ``(original_filename, id) > (:last_name, :last_id)`` range; the only other index touching
         # ``original_filename`` is a GIN trgm one, which can serve neither an ordered scan nor a row

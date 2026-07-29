@@ -199,7 +199,11 @@ def _make_metadata(file_id: uuid.UUID, **kwargs) -> FileMetadata:
 
 
 def test_score_group_bitrate_wins() -> None:
-    """Group with files at 128, 192, 320kbps -> canonical_id is the 320kbps file."""
+    """Group with files at 128, 192, 320kbps -> canonical_id is the 320kbps file.
+
+    ``bitrate`` is stored in BITS per second (phaze-iw2k), so the fixtures use realistic
+    bps-scale values (128000/192000/320000); the rationale string divides by 1000 for display.
+    """
     id_128 = str(uuid.uuid4())
     id_192 = str(uuid.uuid4())
     id_320 = str(uuid.uuid4())
@@ -212,7 +216,7 @@ def test_score_group_bitrate_wins() -> None:
                 "original_path": "/a/low.mp3",
                 "file_size": 1000,
                 "file_type": "mp3",
-                "bitrate": 128,
+                "bitrate": 128000,
                 "artist": None,
                 "title": None,
                 "album": None,
@@ -229,7 +233,7 @@ def test_score_group_bitrate_wins() -> None:
                 "original_path": "/a/mid.mp3",
                 "file_size": 1000,
                 "file_type": "mp3",
-                "bitrate": 192,
+                "bitrate": 192000,
                 "artist": None,
                 "title": None,
                 "album": None,
@@ -246,7 +250,7 @@ def test_score_group_bitrate_wins() -> None:
                 "original_path": "/a/high.mp3",
                 "file_size": 1000,
                 "file_type": "mp3",
-                "bitrate": 320,
+                "bitrate": 320000,
                 "artist": None,
                 "title": None,
                 "album": None,

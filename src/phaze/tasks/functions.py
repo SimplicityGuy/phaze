@@ -308,6 +308,26 @@ async def process_file(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
             await _report_terminal_failure(api, payload.file_id, AnalysisFailurePayload(reason="crashed", error=str(exc)[:_ERROR_DETAIL_MAX]))
             return {"file_id": str(payload.file_id), "status": "analysis_failed"}
 
+        # phaze-by30: mirror job_runner's zero-natural-window floor. phaze-zibn's guard in
+        # analyze_file (services/analysis.py) only fires when >=1 natural window existed
+        # (``fine_total > 0 or coarse_total > 0``); it is a no-op when the duration probe
+        # itself reads 0 seconds -- e.g. a truncated download whose readable ID3 header
+        # nonetheless yields zero-length audio properties. That leaves analyze_file free to
+        # return a false "success" (windows=[], all-None aggregates) which the completion PUT
+        # below would otherwise stamp as ``analysis_completed_at`` forever. Only trip this when
+        # BOTH coverage fields are EXPLICITLY present and zero -- their absence (older/mocked
+        # analyzers) means "unknown", not "zero", and must keep falling through to the normal
+        # partial-PUT path (see test_process_file_coverage_fields_default_none_when_absent).
+        fine_total = analysis.get("fine_windows_total") if isinstance(analysis, dict) else None
+        coarse_total = analysis.get("coarse_windows_total") if isinstance(analysis, dict) else None
+        if fine_total is not None and coarse_total is not None and (fine_total or 0) == 0 and (coarse_total or 0) == 0:
+            await _report_terminal_failure(
+                api,
+                payload.file_id,
+                AnalysisFailurePayload(reason="crashed", error="zero natural analysis windows (undecodable or zero-length audio)"),
+            )
+            return {"file_id": str(payload.file_id), "status": "analysis_failed"}
+
         features = analysis.get("features", {}) if isinstance(analysis, dict) else {}
         mood_dict = _features_to_mood_dict(features) if isinstance(features, dict) else None
         style_dict = _features_to_style_dict(features) if isinstance(features, dict) else None

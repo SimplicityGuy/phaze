@@ -25,13 +25,20 @@ class MetadataWriteRequest(BaseModel):
     #     bogus multi-billion value a buggy tag reader could otherwise emit.
     #   - track_number: no release (including box sets) plausibly has more than a few hundred
     #     tracks; 0-9999 is generous headroom on the same 4-digit-field convention as year.
-    #   - bitrate: kbps. Even exotic hi-res multichannel PCM tops out in the low hundreds of
-    #     thousands of kbps; 0-1,000,000 is a wide safety margin while still rejecting nonsense.
+    #   - bitrate: BITS per second, matching what every mutagen format reader (`wave.py`,
+    #     `flac.py`, `mp4.py`, `mp3.py`, ...) actually reports (phaze-iw2k -- this comment
+    #     previously said "kbps", which was the bug: a kbps-sized bound rejected every
+    #     stereo CD-quality-or-better WAV/AIFF and 24-bit hi-res FLAC/ALAC, which extract_tags
+    #     has always stored in bps). 0-50,000,000 comfortably covers even absurd multichannel
+    #     hi-res PCM (e.g. 8ch/24-bit/192kHz = 36,864,000 bps) while still rejecting nonsense,
+    #     well inside the int4 column ceiling. Display call sites (services/review.py,
+    #     services/dedup.py, templates/duplicates/partials/comparison_table.html) divide by
+    #     1000 to render kbps -- the STORED unit is bps, not kbps.
     year: int | None = Field(default=None, ge=0, le=9999)
     genre: str | None = None
     track_number: int | None = Field(default=None, ge=0, le=9999)
     duration: float | None = Field(default=None, ge=0.0)
-    bitrate: int | None = Field(default=None, ge=0, le=1_000_000)
+    bitrate: int | None = Field(default=None, ge=0, le=50_000_000)
     raw_tags: dict | None = None
 
 

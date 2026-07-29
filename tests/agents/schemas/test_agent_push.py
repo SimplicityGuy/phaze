@@ -14,7 +14,7 @@ import uuid
 import pydantic
 import pytest
 
-from phaze.schemas.agent_push import PushedResponse, PushMismatchRequest, PushMismatchResponse
+from phaze.schemas.agent_push import PushedResponse, PushFailedRequest, PushFailedResponse, PushMismatchRequest, PushMismatchResponse
 
 
 def test_pushed_response_default_status() -> None:
@@ -74,5 +74,43 @@ def test_push_mismatch_response_tolerates_unknown_field() -> None:
     """phaze-3ggc: same forward-compat guarantee for the /mismatch echo."""
     fid = uuid.uuid4()
     r = PushMismatchResponse.model_validate({"file_id": str(fid), "status": "mismatch", "cleared": False, "retry_after": 5})
+    assert r.file_id == fid
+    assert r.cleared is False
+
+
+def test_push_failed_request_detail_optional() -> None:
+    """phaze-c53x: PushFailedRequest carries only an optional diagnostic detail."""
+    assert PushFailedRequest().detail is None
+    assert PushFailedRequest(detail="rsync exit 30").detail == "rsync exit 30"
+
+
+def test_push_failed_request_rejects_identity_in_body() -> None:
+    """AUTH-01: extra='forbid' rejects any attempt to smuggle file_id in the body."""
+    with pytest.raises(pydantic.ValidationError) as exc_info:
+        PushFailedRequest.model_validate({"file_id": str(uuid.uuid4())})
+    assert any(e.get("type") == "extra_forbidden" for e in exc_info.value.errors())
+
+
+def test_push_failed_request_detail_max_length() -> None:
+    """detail is bounded to cap the huge-string DoS surface."""
+    with pytest.raises(pydantic.ValidationError):
+        PushFailedRequest(detail="x" * 2001)
+
+
+def test_push_failed_response_cleared_required() -> None:
+    """PushFailedResponse requires the `cleared` disposition flag."""
+    fid = uuid.uuid4()
+    r = PushFailedResponse(file_id=fid, cleared=True)
+    assert r.file_id == fid
+    assert r.status == "failed"
+    assert r.cleared is True
+    with pytest.raises(pydantic.ValidationError):
+        PushFailedResponse.model_validate({"file_id": str(fid)})
+
+
+def test_push_failed_response_tolerates_unknown_field() -> None:
+    """phaze-3ggc: same forward-compat guarantee for the /failed echo."""
+    fid = uuid.uuid4()
+    r = PushFailedResponse.model_validate({"file_id": str(fid), "status": "failed", "cleared": False, "retry_after": 5})
     assert r.file_id == fid
     assert r.cleared is False

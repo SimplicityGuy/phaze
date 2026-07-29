@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     )
 
     # Phase 50 push-pipeline callbacks (50-01 schemas).
-    from phaze.schemas.agent_push import PushedResponse, PushMismatchResponse
+    from phaze.schemas.agent_push import PushedResponse, PushFailedResponse, PushMismatchResponse
 
     # Phase 53 S3 upload-leg callbacks (53-03 schemas).
     from phaze.schemas.agent_s3 import UploadedPart, UploadedResponse, UploadFailedResponse
@@ -360,6 +360,26 @@ class PhazeAgentClient:
             f"/api/internal/agent/push/{file_id}/pushed",
         )
         return PushedResponse.model_validate(response.json())
+
+    async def report_push_failed(self, file_id: uuid.UUID, detail: str | None = None) -> PushFailedResponse:
+        """POST /api/internal/agent/push/{file_id}/failed -- push_file TERMINAL failure (phaze-c53x).
+
+        The fileserver agent calls this on the non-retryable ``push_file`` attempt (SAQ retries
+        exhausted, or a non-retryable config/binary error), so control spills the ``cloud_job`` back to
+        ``awaiting`` with its cloud budget marked spent -- ``select_backend`` then routes the file to
+        local instead of leaving it silently and permanently stranded ``SUBMITTED``. Inherits the
+        tenacity retry policy (D-11) + exception hierarchy (D-12) via the ``_request`` funnel --
+        5xx retries, 4xx surface immediately. ``file_id`` rides the path only (AUTH-01); the body carries
+        only an optional bounded ``detail``. httpx-only -- NO database import, keeping the agent worker
+        Postgres-free (tests/shared/core/test_task_split.py)."""
+        from phaze.schemas.agent_push import PushFailedRequest, PushFailedResponse  # noqa: PLC0415
+
+        response = await self._request(
+            "POST",
+            f"/api/internal/agent/push/{file_id}/failed",
+            json=PushFailedRequest(detail=detail).model_dump(mode="json"),
+        )
+        return PushFailedResponse.model_validate(response.json())
 
     async def report_push_mismatch(self, file_id: uuid.UUID) -> PushMismatchResponse:
         """POST /api/internal/agent/push/{file_id}/mismatch -- post-transfer sha256 mismatch (Phase 50, 50-03).
