@@ -98,6 +98,32 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-phaze}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
       POSTGRES_DB: ${POSTGRES_DB:-phaze}
+    # phaze-knwk: Docker's default /dev/shm is 64 MB, and Postgres's dynamic shared
+    # memory (parallel query workers, parallel index builds) lives there -- exceed it
+    # and the operation dies with "could not resize shared memory segment ... No space
+    # left on device", a message that names disk while the fault is /dev/shm.
+    #
+    # Derivation (investigated phaze-knwk, no pgvector involved): this deployment does
+    # not override maintenance_work_mem, so it stays at the image default of 64 MB --
+    # exactly today's /dev/shm ceiling, i.e. already the "shm_size >= maintenance_work_mem"
+    # floor the phaze-ytgo.6 spike measured for pgvector's HNSW builds, with ZERO margin.
+    # A direct reproduction against an isolated 1,000,000-row analysis_window (~7.7x
+    # production's current ~130,000 rows) showed ordinary Postgres operations already
+    # reaching into that shared memory under this deployment's own default settings:
+    #   - `CREATE INDEX` on analysis_window naturally invoked a parallel worker (no
+    #     forcing) at that scale, though /dev/shm usage stayed negligible (~3 MB).
+    #   - A `Parallel Hash Join` between files and analysis_window (forced parallel via
+    #     zero setup/tuple cost, the planner's own cost model does not yet choose
+    #     parallel for this shape at 1M rows) drove /dev/shm to 32 MB -- 51% of the 64 MB
+    #     cap -- with default work_mem (4 MB) and max_parallel_workers_per_gather (2).
+    # No failure was reproduced at production's actual current scale or at 7.7x it, so
+    # stock phaze is NOT currently affected -- but the second measurement shows near-zero
+    # headroom once the planner (or an operator tuning work_mem/maintenance_work_mem
+    # upward for legitimate performance reasons) starts choosing parallel plans over a
+    # growing analysis_window. 256 MB = 4x the default maintenance_work_mem ceiling and
+    # 8x the single-operation high-water mark measured above, with headroom for the
+    # several lane workers (analyze/meta/io) issuing queries concurrently.
+    shm_size: "256m"
     volumes:
       # postgres:18+ stores data in a major-version-specific subdirectory under
       # /var/lib/postgresql to support pg_upgrade --link without mount-boundary

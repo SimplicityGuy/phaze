@@ -12,6 +12,13 @@
 # keeps all three in step -- bump this value AND the other two pins together, or the
 # guard test fails and names the mismatch.
 postgres_image := "postgres:18-alpine"
+# phaze-knwk: match production's docker-compose.yml `shm_size: "256m"` on every
+# justfile-launched Postgres container (test-db, integration-test, perf-db-up), so a
+# harness run cannot pass on a Postgres feature (a bigger parallel index build, a
+# manually-raised work_mem/maintenance_work_mem) that the 64 MB Docker default would
+# reject in production, or vice versa. See docker-compose.yml's `postgres.shm_size`
+# comment for the investigation and derivation.
+postgres_shm_size := "256m"
 # Host bind IP for every ephemeral/test-harness Postgres + Redis container this justfile
 # publishes (test-db, integration-test's pinned-port branches, perf-db-up). Defaults to
 # loopback-only (phaze-v7ki): without a bind IP, `docker run -p PORT:PORT` binds 0.0.0.0
@@ -313,6 +320,7 @@ test-db:
                 -e POSTGRES_USER=phaze \
                 -e POSTGRES_PASSWORD=phaze \
                 -e POSTGRES_DB=phaze_test \
+                --shm-size {{postgres_shm_size}} \
                 -p "{{test_db_bind_ip}}:${port}:5432" \
                 {{postgres_image}}
         fi
@@ -492,6 +500,7 @@ integration-test:
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
+            --shm-size {{postgres_shm_size}} \
             -p 127.0.0.1::5432 \
             {{postgres_image}} >/dev/null
         port="$(docker port "$container" 5432/tcp | head -1 | sed -E 's/.*:([0-9]+)$/\1/')"
@@ -502,6 +511,7 @@ integration-test:
             -e POSTGRES_USER=phaze \
             -e POSTGRES_PASSWORD=phaze \
             -e POSTGRES_DB=phaze_test \
+            --shm-size {{postgres_shm_size}} \
             -p "{{test_db_bind_ip}}:${port}:5432" \
             {{postgres_image}} >/dev/null
     fi
@@ -848,6 +858,7 @@ perf-db-up:
         echo "🐘 Starting ${container} ({{postgres_image}}) on host port ${port}..."
         docker run -d --name "$container" \
             -e POSTGRES_USER=phaze -e POSTGRES_PASSWORD=phaze -e POSTGRES_DB={{perf_db_name}} \
+            --shm-size {{postgres_shm_size}} \
             -p "{{test_db_bind_ip}}:${port}:5432" {{postgres_image}} >/dev/null
     fi
     for _ in $(seq 1 30); do
