@@ -335,7 +335,32 @@ async def resolve_group(session: AsyncSession, group_hash: str, canonical_id: uu
     ``DedupResolution`` marker pointing at an unrelated file, and the group silently vanishes with
     zero surviving canonical. Verify ``canonical_id`` names a currently-unresolved member of THIS
     group first; a mismatch is a no-op (0 resolved), not a resolve against the wrong file.
+
+    phaze-v0iy: the phaze-xasy guard above closed the WRONG-canonical path but not the CONCURRENT
+    one. Two overlapping resolves of the SAME group picking DIFFERENT keepers (X and Y) each ran the
+    membership check and the insert as a check-then-act on DIFFERENT rows: the guard reads row
+    ``canonical_id``, the insert writes ``members \\ {canonical_id}``. Under READ COMMITTED, request A
+    (canonical=X) and request B (canonical=Y) each see the full unresolved group in their own
+    snapshot, both pass the membership check, A inserts markers for ``members \\ X`` (which includes
+    Y) and B inserts markers for ``members \\ Y`` (which includes X). Those two insert sets share no
+    row -- worst case is the common 2-member group, where they are completely disjoint -- so
+    ``ON CONFLICT (file_id) DO NOTHING`` never fires for either keeper, and after both commits every
+    file in the group (including both intended keepers) carries a marker: the group vanishes with
+    ZERO surviving canonical. A ``pg_advisory_xact_lock`` keyed on the group hash serializes the two
+    requests so the SECOND one's membership re-check runs against the FIRST one's already-committed
+    result: it sees its own canonical already marked non-canonical and correctly no-ops (0 resolved)
+    instead of minting a second, conflicting resolution. The lock is transaction-scoped (released at
+    the caller's ``commit()``/``rollback()``), matching how both call sites (``resolve_group_endpoint``
+    and the ``bulk_resolve`` loop) run inside a caller-owned transaction.
     """
+    # phaze-v0iy: serialize per group_hash BEFORE the membership check so a concurrent resolve of the
+    # same group (any canonical) blocks here until the first resolve's transaction commits or rolls
+    # back, then re-evaluates the check-then-act pair against that committed state. hashtext() is a
+    # stable-within-a-session 32-bit hash of the group's sha256 hex string; pg_advisory_xact_lock takes
+    # an implicit bigint widening of that int4 result. This is an xact lock: it is automatically
+    # released at COMMIT/ROLLBACK, so it must not be taken with autocommit / outside the caller's txn.
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(group_hash))))
+
     canonical_membership_stmt = select(FileRecord.id).where(
         FileRecord.sha256_hash == group_hash,
         FileRecord.id == canonical_id,

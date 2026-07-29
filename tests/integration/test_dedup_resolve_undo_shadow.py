@@ -20,12 +20,13 @@ Real-PG ``db_session`` fixture (no SAQ dependency). Run via ``just test-bucket i
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import false as sa_false, select
+from sqlalchemy import delete, false as sa_false, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from phaze.models.agent import Agent
@@ -301,6 +302,106 @@ async def test_concurrent_double_submit_insert_conflict_is_a_noop(db_session: As
     assert count == 1  # B believed it resolved the file...
     markers = await _marker_file_ids(db_session)
     assert markers == {dup.id}  # ...but first-writer-wins: still exactly one marker, no IntegrityError
+
+
+# ---------------------------------------------------------------------------
+# phaze-v0iy: TRUE concurrency -- two independent connections/transactions resolving the SAME group
+# with DIFFERENT keepers. This is the shape ``test_concurrent_double_submit_insert_conflict_is_a_noop``
+# above does NOT cover: that test simulates one connection observing a stale snapshot of a marker
+# some OTHER canonical_id already wrote. Here both requests pick genuinely disjoint canonicals (the
+# worst-case 2-member group), so before the phaze-v0iy fix the two INSERTs never conflicted on
+# (file_id) at all and BOTH committed -- stranding both keepers with zero survivor. Real Postgres,
+# real second connection, real ``pg_advisory_xact_lock`` contention (not monkeypatched).
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_concurrent_resolve_with_disjoint_canonicals_leaves_exactly_one_keeper() -> None:
+    """Two overlapping resolves of a 2-member group picking DIFFERENT keepers must not both succeed.
+
+    Reproduces the exact reported interleaving: request A (canonical=x) is slow (holds its
+    transaction open past its own insert); request B (canonical=y) starts while A is still in
+    flight. Before the fix, A's insert set (``{y}``) and B's insert set (``{x}``) share no row, so
+    ``ON CONFLICT (file_id) DO NOTHING`` never fires for either and both commit -- x and y end up
+    pointing at each other, the group vanishes with zero surviving canonical. After the fix, B's
+    ``pg_advisory_xact_lock`` call (the first statement ``resolve_group`` runs) blocks until A
+    commits, then B's re-run membership check sees its own canonical (y) already marked and no-ops.
+
+    Deliberately does NOT take the shared ``db_session`` fixture: that fixture flushes (but never
+    commits) a seed ``Agent`` row and holds the transaction open for the whole test, which would
+    block -- on Postgres, not merely serialize -- this test's own from-scratch engine trying to
+    insert a row with the same primary key, for the entire test body. This test provisions its own
+    engine/schema/seed data end-to-end instead, precisely so two INDEPENDENT connections are real.
+    """
+    import psycopg
+
+    try:
+        probe = await psycopg.AsyncConnection.connect(BROKER_DSN)
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres broker unavailable: {exc}")
+    else:
+        await probe.close()
+
+    engine = create_async_engine(SA_DSN)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    file_x: FileRecord | None = None
+    file_y: FileRecord | None = None
+    try:
+        async with session_factory() as seed_session:
+            if await seed_session.get(Agent, _LEGACY_AGENT_ID) is None:
+                seed_session.add(Agent(id=_LEGACY_AGENT_ID, name="legacy"))
+                await seed_session.flush()
+            file_x = await _file(seed_session)
+            file_y = await _file(seed_session)
+            await seed_session.commit()
+
+        results: dict[str, int] = {}
+
+        async def resolve_keep_x() -> None:
+            """Request A: keeper=x. Slow -- holds its transaction (and the advisory lock) open."""
+            async with session_factory() as session_a:
+                count, _payload = await resolve_group(session_a, HASH_A, file_x.id)  # type: ignore[union-attr]
+                # Widen the race window past the membership-check+insert, matching the reported
+                # "first request is slow" interleaving -- the lock is held until this commit.
+                await asyncio.sleep(0.2)
+                await session_a.commit()
+                results["keep_x"] = count
+
+        async def resolve_keep_y() -> None:
+            """Request B: keeper=y, started while A is still in flight."""
+            await asyncio.sleep(0.05)  # let A acquire the advisory lock first
+            async with session_factory() as session_b:
+                count, _payload = await resolve_group(session_b, HASH_A, file_y.id)  # type: ignore[union-attr]
+                await session_b.commit()
+                results["keep_y"] = count
+
+        await asyncio.gather(resolve_keep_x(), resolve_keep_y())
+
+        # A ran first and won the lock: it marked y (keeping x) and committed normally.
+        assert results["keep_x"] == 1
+        # B was serialized behind A's commit; by the time it re-checked, its own canonical (y) was
+        # already marked non-canonical by A -- a genuine no-op, NOT a second conflicting resolution.
+        assert results["keep_y"] == 0
+
+        async with session_factory() as verify_session:
+            markers = await _marker_file_ids(verify_session)
+
+        # Exactly one marker (on y) -- x survives as the sole live keeper. Before the fix this
+        # assertion fails: markers == {file_x.id, file_y.id}, i.e. zero surviving canonical.
+        assert {file_x.id, file_y.id} & markers == {file_y.id}
+    finally:
+        # This test commits real rows (needed for two GENUINELY independent transactions to
+        # race) against the shared per-worktree test database, unlike every other test in this
+        # module (which rolls back via the `db_session` fixture). Clean up explicitly so later
+        # tests' `_marker_file_ids() == {...}` exact-equality assertions are not polluted by
+        # this test's leftover marker/files (FK-ordered: marker row before its file rows).
+        async with session_factory() as cleanup_session:
+            if file_x is not None and file_y is not None:
+                await cleanup_session.execute(delete(DedupResolution).where(DedupResolution.file_id.in_([file_x.id, file_y.id])))
+                await cleanup_session.execute(delete(FileRecord).where(FileRecord.id.in_([file_x.id, file_y.id])))
+                await cleanup_session.commit()
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
