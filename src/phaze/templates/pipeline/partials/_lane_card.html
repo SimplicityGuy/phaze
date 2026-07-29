@@ -65,6 +65,14 @@
      hx-get="/pipeline/lanes/{{ lane.id }}"
      hx-target="#detail-pane"
      hx-swap="innerHTML"
+     {# phaze-zxbh: this row and the lane body's own 5s own-tick (_lane_detail.html) both target
+        #detail-pane from DIFFERENT elements, so htmx's default per-element de-duplication does
+        NOT serialize them -- a stale own-tick response for the PREVIOUSLY selected lane can land
+        after this click's response and silently pin the pane to the wrong lane. hx-sync puts
+        both producers in the same sync group so a newer request here aborts an in-flight own-tick
+        instead of racing it. (_detail_pane.html's onLoaded() identity check is the backstop that
+        also covers the deep-link hx-trigger="load" producer, which cannot join this sync group.) #}
+     hx-sync="#detail-pane:abort"
      hx-push-url="/s/analyze?lane={{ lane.id }}"
      hx-trigger="click, keyup[key=='Enter']"
      onkeydown="if(event.key===' '){event.preventDefault();this.dispatchEvent(new Event('click'));}"

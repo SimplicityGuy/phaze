@@ -55,6 +55,24 @@
                      this.wipe();
                      return;
                  }
+                 // phaze-zxbh: the own-tick and the row-click trigger both write into this SAME
+                 // target from DIFFERENT elements (hx-sync on both narrows the window, but cannot
+                 // cover the deep-link load-triggered producer on #detail-pane itself), so a
+                 // late response for a PREVIOUSLY selected lane can still land after a newer
+                 // selection's response. Every swapped body stamps its own identity
+                 // (data-<param>-id); if it disagrees with the URL's current selection, this is
+                 // exactly that stale response — self-heal by re-triggering the CURRENT
+                 // selection's own row click (reusing its real hx-get/hx-target, never a
+                 // source-less htmx.ajax()) instead of trusting or displaying it.
+                 const pane = document.getElementById('detail-pane');
+                 const bodyId = pane && pane.firstElementChild ? pane.firstElementChild.getAttribute('data-' + this.param + '-id') : null;
+                 if (bodyId && bodyId !== id) {
+                     const trigger = document.getElementById(this.triggerPrefix + id);
+                     if (trigger && window.htmx) {
+                         window.htmx.trigger(trigger, 'click');
+                     }
+                     return;
+                 }
                  // The swapped body carries the 5s own-tick, which re-swaps THIS target — htmx
                  // fires afterSwap on the swap target for EVERY swap, so onLoaded() runs on each
                  // refresh, not just the card-click open. Capture the pre-swap open state so the
