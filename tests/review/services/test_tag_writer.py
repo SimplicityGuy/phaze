@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from phaze.services.tag_write_disk import write_and_verify_sync
 from phaze.services.tag_writer import (
     _extract_before_tags,
+    _write_id3,
     _write_mp4,
     _write_vorbis,
     enqueue_tag_write,
@@ -161,6 +162,23 @@ class TestWriteVorbisFormat:
 
         audio.__setitem__.assert_called_once_with("tracknumber", ["7"])
 
+    def test_write_vorbis_ignores_unmapped_field(self) -> None:
+        """A field with no Vorbis key mapping is skipped entirely."""
+        audio = MagicMock()
+        _write_vorbis(audio, {"bogus_field": "value"})
+
+        audio.__setitem__.assert_not_called()
+        audio.__delitem__.assert_not_called()
+
+    def test_write_vorbis_none_deletes_present_key(self) -> None:
+        """A None value DELETES the key when it exists on the file (phaze-52qd undo semantics)."""
+        audio = MagicMock()
+        audio.__contains__.return_value = True
+        _write_vorbis(audio, {"artist": None})
+
+        audio.__delitem__.assert_called_once_with("artist")
+        audio.__setitem__.assert_not_called()
+
 
 class TestWriteMP4Format:
     """Tests for MP4/M4A format writing via mock."""
@@ -186,6 +204,35 @@ class TestWriteMP4Format:
         _write_mp4(audio, {"artist": "Test", "title": None})
 
         audio.__setitem__.assert_called_once_with("\xa9ART", ["Test"])
+
+    def test_write_mp4_ignores_unmapped_field(self) -> None:
+        """A field with no MP4 atom mapping is skipped entirely."""
+        audio = MagicMock()
+        _write_mp4(audio, {"bogus_field": "value"})
+
+        audio.__setitem__.assert_not_called()
+        audio.__delitem__.assert_not_called()
+
+    def test_write_mp4_none_deletes_present_atom(self) -> None:
+        """A None value DELETES the atom when it exists on the file (phaze-52qd undo semantics)."""
+        audio = MagicMock()
+        audio.__contains__.return_value = True
+        _write_mp4(audio, {"artist": None})
+
+        audio.__delitem__.assert_called_once_with("\xa9ART")
+        audio.__setitem__.assert_not_called()
+
+
+class TestWriteID3Format:
+    """Direct-dispatch tests for the ID3 writer (the MP3 round-trips above cover the mapped fields)."""
+
+    def test_write_id3_ignores_unmapped_field(self) -> None:
+        """A field with no ID3 frame mapping is skipped entirely."""
+        audio = MagicMock()
+        _write_id3(audio, {"bogus_field": "value"})
+
+        audio.tags.add.assert_not_called()
+        audio.tags.delall.assert_not_called()
 
 
 class TestVerifyWrite:
