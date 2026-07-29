@@ -23,7 +23,16 @@ uv run ruff check .        # Lint
 uv run ruff format .       # Format
 uv run mypy .              # Type check
 uv run pre-commit run --all-files # Run all pre-commit hooks
+
+just check                 # Lint + typecheck + the full test suite (the hive validation)
+just test-db               # Bring up the shared test Postgres (5433) + Redis (6380) harness
+just test-db-for <name>    # Carve an isolated seat out of that harness — REQUIRED for
+                           # concurrent worktrees; prints three exports to set
 ```
+
+> Bare `uv run pytest` needs the harness up (`just test-db`); without it the integration tests
+> skip, so a green run means less than it looks like. Check the database line in the pytest
+> header before trusting any result.
 
 ### Test databases
 
@@ -43,8 +52,16 @@ The test suite resolves its target from `TEST_DATABASE_URL`, validated by a sing
 Every run prints its resolved target in the pytest header
 (`phaze test database: 'phaze_test' on localhost:5433 (from TEST_DATABASE_URL, exclusive)`) — check
 it before trusting a green run. `exclusive` means this pytest process holds the session lock
-described below; `unlocked` means Postgres was unreachable at session start, so the run is *not*
-protected and its failures are not trustworthy under any concurrency.
+described below. The header renders the other state as the literal
+`unlocked (Postgres unreachable or bypass set)`, and it has **three** causes, not one:
+
+1. **Postgres was unreachable** at session start (no harness up) — the lock could not be taken.
+2. **`PHAZE_TEST_DB_ALLOW_SHARED=1`** was set, deliberately bypassing the guard.
+3. **`--collect-only`**, which is exempt: it imports modules and never opens the schema, so it
+   cannot corrupt a live run and stays usable for inspecting a suite *while* it runs.
+
+In cases 1 and 2 the run is *not* protected and its failures are not trustworthy under any
+concurrency.
 
 **Never share Postgres OR Redis between concurrent agents.** Both are stateful, both are shared by
 default, and both must be isolated per worktree. Saying "test database" here was the phaze-fwo7
@@ -63,8 +80,9 @@ export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:
 export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
 ```
 
-**Why Redis matters as much as Postgres.** Several redis-backed test modules run a global
-`scan_iter`+`delete` sweep over `exec:*`, `exec_progress_req:*` and `tracklist_req:*` in fixture
+**Why Redis matters as much as Postgres.** Two redis-backed test modules
+(`tests/review/routers/test_execution_dispatch.py` and `test_agent_exec_batches.py`) run a global
+`scan_iter`+`delete` sweep over `exec:*`, `exec_progress_req:*` and `execdispatch:*` in fixture
 setup *and* teardown. On a shared logical database one agent's fixture deletes another agent's live
 keys mid-test, and assertions that count the keyspace see foreign keys. The result is a failure
 indistinguishable from a real regression that passes on isolated re-run — the worst possible shape,
@@ -240,17 +258,17 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
 | Python | 3.14 | Runtime | Project constraint. essentia-tensorflow dev1438+ ships cp314 wheels only, requiring Python 3.14. |
-| FastAPI | >=0.138.0 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
+| FastAPI | >=0.139.0 | Web framework / API | De facto standard for async Python APIs. Native async, auto-generated OpenAPI docs, Pydantic integration, SSE support for real-time UI updates. Massive ecosystem and community. |
 | SQLAlchemy | >=2.0.51 | ORM / database toolkit | Industry standard Python ORM. Full async support via `create_async_engine` + asyncpg driver. Declarative models, relationship management, migration support via Alembic. |
 | asyncpg | >=0.31.0 | PostgreSQL async driver | Fastest Python PostgreSQL driver. Purpose-built for asyncio. Used as SQLAlchemy's async backend. |
-| Alembic | >=1.18.4 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
+| Alembic | >=1.18.5 | Database migrations | Official SQLAlchemy migration tool. Async template support (`alembic init -t async`). Autogenerate from model changes. |
 | PostgreSQL | 16+ (pinned to `postgres:18-alpine` in docker-compose/CI) | Primary database | Project constraint. Handles large-scale file metadata, complex queries, JSON columns for flexible metadata, full-text search for future features. |
-| Redis | 8.x (client pinned `redis>=8.0.0,<9.0`) | Cache / pub-sub | No longer the SAQ broker (Phase 36 migrated the task queue to Postgres); used for caching analysis results and rate-limiting LLM API calls. |
+| Redis | 8.x in prod (`redis:8-alpine`), client pinned `redis>=8.0.1,<9.0` | Cache / pub-sub | No longer the SAQ broker (Phase 36 migrated the task queue to Postgres); used for caching analysis results and rate-limiting LLM API calls. **The test harness runs `redis:7-alpine`** (`justfile:352,358`) while production runs `redis:8-alpine` (`docker-compose.yml:143`) — a version-skew gap the suite does not cover. |
 | Docker Compose | 2.x | Deployment orchestration | Project constraint. Runs PostgreSQL, Redis, API server, worker processes as separate containers. |
 ### Audio / Music Libraries
 | Library | Version | Purpose | Why Recommended |
 |---------|---------|---------|-----------------|
-| mutagen | >=1.47.0 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
+| mutagen | >=1.48.1 | Audio metadata read/write | The standard for audio tag manipulation in Python. Supports ID3v1/v2, Vorbis, MP4, FLAC, OGG, AIFF. Zero dependencies. Read AND write capability needed for renaming workflows. |
 | essentia-tensorflow | >=2.1b6.dev1438 | Audio feature extraction (BPM, key, mood, style) | Comprehensive MIR library with pre-trained TensorFlow models. Beat tracking, tempo estimation, key detection, mood/style classification. Used for all audio analysis in the main application. |
 | pyacoustid | *(not a pyproject.toml dependency — never used)* | N/A — historical | Originally recommended for Chromaprint/AcoustID bindings. The audio-fingerprinting feature it would have served (the `audfprint`/Panako pipeline) was implemented independently of pyacoustid and removed from the product entirely 2026-07-28 (epic phaze-0jpe; see `docs/design/0002-fingerprint-removal.md`). pyacoustid remains unused. |
 | chromaprint (system) | latest | retained permanently — no known consumer | C library (`libchromaprint`) kept in the app/agent images through the phaze-0jpe removal. **Correction (phaze-0jpe.6):** it was previously described here as an essentia-tensorflow runtime requirement; that was tested against the live deployment and found false — `ldd` on the deployed `_essentia` extension shows no chromaprint link, and `import essentia` succeeds without it. No `phaze` source calls `fpcalc`/`chromaprint`/`Chromaprinter`/`acoustid`. It plausibly dates from the original `pyacoustid`/AcoustID plan that was never implemented. **Operator decision 2026-07-29: KEEP permanently** — the open phaze-0jpe.6 question is closed as "keep". A runtime `dlopen` path was never exhaustively ruled out and the install cost is trivial, so retention is deliberate, not deferred; do not re-open it as a cleanup task. See `docs/design/0002-fingerprint-removal.md`. Provides the `fpcalc` binary. |
@@ -269,13 +287,13 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 ### AI / LLM Integration
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| litellm | >=1.85.6,<1.86.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
+| litellm | >=1.85.7,<1.86.0 (pin exact minor) | Unified LLM API client | Single interface to 100+ LLM providers (OpenAI, Anthropic, local models). Avoids vendor lock-in. Use for filename/path proposals. **IMPORTANT:** Pin exact minor line due to the March 2026 supply chain incident on versions 1.82.7-1.82.8. Verify checksums. |
 | pydantic | >=2.10 | Data validation / LLM structured output | Already a FastAPI dependency. Use for validating LLM responses (proposed filenames, paths). Structured output parsing. |
 ### Configuration / Infrastructure
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
 | pydantic-settings | >=2.14.2 | Configuration management | Type-safe config from env vars, .env files, Docker secrets. Native Pydantic integration. Supports `SecretStr` for API keys. |
-| uvicorn | >=0.49.0 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
+| uvicorn | >=0.51.0 | ASGI server | Standard production server for FastAPI. Use with `--workers` for multi-process or behind gunicorn for production. |
 ### Development Tools
 | Tool | Purpose | Notes |
 |------|---------|-------|
@@ -320,11 +338,11 @@ A music collection organizer that ingests music files (mp3, m4a, ogg) and concer
 |-----------|-----------------|-------|
 | SQLAlchemy >=2.0.51 | asyncpg >=0.31.0 | Use `postgresql+asyncpg://` connection string. Some older asyncpg versions (0.29.x) had issues with `create_async_engine`. |
 | essentia-tensorflow >=2.1b6.dev1438 | Python 3.14 | dev1438+ ships cp314 wheels only (macOS arm64/x86_64 + linux x86_64; no linux/arm64). Keep platform marker `sys_platform != 'linux' or platform_machine == 'x86_64'` in dependencies. |
-| FastAPI >=0.138.0 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
-| FastAPI >=0.138.0 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
-| Alembic >=1.18.4 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
-| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.85.6,<1.86.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
-| SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.0.0) is used for caching only now. |
+| FastAPI >=0.139.0 | Pydantic >=2.10 | FastAPI requires Pydantic v2. Do not install Pydantic v1. |
+| FastAPI >=0.139.0 | Starlette >=0.46.0 | Pinned by FastAPI. Do not override. |
+| Alembic >=1.18.5 | SQLAlchemy >=2.0 | Use `alembic init -t async` for async template. Import all models in `env.py` for autogenerate to work. |
+| litellm | ALL | **Pin exact minor line.** Supply chain attack on 1.82.7/1.82.8 (March 2026). Pinned `>=1.85.7,<1.86.0`; raise the cap deliberately after vetting. Verify SHA checksums. |
+| SAQ >=0.26.4 (`saq[postgres]`) | Postgres (psycopg[binary]>=3.3.4) | Broker migrated from Redis to Postgres in Phase 36. Redis (client >=8.0.1) is used for caching only now. |
 | chromaprint (system) | no verified consumer | Not consumed via `pyacoustid` (unused) or by any `phaze` source. **Not** an essentia-tensorflow runtime dependency either — `ldd` on the deployed `_essentia` extension shows no chromaprint link and `import essentia` succeeds without it (phaze-0jpe.6 correction; see `docs/design/0002-fingerprint-removal.md`). **Retained permanently by operator decision 2026-07-29** — phaze-0jpe.6 closed as "keep"; stays installed (`chromaprint-tools`) in Docker. |
 ## Confidence Assessment
 | Area | Confidence | Reasoning |
