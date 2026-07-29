@@ -198,7 +198,15 @@ class TracklistScraper:
             self._client = client
             self._owns_client = False
         else:
-            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0)
+            # phaze-8ib8: httpx does NOT follow redirects by default. The bare apex host
+            # ("1001tracklists.com") is deliberately on _ALLOWED_HOSTS (phaze-k5zz) BECAUSE it
+            # redirects to "www" -- so every request to an apex source_url, and any server-side
+            # slug move, previously came back as an un-followed 301/302 that scrape_tracklist's
+            # non-200 guard (phaze-o8sy) turned into a permanently-retried HTTPStatusError. Follow
+            # redirects here; _is_allowed_url is re-checked against the FINAL response.url after
+            # every request (see search()/scrape_tracklist()) so this can't be used to smuggle a
+            # request off-host through a malicious/compromised redirect chain.
+            self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0, follow_redirects=True)
             self._owns_client = True
 
     @staticmethod
@@ -240,7 +248,9 @@ class TracklistScraper:
         Returns empty list on 403, HTTP error, or genuinely no results. Raises
         SearchParseFailureError (NOT swallowed to []) when the results page contains candidate
         rows that none of them could be parsed from -- that is a stale-selector defect, and must
-        be distinguishable from a normal empty result (phaze-mk6y).
+        be distinguishable from a normal empty result (phaze-mk6y). Also raises
+        DisallowedScrapeHostError if the client's followed redirects land the request off the
+        1001Tracklists host allow-list (phaze-8ib8/phaze-k5zz).
         """
         cached = self._search_cache.get(query)
         if cached is not None:
@@ -261,6 +271,15 @@ class TracklistScraper:
         if response.status_code != 200:
             logger.info("Search returned status %d for: %s", response.status_code, query)
             return []
+
+        # phaze-8ib8: the client now follows redirects (see __init__), so a redirected search
+        # POST could otherwise land on an off-allow-list host and have its (attacker-controlled)
+        # HTML parsed as if it were a legitimate 1001Tracklists results page. Re-check the FINAL
+        # response.url the same way scrape_tracklist() does, so this can't be used to smuggle a
+        # search off-host through a malicious/compromised redirect chain (phaze-k5zz).
+        if not self._is_allowed_url(str(response.url)):
+            logger.warning("Refusing search result redirected to disallowed URL: %s", response.url)
+            raise DisallowedScrapeHostError(str(response.url))
 
         try:
             results = self._parse_search_results(response.text)
@@ -378,6 +397,15 @@ class TracklistScraper:
         except httpx.HTTPError:
             logger.warning("HTTP error scraping tracklist: %s", url)
             raise
+
+        # phaze-8ib8: the client above now follows redirects (previously an apex-host or
+        # slug-moved source_url deterministically raised on the un-followed 301/302). Re-check the
+        # FINAL response.url against the allow-list so a redirect chain can never be used to smuggle
+        # the request off-host -- this keeps the phaze-k5zz SSRF guard's invariant true even though
+        # httpx, not this method, now performs the follow.
+        if not self._is_allowed_url(str(response.url)):
+            logger.warning("Refusing scrape result redirected to disallowed URL: %s", response.url)
+            raise DisallowedScrapeHostError(str(response.url))
 
         # A blocked/challenge page (403/429/5xx) is served as HTML that parses to an empty
         # tracklist; without this guard the caller would treat that as a valid zero-track scrape
