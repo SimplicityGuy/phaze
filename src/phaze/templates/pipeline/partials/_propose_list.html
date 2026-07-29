@@ -47,7 +47,22 @@
 
    The click targets this container (#propose-workspace-list, via sort.contract.target), NOT the
    whole workspace -- a workspace-wide swap would re-emit the search input mid-keystroke and destroy
-   focus and the caret. It introduces no new id and no OOB fragment. #}
+   focus and the caret. It introduces no new id and no OOB fragment.
+
+   phaze-xxp2: the status filter tabs (proposals/partials/filter_tabs.html) render HERE too, as the
+   FIRST thing inside the container -- moved from propose_workspace.html, which rendered them in a
+   sibling div OUTSIDE this container. That placement meant a tab click (or a bulk mutation) swapped
+   the rows but left the tab bar's active underline and aria-current="page" pointing at whatever was
+   active before the swap: the widget affirmatively announced the wrong filter. Every producer of
+   this partial (the full workspace render, the narrow HX swap, and the bulk response) now
+   re-renders the tabs along with the rows, so the active tab always matches what is on screen --
+   mirroring how the pager (phaze-a6hm.9) and bulk bar (phaze-a6hm.11) already work by living inside
+   this same container. `propose_stats` is recomputed by every producer (build_propose_list_context
+   is the single source for it -- see proposals.bulk_action), so the count badges refresh with it as
+   a consequence, not a special case. #}
+{% with view = propose_view, stats = propose_stats, tabs_url = "/s/propose", tabs_target = "#" ~ propose_list_id %}
+    {% include "proposals/partials/filter_tabs.html" %}
+{% endwith %}
 {% set columns = ["File", "Proposed name", "Proposed path", "Model", "Conf"] %}
 {% set ns = namespace(rows=[]) %}
 {% for p in propose_proposals %}

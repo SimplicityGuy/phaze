@@ -404,8 +404,16 @@ async def test_resolved_groups_not_shown(session: AsyncSession, client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_stats_header_values(session: AsyncSession, client: AsyncClient) -> None:
-    """Stats response includes correct group count and total files."""
+async def test_duplicates_index_redirects_into_the_dedupe_workspace(session: AsyncSession, client: AsyncClient) -> None:
+    """A seeded corpus does not change the answer: GET /duplicates/ is a bare 302 into the shell.
+
+    phaze-nt8f renamed this from ``test_stats_header_values``. That name (and its "includes correct
+    group count and total files" docstring) survived the Phase-57 rewrite that reduced the body to a
+    redirect assertion, leaving a test that claimed to cover the Groups / Total Files stats header
+    while asserting nothing about it -- which is precisely why the header's orphaning went unnoticed
+    for a phase. There is no stats header any more (``duplicates/partials/stats_header.html`` is
+    deleted); what this test actually pins is the redirect, so it now says so.
+    """
     # Create 2 groups: A (2 files) and B (2 files)
     f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=1000)
     f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=2000)
@@ -950,3 +958,134 @@ async def test_duplicates_restore_header_alone_does_not_return_a_fragment(client
     response = await client.get("/duplicates/", headers={"HX-History-Restore-Request": "true"})
     assert response.status_code == 302
     assert response.headers["location"] == "/s/dedupe"
+
+
+@pytest.mark.asyncio
+async def test_dedupe_mutations_emit_no_dead_stats_header_oob(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-nt8f): no dedupe mutation ships the orphaned ``#stats-header`` OOB fragment.
+
+    ``resolve_response.html`` / ``undo_response.html`` / ``bulk_resolve_response.html`` each used to
+    emit ``<div id="stats-header" hx-swap-oob="true">{% include stats_header.html %}</div>``. The id's
+    sole host, ``duplicates/list.html``, was deleted in the Phase-62 cutover (the same sweep that
+    retargeted the toast away from ``#duplicates-list``), so htmx 2.0.10 found no match, fired
+    ``htmx:oobErrorNoTarget`` and discarded the fragment -- after the router had paid THREE
+    whole-corpus aggregates per mutation to render it. The included partial also still pointed its
+    "Accept All" form at the equally-dead ``#duplicates-list``.
+
+    Asserted on all three response bodies at once so re-adding the block to any single fork fails.
+    """
+    f1 = _make_file("/dir/keep.mp3", "mp3", HASH_A)
+    f2 = _make_file("/dir/dup.mp3", "mp3", HASH_A)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve = await client.post(f"/duplicates/{HASH_A}/resolve", data={"canonical_id": str(f1.id)})
+    assert resolve.status_code == 200
+    file_states = _extract_server_file_states(resolve.text)
+
+    undo = await client.post(f"/duplicates/{HASH_A}/undo", data={"file_states": file_states})
+    assert undo.status_code == 200
+
+    bulk = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    assert bulk.status_code == 200
+
+    for label, body in (("resolve", resolve.text), ("undo", undo.text), ("resolve-all", bulk.text)):
+        assert "stats-header" not in body, f"{label} response still emits the orphaned #stats-header OOB fragment"
+        assert "duplicates-list" not in body, f"{label} response still references the v7-cutover-deleted #duplicates-list id"
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_restores_the_group_cards_bulk_resolve_deleted(session: AsyncSession, client: AsyncClient) -> None:
+    """Regression (phaze-dpc5): a successful Undo All must put the deleted cards back.
+
+    phaze-wgse made bulk resolve OOB-delete every ``#dupe-group-{hash}`` card the operator was shown,
+    but ``bulk_undo`` still answered with status text alone -- on the stale premise, recorded in three
+    places, that "bulk resolve never OOB-touches the individual cards". The Dedupe workspace body is
+    only produced by a rail navigation (the chrome poll seeds hidden counters, nothing else), so the
+    cards stayed gone for the life of the page: the operator was told N files were restored while
+    looking at an empty duplicate set with no keeper radios to re-pick with.
+
+    Asserts the full round trip through the SERVER-rendered payloads (never hand-crafted): resolve-all
+    deletes the cards, its toast carries the submitted hashes, and undo-all appends live
+    ``_dupe_group.html`` cards -- same id, same wired keeper radios -- back into ``#dedupe-group-list``.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    f3 = _make_file("/dir/b1.mp3", "mp3", HASH_B, file_size=3000)
+    f4 = _make_file("/dir/b2.mp3", "mp3", HASH_B, file_size=1500)
+    session.add_all([f1, f2, f3, f4])
+    await session.flush()
+
+    resolve_all = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A, HASH_B]})
+    assert resolve_all.status_code == 200
+    # The undo toast must carry the same hashes the OOB deletes name -- that is what makes the
+    # reversal addressable at all.
+    for group_hash in (HASH_A, HASH_B):
+        assert f'<div id="dupe-group-{group_hash}" hx-swap-oob="delete"></div>' in resolve_all.text
+        assert f'<input type="hidden" name="group_hashes" value="{group_hash}">' in resolve_all.text, (
+            f"bulk undo toast does not carry group {group_hash}, so undo cannot restore its card"
+        )
+
+    undo_all = await client.post(
+        "/duplicates/undo-all",
+        data={"file_states": _extract_server_file_states(resolve_all.text), "group_hashes": [HASH_A, HASH_B]},
+    )
+    assert undo_all.status_code == 200
+    assert "Undo All complete" in undo_all.text
+
+    assert 'hx-swap-oob="beforeend:#dedupe-group-list"' in undo_all.text, "undo-all restored no cards into the workspace card list"
+    for group_hash in (HASH_A, HASH_B):
+        assert f'id="dupe-group-{group_hash}"' in undo_all.text, f"group {group_hash}'s card was not restored"
+        assert f'hx-post="/duplicates/{group_hash}/resolve"' in undo_all.text, f"restored card for {group_hash} lost its keeper-select wiring"
+
+    # The restore lands somewhere real: the workspace declares the container the OOB append targets.
+    workspace = await client.get("/s/dedupe")
+    assert workspace.status_code == 200
+    assert 'id="dedupe-group-list"' in workspace.text, "the Dedupe workspace no longer declares the OOB append target"
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_replay_restores_no_duplicate_cards(session: AsyncSession, client: AsyncClient) -> None:
+    """A second Undo All restores nothing, so it must not inject a duplicate copy of a live card.
+
+    The markers are already gone on the replay (``undo_resolve`` is keyed on (file_id, canonical_id)
+    pairs), so ``restored_count`` is 0 -- and the card is by then back on screen. Appending it again
+    would create two elements with the same ``#dupe-group-{hash}`` id, the duplicate-id OOB hazard this
+    repo has paid for four times (gzrd / op6f / 7j50 / 5p43).
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve_all = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    payload = _extract_server_file_states(resolve_all.text)
+
+    first = await client.post("/duplicates/undo-all", data={"file_states": payload, "group_hashes": [HASH_A]})
+    assert f'id="dupe-group-{HASH_A}"' in first.text
+
+    replay = await client.post("/duplicates/undo-all", data={"file_states": payload, "group_hashes": [HASH_A]})
+    assert replay.status_code == 200
+    assert "0 files restored" in replay.text
+    assert "hx-swap-oob" not in replay.text, "a no-op replay must not re-append a card that is already on screen"
+
+
+@pytest.mark.asyncio
+async def test_bulk_undo_without_group_hashes_still_undoes(session: AsyncSession, client: AsyncClient) -> None:
+    """A stale tab whose toast predates phaze-dpc5 posts no ``group_hashes`` -- it must still undo.
+
+    ``group_hashes`` is optional on purpose: the operator has a 10-second window to reverse a bulk
+    archive, and 422-ing that click because the page was rendered by an older build would be a worse
+    failure than the missing cards this bead fixes.
+    """
+    f1 = _make_file("/dir/a1.mp3", "mp3", HASH_A, file_size=2000)
+    f2 = _make_file("/dir/a2.mp3", "mp3", HASH_A, file_size=1000)
+    session.add_all([f1, f2])
+    await session.flush()
+
+    resolve_all = await client.post("/duplicates/resolve-all", data={"group_hashes": [HASH_A]})
+    payload = _extract_server_file_states(resolve_all.text)
+
+    undo_all = await client.post("/duplicates/undo-all", data={"file_states": payload})
+    assert undo_all.status_code == 200
+    assert "1 file restored" in undo_all.text

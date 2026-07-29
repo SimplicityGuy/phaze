@@ -12,10 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from phaze.database import get_session
 from phaze.routers.request_guards import parse_json_array_payload
+
+# phaze-nt8f: `get_duplicate_stats` is deliberately NOT imported here any more. Every resolve /
+# undo / bulk-resolve used to call it purely to populate the `#stats-header` OOB fragment, whose
+# target id died with duplicates/list.html in the Phase-62 cutover -- three whole-corpus aggregate
+# scans per mutation (count_duplicate_groups + the total_files/SUM(file_size) HAVING subquery +
+# the SUM(MAX(file_size)) GROUP BY subquery) for a fragment the browser discarded. The service
+# itself is kept (services/dedup.py, covered by tests/discovery/services/test_dedup.py): it is the
+# read a future Dedupe stats surface would use. Re-import it only alongside a LIVE host for it.
 from phaze.services.dedup import (
     find_duplicate_group_by_hash,
     find_duplicate_groups_by_hashes,
-    get_duplicate_stats,
     resolve_group,
     score_group,
     undo_resolve,
@@ -133,14 +140,12 @@ async def resolve_group_endpoint(
     # dual-written state are rolled back on session close and the HTMX partial reports a resolve
     # that never happened. Matches routers/tags.py:369, routers/tracklists.py.
     await session.commit()
-    stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/resolve_response.html",
         context={
             "request": request,
-            "stats": stats,
             "group_hash": group_hash,
             "resolved_count": resolved_count,
             "resolved_file_states": json.dumps(resolved_file_states),
@@ -178,8 +183,6 @@ async def undo_resolve_endpoint(
         # _dupe_group.html card (build_dupe_group_card's shape), not the legacy group_card.html row.
         dupe_group_card = build_dupe_group_card(group)
 
-    stats = await get_duplicate_stats(session)
-
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/undo_response.html",
@@ -187,7 +190,6 @@ async def undo_resolve_endpoint(
             "request": request,
             "group": dupe_group_card,
             "group_hash": group_hash,
-            "stats": stats,
         },
     )
 
@@ -221,14 +223,12 @@ async def bulk_resolve(
         resolved_groups += 1
 
     await session.commit()  # `get_session` does not commit; without this every resolve is rolled back.
-    stats = await get_duplicate_stats(session)
 
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/bulk_resolve_response.html",
         context={
             "request": request,
-            "stats": stats,
             "resolved_groups": resolved_groups,
             "all_file_states": json.dumps(all_file_states),
             # phaze-wgse: the SUBMITTED hashes (not just the ones actually resolved this pass), so the
@@ -244,16 +244,34 @@ async def bulk_resolve(
 async def bulk_undo(
     request: Request,
     file_states: str = Form(...),
+    group_hashes: list[str] = Form(default_factory=list),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """Undo a bulk resolution, restoring all files.
+    """Undo a bulk resolution, restoring all files AND the group cards the resolve removed.
 
-    phaze-be1j: the toast's "Undo All" now targets the Dedupe workspace's persistent
+    phaze-be1j: the toast's "Undo All" targets the Dedupe workspace's persistent
     ``#dedupe-bulk-response`` status div (``innerHTML``) -- the old ``#duplicates-list`` target
     (and the full ``group_list.html`` legacy accordion-page response built for it) no longer
-    exists in the v7 shell, so the request never fired. Bulk resolve doesn't OOB-touch individual
-    group cards either (R-2), so there's no per-card DOM state to restore here -- just confirm
-    the undo landed.
+    exists in the v7 shell, so the request never fired.
+
+    phaze-dpc5: this used to stop there, on the premise that "bulk resolve doesn't OOB-touch
+    individual group cards either (R-2), so there's no per-card DOM state to restore". phaze-wgse
+    had since made ``bulk_resolve_response.html`` OOB-DELETE every ``#dupe-group-{hash}`` card the
+    operator was shown, and nothing re-renders the Dedupe workspace on its own (the single chrome
+    poll only seeds hidden counters; the body is produced by a rail navigation). So the undo
+    committed correctly and truthfully reported "N files restored" into a workspace with no cards
+    left in it. The response now rebuilds those cards: ``group_hashes`` rides the undo toast (the
+    SAME submitted set bulk resolve deleted, phaze-81bu's "act on exactly what the operator was
+    shown"), and the restored groups are re-read and OOB-appended to ``#dedupe-group-list``.
+
+    The read is deliberately AFTER the commit: ``find_duplicate_groups_by_hashes`` excludes
+    dedup-resolved files, so before the marker DELETE lands it would return the groups still
+    collapsed to a single file (or nothing at all) and "restore" empty cards.
+
+    ``group_hashes`` defaults to empty rather than being required: a stale tab whose toast predates
+    this change still undoes correctly (markers deleted, honest count), it simply restores no cards
+    -- degrading to the old behaviour instead of 422-ing a reversal the operator has 10 seconds to
+    click.
 
     phaze-wkqk: same guarded parse as ``undo_resolve_endpoint`` -- see the untrusted-input contract
     in ``routers/request_guards.py``.
@@ -262,11 +280,18 @@ async def bulk_undo(
     restored_count = await undo_resolve(session, parsed_states)
     await session.commit()  # `get_session` does not commit; without this the bulk undo is rolled back.
 
+    restored_groups: list[dict[str, Any]] = []
+    if restored_count and group_hashes:
+        for group in await find_duplicate_groups_by_hashes(session, group_hashes):
+            score_group(group)
+            restored_groups.append(build_dupe_group_card(group))
+
     return templates.TemplateResponse(
         request=request,
         name="duplicates/partials/bulk_undo_response.html",
         context={
             "request": request,
             "restored_count": restored_count,
+            "dedupe_groups": restored_groups,
         },
     )

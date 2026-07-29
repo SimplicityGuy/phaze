@@ -118,17 +118,18 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # (``delete_scan``) cascades away FileRecord/metadata/analysis but never touches Redis. So
 # ``done==0`` does NOT imply "counter is also 0 there"; a genuinely-emptied corpus reads
 # ``done==0``/``total==0`` while the counter still carries the whole pre-delete completion count.
-# ``_reconciled_done`` caps the fallback at ``stage_total`` UNCONDITIONALLY (including
-# ``stage_total == 0``, where the cap degrades the fallback to ``stage_done``) so this state
-# renders 0, not a phantom historical count.
+# ``_reconciled_done`` (phaze-89tw) only renders the fallback when it is a genuine, boundable
+# partial progress signal — ``0 < fallback < stage_total`` — UNCONDITIONALLY, including
+# ``stage_total == 0``, where the fallback always degrades to ``stage_done``. A fallback at or
+# beyond ``stage_total`` never renders (not even capped to the total): the durable counters are
+# never-reset and routinely exceed a re-scanned/degraded node's current total, so rendering the
+# total itself would falsely claim 100% done exactly when the DB says nothing is done.
 # WR-03 unit constraint: a node may map ONLY to per-file SAQ functions, because the node's
 # ``done`` is a distinct-file/tracklist count and the fallback renders the counter AS that
 # ``done``. ``generate_proposals`` is a BATCH task (one job == N files), so its ``completed``
 # counter counts batches, not files — mapping it here would render a batch count as a file
 # ``done`` (e.g. 1 batch of 10 files -> proposalsDone=1). It is therefore intentionally OMITTED;
-# proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number. The
-# remaining per-file mappings are additionally capped at the node ``total`` in ``_reconciled_done``
-# so re-runs cannot inflate ``done`` past the denominator.
+# proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number.
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
     "fingerprint": ("fingerprint_file",),
@@ -165,28 +166,37 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
 
     DB-truth wins whenever ``stage_done > 0``. Only when the DB source reads 0 do we fall
     back to the sum of the node's mapped ``completed`` counters (D-02 backstop) — and only
-    if that sum is itself > 0. The fallback is capped at ``stage_total`` (WR-03) so
-    re-run-inflated counters cannot render a ``done`` larger than the denominator.
+    if that sum is itself > 0.
 
-    phaze-y0wz: the cap holds UNCONDITIONALLY, including ``stage_total == 0``. The durable
-    Redis ``completed`` counters (plain INCR, never decremented/reset — see
-    ``services/pipeline_counters.py``) survive a full corpus delete (``delete_scan`` cascades
-    away the FileRecord/metadata/analysis rows but never touches Redis), so ``stage_total == 0``
-    is NOT proof of DB degradation — it is also exactly what a genuinely-emptied or
-    genuinely-empty corpus reads. Previously ``stage_total > 0`` gated the cap, so it went dead
-    in that exact state and an emptied corpus rendered its entire pre-delete completion history
-    as a phantom, uncapped ``done`` against a ``total`` of 0. Capping at ``stage_total`` (0 here)
-    means the fallback degrades to ``stage_done`` (already known to be 0, from the guard above)
-    whenever the denominator is 0 — including ``scan_search``, whose ``total`` the DB layer
-    documents as ALWAYS ``None`` -> 0 (``get_stage_progress``), so this also retires that node's
-    permanent uncapped double-count (summing ``scan_live_set`` + ``search_tracklist``).
+    phaze-89tw: the fallback is NEVER allowed to render as ``stage_total`` (100% done). The
+    Redis ``completed:<function>`` counters are durable, never-reset, plain ``INCR``s (see
+    ``services/pipeline_counters.py``) that OUTLIVE the rows they counted, so for any mature
+    archive the cumulative counter is routinely LARGER than the node's current ``total`` —
+    which used to make ``min(fallback, stage_total)`` collapse to exactly ``stage_total``
+    whenever ``stage_done == 0``, i.e. the backstop rendered the node 100% complete precisely
+    in the state where the DB says nothing is done (a degraded read, per phaze-89tw scenario
+    A, or a corpus re-scan after delete-scan, scenario B). ``stage_done == 0`` is an
+    overloaded sentinel here — ``_safe_count`` / ``_safe_bucket_counts`` return 0 for BOTH
+    "query failed" and "genuinely empty", so this function cannot tell degrade from empty and
+    must never manufacture a value equal to the denominator either way.
+
+    The fallback is therefore used ONLY when it represents genuine, boundable partial
+    progress: ``0 < fallback < stage_total``. Any fallback that is at or beyond the
+    denominator (including the ``stage_total == 0`` case carried over from phaze-y0wz, where
+    an emptied corpus must not render its pre-delete completion history) degrades to
+    ``stage_done`` — already known to be 0 from the guard above — rather than the misleading
+    ceiling value. This also covers ``scan_search``, whose ``total`` the DB layer documents as
+    ALWAYS ``None`` -> 0 (``get_stage_progress``), so its summed ``scan_live_set`` +
+    ``search_tracklist`` counters can never render as a phantom double-counted ``done``.
     """
     if stage_done > 0:
         return stage_done
     fallback = sum(counters.get(fn, {}).get("completed", 0) for fn in _NODE_COMPLETED_FNS.get(node, ()))
     if fallback <= 0:
         return stage_done
-    return min(fallback, stage_total) if stage_total > 0 else stage_done
+    if stage_total <= 0 or fallback >= stage_total:
+        return stage_done
+    return fallback
 
 
 def _derive_stats(stage_progress: dict[str, dict[str, int | None]]) -> dict[str, int]:
@@ -796,10 +806,10 @@ async def pipeline_stats_partial(
     # own lane snapshot rather than reading the `lanes` result below) -- so they now fan out
     # CONCURRENTLY via asyncio.gather, mirroring the Phase 92 get_stage_progress pattern exactly:
     # each read runs in its OWN AsyncSession via _read_in_own_session, bounded by the SAME
-    # _stats_fanout() cap (a fresh Semaphore(4) per poll in production; the test suite's
-    # _route_stats_fanout fixture overrides _STATS_FANOUT to Semaphore(1) and routes
-    # phaze.database.async_session onto the per-test connection, so this reuses that EXISTING
-    # test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
+    # _stats_fanout() cap (process-global cap-4, shared with every OTHER concurrently in-flight poll
+    # -- phaze-28wi; the test suite's _route_stats_fanout fixture overrides _STATS_FANOUT to
+    # Semaphore(1) and routes phaze.database.async_session onto the per-test connection, so this
+    # reuses that EXISTING test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
     # pure Redis read that already never raises), so it rides the SAME gather directly rather than
     # through _read_in_own_session.
     #

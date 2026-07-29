@@ -4,32 +4,37 @@
     <p class="text-sm text-gray-400 dark:text-gray-500 mt-2">Use the undo toast to reverse, or navigate to the next page.</p>
 </div>
 
-{# OOB: update stats header #}
-<div id="stats-header" hx-swap-oob="true">
-    {% include "duplicates/partials/stats_header.html" %}
-</div>
+{# phaze-nt8f: the `#stats-header` OOB block that used to sit here is GONE (see
+   resolve_response.html for the full rationale) -- its target id was deleted with
+   duplicates/list.html in the Phase-62 cutover, so the fragment was rendered, shipped and
+   discarded on every bulk resolve. #}
 
 {# OOB: inject bulk toast #}
 <div hx-swap-oob="beforeend:#toast-container">
     {# undo_target: dedupe_workspace.html's persistent "#dedupe-bulk-response" status div, NOT the
        v7-cutover-deleted #duplicates-list (phaze-be1j) -- it always exists in the live shell. #}
-    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML" %}
+    {% with toast_message="Resolved " ~ resolved_groups ~ " groups using auto-selected files", is_bulk=True, undo_file_states=all_file_states, undo_target="dedupe-bulk-response", undo_swap="innerHTML", undo_group_hashes=(group_hashes if group_hashes is defined else []) %}
     {% include "duplicates/partials/toast.html" %}
     {% endwith %}
 </div>
 
 {# OOB: remove every rendered duplicate-group card (phaze-wgse). The primary swap above only touches
-   whichever container the caller's hx-target points at -- the standalone /duplicates page targets
-   #duplicates-list (the whole card list, already replaced by the primary swap above, so this is a
-   harmless no-op there since it declares no #dupe-group-{hash} ids), but the pipeline Dedupe workspace
-   (pipeline/partials/dedupe_workspace.html) targets #dedupe-bulk-response, a status div ABOVE the card
+   whichever container the caller's hx-target points at, and the pipeline Dedupe workspace
+   (pipeline/partials/dedupe_workspace.html) -- the ONLY live caller, since GET /duplicates/ is now a
+   302 into the shell (phaze-dpc5 corrects an earlier note here that described a "harmless no-op" on a
+   standalone /duplicates page targeting #duplicates-list; that page no longer exists, so every bulk
+   resolve takes the card-deleting path) -- targets #dedupe-bulk-response, a status div ABOVE the card
    list, not the card list itself. Without this, every #dupe-group-{hash} card (pipeline/partials/
    _dupe_group.html) stayed fully rendered with live keeper radios below the "all resolved" banner,
    letting an operator re-POST /duplicates/{hash}/resolve against an already-archived group. Mirrors the
    phaze-gwe1 OOB row-removal idiom (tags/partials/bulk_write_response.html) -- delete each card the
    operator was shown, using the SUBMITTED group_hashes so a group a concurrent request already resolved
    between render and this POST (the `continue` branch in the router) disappears too, not just the ones
-   this call wrote. #}
+   this call wrote.
+
+   The SAME group_hashes ride the undo toast above (phaze-dpc5) so POST /duplicates/undo-all can put
+   these cards back. Deleting DOM the reversal path cannot restore is what made a successful Undo All
+   present an empty workspace; treat this delete and that restore as one contract. #}
 {% if group_hashes is defined %}
 {% for hash in group_hashes %}
 <div id="dupe-group-{{ hash }}" hx-swap-oob="delete"></div>

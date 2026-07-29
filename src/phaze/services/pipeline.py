@@ -8,9 +8,10 @@ import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any, cast as type_cast
+import weakref
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, and_, cast, distinct, exists, func, or_, select, text
+from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
 from sqlalchemy.orm import aliased
 import structlog
 
@@ -138,7 +139,12 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
 
     Re-scan-safe: a re-scan creates a NEW completed batch for the same agent, so summing ALL
     completed batches would double-count. Instead a window function ranks each agent's completed
-    batches by ``created_at`` DESC and only ``rn == 1`` (the most recent) is summed.
+    batches by ``created_at`` DESC, ``ScanBatch.id`` DESC and only ``rn == 1`` (the most recent) is
+    summed. The ``id`` tiebreaker (phaze-imih) matters because ``ScanBatch.created_at`` carries no
+    uniqueness constraint (``TimestampMixin``'s ``server_default=func.now()`` is transaction-time
+    constant): two completed batches for one agent can share ``created_at``, and without the
+    tiebreaker the ``rn == 1`` pick on a tie is executor-arbitrary -- matching the corrected window
+    in :func:`get_agent_reconciliations` (phaze-n2d2) so the two sums can never disagree.
 
     Returns None (NOT 0) both when there are no completed batches and on any DB error: None is the
     "hide the reconciliation" sentinel, distinct from a genuine scanned total of 0. Mirrors the
@@ -155,7 +161,7 @@ async def get_scanned_total(session: AsyncSession) -> int | None:
             ranked = (
                 select(
                     ScanBatch.total_files.label("total_files"),
-                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=ScanBatch.created_at.desc()).label("rn"),
+                    func.row_number().over(partition_by=ScanBatch.agent_id, order_by=(ScanBatch.created_at.desc(), ScanBatch.id.desc())).label("rn"),
                 )
                 .where(ScanBatch.status == ScanStatus.COMPLETED.value)
                 .subquery()
@@ -592,29 +598,61 @@ async def get_agent_recent_scans(session: AsyncSession, agent_id: str, *, limit:
 # Bounded fan-out for the get_stage_progress reads (CLEAN-01 / D-01/D-02/D-03). A single
 # AsyncSession (one asyncpg connection) CANNOT run concurrent statements -- SQLAlchemy 2.0 raises
 # IllegalStateChangeError ("another operation is in progress") -- so each concurrent read runs in
-# its OWN session. The semaphore caps the extra concurrent pool checkouts per 5s poll: cap 4 admits
-# all three heavy enrich-bucket reads at once (the serial-cost dominators) while leaving >=6 of the
+# its OWN session. The semaphore caps the extra concurrent pool checkouts: cap 4 admits all three
+# heavy enrich-bucket reads at once (the serial-cost dominators) while leaving >=6 of the
 # deliberately-lean 10-conn/worker pool (pool_size=5 + max_overflow=5, post-PgBouncer-exhaustion
 # incident) for the request's own session + other request traffic + the orphan refresher (RESEARCH
-# Pool Headroom, T-92-02-DoS).
+# Pool Headroom, T-92-02-DoS). That headroom invariant holds only if the cap is GLOBAL across
+# concurrently in-flight polls, not per-poll -- see phaze-28wi below.
 #
 # WHY NOT a module-level pre-constructed ``asyncio.Semaphore(4)``: an asyncio primitive binds to the
-# event loop of its FIRST use, so a module-singleton raises "bound to a different event loop" under
-# pytest's per-test loops and degrades every read (a real bug, not just a test artifact). Instead
-# :func:`_stats_fanout` builds a FRESH ``asyncio.Semaphore(4)`` per poll, bound to the running loop
-# (RESEARCH's cap is explicitly PER-POLL) -- unless the ``_STATS_FANOUT`` override below is set.
+# event loop of its FIRST use, so a single eager module-singleton raises "bound to a different event
+# loop" under pytest's per-test loops and degrades every read (a real bug, not just a test artifact).
+#
+# phaze-28wi: the ORIGINAL fix here built a FRESH ``asyncio.Semaphore(4)`` per poll to route around
+# that loop-binding hazard, but that makes the cap per-poll rather than process-global: two
+# concurrently in-flight polls each get their OWN cap-4 budget, so the ">=6 slots stay free"
+# invariant above only holds for a single in-flight render -- exactly the mismatch this bead fixes.
+# The cap is now bound to the CURRENT event loop lazily in a ``WeakKeyDictionary`` keyed by the
+# running loop (populated on first use, one entry reused for every subsequent poll on that loop):
+# production runs one loop for the process lifetime, so every poll shares the SAME semaphore and the
+# cap is truly global; each pytest loop still gets its own entry (preserving the original
+# loop-binding fix), and the weak key lets that entry drop once the loop is garbage-collected instead
+# of accumulating one leaked entry per test.
 #
 # PATCHABLE SEAM -- ``_STATS_FANOUT`` is the override 92-03 Task 2 sets (per-test, in the test loop)
 # to ``asyncio.Semaphore(1)`` so the fan-out SERIALIZES onto the single shared per-test connection
 # (concurrent reads on one connection would raise IllegalStateChangeError); it also monkeypatches
 # ``phaze.database.async_session`` to route the fan-out through that connection. Both are resolved at
-# CALL time (the deferred import + this module attribute) so the routing takes effect.
+# CALL time (the deferred import + this module attribute) so the routing takes effect, and take
+# priority over the loop-keyed cache below (checked first).
 _STATS_FANOUT: asyncio.Semaphore | None = None
+
+# Cap on concurrent extra pool checkouts a single fan-out read may hold (see the module comment
+# above for the arithmetic).
+_STATS_FANOUT_CAP = 4
+
+# Loop-keyed cache of the process-global fan-out semaphore (phaze-28wi). A ``WeakKeyDictionary`` so a
+# closed event loop's entry is collected instead of leaking one Semaphore per test loop.
+_STATS_FANOUT_CACHE: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 
 def _stats_fanout() -> asyncio.Semaphore:
-    """Return the fan-out bound to the CURRENT loop: the ``_STATS_FANOUT`` test override, else a fresh cap-4."""
-    return _STATS_FANOUT if _STATS_FANOUT is not None else asyncio.Semaphore(4)
+    """Return the process-global fan-out cap for the CURRENT loop (phaze-28wi).
+
+    The ``_STATS_FANOUT`` test override wins when set (routes onto the per-test connection, see the
+    module comment above). Otherwise returns the SAME cap-4 :class:`asyncio.Semaphore` for every call
+    on this event loop -- created lazily on first use and cached in :data:`_STATS_FANOUT_CACHE` -- so
+    the cap bounds ALL concurrently in-flight polls collectively, not just the reads within one poll.
+    """
+    if _STATS_FANOUT is not None:
+        return _STATS_FANOUT
+    loop = asyncio.get_running_loop()
+    fanout = _STATS_FANOUT_CACHE.get(loop)
+    if fanout is None:
+        fanout = asyncio.Semaphore(_STATS_FANOUT_CAP)
+        _STATS_FANOUT_CACHE[loop] = fanout
+    return fanout
 
 
 async def _read_in_own_session[T](fanout: asyncio.Semaphore, fn: Callable[[AsyncSession], Awaitable[T]], default: T) -> T:
@@ -670,8 +708,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
     - ``scrape``      -- done = DISTINCT tracklist_id in ``tracklist_versions``; total = COUNT(tracklists)
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
-    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with BOTH
-      ``metadata`` AND ``analysis``, mirroring routers/pipeline.py:116-128)
+    - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with a
+      ``metadata`` row present AND analysis DONE, mirroring ``get_proposal_pending_batches``'s
+      ``_proposal_pending_clauses`` ready-set gate below -- phaze-nuyn)
     - ``execute``     -- done = DISTINCT file_id with a completed ``execution_log`` row; total = approved-proposal count
 
     Each source is wrapped in :func:`_safe_count` (or :func:`_safe_bucket_counts` for the enrich
@@ -694,11 +733,21 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     tracklist_total_stmt = select(func.count(Tracklist.id))
     discovery_stmt = select(func.count(FileRecord.id))
     # Proposals denominator: the convergence-gate set -- files with BOTH metadata AND analysis
-    # (mirrors routers/pipeline.py:116-128, the generate_proposals ready-set).
+    # (mirrors get_proposal_pending_batches's ready-set, ``_proposal_pending_clauses`` below). The
+    # metadata conjunct intentionally stays a bare row-existence check (matching
+    # ``_proposal_pending_clauses`` exactly -- neither predicate applies ``failed_at IS NULL`` yet;
+    # that is a separate, adjacent gap, not this one). The analysis conjunct uses
+    # ``done_clause(Stage.ANALYZE)`` -- the same completion-discriminated predicate
+    # ``_proposal_pending_clauses`` hand-rolls (DERIV-03: ``analysis_completed_at IS NOT NULL``) --
+    # instead of bare existence, so this no longer counts a mid-flight partial analysis row
+    # (upserted at analysis START, NULL aggregates) or a terminally-failed analyze row (``failed_at``
+    # set, ``analysis_completed_at`` NULL) neither of which get_proposal_pending_batches will ever
+    # batch. Phase 57.1 added that discriminator to the ready-set only; this fixes the drift
+    # (phaze-nuyn) by composing from the shared ``done_clause`` builder so the two cannot drift again.
     convergence_stmt = (
         select(func.count(FileRecord.id))
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
-        .where(exists(select(AnalysisResult.id).where(AnalysisResult.file_id == FileRecord.id)))
+        .where(done_clause(Stage.ANALYZE))
     )
     scan_search_stmt = select(func.count(distinct(Tracklist.file_id)))
     scrape_stmt = select(func.count(distinct(TracklistVersion.tracklist_id)))
@@ -728,8 +777,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
     # (never mutated -- only spread via {**bucket, "total": ...}).
     bucket_default: dict[str, int] = _empty_buckets()
 
-    # ONE semaphore shared across every read in THIS poll so the cap bounds them collectively (fresh
-    # per poll, bound to the running loop -- see _stats_fanout).
+    # ONE semaphore shared across every read in THIS poll -- and, since phaze-28wi, across every
+    # OTHER concurrently in-flight poll on the SAME running loop too, so the cap bounds them all
+    # collectively rather than per-poll (see _stats_fanout).
     fanout = _stats_fanout()
 
     # Fan out every independent read concurrently, each in its own session (D-01/D-02/D-03). The
@@ -982,6 +1032,17 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
     parity with ``recover_orphaned_work`` is DEFINITIONAL and mutation-tested (D-05). The ``reenqueue``
     / ``scheduling_ledger`` imports stay FUNCTION-LOCAL to break the reenqueue<->pipeline cycle and
     preserve the control-only agent-worker boundary (``tests/shared/core/test_task_split.py``); do NOT hoist.
+
+    phaze-xwaj: the live-broker-keys read below executes :data:`_LIVE_KEYS_SQL` DIRECTLY rather than
+    going through the degrade-safe :func:`get_live_job_keys` wrapper. That wrapper SWALLOWS any DB
+    error into an empty set via its own nested SAVEPOINT -- which un-aborts the enclosing transaction,
+    so the rest of THIS function's raising reads would go on to succeed with ``live == set()``, i.e.
+    every genuinely live/in-flight ledger row misclassifies as orphaned. That is exactly the "RAISES
+    on ANY DB error" contract this function promises breaking silently: mixing one swallowing read
+    into an otherwise-raising core lets a live-keys failure masquerade as a real (inflated) success,
+    which :func:`refresh_stage_orphan_counts` would then rebind as the new cache value instead of
+    keeping the last-good one (D-03). ``get_live_job_keys`` itself is UNCHANGED and stays the right
+    call for its degrade-tolerant consumers (the recovery producer).
     """
     out: dict[str, int] = {"metadata": 0, "analyze": 0, "fingerprint": 0}
     async with session.begin_nested():
@@ -999,7 +1060,8 @@ async def _compute_stage_orphan_counts(session: AsyncSession) -> dict[str, int]:
         )
 
         rows = await get_ledger_rows(session)
-        live = await get_live_job_keys(session)
+        # RAISING read (phaze-xwaj) -- deliberately NOT get_live_job_keys, see docstring above.
+        live = {row[0] for row in (await session.execute(_LIVE_KEYS_SQL)).all()}
         done_sets = await _build_done_sets(session, _ledger_fids(rows))
         in_flight = await _in_flight_cloud_job_ids(session)
         # phaze-w0yr: mirror recover_orphaned_work's FOUR-way filter. Since 83-06 recovery ALSO
@@ -1534,6 +1596,21 @@ async def get_analyze_working_set(
                     await session.execute(
                         _analyze_files_select()
                         .where(AnalysisResult.analysis_completed_at.is_not(None))
+                        # phaze-wiz1: exclude anything the active section would also claim -- a
+                        # deepen-in-flight completed file (analysis_completed_at stays set through a
+                        # re-run per the migration-033 XOR check, while the re-run's enqueue recreates
+                        # the scheduling_ledger row / an active cloud_job) or an orphaned, never-cleared
+                        # ledger row on an already-completed file. The Python `seen` dedup below only
+                        # ever covered the FINAL page's active rows, which structurally cannot exclude
+                        # an overlapping file that sorted onto an earlier page -- excluding at the
+                        # query level (mirroring how _analyze_active_where already excludes completed
+                        # rows from the active section) is correct regardless of which page it landed on.
+                        # NULL-safe: _analyze_active_where()'s CloudJob.status disjunct is NULL (not
+                        # False) for the common case of no cloud_job row at all (a LEFT JOIN miss), so
+                        # a bare `~_analyze_active_where()` would evaluate to NULL -- and therefore
+                        # WHERE-exclude -- every ordinary completed local file. coalesce(..., false())
+                        # forces that NULL to False before negating.
+                        .where(~func.coalesce(_analyze_active_where(), false()))
                         .order_by(AnalysisResult.analysis_completed_at.desc(), FileRecord.id.desc())
                         .limit(completions_limit)
                     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
@@ -1495,6 +1496,38 @@ async def test_get_scanned_total_rescan_counts_latest_only(session: AsyncSession
 
 
 @pytest.mark.asyncio
+async def test_get_scanned_total_tiebreaks_tied_created_at_by_id_desc(session: AsyncSession) -> None:
+    """phaze-imih regression: a ``created_at`` tie must resolve via ``ScanBatch.id.desc()``, not
+    executor-arbitrary heap/plan order -- mirroring
+    ``test_get_agent_reconciliations_tiebreaks_tied_created_at_by_id_desc`` (phaze-n2d2), whose
+    fix was applied to :func:`get_agent_reconciliations` only and left this sibling window behind.
+
+    Seeds several completed batches for ONE agent sharing an EXPLICIT ``created_at`` with ids
+    assigned in a SCRAMBLED order relative to insertion, each ``total_files`` derived from its id
+    index so the row actually selected as ``rn == 1`` is identifiable precisely.
+    """
+    await seed_active_agent(session, "nox")
+    tied_at = datetime(2026, 7, 20, 12, 0, 0)  # naive: test schema's created_at is TIMESTAMP WITHOUT TZ
+    ids = [uuid.UUID(f"00000000-0000-0000-0000-0000000000{i:02d}") for i in range(5)]
+    scrambled_indices = [2, 0, 4, 1, 3]
+    for i in scrambled_indices:
+        batch = ScanBatch(
+            id=ids[i],
+            agent_id="nox",
+            scan_path="/music",
+            status=ScanStatus.COMPLETED.value,
+            total_files=(i + 1) * 10,
+            processed_files=(i + 1) * 10,
+        )
+        batch.created_at = tied_at  # type: ignore[assignment]
+        session.add(batch)
+    await session.commit()
+
+    # id DESC as the tiebreak -> ids[4] (the LARGEST id) must win -> total_files=(4+1)*10=50.
+    assert await get_scanned_total(session) == 50
+
+
+@pytest.mark.asyncio
 async def test_get_scanned_total_sums_across_agents(session: AsyncSession) -> None:
     """scanned sums each agent's latest completed batch: 100 (nox) + 50 (lux) → 150."""
     await seed_active_agent(session, "nox")
@@ -2072,3 +2105,61 @@ async def test_get_agent_recent_scans_orders_by_created_at_then_id(session: Asyn
 
     # Newest created_at first: i=4 (last inserted, largest timestamp) down to i=0.
     assert [row.id for row in rows] == list(reversed(ids))
+
+
+@pytest.mark.asyncio
+async def test_stats_fanout_is_process_global_within_a_loop() -> None:
+    """phaze-28wi: two "polls" on the SAME loop must share ONE semaphore, not one each.
+
+    Deliberately does NOT use the ``session`` fixture -- that fixture's ``_route_stats_fanout``
+    monkeypatches ``_STATS_FANOUT`` to a test override, which would short-circuit the very cache
+    this test exercises. Simulates two independent ``/pipeline/stats`` polls landing on the SAME
+    running loop (the real production shape: one uvicorn worker, one loop, many concurrent
+    requests) by calling :func:`pipeline_mod._stats_fanout` twice with nothing in between.
+    """
+    assert pipeline_mod._STATS_FANOUT is None  # guard: no test override is active here
+    first_poll = pipeline_mod._stats_fanout()
+    second_poll = pipeline_mod._stats_fanout()
+    assert first_poll is second_poll
+    assert isinstance(first_poll, asyncio.Semaphore)
+
+
+@pytest.mark.asyncio
+async def test_stats_fanout_reuses_the_cached_semaphore_across_many_calls() -> None:
+    """A long run of calls on one loop never allocates a new Semaphore past the first."""
+    assert pipeline_mod._STATS_FANOUT is None
+    fanouts = [pipeline_mod._stats_fanout() for _ in range(5)]
+    assert len({id(f) for f in fanouts}) == 1
+
+
+def test_stats_fanout_gives_different_loops_different_semaphores() -> None:
+    """A fresh loop still gets its OWN semaphore (preserves the original loop-binding fix).
+
+    An ``asyncio.Semaphore`` binds to the event loop of its first use, so two loops MUST NOT
+    share one -- only concurrently in-flight polls on the SAME loop should. Runs two throwaway
+    loops sequentially (each a stand-in for e.g. two separate pytest test-loops) and asserts the
+    cache hands back a DIFFERENT object per loop.
+    """
+    assert pipeline_mod._STATS_FANOUT is None
+
+    async def _call() -> asyncio.Semaphore:
+        return pipeline_mod._stats_fanout()
+
+    def _get_fanout_on_a_fresh_loop() -> asyncio.Semaphore:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_call())
+        finally:
+            loop.close()
+
+    first = _get_fanout_on_a_fresh_loop()
+    second = _get_fanout_on_a_fresh_loop()
+    assert first is not second
+
+
+@pytest.mark.asyncio
+async def test_stats_fanout_test_override_wins_over_the_loop_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``_STATS_FANOUT`` patchable seam (92-03 Task 2) still takes priority, unchanged by phaze-28wi."""
+    override = asyncio.Semaphore(1)
+    monkeypatch.setattr(pipeline_mod, "_STATS_FANOUT", override)
+    assert pipeline_mod._stats_fanout() is override

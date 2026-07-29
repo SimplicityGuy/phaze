@@ -53,9 +53,11 @@ if TYPE_CHECKING:
     from phaze.models.proposal import RenameProposal
 
 
-# The six redesigned Review & Apply workspace stages whose HX fragments must ride the ONE chrome
-# poll (no per-fragment ``hx-trigger="every"`` / ``setInterval``).
-_WORKSPACE_STAGES = ["propose", "rename", "tagwrite", "move", "dedupe", "cue"]
+# The Review & Apply workspace stages whose HX fragments must ride the ONE chrome poll (no
+# per-fragment ``hx-trigger="every"`` / ``setInterval``). phaze-vvmh appended "apply" -- the group's
+# terminal node, and the only in-product trigger for POST /execution/start -- so it inherits the
+# bare-fragment and single-poll contracts every sibling is held to.
+_WORKSPACE_STAGES = ["propose", "rename", "tagwrite", "move", "dedupe", "cue", "apply"]
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +194,12 @@ async def test_edit_patch_targets_own_row(
         data={"proposed": "Edited Name.mp3", "facet": "filename"},
     )
     assert resp.status_code == 200
-    assert f'id="proposal-{proposal.id}"' in resp.text, "returns the targeted row"
+    # phaze-vvmh: the row comes back as the SHARED pipeline/partials/_diff_row.html under the
+    # default rename/filename shape. It used to be the legacy <tr> proposals/partials/proposal_row.html
+    # (id="proposal-<id>"), which the v7 workspaces mount into a <div> list -- a swap that dropped
+    # table-row markup into a div and threw Alpine ReferenceErrors. That template is deleted; every
+    # mutation route now has exactly one response shape.
+    assert f'id="rename-row-{proposal.id}"' in resp.text, "returns the targeted row"
     assert "<html" not in resp.text, "returns only the row, not a full page"
     await session.refresh(proposal)
     assert proposal.proposed_filename == "Edited Name.mp3"
@@ -789,3 +796,64 @@ async def test_workspace_declares_no_second_toast_container(client: AsyncClient,
     frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
     assert frag.status_code == 200
     assert 'id="toast-container"' not in frag.text, f"the /s/{stage} fragment must not declare its own toast container"
+
+
+# ---------------------------------------------------------------------------
+# phaze-vvmh: the Apply (Execute) workspace -- the terminal step of "nothing moves without review,
+# then execute", which had no in-product trigger at all between the Phase-62 cutover and this bead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_workspace_hosts_the_execute_trigger(
+    client: AsyncClient, session: AsyncSession, seed_pending_proposal: Callable[..., Awaitable[RenameProposal]]
+) -> None:
+    """/s/apply serves a document that can dispatch approved proposals.
+
+    The regression this pins: POST /execution/start had exactly one caller in the template tree,
+    inside a fragment addressed to the deleted ``#stats-bar`` id, so no served document contained an
+    execute control. An operator could approve any number of proposals and never apply them.
+    """
+    proposal = await seed_pending_proposal(0.95)
+    proposal.status = ProposalStatus.APPROVED.value
+    await session.commit()
+
+    fragment = await client.get("/s/apply", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    body = fragment.text
+
+    assert 'hx-post="/execution/start"' in body, "the Apply workspace no longer triggers execution"
+    assert 'hx-target="#apply-execute-response"' in body
+    assert 'id="apply-execute-response"' in body, "the dispatch response has no sink to land in"
+    assert "hx-confirm" in body, "R-4: a mass action must confirm"
+    # The button's sink is a SIBLING, not an ancestor (phaze-thd6) -- otherwise dispatching would
+    # delete the control that dispatched.
+    sink_index = body.index('id="apply-execute-response"')
+    trigger_index = body.index('hx-post="/execution/start"')
+    assert trigger_index < sink_index, "the execute trigger must not live inside its own response sink"
+
+
+@pytest.mark.asyncio
+async def test_apply_workspace_disables_execute_with_nothing_approved(client: AsyncClient) -> None:
+    """With zero approved proposals the trigger is inert and says why -- it does not post an empty batch."""
+    fragment = await client.get("/s/apply", headers={"HX-Request": "true"})
+    assert fragment.status_code == 200
+    body = fragment.text
+
+    assert "disabled" in body
+    assert 'hx-post="/execution/start"' not in body, "an empty batch must not be dispatchable"
+    assert "Nothing approved yet" in body
+
+
+@pytest.mark.asyncio
+async def test_apply_rail_node_is_navigable(client: AsyncClient) -> None:
+    """The rail offers the Execute node, so the workspace is reachable without knowing the URL.
+
+    A stage partial with no rail entry is only marginally better than no stage at all -- the missing
+    rail node is half of why the previous execute affordance went unnoticed.
+    """
+    shell = await client.get("/s/apply")
+    assert shell.status_code == 200
+    assert 'data-rail-stage="apply"' in shell.text
+    assert 'hx-get="/s/apply"' in shell.text
+    assert 'aria-current="page"' in shell.text
