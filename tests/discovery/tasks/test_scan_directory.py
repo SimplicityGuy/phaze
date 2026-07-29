@@ -744,3 +744,106 @@ async def test_scan_directory_precount_runs_off_loop(tmp_path: Path, monkeypatch
     assert result["status"] == "completed"
     # The pre-count helper was dispatched off-loop via to_thread.
     assert _count_ingestible in offloaded
+
+
+# ---------------------------------------------------------------------------
+# phaze-j54q: the synchronous, authoritative HASHING os.walk must also run OFF
+# the event loop (via asyncio.to_thread) -- phaze-bfd1 only fixed the pre-count
+# walk above and left this second walk iterating os.walk directly on the loop.
+# ---------------------------------------------------------------------------
+
+
+def test_walk_ingestible_collects_only_extractable_paths(tmp_path: Path) -> None:
+    """_walk_ingestible returns full paths for MUSIC/VIDEO files only, no errors on a clean walk."""
+    from phaze.tasks.scan import _walk_ingestible
+
+    _touch(tmp_path / "a.mp3")
+    _touch(tmp_path / "c.unknownext")  # UNKNOWN -- excluded
+    _touch(tmp_path / "d.txt")  # COMPANION -- excluded
+    (tmp_path / "sub").mkdir()
+    _touch(tmp_path / "sub" / "e.mp4")
+
+    paths, errors = _walk_ingestible(tmp_path)
+
+    assert {p.name for p in paths} == {"a.mp3", "e.mp4"}
+    assert errors == []
+
+
+def test_walk_ingestible_collects_walk_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """_walk_ingestible collects (does not swallow) the os.walk onerror OSErrors."""
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import _walk_ingestible
+
+    exc = PermissionError("[Errno 13] Permission denied: '/blocked'")
+
+    def fake_walk(path: object, followlinks: bool = False, onerror: object = None) -> object:
+        if onerror is not None:
+            onerror(exc)  # type: ignore[operator]
+        return
+        yield  # pragma: no cover -- generator that yields nothing
+
+    monkeypatch.setattr(scan_module.os, "walk", fake_walk)
+
+    paths, errors = _walk_ingestible(tmp_path)
+
+    assert paths == []
+    assert errors == [exc]
+
+
+async def test_scan_directory_hashing_walk_runs_off_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """scan_directory dispatches the authoritative hashing walk through asyncio.to_thread.
+
+    A regression guard for phaze-j54q: the full synchronous hashing os.walk (including
+    every os.scandir readdir inside it) must not run back-to-back on the agent worker's
+    event loop -- the sole heartbeat source in all-mode. Before the fix, only the per-file
+    stat/hash were offloaded; the directory traversal itself ran directly on the loop.
+    """
+    from phaze.tasks import scan as scan_module
+    from phaze.tasks.scan import _walk_ingestible, scan_directory
+
+    _touch(tmp_path / "a.mp3")
+
+    real_to_thread = scan_module.asyncio.to_thread
+    offloaded: list[Any] = []
+
+    async def _spy(func: Any, *args: Any, **kwargs: Any) -> Any:
+        offloaded.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(scan_module.asyncio, "to_thread", _spy)
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    assert result["files_posted"] == 1
+    # The hashing walk's traversal was dispatched off-loop via to_thread, distinct from
+    # the per-file stat/compute_sha256 to_thread calls that already existed.
+    assert _walk_ingestible in offloaded
+
+
+async def test_scan_directory_companion_only_subtree_does_not_block_hashing_walk(
+    tmp_path: Path,
+) -> None:
+    """A subtree containing only non-ingestible companion files must not stall the walk.
+
+    Regression for the failure scenario in phaze-j54q: a companion-heavy subtree (all
+    files excluded by _EXTRACTABLE) used to keep the loop body's for-filenames iteration
+    entirely await-free while os.walk's generator advanced directly on the event loop.
+    Now the traversal happens off-loop before any per-file work starts, so a large
+    companion-only subtree alongside a real ingestible file still completes normally.
+    """
+    from phaze.tasks.scan import scan_directory
+
+    companions = tmp_path / "artwork"
+    companions.mkdir()
+    for i in range(25):
+        _touch(companions / f"cover-{i}.jpg")
+        _touch(companions / f"note-{i}.nfo")
+    _touch(tmp_path / "track.mp3")
+
+    ctx = _make_ctx()
+    result = await scan_directory(ctx, **_make_payload_kwargs(str(tmp_path)))
+
+    assert result["status"] == "completed"
+    assert result["files_posted"] == 1

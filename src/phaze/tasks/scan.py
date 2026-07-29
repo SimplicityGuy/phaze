@@ -69,6 +69,34 @@ def _classify(filename: str) -> FileCategory:
     return EXTENSION_MAP.get(Path(filename).suffix.lower(), FileCategory.UNKNOWN)
 
 
+def _walk_ingestible(scan_root: Path) -> tuple[list[Path], list[OSError]]:
+    """Authoritative walk over `scan_root`, run entirely off the event loop (phaze-j54q).
+
+    Walks the tree once WITHOUT stat or hashing, collecting the full path of every file
+    whose extension is ingestible (MUSIC/VIDEO) plus any directory-read OSError raised by
+    os.walk. Returns ``(paths, errors)``; the caller stats/hashes each path (still via
+    asyncio.to_thread per file) and logs the collected errors back on the loop.
+
+    Mirrors ``_count_ingestible`` (phaze-bfd1), which moved the pre-count walk off-loop for
+    exactly this reason but left this, the authoritative hashing walk, iterating os.walk
+    directly on the event loop -- i.e. every directory's os.scandir executed synchronously
+    in the caller. A directory whose files are ALL non-ingestible (artwork, .cue/.nfo/.txt
+    companions, playlists -- all excluded by _EXTRACTABLE) produced a loop-body iteration
+    with no await at all, so a companion-heavy subtree (or a stalled network mount) could
+    monopolize the loop with zero yields -- the same starvation shape phaze-bfd1 diagnosed,
+    just on the second walk. Dispatched via asyncio.to_thread so the full synchronous os.walk
+    never runs back-to-back on the agent worker's event loop. Only ingestible-file paths are
+    retained (not every file in the tree), keeping memory bounded to the music/video count.
+    """
+    errors: list[OSError] = []
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=errors.append):
+        for filename in filenames:
+            if _classify(filename) in _EXTRACTABLE:
+                paths.append(Path(dirpath) / filename)
+    return paths, errors
+
+
 def _count_ingestible(scan_root: Path) -> tuple[int, list[OSError]]:
     """Pre-count pass over `scan_root`, run entirely off the event loop (phaze-bfd1).
 
@@ -184,11 +212,14 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # indistinguishable from a genuinely empty directory. This was the exact
     # failure mode that hid the 260608 incident. Collect every walk error so we
     # can fail loudly on a zero-access scan and warn once on partial access.
-    walk_errors: list[OSError] = []
-
-    def _on_walk_error(exc: OSError) -> None:
-        walk_errors.append(exc)
-        logger.warning("scan_directory: cannot read directory during walk: %s", exc)
+    #
+    # phaze-j54q: the traversal itself (including every os.scandir readdir inside
+    # os.walk) runs OFF the event loop via asyncio.to_thread, mirroring the pre-count
+    # walk above (phaze-bfd1). Only the per-file stat/hash below still run on the loop,
+    # each individually offloaded via asyncio.to_thread.
+    candidate_paths, walk_errors = await asyncio.to_thread(_walk_ingestible, scan_root)
+    for walk_error in walk_errors:
+        logger.warning("scan_directory: cannot read directory during walk: %s", walk_error)
 
     batch: list[FileUpsertRecord] = []
     total = 0
@@ -200,44 +231,39 @@ async def scan_directory(ctx: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     # prevent. Track the skips so a 0-file scan with unreadable files also fails loudly.
     files_skipped = 0
     try:
-        for dirpath, _dirnames, filenames in os.walk(scan_root, followlinks=False, onerror=_on_walk_error):
-            for filename in filenames:
-                category = _classify(filename)
-                if category not in _EXTRACTABLE:
-                    continue
+        for full_path in candidate_paths:
+            filename = full_path.name
+            try:
+                stat_result = await asyncio.to_thread(full_path.stat)
+                file_size = stat_result.st_size
+                sha256_hash = await asyncio.to_thread(compute_sha256, full_path)
+            except OSError as exc:
+                files_skipped += 1
+                logger.warning("scan_directory: skipping unreadable file %s: %s", full_path, exc)
+                continue
 
-                full_path = Path(dirpath) / filename
-                try:
-                    stat_result = await asyncio.to_thread(full_path.stat)
-                    file_size = stat_result.st_size
-                    sha256_hash = await asyncio.to_thread(compute_sha256, full_path)
-                except OSError as exc:
-                    files_skipped += 1
-                    logger.warning("scan_directory: skipping unreadable file %s: %s", full_path, exc)
-                    continue
-
-                # Pitfall 3: NFC-normalize EVERY path field. Drift between the watcher's
-                # normalization and scan_directory's would create duplicate FileRecord rows
-                # under the composite UQ (agent_id, original_path).
-                normalized_path = unicodedata.normalize("NFC", str(full_path))
-                normalized_filename = unicodedata.normalize("NFC", filename)
-                normalized_current = unicodedata.normalize("NFC", str(full_path))
-                record = FileUpsertRecord(
-                    sha256_hash=sha256_hash,
-                    original_path=normalized_path,
-                    original_filename=normalized_filename,
-                    current_path=normalized_current,
-                    file_type=Path(filename).suffix.lower().lstrip("."),
-                    file_size=file_size,
-                )
-                batch.append(record)
-                total += 1
-                logger.debug("file discovered", path=normalized_path, size=file_size, ext=record.file_type)
-                if len(batch) >= chunk_size:
-                    await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
-                    await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
-                    logger.info("scan progress", batch_id=str(payload.batch_id), processed=total)
-                    batch = []
+            # Pitfall 3: NFC-normalize EVERY path field. Drift between the watcher's
+            # normalization and scan_directory's would create duplicate FileRecord rows
+            # under the composite UQ (agent_id, original_path).
+            normalized_path = unicodedata.normalize("NFC", str(full_path))
+            normalized_filename = unicodedata.normalize("NFC", filename)
+            normalized_current = unicodedata.normalize("NFC", str(full_path))
+            record = FileUpsertRecord(
+                sha256_hash=sha256_hash,
+                original_path=normalized_path,
+                original_filename=normalized_filename,
+                current_path=normalized_current,
+                file_type=Path(filename).suffix.lower().lstrip("."),
+                file_size=file_size,
+            )
+            batch.append(record)
+            total += 1
+            logger.debug("file discovered", path=normalized_path, size=file_size, ext=record.file_type)
+            if len(batch) >= chunk_size:
+                await api.upsert_files(FileUpsertChunk(files=batch, batch_id=payload.batch_id))
+                await api.patch_scan_batch(payload.batch_id, ScanBatchPatch(processed_files=total))
+                logger.info("scan progress", batch_id=str(payload.batch_id), processed=total)
+                batch = []
 
         # Flush final partial chunk.
         if batch:
