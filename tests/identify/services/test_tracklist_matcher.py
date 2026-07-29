@@ -136,6 +136,45 @@ class TestComputeMatchConfidence:
         )
         assert score >= AUTO_LINK_THRESHOLD
 
+    def test_no_artist_on_either_side_caps_below_auto_link(self):
+        """phaze-bsdu: with no artist overlap, event+date matching alone must not auto-link."""
+        score = compute_match_confidence(
+            None,
+            "Coachella",
+            date(2024, 4, 13),
+            "ArtistA",
+            "Coachella",
+            date(2024, 4, 13),
+        )
+        assert score <= 89
+        assert score < AUTO_LINK_THRESHOLD
+
+    def test_bare_date_overlap_with_no_artist_or_event_caps_below_auto_link(self):
+        """phaze-bsdu: the worst case -- a bare date match with nothing else -- must not score 100."""
+        score = compute_match_confidence(
+            None,
+            None,
+            date(2024, 4, 13),
+            "ArtistA",
+            "Coachella",
+            date(2024, 4, 13),
+        )
+        assert score <= 89
+        assert score < AUTO_LINK_THRESHOLD
+
+    def test_empty_string_artist_is_treated_as_missing(self):
+        """phaze-bsdu: a present-but-empty scraped artist (falsy) must still trip the cap."""
+        score = compute_match_confidence(
+            "",
+            "Coachella",
+            date(2024, 4, 13),
+            "ArtistA",
+            "Coachella",
+            date(2024, 4, 13),
+        )
+        assert score <= 89
+        assert score < AUTO_LINK_THRESHOLD
+
 
 class TestParseLiveSetFilename:
     """Tests for parse_live_set_filename()."""

@@ -236,7 +236,6 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
     # 2. Search + scrape every result with NO DB connection held (phaze-1bcc). Collect the scraped
     #    payloads plus their computed auto-link decision for the store phase.
     scraped_items: list[tuple[ScrapedTracklist, bool, int | None]] = []
-    any_auto_linked = False
     scraper = TracklistScraper()
     try:
         results = await scraper.search(query)
@@ -273,8 +272,6 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
             # with zero date corroboration, exactly the false auto-link the cap was meant to block.
             date_confirmed = scraped_date is not None and file_date is not None and abs((scraped_date - file_date).days) <= 3
             auto_link = should_auto_link(confidence) and date_confirmed
-            if auto_link:
-                any_auto_linked = True
             scraped_items.append((scraped, auto_link, confidence if auto_link else None))
     finally:
         await scraper.close()
@@ -282,25 +279,43 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
     # 3. Store all scraped results in ONE short transaction, sorted by external_id so overlapping
     #    concurrent searches acquire the shared per-external_id advisory locks in a CONSISTENT order
     #    (no ABBA deadlock) and no lock is ever held across a network scrape (phaze-1bcc).
+    #
+    # phaze-g2j3: EmptyScrapeError is a per-item protective refusal (phaze-gfyr) -- it fires when
+    # ONE result's page soft-blocked/parsed to zero tracks over a tracklist that already has good
+    # data. Letting it escape this loop aborts the `async with` without a commit, rolling back
+    # every ALREADY-STORED sibling result in the same batch and forcing SAQ to retry the ENTIRE
+    # search. The guard's purpose -- never overwrite good data with an empty version -- is fully
+    # served by skipping just the offending item, so catch it per-item and keep storing the rest.
     file_uuid = uuid.UUID(file_id)
+    stored_auto_linked = False
     async with ctx["async_session"]() as session:
         for scraped, auto_link, stored_confidence in sorted(scraped_items, key=lambda item: item[0].external_id):
-            await _store_scraped_tracklist(
-                session,
-                scraped,
-                file_id=file_uuid if auto_link else None,
-                confidence=stored_confidence,
-                auto_linked=auto_link,
-            )
+            try:
+                await _store_scraped_tracklist(
+                    session,
+                    scraped,
+                    file_id=file_uuid if auto_link else None,
+                    confidence=stored_confidence,
+                    auto_linked=auto_link,
+                )
+            except EmptyScrapeError:
+                logger.warning(
+                    "Skipping empty re-scrape within search batch store (sibling results preserved)",
+                    file_id=file_id,
+                    external_id=scraped.external_id,
+                )
+                continue
+            if auto_link:
+                stored_auto_linked = True
         await session.commit()
 
     logger.info(
         "tracklist search completed",
         file_id=file_id,
         results_found=len(results),
-        auto_linked=any_auto_linked,
+        auto_linked=stored_auto_linked,
     )
-    return {"file_id": file_id, "results_found": len(results), "auto_linked": any_auto_linked}
+    return {"file_id": file_id, "results_found": len(results), "auto_linked": stored_auto_linked}
 
 
 async def scrape_and_store_tracklist(ctx: dict[str, Any], *, tracklist_id: str) -> dict[str, Any]:

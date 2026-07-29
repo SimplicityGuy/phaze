@@ -918,6 +918,73 @@ async def test_search_tracklist_scrapes_all_then_stores_sorted_without_holding_l
     assert stores == ["store:aaa", "store:bbb", "store:ccc"]
 
 
+@patch("phaze.tasks.tracklist._store_scraped_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=10)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_one_empty_rescrape_does_not_roll_back_siblings(
+    _mock_auto_link: MagicMock,
+    _mock_conf: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_store: AsyncMock,
+) -> None:
+    """phaze-g2j3: a single EmptyScrapeError in the batch store loop must not roll back the
+    already-stored sibling results, and the whole job must not fail.
+
+    Pre-fix, phase 3 stored every result in ONE transaction with no per-item error handling: the
+    guard EmptyScrapeError (phaze-gfyr) raised for ONE poisoned result escaped the ``async with``
+    block, discarding every OTHER already-stored good result in the same batch and forcing SAQ to
+    retry the ENTIRE search. The fix catches it per item and keeps going.
+    """
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    ids = ["aaa", "bbb", "ccc"]
+    search_results = [_make_search_result(external_id=eid) for eid in ids]
+    scraped_by_url = {r.url: _make_scraped_tracklist(external_id=eid) for eid, r in zip(ids, search_results, strict=True)}
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.execute.return_value = mock_file_result
+    session.commit = AsyncMock()
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    async def _scrape_recording(url: str) -> Any:
+        return scraped_by_url[url]
+
+    stored: list[str] = []
+
+    async def _store_recording(_session: Any, scraped: Any, **_kwargs: Any) -> Any:
+        # "bbb" is the poisoned sibling: its page soft-blocked over existing data.
+        if scraped.external_id == "bbb":
+            raise EmptyScrapeError(scraped.external_id)
+        stored.append(scraped.external_id)
+        return scraped
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = search_results
+    mock_scraper.scrape_tracklist.side_effect = _scrape_recording
+    mock_scraper_cls.return_value = mock_scraper
+    mock_store.side_effect = _store_recording
+
+    ctx = {"async_session": lambda: cm}
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    # The good siblings were both attempted and the job reports success, not a failure.
+    assert result["results_found"] == 3
+    assert stored == ["aaa", "ccc"]
+    # The one transaction commits despite the mid-loop skip -- the good stores are NOT rolled back.
+    session.commit.assert_awaited_once()
+
+
 @patch("phaze.tasks.tracklist.TracklistScraper")
 async def test_scrape_and_store_tracklist_releases_connection_before_scrape(mock_scraper_cls: MagicMock) -> None:
     """phaze-igwi: no DB session is held across scrape_tracklist()'s rate-limit sleep + HTTP.
