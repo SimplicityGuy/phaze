@@ -30,7 +30,7 @@ per-agent queue and the global ``key`` PK disambiguates.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast as type_cast
 
 from sqlalchemy import text
 
@@ -38,6 +38,7 @@ from phaze.tasks._shared.stage_control import SENTINEL, STAGE_TO_FUNCTION
 
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -89,10 +90,20 @@ async def pause_stage(session: AsyncSession, stage: str) -> None:
     await session.execute(_PAUSE_SQL, {"s": SENTINEL, "pfx": pfx})
 
 
-async def resume_stage(session: AsyncSession, stage: str) -> None:
-    """Un-park ONLY pause-parked rows for ``stage`` (sentinel-guarded; retry backoffs kept)."""
+async def resume_stage(session: AsyncSession, stage: str) -> int:
+    """Un-park ONLY pause-parked rows for ``stage`` (sentinel-guarded; retry backoffs kept).
+
+    Returns the number of rows un-parked (``CursorResult.rowcount``) so a caller -- the resume
+    endpoint, and the phaze-uqyn reconciliation sweep in
+    :mod:`phaze.tasks.stage_park_reconcile` -- can log how many rows a given un-park pass
+    actually touched, including a pass that finds and heals rows stranded well after the
+    original one-shot resume ran.
+    """
     pfx = _key_prefix(stage)
-    await session.execute(_RESUME_SQL, {"pfx": pfx, "s": SENTINEL})
+    result = await session.execute(_RESUME_SQL, {"pfx": pfx, "s": SENTINEL})
+    # `session.execute` is typed `Result[Any]`; a DML statement always yields a CursorResult, which
+    # is where `rowcount` lives (same narrowing `tasks/ledger_reaper.py` performs on its own DML).
+    return int(type_cast("CursorResult[Any]", result).rowcount or 0)
 
 
 __all__ = ["pause_stage", "resume_stage", "set_stage_priority"]

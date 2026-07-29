@@ -42,7 +42,7 @@ from phaze.routers.response_shape import wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
-from phaze.services.analysis_enqueue import enqueue_process_file, process_file_job_key
+from phaze.services.analysis_enqueue import classify_process_file_collision, enqueue_process_file, process_file_job_key
 from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
@@ -419,14 +419,29 @@ async def _enqueue_analysis_jobs(queue: Any, files: list[FileRecord], agent_id: 
     file succeeded) so a caller that already cleared a durable failure marker BEFORE
     backgrounding this call (:func:`retry_analysis_failed`) can restore it for exactly the
     files that never got a replacement job, instead of the marker and the job both vanishing.
+
+    phaze-ewen: a ``None`` return (deterministic-key collision) is not logged as anything --
+    including the case where the key is held by a DEAD job (aborting/failed/stuck), which means
+    this file was silently OMITTED from a bulk run the dashboard reports as "N enqueued". This
+    does not change behavior (still no retry, and a blocked file is deliberately NOT added to
+    ``failed_ids`` -- restoring its ``failed_at`` would be wrong, because the file's marker
+    state is whatever the dead key-holder left, and un-wedging the key is the aborting-reaper's
+    job, not this loop's), just makes a blocked file visible in logs.
     """
     failed_ids: list[uuid.UUID] = []
     for f in files:
         try:
-            await enqueue_process_file(queue, f, agent_id, models_path)
+            job = await enqueue_process_file(queue, f, agent_id, models_path)
         except Exception:
             logger.exception("enqueue_analysis_jobs: failed to enqueue process_file job", file_id=str(f.id))
             failed_ids.append(f.id)
+            continue
+        if job is None and classify_process_file_collision(await queue.job(process_file_job_key(f.id))) == "blocked":
+            logger.warning(
+                "_enqueue_analysis_jobs: deterministic key held by a dead job -- file omitted from this run",
+                file_id=str(f.id),
+                key=process_file_job_key(f.id),
+            )
     return failed_ids
 
 
@@ -2331,6 +2346,15 @@ async def deepen_analysis(
     - Dedup: ``enqueue_process_file`` uses the deterministic ``process_file:<file_id>`` key, so a
       re-deepen of a file with a live in-flight job dedups to a no-op (D-05); re-deepening an
       already-ANALYZED file with no live job is a fresh enqueue.
+    - Collision classification (phaze-ewen): a ``None`` return is NOT unconditionally "already in
+      flight". SAQ's ``_enqueue`` upsert only overwrites a conflicting key whose status is in
+      ``('aborted', 'complete', 'failed')`` -- a dead ``aborting``/``failed``/``aborted`` row, or a
+      claimed-but-worker-dead ``active`` row past its timeout, holds the key forever without ever
+      processing the file. ``classify_process_file_collision`` (``services.analysis_enqueue``)
+      distinguishes the two so a BLOCKED collision renders an honest terminal fragment (and is
+      logged) instead of the unconditional "Queued — starting deepen…" + an eternal 2s poll that
+      will never see a matching ``analysis_completed_at``/``failed_at`` (the file's frozen
+      sampled-run counters never satisfy ``deepen_progress``'s non-terminal branches either).
 
     The typed ``uuid.UUID`` path param yields a 422 on a malformed id; an unknown (well-formed)
     id resolves to ``None`` and returns a not-found fragment -- never a raw 500 (T-44-10).
@@ -2345,6 +2369,8 @@ async def deepen_analysis(
 
     not_found = file is None
     no_active_agent = False
+    already_in_flight = False
+    blocked = False
 
     if file is not None:
         try:
@@ -2359,7 +2385,20 @@ async def deepen_analysis(
             agent_id = cast("str", routed.agent_id)
             # fine_cap=0 / coarse_cap=0 -> _stride_to_cap no-op -> analyze ALL windows (unbounded
             # deepen, D-04). The single funnel guarantees the full payload + deterministic key.
-            await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+            job = await enqueue_process_file(routed.queue, file, agent_id, settings.models_path, fine_cap=0, coarse_cap=0)
+            if job is None:
+                # Deterministic-key collision -- classify it rather than assuming "in flight"
+                # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
+                existing = await routed.queue.job(process_file_job_key(file.id))
+                if classify_process_file_collision(existing) == "blocked":
+                    blocked = True
+                    logger.warning(
+                        "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
+                        file_id=str(file.id),
+                        key=process_file_job_key(file.id),
+                    )
+                else:
+                    already_in_flight = True
 
     return templates.TemplateResponse(
         request=request,
@@ -2368,8 +2407,11 @@ async def deepen_analysis(
             "request": request,
             "not_found": not_found,
             "no_active_agent": no_active_agent,
-            # Consumed ONLY by the success branch's bootstrap poller (guards/branches above
-            # are unchanged). since is a numeric float threaded into the poll URL.
+            "already_in_flight": already_in_flight,
+            "blocked": blocked,
+            # Consumed ONLY by the success/already-in-flight branches' bootstrap poller
+            # (guards/branches above are unchanged). since is a numeric float threaded into the
+            # poll URL.
             "file_id": file_id,
             "since": since,
         },
@@ -2763,8 +2805,22 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     safety net, D-05) -- it never bypasses the per-item deterministic-key dedup, so a forced
     reconcile over a live queue collapses every still-in-flight item to a skipped no-op and
     can NEVER double the backlog (Phase-32 doubling class is closed).
+
+    Per-row failures inside ``recover_orphaned_work`` are already isolated and tallied under
+    ``errored`` (phaze-o1xx) rather than raising, so this normally just logs the final tally. The
+    ``try/except`` here is the LAST line of defense for a failure the producer itself cannot
+    isolate (e.g. the session/DETECT-gate read at the top of the function): the previous
+    fire-and-forget ``asyncio.create_task`` had no done-callback and no `except`, so that exception
+    was never retrieved -- the operator's HTMX response already said "recovery started" and nothing
+    else ever surfaced the failure. Log it here so a failed forced recovery is at least visible in
+    the controller logs instead of silently vanishing.
     """
-    await recover_orphaned_work(ctx, force=True)
+    try:
+        result = await recover_orphaned_work(ctx, force=True)
+    except Exception:
+        logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced (phaze-o1xx)")
+        return
+    logger.info("manual recovery trigger complete", detected_loss=result["detected_loss"], stages=result["stages"])
 
 
 @router.post("/pipeline/recover", response_class=HTMLResponse)
