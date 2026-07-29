@@ -46,6 +46,7 @@ from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
 from phaze.tasks.reenqueue import backfill_ledger_from_saq_jobs, recover_orphaned_work
 from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
+from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
 
@@ -307,6 +308,11 @@ settings = {
         # (mirrors reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
         reap_resolved_ledger_rows,
         recover_orphaned_work,
+        # phaze-uqyn: every-minute cross-process retro-heal for a stage backlog row stranded
+        # SENTINEL-parked by a stale per-process pause cache after a real resume already ran.
+        # Cron-only (mirrors reap_stalled_scans / reap_stuck_aborting_jobs), NOT in
+        # enqueue_router.CONTROLLER_TASKS -- it enqueues NOTHING, only un-parks existing rows.
+        reconcile_stale_stage_parks,
         stage_cloud_window,
         # Phase 54 (KSUBMIT-02): the fast kube-submit producer is operator/Phase-55-enqueueable on
         # the controller queue. NO CronJob here -- Phase 55 owns the live stage_cloud_window trigger.
@@ -330,6 +336,14 @@ settings = {
         # re-driving work because it only ever touches rows whose stage has already domain-completed.
         # An ORPHANED row (scheduled, no outcome) is deliberately left alone for the gated Recover path.
         CronJob(reap_resolved_ledger_rows, cron="*/5 * * * *"),  # type: ignore[type-var]
+        # phaze-uqyn: every-minute sweep that re-runs the sentinel-guarded resume un-park for every
+        # stage whose durable control row CURRENTLY reads unpaused. Closes the TOCTOU window between
+        # resume_stage's one-shot un-park and the TTL-cached park writers (apply_stage_control /
+        # repark_if_stage_paused) in EVERY OTHER process (a worker, the fingerprint-requeue CLI, ...)
+        # -- the API process's own window is closed immediately by clear_stage_control_cache() in the
+        # pause/resume endpoints themselves. A no-op on a healthy backlog (matches zero rows); never
+        # touches a genuinely paused stage's parked backlog or a genuine retry backoff.
+        CronJob(reconcile_stale_stage_parks, cron="* * * * *"),  # type: ignore[type-var]
         # Phase 42 (D-01): the every-5-min ``reenqueue_discovered`` auto-advance cron was REMOVED.
         # With the Phase-36 Postgres broker, queued/active jobs survive a restart, so a steady-state
         # re-enqueue loop would only churn the DB and risk re-doubling work. Recovery is now a SINGLE
