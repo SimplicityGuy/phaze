@@ -72,6 +72,22 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
         A dict mapping each affected ``__tablename__`` to the number of rows
         deleted from it (``result.rowcount`` per statement).
     """
+    # phaze-8567: lock the ScanBatch row itself FIRST, before anything else. The phaze-q1ow
+    # fix below locks only the batch's PRE-EXISTING file rows -- it does nothing for a brand
+    # NEW FileRecord INSERT into this batch, because that INSERT takes only an implicit `FOR
+    # KEY SHARE` on the *scan_batches* row (the parent of `FileRecord.batch_id`'s FK), and
+    # nothing in the cascade locked that row until the final `DELETE FROM scan_batches` at the
+    # very end. Under READ COMMITTED, a new file row committed after the files DELETE (step 15
+    # below) scans its snapshot but before the `scan_batches` DELETE's RI check runs leaves a
+    # live `files.batch_id` reference, aborting the whole 16-step transaction with a bare
+    # ForeignKeyViolation -> 500. Taking `FOR UPDATE` on the ScanBatch row up front closes the
+    # window the same way the file-row lock already closes it for child-table inserts: a
+    # worker's `upsert_files` INSERT already in flight blocks on this row's lock until this
+    # transaction ends (so it can never land mid-cascade), and a post-commit INSERT simply
+    # FK-fails cheaply against the already-deleted batch (the correct, cheap place for that
+    # race to resolve).
+    await session.execute(select(ScanBatch.id).where(ScanBatch.id == batch_id).with_for_update())
+
     # Files belonging to this batch -- the scoping anchor for every child delete.
     files_of_batch = select(FileRecord.id).where(FileRecord.batch_id == batch_id)
 
