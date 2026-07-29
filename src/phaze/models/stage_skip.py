@@ -20,15 +20,16 @@ empty-autogenerate-diff contract):
 
 * ``uq_stage_skip_file_stage`` UNIQUE(file_id, stage) -- the <=1-row-per-(file, stage) invariant (D-13a,
   T-87-03). A plain b-tree UNIQUE avoids the ``= ANY(ARRAY[...])`` reserialization trap (Pitfall 5).
-* ``ck_stage_skip_enrich_only`` CHECK -- ``stage IN ('metadata','analyze','fingerprint')`` (D-10, OQ-3,
-  T-87-02): approval/execute can never carry a skip marker at the schema layer. ``'fingerprint'`` is a
-  RESIDUAL value: phaze-0jpe removed that stage, and ``skipped_clause`` (services/stage_status.py)
-  already rejects it, so nothing can write one. Narrowing the CHECK is a schema change and is owned by
-  the removal molecule's migration bead (phaze-0jpe.4), not by the code removal -- editing the ORM
-  constraint ahead of the migration would break the baseline's autogenerate-parity contract. The bare ``name`` here is
-  the ``%(constraint_name)s`` token; the ``ck_%(table_name)s_%(constraint_name)s`` convention prepends
-  ``ck_stage_skip_``, rendering ``ck_stage_skip_enrich_only`` -- matching the ``op.f(...)`` name in 037
-  (mirror the ``analysis.py`` bare-name CheckConstraint discipline).
+* ``ck_stage_skip_enrich_only`` CHECK -- ``stage IN ('metadata','analyze')`` (D-10, OQ-3, T-87-02):
+  approval/execute can never carry a skip marker at the schema layer. The CHECK used to also admit
+  the residual ``'fingerprint'`` value (phaze-0jpe removed that stage; ``skipped_clause``,
+  services/stage_status.py, already rejected it, so nothing could write one) -- migration 046
+  (phaze-0jpe.4) narrowed the DB CHECK to match, after first deleting any surviving
+  ``stage='fingerprint'`` rows, and this ORM constraint is updated in the same commit to keep the
+  empty-autogenerate-diff contract intact. The bare ``name`` here is the ``%(constraint_name)s``
+  token; the ``ck_%(table_name)s_%(constraint_name)s`` convention prepends ``ck_stage_skip_``,
+  rendering ``ck_stage_skip_enrich_only`` -- matching the ``op.f(...)`` name in 037 (mirror the
+  ``analysis.py`` bare-name CheckConstraint discipline).
 """
 
 from datetime import datetime
@@ -49,9 +50,7 @@ class StageSkip(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # NOT unique on its own -- uniqueness is the composite (file_id, stage) constraint below.
     file_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=False)
-    # The enrich value 'metadata' | 'analyze' (guarded by the CHECK constraint, D-10; the constraint
-    # still admits the residual 'fingerprint' until phaze-0jpe.4's migration narrows it -- no writer
-    # can produce one, see the module docstring).
+    # The enrich value 'metadata' | 'analyze' (guarded by the CHECK constraint, D-10).
     stage: Mapped[str] = mapped_column(String, nullable=False)
     # D-09: a reason is required (nullable=False) -- force-skip is a deliberate, justified operator action.
     reason: Mapped[str] = mapped_column(Text, nullable=False)
@@ -59,5 +58,5 @@ class StageSkip(TimestampMixin, Base):
 
     __table_args__ = (
         UniqueConstraint("file_id", "stage", name="uq_stage_skip_file_stage"),
-        CheckConstraint("stage IN ('metadata','analyze','fingerprint')", name="enrich_only"),
+        CheckConstraint("stage IN ('metadata','analyze')", name="enrich_only"),
     )
