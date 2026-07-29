@@ -302,6 +302,24 @@ async def test_report_push_mismatch_posts_to_correct_url_and_returns_response_mo
 
 
 @respx.mock
+async def test_report_push_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
+    """phaze-c53x: report_push_failed -> POST /push/{file_id}/failed, parses PushFailedResponse."""
+    from phaze.schemas.agent_push import PushFailedResponse
+
+    file_id = uuid.uuid4()
+    route = respx.post(f"{_BASE_URL}/api/internal/agent/push/{file_id}/failed").mock(
+        return_value=httpx.Response(200, json={"file_id": str(file_id), "status": "failed", "cleared": True})
+    )
+    result = await client.report_push_failed(file_id, detail="rsync exit 30")
+    assert route.called
+    assert isinstance(result, PushFailedResponse)
+    assert result.cleared is True
+
+    sent_body = json.loads(route.calls.last.request.content)
+    assert sent_body["detail"] == "rsync exit 30"
+
+
+@respx.mock
 async def test_report_metadata_failed_posts_to_correct_url_and_returns_response_model(client):  # type: ignore[no-untyped-def]
     """report_metadata_failed -> POST /metadata/{file_id}/failed, parses MetadataFailureResponse."""
     from phaze.schemas.agent_metadata import MetadataFailureResponse
