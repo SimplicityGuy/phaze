@@ -1,5 +1,20 @@
 """Baseline the Analyze-workspace slowdown at 200K scale (Phase 95, phaze-zqvh.1).
 
+phaze-bcf1 (dead-code investigation, confidence 40%, in_degree=0): NOT dead. It has no
+justfile recipe and no import from product code, which is exactly the shape a repo-wide
+static scan flags -- but the same is true of its sibling ``scripts/analyze_browser_soak.py``,
+and both are standalone ``uv run`` operator tools invoked directly per their own docstrings
+(unlike ``scripts/perf_explain.py`` / ``scripts/seed_perf_corpus.py``, which the justfile
+does wire via ``just perf-explain`` / ``just perf-seed``). This script produced the numbers
+cited in ``.planning/phases/95-analyze-view-browser-slowdown/95-BASELINE.md`` and was re-run
+unmodified for ``95-VERIFICATION.md`` (2026-07-16) -- both still on disk, still current.
+Confirmed still functional against a live schema during the phaze-bcf1 investigation
+(``get_analyze_working_set`` DIRECT timing runs clean end-to-end; ``/s/analyze`` and
+``/pipeline/stats`` additionally require the app's SAQ-provisioned ``saq_jobs`` table, which
+the dedicated perf DB this script targets has and an ad hoc alembic-only test DB does not).
+Keep; do not wire into the justfile (matches the sibling script's own standalone pattern) and
+do not delete.
+
 Standalone ``uv run`` companion to :mod:`scripts.perf_explain` / :mod:`scripts.seed_perf_corpus`
 (Phase 82 PERF-02 harness). Run it AFTER seeding the ~200K corpus (``just perf-seed``) into the
 dedicated perf DB (``just perf-db-up``). It measures the THREE hot paths the phase-95 epic names

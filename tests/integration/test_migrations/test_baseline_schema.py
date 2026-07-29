@@ -18,12 +18,17 @@ durable value against the one baseline that replaced it:
   phaze-0jpe.4's migration 046 dropped ``fingerprint_results`` (+ its two partial/unique
   indexes) and narrowed ``stage_skip``'s CHECK, resolving the three PENDING-MIGRATION
   drift entries that used to sit here -- see migration 046's module docstring.
+* phaze-0r9a: the seed INSERTs render bound values (not ``NULL``) in OFFLINE (``--sql``)
+  mode too -- this one test needs no live database, since offline mode never connects.
 
-Runs on the 5433 migrations harness (``MIGRATIONS_TEST_DATABASE_URL``, conftest.py).
+Runs on the 5433 migrations harness (``MIGRATIONS_TEST_DATABASE_URL``, conftest.py) except
+the offline-mode seed test, which is connection-free by construction.
 """
 
 import asyncio
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import types
 import uuid
@@ -36,10 +41,18 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from alembic import command
 import phaze.models  # noqa: F401  -- registers every table on Base.metadata for the autogenerate diff
 from phaze.models.base import Base
 
-from .conftest import MIGRATIONS_TEST_DATABASE_URL, _build_alembic_config, _reset_schema, downgrade_to, upgrade_to
+from .conftest import (
+    MIGRATIONS_TEST_DATABASE_URL,
+    _build_alembic_config,
+    _patched_settings_database_url,
+    _reset_schema,
+    downgrade_to,
+    upgrade_to,
+)
 
 
 _BASELINE_PATH = Path(__file__).resolve().parents[3] / "alembic" / "versions" / "039_baseline_schema.py"
@@ -219,6 +232,29 @@ def test_baseline_is_the_only_migration() -> None:
         "047_drop_analysis_fingerprint_column.py",
         "048_files_original_filename_id_btree.py",
     ], f"unexpected chain files resurrected: {chain_files}"
+
+
+def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None:
+    """phaze-0r9a: ``alembic upgrade head --sql`` must not drop the seed INSERTs' bound values.
+
+    Offline (``--sql``) mode runs against Alembic's ``MockConnection``, which compiles with
+    ``literal_binds=True`` and silently discards a *separate* parameters argument -- the
+    pre-fix ``bind.execute(sa.text(...), {"stage": stage})`` shape rendered every seed
+    INSERT as ``VALUES (NULL, ...)``, a NOT NULL / primary-key violation on both
+    ``pipeline_stage_control`` and ``route_control`` with `alembic` exiting 0 and no
+    warning at generation time. Offline mode never opens a connection (that is the whole
+    point of it), so this needs no live database -- it must NOT depend on the
+    ``migrated_engine``/``MIGRATIONS_TEST_DATABASE_URL`` harness being up.
+    """
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), _patched_settings_database_url(MIGRATIONS_TEST_DATABASE_URL):
+        command.upgrade(cfg, "039", sql=True)
+    sql = buffer.getvalue()
+    for expected in ("VALUES ('metadata'", "VALUES ('analyze'", "VALUES ('fingerprint'", "VALUES ('global'"):
+        assert expected in sql, f"offline-mode SQL is missing a bound seed value ({expected!r}); got:\n{sql}"
+    unbound_marker = "VALUES (NULL"
+    assert unbound_marker not in sql, f"offline-mode SQL rendered an unbound seed INSERT ({unbound_marker!r}):\n{sql}"
 
 
 # --- Schema invariants (baseline-built DB via migrated_engine) ---
