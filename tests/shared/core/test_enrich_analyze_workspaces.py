@@ -307,11 +307,15 @@ async def test_analyze_workspace_hosts_the_real_analysis_health_card(client: Asy
 async def test_other_workspaces_still_sink_the_analysis_health_card_hidden(client: AsyncClient) -> None:
     """Regression (phaze-tyt3): every OTHER stage still needs the hidden OOB sink.
 
-    Only Analyze renders the real card; Discover/Metadata/Fingerprint must still carry the
+    Only Analyze renders the real card; the other enrich-rail stages must still carry the
     hidden `#straggler-failed-card` sink (gated the same way as the six cloud cards) or the
     shared 5s poll's OOB re-push logs `htmx:oobErrorNoTarget`.
+
+    phaze-0jpe: `fingerprint` was dropped from this sweep with the stage itself -- `/s/fingerprint`
+    now 404s, so asserting a sink on it would pin a route that no longer exists rather than the
+    OOB-target invariant this test is guarding.
     """
-    for stage in ("discover", "metadata", "fingerprint"):
+    for stage in ("discover", "metadata"):
         frag = await client.get(f"/s/{stage}", headers={"HX-Request": "true"})
         assert frag.status_code == 200
         body = frag.text

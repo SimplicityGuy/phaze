@@ -33,15 +33,25 @@ is the one column that *could* still hold `'fingerprint'`-sourced historical row
 left alone, see the decision below.
 
 **Explicit decision on historical ``tracklists.source = 'fingerprint'`` rows (inventory sec. 2.6):**
-this migration does **not** purge them. `tasks/tracklist.py::refresh_tracklists` already carries the
-phaze-p1vy guard that permanently excludes them from re-scrape (they are structurally
-un-rescrapeable -- empty `source_url`), so a surviving row is inert: it renders in the CUE-list
-ordering (`routers/cue.py`) and nowhere else. Given both fingerprint engines were confirmed silently
-dead in production for weeks before removal (phaze-p3hj outage diagnosis, phaze-iq65 false-success
-investigation), any surviving rows are historical, harmless, and already permanently excluded from
-future writes now that `scan_live_set` is gone -- purging them buys nothing and destroys a real (if
-stale) record of what was matched. **Recorded here for phaze-0jpe.6's operator runbook: leaving
-these rows in place is the deliberate choice, not a default.**
+this migration **purges them**, along with their versions, tracks and any Discogs links hanging off
+those tracks. *(Operator decision 2026-07-29, reversing this migration's original leave-in-place
+choice. The earlier reasoning was that such rows are inert -- `tasks/tracklist.py::refresh_tracklists`
+carries the phaze-p1vy guard permanently excluding them from re-scrape, since they are structurally
+un-rescrapeable with an empty `source_url`. That remains true; the operator's call is that a
+tracklist attributed to a retired engine is not worth keeping as a record.)*
+
+**The delete MUST run child-first, and that is not a stylistic choice.** Nothing in this chain
+declares ``ON DELETE CASCADE`` -- ``discogs_links.track_id`` -> ``tracklist_tracks`` ->
+``tracklist_versions`` -> ``tracklists`` are all ``NO ACTION``. A bare
+``DELETE FROM tracklists WHERE source = 'fingerprint'`` therefore raises a foreign-key violation in
+precisely the environments that still hold rows, which are the only environments this purge exists
+for. The four statements below run leaf-to-root for that reason.
+
+**Scope, measured:** verified against the live database on 2026-07-29, ``tracklists`` holds **0 rows
+of any source**, and ``tracklist_versions`` / ``tracklist_tracks`` are likewise empty -- consistent
+with both engines having been dead for weeks before removal (phaze-p3hj, phaze-iq65). So in
+production this purge is a no-op. It is written defensively for a restored backup or a developer
+database that predates the outage, where the rows *can* exist and the FK ordering *does* matter.
 
 **Discarded row count:** the dispatching session's brief cites approximately 22,856
 ``fingerprint_results`` rows in the production database as of 2026-07-28 (attributed to the
@@ -106,6 +116,33 @@ _REINSERT_FINGERPRINT_PIPELINE_STAGE_CONTROL = (
 
 _DROP_FINGERPRINT_RESULTS = "DROP TABLE public.fingerprint_results"
 
+# Purge historical fingerprint-sourced tracklists (see the module docstring). LEAF-TO-ROOT: no FK in
+# this chain is ON DELETE CASCADE, so any other order aborts on a foreign-key violation wherever rows
+# actually exist. Each statement re-derives its own scope from `tracklists.source` rather than
+# depending on the previous delete, so the sequence is idempotent and safe to re-run.
+_DELETE_FP_DISCOGS_LINKS = """
+DELETE FROM public.discogs_links
+ WHERE track_id IN (
+     SELECT tt.id
+       FROM public.tracklist_tracks tt
+       JOIN public.tracklist_versions tv ON tv.id = tt.version_id
+       JOIN public.tracklists tl ON tl.id = tv.tracklist_id
+      WHERE tl.source = 'fingerprint')
+"""
+_DELETE_FP_TRACKLIST_TRACKS = """
+DELETE FROM public.tracklist_tracks
+ WHERE version_id IN (
+     SELECT tv.id
+       FROM public.tracklist_versions tv
+       JOIN public.tracklists tl ON tl.id = tv.tracklist_id
+      WHERE tl.source = 'fingerprint')
+"""
+_DELETE_FP_TRACKLIST_VERSIONS = """
+DELETE FROM public.tracklist_versions
+ WHERE tracklist_id IN (SELECT id FROM public.tracklists WHERE source = 'fingerprint')
+"""
+_DELETE_FP_TRACKLISTS = "DELETE FROM public.tracklists WHERE source = 'fingerprint'"
+
 # Recreates the baseline's exact DDL (alembic/versions/039_baseline_schema.py:172-180, :331-332,
 # :389-390, :431-432) so a downgrade-then-upgrade round-trip is byte-identical on schema (data is
 # NOT recoverable -- see the module docstring's downgrade section).
@@ -135,6 +172,11 @@ def upgrade() -> None:
     op.execute(_DROP_STAGE_SKIP_CHECK)
     op.execute(_ADD_STAGE_SKIP_CHECK_NARROW)
     op.execute(_DELETE_FINGERPRINT_PIPELINE_STAGE_CONTROL)
+    # Leaf-to-root; see the constants above. Any other order violates a NO ACTION FK.
+    op.execute(_DELETE_FP_DISCOGS_LINKS)
+    op.execute(_DELETE_FP_TRACKLIST_TRACKS)
+    op.execute(_DELETE_FP_TRACKLIST_VERSIONS)
+    op.execute(_DELETE_FP_TRACKLISTS)
     op.execute(_DROP_FINGERPRINT_RESULTS)
 
 

@@ -261,18 +261,31 @@ longer need them for rollback or forensics:
 3. Keep at least the last known-good tag of each until you are confident you will not need to
    stand up the sidecars again for a comparison or a rollback.
 
-### 3. Historical `tracklists.source = 'fingerprint'` rows — deliberately left in place
+### 3. Historical `tracklists.source = 'fingerprint'` rows — purged by the migration
 
-Migration `046_drop_fingerprint_schema.py` made an explicit decision, recorded in its own
-docstring: it does **not** purge `Tracklist` rows with `source = 'fingerprint'` (the historical
-output of the retired audio-fingerprint scan path, `scan_live_set`). `tasks/tracklist.py`'s
-`refresh_tracklists` already carries a permanent guard (`phaze-p1vy`) that excludes these rows
-from re-scrape — they are structurally un-rescrapeable (empty `source_url`) — so a surviving row
-is inert: it still renders in CUE-list ordering (`routers/cue.py`) and nowhere else. This is not
-an oversight and there is nothing for an operator to do here; it is recorded in this runbook only
-so the decision is visible outside the migration file. Do not write a cleanup script to purge
-these rows — purging them buys nothing and destroys a real (if stale) record of what the retired
-fingerprint engines once matched.
+Migration `046_drop_fingerprint_schema.py` **purges** `Tracklist` rows with `source = 'fingerprint'`
+(the historical output of the retired audio-fingerprint scan path, `scan_live_set`), together with
+their `tracklist_versions`, `tracklist_tracks`, and any `discogs_links` attached to those tracks.
+**There is nothing for an operator to do here** — it happens automatically when `046` runs.
+
+Two things worth knowing if you are reviewing that migration or debugging a restore:
+
+- **The delete runs child-first, and has to.** No foreign key in the chain
+  (`discogs_links` → `tracklist_tracks` → `tracklist_versions` → `tracklists`) declares
+  `ON DELETE CASCADE`; they are all `NO ACTION`. A bare `DELETE FROM tracklists WHERE
+  source = 'fingerprint'` raises a foreign-key violation in exactly the environments that still
+  hold rows. The migration issues four statements leaf-to-root for that reason, each re-deriving
+  its own scope from `tracklists.source` so the sequence is idempotent.
+- **In production this is a no-op.** Measured 2026-07-29: `tracklists` held **0 rows of any
+  source**, and `tracklist_versions` / `tracklist_tracks` were empty too — consistent with both
+  engines having been dead for weeks before removal. The purge is written defensively for a
+  restored backup or a developer database predating the outage, where the rows *can* exist and
+  the ordering *does* matter.
+
+Note this reverses the migration's original recorded decision to leave the rows in place; that
+earlier reasoning (they are inert, since `refresh_tracklists` permanently excludes them from
+re-scrape via the `phaze-p1vy` guard) still holds on the facts. The operator's call was that a
+tracklist attributed to a retired engine is not worth keeping as a record.
 
 ## See also
 
