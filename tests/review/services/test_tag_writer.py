@@ -288,6 +288,30 @@ class TestVerifyWrite:
         assert discrepancies["artist"]["expected"] is None
         assert discrepancies["artist"]["actual"] == "Should Be Deleted"
 
+    def test_semantic_field_match_via_normalizer_is_not_a_discrepancy(self, mp3_file: Path) -> None:
+        """phaze-2zl7: a raw "N/total" write compares equal to its own normalized total-drop.
+
+        write_tags/verify_write both see the RAW undo text "3/12"; the normalizer used for
+        year/track_number must find this equal to the on-disk normalized track number (3), not
+        report a false discrepancy just because the raw string differs from the parsed int.
+        """
+        write_tags(str(mp3_file), {"track_number": "3/12"})
+        discrepancies = verify_write(str(mp3_file), {"track_number": "3/12"})
+        assert discrepancies == {}
+
+    def test_semantic_field_mismatch_is_reported_through_the_normalizer(self, mp3_file: Path) -> None:
+        """phaze-2zl7: a genuine track_number mismatch is still caught through the normalized
+        comparator (_SEMANTIC_COMPARE_FIELDS), not silently accepted because it's a "special"
+        field.
+        """
+        write_tags(str(mp3_file), {"track_number": "3/12"})
+        discrepancies = verify_write(str(mp3_file), {"track_number": "9/12"})
+        assert "track_number" in discrepancies
+        assert discrepancies["track_number"]["expected"] == "9/12"
+        # "actual" is the extractor's own normalized parse (a bare int), not the raw on-disk
+        # text -- verify_write re-reads through extract_tags, which drops the total.
+        assert discrepancies["track_number"]["actual"] == "3"
+
 
 class TestExtractBeforeTags:
     """phaze-52qd: the before/undo snapshot must span every core field, marking absent tags None."""
