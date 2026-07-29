@@ -14,9 +14,11 @@ Exit-code contract (D-01):
     0   success
     10  presign request OR download failure (fail-fast, no retry — D-02)
     11  sha256(downloaded) != expected_sha256 (corrupt/partial transfer)
-    12  windowed analysis raised / OOM (fail-fast — D-02). Wall-clock bounding
-        is NOT done in-process; it is delegated to the Kueue/Job deadline
-        (activeDeadlineSeconds -> SIGTERM -> 143), which is honestly non-zero.
+    12  windowed analysis raised / OOM (fail-fast — D-02). There is NO wall-clock
+        bound on the analysis, in-process or otherwise (phaze-202e): the Job
+        carries no activeDeadlineSeconds by default, so a 2-6 h concert set runs
+        to completion. A pod that can never start is recovered by the control
+        plane's pod-state wedge detection, not by killing the run.
     13  callback PUT failed after the shared bounded retry (D-02)
     20  startup/precondition failure: wrong PHAZE_ROLE, missing PHAZE_JOB_FILE_ID,
         or a malformed file_id UUID. This is a PERMANENT misconfiguration, not a
@@ -411,10 +413,11 @@ async def run() -> None:
         # shared subprocess driver (Phase 101, OBS-03): the pod's event loop is no longer
         # GIL-starved, so the progress callback fires mid-analysis. No retry loop —
         # fail-fast, D-02 / KJOB-03. models_dir from env (D-05). There is NO in-process
-        # timeout here (timeout=None): a hung analysis is bounded by the Kueue/Job
-        # wall-clock deadline (activeDeadlineSeconds -> SIGTERM -> 143). Only a raised
-        # exception maps to EXIT_ANALYSIS (12); the contract docstring documents this
-        # delegation (WR-04).
+        # timeout here (timeout=None) and, since phaze-202e, no Job deadline either --
+        # the analyze runs until it finishes. Bounding it by a wall clock is what killed
+        # every long concert set at 3h (incident 2026-07-28); a pod that can never start
+        # is instead detected by POD STATE in reconcile_cloud_jobs. Only a raised
+        # exception maps to EXIT_ANALYSIS (12).
         t_analyze = time.monotonic()
         progress_cb, pending_progress = _make_progress_cb(client, file_id, cfg.analysis_progress_interval_sec)
         # phaze-sfbx.4 markers, phaze-bo3p.3 capture: essentia's ``[ INFO ] MusicExtractor...``

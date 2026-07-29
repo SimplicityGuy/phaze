@@ -20,19 +20,28 @@ from a synthesized in-memory kubeconfig dict (``kubeconfig``+``context`` parses 
 session-rebuild hack (kr8s private-API) is gone. Distinct kubeconfig dicts key distinct cached kr8s
 clients (verified). Credentials come from the ``_FILE``-resolved ``SecretStr`` fields and are never
 logged (T-54-07); the synthesized dict is in-memory only.
+
+phaze-202e adds the POD surface (:func:`list_pods_for_job`) and the pure wedge classifier
+(:func:`classify_job_pods`). The Job manifest no longer carries ``activeDeadlineSeconds`` by default,
+so nothing kills a long analyze; the question "is this Job wedged?" is answered from pod state
+instead, and a Running pod is never a wedge at any age. The classifier is deliberately pure and
+HTTP-free so the whole decision table is testable without a cluster.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 import kr8s
 import kr8s.asyncio
-from kr8s.asyncio.objects import Job, new_class
+from kr8s.asyncio.objects import Job, Pod, new_class
 import yaml
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     import uuid
 
     from phaze.config_backends import KubeConfig
@@ -50,6 +59,53 @@ _FILE_ID_LABEL = "phaze.dev/file-id"
 # A2 (de-risked): the precise Workload->Job linkage label is a Phase-56 live-cluster verification
 # item; get_workload_for falls back to an owner-reference match when this label lookup misses.
 _JOB_UID_LABEL = "kueue.x-k8s.io/job-uid"
+# phaze-202e pod discovery. k8s >=1.27 stamps the prefixed key on Job-owned pods; older clusters use
+# the un-prefixed legacy one. list_pods_for_job tries them in this order (modern first).
+_JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
+_LEGACY_JOB_NAME_LABEL = "job-name"
+_REASON_UNSCHEDULABLE = "Unschedulable"
+
+# phaze-202e: pod phases that mean "this pod is, or was, genuinely doing the work". Succeeded is
+# included so a success whose callback is still in flight is never mistaken for a wedge.
+_ALIVE_POD_PHASES = frozenset({"Running", "Succeeded"})
+
+# phaze-202e: container ``state.waiting.reason`` values that mean the container can NEVER start
+# without operator action -- the pod is dead before it began, so no amount of waiting helps. Every one
+# of these is a phaze-1b39 wedge shape: a bad/absent image, or an unresolvable ConfigMap/Secret
+# reference (exactly what a missing ``phaze-agent-env`` / ``phaze-agent-token`` produces). Deliberately
+# NARROW: transient-looking reasons (``ContainerCreating``, ``PodInitializing``) are excluded, because a
+# false positive here burns a cloud attempt on healthy work.
+DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
+    {
+        "ImagePullBackOff",
+        "ErrImagePull",
+        "InvalidImageName",
+        "CreateContainerConfigError",
+    }
+)
+
+# phaze-202e: how long ``PodScheduled=False/Unschedulable`` must PERSIST before it counts as a wedge
+# ("unschedulable past a scheduling probe"). A brief unschedulable window is the normal shape of a
+# cluster-autoscaler scale-up, so an instantaneous verdict would fight the autoscaler. 15 min = 3x the
+# */5 reconcile tick, measured on the k8s condition's own ``lastTransitionTime`` -- this is a clock on
+# SCHEDULING FAILURE, never on run time.
+UNSCHEDULABLE_PROBE_SECONDS = 900
+
+
+class PodLiveness(StrEnum):
+    """phaze-202e verdict for a Job's pods -- the state-based replacement for the 1b39 wall clock."""
+
+    ALIVE = "alive"
+    """At least one pod is Running or Succeeded. NEVER terminalize, at any age."""
+
+    DEAD_BEFORE_START = "dead_before_start"
+    """A container is wedged in a fatal waiting reason (bad image / unresolvable ConfigMap-Secret)."""
+
+    UNSCHEDULABLE = "unschedulable"
+    """No pod could be scheduled, and it has stayed that way past the scheduling probe."""
+
+    STARTING = "starting"
+    """Healthy-pending, not-yet-populated, or unreadable. Hold -- proof of death is absent."""
 
 
 class KubeStagingError(RuntimeError):
@@ -158,9 +214,6 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     ``parallelism/completions: 1``, ``backoffLimit: 0`` (KSUBMIT-05 -- the first pod failure is
     immediately terminal; pod-level retry neutralized, control plane owns retry),
     ``ttlSecondsAfterFinished`` = ``JOB_TTL_SECONDS`` (D-04 orphan backstop only),
-    ``activeDeadlineSeconds`` = ``kube.active_deadline_seconds`` (phaze-1b39 -- the pipeline's ONLY
-    wall-clock bound; job_runner delegates all of it here and ttlSecondsAfterFinished cannot help a
-    Job that never finishes),
     ``restartPolicy: Never``, the ``kueue.x-k8s.io/queue-name`` label ON THE JOB (Kueue reads it
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
@@ -218,14 +271,6 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             "parallelism": 1,
             "completions": 1,
             "backoffLimit": 0,
-            # phaze-1b39: the ONLY wall-clock bound in the whole pipeline. job_runner's exit-code
-            # contract delegates all wall-clock bounding here (the analyze stage runs timeout=None), and
-            # ttlSecondsAfterFinished below only fires AFTER a Job finishes -- so it can never rescue a
-            # Job that never finishes. Without activeDeadlineSeconds an admitted-but-stalled pod stays
-            # non-terminal forever and reconcile re-affirms RUNNING every tick, permanently consuming a
-            # burst-lane cap slot. With it, k8s SIGTERMs the pod (-> exit 143) and marks the Job Failed,
-            # which the reconcile loop already routes to _handle_no_callback_terminal (re-drive/spill).
-            "activeDeadlineSeconds": kube.active_deadline_seconds,
             "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
             "template": {
                 "spec": {
@@ -279,6 +324,15 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             },
         },
     }
+    # phaze-202e: the wall-clock Job deadline is OPT-IN and OFF by default. When
+    # ``kube.active_deadline_seconds`` is None the key is ABSENT from the manifest entirely (not 0, not
+    # a sentinel -- k8s treats an absent activeDeadlineSeconds as "no bound"), so a 2-6 h concert-set
+    # analyze runs to completion instead of being SIGTERM'd mid-run. phaze-1b39 had this as a required
+    # 3h bound; that killed every long recording at exactly 3h and burned the whole cloud attempt budget
+    # per file. The wedged-pod protection 1b39 was reaching for now lives in reconcile as POD-STATE
+    # detection (:func:`classify_job_pods`), which cannot mistake a slow analyze for a hang.
+    if kube.active_deadline_seconds is not None:
+        manifest["spec"]["activeDeadlineSeconds"] = kube.active_deadline_seconds
     # Optional models PVC (additive, entirely separate from the phaze-ca Secret mount above). When set,
     # mount the operator-provisioned claim read-only at /models (== PHAZE_MODELS_DIR) so the analyze
     # container reads essentia weights from provisioned storage. Unset -> no models volume/mount is
@@ -374,6 +428,144 @@ async def get_workload_for(job_uid: str, kube: KubeConfig) -> Any | None:
             if ref.get("uid") == job_uid:
                 return workload
     return None
+
+
+async def list_pods_for_job(name: str, kube: KubeConfig) -> list[Any]:
+    """List the pods the Job ``name`` owns on ``kube``'s cluster -- the input to :func:`classify_job_pods`.
+
+    phaze-202e: the pod is the ONLY surface that can tell a genuinely-running 4h analyze apart from a
+    pod that can never start. The Job's own counters cannot (a Pending ImagePullBackOff pod and a
+    Running pod both read ``active=1``), and a wall clock cannot either -- which is exactly why the
+    phaze-1b39 ``activeDeadlineSeconds`` bound killed real work.
+
+    Mirrors :func:`get_workload_for`'s label-uncertainty discipline: k8s 1.27+ labels Job pods
+    ``batch.kubernetes.io/job-name``, older clusters use the un-prefixed ``job-name``. Try the modern
+    key, fall back to the legacy one on an EMPTY result, so a cluster on either side of the rename
+    still yields pods. Returns ``[]`` when both miss -- and callers MUST treat ``[]`` as "unknown",
+    never as "dead": an empty list is indistinguishable from a label the cluster does not use, and
+    terminalizing on it would mass-kill every in-flight run on a label drift.
+    """
+    api = await _api(kube)
+    for label in (_JOB_NAME_LABEL, _LEGACY_JOB_NAME_LABEL):
+        pods = [pod async for pod in Pod.list(namespace=kube.namespace, label_selector={label: name}, api=api)]
+        if pods:
+            return pods
+    return []
+
+
+def _pod_phase(pod: Any) -> str:
+    """Return the pod's ``status.phase`` (``Pending`` / ``Running`` / ``Succeeded`` / ``Failed`` / ``Unknown``)."""
+    status = getattr(pod, "status", None) or {}
+    return str(status.get("phase") or "")
+
+
+def _parse_k8s_time(value: Any) -> datetime | None:
+    """Parse an RFC3339 kube timestamp (``2026-07-28T10:00:00Z``) to an aware UTC datetime, or None.
+
+    Every clock this module reads is kube-side and OPTIONAL (a condition may carry no
+    ``lastTransitionTime``, a fake may omit it). An unparseable/absent value returns None, which the
+    probes below read as "cannot prove anything" -> hold. Never raises.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _dead_before_start_reason(pod: Any) -> str | None:
+    """Return the fatal ``state.waiting.reason`` on any container of ``pod``, or None.
+
+    Scans BOTH ``initContainerStatuses`` and ``containerStatuses``: a wedged init container is just as
+    permanently un-started as a wedged app container, and phaze's pod has no init container today only
+    by accident of the current manifest.
+    """
+    status = getattr(pod, "status", None) or {}
+    for key in ("initContainerStatuses", "containerStatuses"):
+        for container in status.get(key, []) or []:
+            reason = ((container.get("state") or {}).get("waiting") or {}).get("reason")
+            if reason in DEAD_BEFORE_START_WAITING_REASONS:
+                return str(reason)
+    return None
+
+
+def _unschedulable_since(pod: Any) -> datetime | None:
+    """Return when ``pod`` went ``PodScheduled=False/Unschedulable``, or None if it is schedulable.
+
+    A pod with the condition but NO readable ``lastTransitionTime`` returns the epoch-free ``None``
+    only for the not-unschedulable case; when the condition IS present but its timestamp is
+    unreadable the caller cannot run the probe, so this returns None there too (hold, do not kill).
+    """
+    status = getattr(pod, "status", None) or {}
+    for cond in status.get("conditions", []) or []:
+        if cond.get("type") == "PodScheduled" and cond.get("status") == "False" and cond.get("reason") == _REASON_UNSCHEDULABLE:
+            return _parse_k8s_time(cond.get("lastTransitionTime"))
+    return None
+
+
+def classify_job_pods(
+    pods: Sequence[Any], *, now: datetime | None = None, unschedulable_probe_seconds: int = UNSCHEDULABLE_PROBE_SECONDS
+) -> PodLiveness:
+    """Classify a Job's pods into a liveness verdict -- PURE, the phaze-202e wedge detector.
+
+    Replaces the phaze-1b39 wall clock. The ordering is the whole point and is deliberately
+    alive-dominates: if ANY pod is Running or Succeeded the verdict is :attr:`PodLiveness.ALIVE`, no
+    matter how long it has been running and no matter what its siblings look like. **A running analyze
+    is never terminal**, at any age -- that invariant is what this function exists to encode.
+
+    Only when nothing is alive does it look for proof of death:
+
+    * :attr:`PodLiveness.DEAD_BEFORE_START` -- a container is waiting in a reason from
+      :data:`DEAD_BEFORE_START_WAITING_REASONS` (bad image, unresolvable ConfigMap/Secret). These need
+      operator action; k8s will retry the image pull forever on its own, so age adds no information
+      and the verdict is immediate.
+    * :attr:`PodLiveness.UNSCHEDULABLE` -- ``PodScheduled=False/Unschedulable`` that has PERSISTED past
+      ``unschedulable_probe_seconds`` (the "scheduling probe"). A brief unschedulable window is normal
+      while the cluster autoscales, so this one IS time-qualified -- but the clock is the k8s
+      condition's own ``lastTransitionTime``, i.e. how long scheduling has been failing, never how
+      long the analysis has been running.
+    * :attr:`PodLiveness.STARTING` -- anything else, including an empty ``pods``: a healthy Pending
+      pod, a pod whose status is not yet populated, or a pod list that came back empty. Held, never
+      terminalized (see :func:`list_pods_for_job` on why an empty list must not mean "dead").
+    """
+    reference = now or datetime.now(UTC)
+    if any(_pod_phase(pod) in _ALIVE_POD_PHASES for pod in pods):
+        return PodLiveness.ALIVE
+    if any(_dead_before_start_reason(pod) is not None for pod in pods):
+        return PodLiveness.DEAD_BEFORE_START
+    for pod in pods:
+        since = _unschedulable_since(pod)
+        if since is not None and (reference - since).total_seconds() > unschedulable_probe_seconds:
+            return PodLiveness.UNSCHEDULABLE
+    return PodLiveness.STARTING
+
+
+def job_started_at(job: Any) -> datetime | None:
+    """Return the Job's ``status.startTime`` (when Kueue un-suspended it), or None if unreadable.
+
+    This is a POD-SIDE clock, not a run clock: it answers "has this Job been un-gated long enough that
+    a pod should exist by now", which is the only question the zero-pod wedge probe asks. It is never
+    compared against how long an analysis has been running.
+    """
+    status = getattr(job, "status", None) or {}
+    return _parse_k8s_time(status.get("startTime"))
+
+
+def job_is_suspended(job: Any) -> bool:
+    """Return whether the Job is still Kueue-gated (``spec.suspend``) -- a suspended Job has no pod BY DESIGN."""
+    spec = getattr(job, "spec", None) or {}
+    return bool(spec.get("suspend"))
+
+
+def describe_job_pods(pods: Sequence[Any]) -> str:
+    """Render a compact ``phase/reason`` summary of ``pods`` for the reconcile warning log (never raises)."""
+    parts: list[str] = []
+    for pod in pods:
+        reason = _dead_before_start_reason(pod)
+        parts.append(f"{_pod_phase(pod) or 'unknown'}{'/' + reason if reason else ''}")
+    return ",".join(parts) if parts else "no-pods"
 
 
 async def delete_job(name: str, kube: KubeConfig) -> None:

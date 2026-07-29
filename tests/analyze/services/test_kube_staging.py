@@ -22,7 +22,9 @@ A final import-boundary test asserts the module is a pure kr8s seam with NO ORM 
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 import uuid
 
@@ -36,6 +38,7 @@ import yaml
 from phaze.config_backends import KubeConfig
 from phaze.services import kube_staging
 from tests.conftest import KUBE_TEST_API_URL
+from tests.kube_fakes import fake_job, fake_pod
 
 
 if TYPE_CHECKING:
@@ -47,6 +50,7 @@ _LQ = "phaze-lq"
 _IMAGE = "phaze/job-runner:test"
 _JOBS_PATH = f"/apis/batch/v1/namespaces/{_NS}/jobs"
 _WL_PATH = f"/apis/kueue.x-k8s.io/v1beta1/namespaces/{_NS}/workloads"
+_PODS_PATH = f"/api/v1/namespaces/{_NS}/pods"
 _LQ_PATH = f"/apis/kueue.x-k8s.io/v1beta1/namespaces/{_NS}/localqueues/{_LQ}"
 
 # A full kubeconfig YAML for the kubeconfig+context auth form: raw content the operator supplies as a
@@ -156,30 +160,39 @@ def test_build_job_manifest_spec() -> None:
     assert "limits" not in resources  # Q1 RESOLVED (adopted): requests-only is LOCKED
 
 
-def test_build_job_manifest_sets_active_deadline_seconds() -> None:
-    """phaze-1b39: the Job MUST carry ``activeDeadlineSeconds`` -- the pipeline's only wall-clock bound.
+def test_build_job_manifest_omits_active_deadline_seconds_by_default() -> None:
+    """phaze-202e ACCEPTANCE: with no ``active_deadline_seconds`` the manifest carries NO deadline key.
 
-    ``job_runner``'s exit-code contract delegates ALL wall-clock bounding to this field (the analyze
-    stage runs ``timeout=None``) and ``ttlSecondsAfterFinished`` only fires AFTER a Job finishes, so
-    without it a hung/never-started pod is never terminal and holds its burst-lane cap slot forever.
+    THE REGRESSION TEST for the 2026-07-28 incident. phaze-1b39 made ``activeDeadlineSeconds`` a
+    required 3h bound; k8s then SIGTERM'd every 2-6 h concert-set analyze at exactly 3h, burning the
+    file's whole cloud attempt budget. The key must be ABSENT -- not 0, not a sentinel -- because an
+    absent ``activeDeadlineSeconds`` is how k8s spells "no wall-clock bound".
     """
     manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube())
-    spec = manifest["spec"]
 
-    assert spec["activeDeadlineSeconds"] == 10800  # default: 3h, the KubeConfig default
-    # It is a DISTINCT bound from the finished-Job TTL -- the TTL cannot rescue a Job that never finishes.
-    assert spec["activeDeadlineSeconds"] != spec["ttlSecondsAfterFinished"]
+    assert KubeConfig().active_deadline_seconds is None  # the field default is OFF, not 3h
+    assert "activeDeadlineSeconds" not in manifest["spec"]
+    # The finished-Job TTL is a DIFFERENT thing and stays -- it only fires after a Job finishes, so it
+    # can never cut a run short.
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == kube_staging.JOB_TTL_SECONDS
 
 
-def test_build_job_manifest_active_deadline_seconds_is_per_backend_configurable() -> None:
-    """phaze-1b39: a slow cluster can raise the deadline via ``[kube].active_deadline_seconds``."""
+def test_build_job_manifest_emits_active_deadline_seconds_when_explicitly_set() -> None:
+    """An operator who deliberately opts one backend back into a hard bound still gets it emitted."""
     manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(active_deadline_seconds=1800))
 
     assert manifest["spec"]["activeDeadlineSeconds"] == 1800
 
 
-def test_kube_config_rejects_non_positive_active_deadline_seconds() -> None:
-    """A zero/negative deadline would make k8s reject the Job (or bound nothing) -- fail at config load."""
+def test_kube_config_still_validates_a_deployed_active_deadline_seconds() -> None:
+    """phaze-202e ACCEPTANCE: an already-deployed backends.toml carrying the key keeps validating.
+
+    The field went ``int`` -> ``int | None``; making it optional must not reject the configs that are
+    live today (including the incident's 604800s ops stopgap). A non-positive value is still rejected --
+    ``gt=0`` survives on the int branch, so 0 remains a config-load error rather than a Job k8s refuses.
+    """
+    assert _kube(active_deadline_seconds=10800).active_deadline_seconds == 10800
+    assert _kube(active_deadline_seconds=604800).active_deadline_seconds == 604800
     with pytest.raises(ValidationError):
         _kube(active_deadline_seconds=0)
 
@@ -573,6 +586,182 @@ async def test_delete_idempotent_404(kube_respx: MockRouter) -> None:
 
     # Must NOT raise.
     await kube_staging.delete_job(name, _kube())
+
+
+# --------------------------------------------------------------------------- #
+# phaze-202e -- pod-state wedge classifier (PURE, HTTP-free)
+#
+# The state-based replacement for the phaze-1b39 wall clock. The invariant these pin, in order of
+# importance: a Running pod is NEVER a wedge, at any age. Everything else is proof-of-death.
+# --------------------------------------------------------------------------- #
+
+
+_NOW = datetime(2026, 7, 28, 12, 0, 0, tzinfo=UTC)
+
+
+def _ago(seconds: int) -> str:
+    """RFC3339 stamp ``seconds`` before ``_NOW`` -- k8s renders condition timestamps in this form."""
+    return (_NOW - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+@pytest.mark.parametrize("age_seconds", [0, 3600, 10800, 86400, 30 * 86400])
+def test_classify_job_pods_never_terminalizes_a_running_pod(age_seconds: int) -> None:
+    """phaze-202e ACCEPTANCE / THE INVARIANT: a Running pod is ALIVE regardless of age.
+
+    This is the whole point of the bead. phaze-1b39 bounded a run by ``activeDeadlineSeconds`` and
+    killed every 2-6 h concert set at exactly 3h. Age is not an input to this verdict at all -- the
+    parametrization spans a month to make that structural, not incidental. A pod that has been running
+    for 30 days is still ALIVE; only positive proof of death terminalizes.
+    """
+    # An age-shaped signal is present (the pod has ALSO been unschedulable-stamped long ago) purely to
+    # prove that a live pod short-circuits BEFORE any clock is consulted.
+    pod = fake_pod("Running", unschedulable_since=_ago(age_seconds))
+
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.ALIVE
+
+
+def test_classify_job_pods_alive_dominates_a_dead_sibling() -> None:
+    """One Running pod outvotes a wedged sibling -- never kill a Job that has work in flight."""
+    pods = [fake_pod("Pending", waiting_reason="ImagePullBackOff"), fake_pod("Running")]
+
+    assert kube_staging.classify_job_pods(pods, now=_NOW) is kube_staging.PodLiveness.ALIVE
+
+
+def test_classify_job_pods_succeeded_is_alive() -> None:
+    """A Succeeded pod whose callback is still in flight must not be mistaken for a wedge."""
+    assert kube_staging.classify_job_pods([fake_pod("Succeeded")], now=_NOW) is kube_staging.PodLiveness.ALIVE
+
+
+@pytest.mark.parametrize("reason", sorted(kube_staging.DEAD_BEFORE_START_WAITING_REASONS))
+def test_classify_job_pods_flags_every_fatal_waiting_reason(reason: str) -> None:
+    """phaze-202e ACCEPTANCE: ImagePullBackOff / CreateContainerConfigError et al are dead-before-start.
+
+    These are the phaze-1b39 wedge shapes -- a bad image, or the missing operator ConfigMap/Secret the
+    pod's ``envFrom`` needs. k8s retries them forever on its own, so age adds no information and the
+    verdict is immediate.
+    """
+    assert kube_staging.classify_job_pods([fake_pod("Pending", waiting_reason=reason)], now=_NOW) is kube_staging.PodLiveness.DEAD_BEFORE_START
+
+
+def test_classify_job_pods_flags_a_wedged_init_container() -> None:
+    """A wedged INIT container is just as permanently un-started as a wedged app container."""
+    pod = fake_pod("Pending", init_waiting_reason="CreateContainerConfigError")
+
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.DEAD_BEFORE_START
+
+
+def test_classify_job_pods_holds_a_transient_waiting_reason() -> None:
+    """``ContainerCreating`` is normal startup, not a wedge -- a false positive here burns a cloud attempt."""
+    assert kube_staging.classify_job_pods([fake_pod("Pending", waiting_reason="ContainerCreating")], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_holds_a_briefly_unschedulable_pod() -> None:
+    """Unschedulable INSIDE the scheduling probe is held -- that is the normal cluster-autoscaler shape."""
+    pod = fake_pod("Pending", unschedulable_since=_ago(kube_staging.UNSCHEDULABLE_PROBE_SECONDS - 60))
+
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_flags_a_persistently_unschedulable_pod() -> None:
+    """Unschedulable PAST the probe is a wedge -- the clock is the k8s condition's own transition time.
+
+    Note what is being measured: how long SCHEDULING has been failing, read off the pod's
+    ``PodScheduled`` condition. It is never how long an analysis has run.
+    """
+    pod = fake_pod("Pending", unschedulable_since=_ago(kube_staging.UNSCHEDULABLE_PROBE_SECONDS + 60))
+
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.UNSCHEDULABLE
+
+
+def test_classify_job_pods_holds_an_unschedulable_pod_with_no_readable_timestamp() -> None:
+    """An unschedulable condition with an unparseable ``lastTransitionTime`` cannot be probed -> hold."""
+    pod = SimpleNamespace(
+        status={"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}]},
+        metadata=SimpleNamespace(name="p"),
+    )
+
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_treats_an_empty_pod_list_as_starting_not_dead() -> None:
+    """An empty pod list is UNKNOWN, never dead.
+
+    ``list_pods_for_job`` returns ``[]`` both when the Job genuinely has no pod AND when the cluster
+    uses a pod label this code does not know. Terminalizing on that would mass-kill every in-flight run
+    on a single label drift, so the classifier refuses -- the zero-pod case is escalated only by
+    reconcile, and only with independent corroboration from the Job's own ``status.active``.
+    """
+    assert kube_staging.classify_job_pods([], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_defaults_now_to_wall_clock() -> None:
+    """``now`` is injectable for tests but defaults to the real clock in production."""
+    assert kube_staging.classify_job_pods([fake_pod("Running")]) is kube_staging.PodLiveness.ALIVE
+
+
+def test_job_started_at_and_suspended_read_the_job_status() -> None:
+    """The zero-pod probe's two Job-side reads: ``status.startTime`` and ``spec.suspend``."""
+    assert kube_staging.job_started_at(fake_job(start_time=_ago(60))) == _NOW - timedelta(seconds=60)
+    assert kube_staging.job_started_at(fake_job()) is None  # absent -> unprobeable, hold
+    assert kube_staging.job_started_at(fake_job(start_time="not-a-timestamp")) is None
+    assert kube_staging.job_is_suspended(fake_job(suspend=True)) is True
+    assert kube_staging.job_is_suspended(fake_job(suspend=False)) is False
+
+
+def test_describe_job_pods_summarises_for_the_operator_log() -> None:
+    """The warning log must name the phase + fatal reason so an operator can act without kubectl."""
+    assert kube_staging.describe_job_pods([]) == "no-pods"
+    assert kube_staging.describe_job_pods([fake_pod("Pending", waiting_reason="ImagePullBackOff")]) == "Pending/ImagePullBackOff"
+    assert kube_staging.describe_job_pods([fake_pod("Running")]) == "Running"
+
+
+# --------------------------------------------------------------------------- #
+# phaze-202e -- list_pods_for_job (respx seam, modern + legacy job-name label)
+# --------------------------------------------------------------------------- #
+
+
+def _pod_list(*names: str) -> dict[str, object]:
+    return {
+        "apiVersion": "v1",
+        "kind": "PodList",
+        "metadata": {},
+        "items": [{"apiVersion": "v1", "kind": "Pod", "metadata": {"name": n, "namespace": _NS}, "status": {"phase": "Running"}} for n in names],
+    }
+
+
+async def test_list_pods_for_job_uses_the_modern_job_name_label(kube_respx: MockRouter) -> None:
+    """k8s >=1.27 stamps ``batch.kubernetes.io/job-name`` -- the first selector tried."""
+    route = kube_respx.get(_PODS_PATH, params__contains={"labelSelector": "batch.kubernetes.io/job-name=phaze-analyze-x"}).mock(
+        return_value=Response(200, json=_pod_list("phaze-analyze-x-abcde"))
+    )
+
+    pods = await kube_staging.list_pods_for_job("phaze-analyze-x", _kube())
+
+    assert route.called
+    assert [p.name for p in pods] == ["phaze-analyze-x-abcde"]
+
+
+async def test_list_pods_for_job_falls_back_to_the_legacy_label(kube_respx: MockRouter) -> None:
+    """An older cluster labels pods ``job-name``; an EMPTY modern result must degrade to it, not to []."""
+    modern = kube_respx.get(_PODS_PATH, params__contains={"labelSelector": "batch.kubernetes.io/job-name=phaze-analyze-x"}).mock(
+        return_value=Response(200, json=_pod_list())
+    )
+    legacy = kube_respx.get(_PODS_PATH, params__contains={"labelSelector": "job-name=phaze-analyze-x"}).mock(
+        return_value=Response(200, json=_pod_list("legacy-pod"))
+    )
+
+    pods = await kube_staging.list_pods_for_job("phaze-analyze-x", _kube())
+
+    assert modern.called
+    assert legacy.called
+    assert [p.name for p in pods] == ["legacy-pod"]
+
+
+async def test_list_pods_for_job_returns_empty_when_both_labels_miss(kube_respx: MockRouter) -> None:
+    """Both selectors empty -> ``[]``, which callers MUST read as "unknown", never as "dead"."""
+    kube_respx.get(_PODS_PATH).mock(return_value=Response(200, json=_pod_list()))
+
+    assert await kube_staging.list_pods_for_job("phaze-analyze-x", _kube()) == []
 
 
 # --------------------------------------------------------------------------- #
