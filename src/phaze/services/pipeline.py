@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast as type_cast
 import weakref
 
 from saq.utils import now as saq_now
-from sqlalchemy import String, and_, cast, distinct, exists, false, func, or_, select, text
+from sqlalchemy import String, and_, cast, distinct, exists, false, func, literal, or_, select, text, tuple_
 import structlog
 
 from phaze.config import get_settings
@@ -2004,7 +2004,12 @@ async def get_pushed_count(session: AsyncSession) -> int:
 # transaction so a concurrent tick cannot double-stage the same row (T-50-scratch-dos).
 
 
-async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> list[tuple[FileRecord, datetime]]:
+async def get_cloud_staging_candidates(
+    session: AsyncSession,
+    limit: int,
+    *,
+    after: tuple[datetime, uuid.UUID] | None = None,
+) -> list[tuple[FileRecord, datetime]]:
     """Return up to ``limit`` oldest genuinely-parked cloud candidates + each row's staleness clock (Phase 83, D-05/D-06/D-07).
 
     Cut over from the retired ``FileRecord.state == AWAITING_CLOUD`` read (SC#1) to the ``cloud_job``
@@ -2036,17 +2041,41 @@ async def get_cloud_staging_candidates(session: AsyncSession, limit: int) -> lis
     locking only ``files`` would read the deciding ``cloud_job.status`` column stale against the concurrent
     callback routers / reconcile cron the tick's advisory lock does not cover. INNER (not outer) join is
     required -- Postgres rejects ``FOR UPDATE`` on the nullable side of an outer join. ``limit`` is the
-    free-slot count the caller computed as ``sum(remaining)`` across available backends; the caller must
-    guarantee ``limit > 0`` (a ``LIMIT 0`` would be a pointless round-trip).
+    page size the caller wants; the caller must guarantee ``limit > 0`` (a ``LIMIT 0`` would be a pointless
+    round-trip).
+
+    phaze-9sqa -- ``after`` is the KEYSET cursor that lets the drain page PAST a head-of-line run of
+    candidates it could not route. Without it the drain fetched exactly ``sum(free slots)`` rows and, when
+    every one of those oldest rows was unroutable (``select_backend`` -> ``None``, e.g. the D-04 attempts
+    cap with the local backend full), re-fetched the SAME rows every tick forever while every routable
+    file behind them starved -- observed in production as ``staged: 0, skipped: 3`` every 5 min for >24 h
+    behind 14 poisoned heads. Passing the previous page's last ``(created_at, id)`` slides the window
+    forward instead. Deliberately a cursor rather than a smarter WHERE: routability is decided by the pure
+    ``select_backend`` policy over an in-memory per-tick snapshot (backend availability, free slots, the
+    staleness gate, the attempts cap), so re-spelling "unroutable" in SQL would fork that policy into a
+    second, drifting definition -- and this clause is the DERIV-04-locked ``awaiting_candidate_clause``,
+    which must stay byte-identical to the count card's spelling.
+
+    The sort key gains ``FileRecord.id`` as a stable tie-break. ``created_at`` alone is NOT unique (a scan
+    batch inserts many rows inside one transaction, and ``server_default=func.now()`` is transaction time,
+    so whole batches share a timestamp) -- a keyset cursor over a non-unique key would either skip or
+    re-serve the tied rows. FIFO semantics are unchanged: ``created_at`` still dominates, ``id`` only orders
+    within a tie that previously had no defined order at all.
     """
     stmt = (
         select(FileRecord, CloudJob.updated_at)
         .join(CloudJob, CloudJob.file_id == FileRecord.id)
         .where(awaiting_candidate_clause())
-        .order_by(FileRecord.created_at.asc())
+        .order_by(FileRecord.created_at.asc(), FileRecord.id.asc())
         .limit(limit)
         .with_for_update(of=CloudJob, skip_locked=True)
     )
+    if after is not None:
+        # Row-value comparison -- the exact keyset form Postgres can drive from the composite ordering,
+        # and the only spelling that is correct across a ``created_at`` tie.
+        # BOUND params typed off the columns themselves (never interpolated SQL, T-42-03/T-49-02).
+        cursor = tuple_(literal(after[0], FileRecord.created_at.type), literal(after[1], FileRecord.id.type))
+        stmt = stmt.where(tuple_(FileRecord.created_at, FileRecord.id) > cursor)
     return [(file, updated_at) for file, updated_at in (await session.execute(stmt)).all()]
 
 
