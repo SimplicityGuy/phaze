@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 import uuid
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 
 from phaze.config import settings
 from phaze.config_backends import ComputeBackend, KubeConfig, KueueBackend, LocalBackend
@@ -955,6 +955,52 @@ async def test_backfill_marker_clear_is_staged_before_routing_commit(
 
 
 @pytest.mark.asyncio
+async def test_route_discovered_by_duration_skips_a_file_deleted_before_its_hold(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-e8kv: a FileRecord deleted between the discovered-set SELECT and the hold's FK-bearing
+    INSERT must be skipped, never a 500 that aborts the whole run.
+
+    Mirrors ``force_skip_stage``'s SAVEPOINT + caught-``IntegrityError`` discipline for the identical
+    race (a concurrent ``delete_scan`` cascade removing the row). Two long candidates are routed: the
+    first is deleted out from under the loop right before its hold runs (simulating the cascade landing
+    mid-loop); the second is untouched. The FK violation on the first must cost exactly one skipped
+    file, not the second file's hold or the whole request.
+    """
+    import phaze.routers.pipeline as pipeline_mod
+    from phaze.services.backends import hold_awaiting_cloud
+
+    doomed = _make_file()
+    survivor = _make_file()
+    session.add_all([doomed, survivor])
+    await session.commit()
+    doomed_id = doomed.id
+    survivor_id = survivor.id  # capture before expire_all() below
+
+    async def _delete_then_hold(sess: AsyncSession, file: FileRecord, **kwargs: object) -> bool:
+        if file.id == doomed_id:
+            await sess.execute(delete(FileRecord).where(FileRecord.id == doomed_id))
+        return await hold_awaiting_cloud(sess, file, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pipeline_mod, "hold_awaiting_cloud", _delete_then_hold)
+
+    counts = await pipeline_mod._route_discovered_by_duration(
+        app_state=None,
+        session=session,
+        files_with_duration=[(doomed, 999.0), (survivor, 999.0)],
+        threshold_sec=60,
+        cloud_enabled=True,
+        models_path="models",
+    )
+
+    assert counts["awaiting"] == 1  # only the survivor was held
+    assert counts["skipped"] == 1  # the doomed file is counted, not silently dropped
+    session.expire_all()
+    survivor_row = (await session.execute(select(CloudJob).where(CloudJob.file_id == survivor_id))).scalar_one()
+    assert survivor_row.status == CloudJobStatus.AWAITING.value
+    doomed_rows = (await session.execute(select(CloudJob).where(CloudJob.file_id == doomed_id))).scalars().all()
+    assert doomed_rows == []  # no orphaned cloud_job row for the vanished file
+
+
+@pytest.mark.asyncio
 async def test_backfill_double_click_holds_nothing_new(client: AsyncClient, session: AsyncSession) -> None:
     """A second backfill click holds zero new files — never a whole-backlog over-enqueue (D-10)."""
     await _persist_failed_with_duration(session, [_LONG, _LONG])
@@ -1156,6 +1202,57 @@ async def test_backfill_skips_file_with_live_process_file_job(client: AsyncClien
     assert await _analysis_failed_at(session, live_deepen.id) is not None
     assert len(await _process_file_ledger_rows(session, live_deepen.id)) == 1
     assert not await _is_awaiting_cloud(session, live_deepen.id)
+
+
+@pytest.mark.asyncio
+async def test_backfill_ledger_delete_is_cas_guarded_against_a_concurrent_reenqueue(
+    client: AsyncClient, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """phaze-g31m: a concurrent process_file re-enqueue landing between the ledger snapshot and the
+    DELETE must not lose the live ledger row out from under it.
+
+    The l1km ``live_keys`` guard is a lock-free snapshot taken well before the ledger DELETE; a
+    concurrent enqueue (deepen_analysis / retry_analysis_failed's background loop) for this EXACT
+    candidate can land in that gap. ``upsert_ledger_entry`` -- the SAQ before_enqueue write hook every
+    process_file producer shares -- refreshes ``enqueued_at`` on every re-enqueue of a still-existing
+    key, so the ledger DELETE is CAS-guarded on the exact ``enqueued_at`` value observed immediately
+    before it runs. Simulated here by bumping the row's ``enqueued_at`` right after that snapshot read
+    (in the SAME transaction, standing in for the concurrent commit) -- the CAS's stale comparison value
+    no longer matches, so the DELETE misses the row instead of silently clobbering a live producer's claim.
+    """
+    (candidate,) = await _persist_failed_with_duration(session, [_LONG])
+    await seed_active_agent(session, "nox", kind="fileserver")
+    wire_fakes(client)
+
+    real_execute = session.execute
+    bumped = False
+    # A literal future value, NOT func.now(): Postgres's now()/CURRENT_TIMESTAMP is fixed at
+    # TRANSACTION start, and this whole test runs inside one begin/rollback-wrapped transaction
+    # (the shared ``session`` fixture), so a func.now() "bump" here would silently no-op back to the
+    # SAME value the row already carries -- masking the very race this test exists to prove closed.
+    future_enqueued_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
+
+    async def _bump_after_ledger_snapshot(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal bumped
+        result = await real_execute(statement, *args, **kwargs)
+        compiled = str(statement)
+        if not bumped and "scheduling_ledger" in compiled and "enqueued_at" in compiled and "DELETE" not in compiled.upper():
+            bumped = True
+            await real_execute(
+                update(SchedulingLedger).where(SchedulingLedger.key == f"process_file:{candidate.id}").values(enqueued_at=future_enqueued_at),
+            )
+        return result
+
+    monkeypatch.setattr(session, "execute", _bump_after_ledger_snapshot)
+
+    response = await client.post("/pipeline/backfill-cloud")
+    assert response.status_code == 200
+
+    monkeypatch.undo()
+    assert bumped, "the ledger snapshot statement was never intercepted -- test is not exercising the race"
+    # The CAS-guarded delete missed the row (its enqueued_at no longer matched what was observed) -- the
+    # concurrently-refreshed ledger row survives instead of being removed out from under the live job.
+    assert len(await _process_file_ledger_rows(session, candidate.id)) == 1
 
 
 @pytest.mark.asyncio

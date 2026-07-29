@@ -942,6 +942,14 @@ class KueueBackend(_BaseBackend):
                 # post-commit row -- and the None-check for a vanished row could never fire on a cached object).
                 cloud_job = await session.get(CloudJob, cloud_job_id, populate_existing=True)
                 if cloud_job is None:
+                    # phaze-c1u7: a concurrent delete_scan cascade (services/scan_deletion.py) can remove
+                    # this row between the snapshot above and this fresh read. Mirror
+                    # _reap_stranded_staging's identical vanished-row skip (line ~701): roll back to
+                    # release the pg_advisory_xact_lock taken above, exactly like every other skip path in
+                    # this loop -- a bare ``continue`` leaves the lock held across every subsequent row's
+                    # kube I/O (and the rest of the tick, if this was the last row) instead of releasing it
+                    # per-row as the design (SCHED-02 / Pitfall 2) relies on.
+                    await session.rollback()
                     continue
                 tally["reconciled"] += 1
                 # MKUE-01/D-04: thread THIS backend's KubeConfig so every get_job/get_workload_for/

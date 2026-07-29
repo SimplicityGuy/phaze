@@ -150,16 +150,34 @@ async def submit_cloud_job(ctx: dict[str, Any], file_id: str | uuid.UUID) -> dic
         )
         res = cast("CursorResult[Any]", await session.execute(stmt))
         if res.rowcount == 0:
-            # The conflict row is in a non-advanceable status (spilled 'awaiting' / terminal). This is a
-            # late/duplicate submit: do NOT flip the row, and tear down the Job we just POSTed so no
-            # orphaned doomed pod (its S3 input may already be deleted) lingers or charges a cap slot.
+            # The conflict row is in a non-advanceable status -- but that predicate alone can't tell
+            # apart two disjoint situations (phaze-exxt). Read WHICH status before rolling back so we
+            # can distinguish them: a spilled/terminal row ('awaiting'/'succeeded'/'failed') has no live
+            # owner for the deterministic Job name, so tearing it down is correct (phaze-kzto's original
+            # intent). But 'running' (reconcile already advanced the row past SUBMITTED) -- or 'uploading'
+            # (a late upload-callback clobber) -- DOES have a live owner: e.g. a SAQ retry landing after
+            # this task already committed a submit and reconcile advanced the row on an intervening tick.
+            # Deleting `name` there would kill that live, in-flight Job mid-analysis.
+            current_status = (await session.execute(select(CloudJob.status).where(CloudJob.file_id == fid))).scalar_one_or_none()
             await session.rollback()
-            await kube_staging.delete_job(name, kube)
-            logger.warning(
-                "submit_cloud_job: late/duplicate submit no-op (cloud_job not uploaded/submitted); deleted Job",
-                file_id=str(fid),
-                kueue_workload=name,
-            )
+            if current_status in (CloudJobStatus.AWAITING.value, CloudJobStatus.SUCCEEDED.value, CloudJobStatus.FAILED.value):
+                # No live owner at this row's current state -- tear down the Job we just POSTed so no
+                # orphaned doomed pod (its S3 input may already be deleted) lingers or charges a cap slot.
+                await kube_staging.delete_job(name, kube)
+                logger.warning(
+                    "submit_cloud_job: late/duplicate submit no-op (cloud_job spilled/terminal); deleted Job",
+                    file_id=str(fid),
+                    kueue_workload=name,
+                    cloud_job_status=current_status,
+                )
+            else:
+                # A live owner already exists for this deterministic name -- leave it running.
+                logger.info(
+                    "submit_cloud_job: late/duplicate submit no-op (cloud_job already advanced by a live owner); leaving Job alone",
+                    file_id=str(fid),
+                    kueue_workload=name,
+                    cloud_job_status=current_status,
+                )
             return {"file_id": str(fid), "kueue_workload": name, "status": "skipped"}
         await session.commit()
 

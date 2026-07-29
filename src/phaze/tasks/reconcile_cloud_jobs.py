@@ -504,7 +504,24 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         # activeDeadlineSeconds is the PRIMARY fix (k8s marks it Failed, handled above); this is the
         # backstop for when that signal never reaches us. Past deadline+slack with NO analysis result,
         # treat the row as a no-callback terminal so the existing re-drive/spill path recovers the slot.
-        if _row_age_seconds(cloud_job) > _staleness_cutoff_seconds(kube) and not await _analysis_completed(session, cloud_job.file_id):
+        #
+        # phaze-uui9: gate this bound on the row having already been OBSERVED RUNNING on a PRIOR tick
+        # (``cloud_job.status`` here is the value freshly loaded this tick -- KueueBackend.reconcile
+        # re-reads with ``populate_existing=True`` -- so it reflects the last tick's committed state,
+        # not anything this tick has done yet). ``updated_at`` is the "last real state transition"
+        # clock (onupdate=func.now(), mutates only on change), and D-07 designs a healthy Pending quota
+        # wait as indefinite -- the Pending branch above issues no UPDATE while waiting, so
+        # ``updated_at`` stays frozen at submit time for however long admission takes. Evaluating the
+        # bound against that frozen clock on the FIRST admitted tick would measure the queue wait, not
+        # the run time, and kill a just-admitted, healthily-running pod outright. Only a row that was
+        # ALREADY RUNNING/ADMITTED coming into this tick has a clock that means "time in this state";
+        # a row transitioning into that state for the first time this tick gets its own UPDATE below
+        # (the D-04 admission progression) to start that clock and is exempt from the bound until then.
+        if (
+            cloud_job.status == CloudJobStatus.RUNNING.value
+            and _row_age_seconds(cloud_job) > _staleness_cutoff_seconds(kube)
+            and not await _analysis_completed(session, cloud_job.file_id)
+        ):
             logger.warning(
                 "reconcile_cloud_jobs: in-flight row exceeded activeDeadlineSeconds + slack with no terminal signal -- terminalizing",
                 cloud_job_id=str(cloud_job.id),

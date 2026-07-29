@@ -1041,6 +1041,43 @@ async def test_kueue_reconcile_scope_ignores_other_backend_rows(session: AsyncSe
     assert compute_row.status == CloudJobStatus.SUBMITTED.value  # the compute row is left for its /pushed callback
 
 
+@pytest.mark.asyncio
+async def test_reconcile_releases_the_advisory_lock_on_a_row_deleted_mid_sweep(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """phaze-c1u7: a row removed by a concurrent ``delete_scan`` cascade between snapshot and re-read
+    must roll back (releasing ``pg_advisory_xact_lock(5_000_504)``), not leak it past the row boundary.
+
+    Mirrors ``_reap_stranded_staging``'s identical vanished-row skip. Pre-fix the reconcile loop's
+    vanished-row branch was a bare ``continue`` with no rollback: the transaction that acquired the
+    drain advisory lock at the top of the per-row unit stayed open, stalling every subsequent row's kube
+    I/O (and the rest of the tick, if this was the last row) until some LATER commit or session close.
+    The load-bearing assertion is that the session is NOT left inside an open transaction after the skip.
+    """
+    from sqlalchemy import delete, select
+
+    _stub_kube_available(monkeypatch)
+    backend = _kueue(id="kueue-x64")
+    fid = await _seed_cloud_job(session, backend_id="kueue-x64", status=CloudJobStatus.SUBMITTED)
+    row = (await session.execute(select(CloudJob).where(CloudJob.file_id == fid))).scalar_one()
+    cloud_job_id = row.id
+
+    real_get = session.get
+
+    async def _delete_then_get(entity: Any, ident: Any, **kwargs: Any) -> Any:
+        if ident == cloud_job_id:
+            await session.execute(delete(CloudJob).where(CloudJob.id == cloud_job_id))
+            session.expire_all()
+        return await real_get(entity, ident, **kwargs)
+
+    monkeypatch.setattr(session, "get", _delete_then_get)
+
+    tally = await backend.reconcile(session)
+
+    monkeypatch.undo()
+    assert tally is not None
+    assert tally["reconciled"] == 0  # the vanished row is skipped, never counted
+    assert session.in_transaction() is False  # the skip released the lock rather than leaking it
+
+
 # === Layer 2: D-02 equivalence invariant =================================================
 
 
