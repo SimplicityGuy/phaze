@@ -122,6 +122,11 @@ _PAGING = "paging param -- bounded by the pagination contract (wire_bounds rule 
 _WHITELIST = "validated against an in-route whitelist/enum before any column use"
 _TEXT = "lands in a Text column -- unbounded, no cap needed (rule 2)"
 _NOT_STORED = "never reaches a column; consumed as a control value in-route"
+# phaze-qiwc: distinct from _TEXT -- these never land in ANY column. They are predicate operands
+# (tsquery text, ILIKE pattern) bound straight into a WHERE clause, so the unstorable-character
+# obligation (rule 4) applies without a width cap (rule 2 still forbids one -- there is no column
+# to size against). The handler sanitizes with ``sanitize_pg_text`` before either reaches a bind.
+_PREDICATE_OPERAND = "predicate operand (tsquery/ILIKE), never persisted -- sanitized before bind (phaze-qiwc)"
 
 PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/proposals/{proposal_id}/edit", "proposed"): _TEXT,
@@ -223,9 +228,9 @@ PARAM_CLASSIFICATIONS: dict[tuple[str, str], str] = {
     ("/pipeline/stages/{stage}/priority", "delta"): _NOT_STORED,
     ("/pipeline/stages/{stage}/pause", "stage"): _WHITELIST,
     ("/pipeline/stages/{stage}/resume", "stage"): _WHITELIST,
-    ("/search/", "q"): _TEXT,
-    ("/search/", "artist"): _TEXT,
-    ("/search/", "genre"): _TEXT,
+    ("/search/", "q"): _PREDICATE_OPERAND,
+    ("/search/", "artist"): _PREDICATE_OPERAND,
+    ("/search/", "genre"): _PREDICATE_OPERAND,
     # Bulk-action id lists: FastAPI reports the ELEMENT type for a ``list[str] = Form(...)``, so they
     # surface here as ``str``. Each element is parsed to a UUID / compared to a known hash in-route.
     ("/proposals/bulk", "proposal_ids"): "list[str] Form; each element parsed to UUID in-route",
