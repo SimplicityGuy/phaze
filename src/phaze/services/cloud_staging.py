@@ -63,10 +63,23 @@ _PENDING_ENQUEUE_KEY = "cloud_staging_pending_s3_enqueues"
 
 @dataclass(frozen=True)
 class _PendingS3Enqueue:
-    """One deferred ``s3_upload`` enqueue: the resolved queue + the enqueue kwargs, flushed post-commit."""
+    """One deferred ``s3_upload`` enqueue: the resolved queue + the enqueue kwargs, flushed post-commit.
+
+    phaze-cws5: ALSO carries the ``(file_id, upload_id, bucket)`` triple identifying the real S3
+    multipart upload this enqueue depends on. ``_stage_file_to_s3`` creates that multipart as a
+    non-transactional external side effect BEFORE parking the enqueue; if the caller's transaction
+    rolls back for ANY reason after that point -- not just an exception inside the core itself (the
+    phaze-bbwx compensation already covers that), but also a poisoned transaction from a LATER
+    candidate in the same drain tick, or the caller's own post-loop commit failing -- the cloud_job
+    row that would have persisted ``upload_id`` never lands, and nothing else can ever find it to
+    abort. Carrying the triple here lets :func:`drop_pending_s3_enqueues` close that gap.
+    """
 
     queue: Any
     enqueue_kwargs: dict[str, Any] = field(default_factory=dict)
+    file_id: uuid.UUID | None = None
+    upload_id: str | None = None
+    bucket: BucketConfig | None = None
 
 
 def _park_s3_enqueue(session: AsyncSession, pending: _PendingS3Enqueue) -> None:
@@ -74,15 +87,37 @@ def _park_s3_enqueue(session: AsyncSession, pending: _PendingS3Enqueue) -> None:
     session.info.setdefault(_PENDING_ENQUEUE_KEY, []).append(pending)
 
 
-def drop_pending_s3_enqueues(session: AsyncSession) -> None:
-    """Discard any parked ``s3_upload`` enqueues WITHOUT firing them (phaze-grzo).
+async def drop_pending_s3_enqueues(session: AsyncSession) -> None:
+    """Discard any parked ``s3_upload`` enqueues WITHOUT firing them, best-effort aborting their multiparts.
 
     The caller MUST call this whenever the transaction that produced the parked enqueues is rolled
     back: firing an enqueue whose ``cloud_job`` upsert was rolled back is the ORPHANING half of the
     dual-write hole (a job runs against a row that never committed). Dropping the parked enqueues on
     rollback closes that variant.
+
+    phaze-cws5: the freshly-created multipart upload each dropped item names is now ALSO the caller's
+    only remaining chance to abort it. Once the rollback completes, ``upload_id`` was never persisted
+    anywhere (the row that would have carried it just rolled back), so no later cleanup path
+    (``redrive_upload``'s abort, ``report_upload_failed``'s terminal abort, the staging reaper) can
+    ever find it -- it would otherwise sit as an orphaned incomplete multipart on the bucket until the
+    ``s3_lifecycle_ttl_days`` backstop (``ensure_bucket_lifecycle_ttl``) expires it. Best-effort PER
+    ITEM (mirrors :func:`flush_pending_s3_enqueues`'s per-item discipline): an abort failure here must
+    never mask the original rollback cause, and one bad abort must not block the rest.
     """
-    session.info.pop(_PENDING_ENQUEUE_KEY, None)
+    pending: list[_PendingS3Enqueue] = session.info.pop(_PENDING_ENQUEUE_KEY, [])
+    for item in pending:
+        if item.file_id is None or item.upload_id is None or item.bucket is None:
+            continue
+        try:
+            await s3_staging.abort_multipart_upload(item.file_id, item.upload_id, item.bucket)
+        except Exception:
+            logger.warning(
+                "drop_pending_s3_enqueues: best-effort abort of an orphaned multipart upload failed "
+                "(the s3_lifecycle_ttl_days backstop, if configured, is the last resort)",
+                file_id=str(item.file_id),
+                upload_id=item.upload_id,
+                exc_info=True,
+            )
 
 
 async def flush_pending_s3_enqueues(session: AsyncSession) -> int:
@@ -154,7 +189,7 @@ async def stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router:
         await _stage_file_to_s3(session, file, task_router, bucket)
         await session.commit()
     except BaseException:
-        drop_pending_s3_enqueues(session)
+        await drop_pending_s3_enqueues(session)
         raise
     await flush_pending_s3_enqueues(session)
 
@@ -283,6 +318,9 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
         queue = task_router.queue_for(agent.id, lane_for_task("s3_upload"))
         # phaze-grzo: PARK the enqueue -- do NOT fire it here. The caller flushes it AFTER committing the
         # cloud_job UPLOADING row so the job (and its report_uploaded callback) never precedes that row.
+        # phaze-cws5: carry (file_id, upload_id, bucket) alongside it -- drop_pending_s3_enqueues is the
+        # ONLY remaining compensation for a rollback that happens on the CALLER's side (a later candidate
+        # poisoning the transaction, or the caller's own commit failing) rather than inside this core.
         _park_s3_enqueue(
             session,
             _PendingS3Enqueue(
@@ -300,6 +338,9 @@ async def _stage_file_to_s3(session: AsyncSession, file: FileRecord, task_router
                     "retries": S3_UPLOAD_SAQ_RETRIES,
                     **payload.model_dump(mode="json"),
                 },
+                file_id=file.id,
+                upload_id=upload_id,
+                bucket=bucket,
             ),
         )
     except Exception:
