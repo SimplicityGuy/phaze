@@ -114,3 +114,30 @@ jobs:
             > .env.agent
           docker compose -f docker-compose.agent.yml --env-file .env.agent config --quiet
           echo "✅ docker-compose.agent.yml is valid"
+
+      - name: 🐳 Validate docker-compose.dev.yml (merged with base)
+        run: |
+          echo "🔍 Validating dev overlay docker-compose.dev.yml merged with docker-compose.yml..."
+          # phaze-md8n: this overlay had NO CI validation — a syntax error or stale
+          # interpolation shipped silently. It is an overlay (never used standalone),
+          # so validate it exactly as `just up-dev` composes it: merged with the base.
+          # Placeholders mirror the base-compose step above; regenerated here so this
+          # step never depends on step ordering.
+          printf '%s\n' \
+            'REDIS_PASSWORD=ci-validate-placeholder' \
+            'REDIS_BIND_IP=127.0.0.1' \
+            'POSTGRES_PASSWORD=ci-validate-placeholder' \
+            'POSTGRES_BIND_IP=127.0.0.1' \
+            > .env
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
+          echo "✅ docker-compose.dev.yml is valid"
+
+      - name: 🐳 Validate docker-compose.cloud-agent.yml
+        run: |
+          echo "🔍 Validating cloud-agent docker-compose.cloud-agent.yml..."
+          # phaze-md8n: standalone compose for the OCI A1 host, previously unvalidated.
+          # PHAZE_CLOUD_SCRATCH_DIR carries a ${VAR:?} fail-fast guard; supply a
+          # placeholder inline so compose-parse can resolve interpolation.
+          PHAZE_CLOUD_SCRATCH_DIR=/tmp/phaze-ci-scratch-placeholder \
+            docker compose -f docker-compose.cloud-agent.yml config --quiet
+          echo "✅ docker-compose.cloud-agent.yml is valid"
