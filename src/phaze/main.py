@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 import redis.asyncio as redis_async
 from sqlalchemy import select, text
 import structlog
@@ -52,6 +51,7 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.web.saq_mount import build_saq_app
+from phaze.web.static import RevalidatingStaticFiles
 
 
 logger = structlog.get_logger(__name__)
@@ -293,7 +293,11 @@ def create_app() -> FastAPI:
     # router is read-only and does NOT use get_authenticated_agent (consistent
     # with other admin-UI routers on the private LAN).
     app.include_router(admin_agents.router)
-    app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+    # phaze-mw9l: no-cache (revalidate-every-use) static serving. /static/css/app.css sits at a
+    # stable, unfingerprinted URL, and stock StaticFiles sends no Cache-Control -- browsers then
+    # cache it heuristically ACROSS DEPLOYS, which stranded the analyze lane detail pane on-screen
+    # when phaze-2u8v.6's pane needed utilities no earlier compiled stylesheet contained.
+    app.mount("/static", RevalidatingStaticFiles(directory=Path(__file__).parent / "static"), name="static")
     return app
 
 
