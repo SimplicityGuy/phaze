@@ -419,11 +419,13 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     if failed_at is None:
         return True  # done (a metadata row present, failed_at NULL) -> domain-complete
     # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
-    # ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022), so asyncpg
-    # returns it NAIVE in production, while ``metadata.failed_at`` is ``timezone=True`` (aware). Coerce
-    # the naive ledger stamp to UTC-aware before comparing -- a bare ``naive <= aware`` raises TypeError
-    # and would abort the whole recovery run (CR-02). The in-memory D-10 unit rows are already aware, so
-    # this is a no-op for them and the real fix only shows against a DB round-trip (see the CR-02 test).
+    # This coercion was load-bearing when ``scheduling_ledger.enqueued_at`` was ``TIMESTAMP WITHOUT TIME
+    # ZONE``: asyncpg returned it NAIVE while ``metadata.failed_at`` came back aware, and a bare
+    # ``naive <= aware`` raises TypeError, aborting the whole recovery run (CR-02). phaze-cz3m /
+    # migration 049 made every timestamp column ``timestamptz``, so a DB-read row is now aware and this
+    # is a no-op on the production path. KEPT deliberately: it costs one attribute check, and it is the
+    # difference between a TypeError that kills a recovery run and a correct comparison should a naive
+    # stamp ever reach here from a caller that did not come through the DB.
     enqueued_at = row.enqueued_at if row.enqueued_at.tzinfo is not None else row.enqueued_at.replace(tzinfo=UTC)
     return enqueued_at <= failed_at
 

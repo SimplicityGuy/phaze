@@ -102,13 +102,14 @@ async def test_upsert_bumps_updated_at_not_created_at(session) -> None:  # type:
     await session.commit()
 
     # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
-    # well in the past. scheduling_ledger.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE
-    # columns -- use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
-    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    # well in the past. Bind a tz-AWARE value: since phaze-cz3m / migration 049 every timestamp
+    # column is timestamptz, and a NAIVE datetime bound to one is silently reinterpreted as the
+    # session's local time rather than UTC -- a same-shape defect to the one 049 fixed.
+    outage_time = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=12)
     await session.execute(update(SchedulingLedger).where(SchedulingLedger.key == key).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_reupsert = datetime.now(UTC).replace(tzinfo=None)
+    before_reupsert = datetime.now(UTC)
 
     await upsert_ledger_entry(session, key=key, function="process_file", kwargs={"file_id": str(fid), "v": 2})
     await session.commit()
