@@ -40,10 +40,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pre-commit-
 
+      # PINNED, and it must stay pinned (phaze-b67d). The `hadolint` pre-commit hook is a `system`
+      # hook: it lints with whatever `hadolint` is on PATH, so `.pre-commit-config.yaml`'s frozen
+      # SHA pins the hook DEFINITION and not the binary. `hadolint: latest` here therefore defeated
+      # that pin entirely -- CI silently ran an unpinned linter. When 2.15.0 shipped on 2026-07-30
+      # it promoted DL3066 and every open PR went red on two pre-existing `USER phaze` lines, with
+      # a local `pre-commit run --all-files` still green against 2.14.0.
+      #
+      # Keep this version equal to the hadolint release that `.pre-commit-config.yaml`'s frozen rev
+      # corresponds to; bump BOTH together or the two disagree again.
       - name: 🔧 Install hadolint
         uses: alexellis/arkade-get@1eef818e467c387d3f50cfe0d2c565d1cbe82b03  # master
         with:
-          hadolint: latest
+          hadolint: v2.14.0  # arkade uses this verbatim as the release tag -- the `v` is required
 
       - name: 📦 Install dependencies
         run: just install
