@@ -73,7 +73,9 @@ async def test_recent_completions_bounded_newest_first(session: AsyncSession, ma
     from phaze.services.backends import LANE_RECENT_N, get_lane_recent_completions
 
     assert LANE_RECENT_N == 20
-    base = datetime(2026, 7, 11, 12, 0, 0)  # naive on purpose (naive TIMESTAMP column)
+    # tz-aware: post-phaze-cz3m cloud_job.updated_at is timestamptz, and a naive seed would be read
+    # back shifted by the session's UTC offset, breaking the exact-equality assertion below.
+    base = datetime(2026, 7, 11, 12, 0, 0, tzinfo=UTC)
     await _seed_succeeded(session, make_file, "compute-x", 25, base)
 
     # Noise that MUST be excluded: an in-flight row on the same backend, and a succeeded row on another.
