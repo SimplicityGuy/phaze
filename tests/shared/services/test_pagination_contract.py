@@ -352,8 +352,8 @@ async def test_analyze_completions_window_excludes_a_deepen_in_flight_completed_
     session.add(deepened)
     await session.flush()
 
-    # Naive datetimes: the test-DB create_all schema makes created_at/analysis_completed_at
-    # TIMESTAMP WITHOUT TIME ZONE.
+    # Only the relative ORDER of these stamps matters here, never the absolute instant, so a
+    # local-naive now() is fine against the (post-phaze-cz3m) timestamptz columns.
     now = datetime.now()
     for i, f in enumerate(backlog):
         f.created_at = now - timedelta(minutes=i + 1)  # type: ignore[assignment]

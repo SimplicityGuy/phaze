@@ -53,7 +53,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[] annotations at runtime
 from typing import Any
 
-from sqlalchemy import Index, Integer, String, func
+from sqlalchemy import DateTime, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -69,7 +69,7 @@ class SchedulingLedger(TimestampMixin, Base):
     function: Mapped[str] = mapped_column(String(64), nullable=False)
     routing: Mapped[str] = mapped_column(String(16), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    enqueued_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     # Nullable SAQ Job policy captured at enqueue time so recovery replays the SAME bound (NULL =>
     # producer set no explicit value; replay falls back to the queue before_enqueue default).
     timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
