@@ -2446,7 +2446,7 @@ async def test_run_recovery_logs_the_final_tally_on_success(
     import phaze.routers.pipeline as pipeline_mod
 
     async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
-        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0}}}
+        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0, "unreplayable": 0}}}
 
     monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
 
@@ -2454,6 +2454,151 @@ async def test_run_recovery_logs_the_final_tally_on_success(
         await pipeline_mod._run_recovery({})
 
     assert "manual recovery trigger complete" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-71nz: the operator must be able to tell a recovery that COVERED the work
+# from one that knowingly skipped a stage. "Recovery started" cannot be the last word.
+#
+# On 2026-07-31 a single Recover replayed 430 orphaned s3_upload rows whose payloads carried
+# presigned S3 URLs signed at the original enqueue; 428 ran their retries out to terminal `failed`
+# (122x HTTP 403, 257x HTTP 400) and zero succeeded. The operator's UI showed 200 + "Recovery
+# started — re-enqueuing any orphaned work across all stages", identical to a clean run. Because the
+# producer is fire-and-forget, the POST response genuinely cannot know the outcome -- so the fragment
+# now polls GET /pipeline/recover/status, which does.
+# ---------------------------------------------------------------------------
+
+
+def _set_recovery_state(*, running: bool = False, failed: bool = False, result: dict[str, object] | None = None) -> None:
+    """Pin the in-process last-recovery cell the status fragment renders from."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    pipeline_mod._recovery_state.update(running=running, failed=failed, result=result)
+
+
+def _recovery_result(**stages: dict[str, int]) -> dict[str, object]:
+    """Build a ``recover_orphaned_work``-shaped return value from per-stage tallies."""
+    return {
+        "detected_loss": True,
+        "forced": True,
+        "unreplayable": sum(tally.get("unreplayable", 0) for tally in stages.values()),
+        "stages": stages,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recover_response_polls_for_the_final_outcome(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The POST fragment carries the poll that will replace it with the real tally."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return _recovery_result()
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+    install_fake_queues(client)
+
+    response = await client.post("/pipeline/recover")
+    assert response.status_code == 200
+    assert 'hx-get="/pipeline/recover/status"' in response.text
+    await _drain_background()
+
+
+@pytest.mark.asyncio
+async def test_recover_status_does_not_read_as_success_when_a_stage_was_skipped(client: AsyncClient) -> None:
+    """THE bead's operator assertion: an unreplayable stage must not render the success copy.
+
+    Not "the same words plus a footnote" -- a different message. The operator pressing Recover during
+    an incident has to learn, without reading controller logs, that some of the work they asked to be
+    recovered was deliberately left alone and by which stage.
+    """
+    _set_recovery_state(result=_recovery_result(s3_upload={"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 430}))
+
+    response = await client.get("/pipeline/recover/status")
+    assert response.status_code == 200
+    body = response.text
+
+    assert "Recovery started — re-enqueuing any orphaned work across all stages." not in body
+    assert "Recovery complete" not in body
+    assert "430" in body
+    assert "could NOT be recovered" in body
+    assert "s3_upload" in body, "the operator must be told WHICH stage was skipped"
+
+
+@pytest.mark.asyncio
+async def test_recover_status_reads_as_success_when_everything_recovered(client: AsyncClient) -> None:
+    """The clean run keeps its plain success copy -- the warning branch must not fire on zero skips."""
+    _set_recovery_state(result=_recovery_result(process_file={"reenqueued": 2512, "skipped": 3, "errored": 0, "unreplayable": 0}))
+
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "Recovery complete" in body
+    assert "2512" in body
+    assert "could NOT be recovered" not in body
+
+
+@pytest.mark.asyncio
+async def test_recover_status_keeps_polling_while_the_run_is_in_flight(client: AsyncClient) -> None:
+    """While running, the fragment re-arms its own poll; every terminal branch drops it."""
+    _set_recovery_state(running=True)
+    running_body = (await client.get("/pipeline/recover/status")).text
+    assert 'hx-get="/pipeline/recover/status"' in running_body
+
+    _set_recovery_state(result=_recovery_result(process_file={"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}))
+    done_body = (await client.get("/pipeline/recover/status")).text
+    assert 'hx-get="/pipeline/recover/status"' not in done_body, "a settled fragment must stop polling"
+
+
+@pytest.mark.asyncio
+async def test_recover_status_surfaces_a_failed_run(client: AsyncClient) -> None:
+    """A recovery that RAISED is reported as failed, not as started and not as complete."""
+    _set_recovery_state(failed=True)
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "Recovery failed" in body
+    assert "Recovery complete" not in body
+
+
+@pytest.mark.asyncio
+async def test_recover_status_before_any_run(client: AsyncClient) -> None:
+    """A direct hit with no recovery in this process says so rather than inventing a tally."""
+    _set_recovery_state()
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "No recovery has been run" in body
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_publishes_the_tally_for_the_operator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_run_recovery`` publishes the producer's result -- the controller log is no longer the only surface."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    result = _recovery_result(s3_upload={"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 2})
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return result
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+    _set_recovery_state(running=True)
+
+    await pipeline_mod._run_recovery({})
+
+    assert pipeline_mod._recovery_state["running"] is False
+    assert pipeline_mod._recovery_state["failed"] is False
+    assert pipeline_mod._recovery_state["result"] is result
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_clears_running_when_the_producer_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crashed run must settle the fragment, not leave it polling forever on a dead task."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        raise RuntimeError("recovery boom")
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", boom)
+    _set_recovery_state(running=True)
+
+    await pipeline_mod._run_recovery({})
+
+    assert pipeline_mod._recovery_state["running"] is False
+    assert pipeline_mod._recovery_state["failed"] is True
 
 
 @pytest.mark.asyncio
