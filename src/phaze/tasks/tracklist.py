@@ -81,12 +81,19 @@ async def _find_cached_tracklists(session: Any, external_ids: list[str]) -> dict
     caught this, phaze-hu8v changes-requested round). The EXISTS-track check below is exactly
     ``_latest_version_has_tracks``'s predicate, expressed as one bulk correlated subquery instead
     of N per-row round trips.
+
+    phaze-fq9h.7: ``external_id`` is no longer globally unique -- the drain writes PROPAGATED
+    projections of a page onto a unique set's duplicate files, and they share the page's id. Only
+    canonical rows (``propagated_from_set_key IS NULL``) may key this dict; without the filter a
+    projection could win the slot and this function would hand back a row whose file link belongs
+    to a different file entirely.
     """
     if not external_ids:
         return {}
     result = await session.execute(
         select(Tracklist).where(
             Tracklist.external_id.in_(external_ids),
+            Tracklist.propagated_from_set_key.is_(None),
             Tracklist.latest_version_id.is_not(None),
             exists(select(TracklistTrack.id).where(TracklistTrack.version_id == Tracklist.latest_version_id)),
         )
@@ -122,8 +129,12 @@ async def _link_cached_tracklist(session: Any, external_id: str, file_id: uuid.U
     scraped before (phaze-hu8v): the page's data doesn't change once published, so re-persisting an
     identical version on every rediscovery would just bloat tracklist_versions/tracklist_tracks for
     no benefit -- the only NEW information here is the file linkage itself.
+
+    phaze-fq9h.7: scoped to the CANONICAL row. A bare ``external_id`` match now also returns the
+    page's propagated projections (the drain writes one per duplicate file of a unique set), and
+    ``scalar_one_or_none()`` would raise ``MultipleResultsFound`` on the first such projection.
     """
-    result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id, Tracklist.propagated_from_set_key.is_(None)))
     tracklist = result.scalar_one_or_none()
     if tracklist is None:
         # Deleted between the cache-check read and this write -- rare race, nothing to link.
@@ -152,8 +163,13 @@ async def _store_scraped_tracklist(
     # taking a row lock (the row may not exist yet on the insert path). It is released on commit.
     await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(scraped.external_id))))
 
-    # Check for existing tracklist by external_id
-    result = await session.execute(select(Tracklist).where(Tracklist.external_id == scraped.external_id))
+    # Check for existing CANONICAL tracklist by external_id. phaze-fq9h.7 narrowed the UNIQUE on
+    # external_id to a partial index over `propagated_from_set_key IS NULL`, because the drain
+    # writes propagated projections of a page onto a unique set's duplicate files and they carry
+    # the page's own id. Without this filter the query returns those projections too and
+    # `scalar_one_or_none()` raises MultipleResultsFound -- and, worse, an unfiltered INSERT would
+    # try to create a second canonical row for a page that already has one.
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == scraped.external_id, Tracklist.propagated_from_set_key.is_(None)))
     tracklist = result.scalar_one_or_none()
 
     # Parse date string to date object (shared helper -- see search_tracklist scorer, phaze-rkxy)
@@ -484,6 +500,12 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
     stale arm on every monthly run forever, each futile attempt still paying the scraper's
     rate-limit delay plus this loop's 60-300s jitter sleep. The filter is a positive allowlist on
     ``"1001tracklists"``, so it stays correct whether or not those rows are ever purged.
+
+    phaze-fq9h.7: PROPAGATED rows are excluded too. They are projections of a canonical row onto a
+    unique set's duplicate files and share its ``source_url``, so refreshing them would re-scrape
+    the SAME page once per duplicate -- N requests against a whole-host budget of ~1 per 8s to
+    fetch bytes the canonical row's own refresh already fetched. The canonical row is still swept;
+    re-propagating its new version is the drain's job, and costs zero requests.
     """
     # phaze-xpzp: bind a NAIVE threshold. ``tracklists.updated_at`` (TimestampMixin) is a
     # ``TIMESTAMP WITHOUT TIME ZONE`` column; asyncpg's naive-timestamp codec raises DataError
@@ -503,6 +525,7 @@ async def refresh_tracklists(ctx: dict[str, Any]) -> dict[str, Any]:
             result = await session.execute(
                 select(Tracklist).where(
                     Tracklist.source == "1001tracklists",
+                    Tracklist.propagated_from_set_key.is_(None),
                     (Tracklist.file_id.is_(None)) | (Tracklist.updated_at < stale_threshold),
                 )
             )
