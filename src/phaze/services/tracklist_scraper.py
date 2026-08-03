@@ -72,13 +72,24 @@ class SearchParseFailureError(RuntimeError):
 
 @dataclass
 class TracklistSearchResult:
-    """A single result from a 1001Tracklists search."""
+    """A single result from a 1001Tracklists search.
+
+    ``artist`` / ``event`` / ``date`` are the three signals the result scorer
+    (``services.tracklist_result_scorer``, phaze-fq9h.6) weighs against the file's derived query.
+    All three are optional because a real results page mixes genuine set rows with rows that have
+    no artist at all -- promo/aftermovie video entries such as "Sunburn Festival - Official
+    Aftermovie 2019" carry no ``" @ "`` separator, and 32 of the 180 captured rows are that shape.
+    Those are exactly the rows a blind "take the top result" would render into an empty tracklist,
+    so they are represented honestly (artist/event ``None``) rather than being coerced into a
+    plausible-looking string the scorer would then score against.
+    """
 
     external_id: str
     title: str
     url: str
     artist: str | None = None
     date: str | None = None
+    event: str | None = None
 
 
 @dataclass
@@ -239,7 +250,23 @@ class TracklistScraper:
     # phaze-mk6y: the href-embedded date trails the slug, e.g.
     # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
     # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
-    _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:[/?#]|$)")
+    #
+    # phaze-fq9h.6 STALENESS FIX: the site now appends a ".html" extension to that slug, so the
+    # original `(?:[/?#]|$)` tail could never match a live href and this pattern scored **0 hits
+    # across all 180 real result rows** in tests/identify/fixtures/tracklist_search/ -- i.e.
+    # `TracklistSearchResult.date` was silently ALWAYS None. That is the same stale-selector class
+    # as the dead detail selectors (phaze-2akf), and it is far more dangerous here: date is the
+    # only signal that separates a recurring festival's editions from each other, so a scorer
+    # trusting this field would have ranked date-blind and picked whichever year the site listed
+    # first. The optional extension is now consumed before the tail anchor.
+    _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:\.html?)?(?:[/?#]|$)")
+
+    # phaze-fq9h.6: the row's own displayed date cell, verified live at 180/180 rows. Preferred
+    # over the href slug because it is a real rendered field rather than a URL-formatting artifact
+    # -- a slug can be renamed without the tracklist changing, and the two disagreeing is itself a
+    # signal worth catching (the fixture test asserts they agree on every captured row).
+    _SEARCH_ROW_DATE_SELECTOR = 'div[title="tracklist date"]'
+    _ISO_DATE_IN_TEXT_PATTERN = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
     # phaze-hu8v: shared across every TracklistScraper instance in this process, since each
     # search/scrape call site (tasks/tracklist.py) constructs a fresh scraper per job. A
@@ -413,9 +440,13 @@ class TracklistScraper:
             # phaze-mk6y: the current markup carries no separate artist/date elements -- the
             # link text is the full "Artist @ Event, Venue, City, Country" string and the date is
             # embedded at the end of the href slug.
-            artist_part, separator, _rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
+            artist_part, separator, rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
             artist = artist_part.strip() if separator else None
-            date = self._extract_date_from_href(href_str)
+            # phaze-fq9h.6: the remainder after " @ " is the event/venue/city text -- previously
+            # discarded as `_rest`, which left the scorer with no event term at all (0.3 of the
+            # weighting) and forced it to match on artist+date alone.
+            event = rest.strip() or None if separator else None
+            date = self._extract_row_date(item) or self._extract_date_from_href(href_str)
 
             results.append(
                 TracklistSearchResult(
@@ -424,6 +455,7 @@ class TracklistScraper:
                     url=url,
                     artist=artist,
                     date=date,
+                    event=event,
                 )
             )
 
@@ -435,6 +467,21 @@ class TracklistScraper:
             raise SearchParseFailureError(len(items))
 
         return results
+
+    @classmethod
+    def _extract_row_date(cls, item: Tag) -> str | None:
+        """Extract a search row's displayed ``YYYY-MM-DD`` tracklist date (phaze-fq9h.6).
+
+        The primary date source, with :meth:`_extract_date_from_href` as fallback. The cell holds
+        an icon element followed by the bare date text, so the value is read from the cell's full
+        text rather than a child selector -- that keeps it working if the icon markup changes,
+        which is the kind of drift that killed the href pattern above.
+        """
+        cell = item.select_one(cls._SEARCH_ROW_DATE_SELECTOR)
+        if cell is None:
+            return None
+        match = cls._ISO_DATE_IN_TEXT_PATTERN.search(cell.get_text(" ", strip=True))
+        return match.group(0) if match else None
 
     @classmethod
     def _extract_date_from_href(cls, href: str) -> str | None:
