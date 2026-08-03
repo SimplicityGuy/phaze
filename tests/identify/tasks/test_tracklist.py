@@ -9,7 +9,16 @@ import uuid
 
 import pytest
 
-from phaze.tasks.tracklist import EmptyScrapeError, _store_scraped_tracklist, refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+from phaze.tasks.tracklist import (
+    EmptyScrapeError,
+    _apply_file_link,
+    _find_cached_tracklists,
+    _link_cached_tracklist,
+    _store_scraped_tracklist,
+    refresh_tracklists,
+    scrape_and_store_tracklist,
+    search_tracklist,
+)
 
 
 def _make_ctx() -> dict[str, Any]:
@@ -43,6 +52,29 @@ def _make_search_result(external_id: str = "abc123") -> MagicMock:
     result.artist = "Test Artist"
     result.date = "2024-04-14"
     return result
+
+
+def _make_cached_tracklist(
+    external_id: str = "abc123",
+    artist: str = "Artist",
+    event: str = "Coachella",
+    tracklist_date: date | None = date(2024, 4, 14),
+    file_id: uuid.UUID | None = None,
+    latest_version_id: uuid.UUID | None = None,
+) -> MagicMock:
+    """Create a mock already-scraped Tracklist row (phaze-hu8v cache-hit fixtures)."""
+    tracklist = MagicMock()
+    tracklist.id = uuid.uuid4()
+    tracklist.external_id = external_id
+    tracklist.artist = artist
+    tracklist.event = event
+    tracklist.date = tracklist_date
+    tracklist.source_url = f"https://www.1001tracklists.com/tracklist/{external_id}/test.html"
+    tracklist.file_id = file_id
+    tracklist.match_confidence = None
+    tracklist.auto_linked = False
+    tracklist.latest_version_id = latest_version_id or uuid.uuid4()
+    return tracklist
 
 
 def _make_scraped_tracklist(external_id: str = "abc123") -> MagicMock:
@@ -790,10 +822,11 @@ async def test_search_tracklist_repairs_mojibake_on_scraped_side(
 
     mock_file_result = MagicMock()
     mock_file_result.scalar_one_or_none.return_value = file_record
+    mock_cache_check_result = MagicMock()  # unused return value; .scalars().all() iterates empty -> no cache hit
     mock_advisory_lock_result = MagicMock()  # unused return value (session.execute(select(pg_advisory_xact_lock(...))))
     mock_tl_result = MagicMock()
     mock_tl_result.scalar_one_or_none.return_value = None
-    session.execute.side_effect = [mock_file_result, mock_advisory_lock_result, mock_tl_result]
+    session.execute.side_effect = [mock_file_result, mock_cache_check_result, mock_advisory_lock_result, mock_tl_result]
 
     search_result = _make_search_result()
     scraped = _make_scraped_tracklist()
@@ -906,13 +939,17 @@ async def test_search_tracklist_scrapes_all_then_stores_sorted_without_holding_l
     result = await search_tracklist(ctx, file_id=str(file_record.id))
 
     assert result["results_found"] == 3
-    # Two sessions: one short read session (file+query), one short store session -- never one held
-    # across the scrape loop.
-    assert session_count == 2
+    # Three sessions: one short read session (file+query), one short cache-check session
+    # (phaze-hu8v -- session2 here has no cache hits since mock_file_result.scalars().all()
+    # iterates empty), one short store session -- never one held across the scrape loop.
+    assert session_count == 3
     stores = [e for e in events if e.startswith("store:")]
     scrapes = [e for e in events if e.startswith("scrape:")]
-    # Every scrape happens before the store session even opens (no lock/txn held across a scrape).
-    assert events.index("open2") > events.index(scrapes[-1])
+    # The cache-check session opens and closes before any scrape, and the store session opens
+    # only after every scrape (no lock/txn/connection held across a scrape).
+    assert events.index("open2") > events.index("close1")
+    assert events.index("close2") < events.index(scrapes[0])
+    assert events.index("open3") > events.index(scrapes[-1])
     assert all(events.index("close1") < events.index(s) for s in scrapes)
     # Stores run in external_id-sorted order (consistent lock ordering -> no ABBA deadlock).
     assert stores == ["store:aaa", "store:bbb", "store:ccc"]
@@ -1098,3 +1135,292 @@ def test_refresh_tracklists_cron_has_unbounded_timeout() -> None:
     refresh_crons = [cj for cj in controller_settings["cron_jobs"] if cj.function is refresh_tracklists]
     assert len(refresh_crons) == 1, "refresh_tracklists must be registered as exactly one CronJob"
     assert refresh_crons[0].timeout == 0
+
+
+# --- phaze-hu8v: persistent "cached and never re-fetched" tests -----------------------------
+
+
+async def test_find_cached_tracklists_returns_empty_for_empty_ids_without_querying() -> None:
+    """An empty external_ids list short-circuits without touching the session (phaze-hu8v)."""
+    session = AsyncMock()
+
+    result = await _find_cached_tracklists(session, [])
+
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+async def test_find_cached_tracklists_keys_by_external_id() -> None:
+    """Rows with a resolved latest_version_id come back keyed by external_id."""
+    session = AsyncMock()
+    tl_a = _make_cached_tracklist(external_id="aaa")
+    tl_b = _make_cached_tracklist(external_id="bbb")
+    scalars_result = MagicMock()
+    scalars_result.all.return_value = [tl_a, tl_b]
+    execute_result = MagicMock()
+    execute_result.scalars.return_value = scalars_result
+    session.execute.return_value = execute_result
+
+    result = await _find_cached_tracklists(session, ["aaa", "bbb", "ccc"])
+
+    assert result == {"aaa": tl_a, "bbb": tl_b}
+    # Only ONE bulk query for the whole batch, not one per external_id.
+    session.execute.assert_awaited_once()
+
+
+async def test_find_cached_tracklists_filters_to_resolved_latest_version() -> None:
+    """The query requires a resolved ``latest_version_id`` AND at least one track (phaze-hu8v).
+
+    A Tracklist row can exist with no version yet (created but never successfully scraped) --
+    excluded by ``latest_version_id IS NOT NULL``. A row CAN also have a resolved
+    ``latest_version_id`` whose version has ZERO tracks (a first-ever scrape that soft-blocked or
+    hit selector drift, phaze-gfyr's empty-rescrape guard only protects a SECOND scrape over
+    EXISTING data) -- excluded by the correlated EXISTS-track subquery. Both conditions are
+    asserted against the COMPILED SQL here (proving the query shape); real execution semantics
+    against Postgres are covered by ``tests/integration/test_tracklist_cache_real_db.py``, since a
+    mock can't catch a correlated-subquery mistake the way a real database can.
+    """
+    session = AsyncMock()
+    execute_result = MagicMock()
+    session.execute.return_value = execute_result
+
+    await _find_cached_tracklists(session, ["some-id"])
+
+    compiled = str(session.execute.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "latest_version_id IS NOT NULL" in compiled
+    assert "external_id IN" in compiled
+    assert "EXISTS" in compiled
+    assert "tracklist_tracks" in compiled
+
+
+def test_apply_file_link_links_when_unowned() -> None:
+    """phaze-4a5w (shared helper, phaze-hu8v): links onto an unowned tracklist."""
+    tracklist = MagicMock()
+    tracklist.file_id = None
+    file_id = uuid.uuid4()
+
+    _apply_file_link(tracklist, file_id, confidence=95, auto_linked=True)
+
+    assert tracklist.file_id == file_id
+    assert tracklist.match_confidence == 95
+    assert tracklist.auto_linked is True
+
+
+def test_apply_file_link_does_not_steal_existing_link() -> None:
+    """phaze-4a5w (shared helper, phaze-hu8v): refuses to overwrite a DIFFERENT file's link."""
+    tracklist = MagicMock()
+    owner_file_id = uuid.uuid4()
+    tracklist.file_id = owner_file_id
+    tracklist.match_confidence = 77
+    tracklist.auto_linked = False
+
+    _apply_file_link(tracklist, uuid.uuid4(), confidence=99, auto_linked=True)
+
+    assert tracklist.file_id == owner_file_id
+    assert tracklist.match_confidence == 77
+    assert tracklist.auto_linked is False
+
+
+async def test_link_cached_tracklist_links_when_unowned() -> None:
+    """A cache-hit link-only update applies file linkage without creating a version (phaze-hu8v)."""
+    session = AsyncMock()
+    tracklist = _make_cached_tracklist(external_id="unowned-cached", file_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = tracklist
+    session.execute.return_value = result
+
+    file_id = uuid.uuid4()
+    await _link_cached_tracklist(session, "unowned-cached", file_id, confidence=92, auto_linked=True)
+
+    assert tracklist.file_id == file_id
+    assert tracklist.match_confidence == 92
+    assert tracklist.auto_linked is True
+    session.add.assert_not_called()  # no new version/track rows -- link-only
+
+
+async def test_link_cached_tracklist_does_not_steal_existing_link() -> None:
+    """A cache-hit link-only update never steals a manually-linked tracklist (phaze-4a5w/hu8v)."""
+    session = AsyncMock()
+    owner_file_id = uuid.uuid4()
+    tracklist = _make_cached_tracklist(external_id="owned-cached", file_id=owner_file_id)
+    tracklist.match_confidence = 60
+    tracklist.auto_linked = False
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = tracklist
+    session.execute.return_value = result
+
+    await _link_cached_tracklist(session, "owned-cached", uuid.uuid4(), confidence=99, auto_linked=True)
+
+    assert tracklist.file_id == owner_file_id
+    assert tracklist.match_confidence == 60
+    assert tracklist.auto_linked is False
+
+
+async def test_link_cached_tracklist_missing_row_logs_and_returns() -> None:
+    """A race where the cached row vanishes before the link write is handled gracefully."""
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute.return_value = result
+
+    # Must not raise.
+    await _link_cached_tracklist(session, "vanished", uuid.uuid4(), confidence=90, auto_linked=True)
+
+
+@patch("phaze.tasks.tracklist._find_cached_tracklists")
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=50)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_skips_network_scrape_for_cached_result(
+    _mock_auto_link: MagicMock,
+    mock_confidence: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_find_cached: AsyncMock,
+) -> None:
+    """A search result whose external_id is already cached is never re-fetched (phaze-hu8v).
+
+    This is the acceptance criterion itself: "scraped tracklists are cached and never
+    re-fetched" -- scrape_tracklist() must not be awaited at all for the cached result.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result(external_id="already-scraped")
+    cached_tracklist = _make_cached_tracklist(external_id="already-scraped", artist="Cached Artist", event="Cached Event")
+    mock_find_cached.return_value = {"already-scraped": cached_tracklist}
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["results_found"] == 1
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+    mock_confidence.assert_called_once()
+    assert mock_confidence.call_args.kwargs["tracklist_artist"] == "Cached Artist"
+    assert mock_confidence.call_args.kwargs["tracklist_event"] == "Cached Event"
+    assert mock_confidence.call_args.kwargs["tracklist_date"] == date(2024, 4, 14)
+
+
+@patch("phaze.tasks.tracklist._link_cached_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist._store_scraped_tracklist", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist._find_cached_tracklists")
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=100)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=True)
+async def test_search_tracklist_cache_hit_auto_link_uses_link_only_path(
+    _mock_auto_link: MagicMock,
+    _mock_confidence: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_find_cached: AsyncMock,
+    mock_store: AsyncMock,
+    mock_link_cached: AsyncMock,
+) -> None:
+    """A cache-hit that auto-links calls the link-only path, never the version-creating store
+    path (phaze-hu8v) -- re-persisting identical data on every rediscovery would bloat
+    tracklist_versions/tracklist_tracks for zero benefit.
+    """
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    search_result = _make_search_result(external_id="cached-autolink")
+    cached_tracklist = _make_cached_tracklist(external_id="cached-autolink", tracklist_date=date(2024, 4, 14))
+    mock_find_cached.return_value = {"cached-autolink": cached_tracklist}
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [search_result]
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["auto_linked"] is True
+    mock_scraper.scrape_tracklist.assert_not_awaited()
+    mock_store.assert_not_awaited()
+    mock_link_cached.assert_awaited_once()
+    assert mock_link_cached.await_args.args[1] == "cached-autolink"
+    assert mock_link_cached.await_args.args[2] == file_record.id
+
+
+@patch("phaze.tasks.tracklist._find_cached_tracklists")
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+@patch("phaze.tasks.tracklist.compute_match_confidence", return_value=50)
+@patch("phaze.tasks.tracklist.should_auto_link", return_value=False)
+async def test_search_tracklist_mixed_cache_hit_and_miss_only_scrapes_uncached(
+    _mock_auto_link: MagicMock,
+    _mock_confidence: MagicMock,
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_find_cached: AsyncMock,
+) -> None:
+    """Of two results, only the one NOT already cached triggers a network scrape (phaze-hu8v)."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    cached_result = _make_search_result(external_id="cached-one")
+    fresh_result = _make_search_result(external_id="fresh-one")
+    cached_tracklist = _make_cached_tracklist(external_id="cached-one")
+    mock_find_cached.return_value = {"cached-one": cached_tracklist}
+
+    fresh_scraped = _make_scraped_tracklist(external_id="fresh-one")
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = [cached_result, fresh_result]
+    mock_scraper.scrape_tracklist.return_value = fresh_scraped
+    mock_scraper_cls.return_value = mock_scraper
+
+    result = await search_tracklist(ctx, file_id=str(file_record.id))
+
+    assert result["results_found"] == 2
+    mock_scraper.scrape_tracklist.assert_awaited_once_with(fresh_result.url)
+    # The bulk cache-check is called with BOTH external_ids, in one call, before any scrape.
+    mock_find_cached.assert_awaited_once_with(session, ["cached-one", "fresh-one"])
+
+
+@patch("phaze.tasks.tracklist._find_cached_tracklists", new_callable=AsyncMock)
+@patch("phaze.tasks.tracklist.TracklistScraper")
+@patch("phaze.tasks.tracklist.parse_live_set_filename")
+async def test_search_tracklist_no_results_skips_cache_check(
+    mock_parse: MagicMock,
+    mock_scraper_cls: MagicMock,
+    mock_find_cached: AsyncMock,
+) -> None:
+    """No search results means no cache-check query is ever issued (phaze-hu8v)."""
+    ctx = _make_ctx()
+    session = ctx["_mock_session"]
+    file_record = _make_file_record()
+    mock_parse.return_value = ("Artist", "Coachella", date(2024, 4, 14))
+
+    mock_file_result = MagicMock()
+    mock_file_result.scalar_one_or_none.return_value = file_record
+    session.execute.return_value = mock_file_result
+
+    mock_scraper = AsyncMock()
+    mock_scraper.search.return_value = []
+    mock_scraper_cls.return_value = mock_scraper
+
+    await search_tracklist(ctx, file_id=str(file_record.id))
+
+    mock_find_cached.assert_not_awaited()

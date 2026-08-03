@@ -95,11 +95,22 @@ class _TTLCache[T]:
     """Minimal in-process TTL cache, shared across `TracklistScraper` instances (phaze-hu8v).
 
     1001Tracklists' own robots.txt asks for an 8s crawl-delay per request, and a tracklist for a
-    past event essentially never changes -- the cheapest polite request is the one never made. A
-    full persistent cache (checking the tracklists/tracklist_versions tables before scraping, or
-    honoring ETag/If-Modified-Since) is a larger, separate change; this simple in-memory cache
-    covers the common case of the same query/URL being looked up repeatedly within one running
-    process (e.g. a batched rescan), without adding a storage dependency.
+    past event essentially never changes -- the cheapest polite request is the one never made.
+    This simple in-memory cache covers the common case of the same query/URL being looked up
+    repeatedly within one running process (e.g. a batched rescan), without adding a storage
+    dependency.
+
+    The PERSISTENT half of "cached and never re-fetched" -- checking the tracklists /
+    tracklist_versions / tracklist_tracks tables before scraping at all, so a tracklist already
+    scraped in a PRIOR process/run is never re-fetched over the network either -- lives one layer
+    up, in ``tasks/tracklist.py::_find_cached_tracklists``, since this scraper class is
+    deliberately DB-oblivious (it has no session and is unit-testable without one). Conditional
+    requests (ETag / If-Modified-Since) remain unimplemented: since a published tracklist doesn't
+    change, the DB-backed "never re-fetch what we already have" check is strictly stronger for
+    this data (zero requests, not a cheaper 304 request), and the one path that legitimately
+    re-fetches on purpose (``refresh_tracklists``' 90-day staleness sweep) still needs exactly one
+    full request per Crawl-delay-8 slot either way, so conditional requests would save bytes, not
+    compliance.
     """
 
     def __init__(self, ttl_seconds: float) -> None:
@@ -127,7 +138,24 @@ class _TTLCache[T]:
 
 
 class TracklistScraper:
-    """Async scraper for 1001Tracklists.com with rate limiting."""
+    """Async scraper for 1001Tracklists.com with rate limiting.
+
+    Compliance posture (phaze-hu8v, robots.txt fetched live 2026-07-18, re-confirmed 2026-07-24):
+    ``User-agent: *`` gets ``Allow: /`` at ``Crawl-delay: 8``, with ``Disallow: /js/``,
+    ``/user/``, ``/action/``, ``/projects/``. A separate block blanket-disallows ~30 NAMED
+    commercial/AI crawlers (GPTBot, AhrefsBot, SemrushBot, Amazonbot, PetalBot, DotBot, MJ12bot,
+    Sogou, omgili, and others) that phaze is not one of. The site publishes no Terms of Service
+    (confirmed by the operator 2026-07-18). MIN_DELAY/MAX_DELAY below honor the Crawl-delay,
+    ``_build_headers`` sends an honest identifying User-Agent instead of a spoofed browser UA, and
+    the Disallow list is honored BY CONSTRUCTION rather than a runtime robots.txt fetch/parse: this
+    class only ever requests ``SEARCH_URL`` and hrefs matching ``_SEARCH_RESULT_LINK_SELECTOR``
+    (``a[href*='/tracklist/']``) pulled from a search-results page, so it never follows a
+    ``/user/`` profile link (search rows do link to them) or any other disallowed path. A runtime
+    parser (e.g. the ``protego`` library) would additionally re-derive Crawl-delay/Disallow if the
+    site's policy ever changes rather than trusting these hardcoded values indefinitely -- noted
+    as a deliberate, not-yet-implemented enhancement rather than a compliance gap, since the
+    ">= 8s" and "honor the Disallow list" requirements are both independently satisfied above.
+    """
 
     BASE_URL = "https://www.1001tracklists.com"
     SEARCH_URL = f"{BASE_URL}/search/result.php"
