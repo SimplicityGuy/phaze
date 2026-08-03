@@ -459,7 +459,10 @@ async def test_reaped_active_row_makes_its_ledger_row_recoverable(session: Async
 
     # BEFORE: the key is live, so the ledger row is invisible to recovery -- the file is stuck.
     before, before_router = await _recover(session)
-    assert before["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    # ``unreplayable`` is phaze-71nz's fourth counter (a payload refused as carrying time-limited
+    # material). It is 0 here and stays 0 throughout this test: ``process_file`` is time-invariant,
+    # so it is classified replay-safe and never routed to a regenerator.
+    assert before["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert before_router.captures == []
 
     assert await reap_stranded_active_jobs(_make_ctx()) == {"reaped": 1}
@@ -473,7 +476,10 @@ async def test_reaped_active_row_makes_its_ledger_row_recoverable(session: Async
 
     # AFTER: the same ledger row is now an orphan and recovery re-drives the file. No extra step.
     after, after_router = await _recover(session)
-    assert after["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    # The load-bearing assertion of this test: freeing the key alone (ledger row untouched) is what
+    # makes recovery re-drive the file. ``unreplayable`` is 0 -- the row was replayed on its merits,
+    # not refused and not regenerated.
+    assert after["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     # Routed to the file's OWNING fileserver's analyze lane, replaying the STORED payload and the
     # STORED 7200s bound (not the 600s role default a bare re-enqueue would stamp).
     assert after.get("forced") is True
@@ -510,7 +516,10 @@ async def test_deleting_the_ledger_row_too_would_destroy_recoverability(session:
 
     result, router = await _recover(session)
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    # All four counters are 0 because there is no ledger row left to consider at all -- NOT because
+    # the row was refused. ``unreplayable`` (phaze-71nz) staying 0 is what distinguishes "deleted,
+    # therefore invisible" from "present, but declined as carrying time-limited material".
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.captures == []  # the file is now invisible to every recovery path
 
 
