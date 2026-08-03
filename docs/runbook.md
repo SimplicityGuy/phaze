@@ -13,6 +13,8 @@ legacy `GET /pipeline/` 302-redirects there):
   backends by rank and cap.
 - **[Per-backend `_FILE` secrets](#per-backend-_file-secrets)** — where backend credentials live and
   the one rule: never print a secret value.
+- **[Stranded `active` SAQ jobs (phaze-o0n6)](#stranded-active-saq-jobs-phaze-o0n6)** — the
+  `phaze queue status` guard, what its non-zero exit means, and how to clear a pre-existing backlog.
 - **[Removing fingerprint-era data (phaze-0jpe)](#removing-fingerprint-era-data-phaze-0jpe)** — a
   one-time, manual, post-deployment cleanup of the retired `audfprint`/Panako sidecars' on-host
   volumes and published images. Not part of routine operation.
@@ -244,6 +246,73 @@ does **not** restate the field table.
 > "`secret_access_key_file` for bucket `staging-a`") — never the token, key, or DSN value itself.
 > Phaze masks `SecretStr` fields in logs and reprs and logs the resolved registry as a secret-free
 > `{id, kind, rank, cap}` projection at boot; keep that discipline in everything you write down.
+
+## Stranded `active` SAQ jobs (phaze-o0n6)
+
+### What the alarm means
+
+SAQ's `_enqueue` upsert only overwrites a conflicting key whose status is in
+`('aborted','complete','failed')`. `'active'` is not in that list, so **any** `saq_jobs` row left in
+`status='active'` holds its deterministic key `process_file:<file_id>` permanently, and every
+re-enqueue of that file — including via the Recover button and the recovery CLI — silently returns
+`None`. Rows get left there routinely: `PostgresQueue._dequeue` marks rows `active` in bulk and
+buffers them in an in-process `asyncio.Queue`, so a restart, deploy, OOM or kill abandons every
+buffered row with nothing alive to finalize it. SAQ's sweeper is the nominal remedy and does not keep
+up (it waits on each abort serially); on 2026-07-31 this had reached 2,413 rows on one analyze queue,
+keying 2,411 files that had never been analyzed.
+
+Read the queue:
+
+```bash
+phaze queue status --queue phaze-agent-<agent>-analyze
+```
+
+`stranded` is the count of rows past their own job timeout plus `PHAZE_ACTIVE_REAP_SLACK_SECONDS`
+— exactly what `reap_stranded_active_jobs` will delete on its next minute tick. The command **exits
+1** when that count exceeds the lane's concurrency, which cannot happen in healthy operation: the lane
+runs at most `concurrency` jobs at once, so anything above that is abandoned claims. Run it from a
+monitor. Exit 1 is the alarm; a degraded read (unreadable `saq_jobs`) still exits 0, because a missing
+measurement is not a detected incident.
+
+### Steady state: nothing to do
+
+The controller runs `reap_stranded_active_jobs` every minute. It DELETEs each stranded row — releasing
+the key — and deliberately leaves the file's `scheduling_ledger` row alone. That row is the **recovery
+source**, not a second block: `recover_orphaned_work` re-drives `ledger MINUS live-saq_jobs-keys MINUS
+domain-completed`, so freeing the key is precisely what turns the ledger row from invisible into an
+orphan the next recovery pass replays (with its stored 7200s timeout, onto the file's owning
+fileserver). **Never delete the `scheduling_ledger` rows** as part of a manual cleanup: doing so
+destroys the only durable record that the file was ever scheduled, and no path will ever pick it up
+again.
+
+### Clearing a pre-existing backlog
+
+A backlog that accumulated before this cron existed drains on its own, but the re-drive is gated, so
+it needs one operator action. After deploying:
+
+1. Confirm the reaper is running and the count is falling:
+
+   ```bash
+   phaze queue status --queue phaze-agent-<agent>-analyze   # watch `stranded` drop toward 0
+   docker compose logs controller | grep "stranded 'active' jobs reaped"
+   ```
+
+   The log line names every released key, so it is also the record of which files were unblocked.
+
+2. Once `stranded` reaches 0, re-drive the freed files. `recover_orphaned_work`'s automatic pass is
+   gated on the queue being empty (a genuine queue-loss), which a busy deployment is not — so use the
+   **Recover** button in the Analyze workspace, which calls the same function with `force=True`. That
+   bypasses only the no-op detect gate; the per-item deterministic-key dedup still applies, so a
+   forced reconcile over a live queue cannot double the queue.
+
+3. Verify the files re-entered the pending set — the Analyze stage card's pending/orphan counts should
+   move by the number of keys the reaper logged, and `phaze queue status` should show the lane running
+   again.
+
+If `stranded` does **not** fall, the rows are inside their own timeout window: `process_file` carries a
+7200s timeout, so a row is not eligible until 7200s + `PHAZE_ACTIVE_REAP_SLACK_SECONDS` after its
+`started`. That bound is per-row and deliberate — it is what keeps the reaper from deleting the broker
+row of a job a worker is still executing. Wait it out rather than lowering the slack.
 
 ## Removing fingerprint-era data (phaze-0jpe)
 

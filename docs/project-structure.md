@@ -139,6 +139,8 @@ phaze/
 │   │   ├── reenqueue.py        #   Control-side recover_orphaned_work: gated all-stages queue-loss recovery (Phase 42)
 │   │   ├── scan_reaper.py      #   Control-side cron: reap stalled RUNNING scans (no-progress)
 │   │   ├── aborting_reaper.py  #   Control-side every-minute cron: reap SAQ rows stuck in status='aborting' (phaze-e57w)
+│   │   ├── active_reaper.py    #   Control-side every-minute cron: reap SAQ rows stranded in status='active' (phaze-o0n6)
+│   │   ├── _saq_reap.py        #   The one stranded-row DELETE both key reapers issue (frozen started + per-row timeout + status CAS)
 │   │   ├── tracklist.py        #   scrape/search/refresh tracklists
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
 │   │   ├── heartbeat.py        #   30s agent heartbeat POST, run as a startup asyncio background task (Phase 46, not a cron)
