@@ -8,7 +8,7 @@ import random
 from typing import Any
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import selectinload
 import structlog
 
@@ -63,19 +63,34 @@ async def _latest_version_has_tracks(session: Any, tracklist: Any) -> bool:
 
 
 async def _find_cached_tracklists(session: Any, external_ids: list[str]) -> dict[str, Tracklist]:
-    """Load already-scraped Tracklist rows for these external_ids, keyed by external_id.
+    """Load SUCCESSFULLY-scraped Tracklist rows for these external_ids, keyed by external_id.
 
     The persistent half of "cached and never re-fetched" (phaze-hu8v): a search result whose
-    external_id already resolves to a Tracklist WITH a ``latest_version_id`` has already been
-    scraped successfully at least once, in this run or a prior one -- a tracklist for a past event
+    external_id already resolves to a Tracklist whose latest version has at least one track has
+    already been scraped successfully, in this run or a prior one -- a tracklist for a past event
     doesn't change, so re-fetching its detail page over the network is a request the site's
-    Crawl-delay-8 budget never needed to pay. Only rows with a resolved ``latest_version_id`` count
-    as cached; a Tracklist row can exist with no version yet (e.g. created but never successfully
-    scraped), and that one still needs a real fetch.
+    Crawl-delay-8 budget never needed to pay.
+
+    A resolved ``latest_version_id`` alone is NOT sufficient and must not be used as the cache-hit
+    condition: ``_store_scraped_tracklist``'s empty-rescrape guard (phaze-gfyr) only refuses an
+    empty scrape when the tracklist ALREADY has tracks from a prior version -- a tracklist's FIRST
+    scrape ever, if it soft-blocked/interstitial'd/hit selector drift and parsed to zero tracks,
+    still creates a version with a non-null ``latest_version_id`` and zero tracks. Treating that as
+    "cached" would permanently poison it: it would never be fetched again, in this run or any
+    future one, silently converting a transient failure into permanent data loss (the review that
+    caught this, phaze-hu8v changes-requested round). The EXISTS-track check below is exactly
+    ``_latest_version_has_tracks``'s predicate, expressed as one bulk correlated subquery instead
+    of N per-row round trips.
     """
     if not external_ids:
         return {}
-    result = await session.execute(select(Tracklist).where(Tracklist.external_id.in_(external_ids), Tracklist.latest_version_id.is_not(None)))
+    result = await session.execute(
+        select(Tracklist).where(
+            Tracklist.external_id.in_(external_ids),
+            Tracklist.latest_version_id.is_not(None),
+            exists(select(TracklistTrack.id).where(TracklistTrack.version_id == Tracklist.latest_version_id)),
+        )
+    )
     return {tl.external_id: tl for tl in result.scalars().all()}
 
 
@@ -302,6 +317,12 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
                 logger.debug("Skipping re-scrape of already-cached tracklist: %s", search_result.external_id)
                 # Metadata was mojibake-repaired once at initial ingest (phaze-x4ux) and never
                 # re-mutated after, so the stored values are already clean -- no repair needed here.
+                # title="" is safe: Tracklist has no title column (it was never persisted from the
+                # network scrape either), compute_match_confidence below scores only
+                # artist/event/date and never reads title, and a cache-hit ScrapedTracklist never
+                # reaches _store_scraped_tracklist (see the from_cache branch in the store loop
+                # below), so this empty value is never written anywhere. Revisit if title ever
+                # becomes a scoring signal.
                 scraped = ScrapedTracklist(
                     external_id=cached_tracklist.external_id,
                     title="",

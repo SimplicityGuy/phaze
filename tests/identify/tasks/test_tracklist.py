@@ -1169,11 +1169,16 @@ async def test_find_cached_tracklists_keys_by_external_id() -> None:
 
 
 async def test_find_cached_tracklists_filters_to_resolved_latest_version() -> None:
-    """The query only counts rows with latest_version_id set as cached (phaze-hu8v).
+    """The query requires a resolved ``latest_version_id`` AND at least one track (phaze-hu8v).
 
-    A Tracklist row can exist with no version yet (created but never successfully scraped); this
-    exercises the WHERE clause carries the ``is_not(None)`` filter rather than relying only on the
-    caller to have pre-filtered, since the real query runs against Postgres, not this mock.
+    A Tracklist row can exist with no version yet (created but never successfully scraped) --
+    excluded by ``latest_version_id IS NOT NULL``. A row CAN also have a resolved
+    ``latest_version_id`` whose version has ZERO tracks (a first-ever scrape that soft-blocked or
+    hit selector drift, phaze-gfyr's empty-rescrape guard only protects a SECOND scrape over
+    EXISTING data) -- excluded by the correlated EXISTS-track subquery. Both conditions are
+    asserted against the COMPILED SQL here (proving the query shape); real execution semantics
+    against Postgres are covered by ``tests/integration/test_tracklist_cache_real_db.py``, since a
+    mock can't catch a correlated-subquery mistake the way a real database can.
     """
     session = AsyncMock()
     execute_result = MagicMock()
@@ -1184,6 +1189,8 @@ async def test_find_cached_tracklists_filters_to_resolved_latest_version() -> No
     compiled = str(session.execute.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
     assert "latest_version_id IS NOT NULL" in compiled
     assert "external_id IN" in compiled
+    assert "EXISTS" in compiled
+    assert "tracklist_tracks" in compiled
 
 
 def test_apply_file_link_links_when_unowned() -> None:
