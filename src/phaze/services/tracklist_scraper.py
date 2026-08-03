@@ -21,6 +21,22 @@ from phaze.config import get_settings
 logger = structlog.get_logger(__name__)
 
 
+def honest_user_agent_token() -> str:
+    """Return phaze's identifying User-Agent token, ``phaze/<version> (+<contact url>)``.
+
+    Read from settings on every call (not baked into a module-level constant) so tests can
+    exercise a fresh `get_settings()` value.
+
+    phaze-fq9h.1: shared with the Patchright renderer, which APPENDS this to the real browser's
+    own Chrome UA rather than replacing it. The httpx scraper has no browser to contradict, so it
+    sends this alone; a browser that claimed not to be a browser would be exactly the kind of
+    inconsistency Turnstile scores. Same identity, two honest presentations of it.
+    """
+    settings = get_settings()
+    version = importlib.metadata.version("phaze")
+    return f"phaze/{version} (+{settings.scraper_contact_url})"
+
+
 class DisallowedScrapeHostError(ValueError):
     """Raised when a URL's scheme or host falls outside the 1001Tracklists allow-list.
 
@@ -246,10 +262,8 @@ class TracklistScraper:
         contact us, or apply a phaze-specific policy. Read at construction time (not baked into a
         module-level constant) so tests can exercise a fresh `get_settings()` value.
         """
-        settings = get_settings()
-        version = importlib.metadata.version("phaze")
         return {
-            "User-Agent": f"phaze/{version} (+{settings.scraper_contact_url})",
+            "User-Agent": honest_user_agent_token(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.1001tracklists.com/",
@@ -267,29 +281,12 @@ class TracklistScraper:
         return parts.scheme == "https" and parts.hostname is not None and parts.hostname.lower() in cls._ALLOWED_HOSTS
 
     async def _rate_limit(self) -> None:
-        """Serialize outbound requests process-wide, honoring the MIN_DELAY floor (phaze-wb1o).
+        """Serialize this scraper's outbound requests onto the shared whole-host schedule.
 
-        Reserves the next allowed request "slot" under a shared ClassVar lock -- advancing the
-        shared ``_next_request_at`` timestamp and releasing the lock immediately, BEFORE sleeping
-        -- so concurrent callers never race each other into the same slot, but the actual
-        request/sleep still happens outside the lock (holding a lock across a 30s-timeout HTTP
-        call would turn the scraper into a hard serial bottleneck rather than merely floor its
-        rate). Each successive request's slot is at least MIN_DELAY-MAX_DELAY after the previous
-        one; a process that falls behind (e.g. after a slow request) catches up from "now" rather
-        than compounding a backlog of reservations into the future.
+        Thin delegate to :func:`reserve_host_request_slot` -- see that function for the
+        reservation semantics and for why the schedule is module-level rather than per-instance.
         """
-        delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311  # nosec B311
-        async with self._rate_limit_lock:
-            now = time.monotonic()
-            floor = now if self._next_request_at is None else max(self._next_request_at, now)
-            slot = floor + delay
-            # Mutate the CLASS attribute (never `self.x = ...`, which would shadow it with an
-            # instance attribute invisible to every other short-lived TracklistScraper instance).
-            TracklistScraper._next_request_at = slot
-
-        wait = slot - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
+        await reserve_host_request_slot()
 
     async def search(self, query: str) -> list[TracklistSearchResult]:
         """Search 1001Tracklists for tracklists matching query.
@@ -557,3 +554,39 @@ class TracklistScraper:
         """Close the httpx client if we own it."""
         if self._owns_client:
             await self._client.aclose()
+
+
+async def reserve_host_request_slot() -> None:
+    """Serialize outbound 1001Tracklists requests process-wide, honoring MIN_DELAY (phaze-wb1o).
+
+    Reserves the next allowed request "slot" under a shared lock -- advancing the shared
+    ``TracklistScraper._next_request_at`` timestamp and releasing the lock immediately, BEFORE
+    sleeping -- so concurrent callers never race each other into the same slot, but the actual
+    request/sleep still happens outside the lock (holding a lock across a 30s-timeout HTTP call
+    would turn the scraper into a hard serial bottleneck rather than merely floor its rate). Each
+    successive request's slot is at least MIN_DELAY-MAX_DELAY after the previous one; a process
+    that falls behind (e.g. after a slow request) catches up from "now" rather than compounding a
+    backlog of reservations into the future.
+
+    phaze-fq9h.1: lifted out of ``TracklistScraper._rate_limit`` (which now delegates here) so the
+    Patchright renderer in ``services/tracklist_render.py`` draws from the SAME schedule. The
+    crawl-delay published in robots.txt is a WHOLE-HOST budget, so an httpx search and a browser
+    navigation are both one request against one ceiling. Two independent limiters -- one per
+    module -- would each honor 8s while the host saw 4s, which is the exact defect phaze-wb1o
+    fixed for concurrent scraper instances, re-introduced across module boundaries. The state
+    deliberately stays on ``TracklistScraper`` rather than moving to a module-level global: it is
+    the documented reset point for test isolation and for the phaze-wb1o regression tests.
+    """
+    delay = random.uniform(TracklistScraper.MIN_DELAY, TracklistScraper.MAX_DELAY)  # noqa: S311  # nosec B311
+    async with TracklistScraper._rate_limit_lock:
+        now = time.monotonic()
+        previous = TracklistScraper._next_request_at
+        floor = now if previous is None else max(previous, now)
+        slot = floor + delay
+        # Mutate the CLASS attribute (never an instance attribute, which would be invisible to
+        # every other short-lived TracklistScraper instance and to the renderer).
+        TracklistScraper._next_request_at = slot
+
+    wait = slot - time.monotonic()
+    if wait > 0:
+        await asyncio.sleep(wait)
