@@ -91,6 +91,21 @@
         </div>
     </div>
 
+    {# (a.5) 1001Tracklists DRAIN progress (phaze-fq9h.8): queue depth, throughput vs the
+       whole-host ceiling, and an honest ETA -- separate from the three legacy step cards above,
+       which drive the OLDER name-search/scrape/match pipeline (Phase 39-41). The drain
+       (phaze-fq9h.7) is a distinct pass: derive -> search -> score -> render -> parse -> persist,
+       with propagation to duplicates. An EMPTY host div hx-gets the fragment on load, mirroring
+       the per-set table's own load-on-mount pattern below. #}
+    <div class="px-6 pb-6">
+        <div id="tracklist-drain-status-view"
+             hx-get="/pipeline/tracklist-drain-status"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <p class="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading drain status…</p>
+        </div>
+    </div>
+
     {# (b) the per-set table (D-07/D-08) -- N/M track coverage below the aggregate step cards.
        phaze-1wvb: ZERO rows are server-rendered here. This div ships EMPTY and hx-gets the BOUNDED,
        paged GET /pipeline/tracklist-sets fragment on load (_tracklist_sets.html, over
