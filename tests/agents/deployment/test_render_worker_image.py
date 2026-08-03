@@ -63,13 +63,19 @@ def test_dockerfile_pins_playwright_browsers_path() -> None:
 
 
 def test_chrome_install_precedes_user_switch() -> None:
-    """Guard (d): the Chrome install must run BEFORE `USER phaze` (it needs root for apt-get)."""
+    """Guard (d): the Chrome install must run BEFORE the USER switch (it needs root for apt-get).
+
+    Matches the USER *directive*, not a particular user spelling: phaze-aip8 changed this
+    Dockerfile from `USER phaze` to the numeric `USER 1000:1000` to satisfy hadolint DL3066, and a
+    matcher keyed to the name silently stopped finding it. What this guard actually cares about is
+    ordering relative to whatever drops privileges, so match that and survive the next rename.
+    """
     text = _dockerfile_text()
     lines = text.splitlines()
 
     install_idx = next((i for i, line in enumerate(lines) if "patchright install" in line), None)
-    user_idx = next((i for i, line in enumerate(lines) if line.strip().startswith("USER phaze")), None)
+    user_idx = next((i for i, line in enumerate(lines) if line.strip().startswith("USER ")), None)
 
     assert install_idx is not None, "Dockerfile has no `patchright install` step."
-    assert user_idx is not None, "Dockerfile has no `USER phaze` instruction."
-    assert install_idx < user_idx, "`patchright install` must run before `USER phaze` -- `--with-deps` needs root for its apt-get install."
+    assert user_idx is not None, "Dockerfile has no USER instruction."
+    assert install_idx < user_idx, "`patchright install` must run before the USER switch -- `--with-deps` needs root for its apt-get install."

@@ -122,7 +122,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # PLAYWRIGHT_BROWSERS_PATH pins the download to a FIXED path rather than the per-user
 # default (`~/.cache/ms-playwright`; Patchright inherits Playwright's env var name and
 # cache layout). This install runs as root (needed for `--with-deps` apt-get), but the
-# browser launches later as the unprivileged `phaze` user (USER phaze, below) whose
+# browser launches later as the unprivileged `phaze` user (`USER 1000:1000`, below) whose
 # $HOME would not otherwise see root's cache -- so the directory is made world-readable
 # after install. Runs against the dependency-only sync above (not `uv run`, which would
 # try to sync the project itself and fail -- src/ has not been copied into the image yet)
