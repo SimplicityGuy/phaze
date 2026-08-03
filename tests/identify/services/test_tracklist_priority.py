@@ -140,6 +140,50 @@ class TestFileTracklistReview:
         assert review.tracklist is None
         assert review.cache_entry is None
 
+    async def test_an_embedded_tracklist_excludes_the_file_before_classification(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A file with a tag-embedded tracklist never enters the drain funnel (phaze-fq9h.8 bounce).
+
+        Long duration and a set-shaped filename would otherwise classify this LIVE_SET; the
+        embedded tracklist must still win, because ``build_queue_from_signals`` excludes it BEFORE
+        classification ever runs. If ``eligible`` did not honor this, the record page would offer
+        a Prioritize button whose enqueued lookup spends a live request on a completely different,
+        unrelated set.
+        """
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(
+            FileMetadata(
+                file_id=file.id,
+                duration=7200.0,
+                raw_tags={"comment": "00:00 Opener\n05:00 Second track\n10:00 Third track"},
+            )
+        )
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.answered_elsewhere == "embedded tracklist"
+        assert review.eligible is False
+        assert review.tracklist is None
+        assert review.cache_entry is None
+
+    async def test_a_cue_companion_excludes_the_file_before_classification(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """A file with a linked .cue companion never enters the drain funnel either."""
+        from phaze.models.file_companion import FileCompanion
+
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        companion = await make_file(original_filename="companion.cue", file_type="cue")
+        session.add(FileMetadata(file_id=file.id, duration=7200.0))
+        session.add(FileCompanion(companion_id=companion.id, media_id=file.id))
+        await session.commit()
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.answered_elsewhere == "cue companion"
+        assert review.eligible is False
+        assert review.cache_entry is None
+
     async def test_a_definitive_negative_cache_entry_is_surfaced_distinctly(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
         file = await make_file(original_filename=LIVE_SET_FILENAME)
         session.add(FileMetadata(file_id=file.id, duration=7200.0))

@@ -17,19 +17,29 @@ TWO JOBS IN ONE MODULE, DELIBERATELY PAIRED
    Turnstile block, a stale-selector failure, and a genuine "not on the site" render as three
    different things rather than one undifferentiated blank.
 
-SIMPLIFICATION THIS MODULE MAKES, STATED PLAINLY
---------------------------------------------------
+SIMPLIFICATION THIS MODULE MAKES, STATED PLAINLY -- AND THE ONE IT DELIBERATELY DOES NOT
+------------------------------------------------------------------------------------------
 :func:`get_file_tracklist_review`'s eligibility read (would this file ever enter the drain
-queue) uses ONLY duration and filename -- the same :func:`~phaze.services.tracklist_candidates
-.classify` a full corpus pass uses, but it does NOT replicate the cue-companion / embedded-
-tracklist "already answered by another source" checks
-(:attr:`~phaze.services.tracklist_candidates.CandidateSignals.already_tracklisted`) that
-:func:`~phaze.services.tracklist_candidate_queue.load_candidate_signals` performs for the whole
-corpus. Getting those exactly right for one file requires the same joins the corpus-wide query
-already pays for every file at once; duplicating them here would be the highest-cost, lowest-
-value part of this view. The authoritative funnel -- including those exclusions -- is the drain
-progress fragment (:func:`phaze.tasks.tracklist_drain.tracklist_drain_status`), which this module
-does not re-derive (per the bead: "use that rather than inventing a second status path").
+queue) uses ONLY duration and filename for CLASSIFICATION -- the same
+:func:`~phaze.services.tracklist_candidates.classify` a full corpus pass uses. Getting the
+corpus-wide query's OTHER signals (recency, propagation membership) exactly right for one file
+would require the same joins the corpus-wide query already pays for every file at once;
+duplicating those here would be the highest-cost, lowest-value part of this view. The
+authoritative funnel is the drain progress fragment
+(:func:`phaze.tasks.tracklist_drain.tracklist_drain_status`), which this module does not
+re-derive (per the bead: "use that rather than inventing a second status path").
+
+The "already answered by another source" check is NOT skipped, though, and that distinction
+matters: :attr:`~phaze.services.tracklist_candidates.CandidateSignals.already_tracklisted`
+(cue-companion / embedded-tracklist) is what keeps a file OUT of
+:func:`~phaze.services.tracklist_candidate_queue.build_queue_from_signals` entirely, before
+classification even runs. Skipping it here would let :attr:`FileTracklistReview.eligible` say
+"yes" for a file the drain would never look at, and the admin UI would then let an operator spend
+a real request from the whole-host 8s budget on a COMPLETELY UNRELATED set while believing they
+were answering this one (:func:`phaze.routers.pipeline.prioritize_tracklist_lookup_ui` enqueues a
+``limit=1`` slice that answers whatever actually sits at the front of the real queue). So this
+check IS replicated -- cheaply, since it is two per-file reads (a raw_tags column already loaded
+for classification, and one EXISTS query), not a corpus-wide join.
 """
 
 from __future__ import annotations
@@ -38,15 +48,18 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import aliased
 
 from phaze.enums.tracklist_candidate import CandidateClass
 from phaze.models.file import FileRecord
+from phaze.models.file_companion import FileCompanion
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
-from phaze.services.tracklist_candidates import CandidateSignals, classify, group_unique_sets
+from phaze.services.tracklist_candidate_queue import CUE_FILE_TYPE
+from phaze.services.tracklist_candidates import CandidateSignals, classify, detect_embedded_tracklist, group_unique_sets
 from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup
 from phaze.services.tracklist_query import derive_query
 
@@ -134,6 +147,13 @@ class FileTracklistReview:
     calls that ``UNKNOWN`` too, but here it distinguishes "we could not even try" from a real
     ``UNKNOWN`` verdict -- in practice these render identically, both meaning "not eligible by
     default")."""
+    answered_elsewhere: str | None = None
+    """Set (to ``"embedded tracklist"`` or ``"cue companion"``) when the file already carries
+    track data from a source OTHER than a scraped ``tracklists`` row. Such a file is excluded from
+    the drain's candidate funnel BEFORE classification even runs
+    (:attr:`~phaze.services.tracklist_candidates.CandidateSignals.already_tracklisted`), so it can
+    never become a :class:`~phaze.services.tracklist_drain.DrainCandidate` regardless of
+    ``classification_class`` -- see :attr:`eligible`."""
 
     @property
     def eligible(self) -> bool:
@@ -143,7 +163,14 @@ class FileTracklistReview:
         .tracklist_candidate_queue.build_queue_from_signals` by default (a wrong guess spends a
         request the drain can never reclaim), so prioritizing one of those has no effect -- the
         UI hides the control rather than offering a button that silently does nothing.
+
+        A file already answered by another source (``answered_elsewhere``) is excluded the SAME
+        way even when the classifier would call it a LIVE_SET: prioritizing it would flag a file
+        the drain never looks at, and the enqueued ``limit=1`` slice would then spend a live
+        request on whatever unrelated set actually sits at the front of the real queue.
         """
+        if self.answered_elsewhere is not None:
+            return False
         return self.classification_class is CandidateClass.LIVE_SET
 
 
@@ -175,7 +202,7 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
             classification_class=CandidateClass.LIVE_SET,
         )
 
-    classification_class, cache_entry = await _lookup_status_without_a_tracklist(session, file)
+    classification_class, cache_entry, answered_elsewhere = await _lookup_status_without_a_tracklist(session, file)
     return FileTracklistReview(
         file_id=file_id,
         flagged=flagged,
@@ -184,17 +211,59 @@ async def get_file_tracklist_review(session: AsyncSession, file_id: uuid.UUID) -
         is_propagated=False,
         cache_entry=cache_entry,
         classification_class=classification_class,
+        answered_elsewhere=answered_elsewhere,
     )
 
 
-async def _lookup_status_without_a_tracklist(session: AsyncSession, file: FileRecord) -> tuple[CandidateClass | None, TracklistLookupCache | None]:
-    """Classify ``file`` and, if it is a LIVE_SET candidate, fetch the cache's last verdict.
+async def _already_answered_elsewhere(session: AsyncSession, file: FileRecord, metadata: FileMetadata | None) -> str | None:
+    """Cheap, per-file mirror of :attr:`CandidateSignals.already_tracklisted`'s OTHER two sources.
 
-    See the module docstring's simplification note: this reads duration + filename only, not the
-    full already-tracklisted funnel.
+    A scraped ``tracklists`` row is checked by the caller already (a real ``Tracklist`` for this
+    file means the "has a tracklist" branch runs instead of this one at all); this checks the two
+    sources that make a file already-answered with NO ``tracklists`` row to show for it:
+
+    * an embedded tracklist in the file's own tags (:func:`~phaze.services.tracklist_candidates
+      .detect_embedded_tracklist` over ``metadata.raw_tags`` -- already loaded, no extra query);
+    * a linked ``.cue`` companion file (one EXISTS query, mirroring
+      :func:`~phaze.services.tracklist_candidate_queue.candidate_signals_query`'s join).
+
+    Either one means :func:`~phaze.services.tracklist_candidate_queue.build_queue_from_signals`
+    would exclude this file BEFORE classification runs, so it can never become a
+    :class:`~phaze.services.tracklist_drain.DrainCandidate` -- see ``FileTracklistReview.eligible``.
+    """
+    if metadata is not None and detect_embedded_tracklist(metadata.raw_tags):
+        return "embedded tracklist"
+
+    companion = aliased(FileRecord)
+    has_cue = await session.execute(
+        select(
+            exists(
+                select(FileCompanion.id)
+                .join(companion, companion.id == FileCompanion.companion_id)
+                .where(FileCompanion.media_id == file.id, companion.file_type == CUE_FILE_TYPE)
+            )
+        )
+    )
+    if has_cue.scalar_one():
+        return "cue companion"
+    return None
+
+
+async def _lookup_status_without_a_tracklist(
+    session: AsyncSession, file: FileRecord
+) -> tuple[CandidateClass | None, TracklistLookupCache | None, str | None]:
+    """Classify ``file`` and, if it is a LIVE_SET candidate with no other answer, fetch the
+    cache's last verdict.
+
+    See the module docstring: classification itself reads duration + filename only (the
+    corpus-wide funnel's OTHER signals are deliberately not replicated here), but the
+    already-answered-elsewhere check runs regardless of classification, because it is what makes
+    ``eligible`` -- and therefore the Prioritize button -- honest.
     """
     metadata_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file.id).limit(1))
     metadata = metadata_result.scalar_one_or_none()
+
+    answered_elsewhere = await _already_answered_elsewhere(session, file, metadata)
 
     filename = file.original_filename_repaired or file.original_filename
     signals = CandidateSignals(
@@ -212,14 +281,14 @@ async def _lookup_status_without_a_tracklist(session: AsyncSession, file: FileRe
         album=metadata.album if metadata else None,
     )
     classification = classify(signals)
-    if classification.candidate_class is not CandidateClass.LIVE_SET:
-        return classification.candidate_class, None
+    if classification.candidate_class is not CandidateClass.LIVE_SET or answered_elsewhere is not None:
+        return classification.candidate_class, None, answered_elsewhere
 
     derived = derive_query(signals.filename)
     signals = replace(signals, derived_query=derived.query)
     unique_sets = group_unique_sets([signals])
     if not unique_sets:  # pragma: no cover - defensive; a single-element input always yields one cluster
-        return classification.candidate_class, None
+        return classification.candidate_class, None, answered_elsewhere
 
     verdict: CacheVerdict = await lookup(session, unique_sets[0].key)
-    return classification.candidate_class, verdict.entry
+    return classification.candidate_class, verdict.entry, answered_elsewhere

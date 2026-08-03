@@ -2406,6 +2406,35 @@ async def test_prioritize_ineligible_file_flags_nothing_and_enqueues_nothing(cli
 
 
 @pytest.mark.asyncio
+async def test_prioritize_file_with_embedded_tracklist_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """A file already answered by an embedded tracklist (no ``tracklists`` row) is not flagged.
+
+    This is the exact scope-creep shape a full-suite reviewer flagged: a long-duration, set-shaped
+    file with no ``tracklists`` row classifies LIVE_SET on duration+filename alone, but the
+    corpus-wide funnel excludes it BEFORE classification because it already carries an embedded
+    tracklist. If the endpoint only checked classification, it would flag this file and enqueue a
+    limit=1 slice that could never answer it -- spending a live request on an unrelated set while
+    reporting success for this one.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    file_metadata_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_rec.id))
+    metadata = file_metadata_result.scalar_one()
+    metadata.raw_tags = {"comment": "00:00 Opener\n05:00 Second track\n10:00 Third track"}
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "excluded from the drain queue" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
 async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient, session: AsyncSession) -> None:
     """A file that already has a tracklist is not (re-)flagged and nothing is enqueued."""
     from phaze.services.tracklist_priority import load_flagged_file_ids

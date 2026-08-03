@@ -16,7 +16,10 @@
         NOT produce a tracklist. review.cache_entry.outcome distinguishes a DEFINITIVE negative
         ("not on the site") from a TRANSIENT one ("we failed, will retry") -- collapsing those
         into one "failed" badge destroys the distinction three beads were built to preserve.
-     3. neither set -> never looked up. Say so plainly; do not render silence as success.
+     3. neither set -> never looked up (or, if review.answered_elsewhere is set, never WILL be --
+        a cue companion or embedded tracklist already excludes it from the drain's own funnel
+        before classification runs, so say that plainly rather than "not yet"). Never render
+        silence as success.
 #}
 {% set _badge = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold' %}
 {% set _outcome_labels = {
@@ -106,8 +109,16 @@
         <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
         {% endif %}
 
+    {% elif review.answered_elsewhere %}
+        {# STATE 3a -- excluded from the drain BEFORE classification, by a source other than a
+           scraped tracklists row (embedded tags or a .cue companion). Never "not yet looked up"
+           -- this file will never be looked up automatically, and Prioritize would spend a live
+           request on an unrelated set while doing nothing for this one. #}
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Already has track data from a {{ review.answered_elsewhere }} -- excluded from the drain queue.
+        </p>
     {% else %}
-        {# STATE 3 -- never looked up. #}
+        {# STATE 3b -- never looked up, and nothing else excludes it either. #}
         <p class="text-sm text-gray-500 dark:text-gray-400">Not yet looked up.</p>
         {% if not review.eligible %}
         <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
