@@ -34,6 +34,7 @@ import structlog
 
 from phaze.enums.tracklist_candidate import DuplicateConfidence
 from phaze.services.tracklist_drain import DEFAULT_LOOKUP_LIMIT, DEFAULT_PROPAGATION_MIN_CONFIDENCE, build_drain_queue, drain_once
+from phaze.services.tracklist_priority import load_flagged_file_ids
 from phaze.services.tracklist_render import TracklistRenderer
 from phaze.services.tracklist_scraper import TracklistScraper
 
@@ -131,9 +132,16 @@ async def tracklist_drain_status(ctx: dict[str, Any], *, agent_id: str | None = 
     Read-only by construction: it builds the same queue :func:`drain_tracklists` would and returns
     the funnel. The admin UI (phaze-fq9h.8) needs "how much is left, and how long will it take"
     far more often than it needs a run, and answering that question must never cost budget.
+
+    ``flagged_queued`` / ``flagged_total`` (phaze-fq9h.8) come from THIS SAME queue build --
+    ``build_drain_queue`` already merges the persisted priority flags
+    (:func:`phaze.services.tracklist_priority.load_flagged_file_ids`) into every candidate's
+    ``flagged`` bit, so counting them here is reading the one status path this function already
+    is, not standing up a second one.
     """
     async with ctx["async_session"]() as session:
         queue = await build_drain_queue(session, agent_id=agent_id, include_unknown=include_unknown)
+        flagged_total = len(await load_flagged_file_ids(session))
 
     stats = queue.stats
     return {
@@ -149,4 +157,6 @@ async def tracklist_drain_status(ctx: dict[str, Any], *, agent_id: str | None = 
         "cached_backoff": stats.cached_backoff,
         "cached_exhausted": stats.cached_exhausted,
         "next_set_keys": [candidate.set_key for candidate in queue.entries[:10]],
+        "flagged_queued": sum(1 for candidate in queue.entries if candidate.flagged),
+        "flagged_total": flagged_total,
     }

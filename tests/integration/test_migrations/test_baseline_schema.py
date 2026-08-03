@@ -86,6 +86,7 @@ _EXPECTED_TABLES = frozenset(
         "stage_skip",
         "tag_write_log",
         "tracklist_lookup_cache",
+        "tracklist_priority_flags",
         "tracklist_tracks",
         "tracklist_versions",
         "tracklists",
@@ -221,8 +222,11 @@ def test_baseline_is_the_only_migration() -> None:
     nullable files.original_filename_repaired mojibake-repair column; 046 (phaze-0jpe.4) drops
     fingerprint_results and narrows stage_skip's CHECK; 047 (phaze-s7mb) drops the never-populated
     analysis.fingerprint column; 048 (phaze-bto9) adds the files (original_filename, id) btree the
-    tag-write review keyset paging orders and ranges on. Any other resurrected 0xx chain file is a
-    regression.
+    tag-write review keyset paging orders and ranges on; 049 (phaze-cz3m) makes every schema
+    timestamp timestamptz; 050 (phaze-fq9h.3) creates tracklist_lookup_cache; 051 (phaze-fq9h.7)
+    adds tracklists propagation columns + narrows external_id uniqueness to canonical rows; 052
+    (phaze-fq9h.8) creates tracklist_priority_flags, the persisted home for an operator's "answer
+    this file first". Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -239,6 +243,7 @@ def test_baseline_is_the_only_migration() -> None:
         "049_all_timestamps_timestamptz.py",
         "050_tracklist_lookup_cache.py",
         "051_tracklists_propagation.py",
+        "052_tracklist_priority_flags.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -270,10 +275,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (051: tracklist propagation)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (052: tracklist priority flags)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "051"
+    assert version == "052"
 
 
 @pytest.mark.asyncio
@@ -568,7 +573,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "051"
+        assert version == "052"
     finally:
         if engine is not None:
             await engine.dispose()

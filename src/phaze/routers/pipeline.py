@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -98,8 +99,11 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.stage_status import failed_clause, stage_status_sort_case
+from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
+from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.tasks.tracklist_drain import tracklist_drain_status
 
 
 logger = structlog.get_logger(__name__)
@@ -362,6 +366,8 @@ async def _build_dag_context(
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -2790,6 +2796,138 @@ async def trigger_match_tracklists_ui(
         request=request,
         name="pipeline/partials/trigger_tracklist_response.html",
         context={"request": request, "action": "matching", "count": count},
+    )
+
+
+# --- Per-file 1001Tracklists priority + review (phaze-fq9h.8) ---
+
+
+@router.post("/pipeline/tracklists/{file_id}/prioritize", response_class=HTMLResponse)
+async def prioritize_tracklist_lookup_ui(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: persist an operator priority flag for ``file_id`` and queue one bounded
+    drain slice to answer it (phaze-fq9h.8, the "trigger/prioritize a lookup for a file"
+    acceptance criterion).
+
+    Two things happen, and both matter:
+
+    1. :func:`~phaze.services.tracklist_priority.flag_file_for_lookup` PERSISTS the flag, so it
+       survives past this one job -- the gap phaze-fq9h.7 left open (see
+       ``models.tracklist_priority_flag``'s module docstring). ``build_drain_queue`` reads it on
+       every future call, whether that call comes from this endpoint, a scheduled slice, or a
+       worker restart.
+    2. A single ``drain_tracklists`` job is enqueued with ``limit=1`` so the operator sees a real
+       lookup start now rather than only ever affecting some later, unscheduled run.
+       ``drain_tracklists`` is deliberately UNKEYED (phaze-fq9h.7's ``_UNKEYED_TASKS`` entry), so
+       this can never silently dedup onto an unrelated in-flight slice.
+
+    Only flags files that could actually reach the queue: a file that already has a tracklist, or
+    one the classifier reads as ``TRACK``/``UNKNOWN``, never becomes a
+    :class:`~phaze.services.tracklist_drain.DrainCandidate` at all (see
+    ``FileTracklistReview.eligible``), so flagging it would silently do nothing while a
+    ``limit=1`` slice spent its one request on whatever UNRELATED set actually sits at the front
+    of the queue -- a wasted, misattributed lookup. The review renders the honest reason instead.
+
+    Renders the review fragment IMMEDIATELY, before the enqueued job runs -- it can only ever say
+    "queued", never "found", because the lookup has not happened yet (mirrors the record page's
+    snapshot discipline, D-02: no poll here either).
+    """
+    review = await get_file_tracklist_review(session, file_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    queued = False
+    if review.tracklist is None and review.eligible:
+        await flag_file_for_lookup(session, file_id)
+        await session.commit()
+        routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+        await routed.queue.enqueue("drain_tracklists", limit=1)
+        review = await get_file_tracklist_review(session, file_id)
+        queued = True
+
+    return templates.TemplateResponse(
+        request=request,
+        name="record/partials/_tracklist_review_body.html",
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": queued},
+    )
+
+
+@router.post("/pipeline/tracklists/{file_id}/unprioritize", response_class=HTMLResponse)
+async def unprioritize_tracklist_lookup_ui(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: clear ``file_id``'s priority flag -- the operator changed their mind.
+
+    A plain no-op (not an error) when the file was never flagged, so a double-click is safe.
+    """
+    file = await session.get(FileRecord, file_id)
+    if file is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    await unflag_file(session, file_id)
+    await session.commit()
+
+    review = await get_file_tracklist_review(session, file_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="record/partials/_tracklist_review_body.html",
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": False},
+    )
+
+
+# --- Drain progress fragment + manual slice trigger (phaze-fq9h.8) ---
+
+
+@router.get("/pipeline/tracklist-drain-status", response_class=HTMLResponse)
+async def tracklist_drain_status_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX fragment: queue depth, throughput vs the daily ceiling, and an honest ETA.
+
+    Calls :func:`phaze.tasks.tracklist_drain.tracklist_drain_status` DIRECTLY (per its own
+    docstring: it spends no host requests, so routing it through a queue and a poll would buy
+    nothing but latency) rather than reimplementing its funnel here. The task function wants a
+    SAQ-shaped ``ctx["async_session"]`` sessionmaker; this request already has a session from the
+    normal ``get_session`` dependency (the same one every other fragment in this router reads
+    with), so it is wrapped in a trivial one-shot async-context-manager factory rather than
+    pulling in the module-level production ``phaze.database.async_session`` -- which would open a
+    SECOND connection outside this request's transaction (invisible to it under tests, and an
+    unnecessary extra pool checkout in production).
+    """
+
+    @contextlib.asynccontextmanager
+    async def _session_factory() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    ctx: dict[str, Any] = {"async_session": _session_factory}
+    status = await tracklist_drain_status(ctx)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_tracklist_drain_status.html",
+        context={"request": request, "status": status, "daily_ceiling": DAILY_LOOKUP_CEILING},
+    )
+
+
+@router.post("/pipeline/run-tracklist-drain", response_class=HTMLResponse)
+async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX endpoint: enqueue one bounded ``drain_tracklists`` slice (phaze-fq9h.8).
+
+    The drain is deliberately operator-initiated, never a cron (see ``tasks.tracklist_drain``'s
+    module docstring's ethics bound: it deploys from a residential IP, runs a headful browser,
+    and spends a shared public host's published budget) -- this endpoint is that trigger.
+    ``limit`` is left at the default (:data:`~phaze.services.tracklist_drain.DEFAULT_LOOKUP_LIMIT`
+    lookups); any operator-flagged files are picked up automatically by ``build_drain_queue``
+    from the persisted store without needing to be passed here.
+    """
+    routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+    await routed.queue.enqueue("drain_tracklists")
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_run_drain_response.html",
+        context={"request": request},
     )
 
 

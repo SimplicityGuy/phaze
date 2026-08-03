@@ -101,6 +101,7 @@ from phaze.services.tracklist_candidate_queue import CandidateQueue, QueuedCandi
 from phaze.services.tracklist_candidates import UniqueSet, group_unique_sets
 from phaze.services.tracklist_lookup_cache import lookup, lookup_many, record_outcome
 from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
+from phaze.services.tracklist_priority import load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
 from phaze.services.tracklist_result_scorer import ResultSelection, select_result
@@ -260,6 +261,13 @@ async def build_drain_queue(
 
     Idempotent and side-effect free, which is the whole resumption story: re-running it after the
     drain has recorded outcomes yields a strictly shorter queue.
+
+    ``flagged_file_ids`` is unioned with the PERSISTED priority flags
+    (:func:`phaze.services.tracklist_priority.load_flagged_file_ids`) rather than replacing them
+    (phaze-fq9h.8): the explicit argument lets a caller flag files for one call without writing
+    anything, while the persisted store is what makes an operator's "answer this first" survive
+    past the one job it was originally passed into. Callers that pass nothing still get every
+    currently-flagged file honored.
     """
     moment = now or datetime.now(UTC)
     raw_signals = await load_candidate_signals(session, agent_id=agent_id)
@@ -276,7 +284,8 @@ async def build_drain_queue(
     queue: CandidateQueue = build_queue_from_signals(signals, verdicts, include_unknown=include_unknown)
 
     added_at = await _load_added_at(session, {member.file_id for entry in queue.entries for member in entry.unique_set.members})
-    flagged = set(flagged_file_ids)
+    persisted_flags = await load_flagged_file_ids(session)
+    flagged = set(flagged_file_ids) | persisted_flags
 
     candidates = [
         DrainCandidate(
