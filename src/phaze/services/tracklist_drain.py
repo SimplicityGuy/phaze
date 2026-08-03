@@ -104,7 +104,7 @@ from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist
 from phaze.services.tracklist_priority import load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
-from phaze.services.tracklist_result_scorer import ResultSelection, select_result
+from phaze.services.tracklist_result_scorer import ScoredResult, select_result
 from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistSearchResult
 
 
@@ -472,26 +472,30 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
             host_requests=requests,
         )
 
-    return _found(base, selection=selection, render_requests=requests, tracks=tracks)
+    return _found(base, chosen=chosen, reason=selection.reason, render_requests=requests, tracks=tracks)
 
 
-def _found(base: LookupAttempt, *, selection: ResultSelection, render_requests: int, tracks: Sequence[TracklistTrackPayload]) -> LookupAttempt:
+def _found(base: LookupAttempt, *, chosen: ScoredResult, reason: str, render_requests: int, tracks: Sequence[TracklistTrackPayload]) -> LookupAttempt:
     """Assemble the positive attempt, carrying the SELECTED ROW's metadata forward.
 
     Artist/event/date come from the search row rather than from the file's derived query on
     purpose: the derived values are our reading of a scene-release filename, while these are the
     site's own description of the page we are about to persist. Storing our guess next to their
     tracks would make a mis-selection unrecognisable afterwards.
+
+    Takes the ``ScoredResult`` itself rather than the enclosing ``ResultSelection``: the caller has
+    already narrowed ``selection.selected`` to non-None (it returns early otherwise), so re-deriving
+    it here only to re-prove it needed a bare ``assert``, which bandit B101 rightly rejects because
+    ``python -O`` strips it and the "guarantee" evaporates in exactly the build where it would
+    matter. Passing the non-None value makes the precondition structural instead of asserted.
     """
-    chosen = selection.selected
-    assert chosen is not None
     return replace(
         base,
         outcome=LookupOutcome.FOUND,
         external_id=chosen.result.external_id,
         source_url=chosen.result.url,
         result_confidence=chosen.confidence,
-        detail=selection.reason,
+        detail=reason,
         artist=chosen.result.artist,
         event=chosen.result.event,
         date=chosen.row_date,
