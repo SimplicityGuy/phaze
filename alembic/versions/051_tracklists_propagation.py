@@ -59,8 +59,16 @@ _CONFIDENCE_COLUMN = "propagation_confidence"
 _EXTERNAL_ID_INDEX = "ix_tracklists_external_id"
 _EXTERNAL_ID_CONSTRAINT = "uq_tracklists_external_id"
 _SET_KEY_INDEX = "ix_tracklists_propagated_from_set_key"
-_CANONICAL = f"{_SET_KEY_COLUMN} IS NULL"
-_PROPAGATED = f"{_SET_KEY_COLUMN} IS NOT NULL"
+# Index predicates built from SQLAlchemy constructs rather than `sa.text("... IS NULL")`.
+# Both render the identical DDL (`propagated_from_set_key IS NULL`), so the autogenerate drift
+# check against the model's matching Index still passes -- but semgrep's
+# python.sqlalchemy.security.audit.avoid-sqlalchemy-text flags the text() form, and the honest
+# response to that rule is to stop handing SQL to the database as a string rather than to suppress
+# it. There is nothing user-supplied here either way; this is simply the form with no string SQL
+# in it at all. The DELETE statements in downgrade() keep their literal form for a different
+# reason -- see the comment there.
+_CANONICAL = sa.column(_SET_KEY_COLUMN).is_(None)
+_PROPAGATED = sa.column(_SET_KEY_COLUMN).is_not(None)
 
 
 def upgrade() -> None:
@@ -73,8 +81,8 @@ def upgrade() -> None:
     # dropping only one would leave the other silently rejecting every propagation.
     op.drop_constraint(_EXTERNAL_ID_CONSTRAINT, _TABLE, type_="unique")
     op.drop_index(_EXTERNAL_ID_INDEX, table_name=_TABLE)
-    op.create_index(_EXTERNAL_ID_INDEX, _TABLE, ["external_id"], unique=True, postgresql_where=sa.text(_CANONICAL))
-    op.create_index(_SET_KEY_INDEX, _TABLE, [_SET_KEY_COLUMN], postgresql_where=sa.text(_PROPAGATED))
+    op.create_index(_EXTERNAL_ID_INDEX, _TABLE, ["external_id"], unique=True, postgresql_where=_CANONICAL)
+    op.create_index(_SET_KEY_INDEX, _TABLE, [_SET_KEY_COLUMN], postgresql_where=_PROPAGATED)
 
 
 def downgrade() -> None:
