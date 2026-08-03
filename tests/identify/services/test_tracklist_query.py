@@ -60,6 +60,63 @@ class TestSceneGroupStripping:
         assert result.event == "Coachella"
 
 
+class TestSceneGroupPositionalCorroboration:
+    """Regression tests for review round 1: a trailing ALL-CAPS word after a plain SPACE is a
+    prose event acronym, not a scene-group tag -- only a token glued on with a TIGHT
+    hyphen/underscore (no whitespace) counts as scene-tail evidence. See
+    ``_pop_trailing_group_and_sources``'s docstring for the full reasoning.
+    """
+
+    def test_live_at_event_acronym_is_not_eaten_as_a_group(self) -> None:
+        # The exact regression from review: "EDC" is the event, reached via " @ " (whitespace
+        # separator) -- not a scene-group tag.
+        result = derive_query("Carl Cox - Live @ EDC.mp3")
+        assert result.scene_group is None
+        assert result.artist == "Carl Cox"
+        assert result.event == "EDC"
+        assert result.query == "Carl Cox EDC"
+
+    def test_trailing_country_code_after_a_space_is_not_a_group(self) -> None:
+        result = derive_query("Artist - Ultra Miami USA.mp3")
+        assert result.scene_group is None
+        assert result.event == "Ultra Miami USA"
+
+    def test_trailing_city_code_after_a_space_is_not_a_group(self) -> None:
+        result = derive_query("Artist - Awakenings NYC.mp3")
+        assert result.scene_group is None
+        assert result.event == "Awakenings NYC"
+
+    def test_trailing_short_country_code_after_a_space_is_not_a_group(self) -> None:
+        result = derive_query("Artist - Time Warp DE.mp3")
+        assert result.scene_group is None
+        assert result.event == "Time Warp DE"
+
+    def test_true_positive_scene_group_still_works_after_the_positional_guard(self) -> None:
+        # The canonical scene-tail shape (tight hyphens, DATE-SOURCE-SOURCE-GROUP) must keep
+        # working -- the fix must not have overcorrected into never detecting a real group.
+        result = derive_query("Carl Cox - Awakenings Festival - 2019-08-10-WEB-FLAC-GRVMSTR.mp3")
+        assert result.scene_group == "GRVMSTR"
+
+    def test_no_bare_punctuation_token_ever_reaches_the_query(self) -> None:
+        # Before the fix, "Live @ EDC" with EDC wrongly popped as a group left a dangling "@" as
+        # the entire event. Assert directly that no token in the final query is pure punctuation.
+        for filename in (
+            "Carl Cox - Live @ EDC.mp3",
+            "Artist - Live @ .mp3",
+            "Artist - Ultra Miami USA.mp3",
+        ):
+            result = derive_query(filename)
+            for token in result.query.split(" "):
+                assert any(ch.isalnum() for ch in token), f"bare-punctuation token {token!r} in query {result.query!r} for {filename!r}"
+
+    def test_ampersand_in_a_real_artist_name_is_not_treated_as_stray_punctuation(self) -> None:
+        # The structural-symbol filter that fixes the dangling "@" must stay narrow: "&" is a
+        # legitimate part of a real artist name (Above & Beyond) and must survive.
+        result = derive_query("Above & Beyond - Group Therapy - 2020-03-14.mp3")
+        assert result.artist == "Above & Beyond"
+        assert "&" in result.query
+
+
 # --------------------------------------------------------------------------------------------
 # Source-tag stripping
 # --------------------------------------------------------------------------------------------
@@ -268,10 +325,10 @@ class TestInternalHeuristicEdgeCases:
         assert result.event == "Awakenings X"
 
     def test_non_alnum_trailing_token_is_never_treated_as_a_group(self) -> None:
-        # No trailing date here on purpose -- the non-alnum token must be the very LAST token in
-        # the filename to exercise the isalnum() guard itself, rather than the separate
-        # "trailing token is a digit-only date fragment" guard.
-        result = derive_query("Carl Cox - Awakenings - D&B!.mp3")
+        # A TIGHT separator on purpose -- this must fail on the isalnum() guard inside
+        # _looks_like_scene_group itself, not on the (separately tested) positional/whitespace
+        # guard in _pop_trailing_group_and_sources.
+        result = derive_query("Carl Cox - Awakenings-D&B!.mp3")
         assert result.scene_group is None
         assert result.event == "Awakenings D&B!"
 

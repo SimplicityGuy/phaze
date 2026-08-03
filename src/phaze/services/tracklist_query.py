@@ -149,9 +149,11 @@ _BRACKET_RE = re.compile(r"[(\[{]([^()\[\]{}]*)[)\]}]")
 _TRACK_NUMBER_RE = re.compile(r"^(?:track\s*)?\d{1,2}[\s._-]+(?=[A-Za-z])", re.IGNORECASE)
 
 # The last "tight" token (no internal space/dot/underscore/hyphen) in the string, with whatever
-# separator precedes it. Matched repeatedly from the end ONLY -- see _pop_trailing_group_and_sources
+# separator precedes it captured separately (see _pop_trailing_group_and_sources -- the SHAPE of
+# that separator is itself evidence for whether the token is a scene-tail field or just the last
+# word of a prose phrase). Matched repeatedly from the end ONLY -- see _pop_trailing_group_and_sources
 # for why this must never become a blind whole-string split.
-_TRAILING_TOKEN_RE = re.compile(r"[\s._-]+(?P<field>[^\s._-]+)\s*$")
+_TRAILING_TOKEN_RE = re.compile(r"(?P<sep>[\s._-]+)(?P<field>[^\s._-]+)\s*$")
 
 # ISO-shaped date, unambiguous: the year always comes first, so there is nothing to disambiguate.
 _ISO_DATE_RE = re.compile(r"(?P<y>19[7-9]\d|20[0-3]\d)[-._](?P<m>0[1-9]|1[0-2])[-._](?P<d>0[1-9]|[12]\d|3[01])")
@@ -168,6 +170,13 @@ _BARE_YEAR_RE = re.compile(r"(?<!\d)(19[7-9]\d|20[0-3]\d)(?!\d)")
 # recognized here too, but WITHOUT that heuristic's rigid "must end in a full YYYY.MM.DD date and
 # nothing else" requirement, so it still fires once scene noise around it has been stripped.
 _LIVE_AT_RE = re.compile(r"^(?P<artist>.+?)\s*-?\s*live\s*@\s*(?P<event>.+)$", re.IGNORECASE)
+
+# This module's own separator literals -- a token built ENTIRELY from these is always a stray
+# parsing artifact (e.g. a dangling "@" left after _LIVE_AT_RE's "at" separator loses its
+# neighboring word to noise-filtering), never a legitimate artist/event token, and is dropped in
+# `_clean_field`. Deliberately narrow and NOT "any non-alphanumeric token" -- see that function's
+# docstring for why a blanket rule would wrongly eat real punctuation-joined names.
+_STRUCTURAL_SYMBOLS = frozenset({"@"})
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -273,19 +282,36 @@ def _source_token(token: str) -> str | None:
     return upper if upper in _SOURCE_TOKENS else None
 
 
+def _is_tight_separator(sep: str) -> bool:
+    """True when *sep* is a "glued" scene-tail delimiter (hyphen/underscore only, no whitespace).
+
+    The positional half of the scene-group corroboration check -- see
+    ``_pop_trailing_group_and_sources``'s docstring for why this specific distinction (glued vs.
+    whitespace-containing) is what actually separates a scene-tail field from the last word of an
+    ordinary prose phrase.
+    """
+    return len(sep) > 0 and not any(ch.isspace() for ch in sep)
+
+
 def _looks_like_scene_group(token: str) -> bool:
-    """Best-effort trailing-token heuristic for a scene release-group tag.
+    """Best-effort SHAPE heuristic for a scene release-group tag: is this token even plausible?
 
     Self-contained per this bead's scope -- NOT the corpus-validated group extractor phaze-5fta.3
     will build (that one is trained on real evidence and explicitly designed to reject years and
-    source tokens too; see that epic's DESIGN note 3). This is deliberately conservative: it only
-    claims a trailing token as a release-group tag when it is alphanumeric AND either ALL CAPS or
-    contains a digit, which is a common shape for scene-release group monikers (``GRVMSTR``,
-    ``C4``, ``0DAY``, ...) and is what keeps this from swallowing the last plain-English word of a
-    real event name. The tradeoff: an all-lowercase-letters group tag with no digit is NOT
-    stripped by this heuristic and is left in the event text instead -- a false negative rather
-    than the false positive of eating real event words, and exactly the gap phaze-5fta's
-    corpus-learned evidence is meant to close later via the seam above.
+    source tokens too; see that epic's DESIGN note 3). It only claims a token as plausible when it
+    is alphanumeric AND either ALL CAPS or contains a digit, which is a common shape for
+    scene-release group monikers (``GRVMSTR``, ``C4``, ``0DAY``, ...). The tradeoff: an
+    all-lowercase-letters group tag with no digit is NEVER stripped by this heuristic and is left
+    in the event text instead -- a false negative rather than the false positive of eating real
+    event words, and exactly the gap phaze-5fta's corpus-learned evidence is meant to close later
+    via the seam above.
+
+    NOTE this is shape-only and deliberately under-inclusive-by-itself: on its own it also matches
+    an ordinary trailing ALL-CAPS acronym in a prose event name (festival/venue names in this
+    corpus are routinely acronyms -- ``EDC``, city/country codes like ``NYC``/``USA``/``DE``).
+    ``_pop_trailing_group_and_sources`` is what supplies the SECOND, POSITIONAL piece of evidence
+    (see its docstring) that keeps this function's permissiveness from mis-firing on those; do not
+    call this alone as the whole test for "is this a group tag".
     """
     if not token or not token.isalnum():
         return False
@@ -314,10 +340,25 @@ def _pop_trailing_group_and_sources(text: str) -> tuple[str, list[str], str | No
     we loop popping source tags from what is now the new tail. Popping sources first would stop
     at the very first trailing token (the group itself, since it is not a source token) and never
     reach the source tags sitting behind it.
+
+    THE POSITIONAL GUARD (fixes phaze-fq9h.2 review round 1): ``_looks_like_scene_group`` alone is
+    shape-only and, by itself, equally matches a real trailing ALL-CAPS event acronym in a prose
+    filename (``"Carl Cox - Live @ EDC.mp3"`` -> would wrongly claim ``EDC``; likewise trailing
+    country/city codes like ``NYC``/``USA``/``DE``). What actually distinguishes a scene-tail
+    field from the last word of a prose phrase is the SEPARATOR immediately before it: this
+    corpus's scene convention glues its trailing fields together with a TIGHT hyphen/underscore
+    (``...-WEB-FLAC-GRVMSTR``, no surrounding spaces), never a plain word-boundary space
+    (``"Live @ EDC"``, ``"Miami USA"``). So a candidate is only accepted as a group when its
+    separator contains no whitespace -- weak/no positional evidence means the token stays in the
+    event text, the same conservative direction ``_looks_like_scene_group`` already takes for
+    all-lowercase tags. A tight-hyphen-delimited short acronym that is genuinely NOT a group (e.g.
+    a country code some uploader tacked on with a bare hyphen) is a known residual ambiguity this
+    heuristic cannot resolve without corpus evidence -- exactly phaze-5fta seam material, not a
+    case this bead can fix by construction.
     """
     group: str | None = None
     match = _TRAILING_TOKEN_RE.search(text)
-    if match is not None and _looks_like_scene_group(match.group("field")):
+    if match is not None and _is_tight_separator(match.group("sep")) and _looks_like_scene_group(match.group("field")):
         group = match.group("field")
         text = text[: match.start()]
 
@@ -379,9 +420,22 @@ def _extract_date(text: str, *, scene_group: str | None) -> _DateExtraction:
 
 
 def _clean_field(field: str) -> str:
+    """Normalize one artist/event field: spaces for underscores, noise words and stray structural
+    separators dropped.
+
+    The structural-separator filter (fixes phaze-fq9h.2 review round 1) exists because upstream
+    steps can leave one of THIS MODULE'S OWN separator literals standing alone once its
+    neighboring word is removed as noise -- e.g. ``"Live @ EDC"`` with a (now-fixed) upstream bug
+    popping ``EDC`` left the field ``"Live @"``, and dropping ``"LIVE"`` as a noise word left the
+    bare token ``"@"`` -- the literal ``_LIVE_AT_RE`` uses to mean "at" -- standing in for an
+    entire event name. This filters ONLY tokens built purely from :data:`_STRUCTURAL_SYMBOLS`
+    (today just ``@``), deliberately NOT a blanket "drop anything with no alphanumeric character"
+    rule: that would also eat legitimate punctuation-joined names genuinely present in this
+    corpus, like the duo "Above & Beyond" -- "&" must survive this filter.
+    """
     field = field.replace("_", " ")
     field = _WHITESPACE_RE.sub(" ", field).strip(" .-_")
-    tokens = [t for t in field.split(" ") if t.upper() not in _NOISE_TOKENS]
+    tokens = [t for t in field.split(" ") if t.upper() not in _NOISE_TOKENS and not _STRUCTURAL_SYMBOLS.issuperset(t)]
     return " ".join(tokens).strip()
 
 
