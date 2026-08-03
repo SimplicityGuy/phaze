@@ -62,6 +62,61 @@ async def _latest_version_has_tracks(session: Any, tracklist: Any) -> bool:
     return (result.scalar() or 0) > 0
 
 
+async def _find_cached_tracklists(session: Any, external_ids: list[str]) -> dict[str, Tracklist]:
+    """Load already-scraped Tracklist rows for these external_ids, keyed by external_id.
+
+    The persistent half of "cached and never re-fetched" (phaze-hu8v): a search result whose
+    external_id already resolves to a Tracklist WITH a ``latest_version_id`` has already been
+    scraped successfully at least once, in this run or a prior one -- a tracklist for a past event
+    doesn't change, so re-fetching its detail page over the network is a request the site's
+    Crawl-delay-8 budget never needed to pay. Only rows with a resolved ``latest_version_id`` count
+    as cached; a Tracklist row can exist with no version yet (e.g. created but never successfully
+    scraped), and that one still needs a real fetch.
+    """
+    if not external_ids:
+        return {}
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id.in_(external_ids), Tracklist.latest_version_id.is_not(None)))
+    return {tl.external_id: tl for tl in result.scalars().all()}
+
+
+def _apply_file_link(tracklist: Any, file_id: uuid.UUID, confidence: int | None, auto_linked: bool) -> None:
+    """Link tracklist to file_id, unless it is already linked to a DIFFERENT file (phaze-4a5w).
+
+    Shared by ``_store_scraped_tracklist`` (the fresh-scrape / re-scrape path) and
+    ``_link_cached_tracklist`` (the cache-hit path, phaze-hu8v) -- both must honor the same
+    "never steal a manual link" rule, so the check lives in exactly one place.
+    """
+    if tracklist.file_id is None or tracklist.file_id == file_id:
+        tracklist.file_id = file_id
+        tracklist.match_confidence = confidence
+        tracklist.auto_linked = auto_linked
+    else:
+        logger.warning(
+            "Refusing to steal tracklist already linked to another file",
+            external_id=tracklist.external_id,
+            tracklist_id=str(tracklist.id),
+            existing_file_id=str(tracklist.file_id),
+            candidate_file_id=str(file_id),
+        )
+
+
+async def _link_cached_tracklist(session: Any, external_id: str, file_id: uuid.UUID, confidence: int | None, auto_linked: bool) -> None:
+    """Update file linkage on an ALREADY-scraped tracklist without creating a redundant version.
+
+    Used when ``search_tracklist`` rediscovers (for a different file) a tracklist it has already
+    scraped before (phaze-hu8v): the page's data doesn't change once published, so re-persisting an
+    identical version on every rediscovery would just bloat tracklist_versions/tracklist_tracks for
+    no benefit -- the only NEW information here is the file linkage itself.
+    """
+    result = await session.execute(select(Tracklist).where(Tracklist.external_id == external_id))
+    tracklist = result.scalar_one_or_none()
+    if tracklist is None:
+        # Deleted between the cache-check read and this write -- rare race, nothing to link.
+        logger.warning("Cached tracklist vanished before link-only update: %s", external_id)
+        return
+    _apply_file_link(tracklist, file_id, confidence, auto_linked)
+
+
 async def _store_scraped_tracklist(
     session: Any,
     scraped: ScrapedTracklist,
@@ -136,18 +191,7 @@ async def _store_scraped_tracklist(
     # the link when the row is unowned (file_id None) or already points at this same file; otherwise
     # log and leave the existing link intact for manual review.
     if file_id is not None:
-        if tracklist.file_id is None or tracklist.file_id == file_id:
-            tracklist.file_id = file_id
-            tracklist.match_confidence = confidence
-            tracklist.auto_linked = auto_linked
-        else:
-            logger.warning(
-                "Refusing to steal tracklist already linked to another file",
-                external_id=scraped.external_id,
-                tracklist_id=str(tracklist.id),
-                existing_file_id=str(tracklist.file_id),
-                candidate_file_id=str(file_id),
-            )
+        _apply_file_link(tracklist, file_id, confidence, auto_linked)
 
     # Create new version
     version = TracklistVersion(
@@ -235,22 +279,50 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
 
     # 2. Search + scrape every result with NO DB connection held (phaze-1bcc). Collect the scraped
     #    payloads plus their computed auto-link decision for the store phase.
-    scraped_items: list[tuple[ScrapedTracklist, bool, int | None]] = []
+    scraped_items: list[tuple[ScrapedTracklist, bool, int | None, bool]] = []
     scraper = TracklistScraper()
     try:
         results = await scraper.search(query)
+
+        # phaze-hu8v: 1001Tracklists detail pages don't change once published -- before touching
+        # the network again for ANY of these results, check which we've already scraped before (in
+        # THIS run or a prior one). TracklistSearchResult.external_id is parsed straight from the
+        # search-results href (see _parse_search_results), so this needs no scrape of its own. The
+        # session is opened only for this one short bulk SELECT and closed immediately after, same
+        # discipline as the file+query session above (phaze-1bcc) -- never held across a scrape.
+        cached_by_external_id: dict[str, Tracklist] = {}
+        if results:
+            async with ctx["async_session"]() as session:
+                cached_by_external_id = await _find_cached_tracklists(session, [r.external_id for r in results])
+
         for search_result in results:
-            scraped = await scraper.scrape_tracklist(search_result.url)
-            # phaze-x4ux: repair mojibake on the scraped side too -- 1001Tracklists page text is
-            # an external source and can itself carry a mis-decode. Mutated in place (before both
-            # the match-confidence scoring below and the eventual Tracklist row persistence in
-            # _store_scraped_tracklist) so the repair happens ONCE at this ingest boundary rather
-            # than being re-applied at every later read. `tracklists.search_vector` is a DB
-            # GENERATED column over exactly `artist`/`event`, so this also keeps that index clean.
-            if scraped.artist is not None:
-                scraped.artist = repair_mojibake(scraped.artist)
-            if scraped.event is not None:
-                scraped.event = repair_mojibake(scraped.event)
+            cached_tracklist = cached_by_external_id.get(search_result.external_id)
+            from_cache = cached_tracklist is not None
+            if cached_tracklist is not None:
+                logger.debug("Skipping re-scrape of already-cached tracklist: %s", search_result.external_id)
+                # Metadata was mojibake-repaired once at initial ingest (phaze-x4ux) and never
+                # re-mutated after, so the stored values are already clean -- no repair needed here.
+                scraped = ScrapedTracklist(
+                    external_id=cached_tracklist.external_id,
+                    title="",
+                    artist=cached_tracklist.artist,
+                    event=cached_tracklist.event,
+                    date=cached_tracklist.date.isoformat() if cached_tracklist.date else None,
+                    source_url=cached_tracklist.source_url,
+                )
+            else:
+                scraped = await scraper.scrape_tracklist(search_result.url)
+                # phaze-x4ux: repair mojibake on the scraped side too -- 1001Tracklists page text is
+                # an external source and can itself carry a mis-decode. Mutated in place (before both
+                # the match-confidence scoring below and the eventual Tracklist row persistence in
+                # _store_scraped_tracklist) so the repair happens ONCE at this ingest boundary rather
+                # than being re-applied at every later read. `tracklists.search_vector` is a DB
+                # GENERATED column over exactly `artist`/`event`, so this also keeps that index clean.
+                if scraped.artist is not None:
+                    scraped.artist = repair_mojibake(scraped.artist)
+                if scraped.event is not None:
+                    scraped.event = repair_mojibake(scraped.event)
+
             # phaze-rkxy: pass the scraped date so the Pitfall-3 date-mismatch cap actually
             # fires in the auto-link path. Hardcoding None here made the cap dead and let a
             # wrong-date tracklist auto-link on artist+event alone.
@@ -272,7 +344,7 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
             # with zero date corroboration, exactly the false auto-link the cap was meant to block.
             date_confirmed = scraped_date is not None and file_date is not None and abs((scraped_date - file_date).days) <= 3
             auto_link = should_auto_link(confidence) and date_confirmed
-            scraped_items.append((scraped, auto_link, confidence if auto_link else None))
+            scraped_items.append((scraped, auto_link, confidence if auto_link else None, from_cache))
     finally:
         await scraper.close()
 
@@ -289,7 +361,14 @@ async def search_tracklist(ctx: dict[str, Any], *, file_id: str) -> dict[str, An
     file_uuid = uuid.UUID(file_id)
     stored_auto_linked = False
     async with ctx["async_session"]() as session:
-        for scraped, auto_link, stored_confidence in sorted(scraped_items, key=lambda item: item[0].external_id):
+        for scraped, auto_link, stored_confidence, from_cache in sorted(scraped_items, key=lambda item: item[0].external_id):
+            if from_cache:
+                # phaze-hu8v: already-scraped data, nothing new to persist except (maybe) the file
+                # link -- see _link_cached_tracklist for why this skips creating a new version.
+                if auto_link:
+                    await _link_cached_tracklist(session, scraped.external_id, file_uuid, stored_confidence, auto_link)
+                    stored_auto_linked = True
+                continue
             try:
                 await _store_scraped_tracklist(
                     session,
