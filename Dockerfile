@@ -103,7 +103,7 @@ RUN apt-get update \
     && command -v rsync ssh Xvfb
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /bin/
 
 # Install dependencies first (cache layer)
 COPY pyproject.toml uv.lock ./

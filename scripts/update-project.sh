@@ -53,7 +53,7 @@ PYTHON_VERSION=""
 # relative `"COOLDOWN_DAYS days"` window present and uniform across every
 # pyproject.toml, paired with Dependabot's matching cooldown.default-days so fresh
 # floors are never pinned. See ensure_cooldown_window() for the full rationale.
-COOLDOWN_DAYS=7
+COOLDOWN_DAYS=2
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 CHANGES_MADE=false
 
