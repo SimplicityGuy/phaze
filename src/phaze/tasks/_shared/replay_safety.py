@@ -53,8 +53,6 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
     {
         "process_file",
         "extract_file_metadata",
-        "search_tracklist",
-        "scrape_and_store_tracklist",
         "match_tracklist_to_discogs",
         "generate_proposals",
         "push_file",

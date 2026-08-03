@@ -23,6 +23,7 @@ Filenames are invented text describing public events; no archive identifier appe
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -194,6 +195,43 @@ class TestPerformLookupHappyPath:
         search, renderer = anchor_lookup(attempts=3)
         attempt = await perform_lookup(candidate_for(ANCHOR_FILENAME), search=search, renderer=renderer)
         assert attempt.host_requests == 4  # 1 search + 3 navigations
+
+    async def test_site_text_is_mojibake_repaired_at_the_ingest_boundary(self) -> None:
+        """phaze-x4ux, carried onto the drain: repair the SITE's text ONCE, where it enters.
+
+        ``artist`` and ``event`` are the exact columns ``tracklists.search_vector`` is a GENERATED
+        column over, so a double-encoded value here is not cosmetic -- it is INDEXED, and the file
+        it belongs to becomes unfindable by its own artist's name. The file side of the match is
+        repaired upstream (``derive_query`` / ``original_filename_repaired``); this is the other
+        side, which is an external source that can carry its own mis-decode. The repair is
+        idempotent, so the clean rows every other test in this module uses are unaffected.
+        """
+        rows = load_search("time-warp-2024")
+        broken = replace(next(r for r in rows if r.external_id == ANCHOR_ID), artist="Sven VÃ¤th", event="Time WarpÃ©")
+        search = FakeSearch(rows=[broken])
+        renderer = FakeRenderer(html=load_render(ANCHOR_ID))
+
+        attempt = await perform_lookup(candidate_for(ANCHOR_FILENAME), search=search, renderer=renderer)
+
+        assert attempt.outcome is LookupOutcome.FOUND
+        assert attempt.artist == "Sven Väth"
+        assert attempt.event == "Time Warpé"
+
+    async def test_a_row_with_no_artist_or_event_text_survives_the_repair(self) -> None:
+        """The repair must not turn a legitimately absent value into an empty string.
+
+        ``TracklistSearchResult.artist``/``event`` are optional precisely because a real results
+        page mixes set rows with promo/aftermovie rows that have neither. ``None`` and ``""`` mean
+        different things to ``_append_version``'s never-null-out-a-good-value rule.
+        """
+        rows = load_search("time-warp-2024")
+        anchor = next(r for r in rows if r.external_id == ANCHOR_ID)
+        blanked = replace(anchor, event=None)
+        search = FakeSearch(rows=[blanked])
+        renderer = FakeRenderer(html=load_render(ANCHOR_ID))
+
+        attempt = await perform_lookup(candidate_for(ANCHOR_FILENAME), search=search, renderer=renderer)
+        assert attempt.event is None
 
     async def test_the_short_listing_parses_too(self) -> None:
         """Two page shapes, so the parser is not proven only against the anchor."""

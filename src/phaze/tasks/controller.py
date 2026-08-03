@@ -3,8 +3,8 @@
 Control role: runs the application server's SAQ worker pool. Fileless tasks only, e.g.:
 - generate_proposals (LLM-driven rename suggestions)
 - match_tracklist_to_discogs (Discogsography HTTP API)
-- search_tracklist + scrape_and_store_tracklist (1001Tracklists scraping)
-- refresh_tracklists (monthly cron)
+- drain_tracklists + tracklist_drain_status (the 1001Tracklists drain -- operator-initiated, NO cron)
+- refresh_tracklists (operator-initiated re-arm of the drain for specific pages -- NO cron)
 - reap_stalled_scans, recover_orphaned_work, stage_cloud_window, submit_cloud_job,
   reconcile_cloud_jobs (added in later phases -- see the ``settings`` dict below for the
   authoritative, current ``functions`` / ``cron_jobs`` list)
@@ -49,7 +49,7 @@ from phaze.tasks.release_awaiting_cloud import stage_cloud_window
 from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.submit_cloud_job import submit_cloud_job
-from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 
 
@@ -298,8 +298,11 @@ settings = {
     "functions": [
         generate_proposals,
         match_tracklist_to_discogs,
-        search_tracklist,
-        scrape_and_store_tracklist,
+        # phaze-2akf: the legacy search_tracklist / scrape_and_store_tracklist pair is GONE (its
+        # detail-page selectors matched zero nodes and it had no browser to clear Turnstile with).
+        # What remains of that module is refresh_tracklists, now an operator-triggered re-arm of the
+        # drain for specific pages -- registered here as an enqueueable function with NO CronJob.
+        refresh_tracklists,
         # phaze-fq9h.7: one BOUNDED SLICE of the resumable 1001Tracklists drain, plus its
         # request-free status read. Registered as operator-enqueueable functions with NO CronJob,
         # deliberately -- the epic's ethics bound makes the drain operator-initiated rather than a
@@ -339,18 +342,15 @@ settings = {
     ],
     "concurrency": get_settings().worker_max_jobs,
     "cron_jobs": [
-        # phaze-tkd0: give the monthly refresh an explicit UNBOUNDED budget (mirrors the
-        # scan_directory pattern at routers/pipeline_scans.py). With no explicit timeout, SAQ's
-        # Worker.schedule() enqueues the Job at the SAQ-library default (10s), which
-        # apply_project_job_defaults (a before_enqueue hook, also applied to cron-scheduled jobs)
-        # only raises to worker_job_timeout=600s. refresh_tracklists loops in-process over every
-        # stale/unresolved tracklist, sleeping 60-300s jitter per item PLUS an 8-12s rate-limited
-        # scrape (average ~200s/item) -- any run touching more than ~3 candidates was hard-cancelled
-        # by asyncio.wait_for at the 600s wall, retried up to worker_max_retries times, and recorded
-        # FAILED every time without ever reaching the rest of the matched set (bughunt-2026-07-27).
-        CronJob(refresh_tracklists, cron="0 3 1 * *", timeout=0),  # type: ignore[type-var]
+        # phaze-2akf: there is deliberately NO refresh_tracklists CronJob any more. The monthly
+        # "re-fetch everything older than 90 days" sweep that used to live here contradicted the
+        # drain's cache -- which is built on "a published tracklist does not change" and therefore
+        # never re-fetches -- and was a second, unbounded consumer of a whole-host budget of ~1
+        # request / 8 s. Operator decision (2026-08-03): the drain keeps never re-fetching, and
+        # refresh becomes on-demand and targeted. It is registered in `functions` above so the admin
+        # UI can enqueue it; nothing schedules it.
         # PR4: every-minute stall reaper (control-only -- needs ctx["async_session"]).
-        # 5-field standard cron form, matching refresh_tracklists above.
+        # 5-field standard cron form.
         CronJob(reap_stalled_scans, cron="* * * * *"),  # type: ignore[type-var]
         # phaze-e57w: every-minute reaper for zombie 'aborting' SAQ rows (control-only -- needs
         # ctx["async_session"]). Same cadence/shape as reap_stalled_scans.

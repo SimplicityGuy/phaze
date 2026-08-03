@@ -61,6 +61,6 @@ async def test_read_counters_returns_merged_dict_for_all_functions() -> None:
 async def test_read_counters_covers_all_functions() -> None:
     redis = FakeRedis()
     counters = await read_counters(redis)
-    assert len(counters) == len(PIPELINE_FUNCTIONS) == 7
+    assert len(counters) == len(PIPELINE_FUNCTIONS) == 5
     for fn in PIPELINE_FUNCTIONS:
         assert counters[fn] == {"enqueued": 0, "completed": 0}

@@ -84,6 +84,41 @@ class TestFunnel:
         assert (queue.stats.skipped_scraped, queue.stats.skipped_cue, queue.stats.skipped_embedded) == (1, 1, 1)
         assert queue.stats.queued == 1
 
+    def test_a_forced_file_is_re_admitted_past_the_already_tracklisted_filter(self) -> None:
+        """phaze-2akf: ``force_file_ids`` is the refresh override, and it is deliberately narrow.
+
+        The funnel's entire job is to never look a set up twice, so the only honest way to ask again
+        is an explicit, per-file override. It is counted separately (``refresh_forced``) rather than
+        folded into ``already_tracklisted``, so a refresh reads as work the funnel would otherwise
+        have removed instead of looking like the filter silently stopped working.
+        """
+        answered = signals("A - Live @ E 2024-04-12.mp3", duration=3600.0, has_scraped_tracklist=True)
+        untouched = signals("B - Live @ E 2024-04-13.mp3", duration=3600.0, has_scraped_tracklist=True)
+
+        without = build_queue_from_signals([answered, untouched], {})
+        assert without.stats.queued == 0
+        assert without.stats.refresh_forced == 0
+
+        forced = build_queue_from_signals([answered, untouched], {}, force_file_ids=[answered.file_id])
+        assert forced.stats.queued == 1
+        assert forced.stats.refresh_forced == 1
+        assert forced.stats.already_tracklisted == 1, "only the un-forced file is still counted as skipped"
+
+    def test_forcing_does_not_override_the_cache(self) -> None:
+        """A flag left behind on an answered set must be inert, not a permanent re-query.
+
+        ``refresh_tracklists`` clears the positive cache row and sets the flag in the SAME
+        transaction. If only the flag survives -- a stale flag, or a hand-set one -- the set is
+        re-admitted to the funnel but the cache still answers, so it lands in ``cached`` and costs
+        no request. That layering is what bounds the damage of a leaked flag.
+        """
+        answered = signals("A - Live @ E 2024-04-12.mp3", duration=3600.0, has_scraped_tracklist=True)
+        key = build_queue_from_signals([answered], {}, force_file_ids=[answered.file_id]).entries[0].unique_set.key
+
+        queue = build_queue_from_signals([answered], {key: CacheVerdict(key, CacheDecision.HIT_POSITIVE)}, force_file_ids=[answered.file_id])
+        assert queue.stats.queued == 0
+        assert len(queue.cached) == 1
+
     def test_tracks_are_classified_out(self) -> None:
         corpus = [
             signals("A - Live @ E 2024-04-12.mp3", duration=3600.0),

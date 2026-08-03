@@ -36,8 +36,11 @@ from tests._queue_fakes import FakeRedis
 # ``_KEY_BUILDERS`` fails ``test_every_routable_task_is_keyed_or_exempt`` loud.
 _UNKEYED_TASKS: frozenset[str] = frozenset(
     {
-        # cron-only periodic refresh; never operator-enqueued, so repeated runs are
-        # intentionally distinct jobs (no dedup target).
+        # phaze-2akf: an operator-triggered re-arm of the drain for a chosen SET of pages (it was
+        # a monthly cron). Unkeyed because a natural key would have to be the target list, and two
+        # refreshes naming overlapping-but-different sets are genuinely distinct work -- collapsing
+        # them would silently drop pages the operator asked for. It spends no host requests, so a
+        # duplicate run costs nothing worth deduping.
         "refresh_tracklists",
         # repeated directory scans are intentionally distinct (a re-scan of the same
         # root is a NEW unit of work, not a dedup no-op).
@@ -108,10 +111,16 @@ async def test_extract_file_metadata_key() -> None:
 
 
 async def test_tracklist_keyed_by_tracklist_id() -> None:
+    """phaze-2akf: the tracklist-id-keyed builder is now match_tracklist_to_discogs alone.
+
+    ``scrape_and_store_tracklist`` shared this key shape and went with the legacy scrape path. The
+    shape itself is what matters here -- a re-enqueue for the SAME tracklist must dedup -- and it
+    is still exercised by the surviving sibling.
+    """
     tid = uuid.uuid4()
-    job = Job(function="scrape_and_store_tracklist", kwargs={"tracklist_id": tid})
+    job = Job(function="match_tracklist_to_discogs", kwargs={"tracklist_id": tid})
     await apply_deterministic_key(job)
-    assert job.key == f"scrape_and_store_tracklist:{tid}"
+    assert job.key == f"match_tracklist_to_discogs:{tid}"
 
 
 async def test_generate_proposals_batch_hash_is_order_independent() -> None:

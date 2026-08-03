@@ -45,9 +45,12 @@ def test_routing_for_agent_function() -> None:
 
 def test_routing_for_controller_function() -> None:
     assert routing_for_function("generate_proposals") == "controller"
-    assert routing_for_function("search_tracklist") == "controller"
-    assert routing_for_function("scrape_and_store_tracklist") == "controller"
     assert routing_for_function("match_tracklist_to_discogs") == "controller"
+    # phaze-2akf: search_tracklist / scrape_and_store_tracklist were the other two controller
+    # examples here and went with the legacy scrape path. submit_cloud_job keeps a file_id-keyed
+    # controller task under this assertion, which is the shape the removed pair covered.
+    assert routing_for_function("submit_cloud_job") == "controller"
+    assert routing_for_function("drain_tracklists") == "controller"
 
 
 def test_routing_for_unknown_function_raises() -> None:
@@ -170,12 +173,12 @@ async def test_insert_if_absent_does_not_overwrite_existing(session) -> None:  #
 
 @pytest.mark.asyncio
 async def test_insert_if_absent_inserts_when_missing(session) -> None:  # type: ignore[no-untyped-def]
-    key = "search_tracklist:xyz"
-    await insert_ledger_if_absent(session, key=key, function="search_tracklist", kwargs={"file_id": "xyz"})
+    key = "submit_cloud_job:xyz"
+    await insert_ledger_if_absent(session, key=key, function="submit_cloud_job", kwargs={"file_id": "xyz"})
     await session.commit()
 
     row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == key))).scalar_one()
-    assert row.function == "search_tracklist"
+    assert row.function == "submit_cloud_job"
     assert row.routing == "controller"
 
 
@@ -385,10 +388,10 @@ async def test_upsert_stores_and_refreshes_timeout_and_retries(session) -> None:
 async def test_upsert_defaults_timeout_and_retries_to_none(session) -> None:  # type: ignore[no-untyped-def]
     """timeout/retries are OPTIONAL: a caller that omits them stores NULL, and replay then falls
     back to the queue's before_enqueue defaults exactly as before (backward-compatible)."""
-    await upsert_ledger_entry(session, key="search_tracklist:s1", function="search_tracklist", kwargs={"file_id": "s1"})
+    await upsert_ledger_entry(session, key="submit_cloud_job:s1", function="submit_cloud_job", kwargs={"file_id": "s1"})
     await session.commit()
 
-    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == "search_tracklist:s1"))).scalar_one()
+    row = (await session.execute(select(SchedulingLedger).where(SchedulingLedger.key == "submit_cloud_job:s1"))).scalar_one()
     assert row.timeout is None
     assert row.retries is None
 

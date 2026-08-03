@@ -31,6 +31,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
 from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.services.tracklist_priority import (
+    clear_flags,
     flag_file_for_lookup,
     get_file_tracklist_review,
     is_flagged,
@@ -107,6 +108,44 @@ class TestFlagPersistence:
         await session.commit()
 
         assert await is_flagged(session, file.id) is False
+
+    async def test_clear_flags_retires_a_whole_set_at_once(self, session: AsyncSession, make_file) -> None:  # type: ignore[no-untyped-def]
+        """phaze-2akf: the drain's post-answer sweep, bulk over a unique set's members.
+
+        Load-bearing rather than convenience: a flag on an already-tracklisted file is now the
+        REFRESH override, so one left standing after the drain answers the set would re-admit that
+        file past the funnel's already-tracklisted filter on every future pass, forever.
+        """
+        first = await make_file(original_filename=LIVE_SET_FILENAME)
+        second = await make_file(original_filename="Another Artist - Live @ Somewhere 2024-05-01.mp3")
+        await flag_file_for_lookup(session, first.id, now=NOW)
+        await flag_file_for_lookup(session, second.id, now=NOW)
+        await session.commit()
+
+        await clear_flags(session, [first.id, second.id])
+        await session.commit()
+
+        assert await load_flagged_file_ids(session) == set()
+
+    async def test_clear_flags_with_no_ids_is_a_noop_not_an_unfiltered_delete(
+        self,
+        session: AsyncSession,
+        make_file,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """An empty member list must not become ``DELETE FROM tracklist_priority_flags``.
+
+        ``in_([])`` happens to be safe in SQLAlchemy, but the early return states the intent where a
+        future refactor can see it -- wiping every operator's outstanding request because one set
+        had no members is not a failure anyone would notice quickly.
+        """
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        await flag_file_for_lookup(session, file.id, now=NOW)
+        await session.commit()
+
+        await clear_flags(session, [])
+        await session.commit()
+
+        assert await load_flagged_file_ids(session) == {file.id}
 
 
 class TestFileTracklistReview:
