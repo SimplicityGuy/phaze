@@ -1,0 +1,11 @@
+{
+  "bead": "phaze-fq9h.6",
+  "captured_utc": "2026-08-03T17:01:41Z",
+  "final_url": "https://www.1001tracklists.com/search/result.php",
+  "html_bytes": 154854,
+  "parsed_results": 30,
+  "query": "Amelie Lens Awakenings",
+  "row_selector_matches": 30,
+  "status": 200,
+  "why": "Recurring festival, no year, different artist -- corroborates that the row selectors and the multi-year decoy shape are not specific to the Sven Vath rows."
+}
