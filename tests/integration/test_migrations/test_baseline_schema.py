@@ -78,6 +78,7 @@ _EXPECTED_TABLES = frozenset(
         "scheduling_ledger",
         "stage_skip",
         "tag_write_log",
+        "tracklist_lookup_cache",
         "tracklist_tracks",
         "tracklist_versions",
         "tracklists",
@@ -152,6 +153,13 @@ _FROZEN_AUTOGEN_DRIFT = frozenset(
         ("modify_type", "proposals.updated_at"),
         ("modify_type", "scan_batches.created_at"),
         ("modify_type", "scan_batches.updated_at"),
+        # phaze-fq9h.3 / migration 049: tracklist_lookup_cache's TimestampMixin columns are
+        # timestamptz in the DB (following 040's tag_write_log precedent -- the drain records
+        # attempt times across restarts and a naive column there would be a real defect), while
+        # TimestampMixin's `Mapped[datetime]` is naive. Same long-standing ORM-side gap every table
+        # above carries; the new table inherits it rather than introducing a new kind of drift.
+        ("modify_type", "tracklist_lookup_cache.created_at"),
+        ("modify_type", "tracklist_lookup_cache.updated_at"),
         ("remove_column", "files.search_vector"),
         ("remove_column", "metadata.search_vector"),
         ("remove_column", "tracklists.search_vector"),
@@ -217,8 +225,9 @@ def test_baseline_is_the_only_migration() -> None:
     nullable files.original_filename_repaired mojibake-repair column; 046 (phaze-0jpe.4) drops
     fingerprint_results and narrows stage_skip's CHECK; 047 (phaze-s7mb) drops the never-populated
     analysis.fingerprint column; 048 (phaze-bto9) adds the files (original_filename, id) btree the
-    tag-write review keyset paging orders and ranges on. Any other resurrected 0xx chain file is a
-    regression.
+    tag-write review keyset paging orders and ranges on; 049 (phaze-fq9h.3) adds the
+    tracklist_lookup_cache table that stops the rate-capped 1001TL drain re-asking questions it has
+    already paid for. Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -232,6 +241,7 @@ def test_baseline_is_the_only_migration() -> None:
         "046_drop_fingerprint_schema.py",
         "047_drop_analysis_fingerprint_column.py",
         "048_files_original_filename_id_btree.py",
+        "049_tracklist_lookup_cache.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -266,7 +276,7 @@ async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
     """A bare ``upgrade head`` on an empty DB lands at the current head (048: tag-write review btree)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "048"
+    assert version == "049"
 
 
 @pytest.mark.asyncio
@@ -393,7 +403,11 @@ async def test_tag_write_log_timestamps_are_timezone_aware(migrated_engine: Asyn
 
 @pytest.mark.asyncio
 async def test_expected_tables_present(migrated_engine: AsyncEngine) -> None:
-    """The baseline creates the full 22-table inventory the chain produced."""
+    """``upgrade head`` produces the full table inventory: the 039 baseline plus every later migration.
+
+    ``tracklist_lookup_cache`` is migration 049's additive table (phaze-fq9h.3), not part of the
+    baseline -- this fixture upgrades to HEAD, so the inventory is cumulative.
+    """
     async with migrated_engine.connect() as conn:
         rows = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
     tables = set(rows) - {"alembic_version"}
@@ -536,7 +550,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "048"
+        assert version == "049"
     finally:
         if engine is not None:
             await engine.dispose()
