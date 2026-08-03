@@ -100,6 +100,7 @@ from phaze.services.route_control import get_route_control
 from phaze.services.stage_status import failed_clause, stage_status_sort_case
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.web.static import static_asset_url
 
 
 logger = structlog.get_logger(__name__)
@@ -367,6 +368,9 @@ if TYPE_CHECKING:
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-315t: fingerprinted, cache-forever static asset URLs. `pipeline/files.html` extends
+# `base.html`, which carries the app.css link + favicon set.
+templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["pipeline"])
 
 # Hold references to background enqueue tasks to prevent GC (same pattern as scan.py). Typed

@@ -64,6 +64,7 @@ from phaze.services.execution_dispatch import (
 from phaze.services.execution_queries import get_execution_log_detail, get_execution_logs_page, get_execution_stats
 from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE
 from phaze.services.pipeline import count_proposal_pending_files
+from phaze.web.static import static_asset_url
 
 
 if TYPE_CHECKING:
@@ -80,6 +81,9 @@ logger = structlog.get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-315t: fingerprinted, cache-forever static asset URLs. `execution/audit_log.html`
+# extends `base.html`, which carries the app.css link + favicon set.
+templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["execution"])
 
 # phaze-5zyv: how many consecutive empty (no exec:{batch_id} hash) SSE poll ticks to tolerate

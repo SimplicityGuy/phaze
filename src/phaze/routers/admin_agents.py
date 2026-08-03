@@ -54,6 +54,7 @@ from phaze.services.agent_liveness import ComputeLane, classify, derive_compute_
 from phaze.services.pg_text import contains_pg_invalid_chars
 from phaze.services.pipeline import _agent_stage_buckets, get_agent_lane_depths, get_agent_recent_scans
 from phaze.utils.humanize import relative_time
+from phaze.web.static import static_asset_url
 
 
 # The five pipeline stages surfaced in the agent-activity COUNT matrix (DRILL-02 / D-04). TRACKLIST is
@@ -131,6 +132,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Expose the relative-time helper to all templates rendered through this
 # router. The agents_table partial uses it via {{ humanize_relative_time(...) }}.
 templates.env.globals["humanize_relative_time"] = relative_time
+# phaze-315t: fingerprinted, cache-forever static asset URLs. `admin/agents.html` extends
+# `base.html`, which carries the app.css link + favicon set.
+templates.env.globals["static_url"] = static_asset_url
 
 router = APIRouter(prefix="/admin/agents", tags=["admin"])
 
