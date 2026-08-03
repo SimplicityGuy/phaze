@@ -1782,14 +1782,46 @@ async def test_d10_cell_b_callback_partial_failure_stays_terminal(session: Async
 
 @pytest.mark.asyncio
 async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSession) -> None:
-    """CR-02: the D-10 gate must NOT raise on a DB-read (naive) ``enqueued_at`` vs aware ``failed_at``.
+    """CR-02: the D-10 gate compares a DB-read ``enqueued_at`` against an aware ``failed_at`` without raising.
 
-    ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022) -> asyncpg returns
-    it NAIVE, while ``metadata.failed_at`` is ``timezone=True`` (aware). The Cell A/B tests above build the
-    ledger row IN MEMORY with an aware ``enqueued_at`` and never round-trip through ``get_ledger_rows``, so
-    they miss the mismatch. Reading the row back from the DB (the production ``recover_orphaned_work`` path)
-    makes ``enqueued_at`` naive; a bare ``naive <= aware`` raises ``TypeError`` and aborts the whole recovery
-    run. This asserts the coercion holds against the real DB representation.
+    Originally this test's premise was that ``scheduling_ledger.enqueued_at`` came back NAIVE (it was
+    ``TIMESTAMP WITHOUT TIME ZONE``) while ``metadata.failed_at`` came back aware, so a bare
+    ``naive <= aware`` raised ``TypeError`` and aborted the whole recovery run. phaze-cz3m / migration 049
+    made every timestamp column ``timestamptz``, so that premise is now FALSE by construction -- and the
+    inverted assertion below (``tzinfo is not None``) is what keeps it that way: if anything ever restores
+    a naive column here, this fails rather than silently reverting to the old hazard.
+
+    The Cell A/B tests above build the ledger row IN MEMORY and never round-trip through
+    ``get_ledger_rows``, so this remains the only case that exercises the real DB representation.
+    The gate's defensive naive->UTC coercion is covered separately by
+    ``test_d10_gate_coerces_a_naive_enqueued_at``, which no longer depends on the schema to produce one.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    # Read the row back the way production does. Post-049 this is tz-AWARE.
+    row = next(r for r in await get_ledger_rows(session) if r.key == key)
+    assert row.enqueued_at.tzinfo is not None, "post-049 the ledger's enqueued_at must round-trip tz-aware"
+    done_sets = await _build_done_sets(session, _ledger_fids([row]))
+
+    # The committed row's server-default enqueued_at is AFTER failed_at (an orphaned retry) -> re-drives,
+    # but the point is that the comparison COMPLETES without a TypeError.
+    assert is_domain_completed(row, done_sets) is False
+
+
+@pytest.mark.asyncio
+async def test_d10_gate_coerces_a_naive_enqueued_at(session: AsyncSession) -> None:
+    """The gate's naive->UTC coercion still holds, proven WITHOUT relying on the schema to emit a naive stamp.
+
+    Before phaze-cz3m the naive value arrived for free from a ``TIMESTAMP WITHOUT TIME ZONE`` column, so
+    the coercion was covered as a side effect of the schema being wrong. Migration 049 removed that
+    source, which would have left the coercion untested and free to be deleted as dead defence. Setting
+    the naive stamp explicitly keeps the behaviour pinned to intent rather than to a schema accident.
+
     MUTATION: dropping the ``tzinfo``-coercion at the gate (bare ``row.enqueued_at <= failed_at``) -> RED
     (``TypeError: can't compare offset-naive and offset-aware datetimes``).
     """
@@ -1798,16 +1830,15 @@ async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSessi
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
-    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)  # committed -> naive enqueued_at
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
-    # Read the row back the way production does -> enqueued_at is NAIVE (from the WITHOUT TIME ZONE column).
     row = next(r for r in await get_ledger_rows(session) if r.key == key)
-    assert row.enqueued_at.tzinfo is None  # guards the premise: the DB really returns a naive stamp
     done_sets = await _build_done_sets(session, _ledger_fids([row]))
 
-    # The committed row's server-default enqueued_at is AFTER failed_at (an orphaned retry) -> re-drives,
-    # but the point is that the comparison COMPLETES without a TypeError.
-    assert is_domain_completed(row, done_sets) is False
+    # Force the hazard the coercion exists for: a naive stamp that PRE-DATES the aware failure marker.
+    # Without coercion this comparison raises; with it the row reads as domain-complete (terminal).
+    row.enqueued_at = (failed_at - timedelta(minutes=5)).replace(tzinfo=None)
+    assert is_domain_completed(row, done_sets) is True
 
 
 def test_d10_analyze_clears_failed_at_but_metadata_does_not() -> None:

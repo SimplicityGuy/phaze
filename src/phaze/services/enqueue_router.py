@@ -128,6 +128,21 @@ LANES: tuple[str, ...] = tuple(LANE_TASKS)
 order of :data:`LANE_TASKS`. ``all_lane_queues`` iterates this so depth readers and the
 compose split enumerate lanes deterministically."""
 
+LANE_CONCURRENCY_SETTING: dict[str, str] = {
+    "analyze": "lane_analyze_concurrency",
+    "meta": "lane_meta_concurrency",
+    "io": "lane_io_concurrency",
+}
+"""Lane -> the ``Settings`` attribute carrying that lane worker's concurrency (design defaults 4/2/4).
+
+Lives here, beside :data:`LANES`, because BOTH ends need it and they are in different planes: the
+CONSUMER (``phaze.tasks.agent_worker``) sizes its own worker from it, and the CONTROL-side guard
+(``phaze.services.queue_introspection``) needs the same number to answer "are more rows stranded
+``active`` than this lane could ever have been running?" (phaze-o0n6). Duplicating the map would let
+those two answers drift the moment a lane is added or a knob renamed; totality against :data:`LANES` is
+asserted in tests.
+"""
+
 AGENT_TASKS: frozenset[str] = frozenset().union(*LANE_TASKS.values())
 """File-touching tasks a file-server agent worker consumes -- the DERIVED union of every
 :data:`LANE_TASKS` lane (single source of truth). Kept as a flat frozenset so existing
