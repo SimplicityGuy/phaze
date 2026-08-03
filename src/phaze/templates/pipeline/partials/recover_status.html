@@ -1,0 +1,66 @@
+{# Recovery OUTCOME fragment (phaze-71nz). GET /pipeline/recover/status, polled by
+   recover_response.html and replacing it (and then itself) via hx-swap="outerHTML".
+
+   WHY THIS EXISTS. POST /pipeline/recover fire-and-forgets, so its response can only ever say
+   "started". On 2026-07-31 one Recover replayed 430 orphaned s3_upload rows whose stored payloads
+   carried presigned S3 URLs signed at the ORIGINAL enqueue; 428 ran their retries out to terminal
+   `failed` (122x HTTP 403, 257x HTTP 400) and zero succeeded — while the operator's UI showed the
+   same green "Recovery started — re-enqueuing any orphaned work across all stages" it shows for a
+   clean run. Recovery is an incident tool; the person pressing this button is already having a bad
+   day and must not be told a stage was recovered when it was knowingly skipped.
+
+   The `unreplayable` branch is the whole point: it is NOT a variant of the success copy. It names
+   the stages that were deliberately left un-recovered, says the files are still waiting, and says
+   what will pick them up.
+
+   The poll keeps running ONLY while `running` — every terminal branch omits hx-trigger, so the
+   fragment settles and stops hitting the endpoint. #}
+{% if running %}
+    <div id="discover-recover-status"
+         hx-get="/pipeline/recover/status"
+         hx-trigger="every 2s"
+         hx-swap="outerHTML">
+        <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+            Recovery started — re-enqueuing any orphaned work across all stages.
+        </span>
+        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Already-running work is deduplicated — nothing will double-enqueue.
+        </span>
+    </div>
+{% elif failed %}
+    <div id="discover-recover-status">
+        <span class="inline-flex items-center gap-2 text-sm text-rose-600 dark:text-rose-400 font-medium">
+            Recovery failed before it finished — nothing further was re-enqueued.
+        </span>
+        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Check the controller logs, then retry. Orphaned work stays in the scheduling ledger, so nothing was lost.
+        </span>
+    </div>
+{% elif result is none %}
+    <div id="discover-recover-status">
+        <span class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+            No recovery has been run in this controller process yet.
+        </span>
+    </div>
+{% elif unreplayable %}
+    <div id="discover-recover-status">
+        <span class="inline-flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 font-medium">
+            Recovery finished — {{ reenqueued }} re-enqueued, but {{ unreplayable }} item{{ '' if unreplayable == 1 else 's' }} could NOT be recovered and {{ 'was' if unreplayable == 1 else 'were' }} skipped.
+        </span>
+        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Skipped: {{ unreplayable_stages|join(', ') }}. Their queued work carried credentials that had expired and could not be regenerated
+            (no online file-server agent, or no staging bucket recorded). Those files are NOT covered by this run — they stay in the
+            scheduling ledger and the staging pass or a later Recover will pick them up. Nothing was double-enqueued and nothing was lost.
+        </span>
+    </div>
+{% else %}
+    <div id="discover-recover-status">
+        <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+            Recovery complete — {{ reenqueued }} re-enqueued, {{ already_running }} already running.
+        </span>
+        <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {% if errored %}{{ errored }} row{{ '' if errored == 1 else 's' }} hit a transient error and stayed in the ledger for the next pass. {% endif %}
+            Already-running work was deduplicated — nothing double-enqueued.
+        </span>
+    </div>
+{% endif %}

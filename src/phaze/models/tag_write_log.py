@@ -42,7 +42,11 @@ class TagWriteLog(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     discrepancies: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    written_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Migration 040 (phaze-36rc) moved this column to ``timestamptz`` in the database but left the
+    # model declaring bare ``DateTime`` -- so the ORM went on claiming naive while asyncpg decoded
+    # aware. phaze-cz3m closes that half-fix; see ``models.base.TimestampMixin`` for why the
+    # mismatch is a live defect and not a cosmetic one.
+    written_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     file: Mapped[FileRecord] = relationship("FileRecord", foreign_keys=[file_id], lazy="noload")
 

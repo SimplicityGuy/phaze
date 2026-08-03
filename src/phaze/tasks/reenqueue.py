@@ -77,6 +77,42 @@ rows; controller rows route to ``ctx["queue"]``. An offline / non-fileserver own
 after a cold reboot; Pitfall 3) logs a warning and skips THAT owner's agent-routed rows instead of
 raising -- never rerouting them onto another agent. The cached ``task_router`` is reused, never
 reconstructed per call (Pitfall 4).
+
+THE REPLAY-SAFETY INVARIANT (phaze-71nz -- READ THIS BEFORE ADDING A KEYED PRODUCER):
+**A ``scheduling_ledger`` payload must be replayable at an ARBITRARY FUTURE TIME.** Verbatim replay
+is correct only for a TIME-INVARIANT payload; a payload carrying material minted against a clock
+replays DEAD material. Measured 2026-07-31: one operator Recover replayed 430 orphaned ``s3_upload``
+rows whose payloads embedded presigned S3 PUT URLs signed at the ORIGINAL enqueue; 428 ran their
+retries out to terminal ``failed`` at the object store (122x HTTP 403, 257x HTTP 400) and ZERO
+succeeded -- while the same run's 2,512 ``process_file`` rows replayed fine, because that payload
+carries nothing that expires. Recovery is an INCIDENT tool, so "replayed and guaranteed to fail" had
+to stop being indistinguishable from "replayed and will succeed".
+
+The invariant is now carried in THREE enforced pieces (see ``tasks/_shared/replay_safety.py``):
+
+1. **Classification.** Every keyed producer is declared either ``LEDGER_REPLAY_TIME_INVARIANT``
+   (replay the stored payload verbatim) or ``LEDGER_REPLAY_REGENERATED`` (payload carries
+   time-limited material -- NEVER replay it; re-derive from durable inputs). The split is TOTAL and
+   DISJOINT over ``_KEY_BUILDERS``, so the NEXT producer to store expiring material cannot slip
+   through by omission the way ``s3_upload`` did.
+2. **Regeneration (D-71nz, option (a)).** ``s3_upload`` -- today's only regenerated member -- is
+   re-derived through :data:`_REPLAY_REGENERATORS` by calling the SAME live producer that mints the
+   URLs (``cloud_staging.redrive_upload`` -> ``_stage_file_to_s3``: abort the prior multipart,
+   initiate a fresh one, presign fresh part URLs, re-park the enqueue), keyed off durable inputs only
+   (``file_id`` + the row's recorded ``cloud_job.staging_bucket``). Recovery duplicates NO staging
+   logic and therefore cannot drift from it. When the durable inputs are not there (no ``FileRecord``,
+   no resolvable staging bucket, no online fileserver), the row is tallied ``unreplayable`` and
+   SKIPPED -- never faked with stale credentials.
+3. **A general replay-time refusal.** :func:`_replay_row` runs ``find_time_limited_paths`` over EVERY
+   payload it is about to replay verbatim and REFUSES (tally ``unreplayable`` + an ERROR log naming
+   the offending payload paths) if it finds presign/token/expiry material. This is deliberately NOT
+   pinned to ``s3_upload``: a future producer that stores expiring material and is mis-classified as
+   time-invariant is caught by the substrate rather than by an incident.
+
+The per-stage tally therefore distinguishes ``unreplayable`` (knowingly skipped -- the work is NOT
+re-enqueued and needs another owner) from ``skipped`` (deterministic-key dedup -- the work is already
+live), and ``POST /pipeline/recover`` surfaces the difference instead of always reading "Recovery
+started".
 """
 
 from __future__ import annotations
@@ -96,16 +132,19 @@ from phaze.enums.stage import Stage
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.services import cloud_staging
 from phaze.services.backends import IN_FLIGHT
 from phaze.services.enqueue_router import NoActiveAgentError, lane_for_task, select_agent_by_id
 from phaze.services.pipeline import count_inflight_jobs, get_live_job_keys
+from phaze.services.s3_staging import S3StagingError
 from phaze.services.scheduling_ledger import get_ledger_rows, insert_ledger_if_absent
 from phaze.services.stage_status import domain_completed_clause, skipped_clause
 from phaze.tasks._shared.deterministic_key import _KEY_BUILDERS
+from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Awaitable, Callable, Sequence
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -174,9 +213,27 @@ class _DoneSets:
     push_done: set[str]  # D-07: cloud_job.status='succeeded' OR domain_completed_clause(ANALYZE)
 
 
+TALLY_KEYS: tuple[str, ...] = ("reenqueued", "skipped", "errored", "unreplayable")
+"""The per-stage tally counters, in render order. FOUR outcomes, all semantically distinct:
+
+- ``reenqueued`` -- a fresh job landed on the queue; the work WILL run.
+- ``skipped``    -- the deterministic key deduped against a still-live job; the work is ALREADY
+  running. Benign; the stage is covered.
+- ``errored``    -- the replay itself blew up (a transient enqueue/connect failure, an unmapped
+  legacy function). The ledger row survives, so the next pass retries it.
+- ``unreplayable`` -- phaze-71nz. The row was DELIBERATELY not replayed, because replaying it would
+  enqueue a job guaranteed to fail: its payload carries time-limited material (presigned URL / token
+  / expiry) and either the regeneration inputs are unavailable or the producer is mis-classified as
+  time-invariant. The work is NOT covered by this run and needs another owner (the staging drain, a
+  later recovery once the fileserver is back). This is the counter the 2026-07-31 incident had no
+  way to express: 430 ``s3_upload`` rows were reported as ``reenqueued`` while every one of them was
+  guaranteed to 403.
+"""
+
+
 def _zero() -> dict[str, int]:
-    """Return a fresh zero per-stage tally."""
-    return {"reenqueued": 0, "skipped": 0, "errored": 0}
+    """Return a fresh zero per-stage tally (every counter in :data:`TALLY_KEYS`)."""
+    return dict.fromkeys(TALLY_KEYS, 0)
 
 
 def _ledger_fids(rows: Sequence[SchedulingLedger]) -> list[uuid.UUID]:
@@ -419,11 +476,13 @@ def is_domain_completed(row: SchedulingLedger, done_sets: _DoneSets) -> bool:
     if failed_at is None:
         return True  # done (a metadata row present, failed_at NULL) -> domain-complete
     # failed -> the D-10 cell: terminal only when the ledger row PRE-DATES the failure marker.
-    # ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022), so asyncpg
-    # returns it NAIVE in production, while ``metadata.failed_at`` is ``timezone=True`` (aware). Coerce
-    # the naive ledger stamp to UTC-aware before comparing -- a bare ``naive <= aware`` raises TypeError
-    # and would abort the whole recovery run (CR-02). The in-memory D-10 unit rows are already aware, so
-    # this is a no-op for them and the real fix only shows against a DB round-trip (see the CR-02 test).
+    # This coercion was load-bearing when ``scheduling_ledger.enqueued_at`` was ``TIMESTAMP WITHOUT TIME
+    # ZONE``: asyncpg returned it NAIVE while ``metadata.failed_at`` came back aware, and a bare
+    # ``naive <= aware`` raises TypeError, aborting the whole recovery run (CR-02). phaze-cz3m /
+    # migration 049 made every timestamp column ``timestamptz``, so a DB-read row is now aware and this
+    # is a no-op on the production path. KEPT deliberately: it costs one attribute check, and it is the
+    # difference between a TypeError that kills a recovery run and a correct comparison should a naive
+    # stamp ever reach here from a caller that did not come through the DB.
     enqueued_at = row.enqueued_at if row.enqueued_at.tzinfo is not None else row.enqueued_at.replace(tzinfo=UTC)
     return enqueued_at <= failed_at
 
@@ -443,7 +502,36 @@ async def _replay_row(queue: Any, row: SchedulingLedger, tally: dict[str, int]) 
     role default -- a 12x reduction that times out every long concert set on recovery (the
     recover-button timeout-loss bug). A NULL column (legacy/backfilled row, or a producer that set
     no explicit policy) is left out so the default applies exactly as before.
+
+    phaze-71nz -- THE REPLAY-SAFETY REFUSAL (the general guard, deliberately NOT pinned to any one
+    function). Before the enqueue, the payload is screened by ``find_time_limited_paths``. A hit
+    means the payload carries material minted against a clock (a presigned URL, a bearer token, an
+    explicit expiry), so replaying it verbatim would enqueue a job that is GUARANTEED to fail at
+    whatever authenticates it -- exactly the 428-of-430 ``s3_upload`` outcome. Such a row is REFUSED:
+    tallied ``unreplayable``, logged at ERROR with the offending payload paths (never the values --
+    they are credentials), and left in the ledger for an owner that can regenerate it.
+
+    A function declared ``LEDGER_REPLAY_REGENERATED`` never reaches here at all -- it is routed to
+    its regenerator in :data:`_REPLAY_REGENERATORS`. So a refusal HERE always means a producer wrote
+    expiring material into the ledger without declaring it, which is the root-cause class this guard
+    exists to make loud instead of silent.
     """
+    violations = find_time_limited_paths(row.payload)
+    if violations:
+        logger.error(
+            "recover_orphaned_work: REFUSING to replay a ledger payload carrying time-limited material -- "
+            "a scheduling_ledger payload must be replayable at an arbitrary future time (phaze-71nz). "
+            "Replaying it would enqueue a job guaranteed to fail at the credential check. Declare this "
+            "producer in replay_safety.LEDGER_REPLAY_REGENERATED and register a regenerator in "
+            "reenqueue._REPLAY_REGENERATORS, or stop storing the derived material in the payload.",
+            key=row.key,
+            function=row.function,
+            # PATHS only -- the values are live credentials and must never reach a log sink.
+            payload_paths=violations,
+        )
+        tally["unreplayable"] += 1
+        return
+
     # Job-control kwargs only when the ledger captured them (NULL => fall back to queue defaults).
     policy: dict[str, Any] = {}
     if row.timeout is not None:
@@ -482,6 +570,176 @@ async def _replay_row_isolated(queue: Any, row: SchedulingLedger, stages: dict[s
             "recover_orphaned_work: row replay failed -- row skipped this run, ledger entry remains for the next pass",
             key=row.key,
             function=row.function,
+        )
+        tally["errored"] += 1
+
+
+# --- phaze-71nz: regenerating replay for the time-limited producers ------------------------
+
+
+class UnreplayableRow(Exception):
+    """This ledger row CANNOT be replayed correctly RIGHT NOW -- skip it, never fake it.
+
+    Raised by a regenerator when the durable inputs it needs are unavailable (the ``FileRecord`` is
+    gone, no staging bucket resolves, no fileserver is online). It is NOT an error: the correct
+    outcome is a deliberate, TALLIED skip (``unreplayable``) with the reason logged, so the operator
+    can see that a stage was knowingly left uncovered. The alternative -- replaying the stored
+    payload anyway -- is precisely the 2026-07-31 defect (a stage burned into ``failed`` while the
+    HTTP layer reported success).
+
+    Distinct from a bare ``Exception`` out of a regenerator, which is a genuine fault and tallies
+    ``errored`` so the next pass retries the row.
+    """
+
+
+@dataclass(frozen=True)
+class _RegenTarget:
+    """A ledger row SNAPSHOT, detached from the ORM identity map before regeneration runs.
+
+    Unlike every replay path, a regenerator OWNS a transaction boundary: it commits on success and
+    ROLLS BACK on failure. Both expire the ORM instances loaded on that session -- so a
+    :class:`SchedulingLedger` held across the call becomes a lazy-load landmine. The next attribute
+    read (``row.key`` in the very log line reporting the skip, or the NEXT row's ``row.function`` on
+    the following loop iteration) fires IO from sync attribute access and raises ``MissingGreenlet``,
+    turning a deliberate, isolated skip into an exception that escapes the whole recovery run.
+
+    Snapshotting the three fields a regenerator needs before the loop starts removes the hazard by
+    construction rather than by remembering to re-fetch.
+    """
+
+    key: str
+    function: str
+    payload: dict[str, Any]
+
+
+async def _regenerate_s3_upload(session: AsyncSession, task_router: Any, target: _RegenTarget, tally: dict[str, int]) -> None:
+    """Re-drive an orphaned ``s3_upload`` row with FRESHLY presigned part URLs (D-71nz option (a)).
+
+    The stored payload's ``part_urls`` are presigned PUT URLs bounded by ``s3_presign_put_ttl_sec``
+    and signed at the ORIGINAL enqueue, so they are dead by the time a row has been orphaned long
+    enough to matter. Rather than replay them, this calls the SAME producer that mints them on the
+    live path -- ``cloud_staging.redrive_upload`` -> ``_stage_file_to_s3``: best-effort abort the
+    prior multipart, initiate a fresh one, presign fresh part URLs, refresh the ``cloud_job`` row and
+    PARK a fresh ``s3_upload`` enqueue. Recovery therefore duplicates ZERO staging logic and cannot
+    drift from the live path (the reason option (a) was chosen over excluding the stage outright).
+
+    The only inputs consumed are DURABLE: the row's ``payload["file_id"]`` and the recorded
+    ``cloud_job.staging_bucket`` / ``backend_id`` (``cloud_staging._redrive_bucket``, MKUE-02). Nothing
+    time-limited is read from the ledger payload at all.
+
+    Transaction discipline mirrors ``stage_file_to_s3``'s committing wrapper, because
+    ``redrive_upload`` deliberately calls the NO-COMMIT core (phaze-j2tm) and PARKS its enqueue
+    (phaze-grzo): commit the ``cloud_job`` UPLOADING row FIRST, then flush the parked enqueue, so the
+    worker-visible job can never precede the committed row it reads. On any failure the parked
+    enqueue is DROPPED (which also best-effort aborts the fresh multipart, phaze-cws5) and the
+    session is rolled back so the remaining rows in the recovery loop still see a usable session.
+
+    ``fired == 0`` means SAQ deduped the fresh enqueue against a still-incomplete ``s3_upload:<id>``
+    job (``flush_pending_s3_enqueues`` logs it) -- the same ``skipped`` semantics a verbatim replay's
+    ``None`` return carries: the work is already live, not lost.
+
+    KNOWN INHERITED BEHAVIOR (not a regression of this fix): ``_stage_file_to_s3`` resolves the
+    destination via ``select_active_agent(kind="fileserver")`` rather than the row's own
+    ``payload["agent_id"]``, so on a multi-fileserver deployment the regenerated job follows the LIVE
+    staging path's agent choice, not phaze-fjii's per-owner rule. That is deliberate here: recovery
+    must land on exactly the destination the live producer would pick, and fixing the live producer's
+    choice belongs with the staging path, not with recovery.
+    """
+    raw_fid = target.payload.get("file_id")
+    if raw_fid is None:
+        raise UnreplayableRow("s3_upload ledger row carries no payload['file_id'] -- nothing durable to regenerate from")
+    try:
+        file_uuid = uuid.UUID(str(raw_fid))
+    except ValueError as exc:
+        raise UnreplayableRow(f"s3_upload ledger row carries a non-UUID file_id {raw_fid!r}") from exc
+    fid = str(raw_fid)
+
+    file = await session.get(FileRecord, file_uuid)
+    if file is None:
+        raise UnreplayableRow(f"file {fid} no longer exists -- the staged upload has no source to re-presign")
+
+    try:
+        await cloud_staging.redrive_upload(session, file, task_router)
+        await session.commit()
+    except (NoActiveAgentError, S3StagingError) as exc:
+        # Both are "the inputs to regenerate are not available right now", not faults: no online
+        # fileserver to run the upload (cold boot), or no staging bucket recorded/resolvable for this
+        # file. Skip deliberately; the staging drain / a later recovery re-drives it.
+        await session.rollback()
+        await cloud_staging.drop_pending_s3_enqueues(session)
+        raise UnreplayableRow(str(exc)) from exc
+    except BaseException:
+        await session.rollback()
+        await cloud_staging.drop_pending_s3_enqueues(session)
+        raise
+
+    fired = await cloud_staging.flush_pending_s3_enqueues(session)
+    if fired:
+        tally["reenqueued"] += 1
+    else:
+        tally["skipped"] += 1
+
+
+_REPLAY_REGENERATORS: dict[str, Callable[[AsyncSession, Any, _RegenTarget, dict[str, int]], Awaitable[None]]] = {
+    "s3_upload": _regenerate_s3_upload,
+}
+"""Keyed function -> the coroutine that RE-DERIVES its job from durable inputs instead of replaying
+the stored payload (phaze-71nz).
+
+Keys MUST equal ``replay_safety.LEDGER_REPLAY_REGENERATED`` exactly -- asserted by a totality test.
+A member of that frozenset with no regenerator here would silently drop the stage from recovery
+altogether (every row ``unreplayable``, forever), which is a quieter version of the same bug; a
+regenerator here for an unlisted function would leave the classification lying about what recovery
+actually does.
+"""
+
+# FAIL-LOUD at import: both sides are module-level constants, so a mismatch is a programming error
+# that can only exist during development -- and it is exactly the kind that would otherwise ship
+# silently. A declared-regenerated function with no regenerator drops its stage from recovery
+# entirely (every row ``unreplayable``, forever); a regenerator for an undeclared function means
+# ``_replay_row``'s refusal and the classification disagree about the same payload.
+if set(_REPLAY_REGENERATORS) != LEDGER_REPLAY_REGENERATED:
+    raise RuntimeError(
+        "replay-safety drift (phaze-71nz): reenqueue._REPLAY_REGENERATORS "
+        f"{sorted(_REPLAY_REGENERATORS)} != replay_safety.LEDGER_REPLAY_REGENERATED {sorted(LEDGER_REPLAY_REGENERATED)}"
+    )
+
+
+async def _regenerate_row_isolated(
+    session: AsyncSession,
+    task_router: Any,
+    target: _RegenTarget,
+    stages: dict[str, dict[str, int]],
+) -> None:
+    """Run ``row``'s regenerator, isolating both outcomes to THIS row's tally (phaze-71nz/o1xx).
+
+    Three outcomes, three counters:
+
+    - success -> the regenerator tallies ``reenqueued`` (fresh job) or ``skipped`` (SAQ deduped
+      against a still-live job);
+    - :class:`UnreplayableRow` -> ``unreplayable`` + a WARNING carrying the reason. The row stays in
+      the ledger; nothing is enqueued. This is the deliberate, VISIBLE skip;
+    - any other exception -> ``errored`` + an exception log, and the loop moves to the next row
+      (phaze-o1xx: one bad row must never abort the remaining replay).
+    """
+    tally = stages.setdefault(target.function, _zero())
+    regenerator = _REPLAY_REGENERATORS[target.function]
+    try:
+        await regenerator(session, task_router, target, tally)
+    except UnreplayableRow as exc:
+        logger.warning(
+            "recover_orphaned_work: row NOT replayed -- its payload is time-limited and cannot be regenerated right now "
+            "(skipped deliberately, never replayed with stale credentials; ledger entry remains for the next pass)",
+            key=target.key,
+            function=target.function,
+            reason=str(exc),
+        )
+        tally["unreplayable"] += 1
+    except Exception:
+        logger.exception(
+            "recover_orphaned_work: row regeneration failed -- row skipped this run, ledger entry remains for the next pass",
+            key=target.key,
+            function=target.function,
         )
         tally["errored"] += 1
 
@@ -586,14 +844,26 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
        ``queue.enqueue``/``connect()`` failure, or a routing failure for a legacy row) is isolated
        via :func:`_replay_row_isolated` -- logged, tallied under ``errored``, and the loop continues
        with the NEXT row rather than aborting the whole run (phaze-o1xx).
+    3. REGENERATE, ahead of both partitions above (phaze-71nz): a row whose function is declared
+       ``LEDGER_REPLAY_REGENERATED`` never has its stored payload replayed at all -- it goes to its
+       :data:`_REPLAY_REGENERATORS` entry, which re-derives the job from durable inputs. Today that is
+       ``s3_upload``, whose payload embeds presigned PUT URLs signed at the original enqueue. A row
+       whose regeneration inputs are unavailable is tallied ``unreplayable`` and skipped DELIBERATELY,
+       never replayed with stale credentials. Verbatim replay additionally REFUSES any payload that
+       screens positive for time-limited material (:func:`_replay_row`), so a mis-classified future
+       producer is caught by the substrate rather than by an incident.
 
     ``force=True`` bypasses ONLY the no-op DETECT gate (the manual-button path) -- it never bypasses
     the per-item deterministic-key dedup, so a forced reconcile over a live queue is still idempotent.
 
-    Returns ``{"detected_loss": bool, "forced": bool, "stages": {<function>: {"reenqueued": N,
-    "skipped": M, "errored": K}, ...}}`` keyed per keyed function (all eight initialized to zero so
-    the shape is total). Degrade-safe: agent-stage absence skips rather than raises, and (phaze-o1xx)
-    a per-row replay failure is isolated rather than aborting the remaining rows.
+    Returns ``{"detected_loss": bool, "forced": bool, "unreplayable": T, "stages": {<function>:
+    {"reenqueued": N, "skipped": M, "errored": K, "unreplayable": U}, ...}}`` keyed per keyed function
+    (all initialized to zero so the shape is total). ``unreplayable`` is hoisted to the top level as
+    the run-wide total, because it is the one outcome the OPERATOR must see: it means work was
+    knowingly NOT re-enqueued, so "Recovery started" would otherwise read identically to a run that
+    silently left a whole stage uncovered (phaze-71nz, acceptance 3). Degrade-safe: agent-stage
+    absence skips rather than raises, and (phaze-o1xx) a per-row replay failure is isolated rather
+    than aborting the remaining rows.
     """
     # Control-only task: get_settings() returns the ControlSettings in the controller role, so the
     # cast safely narrows BaseSettings -> ControlSettings (kept for parity with the control-side
@@ -606,7 +876,9 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
 
         if not force and not detected_loss:
             logger.info("recover_orphaned_work no-op: queue durable (Phase-36 restart)", inflight=inflight)
-            return {"detected_loss": False, "forced": False, "stages": {}}
+            # phaze-71nz: carry the run-wide ``unreplayable`` total on the no-op shape too, so every
+            # caller (the startup log, the operator status fragment) can read it unconditionally.
+            return {"detected_loss": False, "forced": False, "unreplayable": 0, "stages": {}}
 
         rows = await get_ledger_rows(session)
         live = await get_live_job_keys(session)
@@ -644,8 +916,17 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # orphaned rows reads as an explicit zero, not a missing key the startup-log/UI must guess at).
         stages: dict[str, dict[str, int]] = {fn: _zero() for fn in _ALL_KEYED_FUNCTIONS}
 
-        controller_rows = [r for r in orphaned if r.routing == "controller"]
-        agent_rows = [r for r in orphaned if r.routing == "agent"]
+        # phaze-71nz: peel the REGENERATED functions off FIRST -- their stored payload carries
+        # time-limited material and must never be replayed verbatim by either partition below. They
+        # are SNAPSHOT here (:class:`_RegenTarget`) because a regenerator commits/rolls back, which
+        # expires every ORM instance on this session -- see the dataclass docstring.
+        regenerated_targets = [
+            _RegenTarget(key=r.key, function=r.function, payload=dict(r.payload or {})) for r in orphaned if r.function in _REPLAY_REGENERATORS
+        ]
+        replayable = [r for r in orphaned if r.function not in _REPLAY_REGENERATORS]
+
+        controller_rows = [r for r in replayable if r.routing == "controller"]
+        agent_rows = [r for r in replayable if r.routing == "agent"]
 
         # 83-06 (CONSCIOUSLY REVERSES D-09): the former compute-only ``held_agent_rows`` partition is GONE.
         # It caught a ``process_file`` ledger row whose file was HELD in AWAITING_CLOUD and routed it to a
@@ -676,8 +957,22 @@ async def recover_orphaned_work(ctx: dict[str, Any], *, force: bool = False) -> 
         # never raise).
         await _replay_agent_rows_by_owner(session, ctx["task_router"], other_agent_rows, stages)
 
-    logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, stages=stages)
-    return {"detected_loss": detected_loss, "forced": force, "stages": stages}
+        # phaze-71nz: the time-limited rows, re-derived from durable inputs rather than replayed.
+        # Run LAST so a regenerator's commit boundary (it owns one, unlike every replay above) can
+        # never interleave with the read-only replay partitions.
+        for target in regenerated_targets:
+            await _regenerate_row_isolated(session, ctx["task_router"], target, stages)
+
+    unreplayable = sum(tally["unreplayable"] for tally in stages.values())
+    if unreplayable:
+        logger.warning(
+            "recover_orphaned_work: some orphaned work was NOT re-enqueued -- its payload is time-limited and "
+            "could not be regenerated (phaze-71nz). These stages are NOT covered by this run.",
+            unreplayable=unreplayable,
+            stages=sorted(fn for fn, tally in stages.items() if tally["unreplayable"]),
+        )
+    logger.info("recover_orphaned_work complete", detected_loss=detected_loss, forced=force, unreplayable=unreplayable, stages=stages)
+    return {"detected_loss": detected_loss, "forced": force, "unreplayable": unreplayable, "stages": stages}
 
 
 # The eight keyed function names, sourced from ``deterministic_key._KEY_BUILDERS`` (a Postgres-free

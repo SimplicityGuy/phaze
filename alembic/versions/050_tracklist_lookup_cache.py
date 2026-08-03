@@ -23,8 +23,8 @@ brand-new empty table has no readers to block, so the 048 CONCURRENTLY dance -- 
 because ``files`` is the largest table in the deployment and cannot take an ACCESS EXCLUSIVE lock
 during a build -- buys nothing here.
 
-Revision ID: 049
-Revises: 048
+Revision ID: 050
+Revises: 049
 Create Date: 2026-08-02
 """
 
@@ -35,8 +35,8 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision = "049"
-down_revision = "048"
+revision = "050"
+down_revision = "049"
 branch_labels = None
 depends_on = None
 

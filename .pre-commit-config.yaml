@@ -56,8 +56,12 @@ repos:
       - id: check-github-workflows
       - id: check-github-actions
 
+  # This hook is a `system` hook -- it lints with whatever `hadolint` is on PATH, so this rev pins
+  # the hook DEFINITION and not the binary. `.github/workflows/code-quality.yml` installs the actual
+  # tool and MUST name the same version; the two drifting apart is phaze-b67d, which reddened every
+  # PR for ten hours. Bump both together or not at all.
   - repo: https://github.com/hadolint/hadolint
-    rev: 4e697ba704fd23b2409b947a319c19c3ee54d24f  # frozen: v2.14.0
+    rev: f177f71e7bf435eacc344754b8acde98a6186df7  # frozen: v2.15.0
     hooks:
       - id: hadolint
 

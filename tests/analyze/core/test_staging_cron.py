@@ -544,7 +544,7 @@ async def test_fifo_oldest_awaiting_cloud_first(async_engine: AsyncEngine, sessi
     _patch_settings(monkeypatch, max_in_flight=1)
     await seed_active_agent(session, agent_id="cloud-1", kind="compute")
     await seed_active_agent(session, agent_id="nox", kind="fileserver")
-    # ``files.created_at`` is TIMESTAMP WITHOUT TIME ZONE -> seed naive datetimes.
+    # Only the relative ORDER of these stamps matters here (the ORDER BY), never the absolute instant.
     base = datetime.now() - timedelta(hours=3)
     oldest = _make_file(created_at=base)
     middle = _make_file(created_at=base + timedelta(hours=1))

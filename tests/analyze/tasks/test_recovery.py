@@ -217,7 +217,7 @@ async def test_never_scheduled_files_are_left_alone(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["detected_loss"] is True
-    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0} for t in result["stages"].values())
+    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0} for t in result["stages"].values())
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -245,7 +245,9 @@ async def test_no_op_on_durable_restart(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result == {"detected_loss": False, "forced": False, "stages": {}}
+    # phaze-71nz: the no-op shape carries the run-wide ``unreplayable`` total too, so every caller
+    # (the startup log, the operator status fragment) can read it unconditionally.
+    assert result == {"detected_loss": False, "forced": False, "unreplayable": 0, "stages": {}}
     assert controller_queue.captured == []
     assert router.queue_for_calls == []
 
@@ -278,7 +280,7 @@ async def test_orphaned_agent_row_replays_through_keyed_producer(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     agent_queue = router.queues["nox-analyze"]
     assert [t for t, _ in agent_queue.captured] == ["process_file"]
     # The deterministic key matches the ledger key (re-stamped, so dedup works in production).
@@ -360,7 +362,7 @@ async def test_orphaned_controller_row_replays_on_controller_queue(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert [t for t, _ in controller_queue.captured] == ["scrape_and_store_tracklist"]
     assert router.queue_for_calls == []  # never asked for an agent queue
 
@@ -388,7 +390,7 @@ async def test_live_key_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -424,7 +426,7 @@ async def test_analyze_done_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -453,7 +455,7 @@ async def test_metadata_done_row_is_excluded(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 @pytest.mark.asyncio
@@ -476,7 +478,7 @@ async def test_metadata_pending_row_replays(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 # --- CR-02 regression: the terminal-failure clear (not the predicate) closes the loop -------
@@ -512,7 +514,7 @@ async def test_cleared_metadata_row_is_not_reenqueued(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -554,7 +556,7 @@ async def test_skipped_analyze_row_is_excluded_from_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -585,7 +587,7 @@ async def test_skipped_analyze_row_is_excluded_on_manual_force(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue), force=True)
 
     assert result["forced"] is True
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -616,7 +618,7 @@ async def test_skipped_metadata_row_is_excluded_from_recovery(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -659,7 +661,7 @@ async def test_force_skipped_metadata_with_stale_failed_at_is_excluded_from_reco
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -690,7 +692,7 @@ async def test_controller_row_is_live_keys_only(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 # --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
@@ -941,7 +943,7 @@ async def test_orphaned_agent_rows_skip_when_only_a_compute_agent_is_online(
 
     # No fileserver -> the row is skipped (no queue touched), never routed to the compute agent.
     assert router.queues == {}
-    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["extract_file_metadata"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 # --- phaze-fjii: recovery routes EACH agent row to its OWNING fileserver (not one shared pick) --------
@@ -1134,7 +1136,7 @@ async def test_dedup_skip_backstop_for_a_slipped_live_item(
 
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 1, "errored": 0, "unreplayable": 0}
 
 
 # --- force bypasses ONLY the gate ------------------------------------------------------
@@ -1162,7 +1164,7 @@ async def test_force_bypasses_gate_not_dedup(
 
     assert result["detected_loss"] is False
     assert result["forced"] is True
-    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 # --- No active agent: agent rows skip, controller rows replay --------------------------
@@ -1193,8 +1195,8 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
         result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     # Agent-routed row skipped (zero), controller-routed row replayed.
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queue_for_calls == []
     # phaze-fjii: the owning fileserver ("nox") is offline -> its rows skip with a WARNING, never rerouted.
     assert "offline -- rows skipped, not rerouted" in caplog.text.lower()
@@ -1450,7 +1452,7 @@ async def test_single_owner_in_flight_cloud_job_skips_ledger_recovery(
 
     # The in-flight cloud_job file must NOT be recovered by the ledger -- its callback/reconcile owns it.
     assert "cloud" not in router.queues
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 @pytest.mark.asyncio
@@ -1656,7 +1658,7 @@ async def test_sc2_never_scheduled_discovered_file_with_no_ledger_row_is_not_rec
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0} for t in result["stages"].values())
+    assert all(t == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0} for t in result["stages"].values())
     assert controller_queue.captured == []
     assert router.queues == {}
 
@@ -1689,7 +1691,7 @@ async def test_sc3_failed_analyze_with_surviving_ledger_row_is_terminal_never_re
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -1780,14 +1782,46 @@ async def test_d10_cell_b_callback_partial_failure_stays_terminal(session: Async
 
 @pytest.mark.asyncio
 async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSession) -> None:
-    """CR-02: the D-10 gate must NOT raise on a DB-read (naive) ``enqueued_at`` vs aware ``failed_at``.
+    """CR-02: the D-10 gate compares a DB-read ``enqueued_at`` against an aware ``failed_at`` without raising.
 
-    ``scheduling_ledger.enqueued_at`` is ``TIMESTAMP WITHOUT TIME ZONE`` (migration 022) -> asyncpg returns
-    it NAIVE, while ``metadata.failed_at`` is ``timezone=True`` (aware). The Cell A/B tests above build the
-    ledger row IN MEMORY with an aware ``enqueued_at`` and never round-trip through ``get_ledger_rows``, so
-    they miss the mismatch. Reading the row back from the DB (the production ``recover_orphaned_work`` path)
-    makes ``enqueued_at`` naive; a bare ``naive <= aware`` raises ``TypeError`` and aborts the whole recovery
-    run. This asserts the coercion holds against the real DB representation.
+    Originally this test's premise was that ``scheduling_ledger.enqueued_at`` came back NAIVE (it was
+    ``TIMESTAMP WITHOUT TIME ZONE``) while ``metadata.failed_at`` came back aware, so a bare
+    ``naive <= aware`` raised ``TypeError`` and aborted the whole recovery run. phaze-cz3m / migration 049
+    made every timestamp column ``timestamptz``, so that premise is now FALSE by construction -- and the
+    inverted assertion below (``tzinfo is not None``) is what keeps it that way: if anything ever restores
+    a naive column here, this fails rather than silently reverting to the old hazard.
+
+    The Cell A/B tests above build the ledger row IN MEMORY and never round-trip through
+    ``get_ledger_rows``, so this remains the only case that exercises the real DB representation.
+    The gate's defensive naive->UTC coercion is covered separately by
+    ``test_d10_gate_coerces_a_naive_enqueued_at``, which no longer depends on the schema to produce one.
+    """
+    failed_at = datetime.now(UTC)
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
+
+    # Read the row back the way production does. Post-049 this is tz-AWARE.
+    row = next(r for r in await get_ledger_rows(session) if r.key == key)
+    assert row.enqueued_at.tzinfo is not None, "post-049 the ledger's enqueued_at must round-trip tz-aware"
+    done_sets = await _build_done_sets(session, _ledger_fids([row]))
+
+    # The committed row's server-default enqueued_at is AFTER failed_at (an orphaned retry) -> re-drives,
+    # but the point is that the comparison COMPLETES without a TypeError.
+    assert is_domain_completed(row, done_sets) is False
+
+
+@pytest.mark.asyncio
+async def test_d10_gate_coerces_a_naive_enqueued_at(session: AsyncSession) -> None:
+    """The gate's naive->UTC coercion still holds, proven WITHOUT relying on the schema to emit a naive stamp.
+
+    Before phaze-cz3m the naive value arrived for free from a ``TIMESTAMP WITHOUT TIME ZONE`` column, so
+    the coercion was covered as a side effect of the schema being wrong. Migration 049 removed that
+    source, which would have left the coercion untested and free to be deleted as dead defence. Setting
+    the naive stamp explicitly keeps the behaviour pinned to intent rather than to a schema accident.
+
     MUTATION: dropping the ``tzinfo``-coercion at the gate (bare ``row.enqueued_at <= failed_at``) -> RED
     (``TypeError: can't compare offset-naive and offset-aware datetimes``).
     """
@@ -1796,16 +1830,15 @@ async def test_d10_gate_does_not_crash_on_db_read_ledger_row(session: AsyncSessi
     session.add(f)
     await session.commit()
     await _seed_metadata(session, f.id, failed_at=failed_at)  # metadata FAILED (aware failed_at)
-    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)  # committed -> naive enqueued_at
+    key = await _seed_ledger(session, function="extract_file_metadata", file_id=f.id)
 
-    # Read the row back the way production does -> enqueued_at is NAIVE (from the WITHOUT TIME ZONE column).
     row = next(r for r in await get_ledger_rows(session) if r.key == key)
-    assert row.enqueued_at.tzinfo is None  # guards the premise: the DB really returns a naive stamp
     done_sets = await _build_done_sets(session, _ledger_fids([row]))
 
-    # The committed row's server-default enqueued_at is AFTER failed_at (an orphaned retry) -> re-drives,
-    # but the point is that the comparison COMPLETES without a TypeError.
-    assert is_domain_completed(row, done_sets) is False
+    # Force the hazard the coercion exists for: a naive stamp that PRE-DATES the aware failure marker.
+    # Without coercion this comparison raises; with it the row reads as domain-complete (terminal).
+    row.enqueued_at = (failed_at - timedelta(minutes=5)).replace(tzinfo=None)
+    assert is_domain_completed(row, done_sets) is True
 
 
 def test_d10_analyze_clears_failed_at_but_metadata_does_not() -> None:
@@ -1911,8 +1944,8 @@ async def test_controller_row_replay_failure_is_isolated_and_other_rows_still_re
     controller_queue = _FlakyOnceQueue("controller", fail_key=failing_key)
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 0, "skipped": 0, "errored": 1}
-    assert result["stages"]["match_tracklist_to_discogs"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
+    assert result["stages"]["match_tracklist_to_discogs"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     # BOTH rows were attempted -- the failure of the first did not short-circuit the second.
     assert set(controller_queue.enqueue_attempts) == {failing_key, healthy_key}
     assert [t for t, _ in controller_queue.captured] == ["match_tracklist_to_discogs"]
@@ -1955,5 +1988,5 @@ async def test_agent_row_lane_routing_failure_is_isolated(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["legacy_removed_task"] == {"reenqueued": 0, "skipped": 0, "errored": 1}
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["legacy_removed_task"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
+    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}

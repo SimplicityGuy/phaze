@@ -59,8 +59,8 @@ FROM python:3.14-slim AS base
 
 WORKDIR /app
 
-# Audio pipeline native system deps. Must run as root, so it stays before
-# `USER phaze` below. essentia-tensorflow's native `_essentia` extension links
+# Audio pipeline native system deps. Must run as root, so it stays before the
+# `USER 1000:1000` switch below. essentia-tensorflow's native `_essentia` extension links
 # libatomic.so.1 (libatomic1) -- confirmed by `ldd` on the built extension; without
 # it, `import essentia` fails at runtime and every analysis job dead-letters. The
 # decode toolchain needs ffmpeg + ffprobe (ffmpeg) and libsndfile.so.1 (libsndfile1).
@@ -150,8 +150,14 @@ ENV UV_NO_SYNC=1
 # Non-root user pinned to uid/gid 1000 so the container can read media owned by
 # uid 1000 (mode 700/770). The previous `-r` system account auto-assigned uid 999,
 # which could not read uid-1000-owned files and silently produced 0-file scans.
+#
+# The account is still created (do NOT drop the useradd): Docker resolves the numeric uid against
+# /etc/passwd, so keeping the entry is what makes HOME=/home/phaze instead of degrading to `/`.
+# `USER` names the id rather than the name because the id is the whole point here (DL3066,
+# phaze-aip8) -- verified equivalent on the deployed image: `--user phaze` and `--user 1000:1000`
+# both give uid=1000 gid=1000 name=phaze HOME=/home/phaze, writable.
 RUN groupadd -g 1000 phaze && useradd -m -u 1000 -g 1000 phaze
-USER phaze
+USER 1000:1000
 
 EXPOSE 8000
 CMD ["uv", "run", "uvicorn", "phaze.main:app", "--host", "0.0.0.0", "--port", "8000"]
