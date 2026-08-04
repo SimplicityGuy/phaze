@@ -43,6 +43,7 @@ from saq.job import TERMINAL_STATUSES, Status
 import structlog
 
 from phaze.services.pipeline_counters import incr_completed, incr_enqueued
+from phaze.tasks._shared.replay_safety import LEDGER_REPLAY_REGENERATED, find_time_limited_paths
 
 
 if TYPE_CHECKING:
@@ -100,6 +101,39 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
 }
 
 
+def _warn_if_payload_is_time_limited(function: str, key: str, kwargs: dict[str, Any]) -> None:
+    """Log LOUDLY when a producer writes time-limited material into the durable ledger (phaze-71nz).
+
+    THE WRITE-SIDE HALF of the replay-safety invariant: a ``scheduling_ledger`` payload must be
+    replayable at an arbitrary future time. This is the exact point where that stops being true --
+    the payload is about to become durable -- so it is where the violation is cheapest to see. The
+    2026-07-31 incident had NOTHING at this layer: 430 ``s3_upload`` rows carrying presigned URLs
+    were written, orphaned, replayed and burned into terminal ``failed`` without a single log line
+    distinguishing them from the 2,512 rows that replayed fine.
+
+    DETECTS, never blocks. The ledger write itself is best-effort by contract (T-45-03) and an
+    enqueue must never fail on a bookkeeping opinion; a producer that legitimately needs expiring
+    material declares itself in ``replay_safety.LEDGER_REPLAY_REGENERATED`` (and is exempt here),
+    and recovery's own :func:`phaze.tasks.reenqueue._replay_row` is the hard refusal.
+
+    Only PATHS are logged -- the values are live credentials and must never reach a log sink.
+    """
+    if function in LEDGER_REPLAY_REGENERATED:
+        return
+    violations = find_time_limited_paths(kwargs)
+    if not violations:
+        return
+    logger.error(
+        "scheduling-ledger payload carries TIME-LIMITED material but its producer is declared replay-safe -- "
+        "recovery will refuse to replay this row (phaze-71nz). A scheduling_ledger payload must be replayable "
+        "at an arbitrary future time: store the durable inputs and re-derive, or declare the function in "
+        "replay_safety.LEDGER_REPLAY_REGENERATED with a regenerator in reenqueue._REPLAY_REGENERATORS.",
+        function=function,
+        key=key,
+        payload_paths=violations,
+    )
+
+
 async def apply_deterministic_key(job: Job) -> None:
     """SAQ ``before_enqueue`` hook -- set ``job.key`` deterministically + bump ``enqueued``.
 
@@ -148,6 +182,8 @@ async def apply_deterministic_key(job: Job) -> None:
             # control-side ledger_sessionmaker is present.
             from phaze.services.scheduling_ledger import upsert_ledger_entry  # noqa: PLC0415
 
+            kwargs = dict(job.kwargs or {})
+            _warn_if_payload_is_time_limited(job.function, job.key, kwargs)
             async with sm() as session:
                 # apply_project_job_defaults is registered BEFORE this hook (queue_factory), so
                 # job.timeout / job.retries are the FINAL effective policy here -- capture them so
@@ -157,7 +193,7 @@ async def apply_deterministic_key(job: Job) -> None:
                     session,
                     key=job.key,
                     function=job.function,
-                    kwargs=dict(job.kwargs or {}),
+                    kwargs=kwargs,
                     timeout=job.timeout,
                     retries=job.retries,
                 )

@@ -252,13 +252,14 @@ async def test_resubmit_bumps_updated_at_not_created_at(
     await submit_cloud_job(ctx, fid)
 
     # Backdate created_at/updated_at directly (bypassing the ORM/onupdate hook) to a fixed point
-    # well in the past. cloud_job.created_at/updated_at are TIMESTAMP WITHOUT TIME ZONE columns --
-    # use a naive UTC value so asyncpg doesn't reject the aware/naive mismatch.
-    outage_time = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=12)
+    # well in the past. Bind a tz-AWARE value: since phaze-cz3m / migration 049 every timestamp
+    # column is timestamptz, and a NAIVE datetime bound to one is silently reinterpreted as the
+    # session's local time rather than UTC -- a same-shape defect to the one 049 fixed.
+    outage_time = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=12)
     await session.execute(update(CloudJob).where(CloudJob.file_id == fid).values(created_at=outage_time, updated_at=outage_time))
     await session.commit()
 
-    before_resubmit = datetime.now(UTC).replace(tzinfo=None)
+    before_resubmit = datetime.now(UTC)
 
     await submit_cloud_job(ctx, fid)
 

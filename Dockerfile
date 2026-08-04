@@ -59,8 +59,8 @@ FROM python:3.14-slim AS base
 
 WORKDIR /app
 
-# Audio pipeline native system deps. Must run as root, so it stays before
-# `USER phaze` below. essentia-tensorflow's native `_essentia` extension links
+# Audio pipeline native system deps. Must run as root, so it stays before the
+# `USER 1000:1000` switch below. essentia-tensorflow's native `_essentia` extension links
 # libatomic.so.1 (libatomic1) -- confirmed by `ldd` on the built extension; without
 # it, `import essentia` fails at runtime and every analysis job dead-letters. The
 # decode toolchain needs ffmpeg + ffprobe (ffmpeg) and libsndfile.so.1 (libsndfile1).
@@ -85,21 +85,52 @@ WORKDIR /app
 # added them — every push terminalized with FileNotFoundError. The `command -v`
 # assertion below turns a future slimming regression into a build failure
 # instead of a silent per-file runtime failure.
+# xvfb (phaze-fq9h.5): the 1001Tracklists render engine (services/tracklist_render.py)
+# launches Patchright Chrome HEADFUL -- headless fails Cloudflare Turnstile outright
+# (spike phaze-dmvs) -- and this worker container has no physical screen. `XvfbDisplay`
+# starts a virtual X server (`Xvfb`) before the browser launches whenever
+# `tracklist_render_xvfb` resolves to "required" (Linux, no DISPLAY already set -- i.e.
+# exactly this container). Chrome's OWN runtime libraries (fonts, NSS, GTK, etc.) are
+# installed separately below by `patchright install --with-deps`, which knows the browser's
+# dependency list; Xvfb is specific to how THIS app supplies a screen and stays here.
 # DL3008: versions are intentionally unpinned — Debian-slim apt package versions
 # shift on every base-image refresh and pinning them would break builds on each
 # security update. The base image tag controls the package snapshot instead.
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client \
+    && apt-get install -y --no-install-recommends libatomic1 ffmpeg libsndfile1 libchromaprint-tools libpq5 rsync openssh-client xvfb \
     && rm -rf /var/lib/apt/lists/* \
-    && command -v rsync ssh
+    && command -v rsync ssh Xvfb
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.11.24 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /bin/
 
 # Install dependencies first (cache layer)
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
+
+# Patchright's REAL Google Chrome (phaze-fq9h.5). `channel="chrome"` (config default,
+# tracklist_render_browser_channel) is Patchright's most convincing configuration --
+# more so than its bundled patched Chromium -- so the worker image installs an actual
+# Chrome rather than falling back to the bundled browser. `--with-deps` additionally
+# installs Chrome's own runtime libraries (fonts, NSS, GTK, etc.) via apt-get; it does
+# NOT install Xvfb, which is unrelated to running Chrome itself and is installed above.
+# Capped to the patchright minor line in pyproject.toml on purpose: a patched browser
+# build is pinned per-client-version, so this install must stay in lockstep with the
+# `patchright` package the app imports -- see the dependency comment there.
+#
+# PLAYWRIGHT_BROWSERS_PATH pins the download to a FIXED path rather than the per-user
+# default (`~/.cache/ms-playwright`; Patchright inherits Playwright's env var name and
+# cache layout). This install runs as root (needed for `--with-deps` apt-get), but the
+# browser launches later as the unprivileged `phaze` user (`USER 1000:1000`, below) whose
+# $HOME would not otherwise see root's cache -- so the directory is made world-readable
+# after install. Runs against the dependency-only sync above (not `uv run`, which would
+# try to sync the project itself and fail -- src/ has not been copied into the image yet)
+# so this layer caches on pyproject.toml/uv.lock alone, independent of source changes.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+    && /app/.venv/bin/python -m patchright install --with-deps chrome \
+    && chmod -R a+rX /ms-playwright
 
 # Copy source
 COPY src/ src/
@@ -119,8 +150,14 @@ ENV UV_NO_SYNC=1
 # Non-root user pinned to uid/gid 1000 so the container can read media owned by
 # uid 1000 (mode 700/770). The previous `-r` system account auto-assigned uid 999,
 # which could not read uid-1000-owned files and silently produced 0-file scans.
+#
+# The account is still created (do NOT drop the useradd): Docker resolves the numeric uid against
+# /etc/passwd, so keeping the entry is what makes HOME=/home/phaze instead of degrading to `/`.
+# `USER` names the id rather than the name because the id is the whole point here (DL3066,
+# phaze-aip8) -- verified equivalent on the deployed image: `--user phaze` and `--user 1000:1000`
+# both give uid=1000 gid=1000 name=phaze HOME=/home/phaze, writable.
 RUN groupadd -g 1000 phaze && useradd -m -u 1000 -g 1000 phaze
-USER phaze
+USER 1000:1000
 
 EXPOSE 8000
 CMD ["uv", "run", "uvicorn", "phaze.main:app", "--host", "0.0.0.0", "--port", "8000"]

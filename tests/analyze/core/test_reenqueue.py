@@ -162,7 +162,7 @@ async def test_pushing_orphan_redrives_to_fileserver(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
-    assert result["stages"]["push_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0}
+    assert result["stages"]["push_file"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert "nox-io" in router.queues
     assert [t for t, _ in router.queues["nox-io"].captured] == ["push_file"]
     assert [str(f.id)] == [payload["file_id"] for _name, payload in router.queues["nox-io"].captured]
@@ -216,7 +216,7 @@ async def test_pushing_redrive_skips_when_no_fileserver(
 
     # The push must NOT land on the compute queue -- it is left for the next staging tick.
     assert "cloud" not in router.queues
-    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert "fileserver" in caplog.text.lower()
 
 
@@ -248,7 +248,7 @@ async def test_pushing_pushed_state_is_domain_completed(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
-    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 
@@ -280,7 +280,7 @@ async def test_pushing_analyzed_state_is_domain_completed(
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(router, controller_queue))
 
-    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0}
+    assert result["stages"]["push_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queues == {}
 
 

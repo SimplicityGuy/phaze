@@ -39,6 +39,7 @@ from phaze.services.proposal import ProposalService, load_prompt_template
 from phaze.tasks._shared.deterministic_key import increment_completed
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
+from phaze.tasks.active_reaper import reap_stranded_active_jobs
 from phaze.tasks.discogs import match_tracklist_to_discogs
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
@@ -49,6 +50,7 @@ from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 
 
 if TYPE_CHECKING:
@@ -298,11 +300,25 @@ settings = {
         match_tracklist_to_discogs,
         search_tracklist,
         scrape_and_store_tracklist,
+        # phaze-fq9h.7: one BOUNDED SLICE of the resumable 1001Tracklists drain, plus its
+        # request-free status read. Registered as operator-enqueueable functions with NO CronJob,
+        # deliberately -- the epic's ethics bound makes the drain operator-initiated rather than a
+        # blanket pipeline stage (residential IP, headful browser, a public host's published
+        # crawl-delay budget). The admin UI (phaze-fq9h.8) is the intended trigger.
+        drain_tracklists,
+        tracklist_drain_status,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors
         # reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
         reap_stuck_aborting_jobs,
+        # phaze-o0n6: the SIBLING of reap_stuck_aborting_jobs for the OTHER status outside SAQ's
+        # `_enqueue` overwrite allowlist. A row stranded in 'active' (a claimed-but-buffered row whose
+        # worker died) holds process_file:<file_id> hostage exactly as an 'aborting' zombie does.
+        # Deletes the saq_jobs row ONLY -- the scheduling_ledger row is the recovery source and is
+        # deliberately kept. Cron-only (mirrors reap_stalled_scans), NOT in
+        # enqueue_router.CONTROLLER_TASKS.
+        reap_stranded_active_jobs,
         # phaze-2u8v.2: the LEDGER-side twin of reap_stuck_aborting_jobs -- clears scheduling_ledger
         # rows whose stage has finished and which are running nowhere (a lost terminal clear). Cron-only
         # (mirrors reap_stalled_scans), NOT in enqueue_router.CONTROLLER_TASKS.
@@ -339,6 +355,11 @@ settings = {
         # phaze-e57w: every-minute reaper for zombie 'aborting' SAQ rows (control-only -- needs
         # ctx["async_session"]). Same cadence/shape as reap_stalled_scans.
         CronJob(reap_stuck_aborting_jobs, cron="* * * * *"),  # type: ignore[type-var]
+        # phaze-o0n6: every-minute reaper for SAQ rows STRANDED in 'active' (control-only -- needs
+        # ctx["async_session"]). Same cadence/shape as its 'aborting' sibling above; it enqueues
+        # NOTHING (it only frees keys, so the gated recovery path can re-drive the files), which is why
+        # it is not the forbidden auto-advance cron.
+        CronJob(reap_stranded_active_jobs, cron="* * * * *"),  # type: ignore[type-var]
         # phaze-2u8v.2: every-5-min reconciler for scheduling_ledger rows whose work is FINISHED and
         # running nowhere -- the clear a lost terminal callback owed. This is emphatically NOT the
         # forbidden auto-advance cron below: it enqueues NOTHING, and it is structurally incapable of

@@ -59,10 +59,30 @@ class TestTracklistModel:
         t = Tracklist(external_id="tl-123", source_url="https://example.com/tl/123")
         assert t.latest_version_id is None
 
-    def test_tracklist_external_id_unique_constraint(self):
-        """Verify external_id column has unique=True via column inspection."""
-        col = Tracklist.__table__.columns["external_id"]
-        assert col.unique is True
+    def test_tracklist_external_id_is_unique_among_canonical_rows_only(self):
+        """phaze-fq9h.7 narrowed a GLOBAL unique to a PARTIAL one, and both halves matter.
+
+        The drain looks a unique set up once and propagates the tracklist to the set's duplicate
+        files, so one 1001TL page legitimately has several rows -- the propagated projections carry
+        the page's own ``external_id``. What the old global UNIQUE really encoded, though, was "one
+        row per page that we SCRAPED", and that survives verbatim as the partial index's predicate.
+
+        Asserted structurally here; the behaviour (a second canonical row is refused, a projection
+        is accepted) is pinned against real Postgres DDL in
+        ``tests/integration/test_tracklist_propagation_real_db.py``.
+        """
+        assert Tracklist.__table__.columns["external_id"].unique is not True, "a GLOBAL unique would forbid every propagation"
+
+        index = next(i for i in Tracklist.__table__.indexes if i.name == "ix_tracklists_external_id")
+        assert index.unique is True
+        assert [c.name for c in index.columns] == ["external_id"]
+        assert str(index.dialect_options["postgresql"]["where"]) == "propagated_from_set_key IS NULL"
+
+    def test_propagation_columns_are_nullable_provenance(self):
+        """Both are NULL on a scraped row -- which is what makes every pre-existing row canonical."""
+        tracklist = Tracklist(external_id="tl-123", source_url="https://example.com/tl/123")
+        assert tracklist.propagated_from_set_key is None
+        assert tracklist.propagation_confidence is None
 
     def test_tracklist_file_id_fk_to_files(self):
         """Verify file_id FK references files.id."""

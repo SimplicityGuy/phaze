@@ -70,7 +70,8 @@ async def test_refresh_tracklists_binds_naive_threshold_against_real_db(
     """The stale/unresolved query must not raise asyncpg ``DataError`` and must select real rows.
 
     Before the fix, ``stale_threshold = datetime.now(tz=UTC) - timedelta(days=90)`` is TZ-AWARE while
-    ``Tracklist.updated_at`` is a naive ``TIMESTAMP WITHOUT TIME ZONE`` column -- asyncpg's naive-timestamp
+    ``Tracklist.updated_at`` was a naive ``TIMESTAMP WITHOUT TIME ZONE`` column (phaze-cz3m / migration 049
+    has since made it timestamptz) -- asyncpg's naive-timestamp
     codec raises ``DataError`` ("can't subtract offset-naive and offset-aware datetimes") at ENCODE time.
     The broad ``except Exception`` around the whole query then swallows it and returns the untouched
     ``{"refreshed": 0, "errors": 0}`` initial counters -- indistinguishable from "nothing to do". Seeding

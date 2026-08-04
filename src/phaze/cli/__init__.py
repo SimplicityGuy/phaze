@@ -164,14 +164,32 @@ def _build_parser() -> argparse.ArgumentParser:
     queue_sub = queue_grp.add_subparsers(dest="queue_command", required=True)
     status = queue_sub.add_parser(
         "status",
-        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun (phaze-grx3).",
+        help="Break a queue's status='active' count into RUNNING vs CLAIMED-but-unrun vs STRANDED; exit 1 on the phaze-o0n6 alarm.",
         description=(
             "SAQ marks a row 'active' at dequeue and buffers it in-process; only 'concurrency' rows "
             "actually run at once, so a raw 'active' count over-reports. This splits it using the "
-            "attempts signal: attempts>=1 is genuinely running, attempts=0 is claimed-but-unrun."
+            "attempts signal: attempts>=1 is genuinely running, attempts=0 is claimed-but-unrun. "
+            "It ALSO reports 'stranded' -- rows past their own timeout plus the reap slack, i.e. "
+            "exactly what reap_stranded_active_jobs will delete -- and EXITS 1 when that count "
+            "exceeds the lane's concurrency (phaze-o0n6). A lane can have at most 'concurrency' rows "
+            "legitimately running, so more stranded than that is abandoned claims holding "
+            "deterministic keys hostage: their files cannot be re-enqueued by any path until reaped. "
+            "Run it from a monitor so the next occurrence is detected, not discovered 2,400 rows later."
         ),
     )
     status.add_argument("--queue", dest="queue_name", required=True, help="SAQ queue name (e.g. phaze-agent-nox-analyze).")
+    status.add_argument(
+        "--concurrency",
+        dest="concurrency",
+        type=int,
+        default=None,
+        help=(
+            "Override the lane concurrency the stranded-row alarm compares against. Defaults to the "
+            "queue's own lane knob (queue name suffix -> lane_<lane>_concurrency, clamped by "
+            "WORKER_MAX_JOBS) -- correct when run against the deployment that owns the queue, and the "
+            "reason this override exists when it is not."
+        ),
+    )
     return parser
 
 
@@ -194,17 +212,24 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main_queue_status(args: argparse.Namespace) -> int:
-    """Handle ``phaze queue status``. Returns a process exit code."""
-    breakdown = asyncio.run(_run_queue_status(args.queue_name))
+    """Handle ``phaze queue status``. Returns a process exit code.
+
+    Exit 1 is the phaze-o0n6 GUARD, not a command failure: the read succeeded and found more rows
+    stranded in ``status='active'`` than the lane's concurrency, a condition that cannot arise from
+    healthy operation and that leaves every one of those rows' files un-requeueable until reaped. A
+    degraded read (unreadable ``saq_jobs``) still exits 0 -- a missing measurement must not masquerade
+    as a detected incident.
+    """
+    breakdown = asyncio.run(_run_queue_status(args.queue_name, args.concurrency))
     for line in breakdown.as_lines():
         print(line)
-    return 0
+    return 1 if breakdown.exceeds_concurrency else 0
 
 
-async def _run_queue_status(queue_name: str) -> ActiveJobBreakdown:
-    """Read the RUNNING vs CLAIMED-but-unrun split for ``queue_name`` (phaze-grx3)."""
+async def _run_queue_status(queue_name: str, concurrency: int | None = None) -> ActiveJobBreakdown:
+    """Read the RUNNING vs CLAIMED-but-unrun vs STRANDED split for ``queue_name`` (phaze-grx3/o0n6)."""
     async with async_session() as session:
-        return await summarize_active_jobs(session, queue_name)
+        return await summarize_active_jobs(session, queue_name, concurrency=concurrency)
 
 
 def _main_agents_add(args: argparse.Namespace) -> int:

@@ -2346,6 +2346,169 @@ async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> N
 
 
 # ---------------------------------------------------------------------------
+# phaze-fq9h.8: per-file prioritize/un-prioritize + the drain progress fragment / manual
+# slice trigger. drain_tracklists is a CONTROLLER task (Phase-30 rule); it must never land on
+# the consumer-less default queue.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_live_set_file(session: AsyncSession, *, duration: float = 7200.0) -> FileRecord:
+    """A long-duration file -- classifies LIVE_SET regardless of its own filename markers."""
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.flush()
+    session.add(FileMetadata(file_id=file_rec.id, duration=duration))
+    await session.commit()
+    return file_rec
+
+
+@pytest.mark.asyncio
+async def test_prioritize_persists_flag_and_enqueues_one_bounded_slice(client: AsyncClient, session: AsyncSession) -> None:
+    """POST .../prioritize persists the flag AND enqueues exactly one drain_tracklists(limit=1) job.
+
+    The persistence is the point of phaze-fq9h.8: without it, the flag would last exactly as long
+    as this one job (the phaze-fq9h.7 gap the bead exists to close).
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Prioritize" not in response.text or "cancel" in response.text.lower()
+
+    assert await load_flagged_file_ids(session) == {file_rec.id}
+    assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
+    assert capture[0][2].get("limit") == 1
+
+
+@pytest.mark.asyncio
+async def test_prioritize_ineligible_file_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that would never enter the drain queue (too short -> TRACK) is not flagged.
+
+    Flagging it would have zero effect on ordering while a limit=1 slice would spend its one
+    request on a completely unrelated set at the front of the queue -- a misattributed lookup the
+    endpoint refuses to cause.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session, duration=120.0)
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Not yet looked up" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_file_with_embedded_tracklist_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """A file already answered by an embedded tracklist (no ``tracklists`` row) is not flagged.
+
+    This is the exact scope-creep shape a full-suite reviewer flagged: a long-duration, set-shaped
+    file with no ``tracklists`` row classifies LIVE_SET on duration+filename alone, but the
+    corpus-wide funnel excludes it BEFORE classification because it already carries an embedded
+    tracklist. If the endpoint only checked classification, it would flag this file and enqueue a
+    limit=1 slice that could never answer it -- spending a live request on an unrelated set while
+    reporting success for this one.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    file_metadata_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_rec.id))
+    metadata = file_metadata_result.scalar_one()
+    metadata.raw_tags = {"comment": "00:00 Opener\n05:00 Second track\n10:00 Third track"}
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "excluded from the drain queue" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that already has a tracklist is not (re-)flagged and nothing is enqueued."""
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    session.add(_link_tracklist(file_rec))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_unknown_file_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/prioritize")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSession) -> None:
+    from phaze.services.tracklist_priority import flag_file_for_lookup, load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    await flag_file_for_lookup(session, file_rec.id)
+    await session.commit()
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/unprioritize")
+    assert response.status_code == 200
+    assert "Prioritize lookup" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+
+
+@pytest.mark.asyncio
+async def test_unprioritize_unknown_file_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_tracklist_drain_status_fragment_renders_the_honest_ceiling_and_eta(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /pipeline/tracklist-drain-status renders queue depth, the daily ceiling, and an ETA.
+
+    Reads through phaze.tasks.tracklist_drain.tracklist_drain_status directly (a request-free
+    read) rather than a second, hand-rolled status query.
+    """
+    await _seed_live_set_file(session)
+
+    response = await client.get("/pipeline/tracklist-drain-status")
+    assert response.status_code == 200
+    assert "lookups/day" in response.text
+    assert "Queued" in response.text
+
+
+@pytest.mark.asyncio
+async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/run-tracklist-drain enqueues exactly one drain_tracklists job (no bulk loop)."""
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/run-tracklist-drain")
+    assert response.status_code == 200
+    assert "Queued" in response.text
+
+    assert len(capture) == 1
+    assert capture[0][0] == "controller"
+    assert capture[0][1] == "drain_tracklists"
+
+
+# ---------------------------------------------------------------------------
 # Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
 # SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
 # worker-shaped ctx built from app state; the global DAG "Recover" button renders end-to-end.
@@ -2446,7 +2609,7 @@ async def test_run_recovery_logs_the_final_tally_on_success(
     import phaze.routers.pipeline as pipeline_mod
 
     async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
-        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0}}}
+        return {"detected_loss": True, "forced": force, "stages": {"process_file": {"reenqueued": 3, "skipped": 1, "errored": 0, "unreplayable": 0}}}
 
     monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
 
@@ -2454,6 +2617,151 @@ async def test_run_recovery_logs_the_final_tally_on_success(
         await pipeline_mod._run_recovery({})
 
     assert "manual recovery trigger complete" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# phaze-71nz: the operator must be able to tell a recovery that COVERED the work
+# from one that knowingly skipped a stage. "Recovery started" cannot be the last word.
+#
+# On 2026-07-31 a single Recover replayed 430 orphaned s3_upload rows whose payloads carried
+# presigned S3 URLs signed at the original enqueue; 428 ran their retries out to terminal `failed`
+# (122x HTTP 403, 257x HTTP 400) and zero succeeded. The operator's UI showed 200 + "Recovery
+# started — re-enqueuing any orphaned work across all stages", identical to a clean run. Because the
+# producer is fire-and-forget, the POST response genuinely cannot know the outcome -- so the fragment
+# now polls GET /pipeline/recover/status, which does.
+# ---------------------------------------------------------------------------
+
+
+def _set_recovery_state(*, running: bool = False, failed: bool = False, result: dict[str, object] | None = None) -> None:
+    """Pin the in-process last-recovery cell the status fragment renders from."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    pipeline_mod._recovery_state.update(running=running, failed=failed, result=result)
+
+
+def _recovery_result(**stages: dict[str, int]) -> dict[str, object]:
+    """Build a ``recover_orphaned_work``-shaped return value from per-stage tallies."""
+    return {
+        "detected_loss": True,
+        "forced": True,
+        "unreplayable": sum(tally.get("unreplayable", 0) for tally in stages.values()),
+        "stages": stages,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recover_response_polls_for_the_final_outcome(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The POST fragment carries the poll that will replace it with the real tally."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return _recovery_result()
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+    install_fake_queues(client)
+
+    response = await client.post("/pipeline/recover")
+    assert response.status_code == 200
+    assert 'hx-get="/pipeline/recover/status"' in response.text
+    await _drain_background()
+
+
+@pytest.mark.asyncio
+async def test_recover_status_does_not_read_as_success_when_a_stage_was_skipped(client: AsyncClient) -> None:
+    """THE bead's operator assertion: an unreplayable stage must not render the success copy.
+
+    Not "the same words plus a footnote" -- a different message. The operator pressing Recover during
+    an incident has to learn, without reading controller logs, that some of the work they asked to be
+    recovered was deliberately left alone and by which stage.
+    """
+    _set_recovery_state(result=_recovery_result(s3_upload={"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 430}))
+
+    response = await client.get("/pipeline/recover/status")
+    assert response.status_code == 200
+    body = response.text
+
+    assert "Recovery started — re-enqueuing any orphaned work across all stages." not in body
+    assert "Recovery complete" not in body
+    assert "430" in body
+    assert "could NOT be recovered" in body
+    assert "s3_upload" in body, "the operator must be told WHICH stage was skipped"
+
+
+@pytest.mark.asyncio
+async def test_recover_status_reads_as_success_when_everything_recovered(client: AsyncClient) -> None:
+    """The clean run keeps its plain success copy -- the warning branch must not fire on zero skips."""
+    _set_recovery_state(result=_recovery_result(process_file={"reenqueued": 2512, "skipped": 3, "errored": 0, "unreplayable": 0}))
+
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "Recovery complete" in body
+    assert "2512" in body
+    assert "could NOT be recovered" not in body
+
+
+@pytest.mark.asyncio
+async def test_recover_status_keeps_polling_while_the_run_is_in_flight(client: AsyncClient) -> None:
+    """While running, the fragment re-arms its own poll; every terminal branch drops it."""
+    _set_recovery_state(running=True)
+    running_body = (await client.get("/pipeline/recover/status")).text
+    assert 'hx-get="/pipeline/recover/status"' in running_body
+
+    _set_recovery_state(result=_recovery_result(process_file={"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}))
+    done_body = (await client.get("/pipeline/recover/status")).text
+    assert 'hx-get="/pipeline/recover/status"' not in done_body, "a settled fragment must stop polling"
+
+
+@pytest.mark.asyncio
+async def test_recover_status_surfaces_a_failed_run(client: AsyncClient) -> None:
+    """A recovery that RAISED is reported as failed, not as started and not as complete."""
+    _set_recovery_state(failed=True)
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "Recovery failed" in body
+    assert "Recovery complete" not in body
+
+
+@pytest.mark.asyncio
+async def test_recover_status_before_any_run(client: AsyncClient) -> None:
+    """A direct hit with no recovery in this process says so rather than inventing a tally."""
+    _set_recovery_state()
+    body = (await client.get("/pipeline/recover/status")).text
+    assert "No recovery has been run" in body
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_publishes_the_tally_for_the_operator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_run_recovery`` publishes the producer's result -- the controller log is no longer the only surface."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    result = _recovery_result(s3_upload={"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 2})
+
+    async def fake_recover(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        return result
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", fake_recover)
+    _set_recovery_state(running=True)
+
+    await pipeline_mod._run_recovery({})
+
+    assert pipeline_mod._recovery_state["running"] is False
+    assert pipeline_mod._recovery_state["failed"] is False
+    assert pipeline_mod._recovery_state["result"] is result
+
+
+@pytest.mark.asyncio
+async def test_run_recovery_clears_running_when_the_producer_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A crashed run must settle the fragment, not leave it polling forever on a dead task."""
+    import phaze.routers.pipeline as pipeline_mod
+
+    async def boom(ctx: dict[str, object], *, force: bool = False) -> dict[str, object]:
+        raise RuntimeError("recovery boom")
+
+    monkeypatch.setattr(pipeline_mod, "recover_orphaned_work", boom)
+    _set_recovery_state(running=True)
+
+    await pipeline_mod._run_recovery({})
+
+    assert pipeline_mod._recovery_state["running"] is False
+    assert pipeline_mod._recovery_state["failed"] is True
 
 
 @pytest.mark.asyncio

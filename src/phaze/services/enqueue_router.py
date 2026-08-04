@@ -79,6 +79,12 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         "scrape_and_store_tracklist",
         "match_tracklist_to_discogs",
         "refresh_tracklists",
+        # phaze-fq9h.7: the drain slice and its request-free status read. Both are controller
+        # tasks -- they need ctx["async_session"] and the headful browser phaze-fq9h.5 puts in the
+        # worker image -- and both are operator-enqueued (no cron), so unlike reap_stalled_scans
+        # they MUST be routable.
+        "drain_tracklists",
+        "tracklist_drain_status",
         "submit_cloud_job",  # Phase 54: fast kube-submit producer (control-plane; kube creds live here)
     }
 )
@@ -127,6 +133,21 @@ LANES: tuple[str, ...] = tuple(LANE_TASKS)
 """Ordered lane names (``analyze``, ``meta``, ``io``) -- the insertion
 order of :data:`LANE_TASKS`. ``all_lane_queues`` iterates this so depth readers and the
 compose split enumerate lanes deterministically."""
+
+LANE_CONCURRENCY_SETTING: dict[str, str] = {
+    "analyze": "lane_analyze_concurrency",
+    "meta": "lane_meta_concurrency",
+    "io": "lane_io_concurrency",
+}
+"""Lane -> the ``Settings`` attribute carrying that lane worker's concurrency (design defaults 4/2/4).
+
+Lives here, beside :data:`LANES`, because BOTH ends need it and they are in different planes: the
+CONSUMER (``phaze.tasks.agent_worker``) sizes its own worker from it, and the CONTROL-side guard
+(``phaze.services.queue_introspection``) needs the same number to answer "are more rows stranded
+``active`` than this lane could ever have been running?" (phaze-o0n6). Duplicating the map would let
+those two answers drift the moment a lane is added or a knob renamed; totality against :data:`LANES` is
+asserted in tests.
+"""
 
 AGENT_TASKS: frozenset[str] = frozenset().union(*LANE_TASKS.values())
 """File-touching tasks a file-server agent worker consumes -- the DERIVED union of every

@@ -1393,7 +1393,7 @@ async def test_get_scanned_total_rescan_counts_latest_only(session: AsyncSession
     from datetime import datetime
 
     await seed_active_agent(session, "nox")
-    # Naive datetimes: the test-DB create_all schema makes created_at TIMESTAMP WITHOUT TIME ZONE.
+    # Only the relative ORDER of these two stamps matters here, never the absolute instant.
     earlier = _completed_batch("nox", 100, created_at=datetime(2026, 1, 1, 10, 0, 0))
     later = _completed_batch("nox", 120, created_at=datetime(2026, 1, 1, 11, 0, 0))
     session.add_all([earlier, later])
@@ -1580,7 +1580,7 @@ async def test_get_agent_reconciliations_rescan_counts_latest_only(session: Asyn
     from datetime import datetime
 
     await seed_active_agent(session, "nox")
-    # Naive datetimes: the test-DB create_all schema makes created_at TIMESTAMP WITHOUT TIME ZONE.
+    # Only the relative ORDER of these two stamps matters here, never the absolute instant.
     earlier = _completed_batch("nox", 100, created_at=datetime(2026, 1, 1, 10, 0, 0))
     later = _completed_batch("nox", 120, created_at=datetime(2026, 1, 1, 11, 0, 0))
     session.add_all([earlier, later])

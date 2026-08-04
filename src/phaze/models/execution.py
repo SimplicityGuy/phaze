@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,7 +39,7 @@ class ExecutionLog(TimestampMixin, Base):
     sha256_verified: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    executed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # phaze-37i1.3: the executed proposal this log row is the audit trail for -- ``lazy="raise"``
     # (same discipline as ``RenameProposal.file``, models/proposal.py) so a route that forgets to

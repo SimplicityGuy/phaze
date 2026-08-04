@@ -181,9 +181,10 @@ def test_no_router_uses_tz_naive_now_antipattern() -> None:
 def test_elapsed_seconds_handles_tz_naive_created_at_as_utc() -> None:
     """Defensive fallback: a tz-naive `created_at` (e.g. from a fixture) is treated as UTC.
 
-    Test schemas use TIMESTAMP WITHOUT TIME ZONE so loaded ScanBatch rows
-    have tz-naive `created_at`. The helper must still produce a meaningful
-    elapsed value rather than crashing or returning negative numbers.
+    Post-phaze-cz3m the schema is uniformly timestamptz, so a DB-loaded ScanBatch no longer
+    arrives naive. The remaining sources are hand-built fixtures and in-memory rows, which this
+    covers. The helper must still produce a meaningful elapsed value rather than crashing or
+    returning negative numbers.
     """
     from datetime import UTC, datetime, timedelta
 

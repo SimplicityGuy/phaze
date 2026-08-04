@@ -175,8 +175,14 @@ RUN python3 -m pip install --no-cache-dir --no-deps --ignore-requires-python .
 # Non-root user pinned to uid/gid 1000 for media-read parity (the scan-uid incident fix:
 # a -r system account auto-assigned uid 999 could not read uid-1000-owned media -> 0-file
 # scans). Placed AFTER all root-requiring layers.
+#
+# The account is still created (do NOT drop the useradd): Docker resolves the numeric uid against
+# /etc/passwd, so keeping the entry is what makes HOME=/home/phaze instead of degrading to `/`.
+# `USER` names the id rather than the name because the id is the whole point here (DL3066,
+# phaze-aip8). Kept byte-identical in intent to the x86 Dockerfile so the two images stay parity-
+# checked on the same shape.
 RUN groupadd -g 1000 phaze && useradd -m -u 1000 -g 1000 phaze
-USER phaze
+USER 1000:1000
 
 # Agent role CMD — invoke the system interpreter DIRECTLY, never the uv launcher. The uv
 # launcher resolves against a project .venv and re-validates requires-python >=3.14 against

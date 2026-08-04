@@ -52,45 +52,32 @@ THREE GUARDS, all load-bearing:
 Degrade-safe: the whole statement runs in a SAVEPOINT; a missing/unreadable ``saq_jobs`` table (a
 pre-migration env, or a malformed blob) rolls the nested scope back alone and returns ``reaped=0``.
 A reaper hiccup must never abort a controller cron tick.
+
+SIBLING (phaze-o0n6): ``'aborting'`` is not the only status outside SAQ's overwrite allowlist --
+``'active'`` has the identical blocking property and gets the identical three guards in
+:mod:`phaze.tasks.active_reaper`. The guards themselves now live ONCE in :mod:`phaze.tasks._saq_reap`
+so a fix to one reaper can never silently miss the other; this module supplies only the status and
+the slack. Nothing else changed: the statement is byte-equivalent to the literal it replaced, with
+``'aborting'`` moved from an inline literal to a bind parameter.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import text
 import structlog
 
 from phaze.config import get_settings
+from phaze.tasks._saq_reap import REAP_STRANDED_SQL, SAQ_DEFAULT_TIMEOUT_SECONDS
 
 
 logger = structlog.get_logger(__name__)
 
 
-# SAQ's Job dataclass default timeout (saq/job.py) -- the fallback bound for a row whose blob has
-# no explicit ``timeout`` key (mirrors ``phaze.tasks._shared.queue_defaults._SAQ_DEFAULT_TIMEOUT``,
-# that module's single source of truth; duplicated here as a plain int so this SQL-bound module
-# stays free of a cross-import for one constant).
-_SAQ_DEFAULT_TIMEOUT_SECONDS = 10
-
-# Read+DELETE in ONE atomic statement. The ``status = 'aborting'`` predicate IS the CAS (a
-# concurrent flip to 'aborted' loses the row from this DELETE under READ COMMITTED re-check). Age
-# is computed from the blob's frozen ``started`` (ms) vs now; ``touched`` is deliberately NOT used
-# (sweeper-bumped). Rows whose blob lacks ``started`` (shouldn't happen for an active-then-aborting
-# job) are excluded rather than reaped on incomplete data. phaze-lqkz: the bound is now PER-ROW --
-# the row's own serialized ``timeout`` (falling back to the bare SAQ default when absent) plus a
-# flat slack -- instead of one fixed constant compared against every row regardless of its job's
-# own timeout.
-_REAP_ABORTING_SQL = text(
-    """
-    DELETE FROM saq_jobs
-    WHERE status = 'aborting'
-      AND (convert_from(job, 'UTF8')::jsonb ? 'started')
-      AND (EXTRACT(EPOCH FROM NOW()) * 1000 - (convert_from(job, 'UTF8')::jsonb->>'started')::bigint)
-          / 1000.0 > COALESCE((convert_from(job, 'UTF8')::jsonb->>'timeout')::bigint, :default_timeout_seconds) + :slack_seconds
-    RETURNING key
-    """
-)
+# The shared stranded-row DELETE (see :mod:`phaze.tasks._saq_reap` for the three guards and why they
+# are written once). Aliased under the module-local name this module has always used so the existing
+# degrade test can keep monkeypatching it.
+_REAP_ABORTING_SQL = REAP_STRANDED_SQL
 
 
 async def reap_stuck_aborting_jobs(ctx: dict[str, Any]) -> dict[str, int]:
@@ -107,7 +94,7 @@ async def reap_stuck_aborting_jobs(ctx: dict[str, Any]) -> dict[str, int]:
             async with session.begin_nested():
                 result = await session.execute(
                     _REAP_ABORTING_SQL,
-                    {"slack_seconds": slack, "default_timeout_seconds": _SAQ_DEFAULT_TIMEOUT_SECONDS},
+                    {"status": "aborting", "slack_seconds": slack, "default_timeout_seconds": SAQ_DEFAULT_TIMEOUT_SECONDS},
                 )
                 reaped_keys = [row[0] for row in result.fetchall()]
         except Exception:

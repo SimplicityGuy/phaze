@@ -7,10 +7,22 @@
    task, so this confirms it STARTED (not the final per-stage counts). Carries the LOCKED idempotency
    reassurance copy: a forced reconcile dedups every still-in-flight item via its deterministic key, so
    nothing double-enqueues. NO no_active_agent branch — agent stages skip with zero counts on a cold
-   boot (D-05); the controller stages still reconcile, so the action is always meaningfully "started". #}
-<span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
-    Recovery started — re-enqueuing any orphaned work across all stages.
-</span>
-<span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
-    Already-running work is deduplicated — nothing will double-enqueue.
-</span>
+   boot (D-05); the controller stages still reconcile, so the action is always meaningfully "started".
+
+   phaze-71nz: this is no longer the LAST word. It polls GET /pipeline/recover/status and replaces
+   ITSELF (hx-swap="outerHTML") with recover_status.html once the background run lands, because
+   "Recovery started" read IDENTICALLY for the 2026-07-31 run that replayed 430 s3_upload rows into
+   guaranteed-403 jobs and for a run that recovered cleanly. A run that knowingly leaves a stage
+   un-recovered has to say so, and only the finished tally knows that. The poll stops on its own —
+   recover_status.html drops the trigger once the run is no longer `running`. #}
+<div id="discover-recover-status"
+     hx-get="/pipeline/recover/status"
+     hx-trigger="load delay:1s, every 2s"
+     hx-swap="outerHTML">
+    <span class="inline-flex items-center gap-2 text-sm text-green-600 dark:text-green-400 font-medium">
+        Recovery started — re-enqueuing any orphaned work across all stages.
+    </span>
+    <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">
+        Already-running work is deduplicated — nothing will double-enqueue.
+    </span>
+</div>

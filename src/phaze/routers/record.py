@@ -33,6 +33,7 @@ from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.proposals import TIMELINE_H, TIMELINE_W, _bpm_spark, _ribbons
 from phaze.services.pipeline import get_file_stage_buckets
+from phaze.services.tracklist_priority import get_file_tracklist_review
 
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -144,6 +145,11 @@ async def file_record(
     # Files matrix renders, single-file-scoped, so the Stage-Eligibility pills match that row.
     stage_buckets = await get_file_stage_buckets(session, file_id)
 
+    # phaze-fq9h.8: the per-file 1001Tracklists review -- scraped/propagated/attempted-but-absent/
+    # never-looked-up, plus the operator priority flag. The file was already confirmed to exist
+    # above, so this can never legitimately come back None here.
+    tracklist_review = await get_file_tracklist_review(session, file_id)
+
     spark = _bpm_spark(fine, total_sec, TIMELINE_W, TIMELINE_H)
     context: dict[str, Any] = {
         "request": request,
@@ -164,5 +170,6 @@ async def file_record(
         "pending_rows": pending_rows,
         "identity": identity,
         "history": history,
+        "tracklist_review": tracklist_review,
     }
     return templates.TemplateResponse(request=request, name="record/record_body.html", context=context)

@@ -13,11 +13,17 @@ durable value against the one baseline that replaced it:
 * the ORM<->schema ``--autogenerate`` drift equals the FROZEN pre-flatten set -- the
   flatten's fidelity gate proved the chain and the baseline carry this exact same
   drift (ORM-less ``files_state_archive``, generated ``search_vector`` columns,
-  trgm/partial/functional indexes, timestamp-typing nuances), so ANY change to the set
-  (new drift, or silently resolved drift) fails and forces a deliberate update here.
+  trgm/partial/functional indexes), so ANY change to the set (new drift, or silently
+  resolved drift) fails and forces a deliberate update here.
   phaze-0jpe.4's migration 046 dropped ``fingerprint_results`` (+ its two partial/unique
   indexes) and narrowed ``stage_skip``'s CHECK, resolving the three PENDING-MIGRATION
   drift entries that used to sit here -- see migration 046's module docstring.
+  phaze-cz3m's migration 049 resolved the twenty timestamp ``modify_type`` entries by
+  making the schema uniformly ``timestamptz``; the "timestamp-typing nuances" this
+  docstring used to list as accepted drift were a live defect, not a nuance.
+* phaze-cz3m: no timestamp column in the schema is naive, and no mapped ``DateTime``
+  column declares itself naive -- the two halves of the same invariant, asserted
+  schema-wide so a new table cannot reintroduce the split.
 * phaze-0r9a: the seed INSERTs render bound values (not ``NULL``) in OFFLINE (``--sql``)
   mode too -- this one test needs no live database, since offline mode never connects.
 
@@ -27,6 +33,7 @@ the offline-mode seed test, which is connection-free by construction.
 
 import asyncio
 import contextlib
+from datetime import datetime
 import importlib.util
 import io
 from pathlib import Path
@@ -37,7 +44,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 import asyncpg
 import pytest
-from sqlalchemy import text
+from sqlalchemy import DateTime, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -78,6 +85,8 @@ _EXPECTED_TABLES = frozenset(
         "scheduling_ledger",
         "stage_skip",
         "tag_write_log",
+        "tracklist_lookup_cache",
+        "tracklist_priority_flags",
         "tracklist_tracks",
         "tracklist_versions",
         "tracklists",
@@ -127,31 +136,27 @@ _FROZEN_AUTOGEN_DRIFT = frozenset(
         ("add_index", "ix_analysis_window_file_id"),
         ("modify_nullable", "discogs_links.created_at"),
         ("modify_nullable", "discogs_links.updated_at"),
-        # phaze-36rc / migration 040: tag_write_log timestamps are now timestamptz in the DB, so the
-        # naive ORM columns (plain DateTime / TimestampMixin) drift on TYPE -- exactly mirroring
-        # execution_log below (naive model vs aware DB). These were formerly modify_nullable entries;
-        # once the type also diverges, alembic groups both diffs and _canonical_diff keys them as
-        # modify_type (the nullable delta is still present within the same grouped op).
-        ("modify_type", "tag_write_log.created_at"),
-        ("modify_type", "tag_write_log.updated_at"),
-        ("modify_type", "tag_write_log.written_at"),
-        ("modify_type", "agents.created_at"),
-        ("modify_type", "agents.updated_at"),
-        ("modify_type", "analysis.created_at"),
-        ("modify_type", "analysis.updated_at"),
-        ("modify_type", "execution_log.created_at"),
-        ("modify_type", "execution_log.executed_at"),
-        ("modify_type", "execution_log.updated_at"),
-        ("modify_type", "file_companions.created_at"),
-        ("modify_type", "file_companions.updated_at"),
-        ("modify_type", "files.created_at"),
-        ("modify_type", "files.updated_at"),
-        ("modify_type", "metadata.created_at"),
-        ("modify_type", "metadata.updated_at"),
-        ("modify_type", "proposals.created_at"),
-        ("modify_type", "proposals.updated_at"),
-        ("modify_type", "scan_batches.created_at"),
-        ("modify_type", "scan_batches.updated_at"),
+        # phaze-cz3m / migration 049 DELETED the twenty ("modify_type", "<table>.created_at|updated_at")
+        # entries that used to sit here. Every one was the same defect: the ORM declared a naive
+        # DateTime (TimestampMixin, or a bare `DateTime`) against a column the 039 baseline had made
+        # `timestamptz`. That was never harmless typing noise -- it is what took the cloud staging
+        # scheduler down for ~10 h, because SQLAlchemy emits a `::TIMESTAMP WITHOUT TIME ZONE` cast for
+        # any bind param typed off such a column and asyncpg cannot encode an aware value through it.
+        # 049 made the whole schema `timestamptz` and TimestampMixin now declares timezone=True, so the
+        # two sides agree and there is no type drift left to freeze. Do NOT re-add entries of this
+        # shape: a `modify_type` on a timestamp column means the split is back, and
+        # test_every_schema_timestamp_column_is_timezone_aware /
+        # test_every_model_datetime_column_declares_timezone_aware should be failing alongside it.
+        #
+        # The three tag_write_log entries below are what remained once the type agreed. They are a
+        # NULLABILITY delta, not a tz one -- the 039 baseline created these columns without NOT NULL
+        # while the ORM declares them non-nullable, exactly like discogs_links above. Previously
+        # alembic grouped that delta into the same op as the type diff and `_canonical_diff` keyed the
+        # pair as `modify_type`, hiding it; removing the type diff surfaced it unchanged. Pre-existing
+        # and out of scope for phaze-cz3m.
+        ("modify_nullable", "tag_write_log.created_at"),
+        ("modify_nullable", "tag_write_log.updated_at"),
+        ("modify_nullable", "tag_write_log.written_at"),
         ("remove_column", "files.search_vector"),
         ("remove_column", "metadata.search_vector"),
         ("remove_column", "tracklists.search_vector"),
@@ -217,8 +222,11 @@ def test_baseline_is_the_only_migration() -> None:
     nullable files.original_filename_repaired mojibake-repair column; 046 (phaze-0jpe.4) drops
     fingerprint_results and narrows stage_skip's CHECK; 047 (phaze-s7mb) drops the never-populated
     analysis.fingerprint column; 048 (phaze-bto9) adds the files (original_filename, id) btree the
-    tag-write review keyset paging orders and ranges on. Any other resurrected 0xx chain file is a
-    regression.
+    tag-write review keyset paging orders and ranges on; 049 (phaze-cz3m) makes every schema
+    timestamp timestamptz; 050 (phaze-fq9h.3) creates tracklist_lookup_cache; 051 (phaze-fq9h.7)
+    adds tracklists propagation columns + narrows external_id uniqueness to canonical rows; 052
+    (phaze-fq9h.8) creates tracklist_priority_flags, the persisted home for an operator's "answer
+    this file first". Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -232,6 +240,10 @@ def test_baseline_is_the_only_migration() -> None:
         "046_drop_fingerprint_schema.py",
         "047_drop_analysis_fingerprint_column.py",
         "048_files_original_filename_id_btree.py",
+        "049_all_timestamps_timestamptz.py",
+        "050_tracklist_lookup_cache.py",
+        "051_tracklists_propagation.py",
+        "052_tracklist_priority_flags.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -263,10 +275,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (048: tag-write review btree)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (052: tracklist priority flags)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "048"
+    assert version == "052"
 
 
 @pytest.mark.asyncio
@@ -364,36 +376,61 @@ async def test_scan_batches_no_duplicate_running_enforced(migrated_engine: Async
 
 
 @pytest.mark.asyncio
-async def test_tag_write_log_timestamps_are_timezone_aware(migrated_engine: AsyncEngine) -> None:
-    """phaze-36rc / migration 040: tag_write_log timestamps are timestamptz, matching execution_log.
+async def test_every_schema_timestamp_column_is_timezone_aware(migrated_engine: AsyncEngine) -> None:
+    """phaze-cz3m / migration 049: NO naive timestamp column survives anywhere in the schema.
 
-    Divergent typing (execution_log.executed_at timestamptz vs tag_write_log.written_at naive) made
-    asyncpg decode one aware and one naive, 500-ing GET /record/{id} when both histories were present.
-    After 040 every tag_write_log timestamp -- and execution_log.executed_at -- reports 'timestamp with
-    time zone', so the driver decodes them uniformly aware and the merge-sort can never mix tz-awareness.
+    Deliberately schema-WIDE rather than a list of known tables. Its predecessor
+    (``test_tag_write_log_timestamps_are_timezone_aware``, phaze-36rc / migration 040) asserted the
+    three columns that migration had just fixed, so it stayed green through the outage that the
+    remaining 24 naive columns went on to cause -- a guard that only watches the last fire cannot
+    catch the next one. Phrased as "the set of naive timestamp columns is empty", it fails on any
+    NEW table that reintroduces one, without anybody remembering to extend a list.
+
+    The 039 baseline created these columns inconsistently -- 10 tables aware, 11 naive, all from the
+    same ``TimestampMixin``. asyncpg decodes by column OID, so the tz-awareness of a value depended on
+    which table it came from, and mixing the two raises ``TypeError``/``DataError`` deep inside the
+    driver rather than anywhere near the bug. Migration 049 removed the distinction entirely.
     """
     async with migrated_engine.connect() as conn:
-        rows = (
+        naive = (
             await conn.execute(
                 text(
-                    "SELECT table_name, column_name, data_type FROM information_schema.columns "
-                    "WHERE table_schema = 'public' "
-                    "AND ((table_name = 'tag_write_log' AND column_name IN ('written_at', 'created_at', 'updated_at')) "
-                    "OR (table_name = 'execution_log' AND column_name = 'executed_at'))"
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND data_type = 'timestamp without time zone' "
+                    "ORDER BY table_name, column_name"
                 )
             )
         ).all()
-    by_col = {(t, c): dtype for t, c, dtype in rows}
-    assert by_col[("tag_write_log", "written_at")] == "timestamp with time zone"
-    assert by_col[("tag_write_log", "created_at")] == "timestamp with time zone"
-    assert by_col[("tag_write_log", "updated_at")] == "timestamp with time zone"
-    # The reference sibling was already aware; both sides now agree.
-    assert by_col[("execution_log", "executed_at")] == "timestamp with time zone"
+    assert [f"{t}.{c}" for t, c in naive] == [], (
+        "naive timestamp columns found -- every timestamp column must be 'timestamp with time zone' "
+        "(see migration 049 / models.base.TimestampMixin). Add an ALTER ... AT TIME ZONE 'UTC' migration."
+    )
+
+
+def test_every_model_datetime_column_declares_timezone_aware() -> None:
+    """The ORM half of the same invariant: no mapped DateTime column may claim to be naive.
+
+    The database being uniformly ``timestamptz`` is only half the fix. SQLAlchemy's asyncpg dialect
+    emits an explicit ``$n::TIMESTAMP WITHOUT TIME ZONE`` cast for any bind param typed off a column
+    declared naive, so a model that lies about an aware column still breaks on the WRITE path even
+    though every read works -- which is exactly how the cloud-staging keyset cursor failed while
+    every other query against ``files`` stayed green. Needs no database: it reads the mapped metadata.
+    """
+    naive = [
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, DateTime) and not column.type.timezone
+    ]
+    assert naive == [], (
+        f"model DateTime columns declared naive: {naive} -- every mapped datetime column must be "
+        "DateTime(timezone=True) to match the schema (see models.base.TimestampMixin, phaze-cz3m)."
+    )
 
 
 @pytest.mark.asyncio
 async def test_expected_tables_present(migrated_engine: AsyncEngine) -> None:
-    """The baseline creates the full 22-table inventory the chain produced."""
+    """The baseline creates the full 23-table inventory the chain produced."""
     async with migrated_engine.connect() as conn:
         rows = (await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))).scalars().all()
     tables = set(rows) - {"alembic_version"}
@@ -536,7 +573,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "048"
+        assert version == "052"
     finally:
         if engine is not None:
             await engine.dispose()
@@ -636,6 +673,138 @@ async def test_migration_041_dedupes_preexisting_duplicate_versions() -> None:
         assert by_id[fallback_winner_id] == 5, "with no latest_version_id match in the group, the lowest id keeps its version_number"
         assert by_id[loser_id] != 2, "the loser is renumbered off the colliding version_number"
         assert loser_track_count == 1, "the loser's tracklist_tracks row must survive untouched (no ON DELETE CASCADE)"
+    finally:
+        if engine is not None:
+            await engine.dispose()
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+
+
+async def _set_database_timezone(database_url: str, timezone: str | None) -> None:
+    """``ALTER DATABASE ... SET TimeZone`` (or RESET when ``timezone`` is None), affecting NEW sessions.
+
+    Lets a test drive a migration under a session TimeZone other than the harness container's UTC,
+    which is the only way to tell a correct ``USING <col> AT TIME ZONE 'UTC'`` conversion apart from
+    a naive one. ALTER DATABASE cannot run inside a transaction block, hence AUTOCOMMIT.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    database = database_url.rsplit("/", 1)[-1].split("?")[0]
+    # The database name reaches DDL as an identifier, which is not parameterizable. It comes from
+    # this suite's own env var, never from user input, and is pinned to the harness naming scheme
+    # before use so a malformed URL fails here rather than composing DDL.
+    assert database.replace("_", "").isalnum(), f"refusing to build DDL from unexpected database name {database!r}"
+    action = "RESET TimeZone" if timezone is None else f"SET TimeZone TO '{timezone}'"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(text(f'ALTER DATABASE "{database}" {action}'))
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_migration_049_preserves_existing_timestamp_values_as_utc() -> None:
+    """049 must REINTERPRET naive timestamps as UTC, never shift them (phaze-cz3m).
+
+    The failure mode this guards is silent and unrecoverable: a bare
+    ``ALTER COLUMN ... TYPE timestamptz`` with no ``USING`` clause resolves naive values against the
+    SESSION TimeZone, so on a non-UTC server every historical row would slide by the offset and
+    nothing would look broken afterwards. The migration pins the interpretation with an explicit
+    ``USING <col> AT TIME ZONE 'UTC'``; this test is what makes that clause non-negotiable.
+
+    Seeds a pre-049 database (upgraded only to 048, where the columns are still naive) with a known
+    wall-clock value, upgrades, and asserts the stored instant reads back as that same wall clock in
+    UTC. Uses ``cloud_job`` -- the table whose keyset cursor caused the outage -- plus ``tracklists``
+    so both a converted-in-049 audit table and a converted-in-049 content table are covered.
+
+    Runs the upgrade under a deliberately NON-UTC database TimeZone. This is the whole point: the
+    test harness container runs UTC, where a missing ``USING`` clause produces byte-identical
+    results and the test would pass vacuously. Forcing ``America/Los_Angeles`` for the duration of
+    the upgrade makes the two spellings diverge by the 7-8 h offset, so the assertions below can
+    actually fail. Verified to fail (7 h / 25200 s drift on both columns) against a USING-less
+    variant of 049 before being committed.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cfg = _build_alembic_config(MIGRATIONS_TEST_DATABASE_URL)
+    engine = None
+    # A deliberately non-midnight, sub-second value: a whole-hour offset shift would still be
+    # visible, but so would a fractional-second truncation. The text form is the assertion target
+    # and the naive datetime is what gets bound -- derived from it so there is one source of truth.
+    seeded = "2026-06-14 02:57:18.490794"
+    seeded_dt = datetime.fromisoformat(seeded)
+    try:
+        await _reset_schema(MIGRATIONS_TEST_DATABASE_URL)
+        await asyncio.to_thread(upgrade_to, cfg, "048")
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        agent_id, file_id, tracklist_id = f"tz-{uuid.uuid4().hex[:8]}", uuid.uuid4(), uuid.uuid4()
+        async with engine.begin() as conn:
+            # Confirm the precondition rather than assume it: if 048 ever stops leaving these naive,
+            # this test is no longer testing a conversion and should fail loudly here.
+            naive_before = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'public' "
+                        "AND data_type = 'timestamp without time zone' AND "
+                        "((table_name = 'cloud_job' AND column_name = 'created_at') OR (table_name = 'tracklists' AND column_name = 'created_at'))"
+                    )
+                )
+            ).scalar_one()
+            assert naive_before == 2, "precondition: cloud_job.created_at and tracklists.created_at are naive at 048"
+
+            await conn.execute(text("INSERT INTO agents (id, name, scan_roots) VALUES (:id, :id, '[]'::jsonb)"), {"id": agent_id})
+            await conn.execute(
+                text(
+                    "INSERT INTO files (id, sha256_hash, original_path, original_filename, current_path, file_type, file_size, agent_id) "
+                    "VALUES (:id, :h, '/x/t.mp3', 't.mp3', '/x/t.mp3', 'mp3', 1, :agent_id)"
+                ),
+                {"id": file_id, "h": f"tzhash-{file_id}", "agent_id": agent_id},
+            )
+            await conn.execute(
+                text("INSERT INTO cloud_job (id, file_id, status, created_at, updated_at) VALUES (:id, :fid, 'awaiting', :ts, :ts)"),
+                {"id": uuid.uuid4(), "fid": file_id, "ts": seeded_dt},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO tracklists (id, external_id, source_url, auto_linked, source, status, created_at, updated_at) "
+                    "VALUES (:id, :ext, 'https://example.com/tl', false, '1001tracklists', 'approved', :ts, :ts)"
+                ),
+                {"id": tracklist_id, "ext": f"tz-{tracklist_id}", "ts": seeded_dt},
+            )
+        await engine.dispose()
+        engine = None
+
+        # Force a non-UTC TimeZone for the sessions alembic is about to open, so a USING-less
+        # ALTER would resolve the naive values against LA rather than UTC and shift them.
+        # ALTER DATABASE affects NEW sessions, which is exactly what upgrade_to opens.
+        await _set_database_timezone(MIGRATIONS_TEST_DATABASE_URL, "America/Los_Angeles")
+        try:
+            await asyncio.to_thread(upgrade_to, cfg, "049")
+        finally:
+            await _set_database_timezone(MIGRATIONS_TEST_DATABASE_URL, None)
+
+        engine = create_async_engine(MIGRATIONS_TEST_DATABASE_URL)
+        async with engine.connect() as conn:
+            # Read back the wall clock AT UTC. Equal to the seeded literal iff the value was
+            # reinterpreted as UTC rather than shifted by the server's offset.
+            cloud_utc = (
+                await conn.execute(text("SELECT (created_at AT TIME ZONE 'UTC')::text FROM cloud_job WHERE file_id = :fid"), {"fid": file_id})
+            ).scalar_one()
+            tracklist_utc = (
+                await conn.execute(text("SELECT (created_at AT TIME ZONE 'UTC')::text FROM tracklists WHERE id = :id"), {"id": tracklist_id})
+            ).scalar_one()
+            offset_seconds = (
+                await conn.execute(
+                    text("SELECT EXTRACT(EPOCH FROM (created_at - CAST(:ts AS timestamp) AT TIME ZONE 'UTC')) FROM cloud_job WHERE file_id = :fid"),
+                    {"ts": seeded_dt, "fid": file_id},
+                )
+            ).scalar_one()
+
+        assert cloud_utc == seeded, f"049 shifted cloud_job.created_at: seeded {seeded!r}, read back {cloud_utc!r} at UTC"
+        assert tracklist_utc == seeded, f"049 shifted tracklists.created_at: seeded {seeded!r}, read back {tracklist_utc!r} at UTC"
+        assert offset_seconds == 0, f"049 must reinterpret naive values as UTC, not shift them (drifted {offset_seconds}s)"
     finally:
         if engine is not None:
             await engine.dispose()

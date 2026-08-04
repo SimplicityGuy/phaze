@@ -320,8 +320,21 @@ lifespan as `app.state.task_router`.
   `reap_stalled_scans` (every-minute no-progress scan reaper), `reap_stuck_aborting_jobs`
   (every-minute reaper for SAQ rows stuck in `status='aborting'`, `tasks/aborting_reaper.py`,
   phaze-e57w — deleting them releases the deterministic key so the blocked file is
-  re-queueable), and `recover_orphaned_work` (the gated boot-time queue-loss recovery pass).
-  It connects to Postgres directly.
+  re-queueable), `reap_stranded_active_jobs` (its every-minute sibling for `status='active'`,
+  `tasks/active_reaper.py`, phaze-o0n6 — the OTHER status outside SAQ's `_enqueue` overwrite
+  allowlist; `_dequeue` marks rows `active` in bulk and buffers them in-process, so a worker
+  death strands every buffered row, and 2,413 such rows had made 2,411 files un-requeueable
+  by any path on the live deployment), and `recover_orphaned_work` (the gated boot-time
+  queue-loss recovery pass). It connects to Postgres directly.
+
+  The two key reapers share their three guards verbatim (`tasks/_saq_reap.py`): an age bound on
+  the FROZEN `started` (never the sweeper-bumped `touched`), a PER-ROW bound derived from that
+  row's own serialized `timeout`, and a status CAS in the DELETE's `WHERE`. Both delete ONLY the
+  `saq_jobs` row and deliberately leave the file's `scheduling_ledger` row in place: that row is
+  the recovery SOURCE (`recover_orphaned_work` replays `ledger MINUS live-saq_jobs-keys MINUS
+  domain-completed`), so freeing the key is what turns it from invisible into an orphan the
+  recovery pass re-drives. `reap_resolved_ledger_rows` is the counterpart that clears such a row
+  once — and only once — its stage has domain-completed.
 - **Agent role** (`tasks/agent_worker.py`) runs the per-agent queue and registers the **9**
   file-bound functions: `process_file`, `extract_file_metadata`,
   `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`,

@@ -1,0 +1,11 @@
+{
+  "bead": "phaze-fq9h.6",
+  "captured_utc": "2026-08-03T17:01:10Z",
+  "final_url": "https://www.1001tracklists.com/search/result.php",
+  "html_bytes": 152854,
+  "parsed_results": 30,
+  "query": "Sven Vath Time Warp 2024",
+  "row_selector_matches": 30,
+  "status": 200,
+  "why": "THE WRONG-MATCH CASE. Both detail fixtures captured by phaze-fq9h.1 are Sven Vath 'Time Warp' sets from 2024 -- the Maimarkthalle set (2024-10-25) and the BBC Radio 1 Dance broadcast (2024-10-12). Same artist, same year, event strings where one CONTAINS the other, 13 days apart. If the top row is the wrong one of those two, no amount of artist or event similarity separates them; only the date does."
+}

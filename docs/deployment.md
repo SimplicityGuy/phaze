@@ -651,6 +651,44 @@ just download-models
 
 This runs `bash scripts/download-models.sh models`, populating `./models/` directly; the agent's auto-download check then no-ops.
 
+## 1001Tracklists render worker: residential-IP constraint (phaze-fq9h.5)
+
+The 1001Tracklists lookup pipeline (epic phaze-fq9h) renders detail pages with a real, HEADFUL
+Google Chrome (`services/tracklist_render.py`, `TracklistRenderer`/`PatchrightLauncher`) — the
+only client spike phaze-dmvs found that clears the Cloudflare Turnstile widget without evasion
+(fingerprint MATCHING: no proxies, no UA randomization, no CAPTCHA solvers — the epic's ethics
+ceiling). That client-fidelity work is undone if the *network path* still looks like a bot.
+
+**This is a deployment constraint, not something the render engine's code can work around.**
+1001Tracklists' own FAQ states its anti-scraping measures block requests from datacenter, VPN, and
+Tor IP ranges. Whatever host actually executes the render worker — a `worker-*` lane, a future
+tracklist-drain service, or an ad hoc `scripts/capture_tracklist_render.py` run — **must egress
+through a residential (consumer ISP) IP address.** A cloud VM, VPS, colo box, the OCI Always Free
+tier used for cloud-burst compute (`docker-compose.cloud-agent.yml`), and hosted CI runners
+(GitHub Actions `ubuntu-latest` included) are all datacenter ranges and are all in scope of this
+block — none of them are a valid home for this worker, regardless of how the browser itself is
+configured.
+
+**What happens if you get this wrong.** The render engine cannot tell "IP-blocked" apart from an
+ordinary flaky Turnstile challenge from its own vantage point — both look like the page never
+delivering the `.tlpItem` track container. Every render will exhaust
+`tracklist_render_turnstile_attempts` and report `RenderOutcome.INTERSTITIAL_PERSISTED`
+(retryable, so nothing gets negative-cached — see `RenderResult.is_retryable`), forever, silently
+spending the shared crawl-delay-8 host budget (phaze-hu8v) on requests that can never succeed no
+matter how many attempts or how long the drain runs. There is no distinct "blocked" outcome to
+alert on; the operator-visible signal is an unusually high, *persistent* `INTERSTITIAL_PERSISTED`
+rate that does not improve across the corpus. Before trusting a bulk run's results, confirm the
+render host clears the anchor URL at all (`scripts/capture_tracklist_render.py --trials 6`, run
+manually, one process at a time, never wired into CI — see that script's own docstring).
+
+**For a future operator considering a VPS or cloud migration for this worker specifically:** it
+will stop working, silently in the sense above (no crash, no explicit "blocked" error — just a
+100% `INTERSTITIAL_PERSISTED` rate), the moment the egress IP moves off a residential connection.
+The epic's ethics bound rules out the usual fix (routing through a residential proxy service is
+exactly the kind of evasion phaze-dmvs deliberately avoided), so the render worker's host placement
+is a real, permanent constraint on where this feature can run — keep it on hardware with a
+residential ISP connection (e.g. the same home-server host the file-server agent already runs on).
+
 ## Production Checklist
 
 Before shipping a file-server host to production:
@@ -668,6 +706,9 @@ Before shipping a file-server host to production:
 - [ ] Production bring-up uses `just up` (base `docker-compose.yml` only) — the dev overlay `docker-compose.dev.yml` is opt-in via `just up-dev` and is no longer auto-merged, so it cannot bypass the cert-bootstrap entrypoint (phaze-476w)
 - [ ] Filesystem-isolation smoke confirmed (see above) — `docker compose exec api ls /data/music` returns "No such file or directory"
 - [ ] `/admin/agents` page shows **alive** status within ~60s of `just up-agent`
+- [ ] If this host runs the 1001Tracklists render worker: confirmed to egress through a
+      **residential IP** (never a cloud VM/VPS/colo/CI runner) — see
+      "1001Tracklists render worker: residential-IP constraint" above
 
 ## See also
 

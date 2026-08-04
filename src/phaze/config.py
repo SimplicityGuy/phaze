@@ -314,6 +314,25 @@ class BaseSettings(PydanticBaseSettings):
         description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stuck in status='aborting' is reaped (deleted, releasing its deterministic key). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack.",
     )
 
+    # phaze-o0n6: the SIBLING knob, for the OTHER status outside SAQ's `_enqueue` overwrite allowlist.
+    # 'active' blocks a deterministic key exactly as 'aborting' does, and `PostgresQueue._dequeue`
+    # marks FAR more rows 'active' than a worker can run (it buffers them in-process), so a process
+    # death strands every buffered row with nothing alive to finalize it -- 2,413 such rows against
+    # worker concurrency 4 on the live deployment, 2,411 of them files never analyzed and
+    # un-requeueable by any path. Same three guards as above (frozen `started`, per-row `timeout`,
+    # status CAS -- all in tasks/_saq_reap.py); only the slack differs.
+    #
+    # WHY 900 AND NOT 300: 'aborting' is a POST-give-up status, 'active' is a LIVE one, so the cost of
+    # being wrong is higher. `process_file` runs inside essentia's C extension, which does not yield to
+    # the event loop, so asyncio.wait_for's cancellation at the job's own timeout cannot land until the
+    # native call returns -- a genuinely-running job can outlive its timeout by a bounded margin. This
+    # is that margin, ADDITIVE on top of the row's own timeout (a 7200s process_file gets 8100s).
+    active_reap_slack_seconds: int = Field(
+        default=900,
+        validation_alias=AliasChoices("PHAZE_ACTIVE_REAP_SLACK_SECONDS", "active_reap_slack_seconds"),
+        description="Seconds of grace ADDED ON TOP OF a job's own timeout before a row stranded in status='active' is reaped (deleted, releasing its deterministic key; its scheduling_ledger row is KEPT -- that row is what recovery replays). The bound is per-job (job_timeout + this), not a single fixed value -- a job with no explicit timeout in its serialized blob falls back to the bare SAQ default (10s) plus this slack. Wider than the 'aborting' slack because 'active' is a live status (phaze-o0n6).",
+    )
+
     # DB connection footprint / pool hygiene (quick-260707-ryn). These live on BaseSettings
     # so BOTH the api engine (via the module-level `settings` singleton, database.py) AND the
     # control worker task_engine (via get_settings(), tasks/controller.py) source their pool
@@ -377,6 +396,64 @@ class BaseSettings(PydanticBaseSettings):
         default="https://github.com/SimplicityGuy/phaze",
         validation_alias=AliasChoices("PHAZE_SCRAPER_CONTACT_URL", "scraper_contact_url"),
         description="Contact URL embedded in the honest 1001Tracklists scraper User-Agent (phaze-hu8v).",
+    )
+
+    # phaze-fq9h.1: 1001Tracklists DETAIL pages (unlike search) deliver their track listing via JS
+    # behind a Cloudflare Turnstile widget, so they are rendered by a real browser
+    # (services/tracklist_render.py) rather than fetched with httpx. Spike phaze-dmvs measured the
+    # constraints these defaults encode: HEADFUL is mandatory (headless fails the interstitial
+    # outright) and Turnstile is FLAKY rather than deterministic -- ~6/8 pages cleared on first
+    # navigation -- so a bounded reload/retry loop is the difference between a usable yield and
+    # a quarter of the corpus silently unreachable.
+    tracklist_render_browser_channel: str = Field(
+        default="chrome",
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL", "tracklist_render_browser_channel"),
+        description=(
+            "Patchright browser channel for the 1001Tracklists renderer. 'chrome' uses a real installed Google Chrome "
+            "(Patchright's most convincing configuration); empty string falls back to Patchright's bundled patched Chromium."
+        ),
+    )
+    tracklist_render_turnstile_attempts: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS", "tracklist_render_turnstile_attempts"),
+        description=(
+            "Hard cap on navigations per detail page when Turnstile keeps serving its interstitial (phaze-fq9h.1). "
+            "Every attempt spends one whole-host request from the crawl-delay budget, so this is a politeness bound as much as a timeout."
+        ),
+    )
+    tracklist_render_page_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS", "tracklist_render_page_timeout_seconds"),
+        description=(
+            "Hard wall-clock ceiling for rendering ONE detail page, covering every retry attempt and the pacing waits between them. "
+            "A hung browser page must never stall a months-long drain (phaze-fq9h.1)."
+        ),
+    )
+    tracklist_render_selector_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS", "tracklist_render_selector_timeout_seconds"),
+        description="Per-attempt wait for the track container to appear before the attempt is judged interstitial-or-empty (phaze-fq9h.1).",
+    )
+    tracklist_render_retry_backoff_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS", "tracklist_render_retry_backoff_seconds"),
+        description=(
+            "Base for the exponential backoff added ON TOP of the shared crawl-delay pacing between Turnstile retries. "
+            "Zero disables the extra backoff; the crawl-delay floor still applies (phaze-fq9h.1)."
+        ),
+    )
+    tracklist_render_xvfb: Literal["auto", "always", "never"] = Field(
+        default="auto",
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_XVFB", "tracklist_render_xvfb"),
+        description=(
+            "Whether to start an Xvfb virtual display for the headful browser. 'auto' starts one only on Linux with no DISPLAY "
+            "already set -- i.e. exactly the headless-worker case (phaze-fq9h.1/phaze-fq9h.5)."
+        ),
     )
 
     # Internal agent API (Phase 25)

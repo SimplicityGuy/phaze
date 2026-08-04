@@ -24,7 +24,7 @@ sustained all-held run escalates from the silent per-candidate hold to a WARNING
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 import uuid
 
@@ -49,10 +49,10 @@ _FREE_CLOUD_SLOTS = 3
 _POISONED_HEADS = 14
 _ROUTABLE_BEHIND = 5
 
-# NAIVE by design: ``models/base.TimestampMixin`` declares no ``timezone=True``, so ``files.created_at``
-# is TIMESTAMP WITHOUT TIME ZONE and asyncpg rejects an aware value for it (the same awareness mismatch
-# the drain's ``lane_entered_at`` handling accounts for).
-_BASE_TIME = datetime(2026, 7, 27, 3, 0, 0)
+# AWARE by design (phaze-cz3m): ``TimestampMixin`` now declares ``timezone=True`` and ``files.created_at``
+# is timestamptz, so a naive seed would be resolved against the session's zone rather than pinned. This
+# comment previously recorded the opposite as intentional -- it was describing the defect 049 removed.
+_BASE_TIME = datetime(2026, 7, 27, 3, 0, 0, tzinfo=UTC)
 
 
 class _CloudStub:

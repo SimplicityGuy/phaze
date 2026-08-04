@@ -1,0 +1,11 @@
+{
+  "bead": "phaze-fq9h.6",
+  "captured_utc": "2026-08-03T17:02:03Z",
+  "final_url": "https://www.1001tracklists.com/search/result.php",
+  "html_bytes": 154354,
+  "parsed_results": 30,
+  "query": "Zzyzx Quorum Nonesuch Festival 2019",
+  "row_selector_matches": 30,
+  "status": 200,
+  "why": "THE BELOW-THRESHOLD CASE. A plausible-looking but invented artist/event pair. Needed as a real capture and not a hand-written empty page, because 'no confident match' has to be proven against whatever the site ACTUALLY returns for an unmatchable query -- which may well be a non-empty page of loosely-related rows rather than zero rows."
+}

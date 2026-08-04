@@ -49,7 +49,7 @@ import structlog
 
 from phaze.config import AgentSettings, get_settings
 from phaze.logging_config import configure_logging
-from phaze.services.enqueue_router import LANE_TASKS, LANES
+from phaze.services.enqueue_router import LANE_CONCURRENCY_SETTING, LANE_TASKS, LANES
 from phaze.tasks._shared.agent_bootstrap import (
     _WHOAMI_BACKOFF_S,  # noqa: F401  # re-export for back-compat / test patching
     construct_agent_client,
@@ -326,12 +326,12 @@ _ALL_FUNCTION_NAMES: tuple[str, ...] = (
     "push_file",
     "s3_upload",
 )
-# Per-lane concurrency knob attribute on Settings (design defaults 4/2/4).
-_LANE_CONCURRENCY_ATTR: dict[str, str] = {
-    "analyze": "lane_analyze_concurrency",
-    "meta": "lane_meta_concurrency",
-    "io": "lane_io_concurrency",
-}
+# Per-lane concurrency knob attribute on Settings (design defaults 4/2/4). Sourced from
+# enqueue_router (already imported for LANE_TASKS/LANES) so the control-side stranded-'active' guard
+# in services/queue_introspection.py reads the SAME map this worker sizes itself from -- phaze-o0n6:
+# a guard that says "more rows are stranded than the lane could ever have been running" is only as
+# honest as its idea of the lane's concurrency.
+_LANE_CONCURRENCY_ATTR: dict[str, str] = LANE_CONCURRENCY_SETTING
 
 # quick-260707-dh1: resolve the lane ONCE at import. Unset -> all-mode (back-compat: the
 # single-worker behavior with the base queue, all 8 functions, worker_max_jobs concurrency).

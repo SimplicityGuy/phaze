@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -98,8 +99,11 @@ from phaze.services.pipeline import (
 from phaze.services.pipeline_counters import read_counters
 from phaze.services.route_control import get_route_control
 from phaze.services.stage_status import failed_clause, stage_status_sort_case
+from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
+from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.tasks.tracklist_drain import tracklist_drain_status
 from phaze.web.static import static_asset_url
 
 
@@ -363,6 +367,8 @@ async def _build_dag_context(
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -2797,7 +2803,163 @@ async def trigger_match_tracklists_ui(
     )
 
 
+# --- Per-file 1001Tracklists priority + review (phaze-fq9h.8) ---
+
+
+@router.post("/pipeline/tracklists/{file_id}/prioritize", response_class=HTMLResponse)
+async def prioritize_tracklist_lookup_ui(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: persist an operator priority flag for ``file_id`` and queue one bounded
+    drain slice to answer it (phaze-fq9h.8, the "trigger/prioritize a lookup for a file"
+    acceptance criterion).
+
+    Two things happen, and both matter:
+
+    1. :func:`~phaze.services.tracklist_priority.flag_file_for_lookup` PERSISTS the flag, so it
+       survives past this one job -- the gap phaze-fq9h.7 left open (see
+       ``models.tracklist_priority_flag``'s module docstring). ``build_drain_queue`` reads it on
+       every future call, whether that call comes from this endpoint, a scheduled slice, or a
+       worker restart.
+    2. A single ``drain_tracklists`` job is enqueued with ``limit=1`` so the operator sees a real
+       lookup start now rather than only ever affecting some later, unscheduled run.
+       ``drain_tracklists`` is deliberately UNKEYED (phaze-fq9h.7's ``_UNKEYED_TASKS`` entry), so
+       this can never silently dedup onto an unrelated in-flight slice.
+
+    Only flags files that could actually reach the queue: a file that already has a tracklist, or
+    one the classifier reads as ``TRACK``/``UNKNOWN``, never becomes a
+    :class:`~phaze.services.tracklist_drain.DrainCandidate` at all (see
+    ``FileTracklistReview.eligible``), so flagging it would silently do nothing while a
+    ``limit=1`` slice spent its one request on whatever UNRELATED set actually sits at the front
+    of the queue -- a wasted, misattributed lookup. The review renders the honest reason instead.
+
+    Renders the review fragment IMMEDIATELY, before the enqueued job runs -- it can only ever say
+    "queued", never "found", because the lookup has not happened yet (mirrors the record page's
+    snapshot discipline, D-02: no poll here either).
+    """
+    review = await get_file_tracklist_review(session, file_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    queued = False
+    if review.tracklist is None and review.eligible:
+        await flag_file_for_lookup(session, file_id)
+        await session.commit()
+        routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+        await routed.queue.enqueue("drain_tracklists", limit=1)
+        review = await get_file_tracklist_review(session, file_id)
+        queued = True
+
+    return templates.TemplateResponse(
+        request=request,
+        name="record/partials/_tracklist_review_body.html",
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": queued},
+    )
+
+
+@router.post("/pipeline/tracklists/{file_id}/unprioritize", response_class=HTMLResponse)
+async def unprioritize_tracklist_lookup_ui(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: clear ``file_id``'s priority flag -- the operator changed their mind.
+
+    A plain no-op (not an error) when the file was never flagged, so a double-click is safe.
+    """
+    file = await session.get(FileRecord, file_id)
+    if file is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    await unflag_file(session, file_id)
+    await session.commit()
+
+    review = await get_file_tracklist_review(session, file_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="record/partials/_tracklist_review_body.html",
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": False},
+    )
+
+
+# --- Drain progress fragment + manual slice trigger (phaze-fq9h.8) ---
+
+
+@router.get("/pipeline/tracklist-drain-status", response_class=HTMLResponse)
+async def tracklist_drain_status_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX fragment: queue depth, throughput vs the daily ceiling, and an honest ETA.
+
+    Calls :func:`phaze.tasks.tracklist_drain.tracklist_drain_status` DIRECTLY (per its own
+    docstring: it spends no host requests, so routing it through a queue and a poll would buy
+    nothing but latency) rather than reimplementing its funnel here. The task function wants a
+    SAQ-shaped ``ctx["async_session"]`` sessionmaker; this request already has a session from the
+    normal ``get_session`` dependency (the same one every other fragment in this router reads
+    with), so it is wrapped in a trivial one-shot async-context-manager factory rather than
+    pulling in the module-level production ``phaze.database.async_session`` -- which would open a
+    SECOND connection outside this request's transaction (invisible to it under tests, and an
+    unnecessary extra pool checkout in production).
+    """
+
+    @contextlib.asynccontextmanager
+    async def _session_factory() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    ctx: dict[str, Any] = {"async_session": _session_factory}
+    status = await tracklist_drain_status(ctx)
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_tracklist_drain_status.html",
+        context={"request": request, "status": status, "daily_ceiling": DAILY_LOOKUP_CEILING},
+    )
+
+
+@router.post("/pipeline/run-tracklist-drain", response_class=HTMLResponse)
+async def run_tracklist_drain_ui(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """HTMX endpoint: enqueue one bounded ``drain_tracklists`` slice (phaze-fq9h.8).
+
+    The drain is deliberately operator-initiated, never a cron (see ``tasks.tracklist_drain``'s
+    module docstring's ethics bound: it deploys from a residential IP, runs a headful browser,
+    and spends a shared public host's published budget) -- this endpoint is that trigger.
+    ``limit`` is left at the default (:data:`~phaze.services.tracklist_drain.DEFAULT_LOOKUP_LIMIT`
+    lookups); any operator-flagged files are picked up automatically by ``build_drain_queue``
+    from the persisted store without needing to be passed here.
+    """
+    routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+    await routed.queue.enqueue("drain_tracklists")
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/_run_drain_response.html",
+        context={"request": request},
+    )
+
+
 # --- Manual recovery endpoint (Phase 42, D-02/D-05) ---
+
+
+_recovery_state: dict[str, Any] = {"running": False, "result": None, "failed": False}
+"""In-process outcome of the MOST RECENT operator-triggered recovery (phaze-71nz).
+
+``POST /pipeline/recover`` fires recovery as a background task and returns immediately, so the POST
+response can only ever say "started". That was the whole shape of the 2026-07-31 defect at the
+operator layer: a run that replayed 430 ``s3_upload`` rows into guaranteed-403 jobs returned the
+IDENTICAL 200 + "Recovery started — re-enqueuing any orphaned work across all stages" as a run that
+recovered cleanly. Nothing the operator could see distinguished them.
+
+This cell is what ``GET /pipeline/recover/status`` polls so the FINAL tally -- specifically its
+``unreplayable`` total, the count of orphaned work knowingly NOT re-enqueued -- reaches the operator
+who pressed the button. Shape::
+
+    {"running": bool, "result": <recover_orphaned_work return> | None, "failed": bool}
+
+Deliberately process-local and non-durable: it is a UI echo of one click, not a record. The durable
+record is the ledger (the un-recovered rows survive) plus the controller logs, both of which now name
+the skipped stages explicitly. The API runs as a SINGLE uvicorn process (``Dockerfile`` CMD sets no
+``--workers``), so the poll always reaches the process that owns the task; were that to change, this
+would need to move to Redis and the poll would degrade to "no recent recovery", never to a wrong
+answer.
+"""
 
 
 async def _run_recovery(ctx: dict[str, Any]) -> None:
@@ -2818,13 +2980,26 @@ async def _run_recovery(ctx: dict[str, Any]) -> None:
     was never retrieved -- the operator's HTMX response already said "recovery started" and nothing
     else ever surfaced the failure. Log it here so a failed forced recovery is at least visible in
     the controller logs instead of silently vanishing.
+
+    phaze-71nz: the outcome is ALSO published to :data:`_recovery_state` so the operator who pressed
+    the button can see it. The controller log was the only surface before, and an operator driving an
+    incident from the UI does not have it -- which is how a run that burned an entire stage into
+    ``failed`` could read as an unqualified success. ``finally`` clears ``running`` on every path, so
+    a crash cannot wedge the status fragment polling forever.
     """
     try:
         result = await recover_orphaned_work(ctx, force=True)
     except Exception:
         logger.exception("manual recovery trigger failed -- operator saw 'recovery started' with no further result surfaced (phaze-o1xx)")
+        _recovery_state.update(running=False, result=None, failed=True)
         return
-    logger.info("manual recovery trigger complete", detected_loss=result["detected_loss"], stages=result["stages"])
+    _recovery_state.update(running=False, result=result, failed=False)
+    logger.info(
+        "manual recovery trigger complete",
+        detected_loss=result["detected_loss"],
+        unreplayable=result.get("unreplayable", 0),
+        stages=result["stages"],
+    )
 
 
 @router.post("/pipeline/recover", response_class=HTMLResponse)
@@ -2841,12 +3016,19 @@ async def trigger_recover_ui(request: Request) -> HTMLResponse:
     rather than the final per-stage counts. The endpoint calls the SAME producer as controller
     startup, so the manual and automatic recovery paths cannot drift (D-03), and the deterministic-key
     dedup keeps a forced reconcile idempotent (T-42-06/T-42-07) -- it can never 500 on a healthy queue.
+
+    phaze-71nz: the returned fragment now POLLS :func:`recover_status_ui` instead of being the last
+    word. "Recovery started" is still true at the instant it is rendered, but it must not remain the
+    only thing the operator ever sees -- a run that knowingly leaves a stage un-recovered has to say
+    so. ``_recovery_state`` is armed to ``running`` HERE (not inside the background task) so the very
+    first poll cannot race in ahead of the task starting and report the PREVIOUS run's tally.
     """
     ctx: dict[str, Any] = {
         "async_session": async_session,
         "queue": request.app.state.controller_queue,
         "task_router": request.app.state.task_router,
     }
+    _recovery_state.update(running=True, result=None, failed=False)
     task = asyncio.create_task(_run_recovery(ctx))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -2855,4 +3037,43 @@ async def trigger_recover_ui(request: Request) -> HTMLResponse:
         request=request,
         name="pipeline/partials/recover_response.html",
         context={"request": request},
+    )
+
+
+@router.get("/pipeline/recover/status", response_class=HTMLResponse)
+async def recover_status_ui(request: Request) -> HTMLResponse:
+    """HTMX poll target: the OUTCOME of the most recent operator-triggered recovery (phaze-71nz).
+
+    The "Recover" POST fires recovery in the background and can only report that it started, so this
+    is where the run's actual tally reaches the operator. It renders one of four states from
+    :data:`_recovery_state`:
+
+    - **running** -- keeps polling;
+    - **failed** -- recovery raised; the operator is told to check the logs and retry;
+    - **complete with ``unreplayable > 0``** -- the state this bead exists for. Some orphaned work was
+      DELIBERATELY not re-enqueued (its stored payload was time-limited and could not be regenerated),
+      so those files are NOT covered by the run. Rendered as a distinct warning naming the stages,
+      never as the plain success copy;
+    - **complete, all clear** -- the per-stage re-enqueued / already-running totals.
+
+    Read-only and idempotent: it touches no queue and no database, so the poll is free to run at
+    whatever cadence the fragment sets and safe to hit directly.
+    """
+    result = _recovery_state["result"]
+    stages: dict[str, dict[str, int]] = (result or {}).get("stages", {}) or {}
+    skipped_stages = sorted(fn for fn, tally in stages.items() if tally.get("unreplayable"))
+    return templates.TemplateResponse(
+        request=request,
+        name="pipeline/partials/recover_status.html",
+        context={
+            "request": request,
+            "running": _recovery_state["running"],
+            "failed": _recovery_state["failed"],
+            "result": result,
+            "unreplayable": (result or {}).get("unreplayable", 0),
+            "unreplayable_stages": skipped_stages,
+            "reenqueued": sum(tally.get("reenqueued", 0) for tally in stages.values()),
+            "already_running": sum(tally.get("skipped", 0) for tally in stages.values()),
+            "errored": sum(tally.get("errored", 0) for tally in stages.values()),
+        },
     )
