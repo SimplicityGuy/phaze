@@ -85,6 +85,9 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         # they MUST be routable.
         "drain_tracklists",
         "tracklist_drain_status",
+        # phaze-5fta.3: the corpus-learned filename-convention full refresh. Operator-enqueued (no
+        # cron), needs ctx["async_session"], so like the drain it MUST be routable.
+        "learn_filename_conventions",
         "submit_cloud_job",  # Phase 54: fast kube-submit producer (control-plane; kube creds live here)
     }
 )

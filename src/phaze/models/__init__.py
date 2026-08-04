@@ -8,6 +8,7 @@ from phaze.models.discogs_link import DiscogsLink
 from phaze.models.execution import ExecutionLog, ExecutionStatus
 from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
+from phaze.models.filename_convention import FilenameConvention
 from phaze.models.metadata import FileMetadata
 from phaze.models.pipeline_stage_control import PipelineStageControl
 from phaze.models.proposal import ProposalStatus, RenameProposal
@@ -34,6 +35,7 @@ __all__ = [
     "FileCompanion",
     "FileMetadata",
     "FileRecord",
+    "FilenameConvention",
     "PipelineStageControl",
     "ProposalStatus",
     "RenameProposal",

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import uuid
 
+from bs4 import BeautifulSoup
 import pytest
 
 import phaze
@@ -46,8 +47,13 @@ async def create_test_proposal(
     status: str = ProposalStatus.PENDING,
     reason: str = "Test reasoning",
     proposed_path: str | None = None,
+    context_used: dict[str, object] | None = None,
 ) -> RenameProposal:
-    """Create a FileRecord + RenameProposal pair for testing."""
+    """Create a FileRecord + RenameProposal pair for testing.
+
+    ``context_used`` defaults to the plain artist/event_name shape every pre-phaze-5fta.6 test
+    relies on; pass an override to exercise the ``date_convention`` provenance key (phaze-5fta.6).
+    """
     file_id = uuid.uuid4()
     file_record = FileRecord(
         agent_id="test-fileserver",
@@ -69,7 +75,7 @@ async def create_test_proposal(
         proposed_path=proposed_path,
         confidence=confidence,
         status=status,
-        context_used={"artist": "Test Artist", "event_name": "Test Event"},
+        context_used=context_used if context_used is not None else {"artist": "Test Artist", "event_name": "Test Event"},
         reason=reason,
     )
     session.add(proposal)
@@ -159,6 +165,134 @@ async def test_row_detail(client: AsyncClient, session: AsyncSession) -> None:
     assert response.status_code == 200
     assert "AI Reasoning" in response.text
     assert "Because the artist name matches Coachella lineup" in response.text
+
+
+def _date_dd_text(html: str) -> str:
+    """Extract the normalized text of the "Date:" row's ``<dd>`` from a row_detail response.
+
+    Normalizing (collapsing all whitespace runs to single spaces, stripping the ends) makes the
+    assertion robust to the template's own indentation -- HTML whitespace inside a block element is
+    not visually significant, so this is the right notion of "unchanged" for a browser-rendered
+    comparison, as opposed to a literal byte diff of the response body.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for dt in soup.find_all("dt"):
+        if dt.get_text(strip=True) == "Date:":
+            dd = dt.find_next_sibling("dd")
+            assert dd is not None
+            return " ".join(dd.get_text(separator=" ").split())
+    raise AssertionError("no 'Date:' row found in row_detail response")
+
+
+@pytest.mark.asyncio
+async def test_row_detail_convention_derived_date_shows_provenance(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-5fta.6: a convention-derived date renders the convention, direction and evidence counts.
+
+    ``date_convention`` here is exactly the persisted ``DateProvenance.as_dict()`` shape written by
+    ``phaze.services.date_convention.resolve_date`` (phaze-5fta.4) for ``source=SOURCE_CONVENTION`` --
+    this test constructs it explicitly rather than exercising the flag end-to-end because the flag
+    defaults off (see module docstring on ``date_convention.py``), so no live proposal carries this
+    key today.
+    """
+    proposal = await create_test_proposal(
+        session,
+        context_used={
+            "artist": "Test Artist",
+            "event_name": "Test Event",
+            "date": "2014-05-04",
+            "date_convention": {
+                "date": "2014-05-04",
+                "raw": "04-05-2014",
+                "date_order": "MM-DD",
+                "source": "release_group_convention",
+                "scope": "release_group",
+                "scope_value": "talion",
+                "convention_kind": "date_order",
+                "convention_value": "MM-DD",
+                "convention_id": str(uuid.uuid4()),
+                "supporting_count": 1373,
+                "contradicting_count": 0,
+                "ambiguous_count": 753,
+                "confidence": 1.0,
+                "computed_at": "2026-07-18T00:00:00+00:00",
+            },
+        },
+    )
+    response = await client.get(f"/proposals/{proposal.id}/detail")
+    assert response.status_code == 200
+    assert _date_dd_text(response.text) == "2014-05-04 date inferred from release-group convention (MM-DD — 1,373 supporting, 0 contradicting)"
+
+
+@pytest.mark.asyncio
+async def test_row_detail_self_resolved_date_is_unchanged(client: AsyncClient, session: AsyncSession) -> None:
+    """A self-resolving date (``source=filename``) never shows convention provenance.
+
+    Exercises the case introduced by enabling ``convention_date_fallback_enabled``:
+    ``annotate_date_conventions`` attaches a ``date_convention`` key to EVERY resolved date, self-
+    resolving ones included, tagged ``source="filename"``. The UI must key off ``source``, not mere
+    presence of the ``date_convention`` dict, or a self-resolving proposal would grow a spurious
+    "inferred" note the moment the flag is enabled.
+    """
+    proposal = await create_test_proposal(
+        session,
+        context_used={
+            "artist": "Test Artist",
+            "date": "2014-04-25",
+            "date_convention": {
+                "date": "2014-04-25",
+                "raw": "04-25-2014",
+                "date_order": "MM-DD",
+                "source": "filename",
+                "scope": None,
+                "scope_value": None,
+                "convention_kind": None,
+                "convention_value": None,
+                "convention_id": None,
+                "supporting_count": None,
+                "contradicting_count": None,
+                "ambiguous_count": None,
+                "confidence": None,
+                "computed_at": None,
+            },
+        },
+    )
+    response = await client.get(f"/proposals/{proposal.id}/detail")
+    assert response.status_code == 200
+    assert _date_dd_text(response.text) == "2014-04-25"
+    assert "date inferred from release-group convention" not in response.text
+    assert "date-convention-provenance" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_row_detail_no_date_convention_key_is_unchanged(client: AsyncClient, session: AsyncSession) -> None:
+    """The unresolved shape -- no ``date_convention`` key at all -- renders a bare date.
+
+    This is the byte-for-byte-equivalent case the epic's gated rollout guarantees. It is reached
+    whenever the fallback did not resolve the date: ``convention_date_fallback_enabled`` set false,
+    or on (the default since 2026-08-04) but with no group clearing the evidence and purity bars.
+    ``context_used`` then carries no ``date_convention`` and this row_detail view must be
+    indistinguishable from before phaze-5fta.6.
+    """
+    proposal = await create_test_proposal(
+        session,
+        context_used={"artist": "Test Artist", "date": "2014-04-25"},
+    )
+    response = await client.get(f"/proposals/{proposal.id}/detail")
+    assert response.status_code == 200
+    assert _date_dd_text(response.text) == "2014-04-25"
+    assert "date inferred from release-group convention" not in response.text
+    assert "date-convention-provenance" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_row_detail_no_date_key_shows_no_metadata_row_for_date(client: AsyncClient, session: AsyncSession) -> None:
+    """A proposal whose ``context_used`` has no ``date`` at all renders no Date: row (unchanged)."""
+    proposal = await create_test_proposal(session)  # default context_used has no "date" key
+    response = await client.get(f"/proposals/{proposal.id}/detail")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.text, "html.parser")
+    labels = {dt.get_text(strip=True) for dt in soup.find_all("dt")}
+    assert "Date:" not in labels
 
 
 @pytest.mark.asyncio

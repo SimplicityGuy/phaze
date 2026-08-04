@@ -41,6 +41,7 @@ from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.tasks.aborting_reaper import reap_stuck_aborting_jobs
 from phaze.tasks.active_reaper import reap_stranded_active_jobs
 from phaze.tasks.discogs import match_tracklist_to_discogs
+from phaze.tasks.filename_convention import learn_filename_conventions
 from phaze.tasks.ledger_reaper import reap_resolved_ledger_rows
 from phaze.tasks.proposal import generate_proposals
 from phaze.tasks.reconcile_cloud_jobs import reconcile_cloud_jobs
@@ -310,6 +311,12 @@ settings = {
         # crawl-delay budget). The admin UI (phaze-fq9h.8) is the intended trigger.
         drain_tracklists,
         tracklist_drain_status,
+        # phaze-5fta.3: one full refresh of the corpus-learned release-group date-order
+        # conventions. Operator-enqueueable with NO CronJob, deliberately (see the task module):
+        # it sweeps the whole corpus and its output gates rename proposals, so WHEN it recomputes
+        # is an operator decision. The table is a pure cache, so staleness is the only cost of
+        # never running it.
+        learn_filename_conventions,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors

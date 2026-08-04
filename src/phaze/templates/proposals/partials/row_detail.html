@@ -8,11 +8,25 @@
             <h4 class="text-xs font-semibold text-gray-500 dark:text-gray-400 dark:text-gray-500 uppercase mb-2">Extracted Metadata</h4>
             {% if proposal.context_used %}
             <dl class="space-y-1">
+                {# phaze-5fta.6: a convention-derived date renders its provenance ("date inferred
+                   from release-group convention -- N supporting, M contradicting") instead of the
+                   bare value looking like a fact the filename itself stated. `date_convention` is
+                   the persisted DateProvenance dict (phaze-5fta.4, phaze.services.date_convention);
+                   its `source` field is `release_group_convention` ONLY for a date the store
+                   resolved -- a self-resolving date is `filename` (or the key is absent entirely,
+                   e.g. `convention_date_fallback_enabled` off), so this block renders nothing extra
+                   for either case and the "date" `<dd>` is unchanged from before phaze-5fta.6. #}
+                {% set date_convention = proposal.context_used.get("date_convention") %}
                 {% for key in ["artist", "event_name", "venue", "date", "source_type", "stage"] %}
                     {% if proposal.context_used.get(key) %}
                     <div class="flex">
                         <dt class="text-gray-500 dark:text-gray-400 dark:text-gray-500 w-24">{{ key|replace("_", " ")|title }}:</dt>
-                        <dd class="text-gray-700 dark:text-gray-300">{{ proposal.context_used[key] }}</dd>
+                        <dd class="text-gray-700 dark:text-gray-300">
+                            {{ proposal.context_used[key] }}
+                            {% if key == "date" and date_convention and date_convention.get("source") == "release_group_convention" %}
+                            <span class="mt-1 block text-xs italic text-gray-500 dark:text-gray-400" data-testid="date-convention-provenance">date inferred from release-group convention ({{ date_convention.get("convention_value") }} — {{ "{:,}".format(date_convention.get("supporting_count", 0)) }} supporting, {{ "{:,}".format(date_convention.get("contradicting_count", 0)) }} contradicting)</span>
+                            {% endif %}
+                        </dd>
                     </div>
                     {% endif %}
                 {% endfor %}

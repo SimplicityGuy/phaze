@@ -34,6 +34,9 @@ def test_all_tables_defined() -> None:
         # phaze-fq9h.8 (migration 052): persisted operator "answer this file first" priority flag,
         # so it survives past the single drain job it was originally passed into.
         "tracklist_priority_flags",
+        # phaze-5fta.2 (migration 053): generic corpus-learned convention store, keyed
+        # (scope, scope_value, convention_kind) with a DB-derived confidence column.
+        "filename_convention",
     }
     assert expected == table_names
 

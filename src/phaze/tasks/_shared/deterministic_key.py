@@ -96,6 +96,17 @@ _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     # correctly a distinct job. Keying on file_id would make an undo silently collapse into the
     # write it is reverting.
     "write_file_tags": lambda k: str(k["log_id"]),
+    # phaze-5fta.3: a CONSTANT key -- the whole (release_group, date_order) key space is one
+    # logical unit of work, and the task's only kwarg (batch_size) is a memory knob that does not
+    # change what is computed. Keying it collapses an operator double-click into one full-corpus
+    # sweep instead of two concurrent ones queueing behind the write phase's advisory lock. The key
+    # frees itself the moment the job reaches a terminal status, so a genuine "recompute now that
+    # the corpus changed" re-run is never blocked. The key text is a LITERAL rather than an import
+    # of the learner's CONVENTION_SCOPE / CONVENTION_KIND: this module is ``_shared`` and the agent
+    # worker imports it, so pulling in a service that imports ``phaze.models`` would break the
+    # Postgres-free agent boundary (test_task_split). ``test_learner_key_matches_the_learner_module``
+    # asserts the two agree, so the duplication cannot drift silently.
+    "learn_filename_conventions": lambda _kwargs: "release_group:date_order",
 }
 
 
