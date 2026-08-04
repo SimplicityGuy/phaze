@@ -1,0 +1,156 @@
+{# phaze-fq9h.8: the per-file 1001Tracklists review body.
+
+   Swapped into #tracklist-review-{{ file_id }} on the record page, both on first render
+   (record_body.html includes it inline) and after the Prioritize/Un-prioritize POST responses
+   (routers/pipeline.py). Context:
+     * file_id -- the file this review is scoped to.
+     * review  -- a services.tracklist_priority.FileTracklistReview, or None if the file vanished
+                  between the button click and this render (T-61-05-style honesty, not a 500).
+     * just_queued -- True only on the response immediately after a successful Prioritize click.
+
+   THE THREE STATES THIS TEMPLATE MUST NEVER COLLAPSE (the bead's own acceptance criterion):
+     1. review.tracklist is set  -> a real result. Distinguish SCRAPED from PROPAGATED
+        (review.is_propagated) and show the confidence tier it was propagated at -- a propagated
+        row was never fetched for this file, it was inherited from a byte-identical duplicate.
+     2. review.tracklist is None but review.cache_entry is set -> a lookup was attempted and did
+        NOT produce a tracklist. review.cache_entry.outcome distinguishes a DEFINITIVE negative
+        ("not on the site") from a TRANSIENT one ("we failed, will retry") -- collapsing those
+        into one "failed" badge destroys the distinction three beads were built to preserve.
+     3. neither set -> never looked up (or, if review.answered_elsewhere is set, never WILL be --
+        a cue companion or embedded tracklist already excludes it from the drain's own funnel
+        before classification runs, so say that plainly rather than "not yet"). Never render
+        silence as success.
+#}
+{% set _badge = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold' %}
+{% set _outcome_labels = {
+    'not_found': ('No confident match on 1001Tracklists', 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', 'Definitive -- the search ran cleanly and the site has nothing for this set. Re-checked automatically after its TTL, since the site does gain tracklists over time.'),
+    'blocked': ('Blocked by a Turnstile challenge', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- our own retry loop did not clear it in time. The set may well be on the site; this will be retried, not treated as absent.'),
+    'search_failed': ('Search failed', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- the search request itself failed or its selectors did not parse. Says nothing about whether the set is on the site; will be retried.'),
+    'render_failed': ('Detail page did not render', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- a result was found but the detail page never rendered (browser/timeout). Will be retried.'),
+    'parse_failed': ('Page rendered, nothing parsed', 'text-amber-700 bg-amber-100 dark:text-amber-200 dark:bg-amber-500/10', 'Transient -- almost always our selectors drifting against a site redesign, not an empty tracklist. Will be retried.'),
+} %}
+{% if review is none %}
+<p class="text-sm text-red-600 dark:text-red-400">File not found.</p>
+{% else %}
+
+    {% if just_queued %}
+    <p class="mb-2 text-sm text-blue-600 dark:text-blue-300">
+        Prioritized and queued -- a lookup has been dispatched, but this file's own attempt has not run yet.
+        Reopen this record after it does to see the result.
+    </p>
+    {% endif %}
+
+    {% if review.tracklist %}
+        {# STATE 1 -- a real result exists. Scraped vs propagated is the headline distinction. #}
+        <div class="flex flex-wrap items-center gap-2">
+            {% if review.is_propagated %}
+            <span class="{{ _badge }} text-blue-700 bg-blue-100 dark:text-blue-200 dark:bg-blue-500/10"
+                  title="This file was never fetched from 1001Tracklists directly -- the tracklist was inherited from a byte-identical duplicate file and copied here.">
+                Propagated from a duplicate · {{ review.tracklist.propagation_confidence or 'unknown' }} confidence link
+            </span>
+            {% else %}
+            <span class="{{ _badge }} text-emerald-700 bg-emerald-100 dark:text-emerald-200 dark:bg-emerald-500/10">
+                Scraped from 1001Tracklists
+            </span>
+            {% endif %}
+            {% if review.tracklist.match_confidence is not none %}
+            <span class="text-xs text-gray-500 dark:text-gray-400" title="phaze-fq9h.6 result-scoring confidence -- did we pick the right 1001Tracklists search result for this file. NOT a claim that the tracklist's tracks were verified against the audio.">
+                match confidence {{ review.tracklist.match_confidence }}
+            </span>
+            {% endif %}
+        </div>
+        {% if review.tracklist.source_url %}
+        <p class="mt-2 truncate text-xs">
+            <a href="{{ review.tracklist.source_url }}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline dark:text-blue-300">{{ review.tracklist.source_url }}</a>
+        </p>
+        {% endif %}
+
+        {% if review.tracks %}
+        <div class="mt-3 overflow-x-auto">
+            <table class="w-full text-left text-xs">
+                <thead>
+                    <tr class="text-gray-500 dark:text-gray-400">
+                        <th class="py-1 pr-3 font-medium">#</th>
+                        <th class="py-1 pr-3 font-medium">Time</th>
+                        <th class="py-1 pr-3 font-medium">Artist</th>
+                        <th class="py-1 pr-3 font-medium">Title</th>
+                        <th class="py-1 pr-3 font-medium">Label</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for track in review.tracks %}
+                    <tr class="border-t border-gray-100 dark:border-white/5">
+                        <td class="py-1 pr-3 font-mono text-gray-500 dark:text-gray-400">{{ track.position }}</td>
+                        <td class="py-1 pr-3 font-mono text-gray-500 dark:text-gray-400">{{ track.timestamp or '—' }}</td>
+                        <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">{{ track.artist or '—' }}</td>
+                        <td class="py-1 pr-3 text-gray-900 dark:text-gray-200">
+                            {{ track.title or '—' }}{% if track.is_mashup %} <span class="text-gray-400">(mashup)</span>{% endif %}
+                            {% if track.remix_info %}<span class="text-gray-400"> · {{ track.remix_info }}</span>{% endif %}
+                        </td>
+                        <td class="py-1 pr-3 text-gray-500 dark:text-gray-400">{{ track.label or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">No track rows on the latest version.</p>
+        {% endif %}
+
+    {% elif review.cache_entry %}
+        {# STATE 2 -- attempted, no tracklist. Definitive vs transient must stay visibly distinct. #}
+        {% set label, color, explain = _outcome_labels.get(review.cache_entry.outcome, (review.cache_entry.outcome, 'text-gray-700 bg-gray-100 dark:text-gray-300 dark:bg-white/5', '')) %}
+        <span class="{{ _badge }} {{ color }}">{{ label }}</span>
+        {% if review.cache_entry.result_confidence is not none %}
+        <span class="ml-2 text-xs text-gray-500 dark:text-gray-400">best candidate scored {{ review.cache_entry.result_confidence }}</span>
+        {% endif %}
+        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ explain }}</p>
+        {% if review.cache_entry.detail %}
+        <p class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500" title="{{ review.cache_entry.detail }}">{{ review.cache_entry.detail }}</p>
+        {% endif %}
+
+    {% elif review.answered_elsewhere %}
+        {# STATE 3a -- excluded from the drain BEFORE classification, by a source other than a
+           scraped tracklists row (embedded tags or a .cue companion). Never "not yet looked up"
+           -- this file will never be looked up automatically, and Prioritize would spend a live
+           request on an unrelated set while doing nothing for this one. #}
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            Already has track data from a {{ review.answered_elsewhere }} -- excluded from the drain queue.
+        </p>
+    {% else %}
+        {# STATE 3b -- never looked up, and nothing else excludes it either. #}
+        <p class="text-sm text-gray-500 dark:text-gray-400">Not yet looked up.</p>
+        {% if not review.eligible %}
+        <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            Not classified as a live set{% if review.classification_class %} (reads as {{ review.classification_class.value }}){% endif %} --
+            it would not enter the drain queue automatically.
+        </p>
+        {% endif %}
+    {% endif %}
+
+    {# Prioritize / un-prioritize control -- only offered where it can have an effect (D-06 style:
+       no button that silently does nothing). Already-answered files (a tracklist exists) never
+       show it; a file the classifier reads as non-live-set shows it only via the still-flagged
+       state (so the operator can withdraw a flag they already set on a file that then turned out
+       to be ineligible), never as a fresh action. #}
+    {% if review.tracklist is none %}
+    <div class="mt-3">
+        {% if review.flagged %}
+        <button type="button"
+                hx-post="/pipeline/tracklists/{{ file_id }}/unprioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
+                aria-label="Cancel prioritized lookup for this file"
+                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+            Priority queued · cancel
+        </button>
+        {% elif review.eligible %}
+        <button type="button"
+                hx-post="/pipeline/tracklists/{{ file_id }}/prioritize" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
+                hx-confirm="Queue a prioritized 1001Tracklists lookup for this file?"
+                aria-label="Prioritize a 1001Tracklists lookup for this file"
+                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+            Prioritize lookup
+        </button>
+        {% endif %}
+    </div>
+    {% endif %}
+{% endif %}

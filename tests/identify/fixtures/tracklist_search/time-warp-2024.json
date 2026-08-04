@@ -1,0 +1,11 @@
+{
+  "bead": "phaze-fq9h.6",
+  "captured_utc": "2026-08-03T17:01:52Z",
+  "final_url": "https://www.1001tracklists.com/search/result.php",
+  "html_bytes": 156663,
+  "parsed_results": 30,
+  "query": "Time Warp 2024",
+  "row_selector_matches": 30,
+  "status": 200,
+  "why": "Event-only query: many DIFFERENT artists at the same event on the same date. The inverse discrimination problem from the queries above -- here event and date match almost perfectly across every row and only the artist separates them, which is the case that justifies the artist term carrying the largest weight."
+}

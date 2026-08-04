@@ -398,6 +398,64 @@ class BaseSettings(PydanticBaseSettings):
         description="Contact URL embedded in the honest 1001Tracklists scraper User-Agent (phaze-hu8v).",
     )
 
+    # phaze-fq9h.1: 1001Tracklists DETAIL pages (unlike search) deliver their track listing via JS
+    # behind a Cloudflare Turnstile widget, so they are rendered by a real browser
+    # (services/tracklist_render.py) rather than fetched with httpx. Spike phaze-dmvs measured the
+    # constraints these defaults encode: HEADFUL is mandatory (headless fails the interstitial
+    # outright) and Turnstile is FLAKY rather than deterministic -- ~6/8 pages cleared on first
+    # navigation -- so a bounded reload/retry loop is the difference between a usable yield and
+    # a quarter of the corpus silently unreachable.
+    tracklist_render_browser_channel: str = Field(
+        default="chrome",
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_BROWSER_CHANNEL", "tracklist_render_browser_channel"),
+        description=(
+            "Patchright browser channel for the 1001Tracklists renderer. 'chrome' uses a real installed Google Chrome "
+            "(Patchright's most convincing configuration); empty string falls back to Patchright's bundled patched Chromium."
+        ),
+    )
+    tracklist_render_turnstile_attempts: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_TURNSTILE_ATTEMPTS", "tracklist_render_turnstile_attempts"),
+        description=(
+            "Hard cap on navigations per detail page when Turnstile keeps serving its interstitial (phaze-fq9h.1). "
+            "Every attempt spends one whole-host request from the crawl-delay budget, so this is a politeness bound as much as a timeout."
+        ),
+    )
+    tracklist_render_page_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_PAGE_TIMEOUT_SECONDS", "tracklist_render_page_timeout_seconds"),
+        description=(
+            "Hard wall-clock ceiling for rendering ONE detail page, covering every retry attempt and the pacing waits between them. "
+            "A hung browser page must never stall a months-long drain (phaze-fq9h.1)."
+        ),
+    )
+    tracklist_render_selector_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_SELECTOR_TIMEOUT_SECONDS", "tracklist_render_selector_timeout_seconds"),
+        description="Per-attempt wait for the track container to appear before the attempt is judged interstitial-or-empty (phaze-fq9h.1).",
+    )
+    tracklist_render_retry_backoff_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_RETRY_BACKOFF_SECONDS", "tracklist_render_retry_backoff_seconds"),
+        description=(
+            "Base for the exponential backoff added ON TOP of the shared crawl-delay pacing between Turnstile retries. "
+            "Zero disables the extra backoff; the crawl-delay floor still applies (phaze-fq9h.1)."
+        ),
+    )
+    tracklist_render_xvfb: Literal["auto", "always", "never"] = Field(
+        default="auto",
+        validation_alias=AliasChoices("PHAZE_TRACKLIST_RENDER_XVFB", "tracklist_render_xvfb"),
+        description=(
+            "Whether to start an Xvfb virtual display for the headful browser. 'auto' starts one only on Linux with no DISPLAY "
+            "already set -- i.e. exactly the headless-worker case (phaze-fq9h.1/phaze-fq9h.5)."
+        ),
+    )
+
     # Internal agent API (Phase 25)
     agent_token_prefix: str = "phaze_agent_"  # noqa: S105
     agent_file_chunk_max: int = 1000

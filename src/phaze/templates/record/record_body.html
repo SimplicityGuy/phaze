@@ -131,6 +131,18 @@
             </div>
         </div>
 
+        {# 5.5 — 1001Tracklists review + trigger/prioritize (phaze-fq9h.8). Renders the SAME
+           partial the Prioritize/Un-prioritize POST responses swap back in, so first render and
+           post-action render can never drift into two different presentations. #}
+        <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
+            <p class="{{ _eyebrow }} mb-2">1001Tracklists</p>
+            <div id="tracklist-review-{{ file.id }}">
+                {% with review=tracklist_review, just_queued=False %}
+                    {% include "record/partials/_tracklist_review_body.html" %}
+                {% endwith %}
+            </div>
+        </div>
+
         {# 6 — Pending approvals for THIS file: amber box, inline-approvable via the Phase 60 routes. #}
         <div class="rounded-xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
             <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-200">Pending approvals for this file</p>

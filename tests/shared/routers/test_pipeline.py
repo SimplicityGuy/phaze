@@ -2346,6 +2346,169 @@ async def test_match_tracklists_no_pending_returns_200(client: AsyncClient) -> N
 
 
 # ---------------------------------------------------------------------------
+# phaze-fq9h.8: per-file prioritize/un-prioritize + the drain progress fragment / manual
+# slice trigger. drain_tracklists is a CONTROLLER task (Phase-30 rule); it must never land on
+# the consumer-less default queue.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_live_set_file(session: AsyncSession, *, duration: float = 7200.0) -> FileRecord:
+    """A long-duration file -- classifies LIVE_SET regardless of its own filename markers."""
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.flush()
+    session.add(FileMetadata(file_id=file_rec.id, duration=duration))
+    await session.commit()
+    return file_rec
+
+
+@pytest.mark.asyncio
+async def test_prioritize_persists_flag_and_enqueues_one_bounded_slice(client: AsyncClient, session: AsyncSession) -> None:
+    """POST .../prioritize persists the flag AND enqueues exactly one drain_tracklists(limit=1) job.
+
+    The persistence is the point of phaze-fq9h.8: without it, the flag would last exactly as long
+    as this one job (the phaze-fq9h.7 gap the bead exists to close).
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Prioritize" not in response.text or "cancel" in response.text.lower()
+
+    assert await load_flagged_file_ids(session) == {file_rec.id}
+    assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
+    assert capture[0][2].get("limit") == 1
+
+
+@pytest.mark.asyncio
+async def test_prioritize_ineligible_file_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that would never enter the drain queue (too short -> TRACK) is not flagged.
+
+    Flagging it would have zero effect on ordering while a limit=1 slice would spend its one
+    request on a completely unrelated set at the front of the queue -- a misattributed lookup the
+    endpoint refuses to cause.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session, duration=120.0)
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "Not yet looked up" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_file_with_embedded_tracklist_flags_nothing_and_enqueues_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """A file already answered by an embedded tracklist (no ``tracklists`` row) is not flagged.
+
+    This is the exact scope-creep shape a full-suite reviewer flagged: a long-duration, set-shaped
+    file with no ``tracklists`` row classifies LIVE_SET on duration+filename alone, but the
+    corpus-wide funnel excludes it BEFORE classification because it already carries an embedded
+    tracklist. If the endpoint only checked classification, it would flag this file and enqueue a
+    limit=1 slice that could never answer it -- spending a live request on an unrelated set while
+    reporting success for this one.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    file_metadata_result = await session.execute(select(FileMetadata).where(FileMetadata.file_id == file_rec.id))
+    metadata = file_metadata_result.scalar_one()
+    metadata.raw_tags = {"comment": "00:00 Opener\n05:00 Second track\n10:00 Third track"}
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+    assert "excluded from the drain queue" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient, session: AsyncSession) -> None:
+    """A file that already has a tracklist is not (re-)flagged and nothing is enqueued."""
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    session.add(_link_tracklist(file_rec))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/prioritize")
+    assert response.status_code == 200
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_prioritize_unknown_file_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/prioritize")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSession) -> None:
+    from phaze.services.tracklist_priority import flag_file_for_lookup, load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    await flag_file_for_lookup(session, file_rec.id)
+    await session.commit()
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/unprioritize")
+    assert response.status_code == 200
+    assert "Prioritize lookup" in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+
+
+@pytest.mark.asyncio
+async def test_unprioritize_unknown_file_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_tracklist_drain_status_fragment_renders_the_honest_ceiling_and_eta(client: AsyncClient, session: AsyncSession) -> None:
+    """GET /pipeline/tracklist-drain-status renders queue depth, the daily ceiling, and an ETA.
+
+    Reads through phaze.tasks.tracklist_drain.tracklist_drain_status directly (a request-free
+    read) rather than a second, hand-rolled status query.
+    """
+    await _seed_live_set_file(session)
+
+    response = await client.get("/pipeline/tracklist-drain-status")
+    assert response.status_code == 200
+    assert "lookups/day" in response.text
+    assert "Queued" in response.text
+
+
+@pytest.mark.asyncio
+async def test_run_tracklist_drain_enqueues_one_job_on_the_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
+    """POST /pipeline/run-tracklist-drain enqueues exactly one drain_tracklists job (no bulk loop)."""
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/run-tracklist-drain")
+    assert response.status_code == 200
+    assert "Queued" in response.text
+
+    assert len(capture) == 1
+    assert capture[0][0] == "controller"
+    assert capture[0][1] == "drain_tracklists"
+
+
+# ---------------------------------------------------------------------------
 # Phase 42 (REQ-42-1/REQ-42-4/REQ-42-5): the manual /pipeline/recover endpoint calls the
 # SAME gated recover_orphaned_work producer (force=True) the controller startup runs, on a
 # worker-shaped ctx built from app state; the global DAG "Recover" button renders end-to-end.

@@ -23,18 +23,22 @@ repos:
       - id: end-of-file-fixer
         # Don't reformat vendored third-party assets — must stay byte-identical
         # to the audited upstream build (see static/vendor/ and base.html).
-        exclude: ^src/phaze/static/vendor/
+        # Same rule, different reason, for the recorded 1001Tracklists renders
+        # (phaze-fq9h.1): they are EVIDENCE of what the live site served, and each
+        # one cost a request from a budget of one per 8 seconds. Whitespace-fixing
+        # them would quietly edit the record the detail parser is developed against.
+        exclude: &byte-identical ^(src/phaze/static/vendor/|tests/identify/fixtures/tracklist_render/)
       - id: mixed-line-ending
-        exclude: ^src/phaze/static/vendor/
+        exclude: *byte-identical
       - id: trailing-whitespace
-        exclude: ^src/phaze/static/vendor/
+        exclude: *byte-identical
       - id: pretty-format-json
         args: [--autofix, --indent=2]
         # Skip generated artifacts (planning graphs, graphify output)
         exclude: ^(\.planning/|graphify-out/)
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 2700fd5671c633760d912769c041bfcde2b9a01b  # frozen: v0.15.22
+    rev: 39d9ac5938dadb73df0564a45f163e25ff9fa6e2  # frozen: v0.16.1
     hooks:
       - id: ruff
         args: [--fix]
@@ -57,7 +61,7 @@ repos:
   # tool and MUST name the same version; the two drifting apart is phaze-b67d, which reddened every
   # PR for ten hours. Bump both together or not at all.
   - repo: https://github.com/hadolint/hadolint
-    rev: f177f71e7bf435eacc344754b8acde98a6186df7  # frozen: v2.15.0
+    rev: 2eece55955ced00200be9729e9728cb7dacca505  # frozen: v2.15.1
     hooks:
       - id: hadolint
 

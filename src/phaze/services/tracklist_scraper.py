@@ -21,6 +21,22 @@ from phaze.config import get_settings
 logger = structlog.get_logger(__name__)
 
 
+def honest_user_agent_token() -> str:
+    """Return phaze's identifying User-Agent token, ``phaze/<version> (+<contact url>)``.
+
+    Read from settings on every call (not baked into a module-level constant) so tests can
+    exercise a fresh `get_settings()` value.
+
+    phaze-fq9h.1: shared with the Patchright renderer, which APPENDS this to the real browser's
+    own Chrome UA rather than replacing it. The httpx scraper has no browser to contradict, so it
+    sends this alone; a browser that claimed not to be a browser would be exactly the kind of
+    inconsistency Turnstile scores. Same identity, two honest presentations of it.
+    """
+    settings = get_settings()
+    version = importlib.metadata.version("phaze")
+    return f"phaze/{version} (+{settings.scraper_contact_url})"
+
+
 class DisallowedScrapeHostError(ValueError):
     """Raised when a URL's scheme or host falls outside the 1001Tracklists allow-list.
 
@@ -56,13 +72,24 @@ class SearchParseFailureError(RuntimeError):
 
 @dataclass
 class TracklistSearchResult:
-    """A single result from a 1001Tracklists search."""
+    """A single result from a 1001Tracklists search.
+
+    ``artist`` / ``event`` / ``date`` are the three signals the result scorer
+    (``services.tracklist_result_scorer``, phaze-fq9h.6) weighs against the file's derived query.
+    All three are optional because a real results page mixes genuine set rows with rows that have
+    no artist at all -- promo/aftermovie video entries such as "Sunburn Festival - Official
+    Aftermovie 2019" carry no ``" @ "`` separator, and 32 of the 180 captured rows are that shape.
+    Those are exactly the rows a blind "take the top result" would render into an empty tracklist,
+    so they are represented honestly (artist/event ``None``) rather than being coerced into a
+    plausible-looking string the scorer would then score against.
+    """
 
     external_id: str
     title: str
     url: str
     artist: str | None = None
     date: str | None = None
+    event: str | None = None
 
 
 @dataclass
@@ -95,11 +122,22 @@ class _TTLCache[T]:
     """Minimal in-process TTL cache, shared across `TracklistScraper` instances (phaze-hu8v).
 
     1001Tracklists' own robots.txt asks for an 8s crawl-delay per request, and a tracklist for a
-    past event essentially never changes -- the cheapest polite request is the one never made. A
-    full persistent cache (checking the tracklists/tracklist_versions tables before scraping, or
-    honoring ETag/If-Modified-Since) is a larger, separate change; this simple in-memory cache
-    covers the common case of the same query/URL being looked up repeatedly within one running
-    process (e.g. a batched rescan), without adding a storage dependency.
+    past event essentially never changes -- the cheapest polite request is the one never made.
+    This simple in-memory cache covers the common case of the same query/URL being looked up
+    repeatedly within one running process (e.g. a batched rescan), without adding a storage
+    dependency.
+
+    The PERSISTENT half of "cached and never re-fetched" -- checking the tracklists /
+    tracklist_versions / tracklist_tracks tables before scraping at all, so a tracklist already
+    scraped in a PRIOR process/run is never re-fetched over the network either -- lives one layer
+    up, in ``tasks/tracklist.py::_find_cached_tracklists``, since this scraper class is
+    deliberately DB-oblivious (it has no session and is unit-testable without one). Conditional
+    requests (ETag / If-Modified-Since) remain unimplemented: since a published tracklist doesn't
+    change, the DB-backed "never re-fetch what we already have" check is strictly stronger for
+    this data (zero requests, not a cheaper 304 request), and the one path that legitimately
+    re-fetches on purpose (``refresh_tracklists``' 90-day staleness sweep) still needs exactly one
+    full request per Crawl-delay-8 slot either way, so conditional requests would save bytes, not
+    compliance.
     """
 
     def __init__(self, ttl_seconds: float) -> None:
@@ -127,7 +165,24 @@ class _TTLCache[T]:
 
 
 class TracklistScraper:
-    """Async scraper for 1001Tracklists.com with rate limiting."""
+    """Async scraper for 1001Tracklists.com with rate limiting.
+
+    Compliance posture (phaze-hu8v, robots.txt fetched live 2026-07-18, re-confirmed 2026-07-24):
+    ``User-agent: *`` gets ``Allow: /`` at ``Crawl-delay: 8``, with ``Disallow: /js/``,
+    ``/user/``, ``/action/``, ``/projects/``. A separate block blanket-disallows ~30 NAMED
+    commercial/AI crawlers (GPTBot, AhrefsBot, SemrushBot, Amazonbot, PetalBot, DotBot, MJ12bot,
+    Sogou, omgili, and others) that phaze is not one of. The site publishes no Terms of Service
+    (confirmed by the operator 2026-07-18). MIN_DELAY/MAX_DELAY below honor the Crawl-delay,
+    ``_build_headers`` sends an honest identifying User-Agent instead of a spoofed browser UA, and
+    the Disallow list is honored BY CONSTRUCTION rather than a runtime robots.txt fetch/parse: this
+    class only ever requests ``SEARCH_URL`` and hrefs matching ``_SEARCH_RESULT_LINK_SELECTOR``
+    (``a[href*='/tracklist/']``) pulled from a search-results page, so it never follows a
+    ``/user/`` profile link (search rows do link to them) or any other disallowed path. A runtime
+    parser (e.g. the ``protego`` library) would additionally re-derive Crawl-delay/Disallow if the
+    site's policy ever changes rather than trusting these hardcoded values indefinitely -- noted
+    as a deliberate, not-yet-implemented enhancement rather than a compliance gap, since the
+    ">= 8s" and "honor the Disallow list" requirements are both independently satisfied above.
+    """
 
     BASE_URL = "https://www.1001tracklists.com"
     SEARCH_URL = f"{BASE_URL}/search/result.php"
@@ -195,7 +250,23 @@ class TracklistScraper:
     # phaze-mk6y: the href-embedded date trails the slug, e.g.
     # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
     # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
-    _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:[/?#]|$)")
+    #
+    # phaze-fq9h.6 STALENESS FIX: the site now appends a ".html" extension to that slug, so the
+    # original `(?:[/?#]|$)` tail could never match a live href and this pattern scored **0 hits
+    # across all 180 real result rows** in tests/identify/fixtures/tracklist_search/ -- i.e.
+    # `TracklistSearchResult.date` was silently ALWAYS None. That is the same stale-selector class
+    # as the dead detail selectors (phaze-2akf), and it is far more dangerous here: date is the
+    # only signal that separates a recurring festival's editions from each other, so a scorer
+    # trusting this field would have ranked date-blind and picked whichever year the site listed
+    # first. The optional extension is now consumed before the tail anchor.
+    _HREF_DATE_PATTERN = re.compile(r"-(\d{4})-(\d{1,2})-(\d{1,2})(?:\.html?)?(?:[/?#]|$)")
+
+    # phaze-fq9h.6: the row's own displayed date cell, verified live at 180/180 rows. Preferred
+    # over the href slug because it is a real rendered field rather than a URL-formatting artifact
+    # -- a slug can be renamed without the tracklist changing, and the two disagreeing is itself a
+    # signal worth catching (the fixture test asserts they agree on every captured row).
+    _SEARCH_ROW_DATE_SELECTOR = 'div[title="tracklist date"]'
+    _ISO_DATE_IN_TEXT_PATTERN = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
     # phaze-hu8v: shared across every TracklistScraper instance in this process, since each
     # search/scrape call site (tasks/tracklist.py) constructs a fresh scraper per job. A
@@ -246,10 +317,8 @@ class TracklistScraper:
         contact us, or apply a phaze-specific policy. Read at construction time (not baked into a
         module-level constant) so tests can exercise a fresh `get_settings()` value.
         """
-        settings = get_settings()
-        version = importlib.metadata.version("phaze")
         return {
-            "User-Agent": f"phaze/{version} (+{settings.scraper_contact_url})",
+            "User-Agent": honest_user_agent_token(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.1001tracklists.com/",
@@ -267,29 +336,12 @@ class TracklistScraper:
         return parts.scheme == "https" and parts.hostname is not None and parts.hostname.lower() in cls._ALLOWED_HOSTS
 
     async def _rate_limit(self) -> None:
-        """Serialize outbound requests process-wide, honoring the MIN_DELAY floor (phaze-wb1o).
+        """Serialize this scraper's outbound requests onto the shared whole-host schedule.
 
-        Reserves the next allowed request "slot" under a shared ClassVar lock -- advancing the
-        shared ``_next_request_at`` timestamp and releasing the lock immediately, BEFORE sleeping
-        -- so concurrent callers never race each other into the same slot, but the actual
-        request/sleep still happens outside the lock (holding a lock across a 30s-timeout HTTP
-        call would turn the scraper into a hard serial bottleneck rather than merely floor its
-        rate). Each successive request's slot is at least MIN_DELAY-MAX_DELAY after the previous
-        one; a process that falls behind (e.g. after a slow request) catches up from "now" rather
-        than compounding a backlog of reservations into the future.
+        Thin delegate to :func:`reserve_host_request_slot` -- see that function for the
+        reservation semantics and for why the schedule is module-level rather than per-instance.
         """
-        delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311  # nosec B311
-        async with self._rate_limit_lock:
-            now = time.monotonic()
-            floor = now if self._next_request_at is None else max(self._next_request_at, now)
-            slot = floor + delay
-            # Mutate the CLASS attribute (never `self.x = ...`, which would shadow it with an
-            # instance attribute invisible to every other short-lived TracklistScraper instance).
-            TracklistScraper._next_request_at = slot
-
-        wait = slot - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
+        await reserve_host_request_slot()
 
     async def search(self, query: str) -> list[TracklistSearchResult]:
         """Search 1001Tracklists for tracklists matching query.
@@ -388,9 +440,13 @@ class TracklistScraper:
             # phaze-mk6y: the current markup carries no separate artist/date elements -- the
             # link text is the full "Artist @ Event, Venue, City, Country" string and the date is
             # embedded at the end of the href slug.
-            artist_part, separator, _rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
+            artist_part, separator, rest = title.partition(self._SEARCH_LINK_TEXT_ARTIST_SEPARATOR)
             artist = artist_part.strip() if separator else None
-            date = self._extract_date_from_href(href_str)
+            # phaze-fq9h.6: the remainder after " @ " is the event/venue/city text -- previously
+            # discarded as `_rest`, which left the scorer with no event term at all (0.3 of the
+            # weighting) and forced it to match on artist+date alone.
+            event = rest.strip() or None if separator else None
+            date = self._extract_row_date(item) or self._extract_date_from_href(href_str)
 
             results.append(
                 TracklistSearchResult(
@@ -399,6 +455,7 @@ class TracklistScraper:
                     url=url,
                     artist=artist,
                     date=date,
+                    event=event,
                 )
             )
 
@@ -410,6 +467,21 @@ class TracklistScraper:
             raise SearchParseFailureError(len(items))
 
         return results
+
+    @classmethod
+    def _extract_row_date(cls, item: Tag) -> str | None:
+        """Extract a search row's displayed ``YYYY-MM-DD`` tracklist date (phaze-fq9h.6).
+
+        The primary date source, with :meth:`_extract_date_from_href` as fallback. The cell holds
+        an icon element followed by the bare date text, so the value is read from the cell's full
+        text rather than a child selector -- that keeps it working if the icon markup changes,
+        which is the kind of drift that killed the href pattern above.
+        """
+        cell = item.select_one(cls._SEARCH_ROW_DATE_SELECTOR)
+        if cell is None:
+            return None
+        match = cls._ISO_DATE_IN_TEXT_PATTERN.search(cell.get_text(" ", strip=True))
+        return match.group(0) if match else None
 
     @classmethod
     def _extract_date_from_href(cls, href: str) -> str | None:
@@ -557,3 +629,39 @@ class TracklistScraper:
         """Close the httpx client if we own it."""
         if self._owns_client:
             await self._client.aclose()
+
+
+async def reserve_host_request_slot() -> None:
+    """Serialize outbound 1001Tracklists requests process-wide, honoring MIN_DELAY (phaze-wb1o).
+
+    Reserves the next allowed request "slot" under a shared lock -- advancing the shared
+    ``TracklistScraper._next_request_at`` timestamp and releasing the lock immediately, BEFORE
+    sleeping -- so concurrent callers never race each other into the same slot, but the actual
+    request/sleep still happens outside the lock (holding a lock across a 30s-timeout HTTP call
+    would turn the scraper into a hard serial bottleneck rather than merely floor its rate). Each
+    successive request's slot is at least MIN_DELAY-MAX_DELAY after the previous one; a process
+    that falls behind (e.g. after a slow request) catches up from "now" rather than compounding a
+    backlog of reservations into the future.
+
+    phaze-fq9h.1: lifted out of ``TracklistScraper._rate_limit`` (which now delegates here) so the
+    Patchright renderer in ``services/tracklist_render.py`` draws from the SAME schedule. The
+    crawl-delay published in robots.txt is a WHOLE-HOST budget, so an httpx search and a browser
+    navigation are both one request against one ceiling. Two independent limiters -- one per
+    module -- would each honor 8s while the host saw 4s, which is the exact defect phaze-wb1o
+    fixed for concurrent scraper instances, re-introduced across module boundaries. The state
+    deliberately stays on ``TracklistScraper`` rather than moving to a module-level global: it is
+    the documented reset point for test isolation and for the phaze-wb1o regression tests.
+    """
+    delay = random.uniform(TracklistScraper.MIN_DELAY, TracklistScraper.MAX_DELAY)  # noqa: S311  # nosec B311
+    async with TracklistScraper._rate_limit_lock:
+        now = time.monotonic()
+        previous = TracklistScraper._next_request_at
+        floor = now if previous is None else max(previous, now)
+        slot = floor + delay
+        # Mutate the CLASS attribute (never an instance attribute, which would be invisible to
+        # every other short-lived TracklistScraper instance and to the renderer).
+        TracklistScraper._next_request_at = slot
+
+    wait = slot - time.monotonic()
+    if wait > 0:
+        await asyncio.sleep(wait)

@@ -1,0 +1,78 @@
+{# phaze-fq9h.8: the 1001Tracklists DRAIN progress panel -- queue depth, throughput vs the
+   whole-host ceiling, and an honest ETA.
+
+   Fed by GET /pipeline/tracklist-drain-status, which calls
+   phaze.tasks.tracklist_drain.tracklist_drain_status DIRECTLY (a request-free read, per that
+   function's own docstring: "the admin UI needs how-much-is-left far more often than it needs a
+   run, and answering that must never cost budget"). This fragment renders exactly the fields
+   that function returns -- no second funnel is computed here.
+
+   HONESTY RULES this fragment exists to enforce (see the bead):
+   * dedup is a ~3% lever, not a big multiplier -- `status.collapse_ratio` is shown as a plain
+     number (files per lookup), with the no-dedup comparison alongside it, so "collapse ratio
+     1.03" cannot be misread as "97% savings".
+   * the ETA divides by the SAME ceiling every other projection in this molecule uses
+     (DAILY_LOOKUP_CEILING) and shows the without-dedup-or-cache figure next to it, so neither
+     number can be read as more optimistic than the other actually is.
+   * operator-flagged sets are counted separately (`flagged_queued`) from the funnel, since a
+     flag changes ORDER, not the total amount of work.
+#}
+<div id="tracklist-drain-status" class="rounded-xl border border-gray-200 bg-white p-4 dark:border-phaze-border dark:bg-phaze-panel">
+    <div class="flex items-center justify-between gap-2">
+        <p class="font-jura text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">1001Tracklists drain</p>
+        <button type="button"
+                hx-post="/pipeline/run-tracklist-drain" hx-target="#drain-run-response" hx-swap="innerHTML"
+                hx-confirm="Queue one drain slice (up to 100 lookups) against the live 1001Tracklists host?"
+                aria-label="Run a bounded 1001Tracklists drain slice"
+                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+            Run a drain slice
+        </button>
+    </div>
+    <div id="drain-run-response" class="mt-2 text-xs empty:hidden"></div>
+
+    <dl class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div>
+            <dt class="text-xs text-gray-500 dark:text-gray-400">Queued</dt>
+            <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.queued) }}</dd>
+            <dd class="text-xs text-gray-500 dark:text-gray-400">unique sets awaiting a lookup</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-gray-500 dark:text-gray-400">Prioritized</dt>
+            <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.flagged_queued) }}</dd>
+            <dd class="text-xs text-gray-500 dark:text-gray-400">
+                operator-flagged, still queued
+                {% if status.flagged_total > status.flagged_queued %}
+                ({{ '{:,}'.format(status.flagged_total - status.flagged_queued) }} more flagged file{{ 's' if status.flagged_total - status.flagged_queued != 1 else '' }} already answered or ineligible)
+                {% endif %}
+            </dd>
+        </div>
+        <div>
+            <dt class="text-xs text-gray-500 dark:text-gray-400">Answered by cache</dt>
+            <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '{:,}'.format(status.cached) }}</dd>
+            <dd class="text-xs text-gray-500 dark:text-gray-400">
+                {{ '{:,}'.format(status.cached_positive) }} found ·
+                {{ '{:,}'.format(status.cached_negative) }} confirmed absent ·
+                {{ '{:,}'.format(status.cached_backoff) }} retrying ·
+                {{ '{:,}'.format(status.cached_exhausted) }} parked
+            </dd>
+        </div>
+        <div>
+            <dt class="text-xs text-gray-500 dark:text-gray-400">Collapse ratio</dt>
+            <dd class="font-mono text-lg text-gray-900 dark:text-gray-100">{{ '%.2f' | format(status.collapse_ratio) }}</dd>
+            <dd class="text-xs text-gray-500 dark:text-gray-400">files served per lookup -- dedup is a small lever, not a big one</dd>
+        </div>
+    </dl>
+
+    <div class="mt-4 border-t border-gray-200 pt-3 text-xs text-gray-600 dark:border-phaze-border dark:text-gray-300 dark:text-gray-400">
+        <p>
+            Ceiling: ~{{ '{:,}'.format(daily_ceiling) }} lookups/day (the whole 1001Tracklists host's published
+            crawl-delay budget -- adding workers cannot raise this).
+        </p>
+        <p class="mt-1">
+            Projected drain at the current queue depth: <strong class="text-gray-900 dark:text-gray-100">~{{ '%.1f' | format(status.projected_days) }} days</strong>.
+            Without dedup or the cache it would be ~{{ '%.1f' | format(status.days_without_dedup) }} days -- the gap between
+            those two numbers IS what dedup buys, and at a {{ '%.2f' | format(status.collapse_ratio) }} collapse ratio it is a
+            few percent, not a shortcut.
+        </p>
+    </div>
+</div>

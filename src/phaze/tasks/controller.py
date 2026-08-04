@@ -50,6 +50,7 @@ from phaze.tasks.scan_reaper import reap_stalled_scans
 from phaze.tasks.stage_park_reconcile import reconcile_stale_stage_parks
 from phaze.tasks.submit_cloud_job import submit_cloud_job
 from phaze.tasks.tracklist import refresh_tracklists, scrape_and_store_tracklist, search_tracklist
+from phaze.tasks.tracklist_drain import drain_tracklists, tracklist_drain_status
 
 
 if TYPE_CHECKING:
@@ -299,6 +300,13 @@ settings = {
         match_tracklist_to_discogs,
         search_tracklist,
         scrape_and_store_tracklist,
+        # phaze-fq9h.7: one BOUNDED SLICE of the resumable 1001Tracklists drain, plus its
+        # request-free status read. Registered as operator-enqueueable functions with NO CronJob,
+        # deliberately -- the epic's ethics bound makes the drain operator-initiated rather than a
+        # blanket pipeline stage (residential IP, headful browser, a public host's published
+        # crawl-delay budget). The admin UI (phaze-fq9h.8) is the intended trigger.
+        drain_tracklists,
+        tracklist_drain_status,
         reap_stalled_scans,
         # phaze-e57w: every-minute reaper for SAQ rows stuck in status='aborting'; deletes them to
         # release the deterministic key so the blocked file is re-queueable. Cron-only (mirrors

@@ -79,6 +79,12 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
         "scrape_and_store_tracklist",
         "match_tracklist_to_discogs",
         "refresh_tracklists",
+        # phaze-fq9h.7: the drain slice and its request-free status read. Both are controller
+        # tasks -- they need ctx["async_session"] and the headful browser phaze-fq9h.5 puts in the
+        # worker image -- and both are operator-enqueued (no cron), so unlike reap_stalled_scans
+        # they MUST be routable.
+        "drain_tracklists",
+        "tracklist_drain_status",
         "submit_cloud_job",  # Phase 54: fast kube-submit producer (control-plane; kube creds live here)
     }
 )

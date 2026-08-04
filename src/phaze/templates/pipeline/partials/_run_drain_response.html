@@ -1,0 +1,10 @@
+{# phaze-fq9h.8: confirmation for POST /pipeline/run-tracklist-drain.
+
+   Deliberately says "queued", never "found N tracklists" -- the job runs asynchronously on the
+   controller worker and this response renders before it starts. The drain progress fragment
+   (#tracklist-drain-status, _tracklist_drain_status.html) is where the operator checks the
+   outcome, on its own refresh, not here.
+#}
+<span class="text-sm text-green-600 dark:text-green-400 font-medium">
+    Queued one drain slice (up to 100 lookups, host budget permitting).
+</span>
