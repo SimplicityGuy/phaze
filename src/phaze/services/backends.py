@@ -1190,6 +1190,29 @@ async def get_backend_lane_snapshot(session: AsyncSession) -> list[dict[str, Any
     return lanes
 
 
+def derive_localqueue_unreachable(lanes: list[dict[str, Any]]) -> bool:
+    """Return True iff ANY kueue lane in ``lanes`` is unreachable -- the K8s LocalQueue amber alert (D-05).
+
+    Phase 56/70 (KDEPLOY-04, MKUE-01/03) originally drove this from a cross-process Redis flag the
+    controller's startup probe wrote once at boot (D-05/D-06). phaze-6r39 retired that mechanism: the
+    flag was a boot-time SNAPSHOT with no TTL and no other writer, so it (a) never cleared once
+    connectivity was restored (the reported bug) and (b) never appeared at all for an outage that began
+    AFTER boot -- the alert was structurally incapable of firing for the exact class of event it exists
+    to surface. Every 5s ``/pipeline/stats`` poll already probes the SAME LocalQueue live via
+    :func:`get_backend_lane_snapshot` -> ``_probe_availability`` -> ``KueueBackend.is_available``, so
+    this derives the flag from that snapshot instead of a second, staler read.
+
+    Preserves the original aggregate semantic: unreachable iff ANY configured kueue backend is
+    unreachable (reachable == ALL-reachable). Zero kueue lanes (all-local / compute-only, the WR-01
+    case) makes ``any(...)`` False for free -- no special-casing needed, and no Redis key is read or
+    written on this path at all any more. ``lanes`` is already degrade-safe (``get_backend_lane_snapshot``
+    -> ``[]`` on any error), so a fully degraded snapshot silently reports "reachable" rather than
+    surfacing a false alarm -- the same fail-silent posture the retired Redis-flag reader
+    (``get_localqueue_unreachable``, removed by this change) used to provide on a Redis hiccup.
+    """
+    return any(lane["kind"] == "kueue" and not lane["available"] for lane in lanes)
+
+
 # The neutral, no-causal-claim copy any unexpected error in derive_cloud_hold_reason degrades to --
 # the card must never assert a specific blocker it has not actually confirmed.
 _HOLD_REASON_DEGRADED = "held"

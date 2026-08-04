@@ -397,10 +397,14 @@ cluster-wide**:
 | `kueue.x-k8s.io` | `workloads` | `get`, `watch`, `list` | `get_workload_for` only `list`s today; `get`/`watch` are the conservative spec |
 | `kueue.x-k8s.io` | `localqueues` | `get` | **the Phase 56 startup reachability probe** GETs the LocalQueue |
 
-> **`localqueues: get` is load-bearing.** Without it the Phase 56 startup probe 403s and the
-> dashboard falsely reports "K8s LocalQueue unreachable" forever, even on a healthy cluster.
-> The `tests/agents/deployment/test_k8s_runbook.py::test_rbac_covers_call_graph` guard asserts
-> this verb floor is present so it can never be dropped.
+> **`localqueues: get` is load-bearing.** Without it every live probe of that cluster's
+> LocalQueue 403s -- both the Phase 56 controller startup probe (log-only since phaze-6r39) and
+> the per-poll probe `get_backend_lane_snapshot` runs on every 5s `/pipeline/stats` tick -- and
+> the dashboard reports "K8s LocalQueue unreachable" for as long as the 403 persists (phaze-6r39:
+> no longer "forever" -- it is live-derived, so restoring the verb clears the banner on the next
+> poll with no restart needed). The
+> `tests/agents/deployment/test_k8s_runbook.py::test_rbac_covers_call_graph` guard asserts this
+> verb floor is present so it can never be dropped.
 
 The Role is **namespaced** (`kind: Role`, not `ClusterRole`) and the RoleBinding binds it in
 the single `phaze` namespace — there are **no cluster-wide grants**.
@@ -757,12 +761,14 @@ cluster:
 - [ ] **The availability probe is happy.** With the `kind="kueue"` entry added and the control
       plane restarted, the pipeline dashboard shows **no** "K8s LocalQueue unreachable" alert (the
       probe GETs the LocalQueue via each backend's `context` — confirms `localqueues: get` is
-      granted). **The alert is aggregate, not per-backend:** the probe runs per cluster, but the
-      surfaced flag is a single Redis key (`phaze:k8s:localqueue_unreachable`) set iff **any**
-      configured cluster is unreachable, and it is written **once, at controller startup** — not on
-      a poll. So one bad cluster lights the alert for the whole deploy, and clearing it means fixing
-      the cluster **and restarting the control plane**. Read the controller's startup WARNING log
-      lines to tell which cluster failed.
+      granted). **The alert is aggregate, not per-backend:** it lights when **any** configured
+      cluster is unreachable. Since phaze-6r39 the flag is derived **live** from the same per-lane
+      probe `get_backend_lane_snapshot` already runs on every 5s `/pipeline/stats` poll — not a
+      Redis key written once at controller startup — so it tracks reality on every tick: one bad
+      cluster lights the alert immediately, and fixing that cluster clears it on the next poll with
+      **no control-plane restart needed**. The controller's own startup probe still runs and still
+      logs a WARNING per unreachable cluster at boot (useful for naming which cluster failed early),
+      but it no longer owns the dashboard's state.
 - [ ] **A long file routes through Kueue.** Trigger analysis on a set whose duration ≥
       `PHAZE_CLOUD_ROUTE_THRESHOLD_SEC`; confirm the tiered drain picks the lowest-rank available
       backend, the file stages to that backend's `pick_bucket` choice (recorded on

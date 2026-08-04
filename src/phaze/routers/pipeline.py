@@ -47,6 +47,7 @@ from phaze.services.analysis_enqueue import classify_process_file_collision, enq
 from phaze.services.backends import (
     LANE_RECENT_N,
     derive_cloud_hold_reason,
+    derive_localqueue_unreachable,
     get_backend_lane_snapshot,
     get_lane_queue_depths,
     get_lane_recent_completions,
@@ -75,7 +76,6 @@ from phaze.services.pipeline import (
     get_global_reconciliation,
     get_inadmissible_count,
     get_live_job_keys,
-    get_localqueue_unreachable,
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_failed_files,
@@ -807,13 +807,6 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # error), so NO try/except here -- same service-owns-degrade idiom as awaiting_cloud_count.
     inadmissible_count = await get_inadmissible_count(session)
 
-    # Phase 56 (56-02, D-05, KDEPLOY-04): the K8s LocalQueue-unreachable amber alert flag -- True when
-    # the controller.startup probe (56-01) set the cross-process Redis key phaze:k8s:localqueue_unreachable.
-    # get_localqueue_unreachable owns the never-500 degrade (returns False on a missing handle / any Redis
-    # error), so NO try/except here -- the redis handle is read off app.state like the queue counters.
-    # Seeded IDENTICALLY in pipeline_stats_partial() for the 5s OOB re-push.
-    localqueue_unreachable = await get_localqueue_unreachable(getattr(app_state, "redis", None))
-
     # Phase 55 (55-05, D-04, KROUTE-06): the four per-cloud_phase admission-state counts driving the
     # admission_state_card. get_cloud_phase_counts owns the never-500 _safe_count degrade per phase
     # (returns 0 on any DB error), so NO try/except here -- same service-owns-degrade idiom as
@@ -843,6 +836,16 @@ async def build_dashboard_context(app_state: Any, session: AsyncSession) -> dict
     # same service-owns-degrade idiom as the cloud counts above. This SUPERSEDES the transitional single
     # non-local lane-kind key (retired); resolved_non_local_kind stays for the :811 callers.
     lanes = await get_backend_lane_snapshot(session)
+
+    # phaze-6r39 (retires 56-02/D-05/D-06's cross-process Redis flag): the K8s LocalQueue-unreachable
+    # amber alert, derived from the SAME lane snapshot above rather than a separate boot-time Redis key.
+    # The old mechanism was written ONCE by the controller's startup probe with no TTL, so it never
+    # cleared once connectivity was restored (the reported bug) and never fired at all for an outage
+    # that began after boot (the silent, more dangerous half). derive_localqueue_unreachable is a pure
+    # function over `lanes` (no I/O, cannot raise), so NO try/except here -- same
+    # service-owns-degrade idiom as the cloud counts above. Seeded IDENTICALLY in pipeline_stats_partial()
+    # below so the OOB-swapped card re-push agrees with this first-load render (the OOB swap contract).
+    localqueue_unreachable = derive_localqueue_unreachable(lanes)
 
     # The Cloud Routing card's truthful hold-reason sub-caption -- derived from the SAME lane snapshot
     # above via the SAME gate order the drain (stage_cloud_window) checks, so the card can never claim
@@ -927,9 +930,7 @@ async def pipeline_stats_partial(
     # _stats_fanout() cap (process-global cap-4, shared with every OTHER concurrently in-flight poll
     # -- phaze-28wi; the test suite's _route_stats_fanout fixture overrides _STATS_FANOUT to
     # Semaphore(1) and routes phaze.database.async_session onto the per-test connection, so this
-    # reuses that EXISTING test-isolation seam with no new fixture). get_localqueue_unreachable needs no DB session (a
-    # pure Redis read that already never raises), so it rides the SAME gather directly rather than
-    # through _read_in_own_session.
+    # reuses that EXISTING test-isolation seam with no new fixture).
     #
     # activity feeds queue_progress below AND is a required (if internally-unused-by-design --
     # see _build_dag_context's docstring) positional argument to _build_dag_context: a TRUE
@@ -947,7 +948,6 @@ async def pipeline_stats_partial(
         pushing_count,
         analyzing_cloud_count,
         inadmissible_count,
-        localqueue_unreachable,
         cloud_phase_counts,
         lanes,
         awaiting_hold_reason,
@@ -955,7 +955,7 @@ async def pipeline_stats_partial(
         # mypy (mirrors the identical cast in services/pipeline.py:get_stage_progress) -- pin the
         # exact per-read tuple shape with a single cast.
     ) = cast(
-        "tuple[dict[str, int], int, int, int, int, int, int, bool, dict[str, int], list[dict[str, Any]], str]",
+        "tuple[dict[str, int], int, int, int, int, int, int, dict[str, int], list[dict[str, Any]], str]",
         await asyncio.gather(
             # Phase 34: surface live queue depth through the EXISTING 5s poll (no new loop).
             # get_queue_activity degrades to zeros on a Redis hiccup / missing app.state, so the
@@ -985,12 +985,6 @@ async def pipeline_stats_partial(
             # poll so the inadmissible_card stays live via its OOB swap. Degrade-safe at the service layer,
             # so NO router try/except -- mirrors the awaiting_cloud_count wiring.
             _read_in_own_session(fanout, lambda s: get_inadmissible_count(s), 0),
-            # Phase 56 (56-02, D-05, KDEPLOY-04): the same K8s LocalQueue-unreachable flag the dashboard seeds,
-            # re-pushed on every 5s poll so the localqueue_card stays live via its OOB swap. Degrade-safe at the
-            # service layer (56-01), so NO router try/except -- mirrors the inadmissible_count wiring; the redis
-            # handle is read off app.state exactly like the dashboard() first-load path. No session needed --
-            # runs directly (not through _read_in_own_session) rather than opening a DB connection for nothing.
-            get_localqueue_unreachable(getattr(request.app.state, "redis", None)),
             # Phase 55 (55-05, D-04, KROUTE-06): the same four per-cloud_phase admission counts the dashboard
             # seeds, re-pushed on every 5s poll so the admission_state_card stays live via its OOB swap.
             # Degrade-safe at the service layer (per-phase _safe_count), so NO router try/except -- mirrors
@@ -1009,6 +1003,11 @@ async def pipeline_stats_partial(
             _read_in_own_session(fanout, lambda s: derive_cloud_hold_reason(s), "held"),
         ),
     )
+    # phaze-6r39: the same live-lane derivation build_dashboard_context seeds on first load, re-pushed
+    # on every 5s poll so the localqueue_card stays live via its OOB swap (the OOB swap contract: both
+    # render paths must agree). Pure function over the `lanes` snapshot just resolved above -- no I/O,
+    # cannot raise -- so NO router try/except, mirroring the lanes wiring immediately above it.
+    localqueue_unreachable = derive_localqueue_unreachable(lanes)
     queue_progress = queue_progress_percent(stats["analyzed"], activity["agent_busy"])
     # Phase 35 (35-04): same per-node reconcile as dashboard(), re-pushed on every 5s
     # poll via the OOB x-init seeds in stats_bar.html (gated behind oob_counts). The store

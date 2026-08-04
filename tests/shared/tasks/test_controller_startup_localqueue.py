@@ -1,16 +1,26 @@
 """LocalQueue startup-probe tests for phaze.tasks.controller (Phase 56, KDEPLOY-04 / D-05 / D-06).
 
-The probe is a non-fatal, ``active_cloud_kind == "kueue"``-gated reachability check (Phase 67 rewired
-it off the flat ``cloud_target`` onto the registry accessor) that GETs the configured Kueue LocalQueue and
-writes a cross-process flag via ``ctx["redis"]`` -- ``.set("phaze:k8s:localqueue_unreachable", ...)``
-on failure, ``.delete(...)`` on success -- wrapped in a broad try/except that NEVER re-raises
-(boot resilience: a transient kube/mesh blip must not take down Postgres/Redis/UI/local-analysis).
+REVISED phaze-6r39: the probe is a non-fatal, per-kueue-backend reachability check (Phase 70 rewired
+it off a single ``active_cloud_kind == "kueue"``-gated global probe onto iterating EVERY configured
+kueue backend) that GETs each backend's own Kueue LocalQueue and logs a WARNING on failure, wrapped in
+a broad try/except that NEVER re-raises (boot resilience: a transient kube/mesh blip must not take
+down Postgres/Redis/UI/local-analysis).
+
+phaze-6r39 retired the probe's Redis side effect entirely: it used to ALSO persist a cross-process
+flag via ``ctx["redis"]`` (``.set(...)`` on failure, ``.delete(...)`` on success) for the dashboard to
+read. That flag was a boot-time snapshot with no TTL and no other writer -- it never cleared once
+connectivity was restored (the reported bug) and never appeared at all for an outage that began after
+boot. The dashboard now derives the same alert live from the per-lane probe every 5s ``/pipeline/stats``
+poll already runs (``derive_localqueue_unreachable``, see ``tests/shared/routers/test_pipeline_localqueue.py``
+and ``tests/shared/services/test_lane_snapshot.py``), so this suite only covers what remains: the probe
+itself still runs (or is skipped when no kueue backend is configured), still logs on failure, and STILL
+never aborts boot on a kube blip -- and it asserts the retired Redis write is really gone (``fake_redis.set``
+/ ``fake_redis.delete`` are never awaited by this probe any more).
 
 The monkeypatch recipe clones ``test_controller_startup_banner.py``: stub the heavyweight
 constructors + ``get_settings`` so ``startup`` opens no Postgres/HTTP connection, and replace
-``redis_async.Redis.from_url`` so ``ctx["redis"]`` is an ``AsyncMock`` whose ``set``/``delete`` we
-assert on. The probe seam ``phaze.services.kube_staging.get_local_queue`` is patched with
-``raising=False`` so the tests collect/run before 56-01 adds that function.
+``redis_async.Redis.from_url`` so ``ctx["redis"]`` is an ``AsyncMock`` we can assert was left alone.
+The probe seam ``phaze.services.kube_staging.get_local_queue`` is patched with ``raising=False``.
 """
 
 from __future__ import annotations
@@ -42,13 +52,12 @@ def _stub_collaborators(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock) 
 def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, active_cloud_kind: str | None) -> MagicMock:
     """Patch collaborators + a MagicMock ``get_settings``; return the fake_cfg.
 
-    Phase 70 (MKUE-01/03): the probe now iterates EVERY configured kueue backend, threading each
-    backend's own ``KubeConfig`` into ``kube_staging.get_local_queue(kube)``; the flag is set iff ANY
-    configured cluster is unreachable. The stub sets the registry shape -- ``cloud_enabled`` + a
-    ``backends`` list whose kueue entry duck-types the Phase-67 submodel (kind/id/rank/cap + ``kube``).
-    Pass ``active_cloud_kind="kueue"`` to seed a one-kueue registry (probe runs) or ``None`` (all-local,
-    probe skipped). ``log_effective_registry`` is a MagicMock no-op here (the real projection is asserted
-    in ``test_startup_logs_effective_registry_secret_free``).
+    Phase 70 (MKUE-01/03): the probe iterates EVERY configured kueue backend, threading each backend's
+    own ``KubeConfig`` into ``kube_staging.get_local_queue(kube)``. The stub sets the registry shape --
+    ``cloud_enabled`` + a ``backends`` list whose kueue entry duck-types the Phase-67 submodel
+    (kind/id/rank/cap + ``kube``). Pass ``active_cloud_kind="kueue"`` to seed a one-kueue registry (probe
+    runs) or ``None`` (all-local, probe skipped). ``log_effective_registry`` is a MagicMock no-op here
+    (the real projection is asserted in ``test_startup_logs_effective_registry_secret_free``).
     """
     _stub_collaborators(monkeypatch, fake_redis)
 
@@ -80,9 +89,6 @@ def _stub_controller(monkeypatch: pytest.MonkeyPatch, fake_redis: AsyncMock, *, 
     return fake_cfg
 
 
-_FLAG_KEY = "phaze:k8s:localqueue_unreachable"
-
-
 @pytest.mark.asyncio
 async def test_localqueue_probe_skipped_when_not_k8s(monkeypatch: pytest.MonkeyPatch) -> None:
     """D-05: with ``active_cloud_kind != "kueue"`` (all-local) the probe never runs -- get_local_queue is not called."""
@@ -98,11 +104,21 @@ async def test_localqueue_probe_skipped_when_not_k8s(monkeypatch: pytest.MonkeyP
     await controller.startup(ctx)
 
     probe.assert_not_called()
+    # phaze-6r39: the probe no longer touches Redis at all -- not on the skip path either.
+    fake_redis.set.assert_not_awaited()
+    fake_redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_localqueue_probe_sets_flag_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """D-05/D-06: an unreachable LocalQueue raises a flag AND startup returns without raising (boot-resilient)."""
+async def test_localqueue_probe_logs_warning_on_failure(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """D-05/D-06: an unreachable LocalQueue logs a WARNING AND startup returns without raising (boot-resilient).
+
+    phaze-6r39: the probe no longer persists a cross-process Redis flag on failure -- that mechanism
+    was retired (see module docstring). Only the boot-time WARNING log and boot resilience remain.
+    Captures stdout instead of caplog, mirroring ``test_controller_startup_banner.py`` (structlog's
+    own processors write to stdout; the root handler ``configure_logging`` installs is not what caplog
+    listens on).
+    """
     fake_redis = AsyncMock()
     _stub_controller(monkeypatch, fake_redis, active_cloud_kind="kueue")
 
@@ -116,15 +132,15 @@ async def test_localqueue_probe_sets_flag_on_failure(monkeypatch: pytest.MonkeyP
     await controller.startup(ctx)
 
     probe.assert_awaited()
-    # The cross-process unreachable flag is written so the dashboard can surface the alert.
-    set_keys = [call.args[0] for call in fake_redis.set.await_args_list if call.args]
-    assert _FLAG_KEY in set_keys
+    assert "LocalQueue is unreachable" in capsys.readouterr().out
+    # phaze-6r39: the retired Redis flag write -- neither .set nor .delete is called by the probe.
+    fake_redis.set.assert_not_awaited()
     fake_redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_localqueue_probe_clears_flag_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A reachable LocalQueue clears the flag -- ``ctx["redis"].delete(<flag key>)`` is called."""
+async def test_localqueue_probe_reachable_does_not_touch_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reachable LocalQueue probes clean and touches NO Redis key (phaze-6r39: the clearing ``.delete`` is gone)."""
     fake_redis = AsyncMock()
     _stub_controller(monkeypatch, fake_redis, active_cloud_kind="kueue")
 
@@ -137,21 +153,14 @@ async def test_localqueue_probe_clears_flag_on_success(monkeypatch: pytest.Monke
     await controller.startup(ctx)
 
     probe.assert_awaited()
-    delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
-    assert _FLAG_KEY in delete_keys
+    fake_redis.set.assert_not_awaited()
+    fake_redis.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_redis_down_during_unreachable_probe_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CR-01: with kube unreachable AND Redis down, the flag ``.set`` raises -- startup must still NOT abort.
-
-    The probe is the first Redis call in ``startup`` (backfill/recovery use Postgres). If a Redis-down
-    boot lets the flag write propagate, the control worker crashes -- the exact opposite of the D-05
-    "control plane boots regardless" invariant. Persisting the flag must therefore be guarded too.
-    """
+async def test_kube_blip_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-05: a kube probe failure must never abort controller boot, independent of Redis health."""
     fake_redis = AsyncMock()
-    fake_redis.set.side_effect = ConnectionError("redis down")
-    fake_redis.delete.side_effect = ConnectionError("redis down")
     _stub_controller(monkeypatch, fake_redis, active_cloud_kind="kueue")
 
     probe = AsyncMock(side_effect=RuntimeError("kube unreachable"))
@@ -160,37 +169,19 @@ async def test_redis_down_during_unreachable_probe_does_not_abort_boot(monkeypat
     from phaze.tasks import controller
 
     ctx: dict[str, Any] = {}
-    # Must NOT raise -- neither a kube blip nor a Redis blip can abort controller boot (D-05).
+    # Must NOT raise -- a kube blip can never abort controller boot (D-05).
     await controller.startup(ctx)
 
     probe.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_redis_down_during_reachable_probe_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CR-01 (success path): kube reachable but Redis down -- the clearing ``.delete`` must not abort boot."""
-    fake_redis = AsyncMock()
-    fake_redis.delete.side_effect = ConnectionError("redis down")
-    _stub_controller(monkeypatch, fake_redis, active_cloud_kind="kueue")
+async def test_switching_off_k8s_probes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WR-01 (revised phaze-6r39): switching the control plane away from k8s simply skips the probe.
 
-    probe = AsyncMock(return_value=MagicMock())
-    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
-
-    from phaze.tasks import controller
-
-    ctx: dict[str, Any] = {}
-    await controller.startup(ctx)
-
-    probe.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_stale_flag_cleared_when_not_k8s(monkeypatch: pytest.MonkeyPatch) -> None:
-    """WR-01: switching the control plane away from k8s clears any stale unreachable flag.
-
-    The flag lives in long-lived Redis. Without an explicit clear on a non-k8s boot, a previously-set
-    flag persists forever and the dashboard shows a perpetual false alert -- the documented one-flip
-    revert (``PHAZE_CLOUD_TARGET=k8s`` -> ``local``) would not silence it.
+    There is no stale flag to clear any more -- the dashboard's alert is derived live from the current
+    lane snapshot on every poll, so an all-local boot naturally shows no kueue lanes and no banner,
+    with nothing to reset in Redis (see ``tests/shared/routers/test_pipeline_localqueue.py``).
     """
     fake_redis = AsyncMock()
     _stub_controller(monkeypatch, fake_redis, active_cloud_kind=None)
@@ -203,28 +194,9 @@ async def test_stale_flag_cleared_when_not_k8s(monkeypatch: pytest.MonkeyPatch) 
     ctx: dict[str, Any] = {}
     await controller.startup(ctx)
 
-    # The probe never runs off-k8s, but the stale flag is cleared so the alert cannot persist.
     probe.assert_not_called()
-    delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
-    assert _FLAG_KEY in delete_keys
-
-
-@pytest.mark.asyncio
-async def test_stale_flag_clear_redis_down_does_not_abort_boot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """WR-01 + D-05: the off-k8s stale-flag clear is best-effort -- a Redis blip must not abort boot."""
-    fake_redis = AsyncMock()
-    fake_redis.delete.side_effect = ConnectionError("redis down")
-    _stub_controller(monkeypatch, fake_redis, active_cloud_kind=None)
-
-    probe = AsyncMock()
-    monkeypatch.setattr("phaze.services.kube_staging.get_local_queue", probe, raising=False)
-
-    from phaze.tasks import controller
-
-    ctx: dict[str, Any] = {}
-    await controller.startup(ctx)
-
-    probe.assert_not_called()
+    fake_redis.set.assert_not_awaited()
+    fake_redis.delete.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +321,8 @@ async def test_multi_kueue_registry_probes_every_cluster(
     The registry is the literal multi-cluster scenario (two kueue clusters sharing a shared-scope bucket,
     D-09), so ControlSettings() constructs and cloud_enabled is True. Phase 70 iterates every kueue
     backend (was a single ≤1-non-local-gated global probe), threading each backend's own KubeConfig, so
-    BOTH clusters are probed; boot never aborts (D-05).
+    BOTH clusters are probed; boot never aborts (D-05). phaze-6r39: neither outcome touches Redis any
+    more -- the assertion below replaces the old "stale flag cleared" check with "no Redis write at all".
     """
     from phaze.config import ControlSettings
 
@@ -371,7 +344,6 @@ async def test_multi_kueue_registry_probes_every_cluster(
 
     # Both clusters were probed (one get_local_queue call per configured kueue backend).
     assert probe.await_count == 2
-    # All reachable -> the stale unreachable flag is cleared, never set.
-    delete_keys = [call.args[0] for call in fake_redis.delete.await_args_list if call.args]
-    assert _FLAG_KEY in delete_keys
+    # phaze-6r39: reachable or not, the probe never writes the retired Redis flag any more.
     fake_redis.set.assert_not_awaited()
+    fake_redis.delete.assert_not_awaited()
