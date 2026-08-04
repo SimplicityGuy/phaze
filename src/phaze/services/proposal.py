@@ -19,6 +19,7 @@ from phaze.models.file import FileRecord
 from phaze.models.file_companion import FileCompanion
 from phaze.models.proposal import ProposalStatus, RenameProposal
 from phaze.schemas.agent_tasks import CompanionReadItem, ReadCompanionFilesPayload
+from phaze.services.date_convention import CONTEXT_KEY as DATE_CONVENTION_CONTEXT_KEY
 from phaze.services.enqueue_router import lane_for_task
 from phaze.services.pg_text import sanitize_pg_text
 from phaze.services.text_repair import repair_mojibake
@@ -223,6 +224,37 @@ def build_file_context(
 
 
 # ---------------------------------------------------------------------------
+# Date-convention prompt guidance (phaze-5fta.4)
+# ---------------------------------------------------------------------------
+
+# The placeholder line in prompts/naming.md, INCLUDING its trailing newline. Substituting the empty
+# string therefore removes the whole line, leaving the prompt byte-identical to the pre-phaze-5fta.4
+# template -- which is what makes "with the flag off, proposals are byte-identical to today's
+# behavior" true of the LLM INPUT too, not merely of the stored row. Documenting the key
+# unconditionally would have changed every prompt the moment this bead landed, flag or no flag.
+_DATE_CONVENTION_PLACEHOLDER = "{date_convention_guidance}\n"
+
+# Rendered ONLY when at least one file in the batch actually carries resolved date provenance.
+# Ends with a newline so the substituted line matches the shape of the list item it joins.
+_DATE_CONVENTION_GUIDANCE = (
+    "- `date_convention`: Present only when the filename carries an `NN-NN-YYYY` scene date that was resolved. "
+    "`date` is that date as ISO `YYYY-MM-DD` and `raw` is the token it came from. `source` is `filename` when the "
+    "token could only be read one way, or `release_group_convention` when the token was genuinely ambiguous and was "
+    "resolved from the release group's learned date-order convention -- in which case `scope_value`, "
+    "`convention_value`, `supporting_count` and `contradicting_count` are the evidence behind it. Prefer this `date` "
+    "over your own reading of that token: it is either a fact about the string or an inference backed by counted "
+    "evidence. It is absent for every other date shape; read those yourself as usual.\n"
+)
+
+
+def _date_convention_guidance(files_context: list[dict[str, Any]]) -> str:
+    """The guidance line for this batch, or ``""`` when no file in it carries date provenance."""
+    if any(DATE_CONVENTION_CONTEXT_KEY in context for context in files_context):
+        return _DATE_CONVENTION_GUIDANCE
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # ProposalService — LLM calling and confidence clamping
 # ---------------------------------------------------------------------------
 
@@ -244,7 +276,10 @@ class ProposalService:
         Returns:
             Parsed ``BatchProposalResponse`` from the LLM.
         """
-        prompt = self.prompt_template.replace("{files_json}", json.dumps(files_context, indent=2))
+        # Placeholder BEFORE payload: substituting the file JSON first would let a filename that
+        # happened to contain the placeholder text get rewritten by the second pass.
+        prompt = self.prompt_template.replace(_DATE_CONVENTION_PLACEHOLDER, _date_convention_guidance(files_context))
+        prompt = prompt.replace("{files_json}", json.dumps(files_context, indent=2))
         response = await acompletion(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
@@ -391,6 +426,16 @@ async def store_proposals(
             "b2b_partners": proposal.b2b_partners,
             "input_context": files_context[idx],
         }
+        # phaze-5fta.4: lift the date provenance to a TOP-LEVEL key. It is already inside
+        # `input_context`, but the approval UI (phaze-5fta.6) must render "date inferred from
+        # release-group convention -- N supporting, M contradicting" without reaching into the raw
+        # LLM payload, and a top-level key is the stable contract for that. Added ONLY when the
+        # gated fallback actually resolved a date: with `convention_date_fallback_enabled` off
+        # (the default) the key is absent from the context, so `context_used` is byte-identical to
+        # what this function has always written.
+        date_provenance = files_context[idx].get(DATE_CONVENTION_CONTEXT_KEY)
+        if date_provenance is not None:
+            context_used[DATE_CONVENTION_CONTEXT_KEY] = date_provenance
         # phaze-qj9e: deep-sanitize every string reaching the context_used JSONB column. A raw NUL
         # (U+0000) -- classically from a UTF-16LE .nfo companion, but also possible in any
         # LLM-supplied field (artist/event_name/...) -- is rejected outright by PostgreSQL jsonb and
