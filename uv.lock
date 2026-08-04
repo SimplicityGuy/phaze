@@ -1517,7 +1517,7 @@ requires-dist = [
     { name = "sse-starlette", specifier = ">=3.4.6" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
-    { name = "uvicorn", specifier = ">=0.52.0" },
+    { name = "uvicorn", specifier = ">=0.52.1" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
 

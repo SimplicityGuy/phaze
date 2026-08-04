@@ -80,7 +80,7 @@ dependencies = [
     "sse-starlette>=3.4.6",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
-    "uvicorn>=0.52.0",
+    "uvicorn>=0.52.1",
     "watchdog>=6.0.0",
 ]
 
