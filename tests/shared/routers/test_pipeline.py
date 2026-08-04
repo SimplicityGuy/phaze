@@ -2144,8 +2144,23 @@ async def test_proposals_generate_no_files(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 39 (REQ-39-1/REQ-39-4): bulk search-tracklist trigger routes to the controller queue
+# Phase 41 (REQ-41-2/REQ-41-4): the bulk match trigger routes to the controller queue (never
+# default), skips already-linked rows, and renders the tracklist-unit empty-state.
+#
+# phaze-2akf: the SEARCH (Phase 39) and SCRAPE (Phase 41) bulk-trigger sections that used to sit
+# here are gone with their endpoints. Both fanned one job out per file / per tracklist against a
+# host whose entire published budget is ~1 request / 8 s, and the detail-page selectors they
+# ultimately reached matched zero nodes -- so every job they enqueued produced an empty tracklist.
+# Their routing invariant (a controller task must never land on the consumer-less default queue) is
+# still asserted below on the surviving sibling, and the endpoints' ABSENCE is asserted in
+# ``test_the_retired_bulk_scrape_triggers_are_gone``.
 # ---------------------------------------------------------------------------
+
+
+def _make_tracklist(n: int) -> Tracklist:
+    """Build a bare Tracklist row (no version, no discogs chain) — match pending."""
+    uid = uuid.uuid4()
+    return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
 
 
 def _link_tracklist(file_rec: FileRecord) -> Tracklist:
@@ -2153,134 +2168,22 @@ def _link_tracklist(file_rec: FileRecord) -> Tracklist:
     uid = uuid.uuid4()
     return Tracklist(
         external_id=uid.hex,
-        source_url=f"https://1001.tl/{uid.hex}",
+        source_url=f"https://www.1001tracklists.com/tracklist/{uid.hex}/x.html",
         file_id=file_rec.id,
     )
 
 
 @pytest.mark.asyncio
-async def test_search_tracklists_routes_to_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/search-tracklists enqueues search_tracklist on the controller queue (never default).
+async def test_the_retired_bulk_scrape_triggers_are_gone(client: AsyncClient) -> None:
+    """phaze-2akf: re-adding an unbounded bulk fan-out at 1001Tracklists must fail loudly.
 
-    search_tracklist is a CONTROLLER task (Phase-30 rule). The capture must be exactly
-    {("controller","search_tracklist")} — a routing regression that sent it to the consumer-less
-    default queue is caught here.
+    Asserted as 404s rather than merely by omission. The whole reason the drain exists is that the
+    host budget is ~1 request / 8 s for the entire system, so a "just enqueue one per file" button
+    is not a convenience -- it is the shape that made the legacy path unschedulable. A future
+    "restore the old triggers" change should break a test, not quietly ship.
     """
-    files = [_make_file() for _ in range(3)]
-    session.add_all(files)
-    await session.commit()
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/search-tracklists")
-    assert response.status_code == 200
-
-    await _drain_background()
-    assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("controller", "search_tracklist")}
-    assert all(q != "default" for q, _, _ in capture)
-    # Each enqueue carries the file_id the deterministic key dedups on.
-    assert {c[2]["file_id"] for c in capture} == {str(f.id) for f in files}
-
-
-@pytest.mark.asyncio
-async def test_search_tracklists_excludes_files_with_existing_tracklist(client: AsyncClient, session: AsyncSession) -> None:
-    """A file that already has a linked tracklist is skipped from the eligible set (idempotent re-run)."""
-    matched = _make_file()
-    unmatched = _make_file()
-    session.add_all([matched, unmatched])
-    await session.flush()
-    session.add(_link_tracklist(matched))
-    await session.commit()
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/search-tracklists")
-    assert response.status_code == 200
-
-    await _drain_background()
-    # Only the unmatched file is enqueued; the matched file is excluded.
-    assert len(capture) == 1
-    assert capture[0][2]["file_id"] == str(unmatched.id)
-
-
-@pytest.mark.asyncio
-async def test_search_tracklists_no_eligible_files_returns_200(client: AsyncClient) -> None:
-    """A zero-eligible POST returns 200 and enqueues nothing (renders the 'No files ready' copy)."""
-    capture = wire_fakes(client)
-    response = await client.post("/pipeline/search-tracklists")
-    assert response.status_code == 200
-    assert "No files ready for tracklist search" in response.text
-
-    await _drain_background()
-    assert capture == []
-
-
-# ---------------------------------------------------------------------------
-# Phase 41 (REQ-41-1/REQ-41-2/REQ-41-4): bulk scrape + match triggers route to the controller
-# queue (never default), skip already-done rows, render the tracklist-unit empty-state.
-# ---------------------------------------------------------------------------
-
-
-def _make_tracklist(n: int) -> Tracklist:
-    """Build a bare Tracklist row (no version, no discogs chain) — scrape AND match pending."""
-    uid = uuid.uuid4()
-    return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
-
-
-@pytest.mark.asyncio
-async def test_scrape_tracklists_routes_to_controller_queue(client: AsyncClient, session: AsyncSession) -> None:
-    """POST /pipeline/scrape-tracklists enqueues scrape_and_store_tracklist on the controller queue.
-
-    scrape_and_store_tracklist is a CONTROLLER task (Phase-30 rule). The capture must be exactly
-    {("controller","scrape_and_store_tracklist")} — a routing regression that sent it to the
-    consumer-less default queue is caught here (T-41-04).
-    """
-    tracklists = [_make_tracklist(i) for i in range(3)]
-    session.add_all(tracklists)
-    await session.commit()
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/scrape-tracklists")
-    assert response.status_code == 200
-
-    await _drain_background()
-    assert len(capture) == 3
-    assert {(q, t) for q, t, _ in capture} == {("controller", "scrape_and_store_tracklist")}
-    assert all(q != "default" for q, _, _ in capture)
-    # Each enqueue carries the tracklist_id the deterministic key dedups on.
-    assert {c[2]["tracklist_id"] for c in capture} == {str(tl.id) for tl in tracklists}
-
-
-@pytest.mark.asyncio
-async def test_scrape_tracklists_excludes_versioned(client: AsyncClient, session: AsyncSession) -> None:
-    """A tracklist that already has a scraped version is skipped from the scrape pending set."""
-    from phaze.models.tracklist import TracklistVersion
-
-    pending = _make_tracklist(1)
-    scraped = _make_tracklist(2)
-    session.add_all([pending, scraped])
-    await session.flush()
-    session.add(TracklistVersion(id=uuid.uuid4(), tracklist_id=scraped.id, version_number=1))
-    await session.commit()
-    capture = wire_fakes(client)
-
-    response = await client.post("/pipeline/scrape-tracklists")
-    assert response.status_code == 200
-
-    await _drain_background()
-    assert len(capture) == 1
-    assert capture[0][2]["tracklist_id"] == str(pending.id)
-
-
-@pytest.mark.asyncio
-async def test_scrape_tracklists_no_pending_returns_200(client: AsyncClient) -> None:
-    """A zero-pending POST returns 200 and enqueues nothing (renders the tracklist-unit empty-state)."""
-    capture = wire_fakes(client)
-    response = await client.post("/pipeline/scrape-tracklists")
-    assert response.status_code == 200
-    assert "No tracklists ready for scraping" in response.text
-
-    await _drain_background()
-    assert capture == []
+    for path in ("/pipeline/search-tracklists", "/pipeline/scrape-tracklists"):
+        assert (await client.post(path)).status_code == 404, path
 
 
 @pytest.mark.asyncio
@@ -2450,6 +2353,55 @@ async def test_prioritize_already_tracklisted_file_is_a_noop(client: AsyncClient
     assert await load_flagged_file_ids(session) == set()
     await _drain_background()
     assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_rearms_the_drain_for_an_already_tracklisted_file(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-2akf: REFRESH is what Prioritize is for a file that already HAS a tracklist.
+
+    The endpoint spends no host request itself -- it drops the cached answer, flags the file, and
+    enqueues ONE bounded drain slice that pays for the re-read through the same path and the same
+    whole-host budget as every other lookup. Asserting the enqueue is ``drain_tracklists`` on the
+    CONTROLLER queue is the load-bearing part: routing it anywhere else, or fanning it out per row,
+    would rebuild the unbounded second consumer this bead exists to remove.
+    """
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    session.add(_link_tracklist(file_rec))
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/refresh")
+    assert response.status_code == 200
+    assert "Refresh requested" in response.text
+
+    assert await load_flagged_file_ids(session) == {file_rec.id}
+    await _drain_background()
+    assert {(q, t) for q, t, _ in capture} == {("controller", "drain_tracklists")}
+    assert [c[2].get("limit") for c in capture] == [1]
+
+
+@pytest.mark.asyncio
+async def test_refresh_on_a_file_with_no_tracklist_does_nothing(client: AsyncClient, session: AsyncSession) -> None:
+    """Nothing to re-read means nothing to spend -- the control is not offered in this state either."""
+    from phaze.services.tracklist_priority import load_flagged_file_ids
+
+    file_rec = await _seed_live_set_file(session)
+    capture = wire_fakes(client)
+
+    response = await client.post(f"/pipeline/tracklists/{file_rec.id}/refresh")
+    assert response.status_code == 200
+    assert "Refresh requested" not in response.text
+
+    assert await load_flagged_file_ids(session) == set()
+    await _drain_background()
+    assert capture == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_unknown_file_is_404(client: AsyncClient) -> None:
+    assert (await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")).status_code == 404
 
 
 @pytest.mark.asyncio

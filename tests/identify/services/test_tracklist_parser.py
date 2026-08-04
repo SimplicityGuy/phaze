@@ -68,6 +68,39 @@ def _page(*rows: str) -> str:
     return f"<html><body>{''.join(rows)}</body></html>"
 
 
+class TestOnlyOneSelectorSetInTheTree:
+    """phaze-2akf's acceptance criterion: NO selector set in the tree matches zero nodes.
+
+    This is a build-failing anti-drift guard, not documentation. The defect it exists to prevent is
+    specific and it already happened once: two per-track selector sets coexisted, one of them
+    (``TracklistScraper``'s ``.tp a`` / ``.tN`` / ``.tL`` / ``.cueTime``) matched ZERO nodes against
+    the very fixtures committed to this repo, and nothing failed -- the path using it simply
+    returned empty tracklists that looked like successfully scraped sets with no tracks. A dead
+    selector is invisible precisely because "no nodes matched" and "nothing to match" render
+    identically.
+    """
+
+    def test_every_selector_this_module_uses_matches_the_anchor(self) -> None:
+        """Each selector resolves on the real capture -- a stale one is a build failure, not a shrug."""
+        from bs4 import BeautifulSoup
+
+        from phaze.services import tracklist_parser as parser_module
+        from phaze.services.tracklist_render import TRACK_CONTAINER_SELECTOR
+
+        soup = BeautifulSoup(ANCHOR_HTML, "lxml")
+        assert len(soup.select(TRACK_CONTAINER_SELECTOR)) == 52
+        for name in ("_TRACK_VALUE_SELECTOR", "_LABEL_SELECTOR", "_CUE_SELECTOR"):
+            selector = getattr(parser_module, name)
+            assert soup.select(selector), f"{name} ({selector!r}) matches ZERO nodes on the committed anchor capture"
+
+    def test_the_scraper_carries_no_per_track_selectors_any_more(self) -> None:
+        """The retired set must not come back -- one selector set, or the next redesign breaks the untested one."""
+        from phaze.services.tracklist_scraper import TracklistScraper
+
+        dead = [name for name in vars(TracklistScraper) if name.startswith(("_TRACK_", "_META_", "_CUE_TIME"))]
+        assert dead == [], f"TracklistScraper regrew detail-page selectors: {dead}"
+
+
 class TestAnchorFixture:
     """The acceptance criterion: the anchor renders+parses to 52 tracks."""
 

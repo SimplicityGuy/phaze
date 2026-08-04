@@ -41,8 +41,9 @@ _NEW_STORE_KEYS = (
     "analyzeTotal",
     "analyzeActive",
     "tracklistDone",
-    "scrapeDone",
-    "scrapeTotal",
+    # phaze-2akf: scrapeDone / scrapeTotal are gone with the ``scrape`` stage node -- under the
+    # drain, every tracklist row gets its first version in the same transaction, so done == total
+    # always and the bar measured nothing.
     "matchDone",
     "matchTotal",
     "proposalsDone",
@@ -60,20 +61,17 @@ _NEW_STORE_KEYS = (
     # edit drives the store-literal seed test, the int-key context test, AND the OOB-seed test.
     "metadataBusy",
     "analyzeBusy",
-    # Phase 39 (REQ-39-3): search_tracklist in-flight busy count. Rides the same dag.items()
-    # seed/OOB loop so the Search node gate reacts live on every 5s poll. One edit drives the
-    # store-literal seed test, the int-key context test, AND the OOB-seed test.
-    "searchBusy",
+    # phaze-2akf: searchBusy is gone with search_tracklist -- with no such job left to enqueue, it
+    # was structurally pinned at 0, i.e. a "not busy" signal that could never become busy.
     # Phase 40 (REQ-40-3): the online-agent count ("Needs agent" when 0) rides the same
     # dag.items() seed/OOB loop so the per-agent
     # Scan node gate reacts live on every 5s poll. One edit drives the store-literal seed test, the
     # int-key context test, AND the OOB-seed test.
     "agentOnline",
-    # Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight busy
-    # counts gating the DAG Scrape/Match trigger nodes. Both ride the same dag.items() seed/OOB loop
-    # so the gates react live on every 5s poll. One edit drives the store-literal seed test, the
-    # int-key context test, AND the OOB-seed test.
-    "scrapeBusy",
+    # Phase 41 (REQ-41-3): the match_tracklist_to_discogs in-flight busy count gating the DAG Match
+    # trigger node. It rides the same dag.items() seed/OOB loop so the gate reacts live on every 5s
+    # poll. One edit drives the store-literal seed test, the int-key context test, AND the OOB-seed
+    # test. (phaze-2akf removed its scrapeBusy sibling with the task it counted.)
     "matchBusy",
     # Phase 58 (58-02, WORK-01): Discover "not yet enriched" derived backlog int (discovered -
     # metadataExtracted, clamped >= 0). One edit drives the store-literal seed test, the int-key
@@ -355,18 +353,25 @@ async def test_completed_counter_fallback_caps_to_zero_when_total_is_zero(sessio
 def test_reconciled_done_caps_unconditionally_at_stage_total_zero() -> None:
     """phaze-y0wz unit-level regression on ``_reconciled_done`` directly.
 
-    ``scan_search``'s ``total`` is documented as ALWAYS ``None`` -> 0 (get_stage_progress), so
-    prior to the y0wz fix its fallback was PERMANENTLY uncapped (the ``stage_total > 0`` gate
-    never held) and double-counted two summed counters. The fallback must degrade to
-    ``stage_done`` (0, from the guard above) whenever ``stage_total == 0`` -- never the raw
-    (here doubly-summed) counter value.
+    ``tracklist``'s ``total`` is documented as ALWAYS ``None`` -> 0 (get_stage_progress), so prior
+    to the y0wz fix its fallback was PERMANENTLY uncapped (the ``stage_total > 0`` gate never held)
+    and double-counted two summed counters. The fallback must degrade to ``stage_done`` (0, from the
+    guard above) whenever ``stage_total == 0`` -- never the raw counter value.
+
+    phaze-2akf: ``scan_search`` was renamed ``tracklist`` and now maps to NO counter at all (one
+    drain job is a bounded slice covering many files, so its ``completed`` counter counts slices,
+    not files -- the WR-03 unit constraint). The zero-total rule is asserted against ``match``, a
+    node that DOES map to a counter, so the guard is still genuinely exercised rather than passing
+    vacuously; the ``tracklist`` assertion below then pins the no-counter case too.
     """
     from phaze.routers.pipeline import _reconciled_done
 
-    counters = {"search_tracklist": {"completed": 60}, "scrape_and_store_tracklist": {"completed": 40}}
-    assert _reconciled_done("scan_search", stage_done=0, stage_total=0, counters=counters) == 0
+    counters = {"match_tracklist_to_discogs": {"completed": 60}}
+    assert _reconciled_done("match", stage_done=0, stage_total=0, counters=counters) == 0
     # DB-truth still wins outright whenever stage_done > 0, unaffected by this fix.
-    assert _reconciled_done("scan_search", stage_done=7, stage_total=0, counters=counters) == 7
+    assert _reconciled_done("match", stage_done=7, stage_total=0, counters=counters) == 7
+    # The tracklist node has no mapped counter, so it can never manufacture a fallback at all.
+    assert _reconciled_done("tracklist", stage_done=0, stage_total=0, counters=counters) == 0
 
 
 def test_reconciled_done_never_renders_stage_total_as_the_fallback_value() -> None:

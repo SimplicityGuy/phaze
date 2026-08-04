@@ -9,15 +9,22 @@ here instead, so a parser fix never costs a host request and a captured fixture 
 `tests/identify/fixtures/tracklist_render/`) can be re-parsed offline forever. This module does
 not render, retry, or touch the network.
 
-RE-DERIVED, NOT REUSED, FROM `TracklistScraper`
-------------------------------------------------
-`services/tracklist_scraper.py` carries an older, EXPLICITLY UNVERIFIED guess at these same
+RE-DERIVED, NOT REUSED, FROM `TracklistScraper` -- AND NOW THE ONLY SET IN THE TREE
+-----------------------------------------------------------------------------------
+`services/tracklist_scraper.py` used to carry an older, EXPLICITLY UNVERIFIED guess at these same
 per-track selectors (`_TRACK_ARTIST_SELECTOR = ".tp a"`, `_TRACK_NAME_SELECTOR = ".tN"`,
-`_TRACK_LABEL_SELECTOR = ".tL"`, `_TRACK_TIME_SELECTOR = ".cueTime"`) -- its own docstring (phaze
--mk6y) says the detail-page block was never checked against a live page, only the search-page
-selectors were. Checked here against the two real captures phaze-fq9h.1 recorded (`25fhn7c9-ok
-.html`, 52 rows; `19h6nw7t-ok.html`, 12 rows): every one of those four old selectors matches ZERO
-nodes in both files. The site's actual per-track markup, as verified against those captures:
+`_TRACK_LABEL_SELECTOR = ".tL"`, `_TRACK_TIME_SELECTOR = ".cueTime"`) -- its own docstring
+(phaze-mk6y) said the detail-page block was never checked against a live page, only the search-page
+selectors were. Checked against the two real captures phaze-fq9h.1 recorded (`25fhn7c9-ok.html`, 52
+rows; `19h6nw7t-ok.html`, 12 rows), every one of those four matched ZERO nodes in both files.
+
+phaze-2akf DELETED them, along with the httpx detail-scrape path they served, so this module is now
+the ONLY per-track selector set in the tree. That is the point rather than a side effect: two
+divergent sets cannot both be maintained, and the next site change would break whichever one nobody
+was testing. `tests/identify/services/test_tracklist_parser.py` fails the build if any selector here
+stops matching the captures.
+
+The site's actual per-track markup, as verified against those captures:
 
 * **Position** -- `data-trno` on the `.tlpItem` container itself (0-based; verified unique and
   contiguous 0..N-1 across both fixtures). ``position = int(data-trno) + 1``. Falls back to a

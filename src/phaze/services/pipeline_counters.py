@@ -26,15 +26,16 @@ from typing import Any
 
 _NAMESPACE = "phaze:pipeline"
 
-# The 9 pipeline functions that carry a deterministic key + maintained counters.
+# The pipeline functions that carry a deterministic key + maintained counters.
 # MUST stay in sync with ``deterministic_key._KEY_BUILDERS`` -- the drift-guard test
 # (tests/test_deterministic_key.py) enforces the routable-task universe; this tuple
 # is the read-side enumeration ``read_counters`` reports over.
 PIPELINE_FUNCTIONS: tuple[str, ...] = (
     "process_file",
     "extract_file_metadata",
-    "search_tracklist",
-    "scrape_and_store_tracklist",
+    # phaze-2akf: search_tracklist / scrape_and_store_tracklist are gone with the legacy scrape
+    # path. Their durable Redis counters are deliberately NOT deleted -- they are never-reset
+    # INCRs that record work genuinely completed, and read_counters simply stops enumerating them.
     "match_tracklist_to_discogs",
     "generate_proposals",
     "push_file",

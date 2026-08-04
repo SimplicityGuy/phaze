@@ -257,7 +257,7 @@ async def get_queue_activity(app_state: Any, session: AsyncSession) -> dict[str,
     ``select_active_agent``, which returns one agent and raises when none is recently seen)
     plus the controller queue. Only the ``queued`` and ``active`` kinds are read: those two
     kinds exclude scheduled/cron jobs, so the idle controller crons (``reap_stalled_scans``,
-    ``refresh_tracklists``) never inflate the counts. The scheduled-inclusive kind is never
+    ``reap_stuck_aborting_jobs``) never inflate the counts. The scheduled-inclusive kind is never
     read.
 
     Failure isolation is split per-source AND per-agent, and the function never raises: a
@@ -700,9 +700,15 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
       (:func:`_safe_bucket_counts`); ``done`` = row present + ``failed_at`` NULL; total = music/video count
     - ``analyze``     -- FIVE-BUCKET via ``stage_status_case(ANALYZE)``; ``done`` = ``analysis`` row with
       ``analysis_completed_at`` NOT NULL (a partial in-flight row is ``in_flight``, not done); total = music/video count
-    - ``scan_search`` -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
+    - ``tracklist``   -- done = DISTINCT file_id in ``tracklists``; total = ``None`` (counter-only; the UI
       renders ``done / —``). No DB table defines "should get a tracklist" so NO denominator is fabricated.
-    - ``scrape``      -- done = DISTINCT tracklist_id in ``tracklist_versions``; total = COUNT(tracklists)
+      phaze-2akf renamed this node from ``scan_search`` and DELETED the separate ``scrape`` node beside
+      it. Both were shaped by the legacy two-step name-search-then-scrape path; the drain collapses
+      derive -> search -> score -> render -> parse -> persist into ONE operation, so "searched but not
+      yet scraped" is no longer a state a row can be in. ``scrape.done`` (DISTINCT tracklist_id in
+      ``tracklist_versions``) over ``scrape.total`` (COUNT(tracklists)) is now a tautology: every row the
+      drain writes gets its first version in the same transaction, so the bar reported 100% always and
+      measured nothing.
     - ``match``       -- done = DISTINCT tracklist_id reachable from ``discogs_links``; total = COUNT(tracklists)
     - ``proposals``   -- done = DISTINCT file_id in ``proposals``; total = convergence set (files with a
       ``metadata`` row present AND analysis DONE, mirroring ``get_proposal_pending_batches``'s
@@ -745,8 +751,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         .where(exists(select(FileMetadata.id).where(FileMetadata.file_id == FileRecord.id)))
         .where(done_clause(Stage.ANALYZE))
     )
-    scan_search_stmt = select(func.count(distinct(Tracklist.file_id)))
-    scrape_stmt = select(func.count(distinct(TracklistVersion.tracklist_id)))
+    tracklist_stmt = select(func.count(distinct(Tracklist.file_id)))
     proposals_stmt = select(func.count(distinct(RenameProposal.file_id)))
     execute_total_stmt = select(func.count(distinct(RenameProposal.file_id))).where(RenameProposal.status == ProposalStatus.APPROVED)
 
@@ -789,8 +794,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         convergence_total,
         metadata_b,
         analyze_b,
-        scan_search_done,
-        scrape_done,
+        tracklist_done,
         match_done,
         proposals_done,
         execute_done,
@@ -800,7 +804,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # NOTE: typing.cast is aliased type_cast -- the bare `cast` name is sqlalchemy's SQL cast (used
         # elsewhere in this module).
     ) = type_cast(
-        "tuple[int, int, int, int, dict[str, int], dict[str, int], int, int, int, int, int, int]",
+        "tuple[int, int, int, int, dict[str, int], dict[str, int], int, int, int, int, int]",
         await asyncio.gather(
             _read_in_own_session(fanout, lambda s: _safe_count(s, mv_total_stmt, node="music_video_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_total_stmt, node="tracklist_total"), 0),
@@ -808,8 +812,7 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
             _read_in_own_session(fanout, lambda s: _safe_count(s, convergence_stmt, node="proposals_total"), 0),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.METADATA), bucket_default),
             _read_in_own_session(fanout, lambda s: _safe_bucket_counts(s, Stage.ANALYZE), bucket_default),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, scan_search_stmt, node="scan_search"), 0),
-            _read_in_own_session(fanout, lambda s: _safe_count(s, scrape_stmt, node="scrape"), 0),
+            _read_in_own_session(fanout, lambda s: _safe_count(s, tracklist_stmt, node="tracklist"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, match_done_stmt, node="match"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, proposals_stmt, node="proposals"), 0),
             _read_in_own_session(fanout, lambda s: _safe_count(s, execute_done_stmt, node="execute"), 0),
@@ -826,13 +829,9 @@ async def get_stage_progress(session: AsyncSession) -> dict[str, dict[str, int |
         # by _build_dag_context) is now the derived done-bucket. Degrade-safe (all-zero on any error).
         "metadata": {**metadata_b, "total": music_video_total},
         "analyze": {**analyze_b, "total": music_video_total},
-        "scan_search": {
-            "done": scan_search_done,
+        "tracklist": {
+            "done": tracklist_done,
             "total": None,  # counter-only: no table defines "should get a tracklist" (RESEARCH Q5 / UI-SPEC)
-        },
-        "scrape": {
-            "done": scrape_done,
-            "total": tracklist_total,
         },
         "match": {
             "done": match_done,
@@ -1122,82 +1121,19 @@ async def refresh_stage_orphan_counts() -> dict[str, int]:
     return computed
 
 
-# Search-tracklist in-flight gate (Phase 39, REQ-39-3). search_tracklist is a CONTROLLER task --
-# NOT one of the agent stages -- so it is deliberately ABSENT from get_stage_busy_counts's
-# {metadata,analyze} contract (that function + its tests stay untouched). The
-# deterministic key is "search_tracklist:<file_id>" (Phase 35), so the in-flight count is the
-# bucket whose key prefix == "search_tracklist". Reuses the SAME static _STAGE_BUSY_SQL grouped
-# scan (no operator input is interpolated -- the only literals are split_part, the status
-# allowlist, and the function-name constant below; T-39-01, mirroring the Phase-37/t7k discipline).
-_SEARCH_BUSY_FUNCTION = "search_tracklist"
-
-
-async def get_search_busy_count(session: AsyncSession) -> int:
-    """Return the in-flight ``search_tracklist`` job count (``queued`` + ``active``), degrade-safe.
-
-    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``search_tracklist`` (status
-    ``IN ('queued', 'active')``). This drives the DAG Search node's "Search busy" gate so a second
-    bulk search cannot be launched while one batch is in flight. A paused/parked search job (status
-    still ``queued``) counts as busy -- the same accepted semantics as :func:`get_stage_busy_counts`.
-
-    Failure isolation (T-39-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
-    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
-    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
-    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
-    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
-    it NEVER raises into the hot 5s /pipeline/stats poll.
-    """
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
-    except Exception:
-        logger.warning("search_busy_degraded", exc_info=True)
-        return 0
-    for row in rows:
-        if row[0] == _SEARCH_BUSY_FUNCTION:
-            return int(row[1])
-    return 0
-
-
-# Bulk scrape/match in-flight gates (Phase 41, REQ-41-3). Both scrape_and_store_tracklist and
-# match_tracklist_to_discogs are CONTROLLER tasks -- NOT one of the three agent stages tracked by
-# get_stage_busy_counts (that function + its tests stay untouched) -- but their jobs live in the SAME
-# saq_jobs table, so the same key-prefix scan works. The deterministic keys are
-# "scrape_and_store_tracklist:<tracklist_id>" / "match_tracklist_to_discogs:<tracklist_id>" (Phase 35),
-# so each in-flight count is the bucket whose key prefix == the function-name constant. Reuses the SAME
-# static _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
-# split_part, the status allowlist, and the function-name constants below; T-41-01, mirroring the
-# Phase-37/39/40 static-SQL discipline).
-_SCRAPE_BUSY_FUNCTION = "scrape_and_store_tracklist"
+# Bulk match in-flight gate (Phase 41, REQ-41-3). match_tracklist_to_discogs is a CONTROLLER task --
+# NOT one of the agent stages tracked by get_stage_busy_counts (that function + its tests stay
+# untouched) -- but its jobs live in the SAME saq_jobs table, so the same key-prefix scan works. The
+# deterministic key is "match_tracklist_to_discogs:<tracklist_id>" (Phase 35), so the in-flight count
+# is the bucket whose key prefix == the function-name constant. Reuses the SAME static
+# _STAGE_BUSY_SQL grouped scan (no operator input is interpolated -- the only literals are
+# split_part, the status allowlist, and the function-name constant below; T-41-01).
+#
+# phaze-2akf: the sibling _SEARCH_BUSY_FUNCTION / _SCRAPE_BUSY_FUNCTION gates are GONE with the
+# legacy scrape path they gated. They counted saq_jobs rows for two functions that no longer exist,
+# so they were structurally pinned at 0 -- a "not busy" signal that could never become busy. The
+# drain's own progress surface (GET /pipeline/tracklist-drain-status) replaces them.
 _MATCH_BUSY_FUNCTION = "match_tracklist_to_discogs"
-
-
-async def get_scrape_busy_count(session: AsyncSession) -> int:
-    """Return the in-flight ``scrape_and_store_tracklist`` job count (``queued`` + ``active``), degrade-safe.
-
-    Counts the ``saq_jobs`` rows whose deterministic key prefix is ``scrape_and_store_tracklist``
-    (status ``IN ('queued', 'active')``). This drives the DAG Scrape node's "Scraping…" gate so a
-    second bulk scrape cannot be launched while one batch is in flight. A paused/parked scrape job
-    (status still ``queued``) counts as busy -- the same accepted semantics as
-    :func:`get_search_busy_count`.
-
-    Failure isolation (T-41-03): the read runs inside a SAVEPOINT (``session.begin_nested()``). On
-    ANY DB error (a missing ``saq_jobs`` table in a pre-migration env, a DB hiccup) the nested scope
-    is rolled back ALONE -- recovering the aborted Postgres transaction WITHOUT expiring the
-    dashboard's already-loaded ORM objects (a plain ``session.rollback()`` would 500 the page on the
-    next lazy load) and WITHOUT poisoning later queries. The function logs a warning and returns 0 --
-    it NEVER raises into the hot 5s /pipeline/stats poll.
-    """
-    try:
-        async with session.begin_nested():
-            rows = (await session.execute(_STAGE_BUSY_SQL)).all()
-    except Exception:
-        logger.warning("scrape_busy_degraded", exc_info=True)
-        return 0
-    for row in rows:
-        if row[0] == _SCRAPE_BUSY_FUNCTION:
-            return int(row[1])
-    return 0
 
 
 async def get_match_busy_count(session: AsyncSession) -> int:
@@ -1224,20 +1160,6 @@ async def get_match_busy_count(session: AsyncSession) -> int:
         if row[0] == _MATCH_BUSY_FUNCTION:
             return int(row[1])
     return 0
-
-
-async def get_scrape_pending_tracklists(session: AsyncSession) -> list[Tracklist]:
-    """Return the Tracklist rows with NO ``tracklist_versions`` row (the complement of scrape.done).
-
-    The EXACT complement of :func:`get_stage_progress`'s ``scrape.done``
-    (``COUNT(DISTINCT TracklistVersion.tracklist_id)``): a tracklist that already has any scraped
-    version is excluded, so a bulk scrape over this set skips already-done rows (idempotent re-runs;
-    the deterministic ``tracklist_id`` key additionally dedups in-flight replays). Pure ORM
-    ``~exists(...)`` with NO interpolated operator input (T-41-01).
-    """
-    stmt = select(Tracklist).where(~exists(select(TracklistVersion.id).where(TracklistVersion.tracklist_id == Tracklist.id)))
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
 
 
 async def get_match_pending_tracklists(session: AsyncSession) -> list[Tracklist]:
@@ -1659,11 +1581,12 @@ def analyze_lanes_content_hash(lanes: list[dict[str, Any]], selected_lane: str |
 # RULE 7 DETERMINATION (paging contract rule 7 -- do this BEFORE bounding anything): the reader is
 # RENDER-ONLY. Verified by call graph -- its ONLY caller was ``shell._render_stage``
 # (``tracklist_sets``), flowing straight into ``_file_table.html``; it feeds no enqueue, no trigger
-# and no bulk action. The Identify workspace's bulk actions read DIFFERENT, deliberately UNBOUNDED
-# sets: SEARCH ALL -> :func:`get_untracked_files`, SCRAPE ALL -> :func:`get_scrape_pending_tracklists`,
-# MATCH ALL -> :func:`get_match_pending_tracklists`. None of those three is touched here, so there is
-# no shared reader to split and no way for this change to under-enqueue the backlog: bounding this one
-# bounds ONLY pixels. Do NOT ever point a bulk trigger at a ``*_page`` reader.
+# and no bulk action. The Identify workspace's remaining bulk action reads a DIFFERENT, deliberately
+# UNBOUNDED set: MATCH ALL -> :func:`get_match_pending_tracklists`. (phaze-2akf removed the SEARCH ALL
+# and SCRAPE ALL triggers with the legacy scrape path; the drain replaces them and bounds itself in
+# LOOKUPS rather than in rows.) That set is not touched here, so there is no shared reader to split
+# and no way for this change to under-enqueue the backlog: bounding this one bounds ONLY pixels. Do
+# NOT ever point a bulk trigger at a ``*_page`` reader.
 
 
 def _tracklist_sets_page_stmt(*, page: int, page_size: int, sort: SortState | None = None) -> Select[Any]:
@@ -1724,10 +1647,10 @@ async def get_tracklist_sets_page(
     tiebreaker (rule 4 -- ``created_at`` ties for every row written in one transaction), and clamped
     inputs that yield an empty page rather than an error (rule 5).
 
-    RENDER READ ONLY (rule 7): the SEARCH / SCRAPE / MATCH ALL triggers above this table enqueue
-    :func:`get_untracked_files` / :func:`get_scrape_pending_tracklists` /
-    :func:`get_match_pending_tracklists`, which are UNBOUNDED BY DESIGN and untouched. Paging THIS
-    read cannot under-enqueue anything; paging THOSE would.
+    RENDER READ ONLY (rule 7): the MATCH ALL trigger above this table enqueues
+    :func:`get_match_pending_tracklists`, which is UNBOUNDED BY DESIGN and untouched, and the drain
+    trigger beside it bounds itself in LOOKUPS rather than in rows. Paging THIS read cannot
+    under-enqueue anything; paging THOSE would.
 
     Degrade-safe via a SAVEPOINT returning an EMPTY :class:`Page` on any error (rule 6).
     """
@@ -2252,12 +2175,15 @@ async def get_metadata_failed_files(session: AsyncSession) -> list[FileRecord]:
 
 
 async def get_untracked_files(session: AsyncSession) -> list[FileRecord]:
-    """Return music/video FileRecords with NO ``Tracklist`` row -- the search/scan pending set.
+    """Return music/video FileRecords with NO ``Tracklist`` row -- the un-tracklisted set.
 
-    The EXACT set the Phase-39 name-search trigger (``trigger_search_ui``) enqueues: a music/video
-    file that does not yet have a ``Tracklist`` (already-matched files are skipped so re-runs
-    are cheap and idempotent). Pure ORM ``~exists(...)`` with NO interpolated operator input
-    (T-42-03).
+    phaze-2akf: this used to be the enqueue set for the "SEARCH ALL" bulk trigger, which is gone
+    with the legacy scrape path. It survives as the canonical READ of "which files still have no
+    tracklist" -- the same question ``stage_status.done_clause(Stage.TRACKLIST)`` answers from the
+    other side, which is why ``tests/shared/core/test_identify_workspaces.py`` pins the two
+    together. The drain builds its own, much narrower candidate funnel
+    (``services/tracklist_candidate_queue.py``) and does NOT consume this. Pure ORM ``~exists(...)``
+    with NO interpolated operator input (T-42-03).
     """
     stmt = select(FileRecord).where(
         FileRecord.file_type.in_(MUSIC_VIDEO_TYPES),

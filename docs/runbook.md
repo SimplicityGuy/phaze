@@ -384,8 +384,9 @@ Two things worth knowing if you are reviewing that migration or debugging a rest
   the ordering *does* matter.
 
 Note this reverses the migration's original recorded decision to leave the rows in place; that
-earlier reasoning (they are inert, since `refresh_tracklists` permanently excludes them from
-re-scrape via the `phaze-p1vy` guard) still holds on the facts. The operator's call was that a
+earlier reasoning (they are inert — the `phaze-p1vy` source allowlist permanently excludes them
+from any re-read, and phaze-2akf carried that allowlist into the on-demand `refresh_tracklists`)
+still holds on the facts. The operator's call was that a
 tracklist attributed to a retired engine is not worth keeping as a record.
 
 ## See also

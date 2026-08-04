@@ -255,7 +255,8 @@ async def test_downstream_nodes_keep_done_total_shape(db_session: AsyncSession) 
     await _seed_mixed_corpus(db_session)
     progress = await get_stage_progress(db_session)
 
-    for node_name in ("discovery", "scan_search", "scrape", "match", "proposals", "execute"):
+    # phaze-2akf renamed ``scan_search`` -> ``tracklist`` and deleted the ``scrape`` node beside it.
+    for node_name in ("discovery", "tracklist", "match", "proposals", "execute"):
         node = progress[node_name]
         assert "done" in node
         assert "total" in node

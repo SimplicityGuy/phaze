@@ -4,7 +4,8 @@ Two groups:
 1. Registration (``-k cron`` / ``-k functions``) -- ``recover_orphaned_work`` is in
    ``settings["functions"]``; the legacy ``reenqueue_discovered`` is FULLY removed (no
    import, no function, no cron); the every-5-min ``*/5 * * * *`` auto-advance cron is
-   GONE; and the existing ``reap_stalled_scans`` / ``refresh_tracklists`` crons remain.
+   GONE; the existing ``reap_stalled_scans`` cron remains; and ``refresh_tracklists`` is
+   registered as a function but is deliberately NOT a cron (phaze-2akf).
 2. Startup behavior (``-k startup``) -- patch the heavyweight constructors, stash
    ``ctx["task_router"]``, await the gated ``recover_orphaned_work(ctx)`` once on boot,
    close the router in shutdown, and prove a raising recovery never aborts boot.
@@ -131,14 +132,24 @@ def test_no_auto_advance_cron() -> None:
 
 
 def test_cron_does_not_regress_existing_jobs() -> None:
-    """The existing reap_stalled_scans + refresh_tracklists crons must remain."""
+    """The reap_stalled_scans cron must remain -- and refresh_tracklists must NOT be one.
+
+    phaze-2akf inverted the second half of this assertion deliberately, so read it as the record of
+    a decision rather than as a relaxation. The monthly ``refresh_tracklists`` cron re-fetched every
+    tracklist older than 90 days, which directly contradicts the drain's cache ("a published
+    tracklist does not change, so never re-fetch") and made a second, unbounded consumer of a
+    whole-host budget of ~1 request / 8 s. The operator decision was: the drain keeps never
+    re-fetching, and refresh becomes on-demand and targeted. Re-adding the cron re-opens that,
+    which is why the absence is asserted rather than merely un-asserted.
+    """
     from phaze.tasks import controller
     from phaze.tasks.scan_reaper import reap_stalled_scans
     from phaze.tasks.tracklist import refresh_tracklists
 
     cron_functions = {cj.function for cj in controller.settings["cron_jobs"]}
     assert reap_stalled_scans in cron_functions, "reap_stalled_scans cron regressed (missing)"
-    assert refresh_tracklists in cron_functions, "refresh_tracklists cron regressed (missing)"
+    assert refresh_tracklists not in cron_functions, "refresh_tracklists must stay on-demand -- never a cron (phaze-2akf)"
+    assert refresh_tracklists in controller.settings["functions"], "refresh_tracklists must stay operator-enqueueable"
 
 
 # --------------------------------------------------------------------------- #

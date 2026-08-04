@@ -7,6 +7,9 @@
      * review  -- a services.tracklist_priority.FileTracklistReview, or None if the file vanished
                   between the button click and this render (T-61-05-style honesty, not a 500).
      * just_queued -- True only on the response immediately after a successful Prioritize click.
+     * just_refreshed -- True only on the response immediately after a successful Refresh click
+                  (phaze-2akf). The two are mutually exclusive by construction: Prioritize is
+                  offered only when there is no tracklist, Refresh only when there is one.
 
    THE THREE STATES THIS TEMPLATE MUST NEVER COLLAPSE (the bead's own acceptance criterion):
      1. review.tracklist is set  -> a real result. Distinguish SCRAPED from PROPAGATED
@@ -37,6 +40,14 @@
     <p class="mb-2 text-sm text-blue-600 dark:text-blue-300">
         Prioritized and queued -- a lookup has been dispatched, but this file's own attempt has not run yet.
         Reopen this record after it does to see the result.
+    </p>
+    {% endif %}
+
+    {% if just_refreshed %}
+    <p class="mb-2 text-sm text-blue-600 dark:text-blue-300">
+        Refresh requested -- the cached answer for this page has been dropped and a drain slice dispatched.
+        The tracks below are the CURRENT version and stay in place until the re-read succeeds; a blocked or
+        empty re-read writes nothing at all.
     </p>
     {% endif %}
 
@@ -128,11 +139,29 @@
         {% endif %}
     {% endif %}
 
+    {# phaze-2akf: REFRESH -- the on-demand replacement for the retired monthly re-scrape cron and
+       the removed per-tracklist rescrape trigger. Offered ONLY where a tracklist already exists,
+       because that is the only state in which "read that page again" means anything; for a file
+       with no tracklist the equivalent action is Prioritize below. It costs no request here: it
+       drops the cached answer, flags the file, and enqueues one bounded drain slice that pays for
+       the re-read through the same path and the same budget as every other lookup. #}
+    {% if review.tracklist %}
+    <div class="mt-3">
+        <button type="button"
+                hx-post="/pipeline/tracklists/{{ file_id }}/refresh" hx-target="#tracklist-review-{{ file_id }}" hx-swap="innerHTML"
+                hx-confirm="Re-read this tracklist's page from 1001Tracklists? The current tracks are kept until a successful re-read replaces them."
+                aria-label="Refresh this file's tracklist from 1001Tracklists"
+                class="inline-flex items-center justify-center h-8 px-3 rounded-lg border border-gray-300 dark:border-phaze-border bg-white dark:bg-phaze-panel text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5 font-jura text-xs font-medium uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500">
+            Refresh from 1001Tracklists
+        </button>
+    </div>
+    {% endif %}
+
     {# Prioritize / un-prioritize control -- only offered where it can have an effect (D-06 style:
-       no button that silently does nothing). Already-answered files (a tracklist exists) never
-       show it; a file the classifier reads as non-live-set shows it only via the still-flagged
-       state (so the operator can withdraw a flag they already set on a file that then turned out
-       to be ineligible), never as a fresh action. #}
+       no button that silently does nothing). Already-answered files (a tracklist exists) show the
+       Refresh control above instead; a file the classifier reads as non-live-set shows this only
+       via the still-flagged state (so the operator can withdraw a flag they already set on a file
+       that then turned out to be ineligible), never as a fresh action. #}
     {% if review.tracklist is none %}
     <div class="mt-3">
         {% if review.flagged %}
