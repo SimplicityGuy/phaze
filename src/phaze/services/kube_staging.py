@@ -228,6 +228,18 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
 
+    **SUPERSEDED (2026-08-04) -- do not re-adopt the requests-only lock without reading
+    ADR-0005** (``docs/design/0005-analyze-job-memory-limits.md``), which supersedes it on
+    measured evidence from spike ``phaze-esut``. The lock rested on the premise that requests
+    approximate actual usage; the spike measured a duration-INDEPENDENT 8.5-10.5 GiB floor that
+    EVERY file exceeds (a 3.3-minute file peaks at 9.73 GiB against an 8Gi request), and the
+    absence of a limit is what made the resulting kills ``constraint=CONSTRAINT_NONE`` global
+    OOMs that took out coredns/metrics-server/local-path-provisioner instead of cgroup-OOMKilling
+    the offending pod. Note the stated rationale above is about ``requests`` (true, and ADR-0005
+    keeps requests authoritative) -- it never supported omitting ``limits``, which Kueue's quota
+    accounting does not read. THIS FUNCTION IS STILL REQUESTS-ONLY: emitting an optional
+    ``KubeConfig.memory_limit`` is scoped as its own bead, not done in the spike.
+
     The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
     KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
     named by ``kube_ca_secret_name`` (key ``phaze-ca.crt``), mounted read-only at ``/certs``, and
