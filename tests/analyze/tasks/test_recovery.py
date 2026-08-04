@@ -356,14 +356,14 @@ async def test_orphaned_controller_row_replays_on_controller_queue(
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
     tl_id = uuid.uuid4()
-    await _seed_ledger(session, function="scrape_and_store_tracklist", file_id=tl_id, payload={"tracklist_id": str(tl_id)})
+    await _seed_ledger(session, function="match_tracklist_to_discogs", file_id=tl_id, payload={"tracklist_id": str(tl_id)})
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
-    assert [t for t, _ in controller_queue.captured] == ["scrape_and_store_tracklist"]
+    assert result["stages"]["match_tracklist_to_discogs"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert [t for t, _ in controller_queue.captured] == ["match_tracklist_to_discogs"]
     assert router.queue_for_calls == []  # never asked for an agent queue
 
 
@@ -673,7 +673,7 @@ async def test_controller_row_is_live_keys_only(
 ) -> None:
     """A controller row has NO domain predicate: an ANALYZED file (a "done"-looking state) still replays.
 
-    ``search_tracklist`` is live-keys-only -- its ledger row is cleared by Plan 01's after_process on
+    ``submit_cloud_job`` is live-keys-only -- its ledger row is cleared by Plan 01's after_process on
     every terminal outcome, so any row that reaches recovery IS orphaned. The domain-completed
     predicate must NOT apply to it (no scalar-state/pending-set exclusion), so even an ANALYZED file
     replays. (Authored against ``scan_live_set``, moved to its sibling live-keys-only stage when
@@ -686,13 +686,13 @@ async def test_controller_row_is_live_keys_only(
     f = _make_file()  # would be "done" for analyze, but irrelevant to the controller stage
     session.add(f)
     await session.commit()
-    await _seed_ledger(session, function="search_tracklist", file_id=f.id)
+    await _seed_ledger(session, function="submit_cloud_job", file_id=f.id)
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
 
 
 # --- Phase 49 D-04: AWAITING_CLOUD stays pending in recovery ----------------------------
@@ -1187,7 +1187,7 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
     await session.commit()
     await _seed_ledger(session, function="process_file", file_id=f.id)  # agent-routed
     tl_id = uuid.uuid4()
-    await _seed_ledger(session, function="search_tracklist", file_id=tl_id, payload={"file_id": str(tl_id)})  # controller-routed
+    await _seed_ledger(session, function="submit_cloud_job", file_id=tl_id, payload={"file_id": str(tl_id)})  # controller-routed
 
     router = DedupFakeTaskRouter()
     controller_queue = DedupFakeQueue("controller")
@@ -1196,7 +1196,7 @@ async def test_agent_rows_skip_when_no_active_agent_controller_rows_replay(
 
     # Agent-routed row skipped (zero), controller-routed row replayed.
     assert result["stages"]["process_file"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 0}
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     assert router.queue_for_calls == []
     # phaze-fjii: the owning fileserver ("nox") is offline -> its rows skip with a WARNING, never rerouted.
     assert "offline -- rows skipped, not rerouted" in caplog.text.lower()
@@ -1522,7 +1522,7 @@ async def test_single_owner_no_cloud_job_keeps_held_recovery_path(
 #
 # ``_natural_id`` is function-agnostic (payload['file_id'] for EVERY file-keyed row), so the SCHED-05
 # in-flight and 83-06 awaiting exclusions -- built as file-id sets -- were silently dropping an orphaned
-# extract_file_metadata / search_tracklist row for any file that merely
+# extract_file_metadata / generate_proposals row for any file that merely
 # also carried a cloud_job. The cloud callback/drain re-drives ONLY process_file/push_file/s3_upload/
 # submit_cloud_job; the other stages have no cloud second owner, so scoping the exclusions to
 # ``_CLOUD_OWNED_FUNCTIONS`` restores their recovery while keeping the analyze/push single-owner + the
@@ -1930,10 +1930,12 @@ async def test_controller_row_replay_failure_is_isolated_and_other_rows_still_re
     _patch_live_keys(monkeypatch, set())
     await seed_active_agent(session, agent_id="nox")
 
-    failing_tl_id = uuid.uuid4()
-    failing_key = await _seed_ledger(
-        session, function="scrape_and_store_tracklist", file_id=failing_tl_id, payload={"tracklist_id": str(failing_tl_id)}
-    )
+    # phaze-2akf: the failing row was a ``scrape_and_store_tracklist``, which went with the legacy
+    # scrape path. Any OTHER controller-routed function proves the same isolation, so it is now a
+    # ``submit_cloud_job`` -- the two rows must stay DIFFERENT functions, since the assertions below
+    # read two distinct ``stages`` entries.
+    failing_fid = uuid.uuid4()
+    failing_key = await _seed_ledger(session, function="submit_cloud_job", file_id=failing_fid, payload={"file_id": str(failing_fid)})
 
     healthy_tl_id = uuid.uuid4()
     healthy_key = await _seed_ledger(
@@ -1944,7 +1946,7 @@ async def test_controller_row_replay_failure_is_isolated_and_other_rows_still_re
     controller_queue = _FlakyOnceQueue("controller", fail_key=failing_key)
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
-    assert result["stages"]["scrape_and_store_tracklist"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
+    assert result["stages"]["submit_cloud_job"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
     assert result["stages"]["match_tracklist_to_discogs"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
     # BOTH rows were attempted -- the failure of the first did not short-circuit the second.
     assert set(controller_queue.enqueue_attempts) == {failing_key, healthy_key}
@@ -1981,7 +1983,7 @@ async def test_agent_row_lane_routing_failure_is_isolated(
     )
     # A second, healthy orphaned row in the SAME run must still replay.
     other_fid = uuid.uuid4()
-    await _seed_ledger(session, function="search_tracklist", file_id=other_fid, payload=_agent_payload("search_tracklist", other_fid))
+    await _seed_ledger(session, function="submit_cloud_job", file_id=other_fid, payload=_agent_payload("submit_cloud_job", other_fid))
     await session.commit()
 
     router = DedupFakeTaskRouter()
@@ -1989,4 +1991,4 @@ async def test_agent_row_lane_routing_failure_is_isolated(
     result = await recover_orphaned_work(_make_ctx(async_engine, router, controller_queue))
 
     assert result["stages"]["legacy_removed_task"] == {"reenqueued": 0, "skipped": 0, "errored": 1, "unreplayable": 0}
-    assert result["stages"]["search_tracklist"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}
+    assert result["stages"]["submit_cloud_job"] == {"reenqueued": 1, "skipped": 0, "errored": 0, "unreplayable": 0}

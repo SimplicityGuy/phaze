@@ -137,7 +137,7 @@
         <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-phaze-border dark:bg-phaze-panel">
             <p class="{{ _eyebrow }} mb-2">1001Tracklists</p>
             <div id="tracklist-review-{{ file.id }}">
-                {% with review=tracklist_review, just_queued=False %}
+                {% with review=tracklist_review, just_queued=False, just_refreshed=False %}
                     {% include "record/partials/_tracklist_review_body.html" %}
                 {% endwith %}
             </div>

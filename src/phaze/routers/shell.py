@@ -44,9 +44,7 @@ from phaze.services.pipeline import (
     analyze_lanes_content_hash,
     get_files_page,
     get_match_pending_tracklists,
-    get_scrape_pending_tracklists,
     get_stage_progress,
-    get_untracked_files,
 )
 from phaze.services.proposal_queries import get_proposal_stats
 from phaze.services.review import (
@@ -417,22 +415,20 @@ async def _render_stage(request: Request, stage: str, session: AsyncSession) -> 
     # it was paged. The workspace now hx-gets the bounded GET /pipeline/pending-files fragment on
     # load instead, so there is no file read on this path.
     elif stage == "tracklist":
-        # Phase 59 (59-03, IDENT-02): the Tracklist workspace renders three Search/Scrape/Match step
-        # cards (server-rendered done/total + pending counts) over the per-step ALL triggers, plus the
-        # per-set N/M track-coverage table (the latter now hx-get, below). get_stage_progress + the three
-        # pending-set helpers are read-only, degrade-safe assemblies over the existing tracklist reads
-        # (NO new query path, NO enqueue, NO backend change). The busy pills bind to the existing
-        # searchBusy/scrapeBusy/matchBusy store keys (Pitfall 3 -- no new key, no second poll), so
-        # oob_counts stays False (Pitfall 5); the live values ride the single chrome poll's OOB seeds.
+        # Phase 59 (59-03, IDENT-02), reworked by phaze-2akf: the Tracklist workspace renders the
+        # drain panel (its own hx-get fragment, phaze-fq9h.8) as the LOOKUP stage, plus the MATCH
+        # step card over the existing bulk trigger, plus the per-set N/M coverage table (also
+        # hx-get). The former SEARCH and SCRAPE step cards are gone with the tasks behind them --
+        # see the template for why those two stages stopped describing anything real. What is left
+        # here is read-only and degrade-safe over the existing tracklist reads (NO new query path,
+        # NO enqueue). The match busy pill binds to the existing matchBusy store key (Pitfall 3 --
+        # no new key, no second poll), so oob_counts stays False (Pitfall 5).
         context["tracklist_steps"] = await get_stage_progress(session)
-        context["tracklist_search_pending"] = len(await get_untracked_files(session))
-        context["tracklist_scrape_pending"] = len(await get_scrape_pending_tracklists(session))
         context["tracklist_match_pending"] = len(await get_match_pending_tracklists(session))
-        # phaze-1wvb: the per-set table is NOT seeded here any more -- get_tracklist_set_rows was an
+        # phaze-1wvb: the per-set table is NOT seeded here -- get_tracklist_set_rows was an
         # unbounded row-per-Tracklist read rendered inline. The workspace hx-gets the bounded
-        # GET /pipeline/tracklist-sets fragment on load instead. NOTE the three *_pending counts above
-        # stay as they are: they feed the SEARCH/SCRAPE/MATCH ALL *enqueue* sets (paging contract
-        # rule 7), which must never be paged.
+        # GET /pipeline/tracklist-sets fragment on load instead. NOTE tracklist_match_pending stays
+        # as it is: it feeds the MATCH ALL *enqueue* set (paging contract rule 7), never a render.
     elif stage == "rename":
         # Phase 60 (60-02, REVIEW-01/REVIEW-02): the Rename/Path review workspace renders the pending
         # RenameProposal rows (filename facet) through the shared _diff_row.html. get_pending_proposal_rows

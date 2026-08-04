@@ -181,8 +181,7 @@ def test_detector_reports_every_offending_index(moto_s3_server: str) -> None:
         # exactly why 2,512 process_file rows replayed correctly in the same incident run.
         ("process_file", {"file_id": "f1", "original_path": "/music/set.flac", "file_type": "flac", "agent_id": "nox", "models_path": "/models"}),
         ("extract_file_metadata", {"file_id": "f1", "original_path": "/music/set.flac", "agent_id": "nox"}),
-        ("search_tracklist", {"file_id": "f1"}),
-        ("scrape_and_store_tracklist", {"tracklist_id": "t1"}),
+        ("match_tracklist_to_discogs", {"tracklist_id": "t1"}),
         ("match_tracklist_to_discogs", {"tracklist_id": "t1"}),
         ("generate_proposals", {"file_ids": ["f1", "f2"], "batch_index": 0}),
         ("push_file", {"file_id": "f1", "original_path": "/music/set.flac", "agent_id": "nox", "destination": "host-store:/archive"}),

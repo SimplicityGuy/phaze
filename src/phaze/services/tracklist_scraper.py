@@ -1,9 +1,29 @@
-"""Scraper service for 1001Tracklists.com search and tracklist extraction."""
+"""Scraper service for 1001Tracklists.com SEARCH -- the httpx half of the drain's two requests.
+
+SCOPE, AND WHY IT IS ONLY THE SEARCH PAGE (phaze-2akf)
+------------------------------------------------------
+This module once also fetched and parsed DETAIL pages (``scrape_tracklist`` /
+``_parse_track_item``). That path is gone. It was httpx-only, so it had no browser and could never
+clear the Turnstile interstitial the detail pages sit behind -- meaning even perfect selectors
+would have parsed the pre-JS page. Measured against the committed capture
+``tests/identify/fixtures/tracklist_render/25fhn7c9-ok.html``, every per-track selector it used
+(``.tp a`` / ``.tN`` / ``.tL`` / ``.cueTime``) matched ZERO nodes while the container ``.tlpItem``
+matched 52 -- i.e. it found 52 track rows and extracted nothing from each, producing a zero-track
+result that looked like a successfully scraped empty tracklist.
+
+Detail pages are now fetched by :mod:`phaze.services.tracklist_render` (a real browser) and parsed
+by :mod:`phaze.services.tracklist_parser` (selectors re-derived against two real captures, verified
+52/52 and 12/12). There is exactly ONE per-track selector set in the tree, and it is that one.
+
+What stays here is the search POST, its result parsing, and
+:func:`reserve_host_request_slot` -- the process-wide whole-host schedule that BOTH this module and
+the renderer draw from, so the published ``Crawl-delay: 8`` is a single budget rather than two.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import importlib.metadata
 import random
 import re
@@ -40,9 +60,11 @@ def honest_user_agent_token() -> str:
 class DisallowedScrapeHostError(ValueError):
     """Raised when a URL's scheme or host falls outside the 1001Tracklists allow-list.
 
-    Guards scrape_tracklist() against SSRF: a compromised/malicious search-results response or a
-    DB-stored source_url pointing at an internal address (e.g. cloud metadata, an internal Docker
-    service) must never reach the outbound HTTP client (phaze-k5zz).
+    The SSRF guard (phaze-k5zz): a compromised/malicious search-results response, or a DB-stored
+    ``source_url`` pointing at an internal address (e.g. cloud metadata, an internal Docker
+    service), must never reach an outbound client. Raised by :meth:`TracklistScraper.search` when a
+    followed redirect leaves the allow-list, and by
+    :mod:`phaze.services.tracklist_render` before it navigates a detail page.
     """
 
     def __init__(self, url: str) -> None:
@@ -92,52 +114,23 @@ class TracklistSearchResult:
     event: str | None = None
 
 
-@dataclass
-class ScrapedTrack:
-    """A single track extracted from a tracklist page."""
-
-    position: int
-    artist: str | None = None
-    title: str | None = None
-    label: str | None = None
-    timestamp: str | None = None
-    is_mashup: bool = False
-    remix_info: str | None = None
-
-
-@dataclass
-class ScrapedTracklist:
-    """Scraped tracklist data from a 1001Tracklists detail page."""
-
-    external_id: str
-    title: str
-    artist: str | None = None
-    event: str | None = None
-    date: str | None = None
-    tracks: list[ScrapedTrack] = field(default_factory=list)
-    source_url: str = ""
-
-
 class _TTLCache[T]:
     """Minimal in-process TTL cache, shared across `TracklistScraper` instances (phaze-hu8v).
 
     1001Tracklists' own robots.txt asks for an 8s crawl-delay per request, and a tracklist for a
     past event essentially never changes -- the cheapest polite request is the one never made.
-    This simple in-memory cache covers the common case of the same query/URL being looked up
-    repeatedly within one running process (e.g. a batched rescan), without adding a storage
+    This simple in-memory cache covers the common case of the same query being looked up
+    repeatedly within one running process (e.g. a long drain slice), without adding a storage
     dependency.
 
-    The PERSISTENT half of "cached and never re-fetched" -- checking the tracklists /
-    tracklist_versions / tracklist_tracks tables before scraping at all, so a tracklist already
-    scraped in a PRIOR process/run is never re-fetched over the network either -- lives one layer
-    up, in ``tasks/tracklist.py::_find_cached_tracklists``, since this scraper class is
-    deliberately DB-oblivious (it has no session and is unit-testable without one). Conditional
-    requests (ETag / If-Modified-Since) remain unimplemented: since a published tracklist doesn't
-    change, the DB-backed "never re-fetch what we already have" check is strictly stronger for
-    this data (zero requests, not a cheaper 304 request), and the one path that legitimately
-    re-fetches on purpose (``refresh_tracklists``' 90-day staleness sweep) still needs exactly one
-    full request per Crawl-delay-8 slot either way, so conditional requests would save bytes, not
-    compliance.
+    The PERSISTENT half of "cached and never re-fetched" lives one layer up, in
+    :mod:`phaze.services.tracklist_lookup_cache`: one row per unique set, consulted before the
+    drain spends anything, so a set answered in a PRIOR process or run costs zero requests. This
+    class stays deliberately DB-oblivious (no session, unit-testable without one). Conditional
+    requests (ETag / If-Modified-Since) remain unimplemented on purpose: since a published
+    tracklist does not change, "never re-fetch what we already have" is strictly stronger than a
+    cheaper 304 -- zero requests beats one small one against a per-host budget counted in requests,
+    not bytes.
     """
 
     def __init__(self, ttl_seconds: float) -> None:
@@ -194,8 +187,8 @@ class TracklistScraper:
     MIN_DELAY = 8.0
     MAX_DELAY = 12.0
 
-    # phaze-hu8v: tracklists don't change once published -- cache search/scrape results in-process
-    # for a while so a batched job re-touching the same query/URL doesn't re-hit the site at all.
+    # phaze-hu8v: tracklists don't change once published -- cache search results in-process for a
+    # while so a long slice re-touching the same query doesn't re-hit the site at all.
     _CACHE_TTL_SECONDS: ClassVar[float] = 6 * 60 * 60  # 6 hours
 
     # Hosts a scrape is ever allowed to target (phaze-k5zz). Exact-match only -- comparing against
@@ -218,20 +211,11 @@ class TracklistScraper:
     _SEARCH_RESULT_LINK_SELECTOR = "a[href*='/tracklist/']"
     _SEARCH_LINK_TEXT_ARTIST_SEPARATOR = " @ "
 
-    # phaze-mk6y SCOPE NOTE: only the SEARCH page selectors above were verified against live
-    # markup. The DETAIL-page selectors below were NOT exercised live -- the bead explicitly
-    # calls them "likely stale too" since the site clearly redesigned, but re-deriving them
-    # requires a real fetched detail page, which is out of scope here (no live requests are made
-    # by this scraper's tests or CI). Treat these as UNVERIFIED, not confirmed-working, until a
-    # real detail page is captured and checked against them.
-    _TRACK_ITEM_SELECTOR = ".tlpItem"
-    _TRACK_ARTIST_SELECTOR = ".tp a"
-    _TRACK_NAME_SELECTOR = ".tN"
-    _TRACK_LABEL_SELECTOR = ".tL"
-    _TRACK_TIME_SELECTOR = ".cueTime"
-    _META_ARTIST_SELECTOR = ".artName"
-    _META_EVENT_SELECTOR = ".evtName"
-    _META_DATE_SELECTOR = ".evtDate"
+    # phaze-2akf: the DETAIL-page selector block that used to sit here is GONE, along with
+    # `scrape_tracklist` / `_parse_track_item`. It was never verified against live markup, and when
+    # it finally was (against tests/identify/fixtures/tracklist_render/25fhn7c9-ok.html) every
+    # per-track selector matched zero nodes. Detail-page parsing now lives in
+    # `services/tracklist_parser.py` -- one selector set, fixture-verified, exercised by the drain.
 
     _EXTERNAL_ID_PATTERN = re.compile(r"/tracklist/([^/?#]+)")
     # phaze-7zoh: Tracklist.external_id is String(50) (models/tracklist.py) and is also the
@@ -240,13 +224,6 @@ class TracklistScraper:
     # path segment would blow the column width and abort the store transaction. Bound it here,
     # at the scraper boundary, rather than let an oversized value reach Postgres.
     _EXTERNAL_ID_MAX_LEN = 50
-    # phaze-7zoh: TracklistTrack.timestamp is String(20) (models/tracklist.py); every other
-    # scraped free-text field lands in an unbounded Text column, but this one is width-bounded
-    # while ".cueTime" (like every detail-page selector in this block) is UNVERIFIED and may
-    # drift to matching something else. Validate the shape instead of trusting the width: a
-    # non-conforming value is dropped to None rather than truncated, so a stale/renamed selector
-    # can't silently persist a mangled cue time.
-    _CUE_TIME_PATTERN = re.compile(r"^\d{1,2}(:\d{2}){1,2}$")
     # phaze-mk6y: the href-embedded date trails the slug, e.g.
     # ".../sven-vath-time-warp-maimarkthalle-mannheim-germany-2024-10-25". Anchored so it only
     # matches a trailing date, not an incidental "-1-2-3"-shaped substring earlier in the slug.
@@ -268,17 +245,16 @@ class TracklistScraper:
     _SEARCH_ROW_DATE_SELECTOR = 'div[title="tracklist date"]'
     _ISO_DATE_IN_TEXT_PATTERN = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
-    # phaze-hu8v: shared across every TracklistScraper instance in this process, since each
-    # search/scrape call site (tasks/tracklist.py) constructs a fresh scraper per job. A
-    # process-lifetime, in-memory TTL cache is the simplest way to make "repeat lookups don't
-    # re-hit the site" true across those short-lived instances without adding a storage
-    # dependency; see `_TTLCache` docstring for why this isn't the full persistent cache.
+    # phaze-hu8v: shared across every TracklistScraper instance in this process, since each call
+    # site (``tasks/tracklist_drain.py``) constructs a fresh scraper per job. A process-lifetime,
+    # in-memory TTL cache is the simplest way to make "repeat lookups don't re-hit the site" true
+    # across those short-lived instances without adding a storage dependency; see `_TTLCache`
+    # docstring for why this isn't the full persistent cache.
     _search_cache: ClassVar[_TTLCache[list[TracklistSearchResult]]] = _TTLCache(_CACHE_TTL_SECONDS)
-    _tracklist_cache: ClassVar[_TTLCache[ScrapedTracklist]] = _TTLCache(_CACHE_TTL_SECONDS)
 
     # phaze-wb1o: process-wide shared rate-limiter state. `_rate_limit` used to be a private
-    # per-coroutine sleep with no shared lock/timestamp -- since each search/scrape call site
-    # (tasks/tracklist.py) constructs a fresh TracklistScraper() per SAQ job, and the controller
+    # per-coroutine sleep with no shared lock/timestamp -- since each search call site
+    # (tasks/tracklist_drain.py) constructs a fresh TracklistScraper() per SAQ job, and the controller
     # worker runs `worker_max_jobs` (default 8) jobs concurrently in ONE process, N concurrent
     # jobs each slept their own independent 8-12s and then fired immediately, so the AGGREGATE
     # request rate scaled ~Nx past the MIN_DELAY floor the module exists to honor. A `asyncio.Lock`
@@ -300,12 +276,12 @@ class TracklistScraper:
         else:
             # phaze-8ib8: httpx does NOT follow redirects by default. The bare apex host
             # ("1001tracklists.com") is deliberately on _ALLOWED_HOSTS (phaze-k5zz) BECAUSE it
-            # redirects to "www" -- so every request to an apex source_url, and any server-side
-            # slug move, previously came back as an un-followed 301/302 that scrape_tracklist's
-            # non-200 guard (phaze-o8sy) turned into a permanently-retried HTTPStatusError. Follow
-            # redirects here; _is_allowed_url is re-checked against the FINAL response.url after
-            # every request (see search()/scrape_tracklist()) so this can't be used to smuggle a
-            # request off-host through a malicious/compromised redirect chain.
+            # redirects to "www" -- so every request to an apex URL, and any server-side slug move,
+            # previously came back as an un-followed 301/302 that the non-200 guard (phaze-o8sy)
+            # turned into a permanently-retried HTTPStatusError. Follow redirects here;
+            # _is_allowed_url is re-checked against the FINAL response.url after the request (see
+            # search()) so this can't be used to smuggle a request off-host through a
+            # malicious/compromised redirect chain.
             self._client = httpx.AsyncClient(headers=self._build_headers(), timeout=30.0, follow_redirects=True)
             self._owns_client = True
 
@@ -491,139 +467,6 @@ class TracklistScraper:
             return None
         year, month, day = match.groups()
         return f"{year}-{int(month):02d}-{int(day):02d}"
-
-    async def scrape_tracklist(self, url: str) -> ScrapedTracklist:
-        """Scrape a tracklist detail page and extract track data.
-
-        Extracts title, artist, event, date, and individual track entries.
-
-        Raises:
-            DisallowedScrapeHostError: url's scheme is not https or its host is not on the
-                1001Tracklists allow-list. Checked BEFORE any network I/O so a malicious/poisoned
-                source_url (attacker-controlled DB row or search-result href) never reaches the
-                outbound HTTP client -- the SSRF surface this method previously had (phaze-k5zz).
-        """
-        if not self._is_allowed_url(url):
-            logger.warning("Refusing to scrape disallowed URL: %s", url)
-            raise DisallowedScrapeHostError(url)
-
-        cached = self._tracklist_cache.get(url)
-        if cached is not None:
-            logger.debug("Tracklist scrape cache hit for: %s", url)
-            return cached
-
-        await self._rate_limit()
-
-        try:
-            response = await self._client.get(url)
-        except httpx.HTTPError:
-            logger.warning("HTTP error scraping tracklist: %s", url)
-            raise
-
-        # phaze-8ib8: the client above now follows redirects (previously an apex-host or
-        # slug-moved source_url deterministically raised on the un-followed 301/302). Re-check the
-        # FINAL response.url against the allow-list so a redirect chain can never be used to smuggle
-        # the request off-host -- this keeps the phaze-k5zz SSRF guard's invariant true even though
-        # httpx, not this method, now performs the follow.
-        if not self._is_allowed_url(str(response.url)):
-            logger.warning("Refusing scrape result redirected to disallowed URL: %s", response.url)
-            raise DisallowedScrapeHostError(str(response.url))
-
-        # A blocked/challenge page (403/429/5xx) is served as HTML that parses to an empty
-        # tracklist; without this guard the caller would treat that as a valid zero-track scrape
-        # and clobber good data. Mirror search()'s status handling, but RAISE instead of returning
-        # empty so SAQ retries the job rather than persisting the degraded result (phaze-o8sy).
-        if response.status_code != 200:
-            logger.warning("Scrape returned status %d for: %s", response.status_code, url)
-            raise httpx.HTTPStatusError(
-                f"Unexpected status {response.status_code} while scraping tracklist",
-                request=response.request,
-                response=response,
-            )
-
-        # Extract external_id from URL -- phaze-7zoh: bound to the column width.
-        match = self._EXTERNAL_ID_PATTERN.search(url)
-        external_id = match.group(1)[: self._EXTERNAL_ID_MAX_LEN] if match else ""
-
-        soup = BeautifulSoup(response.text, "lxml")
-
-        # Extract title from h1 or <title>
-        h1 = soup.find("h1")
-        title_tag = soup.find("title")
-        title = ""
-        if h1:
-            title = h1.get_text(strip=True)
-        elif title_tag:
-            title = title_tag.get_text(strip=True).replace(" | 1001Tracklists", "")
-
-        # Extract metadata
-        artist_el = soup.select_one(self._META_ARTIST_SELECTOR)
-        event_el = soup.select_one(self._META_EVENT_SELECTOR)
-        date_el = soup.select_one(self._META_DATE_SELECTOR)
-
-        artist = artist_el.get_text(strip=True) if artist_el else None
-        event = event_el.get_text(strip=True) if event_el else None
-        tracklist_date = date_el.get_text(strip=True) if date_el else None
-
-        # Extract tracks
-        tracks: list[ScrapedTrack] = []
-        for idx, track_item in enumerate(soup.select(self._TRACK_ITEM_SELECTOR), start=1):
-            track = self._parse_track_item(track_item, idx)
-            tracks.append(track)
-
-        scraped = ScrapedTracklist(
-            external_id=external_id,
-            title=title,
-            artist=artist,
-            event=event,
-            date=tracklist_date,
-            tracks=tracks,
-            source_url=url,
-        )
-        self._tracklist_cache.set(url, scraped)
-        return scraped
-
-    def _parse_track_item(self, item: Tag, position: int) -> ScrapedTrack:
-        """Parse a single track item from the tracklist page."""
-        # Artist: join text from all .tp a links
-        artist_links = item.select(self._TRACK_ARTIST_SELECTOR)
-        artist = " & ".join(a.get_text(strip=True) for a in artist_links) if artist_links else None
-
-        # Title
-        title_el = item.select_one(self._TRACK_NAME_SELECTOR)
-        title = title_el.get_text(strip=True) if title_el else None
-
-        # Label
-        label_el = item.select_one(self._TRACK_LABEL_SELECTOR)
-        label = label_el.get_text(strip=True) if label_el else None
-
-        # Timestamp -- phaze-7zoh: bound to the column width by validating the cue-time shape
-        # rather than trusting the (UNVERIFIED) selector; non-conforming text is dropped to None
-        # instead of being truncated into a mangled value.
-        time_el = item.select_one(self._TRACK_TIME_SELECTOR)
-        raw_timestamp = time_el.get_text(strip=True) if time_el else None
-        timestamp = raw_timestamp if raw_timestamp and self._CUE_TIME_PATTERN.match(raw_timestamp) else None
-
-        # Mashup detection
-        classes = item.get("class")
-        is_mashup = "mashup" in classes if isinstance(classes, list) else "mashup" in str(classes or "")
-
-        # Remix info: extract from title if present
-        remix_info = None
-        if title:
-            remix_match = re.search(r"\(([^)]*(?:remix|mix|edit|bootleg|vip)[^)]*)\)", title, re.IGNORECASE)
-            if remix_match:
-                remix_info = remix_match.group(1)
-
-        return ScrapedTrack(
-            position=position,
-            artist=artist,
-            title=title,
-            label=label,
-            timestamp=timestamp,
-            is_mashup=is_mashup,
-            remix_info=remix_info,
-        )
 
     async def close(self) -> None:
         """Close the httpx client if we own it."""

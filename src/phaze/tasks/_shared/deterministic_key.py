@@ -71,15 +71,13 @@ def _hash_ids(file_ids: Any) -> str:
 # Each builder maps a job's kwargs (the task payload) to the natural id that makes a re-enqueue
 # of the same logical work dedup. Natural ids VERIFIED present in each payload (35-RESEARCH Q1
 # table). MUST cover the drift-guard test's routable universe (CONTROLLER_TASKS | AGENT_TASKS)
-# minus the documented _UNKEYED_TASKS exemptions. The first nine entries also back
+# minus the documented _UNKEYED_TASKS exemptions. The first entries also back
 # ``pipeline_counters.PIPELINE_FUNCTIONS`` (dashboard counters); ``s3_upload`` is keyed here for
 # scheduling-ledger dedup/re-drive (Phase 53, Plan 04) ahead of its dashboard-counter wiring,
 # which lands with the live routing seam (Phase 55).
 _KEY_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "process_file": lambda k: str(k["file_id"]),
     "extract_file_metadata": lambda k: str(k["file_id"]),
-    "search_tracklist": lambda k: str(k["file_id"]),
-    "scrape_and_store_tracklist": lambda k: str(k["tracklist_id"]),
     "match_tracklist_to_discogs": lambda k: str(k["tracklist_id"]),
     "generate_proposals": lambda k: _hash_ids(k["file_ids"]),
     # Phase 50 (CLOUDPIPE-05): push_file:<file_id> dedup collapses a double-tick of the

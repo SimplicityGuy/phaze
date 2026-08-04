@@ -255,13 +255,16 @@ def test_shell_router_does_not_read_the_unbounded_identify_sets() -> None:
 def test_tracklist_bulk_triggers_still_use_the_unbounded_sets() -> None:
     """Contract rule 7 for the Identify surface: bounding the table must not bound the buttons.
 
-    The Tracklist workspace's SEARCH / SCRAPE / MATCH ALL triggers keep reading their own UNBOUNDED
-    pending sets. A "consistency" refactor pointing them at a ``*_page`` reader would silently stop
-    enqueuing everything past page 1.
+    The Tracklist workspace's MATCH ALL trigger keeps reading its own UNBOUNDED pending set. A
+    "consistency" refactor pointing it at a ``*_page`` reader would silently stop enqueuing
+    everything past page 1.
+
+    phaze-2akf: the SEARCH ALL / SCRAPE ALL triggers this test used to cover are gone with the
+    legacy scrape path. Their replacement, the drain, is bounded on purpose -- but in LOOKUPS
+    (host requests), never in rows -- and it rebuilds its queue from the corpus every slice, so it
+    cannot under-cover a backlog the way a paged enqueue reader would.
     """
     router_src = pathlib.Path("src/phaze/routers/pipeline.py").read_text()
-    assert "get_untracked_files(session)" in router_src, "SEARCH ALL must enqueue the UNBOUNDED pending set"
-    assert "get_scrape_pending_tracklists(session)" in router_src, "SCRAPE ALL must enqueue the UNBOUNDED pending set"
     assert "get_match_pending_tracklists(session)" in router_src, "MATCH ALL must enqueue the UNBOUNDED pending set"
 
 

@@ -42,7 +42,7 @@ from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup_many
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,6 +104,10 @@ class CandidateQueueStats:
     skipped_embedded: int
     skipped_cue: int
     skipped_scraped: int
+    refresh_forced: int
+    """Already-tracklisted files re-admitted by an operator refresh (phaze-2akf). Counted
+    separately from ``already_tracklisted`` so a refresh is visible as work the funnel would
+    otherwise have removed, rather than looking like the filter silently stopped working."""
     classified_live_set: int
     classified_track: int
     classified_unknown: int
@@ -247,19 +251,35 @@ def build_queue_from_signals(
     verdicts: dict[str, CacheVerdict],
     *,
     include_unknown: bool = False,
+    force_file_ids: Collection[uuid.UUID] = (),
 ) -> CandidateQueue:
     """Run the funnel over already-loaded signals. Pure -- no session, no clock.
 
     ``include_unknown`` lets an operator deliberately spend budget on the undecided tail once the
     confident work is drained. Off by default: a wrong guess costs a request that cannot be
     reclaimed, and the tail is exactly the population where the classifier has no evidence.
+
+    ``force_file_ids`` (phaze-2akf) re-admits files the already-tracklisted filter would drop. It
+    is the REFRESH mechanism: the funnel's whole job is to never look a set up twice, so the only
+    honest way to ask it again is an explicit, per-file override. It carries no power over the
+    other gates -- a forced file is still classified, still deduped, and still subject to the cache
+    verdict, so a set whose cache row was NOT cleared stays suppressed even when forced. That is
+    deliberate: :func:`phaze.tasks.tracklist.refresh_tracklists` clears the cache row and sets the
+    flag together, and a flag left behind on an answered set must be inert rather than a permanent
+    re-query.
     """
+    forced = frozenset(force_file_ids)
     skipped_embedded = skipped_cue = skipped_scraped = 0
+    refresh_forced = 0
     live_set = track = unknown = 0
 
     candidates: list[CandidateSignals] = []
     for item in signals:
         if item.already_tracklisted:
+            if item.file_id in forced:
+                refresh_forced += 1
+                candidates.append(item)
+                continue
             source = item.tracklist_source
             if source == "scraped":
                 skipped_scraped += 1
@@ -308,6 +328,7 @@ def build_queue_from_signals(
         skipped_embedded=skipped_embedded,
         skipped_cue=skipped_cue,
         skipped_scraped=skipped_scraped,
+        refresh_forced=refresh_forced,
         classified_live_set=live_set,
         classified_track=track,
         classified_unknown=unknown,
@@ -358,6 +379,7 @@ def format_corpus_report(stats: CandidateQueueStats) -> str:
         f"  media files                     {stats.media_files:>9,}",
         f"  already tracklisted             {stats.already_tracklisted:>9,}  "
         f"(embedded {stats.skipped_embedded:,} / cue {stats.skipped_cue:,} / scraped {stats.skipped_scraped:,})",
+        f"  re-admitted by refresh          {stats.refresh_forced:>9,}",
         f"  classified live_set (files)     {stats.classified_live_set:>9,}",
         f"  classified track (files)        {stats.classified_track:>9,}",
         f"  classified unknown (files)      {stats.classified_unknown:>9,}",

@@ -65,6 +65,7 @@ from phaze.services.tracklist_query import derive_query
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
     import uuid
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -94,6 +95,25 @@ async def unflag_file(session: AsyncSession, file_id: uuid.UUID) -> None:
     await session.execute(delete(TracklistPriorityFlag).where(TracklistPriorityFlag.file_id == file_id))
 
 
+async def clear_flags(session: AsyncSession, file_ids: Collection[uuid.UUID]) -> None:
+    """Retire the flags for a whole unique set at once -- the drain's post-answer sweep.
+
+    Called by :func:`phaze.services.tracklist_drain.persist_lookup` when a lookup produces a
+    DEFINITIVE outcome. Bulk rather than a loop over :func:`unflag_file` because a set can carry
+    many members and this runs inside the per-candidate transaction, where an extra round trip per
+    duplicate is pure cost.
+
+    phaze-2akf: this became load-bearing when a flag stopped being purely advisory. A flag on an
+    already-tracklisted file now re-admits that file past the funnel's already-tracklisted filter
+    (the refresh override), so leaving one in place after the refresh has been serviced would
+    re-queue the same set on every future pass. Empty input is a no-op, not an unfiltered DELETE.
+    """
+    ids = list(file_ids)
+    if not ids:
+        return
+    await session.execute(delete(TracklistPriorityFlag).where(TracklistPriorityFlag.file_id.in_(ids)))
+
+
 async def is_flagged(session: AsyncSession, file_id: uuid.UUID) -> bool:
     """True when ``file_id`` currently carries a priority flag."""
     return (await session.get(TracklistPriorityFlag, file_id)) is not None
@@ -107,6 +127,12 @@ async def load_flagged_file_ids(session: AsyncSession) -> set[uuid.UUID]:
     set the drain has already resolved (found, or a cached negative) simply will not appear in
     ``DrainQueue.entries`` regardless of what this returns, so a stale flag on an answered file
     is inert rather than wrong.
+
+    phaze-2akf: "inert" now depends on the drain retiring the flag once it answers the set (see
+    :func:`clear_flags`), because a flag on an ALREADY-TRACKLISTED file is the refresh override and
+    re-admits that file past the funnel's already-tracklisted filter. The cache still bounds the
+    damage of a leaked flag -- a set whose row says FOUND lands in ``cached``, not ``entries``, and
+    costs no request -- but the flag is no longer a pure no-op, so it is cleared deliberately.
     """
     result = await session.execute(select(TracklistPriorityFlag.file_id))
     return set(result.scalars().all())

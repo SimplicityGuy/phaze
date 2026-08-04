@@ -44,7 +44,6 @@ from phaze.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from phaze.services.pipeline import (
     _tracklist_sets_page_stmt,
     get_match_pending_tracklists,
-    get_scrape_pending_tracklists,
     get_tracklist_sets_page,
     get_untracked_files,
 )
@@ -215,30 +214,40 @@ async def test_identify_single_poll_discipline(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tracklist_step_cards_and_triggers(client: AsyncClient) -> None:
-    """IDENT-02 / D-05 / D-06 -- three sequential step cards with per-step ALL triggers.
+async def test_tracklist_workspace_is_the_drain_plus_match(client: AsyncClient) -> None:
+    """IDENT-02 / D-05 / D-06, reworked by phaze-2akf -- LOOKUP (the drain) then MATCH.
 
-    The ``/s/tracklist`` fragment renders Search/Scrape/Match step cards, each with its own ALL
-    trigger wired VERBATIM to the existing endpoint (``/pipeline/search-tracklists`` /
-    ``scrape-tracklists`` / ``match-tracklists``) under the R-4 guard (``hx-confirm`` + ``:disabled``
-    on the matching ``*Busy``), with NO single chain button.
+    This used to assert THREE step cards (Search / Scrape / Match), each posting to its own bulk
+    endpoint. Two of those three are gone with the legacy scrape path:
+
+    * SEARCH and SCRAPE were separate only because the legacy path searched in one job and fetched
+      the detail page in another. The drain collapses derive -> search -> score -> render -> parse
+      -> persist into ONE operation, so neither the split nor its two bulk fan-out triggers
+      describe anything the system does.
+    * Their endpoints (``/pipeline/search-tracklists``, ``/pipeline/scrape-tracklists``) are
+      deleted, so this test now asserts their ABSENCE -- re-adding a bulk fan-out at a host that
+      publishes ~1 request / 8 s must fail loudly rather than pass silently.
+
+    What remains is the drain panel (phaze-fq9h.8's status fragment, which carries its own bounded
+    "run a slice" trigger) and the MATCH card, which is still a real, separate stage.
     """
     resp = await client.get("/s/tracklist", headers={"HX-Request": "true"})
     assert resp.status_code == 200
     body = resp.text
-    # D-06: each step card posts to its own existing bulk endpoint (no single run-chain button).
-    assert 'hx-post="/pipeline/search-tracklists"' in body
-    assert 'hx-post="/pipeline/scrape-tracklists"' in body
+    # The LOOKUP stage IS the drain fragment -- one status surface, not a third one.
+    assert 'hx-get="/pipeline/tracklist-drain-status"' in body
+    # MATCH survives as the one remaining bulk trigger, still R-4 guarded.
     assert 'hx-post="/pipeline/match-tracklists"' in body
-    # R-4: every ALL trigger carries an hx-confirm + a :disabled busy-gate on its matching *Busy key.
-    assert body.count("hx-confirm=") >= 3
-    assert ':disabled="$store.pipeline.searchBusy > 0"' in body
-    assert ':disabled="$store.pipeline.scrapeBusy > 0"' in body
     assert ':disabled="$store.pipeline.matchBusy > 0"' in body
-    # D-06: the three ALL-trigger labels are present (Search/Scrape/Match cards).
-    assert "SEARCH ALL" in body
-    assert "SCRAPE ALL" in body
     assert "MATCH ALL" in body
+    assert body.count("hx-confirm=") >= 1
+    # phaze-2akf: the retired bulk fan-outs must not come back.
+    assert "/pipeline/search-tracklists" not in body
+    assert "/pipeline/scrape-tracklists" not in body
+    assert "SEARCH ALL" not in body
+    assert "SCRAPE ALL" not in body
+    assert "searchBusy" not in body
+    assert "scrapeBusy" not in body
     # D-05: NO single run-chain orchestrator button (no backend endpoint runs all three).
     assert "run-chain" not in body
     assert "RUN CHAIN" not in body
@@ -249,19 +258,21 @@ async def test_tracklist_per_set_coverage(client: AsyncClient, session: AsyncSes
     """IDENT-02 / D-07 / D-08 -- per-set table renders N/M track coverage; inert rows.
 
     Seed a linked tracklist with a version + N confident / M total tracks, then assert the per-set
-    table below the step cards renders the ``N/M`` coverage from ``TracklistTrack.confidence`` with
-    inert (no ``hx-get``) rows.
+    table below the aggregate cards renders the ``N/M`` coverage from ``TracklistTrack.confidence``
+    with inert (no ``hx-get``) rows.
     """
     file = await _seed_file(session, original_filename="set.mp3")
     tl = await _seed_tracklist(session, file_id=file.id, match_confidence=88)
     version = await _seed_tracklist_version(session, tl.id)
     await _seed_tracklist_track(session, version.id, position=1, confidence=0.9)
     await _seed_tracklist_track(session, version.id, position=2, confidence=None)
-    # D-08: the per-set table's HOST still sits below the three step cards (aggregate on top,
-    # detail below) -- phaze-1wvb moved the ROWS into the bounded fragment, not the layout.
+    # D-08: the per-set table's HOST still sits below the aggregates (aggregate on top, detail
+    # below) -- phaze-1wvb moved the ROWS into the bounded fragment, not the layout, and phaze-2akf
+    # replaced the three-card grid with the drain panel + the MATCH card without moving the table.
     shell = await client.get("/s/tracklist", headers={"HX-Request": "true"})
     assert shell.status_code == 200
-    assert shell.text.index("grid grid-cols-3") < shell.text.index('id="tracklist-sets-view"')
+    assert shell.text.index('id="tracklist-drain-status-view"') < shell.text.index('id="tracklist-sets-view"')
+    assert shell.text.index("MATCH ALL") < shell.text.index('id="tracklist-sets-view"')
 
     resp = await client.get("/pipeline/tracklist-sets")
     assert resp.status_code == 200
@@ -520,11 +531,16 @@ async def test_identify_render_payload_does_not_grow_with_the_corpus(client: Asy
 async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSession) -> None:
     """PAGING CONTRACT RULE 7 -- bounding the render must NOT bound the enqueue sets.
 
-    The Tracklist workspace's SEARCH / SCRAPE / MATCH ALL triggers read their own pending sets, which
-    are UNBOUNDED BY DESIGN. This is the rule-7 guard: with a backlog larger than one render page,
-    the enqueue readers must still return the FULL set. If someone "unifies" these with the paged
-    render reader, the buttons silently under-enqueue the backlog -- a far worse bug than a long
-    table -- and this test is what catches it.
+    The Tracklist workspace's MATCH ALL trigger reads its own pending set, which is UNBOUNDED BY
+    DESIGN. This is the rule-7 guard: with a backlog larger than one render page, the enqueue reader
+    must still return the FULL set. If someone "unifies" it with the paged render reader, the button
+    silently under-enqueues the backlog -- a far worse bug than a long table -- and this test is
+    what catches it.
+
+    phaze-2akf: ``get_untracked_files`` is still asserted here even though its SEARCH ALL trigger is
+    gone. It remains the canonical unbounded READ of "files with no tracklist" (the counterpart of
+    ``stage_status.done_clause(Stage.TRACKLIST)``), and keeping the unpaged assertion is what stops
+    a future edit from quietly giving it a LIMIT and then wiring a trigger back onto it.
     """
     for i in range(_OVER_A_PAGE):
         await _seed_file(session, original_filename=f"untracked-{i:03d}.mp3")
@@ -535,11 +551,10 @@ async def test_tracklist_bulk_actions_still_cover_the_full_set(session: AsyncSes
 
     # ...while the ENQUEUE read still covers every pending file (no LIMIT, ever).
     enqueue_set = await get_untracked_files(session)
-    assert len(enqueue_set) == _OVER_A_PAGE, "SEARCH ALL must enqueue the FULL backlog, not one page"
+    assert len(enqueue_set) == _OVER_A_PAGE, "the un-tracklisted read must cover the FULL backlog, not one page"
     assert len(enqueue_set) > DEFAULT_PAGE_SIZE
 
-    # The sibling scrape/match enqueue readers are likewise unpaged (they take no paging args at all).
-    assert isinstance(await get_scrape_pending_tracklists(session), list)
+    # The MATCH ALL enqueue reader is likewise unpaged (it takes no paging args at all).
     assert isinstance(await get_match_pending_tracklists(session), list)
 
 

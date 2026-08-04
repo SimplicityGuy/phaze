@@ -122,9 +122,6 @@
                 // gate so each agent enqueue button gates on its OWN stage (run in parallel).
                 // agentBusy is kept — the queue_progress card path still reads agent_busy server-side.
                 metadataBusy: 0, analyzeBusy: 0,
-                // Phase 39 (REQ-39-3): search_tracklist in-flight count gates the DAG Search node
-                // "busy" — rides the same dag.items() seed/OOB poll as the agent busy counts.
-                searchBusy: 0,
                 // Phase 40 (REQ-40-3): online-agent count ("Needs agent" when 0) gates the per-agent
                 // DAG nodes — same seed/OOB poll.
                 agentOnline: 0,
@@ -136,13 +133,13 @@
                 // "Agents · N" total. A read-only derived int seeded onto the dag dict server-side;
                 // rides the existing dag.items() OOB loop onto dag-seed-computeLanesActive.
                 computeLanesActive: 0,
-                // Phase 41 (REQ-41-3): scrape_and_store_tracklist / match_tracklist_to_discogs in-flight
-                // counts gate the DAG Scrape/Match trigger nodes ("Scraping…" / "Matching…") — same seed/OOB poll.
-                scrapeBusy: 0, matchBusy: 0,
+                // Phase 41 (REQ-41-3): match_tracklist_to_discogs in-flight count gates the DAG Match
+                // trigger node ("Matching…") — same seed/OOB poll. phaze-2akf dropped the searchBusy /
+                // scrapeBusy siblings with the two legacy tasks they counted.
+                matchBusy: 0,
                 metadataDone: 0, metadataTotal: 0,
                 analyzeDone: 0, analyzeTotal: 0, analyzeActive: 0,
                 tracklistDone: 0,
-                scrapeDone: 0, scrapeTotal: 0,
                 matchDone: 0, matchTotal: 0,
                 proposalsDone: 0, proposalsTotal: 0,
                 approved: 0,
