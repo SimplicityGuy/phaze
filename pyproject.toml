@@ -80,7 +80,7 @@ dependencies = [
     "sse-starlette>=3.4.6",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
-    "uvicorn>=0.52.0",
+    "uvicorn>=0.52.1",
     "watchdog>=6.0.0",
 ]
 
@@ -127,12 +127,12 @@ module = ["mutagen", "mutagen.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["aioboto3", "aioboto3.*", "aiobotocore", "aiobotocore.*", "botocore", "botocore.*"]
+module = ["aioboto3", "aiobotocore.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
 # PyYAML ships no py.typed / stubs bundled; kube_staging parses inline kubeconfig content via yaml.safe_load.
 [[tool.mypy.overrides]]
-module = ["yaml", "yaml.*"]
+module = ["yaml"]
 ignore_missing_imports = true
 
 # Playwright ITSELF is still never a project dependency (ephemeral `uv run --with playwright`)
@@ -147,7 +147,7 @@ ignore_missing_imports = true
 # invocation cannot serve that. Do not re-litigate this as an accidental dependency; the ephemeral
 # rule survives only for the manual soak script above.
 [[tool.mypy.overrides]]
-module = ["playwright", "playwright.*"]
+module = ["playwright.*"]
 ignore_missing_imports = true
 
 # Patchright ships no py.typed marker, so mypy cannot see through `patchright.async_api` even
