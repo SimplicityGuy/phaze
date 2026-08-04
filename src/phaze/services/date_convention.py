@@ -14,14 +14,20 @@ same self-resolving files are what the convention was learned FROM.
 1. **The feature flag** (``convention_date_fallback_enabled``) -- **defaults OFF**, and gates the
    whole capability rather than just the store query. With it off this module writes nothing into
    the LLM context and nothing into the proposal's ``context_used``, so proposals are byte-identical
-   to the pre-phaze-5fta behavior. It stays off until phaze-5fta.5 validates derived dates against
-   an independent source and flips it on. Internal consistency is not correctness, and a rename
-   proposal is the one output that permanently rewrites what is on disk.
+   to the pre-phaze-5fta behavior. phaze-5fta.5 has since validated derived dates against
+   independent published event dates and the check passed with 0 contradictions, but the flag still
+   defaults off: correctness of the inference and permission to rewrite filenames with it are
+   separate questions, and only the first was settled. A rename proposal is the one output that
+   permanently rewrites what is on disk.
 2. **The evidence bar** (``convention_date_min_supporting``) -- a group whose convention rests on a
-   handful of files is indistinguishable from chance.
+   handful of files is indistinguishable from chance. Validated at 50 against the live corpus,
+   where it admits the 10 groups covering 84.9% of the ambiguous files that land in any group.
 3. **The purity bar** (``convention_date_min_purity``, compared against the DB-derived
    ``filename_convention.confidence``) -- a group with real contradictions has drift, a shared tag,
-   or an extractor bug, and none of those should silently rewrite a date.
+   or an extractor bug, and none of those should silently rewrite a date. Raised to 1.0 by
+   phaze-5fta.5: below unanimity the bar stops being a rule about evidence quality and becomes a
+   rule about group size, since the same single contradicting file clears 0.99 in a large group
+   and fails it in a small one.
 
 A group below either bar leaves the date **unresolved**. That is the fail-closed outcome, not a
 degraded one: the proposal is generated exactly as it would have been without this feature.
