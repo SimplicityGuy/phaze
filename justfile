@@ -401,8 +401,18 @@ test-db-for name:
     just test-db
     container="{{test_db_container}}"
     port="{{test_db_port}}"
-    main_db="phaze_{{name}}_test"
-    migrations_db="phaze_{{name}}_migrations_test"
+    raw_name="{{name}}"
+    # phaze-fmfk: a raw Postgres unquoted identifier can't contain a hyphen, but this repo's own
+    # worktree convention IS hyphenated (`wt/bead/issue/phaze-fq9h-1`), so naming a seat after the
+    # worktree -- the obvious, natural thing to do -- used to blow up with a raw
+    # `syntax error at or near "-"` and no hint at the cause. `derive-seat-name.sh` is the single
+    # place that decides what a raw name normalizes to (validation rule + collision-safe hashing);
+    # see its header for the full rationale. Shared with this script's own regression tests so the
+    # justfile recipe and the tests can never drift apart.
+    name="$(bash scripts/derive-seat-name.sh "$raw_name")"
+    echo "Seat '${raw_name}' -> identifier '${name}' (stable across re-runs of the same seat name)."
+    main_db="phaze_${name}_test"
+    migrations_db="phaze_${name}_migrations_test"
     # phaze-hk8r: ensure-pg-database.sh tolerates a lost create race -- see its header for why
     # a plain SELECT-then-CREATE is a check-then-act TOCTOU that used to kill this recipe under
     # `set -e` when a concurrent invocation (e.g. a dispatcher and an agent both recovering
@@ -421,15 +431,16 @@ test-db-for name:
     counter_key="phaze:test:redis-db-counter"
     # INCR reserves a candidate, HSETNX publishes it. Two shells racing on the same name both read
     # back the single winner; the loser's candidate is merely skipped. Re-running for an already
-    # allocated name is therefore idempotent and returns the same index.
-    redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "{{name}}")"
+    # allocated name is therefore idempotent and returns the same index. Keyed on the DERIVED
+    # `name` (not `raw_name`), so it stays consistent with the Postgres pair above.
+    redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "$name")"
     if [ -z "$redis_db" ]; then
         candidate="$(docker exec "$redis_container" redis-cli -n 0 INCR "$counter_key")"
-        docker exec "$redis_container" redis-cli -n 0 HSETNX "$registry_key" "{{name}}" "$candidate" >/dev/null
-        redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "{{name}}")"
-        echo "✅ allocated Redis logical DB ${redis_db} to '{{name}}'"
+        docker exec "$redis_container" redis-cli -n 0 HSETNX "$registry_key" "$name" "$candidate" >/dev/null
+        redis_db="$(docker exec "$redis_container" redis-cli -n 0 HGET "$registry_key" "$name")"
+        echo "✅ allocated Redis logical DB ${redis_db} to '${name}'"
     else
-        echo "🟥 '{{name}}' already holds Redis logical DB ${redis_db}"
+        echo "🟥 '${name}' already holds Redis logical DB ${redis_db}"
     fi
     # Fail loudly rather than wrapping back onto a shared index: a silent wrap restores exactly the
     # cross-seat interference this recipe exists to prevent.
@@ -438,9 +449,9 @@ test-db-for name:
         echo "❌ Redis DB index ${redis_db} exceeds the ${redis_databases} logical DBs on ${redis_container}." >&2
         echo "   Refusing to wrap onto a shared index -- that would silently reintroduce cross-worktree" >&2
         echo "   Redis interference. Either raise the space:" >&2
-        echo "     PHAZE_TEST_REDIS_DATABASES=$((redis_databases * 2)) just test-db-down && just test-db-for {{name}}" >&2
+        echo "     PHAZE_TEST_REDIS_DATABASES=$((redis_databases * 2)) just test-db-down && just test-db-for ${raw_name}" >&2
         echo "   or reclaim the exhausted allocations (clears the test Redis):" >&2
-        echo "     just test-db-down && just test-db-for {{name}}" >&2
+        echo "     just test-db-down && just test-db-for ${raw_name}" >&2
         exit 1
     fi
     echo ""

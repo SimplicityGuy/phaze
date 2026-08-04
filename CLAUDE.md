@@ -68,15 +68,23 @@ default, and both must be isolated per worktree. Saying "test database" here was
 defect: it taught agents to isolate Postgres and left every seat on the same logical Redis.
 
 ```bash
-just test-db-for <name>    # creates phaze_<name>_test + phaze_<name>_migrations_test,
+just test-db-for <name>    # derives <derived> from <name> (see below), creates
+                           # phaze_<derived>_test + phaze_<derived>_migrations_test,
                            # allocates a dedicated Redis logical DB, and prints all three exports
 ```
 
-Export all three lines it prints:
+`<name>` is not used verbatim (phaze-fmfk): `test-db-for` normalizes it into `<derived>` by
+turning hyphens into underscores and appending a short hash of the original `<name>`, e.g.
+`review-polite` → `phaze_review_polite_7a21035a_test`. The hash exists so that `my-seat` and
+`my_seat` — which normalize to identical text — don't silently collide onto one shared seat, the
+same class of defect described in "Why Redis matters" below; do not "simplify" the recipe back to
+a bare `phaze_<name>_test` substitution. **Always copy the exports the recipe prints** rather
+than hand-constructing the DSN from `<name>` yourself — the two agree only when `<name>` has no
+hyphens.
 
 ```bash
-export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_test"
-export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_migrations_test"
+export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<derived>_test"
+export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<derived>_migrations_test"
 export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
 ```
 
