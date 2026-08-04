@@ -16,9 +16,14 @@ Three things are pinned here, all of which fail SILENTLY rather than loudly if t
    so a false merge is possible and must be reversible: deleting on ``propagated_from_set_key``
    must remove exactly the cluster's projections and leave the canonical scrape untouched.
 
-Plus the legacy-path coexistence checks. ``tasks/tracklist.py`` resolves pages by ``external_id``
-with ``scalar_one_or_none()``; once a projection exists, an unfiltered query there raises
-``MultipleResultsFound`` and takes the ordinary search path down with it.
+Plus the canonical-resolution checks. Every consumer that resolves a page by ``external_id`` must
+carry the ``propagated_from_set_key IS NULL`` filter; once a projection exists, an unfiltered
+``scalar_one_or_none()`` raises ``MultipleResultsFound`` and takes its caller down with it.
+
+phaze-2akf: those checks used to run against ``tasks/tracklist.py``'s legacy store/cache helpers,
+which are retired with the legacy scrape path. They now run against the two consumers that remain
+-- the drain's ``_resolve_canonical`` and the on-demand refresh's ``_resolve_targets`` -- which is
+where the invariant now has to hold.
 """
 
 from __future__ import annotations
@@ -31,7 +36,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from phaze.enums.tracklist_candidate import DuplicateConfidence
+from phaze.enums.tracklist_candidate import DuplicateConfidence, LookupOutcome
+from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
 
 
@@ -55,6 +61,32 @@ def _row(external_id: str, *, set_key: str | None = None, file_id: uuid.UUID | N
         propagated_from_set_key=set_key,
         propagation_confidence=DuplicateConfidence.EXACT.value if set_key else None,
     )
+
+
+async def _seed_file(factory: async_sessionmaker[AsyncSession]) -> uuid.UUID:
+    """Insert a real ``files`` row -- ``tracklists.file_id`` carries a FK, so a bare uuid4 fails."""
+    file_id = uuid.uuid4()
+    async with factory() as session:
+        session.add(
+            FileRecord(
+                id=file_id,
+                agent_id="test-fileserver",
+                sha256_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                original_path=f"/music/{file_id}/set.mp3",
+                original_filename="set.mp3",
+                current_path=f"/music/{file_id}.mp3",
+                file_type="mp3",
+                file_size=1_000_000,
+            )
+        )
+        await session.commit()
+    return file_id
+
+
+async def _cleanup_files(factory: async_sessionmaker[AsyncSession], file_ids: list[uuid.UUID]) -> None:
+    async with factory() as session:
+        await session.execute(delete(FileRecord).where(FileRecord.id.in_(file_ids)))
+        await session.commit()
 
 
 async def _cleanup(factory: async_sessionmaker[AsyncSession], external_id: str) -> None:
@@ -127,50 +159,83 @@ async def test_a_false_merge_is_reversible_by_deleting_on_the_set_key(async_engi
         await _cleanup(factory, external_id)
 
 
-async def test_the_legacy_store_path_survives_a_projection_existing(async_engine: AsyncEngine) -> None:
-    """``_store_scraped_tracklist`` resolves the page by external_id with ``scalar_one_or_none()``.
+async def test_the_drain_resolves_the_canonical_row_when_a_projection_exists(async_engine: AsyncEngine) -> None:
+    """``_resolve_canonical`` must pick THE scraped row, not raise and not pick a projection.
 
-    Unfiltered, that raises ``MultipleResultsFound`` the moment the drain propagates a page the
-    legacy path later re-scrapes -- taking the ordinary search flow down with it.
+    This is the phaze-fq9h.7 invariant at the point where it is easiest to break: a fresh lookup for
+    a page that has already been propagated. Unfiltered, the ``scalar_one_or_none()`` inside raises
+    ``MultipleResultsFound`` the moment a second row shares the external_id -- which is every
+    re-lookup of every duplicated set.
     """
-    from phaze.services.tracklist_scraper import ScrapedTrack, ScrapedTracklist
-    from phaze.tasks.tracklist import _find_cached_tracklists, _link_cached_tracklist, _store_scraped_tracklist
+    from phaze.services.tracklist_drain import LookupAttempt, _resolve_canonical
 
     factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    external_id = f"legacy-{uuid.uuid4().hex[:10]}"
+    external_id = f"canon-{uuid.uuid4().hex[:10]}"
+    preferred_file_id = await _seed_file(factory)
     try:
         async with factory() as session:
             session.add(_row(external_id))
             session.add(_row(external_id, set_key=SET_KEY))
             await session.commit()
 
-        scraped = ScrapedTracklist(
+        attempt = LookupAttempt(
+            set_key=SET_KEY,
+            query_text="q",
+            outcome=LookupOutcome.FOUND,
             external_id=external_id,
-            title="t",
             source_url="https://www.1001tracklists.com/tracklist/x/y.html",
-            tracks=[ScrapedTrack(position=1, artist="A", title="B")],
         )
         async with factory() as session:
-            stored = await _store_scraped_tracklist(session, scraped)
+            resolved = await _resolve_canonical(session, attempt=attempt, preferred_file_id=preferred_file_id)
             await session.commit()
-            assert stored.propagated_from_set_key is None, "the legacy path must update the CANONICAL row"
-
-            cached = await _find_cached_tracklists(session, [external_id])
-            assert external_id in cached
-            assert cached[external_id].propagated_from_set_key is None
-
-            # Link-only update on the canonical row: must resolve, not raise.
-            await _link_cached_tracklist(session, external_id, uuid.uuid4(), 90, True)
+        assert resolved.propagated_from_set_key is None, "a re-lookup must update the CANONICAL row"
     finally:
         await _cleanup(factory, external_id)
+        await _cleanup_files(factory, [preferred_file_id])
 
 
-async def test_the_monthly_refresh_never_re_scrapes_a_projection(async_engine: AsyncEngine) -> None:
-    """N projections of one page share its source_url -- refreshing them is N requests for one page.
+async def test_the_refresh_sweep_resolves_only_the_canonical_row(async_engine: AsyncEngine) -> None:
+    """``_resolve_targets`` never hands a projection back as a refresh target (phaze-2akf).
+
+    Refreshing a projection directly would either re-fetch the same page once per duplicate -- N
+    requests against a whole-host budget of ~1 per 8 s, for bytes the canonical row's own re-read
+    already fetched -- or leave the canonical row untouched while reporting success.
+    """
+    from phaze.tasks.tracklist import _resolve_targets
+
+    factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    external_id = f"target-{uuid.uuid4().hex[:10]}"
+    file_id = await _seed_file(factory)
+    try:
+        async with factory() as session:
+            canonical = _row(external_id)
+            projection = _row(external_id, set_key=SET_KEY, file_id=file_id)
+            session.add(canonical)
+            session.add(projection)
+            await session.commit()
+            canonical_id, projection_id = canonical.id, projection.id
+
+        async with factory() as session:
+            # Naming the projection by id resolves to NOTHING...
+            assert await _resolve_targets(session, [projection_id], []) == []
+            # ...and naming the duplicate's FILE resolves to nothing either, because the projection
+            # is what carries that file_id. The canonical row is reached by its own id.
+            assert await _resolve_targets(session, [], [file_id]) == []
+            targets = await _resolve_targets(session, [canonical_id], [])
+        assert [t.id for t in targets] == [canonical_id]
+    finally:
+        await _cleanup(factory, external_id)
+        await _cleanup_files(factory, [file_id])
+
+
+async def test_a_canonical_scoped_sweep_selects_one_row_per_page(async_engine: AsyncEngine) -> None:
+    """N projections of one page share its source_url -- acting on them is N reads for one page.
 
     At a whole-host budget of ~1 request / 8 s that is not a micro-optimisation: a widely-duplicated
-    set would spend its cluster size in requests every month, forever, to fetch bytes the canonical
-    row's own refresh already fetched.
+    set would spend its cluster size in requests to fetch bytes the canonical row already covers.
+    The monthly cron this predicate was written for is gone (phaze-2akf), but the predicate SHAPE --
+    source allowlist + canonical-only -- is exactly what ``_resolve_targets`` now carries, so the
+    DDL-level assertion that it selects one row per page is kept.
     """
     factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     external_id = f"refresh-{uuid.uuid4().hex[:8]}"

@@ -97,11 +97,12 @@ import structlog
 from phaze.enums.tracklist_candidate import CacheDecision, DuplicateConfidence, LookupOutcome
 from phaze.models.file import FileRecord
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
+from phaze.services.text_repair import repair_mojibake
 from phaze.services.tracklist_candidate_queue import CandidateQueue, QueuedCandidate, build_queue_from_signals, load_candidate_signals
 from phaze.services.tracklist_candidates import UniqueSet, group_unique_sets
 from phaze.services.tracklist_lookup_cache import lookup, lookup_many, record_outcome
 from phaze.services.tracklist_parser import TracklistParseError, parse_tracklist_tracks
-from phaze.services.tracklist_priority import load_flagged_file_ids
+from phaze.services.tracklist_priority import clear_flags, load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
 from phaze.services.tracklist_result_scorer import ScoredResult, select_result
@@ -268,6 +269,16 @@ async def build_drain_queue(
     anything, while the persisted store is what makes an operator's "answer this first" survive
     past the one job it was originally passed into. Callers that pass nothing still get every
     currently-flagged file honored.
+
+    phaze-2akf: the flag set is ALSO the refresh override. A flag on a file that has no tracklist
+    yet only changes ORDER; a flag on a file that already has one is an operator saying "read that
+    page again", so it is passed to ``build_queue_from_signals`` as ``force_file_ids`` and
+    re-admits the file past the already-tracklisted filter. The two readings do not conflict --
+    there is nothing to re-order about an already-answered file, and nothing to re-admit about an
+    unanswered one -- which is why this needs no second flag table. The cache still governs:
+    :func:`phaze.tasks.tracklist.refresh_tracklists` clears the positive cache row in the same
+    transaction as it sets the flag, and a flag whose cache row still says FOUND leaves the set in
+    ``cached`` where it costs nothing.
     """
     moment = now or datetime.now(UTC)
     raw_signals = await load_candidate_signals(session, agent_id=agent_id)
@@ -279,13 +290,14 @@ async def build_drain_queue(
         derived_by_file[signal.file_id] = derived
         signals.append(replace(signal, derived_query=derived.query))
 
-    provisional = group_unique_sets([s for s in signals if not s.already_tracklisted])
-    verdicts = await lookup_many(session, [u.key for u in provisional], now=moment)
-    queue: CandidateQueue = build_queue_from_signals(signals, verdicts, include_unknown=include_unknown)
-
-    added_at = await _load_added_at(session, {member.file_id for entry in queue.entries for member in entry.unique_set.members})
     persisted_flags = await load_flagged_file_ids(session)
     flagged = set(flagged_file_ids) | persisted_flags
+
+    provisional = group_unique_sets([s for s in signals if not s.already_tracklisted or s.file_id in flagged])
+    verdicts = await lookup_many(session, [u.key for u in provisional], now=moment)
+    queue: CandidateQueue = build_queue_from_signals(signals, verdicts, include_unknown=include_unknown, force_file_ids=flagged)
+
+    added_at = await _load_added_at(session, {member.file_id for entry in queue.entries for member in entry.unique_set.members})
 
     candidates = [
         DrainCandidate(
@@ -488,6 +500,16 @@ def _found(base: LookupAttempt, *, chosen: ScoredResult, reason: str, render_req
     it here only to re-prove it needed a bare ``assert``, which bandit B101 rightly rejects because
     ``python -O`` strips it and the "guarantee" evaporates in exactly the build where it would
     matter. Passing the non-None value makes the precondition structural instead of asserted.
+
+    THIS IS ALSO THE INGEST BOUNDARY, so mojibake is repaired here and ONLY here (phaze-x4ux). The
+    two values below are the exact columns ``tracklists.search_vector`` is a GENERATED column over,
+    so a double-encoded ``Sven VÃ¤th`` reaching the row is not merely ugly -- it is indexed, and the
+    file it belongs to becomes unfindable by its own artist's name. The file side of the match is
+    already repaired upstream (``tracklist_query.derive_query``, and ``candidate_signals_query``'s
+    COALESCE onto ``original_filename_repaired``); this is the SITE side, which is an external
+    source that can carry its own mis-decode. ``repair_mojibake`` is idempotent and a no-op on
+    clean text, and doing it once here rather than at every later read is what keeps the stored
+    value and the generated index in agreement.
     """
     return replace(
         base,
@@ -496,8 +518,8 @@ def _found(base: LookupAttempt, *, chosen: ScoredResult, reason: str, render_req
         source_url=chosen.result.url,
         result_confidence=chosen.confidence,
         detail=reason,
-        artist=chosen.result.artist,
-        event=chosen.result.event,
+        artist=repair_mojibake(chosen.result.artist) if chosen.result.artist else chosen.result.artist,
+        event=repair_mojibake(chosen.result.event) if chosen.result.event else chosen.result.event,
         date=chosen.row_date,
         tracks=tuple(tracks),
         host_requests=render_requests,
@@ -543,6 +565,15 @@ async def persist_lookup(
     The cache write happens for EVERY outcome, including the failures, and that is the point: an
     outcome that is not recorded is a request that gets spent again on the next pass. The caller
     commits -- one transaction per candidate, so a crash costs at most the in-flight lookup.
+
+    phaze-2akf: a DEFINITIVE outcome also retires the operator's priority flags for this set's
+    members. The flag is a request ("answer this next", or -- on an already-tracklisted file --
+    "read that page again"), and a request that has been serviced must stop being re-asserted:
+    since ``build_drain_queue`` now treats a flag as a re-admission override, a flag left standing
+    after a refresh would re-admit the same file on every future pass forever. Transients
+    deliberately do NOT clear it: a Turnstile block is not an answer, and the operator's request is
+    still outstanding until the backoff produces one (or the attempt cap parks the set, at which
+    point the cache -- not the flag -- keeps it out of ``entries``).
     """
     moment = now or datetime.now(UTC)
     result = PersistResult()
@@ -560,6 +591,9 @@ async def persist_lookup(
         detail=attempt.detail,
         now=moment,
     )
+
+    if attempt.is_found or attempt.outcome.is_definitive_negative:
+        await clear_flags(session, [member.file_id for member in candidate.unique_set.members])
     return result
 
 

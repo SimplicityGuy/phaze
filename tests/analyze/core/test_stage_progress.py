@@ -47,15 +47,24 @@ def _make_file(i: int, *, file_type: str = "mp3") -> FileRecord:
 
 
 @pytest.mark.asyncio
-async def test_empty_db_returns_zeros_and_scan_search_has_no_denominator(session: AsyncSession):
-    """An empty DB yields done=0 everywhere and scan_search.total stays None (em-dash sentinel)."""
+async def test_empty_db_returns_zeros_and_tracklist_has_no_denominator(session: AsyncSession):
+    """An empty DB yields done=0 everywhere and tracklist.total stays None (em-dash sentinel).
+
+    phaze-2akf: ``scan_search`` was renamed ``tracklist`` and the ``scrape`` node beside it was
+    deleted. Both were shaped by the legacy two-step name-search-then-scrape path; the drain does
+    the whole lookup in one operation, so "searched but not yet scraped" is not a state a row can
+    be in -- ``scrape.done`` over ``scrape.total`` was a tautology reporting 100% forever.
+    """
     progress = await get_stage_progress(session)
 
-    for node in ("discovery", "metadata", "analyze", "scan_search", "scrape", "match", "proposals", "execute"):
+    for node in ("discovery", "metadata", "analyze", "tracklist", "match", "proposals", "execute"):
         assert progress[node]["done"] == 0, node
 
     # The tracklist head node never fabricates a denominator.
-    assert progress["scan_search"]["total"] is None
+    assert progress["tracklist"]["total"] is None
+    # The retired node must not come back with it.
+    assert "scrape" not in progress
+    assert "scan_search" not in progress
 
 
 @pytest.mark.asyncio
@@ -95,8 +104,8 @@ async def test_metadata_denominator_is_music_video_count(session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_scan_search_done_counts_tracklists_without_total(session: AsyncSession):
-    """scan_search.done = DISTINCT file_id in tracklists; total stays None (no fabricated denominator)."""
+async def test_tracklist_done_counts_tracklists_without_total(session: AsyncSession):
+    """tracklist.done = DISTINCT file_id in tracklists; total stays None (no fabricated denominator)."""
     f1 = _make_file(1)
     f2 = _make_file(2)
     session.add_all([f1, f2])
@@ -109,8 +118,8 @@ async def test_scan_search_done_counts_tracklists_without_total(session: AsyncSe
 
     progress = await get_stage_progress(session)
 
-    assert progress["scan_search"]["done"] == 2
-    assert progress["scan_search"]["total"] is None
+    assert progress["tracklist"]["done"] == 2
+    assert progress["tracklist"]["total"] is None
 
 
 @pytest.mark.asyncio
@@ -169,8 +178,12 @@ async def test_proposals_total_excludes_partial_and_failed_analysis_rows(session
 
 
 @pytest.mark.asyncio
-async def test_scrape_and_match_count_distinct_tracklist_id(session: AsyncSession):
-    """scrape counts DISTINCT tracklist_id in tracklist_versions; match walks discogs_links -> tracklist."""
+async def test_match_counts_distinct_tracklist_id(session: AsyncSession):
+    """match walks discogs_links -> tracklist_tracks -> tracklist_versions to a DISTINCT tracklist_id.
+
+    phaze-2akf: the ``scrape`` half of this test went with the ``scrape`` node. Match is unaffected
+    -- it is a genuinely separate stage over already-stored tracklists, with its own pending set.
+    """
     f = _make_file(1)
     session.add(f)
     await session.flush()
@@ -188,8 +201,6 @@ async def test_scrape_and_match_count_distinct_tracklist_id(session: AsyncSessio
 
     progress = await get_stage_progress(session)
 
-    assert progress["scrape"]["done"] == 1
-    assert progress["scrape"]["total"] == 1
     assert progress["match"]["done"] == 1
     assert progress["match"]["total"] == 1
 

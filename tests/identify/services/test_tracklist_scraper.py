@@ -1,4 +1,19 @@
-"""Tests for TracklistScraper service."""
+"""Tests for the TracklistScraper SEARCH service.
+
+phaze-2akf removed ``scrape_tracklist`` / ``_parse_track_item`` and the ``ScrapedTracklist`` /
+``ScrapedTrack`` payloads with them, so every detail-page case that used to live here is gone. The
+behaviour those cases protected did NOT go with them -- it moved to the path that can actually
+work:
+
+* detail-page fetching -> ``tests/identify/services/test_tracklist_render.py`` (a real browser, so
+  the Turnstile interstitial the httpx path could never clear is handled);
+* detail-page parsing  -> ``tests/identify/services/test_tracklist_parser.py``, which pins 52/52
+  rows against the committed capture -- the exact assertion the deleted selectors would have
+  failed, since all four of them matched zero nodes against it.
+
+The SSRF allow-list (phaze-k5zz) and the redirect recheck (phaze-8ib8) are still covered below, now
+against ``_is_allowed_url`` and ``search()`` rather than against the removed scrape method.
+"""
 
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -9,7 +24,6 @@ import pytest
 from phaze.config import get_settings
 from phaze.services.tracklist_scraper import (
     DisallowedScrapeHostError,
-    ScrapedTracklist,
     SearchParseFailureError,
     TracklistScraper,
     TracklistSearchResult,
@@ -66,55 +80,14 @@ SAMPLE_STALE_SEARCH_HTML = """
 </body></html>
 """
 
-SAMPLE_TRACKLIST_HTML = """
-<html>
-<head><title>Skrillex @ Coachella 2025 | 1001Tracklists</title></head>
-<body>
-<div id="tlMeta">
-  <h1>Skrillex @ Coachella 2025</h1>
-  <div class="meta">
-    <span class="artName">Skrillex</span>
-    <span class="evtName">Coachella</span>
-    <span class="evtDate">2025-04-12</span>
-  </div>
-</div>
-<div class="tlpTog">
-  <div class="tlpItem">
-    <span class="trackFormat">
-      <span class="tp"><a>Skrillex</a></span>
-      <span class="tN">Bangarang</span>
-      <span class="tL">OWSLA</span>
-    </span>
-    <span class="cueTime">00:05:30</span>
-  </div>
-  <div class="tlpItem">
-    <span class="trackFormat">
-      <span class="tp"><a>Skrillex</a> &amp; <a>Diplo</a></span>
-      <span class="tN">Where Are U Now (VIP Mix)</span>
-      <span class="tL">Atlantic</span>
-    </span>
-    <span class="cueTime">00:10:15</span>
-  </div>
-  <div class="tlpItem mashup">
-    <span class="trackFormat">
-      <span class="tp"><a>Skrillex</a></span>
-      <span class="tN">Scary Monsters</span>
-      <span class="tL">mau5trap</span>
-    </span>
-    <span class="cueTime">00:15:00</span>
-  </div>
-</div>
-</body></html>
-"""
-
 
 def _mock_response(status_code: int, text: str, url: str = "https://www.1001tracklists.com/") -> httpx.Response:
     """Create a mock httpx.Response.
 
-    ``url`` defaults to an allowed host (phaze-8ib8): ``scrape_tracklist`` re-validates the
-    FINAL ``response.url`` against ``_ALLOWED_HOSTS`` after the client follows redirects, so a
-    response built against an arbitrary off-allow-list host (the previous default,
-    ``https://example.com``) would make every mocked scrape look like a disallowed redirect.
+    ``url`` defaults to an allowed host (phaze-8ib8): ``search`` re-validates the FINAL
+    ``response.url`` against ``_ALLOWED_HOSTS`` after the client follows redirects, so a response
+    built against an arbitrary off-allow-list host (the previous default, ``https://example.com``)
+    would make every mocked request look like a disallowed redirect.
     """
     return httpx.Response(status_code=status_code, text=text, request=httpx.Request("GET", url))
 
@@ -128,11 +101,9 @@ def _clear_scraper_caches():
     production).
     """
     TracklistScraper._search_cache.clear()
-    TracklistScraper._tracklist_cache.clear()
     TracklistScraper._next_request_at = None
     yield
     TracklistScraper._search_cache.clear()
-    TracklistScraper._tracklist_cache.clear()
     TracklistScraper._next_request_at = None
 
 
@@ -141,8 +112,7 @@ def _no_real_rate_limit_sleep(request):
     """Stub asyncio.sleep for every test except the one that specifically asserts its bounds.
 
     MIN_DELAY/MAX_DELAY are now 8.0/12.0s (phaze-hu8v, robots.txt Crawl-delay compliance) --
-    without this, every test exercising search()/scrape_tracklist() would burn 8-12 real wall
-    seconds. `test_rate_limit_delay` installs its own nested patch to inspect the sampled delay.
+    without this, every test exercising search() would burn 8-12 real wall seconds. `test_rate_limit_delay` installs its own nested patch to inspect the sampled delay.
     """
     if request.node.name == "test_rate_limit_delay":
         yield
@@ -301,166 +271,6 @@ class TestTracklistScraperHrefDateExtraction:
         assert TracklistScraper._extract_date_from_href(href) == "2024-03-05"
 
 
-class TestTracklistScraperScrape:
-    """Tests for TracklistScraper.scrape_tracklist()."""
-
-    @pytest.mark.asyncio
-    async def test_scrape_returns_tracklist(self):
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
-
-        assert isinstance(result, ScrapedTracklist)
-        assert result.external_id == "abc123"
-        assert "Skrillex" in result.title
-        assert len(result.tracks) == 3
-        assert result.tracks[0].position == 1
-        assert result.tracks[0].artist == "Skrillex"
-        assert result.tracks[0].title == "Bangarang"
-        assert result.tracks[0].label == "OWSLA"
-        assert result.tracks[0].timestamp == "00:05:30"
-
-    @pytest.mark.asyncio
-    async def test_scrape_empty_tracks(self):
-        empty_html = "<html><head><title>Test | 1001Tracklists</title></head><body><div id='tlMeta'><h1>Test</h1></div></body></html>"
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, empty_html))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/xyz789/test.html")
-
-        assert isinstance(result, ScrapedTracklist)
-        assert result.tracks == []
-
-    @pytest.mark.asyncio
-    async def test_scrape_http_error_raises(self):
-        """HTTP errors during scrape are logged and re-raised."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
-
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(httpx.ConnectError):
-            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
-
-    @pytest.mark.asyncio
-    async def test_scrape_non_200_raises_status_error(self):
-        """A 403/blocked page must RAISE so SAQ retries rather than parsing an empty tracklist (phaze-o8sy)."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(403, "<html><body>Access denied</body></html>"))
-
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
-        assert exc_info.value.response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_scrape_429_raises_status_error(self):
-        """A 429 rate-limit page also raises rather than silently returning zero tracks (phaze-o8sy)."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(429, "Too Many Requests"))
-
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(httpx.HTTPStatusError):
-            await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
-
-    @pytest.mark.asyncio
-    async def test_scrape_mashup_detection(self):
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
-
-        # Third track has mashup class
-        assert result.tracks[2].is_mashup is True
-        # First track is not a mashup
-        assert result.tracks[0].is_mashup is False
-
-    @pytest.mark.asyncio
-    async def test_scrape_title_falls_back_to_title_tag_when_no_h1(self):
-        """With no <h1>, the title is taken from <title> with the site suffix stripped."""
-        html = "<html><head><title>Zeds Dead @ EDC 2025 | 1001Tracklists</title></head><body></body></html>"
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, html))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/zd99/zeds-dead.html")
-
-        assert result.title == "Zeds Dead @ EDC 2025"
-        assert result.external_id == "zd99"
-
-    @pytest.mark.asyncio
-    async def test_scrape_drops_oversized_cue_time_instead_of_storing_it(self):
-        """phaze-7zoh: TracklistTrack.timestamp is String(20) -- an over-wide/malformed cueTime
-        value must be dropped to None at the scraper boundary instead of reaching the store
-        transaction, where it would raise StringDataRightTruncation and roll back the batch.
-        """
-        html = """
-        <html><head><title>Test | 1001Tracklists</title></head><body>
-        <div id="tlMeta"><h1>Test</h1></div>
-        <div class="tlpTog">
-          <div class="tlpItem">
-            <span class="trackFormat">
-              <span class="tp"><a>Artist</a></span>
-              <span class="tN">Title</span>
-            </span>
-            <span class="cueTime">01:23:45 - 01:27:10 (encore)</span>
-          </div>
-        </div>
-        </body></html>
-        """
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, html))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
-
-        assert result.tracks[0].timestamp is None
-
-    @pytest.mark.asyncio
-    async def test_scrape_keeps_conforming_cue_time(self):
-        """phaze-7zoh: a well-formed cue time (H:MM or H:MM:SS) still passes through unchanged."""
-        html = """
-        <html><head><title>Test | 1001Tracklists</title></head><body>
-        <div id="tlMeta"><h1>Test</h1></div>
-        <div class="tlpTog">
-          <div class="tlpItem">
-            <span class="trackFormat">
-              <span class="tp"><a>Artist</a></span>
-              <span class="tN">Title</span>
-            </span>
-            <span class="cueTime">5:30</span>
-          </div>
-        </div>
-        </body></html>
-        """
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, html))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/test.html")
-
-        assert result.tracks[0].timestamp == "5:30"
-
-    @pytest.mark.asyncio
-    async def test_scrape_truncates_oversized_external_id_to_column_width(self):
-        """phaze-7zoh: Tracklist.external_id is String(50) and the ON CONFLICT idempotency key --
-        a URL-shape change that moves a long slug into the first path segment must not blow the
-        column; bound it at the scraper boundary instead.
-        """
-        long_slug = "a" * 80
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
-
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist(f"https://www.1001tracklists.com/tracklist/{long_slug}/skrillex.html")
-
-        assert len(result.external_id) == 50
-        assert result.external_id == long_slug[:50]
-
-
 class TestTracklistScraperSearchEdgeCases:
     """Search error/parse branches and result-item skip paths."""
 
@@ -543,63 +353,52 @@ class TestTracklistScraperSsrfGuard:
         assert len(results) == 1
         assert results[0].url == "https://www.1001tracklists.com/tracklist/abc123/skrillex.html"
 
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_rejects_internal_ip_url(self):
-        """scrape_tracklist refuses a cloud-metadata-style internal IP URL before any request."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(DisallowedScrapeHostError):
-            await scraper.scrape_tracklist("http://169.254.169.254/tracklist/x/evil.html")
-        client.get.assert_not_called()
+    def test_is_allowed_url_rejects_internal_ip(self):
+        """The guard itself refuses a cloud-metadata-style internal IP before anything requests it.
 
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_rejects_off_allowlist_https_host(self):
-        """scrape_tracklist refuses an https URL whose host is not on the allow-list."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(DisallowedScrapeHostError):
-            await scraper.scrape_tracklist("https://evil.com/tracklist/x/evil.html")
-        client.get.assert_not_called()
+        phaze-2akf: asserted against ``_is_allowed_url`` rather than through the removed
+        ``scrape_tracklist``. That is where the SSRF decision has always been made, and it is now
+        the shared gate for BOTH remaining consumers -- ``search()``'s final-URL recheck and
+        ``services/tracklist_render``'s pre-navigation check -- so pinning it here covers both.
+        """
+        assert TracklistScraper._is_allowed_url("http://169.254.169.254/tracklist/x/evil.html") is False
 
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_rejects_lookalike_domain(self):
-        """scrape_tracklist refuses a lookalike domain that merely contains the real one as a substring."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        scraper = TracklistScraper(client=client)
-        with pytest.raises(DisallowedScrapeHostError):
-            await scraper.scrape_tracklist("https://1001tracklists.com.evil.com/tracklist/x/evil.html")
-        client.get.assert_not_called()
+    def test_is_allowed_url_rejects_off_allowlist_https_host(self):
+        assert TracklistScraper._is_allowed_url("https://evil.com/tracklist/x/evil.html") is False
 
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_rejects_userinfo_trick(self):
-        """A userinfo trick (https://evil@1001tracklists.com/...) must not smuggle a disallowed host past hostname checks."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        scraper = TracklistScraper(client=client)
-        # hostname here IS 1001tracklists.com (userinfo "evil@" is stripped by urlsplit), so this
-        # one is actually ALLOWED -- included to document that .hostname, not .netloc, is what
-        # gates the request.
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_EMPTY_SEARCH_HTML))
-        result = await scraper.scrape_tracklist("https://evil@1001tracklists.com/tracklist/abc123/test.html")
-        assert result.external_id == "abc123"
+    def test_is_allowed_url_rejects_lookalike_domain(self):
+        """A lookalike that merely CONTAINS the real domain is refused (a suffix check would not)."""
+        assert TracklistScraper._is_allowed_url("https://1001tracklists.com.evil.com/tracklist/x/evil.html") is False
 
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_still_works_for_legitimate_url(self):
-        """The allow-list guard does not break the normal, legitimate scrape path."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
-        scraper = TracklistScraper(client=client)
-        result = await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
-        assert isinstance(result, ScrapedTracklist)
-        assert result.external_id == "abc123"
+    def test_is_allowed_url_rejects_plain_http_on_an_allowed_host(self):
+        """Scheme is part of the gate: the allow-list is https-only."""
+        assert TracklistScraper._is_allowed_url("http://www.1001tracklists.com/tracklist/abc123/x.html") is False
+
+    def test_is_allowed_url_allows_userinfo_because_hostname_not_netloc_is_checked(self):
+        """``https://evil@1001tracklists.com/...`` IS allowed -- documenting that .hostname gates it.
+
+        urlsplit strips the userinfo, so the host really is 1001tracklists.com. Comparing
+        ``.netloc`` instead would reject this legitimate URL while ALSO being fooled by the
+        reverse trick; this test exists so a future "harden the check" edit cannot quietly swap
+        the attribute.
+        """
+        assert TracklistScraper._is_allowed_url("https://evil@1001tracklists.com/tracklist/abc123/test.html") is True
+
+    def test_is_allowed_url_allows_the_apex_host(self):
+        """The bare apex is allow-listed BECAUSE it 301s to www (phaze-8ib8)."""
+        assert TracklistScraper._is_allowed_url("https://1001tracklists.com/tracklist/abc123/test.html") is True
 
 
 class TestTracklistScraperRedirects:
     """Regression coverage for phaze-8ib8: httpx does not follow redirects by default, so a
-    301/302 (apex-host or slug-moved source_url) previously hit scrape_tracklist's non-200 guard
-    (phaze-o8sy) and raised forever instead of being followed. The owned client must be built
-    with ``follow_redirects=True``; a real ``httpx.MockTransport`` (not the injected-client
-    ``AsyncMock`` used elsewhere in this module) is required here because a constructor-only fix
-    is invisible to tests that mock ``client.get`` directly.
+    301/302 (an apex-host URL, or a server-side slug move) previously came back un-followed and
+    was treated as a hard failure. The owned client must be built with ``follow_redirects=True``.
+
+    phaze-2akf: the two detail-page cases that used to sit here went with ``scrape_tracklist``.
+    The invariant they protected -- follow redirects, then RE-CHECK the final URL against the
+    allow-list so the follow cannot smuggle a request off-host -- is asserted on the search path
+    by ``test_search_rejects_redirect_off_allowlist`` below, which is the only remaining httpx
+    consumer.
     """
 
     @pytest.mark.asyncio
@@ -610,45 +409,6 @@ class TestTracklistScraperRedirects:
             assert scraper._client.follow_redirects is True
         finally:
             await scraper.close()
-
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_follows_apex_host_redirect(self):
-        """An apex-host source_url (301 -> www) is followed to a 200, not raised as HTTPStatusError."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "1001tracklists.com":
-                return httpx.Response(301, headers={"Location": "https://www.1001tracklists.com/tracklist/abc123/skrillex.html"})
-            return httpx.Response(200, text=SAMPLE_TRACKLIST_HTML)
-
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
-        scraper = TracklistScraper(client=client)
-        try:
-            result = await scraper.scrape_tracklist("https://1001tracklists.com/tracklist/abc123/skrillex.html")
-        finally:
-            await client.aclose()
-        assert result.external_id == "abc123"
-
-    @pytest.mark.asyncio
-    async def test_scrape_tracklist_rejects_redirect_off_allowlist(self):
-        """A redirect chain that ends off the allow-listed host is rejected, not silently followed.
-
-        This is the guard that keeps follow_redirects=True from re-opening the phaze-k5zz SSRF
-        surface: the FINAL response.url is re-checked even though the initial url passed the
-        pre-flight allow-list check.
-        """
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "www.1001tracklists.com":
-                return httpx.Response(302, headers={"Location": "https://evil.example.com/steal"})
-            return httpx.Response(200, text="stolen")
-
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
-        scraper = TracklistScraper(client=client)
-        try:
-            with pytest.raises(DisallowedScrapeHostError):
-                await scraper.scrape_tracklist("https://www.1001tracklists.com/tracklist/abc123/skrillex.html")
-        finally:
-            await client.aclose()
 
 
 class TestTracklistScraperSharedRateLimit:
@@ -818,8 +578,48 @@ class TestTracklistScraperHonestUserAgent:
         assert scraper._client is injected
 
 
+class TestTTLCacheExpiry:
+    """The cache's TTL branch, exercised directly rather than through a 6-hour wait."""
+
+    def test_an_expired_entry_is_evicted_and_reads_as_a_miss(self) -> None:
+        """A stale entry must be DROPPED, not returned -- and dropped, not merely hidden.
+
+        Returning stale data here would silently pin a query's results for the process's lifetime;
+        leaving the evicted key in place would grow the dict without bound in a worker that runs
+        for months. Both matter, so both are asserted.
+        """
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=0.0)
+        cache.set("k", "v")
+        assert cache.get("k") is None
+        assert cache.get("k") is None  # the eviction was real; a second read does not resurrect it
+
+    def test_a_live_entry_is_returned(self) -> None:
+        from phaze.services.tracklist_scraper import _TTLCache
+
+        cache: _TTLCache[str] = _TTLCache(ttl_seconds=3600.0)
+        cache.set("k", "v")
+        assert cache.get("k") == "v"
+        cache.clear()
+        assert cache.get("k") is None
+
+
 class TestTracklistScraperCaching:
     """phaze-hu8v: repeat lookups must not re-hit the site."""
+
+    def test_a_result_link_with_no_parseable_id_is_skipped_not_forwarded(self) -> None:
+        """An href that satisfies the LINK selector but carries no id segment yields no result.
+
+        ``a[href*='/tracklist/']`` is a substring match, so a malformed or truncated href reaches
+        the id extraction; without the skip it would produce a ``TracklistSearchResult`` with an
+        empty ``external_id``, which is the ON CONFLICT identity the whole persistence layer keys
+        on. Note this row is skipped INDIVIDUALLY -- it is not an unparseable ROW (the link selector
+        matched), so it must not trip the stale-selector alarm either.
+        """
+        html = '<html><body><div class="bItm"><div class="bItmT"><a href="/tracklist/?q=1">Broken</a></div></div></body></html>'
+        scraper = TracklistScraper(client=AsyncMock(spec=httpx.AsyncClient))
+        assert scraper._parse_search_results(html) == []
 
     @pytest.mark.asyncio
     async def test_search_cache_hit_skips_second_network_call(self):
@@ -855,31 +655,3 @@ class TestTracklistScraperCaching:
         await scraper.search("Skrillex")
 
         assert client.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_scrape_cache_hit_skips_second_network_call(self):
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(200, SAMPLE_TRACKLIST_HTML))
-        scraper = TracklistScraper(client=client)
-        url = "https://www.1001tracklists.com/tracklist/cache1/test.html"
-
-        first = await scraper.scrape_tracklist(url)
-        second = await scraper.scrape_tracklist(url)
-
-        assert client.get.await_count == 1
-        assert second is first
-
-    @pytest.mark.asyncio
-    async def test_scrape_does_not_cache_a_403(self):
-        """A blocked/challenge page must never be cached as if it were a valid scrape (phaze-o8sy)."""
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get = AsyncMock(return_value=_mock_response(403, "<html><body>Access denied</body></html>"))
-        scraper = TracklistScraper(client=client)
-        url = "https://www.1001tracklists.com/tracklist/cache2/test.html"
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await scraper.scrape_tracklist(url)
-        with pytest.raises(httpx.HTTPStatusError):
-            await scraper.scrape_tracklist(url)
-
-        assert client.get.await_count == 2

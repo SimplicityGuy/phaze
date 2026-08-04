@@ -85,15 +85,11 @@ from phaze.services.pipeline import (
     get_pushed_count,
     get_pushing_count,
     get_queue_activity,
-    get_scrape_busy_count,
-    get_scrape_pending_tracklists,
-    get_search_busy_count,
     get_stage_busy_counts,
     get_stage_controls,
     get_stage_progress,
     get_straggler_count,
     get_tracklist_sets_page,
-    get_untracked_files,
     queue_progress_percent,
 )
 from phaze.services.pipeline_counters import read_counters
@@ -103,6 +99,7 @@ from phaze.services.tracklist_candidate_queue import DAILY_LOOKUP_CEILING
 from phaze.services.tracklist_priority import flag_file_for_lookup, get_file_tracklist_review, unflag_file
 from phaze.tasks._shared.stage_control import STAGE_TO_FUNCTION
 from phaze.tasks.reenqueue import recover_orphaned_work
+from phaze.tasks.tracklist import refresh_tracklists
 from phaze.tasks.tracklist_drain import tracklist_drain_status
 
 
@@ -135,11 +132,15 @@ _NO_ACTIVE_AGENT_MESSAGE = "No active agent available — start an agent worker 
 # counter counts batches, not files — mapping it here would render a batch count as a file
 # ``done`` (e.g. 1 batch of 10 files -> proposalsDone=1). It is therefore intentionally OMITTED;
 # proposalsDone falls back to DB-truth (0 when degraded) rather than a wrong-unit number.
+# phaze-2akf: the former ``scan_search`` -> ``search_tracklist`` and ``scrape`` ->
+# ``scrape_and_store_tracklist`` entries are gone with those tasks. The ``tracklist`` node (the
+# renamed ``scan_search``) is deliberately NOT remapped onto ``drain_tracklists``: the WR-03 unit
+# constraint below requires a per-FILE SAQ function, and one drain job is a bounded SLICE covering
+# many files, so its ``completed`` counter counts slices. Mapping it here would render a slice count
+# as a file ``done``. The node falls back to DB-truth instead, which for this node is exact.
 _NODE_COMPLETED_FNS: dict[str, tuple[str, ...]] = {
     "metadata": ("extract_file_metadata",),
     "analyze": ("process_file",),
-    "scan_search": ("search_tracklist",),
-    "scrape": ("scrape_and_store_tracklist",),
     "match": ("match_tracklist_to_discogs",),
 }
 
@@ -189,9 +190,9 @@ def _reconciled_done(node: str, stage_done: int, stage_total: int, counters: dic
     denominator (including the ``stage_total == 0`` case carried over from phaze-y0wz, where
     an emptied corpus must not render its pre-delete completion history) degrades to
     ``stage_done`` — already known to be 0 from the guard above — rather than the misleading
-    ceiling value. This also covers ``scan_search``, whose ``total`` the DB layer documents as
-    ALWAYS ``None`` -> 0 (``get_stage_progress``), so its ``search_tracklist``
-    counter can never render as a phantom ``done``.
+    ceiling value. This also covers ``tracklist``, whose ``total`` the DB layer documents as
+    ALWAYS ``None`` -> 0 (``get_stage_progress``); since phaze-2akf it maps to no counter at all,
+    so it can never render a phantom ``done`` from either direction.
     """
     if stage_done > 0:
         return stage_done
@@ -275,9 +276,10 @@ async def _build_dag_context(
         # SAQ agent_active source saw only LOCAL agent queues and read 0 while thousands of analyze
         # jobs were in flight on the compute lanes.
         "analyzeActive": int(stage["analyze"].get("in_flight") or 0),
-        "tracklistDone": done("scan_search"),
-        "scrapeDone": done("scrape"),
-        "scrapeTotal": total("scrape"),
+        # phaze-2akf: scrapeDone / scrapeTotal are gone with the ``scrape`` node -- see
+        # get_stage_progress for why that node was a tautology once the drain collapsed the
+        # search/scrape split into one operation.
+        "tracklistDone": done("tracklist"),
         "matchDone": done("match"),
         "matchTotal": total("match"),
         "proposalsDone": done("proposals"),
@@ -317,12 +319,6 @@ async def _build_dag_context(
     dag["metadataBusy"] = int(busy["metadata"])
     dag["analyzeBusy"] = int(busy["analyze"])
 
-    # Phase 39 (REQ-39-3): the search_tracklist in-flight count gates the DAG Search node "busy".
-    # search_tracklist is a controller task, so it is NOT part of get_stage_busy_counts's
-    # agent stages -- get_search_busy_count owns its own never-500 SAVEPOINT degrade (returns 0 on
-    # any DB error), so NO try/except is added here; the int rides the same dag.items() seed + OOB loop.
-    dag["searchBusy"] = int(await get_search_busy_count(session))
-
     # Phase 40 (REQ-40-3): the per-agent DAG nodes gate on an online-agent signal ("Needs agent").
     # count_active_agents owns its own never-500 SAVEPOINT degrade (returns 0 on any DB error), so NO
     # try/except is added here; the int rides the same dag.items() seed + OOB loop. It is a count where
@@ -345,13 +341,13 @@ async def _build_dag_context(
     # not an online worker). It rides the same dag.items() seed + OOB loop, no stats_bar.html edit.
     dag["computeLanesActive"] = sum(1 for lane in await derive_compute_lane_identities(session) if lane.state == "ACTIVE")
 
-    # Phase 41 (REQ-41-3): the scrape_and_store_tracklist / match_tracklist_to_discogs in-flight counts
-    # gate the DAG Scrape/Match trigger nodes "busy" (Scraping… / Matching…). Both are controller tasks
-    # (NOT part of get_stage_busy_counts's three agent stages) -- get_scrape_busy_count + get_match_busy_
-    # count each own their own never-500 SAVEPOINT degrade (return 0 on any DB error), so NO try/except is
-    # added here; the ints ride the same dag.items() seed + OOB loop. (scrapeTotal/scrapeDone/matchTotal/
-    # matchDone are already seeded above; the gate derives pending = total - done client-side.)
-    dag["scrapeBusy"] = int(await get_scrape_busy_count(session))
+    # Phase 41 (REQ-41-3): the match_tracklist_to_discogs in-flight count gates the DAG Match trigger
+    # node "busy" (Matching…). It is a controller task (NOT part of get_stage_busy_counts's agent
+    # stages) -- get_match_busy_count owns its own never-500 SAVEPOINT degrade (returns 0 on any DB
+    # error), so NO try/except is added here; the int rides the same dag.items() seed + OOB loop.
+    # (matchTotal/matchDone are already seeded above; the gate derives pending = total - done
+    # client-side.) phaze-2akf removed the searchBusy / scrapeBusy siblings along with the two
+    # legacy tasks they counted -- with no such jobs left to enqueue, both were pinned at 0.
     dag["matchBusy"] = int(await get_match_busy_count(session))
 
     # Phase 58 (58-02, WORK-01): the Discover "not yet enriched" backlog -- a READ-ONLY derived
@@ -2657,71 +2653,16 @@ async def trigger_extraction_ui(
     )
 
 
-# --- Tracklist name-search endpoint (Phase 39, REQ-39-1) ---
-
-
-async def _enqueue_search_jobs(queue: Any, files: list[FileRecord]) -> None:
-    """Background coroutine to enqueue ``search_tracklist`` jobs (one per eligible file).
-
-    ``search_tracklist`` is a CONTROLLER task taking only ``file_id`` (mirrors the single-file
-    ``tracklists.manual_search`` trigger); the deterministic key ``search_tracklist:<file_id>`` is
-    applied centrally by the ``before_enqueue`` hook (Phase 35), so a double-click / refresh
-    collapses an in-flight re-run to a no-op (D, T-39-02). Background-enqueued to avoid HTTP timeout
-    on a large eligible archive (Research pitfall 2). ``files`` attributes are already loaded by the
-    eligible-set query and the request never commits, so reading ``f.id`` here is not a lazy load.
-    """
-    for f in files:
-        await queue.enqueue("search_tracklist", file_id=str(f.id))
-
-
-@router.post("/pipeline/search-tracklists", response_class=HTMLResponse)
-async def trigger_search_ui(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: bulk-trigger name-based tracklist search over eligible files (Phase 39).
-
-    Eligible = music/video files that do NOT already have a tracklist (skip already-matched files so
-    re-runs are cheap and idempotent). ``search_tracklist`` is a CONTROLLER task, routed via
-    :func:`enqueue_router.resolve_queue_for_task` to the controller queue (Phase-30 rule) -- never
-    the consumer-less default queue. Controller tasks never raise ``NoActiveAgentError`` (mirrors
-    ``manual_search``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
-    (the Phase-39 boundary; automatic enqueue is reserved for the Phase-42 recovery pass).
-    """
-    # Shared pending-set helper (D-03 anti-drift): the SAME untracked-files set the Phase-40 scan
-    # trigger and Phase-42 recovery read, so the three paths cannot drift.
-    files = await get_untracked_files(session)
-    count = len(files)
-
-    if count > 0:
-        routed = await enqueue_router.resolve_queue_for_task("search_tracklist", request.app.state, session)
-        task = asyncio.create_task(_enqueue_search_jobs(routed.queue, files))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/trigger_response.html",
-        context={"request": request, "action": "tracklist search", "count": count, "no_active_agent": False},
-    )
-
-
-# --- Bulk scrape + match tracklist endpoints (Phase 41, REQ-41-1/REQ-41-2) ---
-
-
-async def _enqueue_scrape_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
-    """Background coroutine to enqueue ``scrape_and_store_tracklist`` jobs (one per pending tracklist).
-
-    ``scrape_and_store_tracklist`` is a CONTROLLER task taking only ``tracklist_id`` (mirrors the
-    single-tracklist ``tracklists.rescrape_tracklist`` trigger); the deterministic key
-    ``scrape_and_store_tracklist:<tracklist_id>`` is applied centrally by the ``before_enqueue`` hook
-    (Phase 35), so a double-click / refresh collapses an in-flight re-run to a no-op (D, T-41-02). Set
-    NO explicit ``key=``. Background-enqueued to avoid HTTP timeout on a large pending set (Pitfall 2).
-    ``tracklists`` rows are already loaded by the eligible-set query and the request never commits, so
-    reading ``tl.id`` here is not a lazy load.
-    """
-    for tl in tracklists:
-        await queue.enqueue("scrape_and_store_tracklist", tracklist_id=str(tl.id))
+# --- Bulk match tracklist endpoint (Phase 41, REQ-41-2) ---
+#
+# phaze-2akf: the SEARCH ALL (POST /pipeline/search-tracklists) and SCRAPE ALL
+# (POST /pipeline/scrape-tracklists) endpoints that used to sit here are GONE, with the two SAQ
+# tasks behind them. They fanned one job out per file / per tracklist against a host that publishes
+# a whole-system budget of ~1 request / 8 s, with no cache, no queue and no resumption -- and the
+# detail-page selectors they ultimately called matched zero nodes, so every job they enqueued
+# produced an empty tracklist. The replacement is not another bulk button: it is
+# POST /pipeline/run-tracklist-drain, which enqueues ONE bounded slice of the resumable drain and
+# reports its queue depth and honest ETA through GET /pipeline/tracklist-drain-status.
 
 
 async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
@@ -2735,37 +2676,6 @@ async def _enqueue_match_jobs(queue: Any, tracklists: list[Tracklist]) -> None:
     """
     for tl in tracklists:
         await queue.enqueue("match_tracklist_to_discogs", tracklist_id=str(tl.id))
-
-
-@router.post("/pipeline/scrape-tracklists", response_class=HTMLResponse)
-async def trigger_scrape_tracklists_ui(
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    """HTMX endpoint: bulk-trigger tracklist scraping over the pending set (Phase 41).
-
-    Pending = tracklists with NO scraped version yet (the exact complement of
-    :func:`get_stage_progress`'s ``scrape.done``); already-scraped tracklists are skipped so re-runs
-    are cheap and idempotent. ``scrape_and_store_tracklist`` is a CONTROLLER task, routed via
-    :func:`enqueue_router.resolve_queue_for_task` to the controller queue (Phase-30 rule) -- never the
-    consumer-less default queue. Controller tasks never raise ``NoActiveAgentError`` (mirrors
-    ``rescrape_tracklist``), so no no-active-agent branch is needed. Manual only -- NO auto-trigger
-    (automatic enqueue is reserved for the Phase-42 recovery pass).
-    """
-    tracklists = await get_scrape_pending_tracklists(session)
-    count = len(tracklists)
-
-    if count > 0:
-        routed = await enqueue_router.resolve_queue_for_task("scrape_and_store_tracklist", request.app.state, session)
-        task = asyncio.create_task(_enqueue_scrape_jobs(routed.queue, tracklists))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-
-    return templates.TemplateResponse(
-        request=request,
-        name="pipeline/partials/trigger_tracklist_response.html",
-        context={"request": request, "action": "scraping", "count": count},
-    )
 
 
 @router.post("/pipeline/match-tracklists", response_class=HTMLResponse)
@@ -2851,7 +2761,56 @@ async def prioritize_tracklist_lookup_ui(
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": review, "just_queued": queued},
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": queued, "just_refreshed": False},
+    )
+
+
+@router.post("/pipeline/tracklists/{file_id}/refresh", response_class=HTMLResponse)
+async def refresh_tracklist_lookup_ui(
+    request: Request,
+    file_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """HTMX endpoint: re-read this file's 1001Tracklists page, on demand (phaze-2akf).
+
+    The replacement for the retired monthly ``refresh_tracklists`` cron and for the removed
+    per-tracklist re-scrape trigger. The cron re-fetched every tracklist older than 90 days, which
+    contradicts the drain's cache ("a published tracklist does not change, so never re-fetch") and
+    put a second, unbounded consumer on a whole-host budget of ~1 request / 8 s. The operator
+    decision was to keep the drain never-re-fetching and make refresh explicit, targeted, and
+    operator-initiated -- this button is that trigger, and there is no scheduled counterpart.
+
+    :func:`phaze.tasks.tracklist.refresh_tracklists` is called DIRECTLY rather than enqueued, for
+    the same reason ``tracklist_drain_status`` is: it spends NO host requests. All it does is drop
+    the positive cache row for this page and flag the files it serves, which re-admits them to the
+    drain queue. The ``limit=1`` slice enqueued afterwards is what actually pays for the re-read,
+    out of the same budget and through the same single path as every other lookup.
+
+    Offered only where a tracklist already exists -- refreshing a file that has none is what
+    Prioritize is for.
+    """
+    review = await get_file_tracklist_review(session, file_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    refreshed = False
+    if review.tracklist is not None:
+
+        @contextlib.asynccontextmanager
+        async def _session_factory() -> AsyncIterator[AsyncSession]:
+            yield session
+
+        outcome = await refresh_tracklists({"async_session": _session_factory}, file_ids=[str(file_id)])
+        refreshed = bool(outcome["refreshed"])
+        if refreshed:
+            routed = await enqueue_router.resolve_queue_for_task("drain_tracklists", request.app.state, session)
+            await routed.queue.enqueue("drain_tracklists", limit=1)
+        review = await get_file_tracklist_review(session, file_id)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="record/partials/_tracklist_review_body.html",
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": False, "just_refreshed": refreshed},
     )
 
 
@@ -2876,7 +2835,7 @@ async def unprioritize_tracklist_lookup_ui(
     return templates.TemplateResponse(
         request=request,
         name="record/partials/_tracklist_review_body.html",
-        context={"request": request, "file_id": file_id, "review": review, "just_queued": False},
+        context={"request": request, "file_id": file_id, "review": review, "just_queued": False, "just_refreshed": False},
     )
 
 

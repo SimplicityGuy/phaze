@@ -208,6 +208,16 @@ class TestParseLiveSetFilename:
         result = parse_live_set_filename("Skrillex - Live @ Coachella 2025.04.12")
         assert result is None
 
+    def test_a_pattern_matching_but_impossible_date_returns_none_rather_than_raising(self):
+        """The regex only checks SHAPE, so "2025.13.45" reaches ``date()`` and raises ValueError.
+
+        Returning None (a parse miss) rather than letting the exception escape is what keeps a
+        single oddly-named file from failing whatever is iterating the corpus. Moved here from the
+        retired ``tests/identify/tasks/test_tracklist.py`` when phaze-2akf removed the legacy
+        scrape path that used to be this function's only caller.
+        """
+        assert parse_live_set_filename("Skrillex - Live @ Coachella 2025.13.45.mp3") is None
+
 
 class TestAutoLink:
     """Tests for auto-link threshold and should_auto_link()."""

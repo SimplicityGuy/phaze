@@ -107,7 +107,7 @@ phaze/
 │   │   ├── pipeline_counters.py#   Maintained Redis per-job-type enqueued/completed counters (cache, not truth)
 │   │   ├── stage_status.py     #   SQL ColumnElement per-stage predicate builders (done/failed/inflight/status CASE)
 │   │   ├── scan_deletion.py    #   Ordered transactional cascade delete of a scan batch + dependent rows
-│   │   ├── tracklist_scraper.py#   1001Tracklists web scraper
+│   │   ├── tracklist_scraper.py#   1001Tracklists SEARCH + the whole-host request schedule
 │   │   ├── tracklist_matcher.py#   Fuzzy match tracklists to files
 │   │   ├── cue_generator.py    #   CUE sheet generation
 │   │   ├── discogs_matcher.py  #   Discogsography API adapter + fuzzy Discogs matching
@@ -141,7 +141,7 @@ phaze/
 │   │   ├── aborting_reaper.py  #   Control-side every-minute cron: reap SAQ rows stuck in status='aborting' (phaze-e57w)
 │   │   ├── active_reaper.py    #   Control-side every-minute cron: reap SAQ rows stranded in status='active' (phaze-o0n6)
 │   │   ├── _saq_reap.py        #   The one stranded-row DELETE both key reapers issue (frozen started + per-row timeout + status CAS)
-│   │   ├── tracklist.py        #   scrape/search/refresh tracklists
+│   │   ├── tracklist.py        #   on-demand refresh: re-arm the drain for chosen pages
 │   │   ├── discogs.py          #   match tracklist tracks to Discogs releases
 │   │   ├── heartbeat.py        #   30s agent heartbeat POST, run as a startup asyncio background task (Phase 46, not a cron)
 │   │   ├── push.py             #   push_file: rsync-over-SSH push of media to compute scratch
