@@ -1,15 +1,21 @@
-{# Phase 56 (56-02, D-05, KDEPLOY-04): K8s LocalQueue-unreachable operator alert card.
+{# Phase 56 (56-02, D-05, KDEPLOY-04) -- REVISED phaze-6r39: K8s LocalQueue-unreachable operator alert card.
 
-   localqueue_unreachable = get_localqueue_unreachable(redis): True when the controller.startup probe
-   (56-01, D-06) flagged the Kueue LocalQueue unreachable by setting the cross-process Redis key
-   phaze:k8s:localqueue_unreachable; on a healthy probe the key is absent so the flag is False and the
-   banner is rendered EMPTY (no visible content) — loud only when the k8s lane can't reach its
-   LocalQueue. D-05 is warn+surface (the app stays up), so this uses AMBER, NOT red.
+   localqueue_unreachable = derive_localqueue_unreachable(lanes) (services/backends.py): True iff ANY
+   kueue lane in the SAME live snapshot the 5s poll already fetches (get_backend_lane_snapshot) has
+   available=False. Reachable (or zero kueue lanes configured) -> False and the banner renders EMPTY
+   (no visible content) — loud only when a k8s lane can't reach its LocalQueue. D-05 is warn+surface
+   (the app stays up), so this uses AMBER, NOT red.
 
-   The flag arrives in the context from the 56-01 degrade-safe service read (get_localqueue_unreachable);
-   a missing app.state.redis or any Redis error surfaces as False, so the card always renders (possibly
-   empty) and NEVER raises (T-56-POLL). All copy is a STATIC string rendered through Jinja autoescape —
-   no operator free-text or PII is interpolated (T-56-XSS).
+   phaze-6r39: this used to be a cross-process Redis flag (the "LocalQueue-unreachable" key, D-05/D-06)
+   written ONCE by the controller's startup probe. That boot-time snapshot never cleared once connectivity was
+   restored and never appeared at all for an outage that began after boot. It is now derived live from
+   the SAME per-lane probe the poll already runs, so it tracks reality on every tick instead of only at
+   boot -- no Redis key is read or written on this path any more.
+
+   derive_localqueue_unreachable is a pure function over the already-degrade-safe `lanes` list
+   (get_backend_lane_snapshot -> [] on any error), so the card always renders (possibly empty) and NEVER
+   raises (T-56-POLL). All copy is a STATIC string rendered through Jinja autoescape — no operator
+   free-text or PII is interpolated (T-56-XSS).
 
    Rendered inline in dashboard.html on first load (#localqueue-card lives OUTSIDE the #pipeline-stats
    poll target), then re-pushed by stats_bar.html as an hx-swap-oob fragment on every 5s poll (oob=True)
