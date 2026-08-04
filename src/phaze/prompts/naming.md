@@ -104,6 +104,7 @@ You will receive a JSON array of file objects. Each file object contains:
 - `file_type`: The file extension (mp3, flac, ogg, etc.)
 - `analysis`: Audio analysis results (BPM, musical key, mood, style, features) or null if not analyzed
 - `companions`: List of companion files (NFO, cue, m3u) with their text content
+{date_convention_guidance}
 
 ## File Data
 

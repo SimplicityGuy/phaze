@@ -11,6 +11,7 @@ from phaze.config import settings
 from phaze.models.analysis import AnalysisResult
 from phaze.models.file import FileRecord
 from phaze.models.metadata import FileMetadata
+from phaze.services.date_convention import annotate_date_conventions
 from phaze.services.proposal import (
     ProposalService,
     build_file_context,
@@ -71,6 +72,19 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
             ctx_dict["index"] = len(files_context)
             files_context.append(ctx_dict)
             valid_file_ids.append(fid)
+
+        # phaze-5fta.4: resolve each file's scene date and attach its provenance, in the SAME read
+        # session (one batched store query, no extra connection). This is a no-op returning 0 --
+        # and issuing no query at all -- while `convention_date_fallback_enabled` is off, which is
+        # the default and what keeps proposals byte-identical to today's behavior until
+        # phaze-5fta.5's external validation flips the flag on.
+        await annotate_date_conventions(
+            session,
+            files_context,
+            enabled=settings.convention_date_fallback_enabled,
+            min_supporting=settings.convention_date_min_supporting,
+            min_purity=settings.convention_date_min_purity,
+        )
 
     if not files_context:
         return {"batch": batch_index, "count": 0, "status": "empty"}

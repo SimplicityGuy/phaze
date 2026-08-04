@@ -723,6 +723,59 @@ class ControlSettings(BaseSettings):
     llm_batch_size: int = 10
     llm_max_companion_chars: int = 3000
 
+    # ------------------------------------------------------------------------------------
+    # phaze-5fta.4: corpus-learned date-order fallback for the rename-proposal path.
+    #
+    # FAIL-CLOSED ROLLOUT (epic phaze-5fta DESIGN note 5). `convention_date_fallback_enabled`
+    # DEFAULTS OFF and gates the WHOLE capability, not just the store lookup: with it off the
+    # proposal path adds nothing to the LLM context and nothing to the stored `context_used`, so
+    # proposals are byte-identical to the pre-phaze-5fta behavior. It stays off until
+    # phaze-5fta.5 validates derived dates against an independent source (1001tracklists / event
+    # histories) and flips it on deliberately. "Consistent" is not "correct": every group in the
+    # 2026-07-18 measurement was internally unanimous, and NONE of them has yet been checked
+    # against anything outside the archive. Turning this on early would put unvalidated
+    # inferences into real rename proposals, which are the one output that permanently rewrites
+    # what is on disk.
+    convention_date_fallback_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "convention_date_fallback_enabled"),
+        description=(
+            "Enable the corpus-learned release-group date-order fallback in the rename-proposal path (phaze-5fta.4). "
+            "DEFAULT OFF -- convention-derived dates must not drive proposals until phaze-5fta.5's external validation."
+        ),
+    )
+    # The EVIDENCE bar: how many self-resolving files must support a group's convention before it
+    # may resolve any of that group's ambiguous ones. Named, not inline, because phaze-5fta.5 owns
+    # the final value and must be able to move it without hunting for a literal. The default is a
+    # deliberately conservative placeholder: it admits the measurement's large groups (talion
+    # 1,373 / 1king 232) and excludes the long tail of groups whose "unanimity" is a handful of
+    # files and therefore indistinguishable from chance.
+    convention_date_min_supporting: int = Field(
+        default=50,
+        ge=1,
+        validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_MIN_SUPPORTING", "convention_date_min_supporting"),
+        description=(
+            "Minimum supporting_count before a learned release-group date-order convention may resolve an ambiguous date "
+            "(phaze-5fta.4). Provisional -- phaze-5fta.5 sets the validated value."
+        ),
+    )
+    # The PURITY bar, compared against `filename_convention.confidence` -- which IS
+    # supporting/(supporting+contradicting), derived by Postgres from the counts and impossible to
+    # hand-set. Separate from the evidence bar on purpose: 1,000 supporting files do not make a
+    # convention safe if 400 files contradict it, and 60/0 is a different object from 60/40 even
+    # though both clear the count bar. Default 0.99 admits the measured unanimous groups and
+    # rejects anything with meaningful drift.
+    convention_date_min_purity: float = Field(
+        default=0.99,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_MIN_PURITY", "convention_date_min_purity"),
+        description=(
+            "Minimum filename_convention.confidence (supporting share of supporting+contradicting) before a learned "
+            "date-order convention may resolve an ambiguous date (phaze-5fta.4). Provisional -- phaze-5fta.5 sets the validated value."
+        ),
+    )
+
     # Phase 44: how long an in-flight `process_file` analyze job may run before the dashboard
     # flags it as a STRAGGLER (still grinding, distinct from ANALYSIS_FAILED which gave up).
     # Default tied to the agent's analysis_inner_timeout_sec (6600s): a job past the
