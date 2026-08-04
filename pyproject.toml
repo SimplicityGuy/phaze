@@ -251,7 +251,6 @@ split-on-trailing-comma = true
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
 [tool.uv]
-exclude-newer = "0 days"
 # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
 # NO dependency cooldown. Operator decision 2026-08-03: resolve every package at its latest
 # published version rather than deferring adoption.
