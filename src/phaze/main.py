@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncGenerator
 import contextlib
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 import redis.asyncio as redis_async
@@ -51,7 +50,7 @@ from phaze.services.agent_task_router import AgentTaskRouter
 from phaze.services.pipeline import _ORPHAN_TTL_SECONDS, refresh_stage_orphan_counts
 from phaze.tasks._shared.queue_factory import build_pipeline_queue
 from phaze.web.saq_mount import build_saq_app
-from phaze.web.static import RevalidatingStaticFiles
+from phaze.web.static import STATIC_DIR, STATIC_VERSION, RevalidatingStaticFiles
 
 
 logger = structlog.get_logger(__name__)
@@ -293,11 +292,17 @@ def create_app() -> FastAPI:
     # router is read-only and does NOT use get_authenticated_agent (consistent
     # with other admin-UI routers on the private LAN).
     app.include_router(admin_agents.router)
-    # phaze-mw9l: no-cache (revalidate-every-use) static serving. /static/css/app.css sits at a
-    # stable, unfingerprinted URL, and stock StaticFiles sends no Cache-Control -- browsers then
-    # cache it heuristically ACROSS DEPLOYS, which stranded the analyze lane detail pane on-screen
-    # when phaze-2u8v.6's pane needed utilities no earlier compiled stylesheet contained.
-    app.mount("/static", RevalidatingStaticFiles(directory=Path(__file__).parent / "static"), name="static")
+    # phaze-315t (supersedes phaze-mw9l): fingerprinted, cache-forever static serving.
+    # /static/css/app.css used to sit at a stable, unfingerprinted URL with stock StaticFiles
+    # sending no Cache-Control -- browsers then cached it heuristically ACROSS DEPLOYS, which
+    # stranded the analyze lane detail pane on-screen when phaze-2u8v.6's pane needed utilities
+    # no earlier compiled stylesheet contained. Every response whose `?v=` query param matches
+    # the current STATIC_VERSION (a content hash recomputed at import time from the real served
+    # directory) is safe to cache for a year -- if the content ever changes, so does the
+    # fingerprint and therefore the URL. Anything else (a stale fingerprint, or a direct request
+    # with none at all, e.g. a browser's own /favicon.ico probe) falls back to the phaze-mw9l
+    # no-cache/revalidate behavior.
+    app.mount("/static", RevalidatingStaticFiles(directory=STATIC_DIR, version=STATIC_VERSION), name="static")
     return app
 
 

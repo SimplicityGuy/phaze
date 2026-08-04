@@ -491,6 +491,14 @@ The `Dockerfile` is multi-stage. A `css-builder` stage (`FROM python:3.14-slim A
 
 You can also build/push manually with `just`: `just docker-build`, `just docker-validate` (hadolint), `just docker-compose-validate`, and `just image-push` (requires a `gh` token with `packages:write`).
 
+### Static asset caching (phaze-315t)
+
+Every `/static/...` URL the app's templates emit (`app.css`, favicons, `site.webmanifest`, `og_image.png`) carries a `?v=<content-hash>` query parameter — `phaze.web.static.STATIC_VERSION`, a SHA-256 fingerprint over the content of every file under `src/phaze/static/`, computed once at process import time. `base.html` / `shell.html` build these URLs via the `static_url(...)` Jinja global (registered per-router in `shell.py`, `pipeline.py`, `execution.py`, `admin_agents.py` — the four routers that render a full page extending `base.html` or rendering `shell/shell.html`).
+
+`RevalidatingStaticFiles` (`src/phaze/web/static.py`, mounted at `/static` in `main.py`) answers a request whose `?v=` matches the CURRENT `STATIC_VERSION` with `Cache-Control: max-age=31536000, immutable` — safe forever, because that exact URL can never later serve different bytes: if the content changes, the fingerprint changes too, and the browser fetches the new URL instead of reusing anything. Any other request (a stale fingerprint from a previous deploy, or a direct request with no `?v=` at all — e.g. a browser's automatic `/favicon.ico` probe, or the icon paths inside `site.webmanifest` itself, which is static JSON and not template-rendered) falls back to `Cache-Control: no-cache`, forcing a cheap conditional-request/304 revalidation instead of a stale heuristic hit.
+
+This replaces phaze-mw9l's no-cache-only fix (every hit, even an unchanged file, paid a round trip) and closes the defect it was filed against: a browser that had visited the site before a CSS-changing deploy previously kept rendering the OLD stylesheet against the NEW server HTML on an ordinary reload, because stock `StaticFiles` sent no `Cache-Control` at all and browsers applied heuristic freshness across deploys. Because the compiled `src/phaze/static/css/app.css` is produced by the Dockerfile's `css-builder` stage and `COPY --from=css-builder`'d into the final image (never a stale local copy — see `.dockerignore`), `STATIC_VERSION` computed at container startup always reflects exactly what that specific deployed image serves.
+
 ## Environment Setup
 
 The full environment-variable reference, including required-vs-optional status and defaults, lives in [docs/configuration.md](configuration.md). The two templates in the repo are `.env.example` (app-server) and `.env.example.agent` (file-server agent).
