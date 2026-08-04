@@ -298,6 +298,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.0",
+    "ruff>=0.16.1",
     "vulture>=2.16",
 ]
