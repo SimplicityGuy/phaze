@@ -188,10 +188,11 @@ def resolve_date(
         return None
 
     resolved = reading.as_date(order)
-    if resolved is None:
-        # The convention's reading names no calendar date (e.g. MM-DD applied to 04-31-2014 in a
-        # group whose OTHER reading was the legal one). The filename was ambiguous by the calendar
-        # test, so this is rare; treat it as unresolvable rather than inventing a date.
+    if resolved is None:  # pragma: no cover -- unreachable: AMBIGUOUS means BOTH readings are legal
+        # `read_date_order` decides AMBIGUOUS by constructing the calendar date BOTH ways and
+        # finding both legal, so neither order can fail here. This is a type-narrowing guard that
+        # fails closed rather than inventing a date, not a live path -- if it ever executes, the
+        # verdict and the composer have drifted apart and refusing to resolve is the right answer.
         return None
     return DateProvenance(
         date=resolved.isoformat(),
