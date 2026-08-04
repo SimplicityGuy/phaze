@@ -13,6 +13,22 @@
 # Build (native arm64 host — ubuntu-24.04-arm in CI, or Apple Silicon / colima):
 #   docker build --build-arg TF_VERSION=2.20.0 -f Dockerfile.agent-arm64 -t <ghcr>/phaze:<tag>-arm64 .
 
+# PYTHON 3.13 IS DELIBERATE HERE, and is the one place in this repo that is not on 3.14.
+# CLAUDE.md mandates "Python 3.14 exclusively"; this image cannot comply yet. TensorFlow
+# publishes no cp314 aarch64 wheel, and this build needs the aarch64 `tensorflow` wheel to
+# compile essentia against (see CLOUDIMG-01 above). Measured, not assumed: dependabot PR #326
+# proposed 3.14-slim-bookworm and the arm64 build failed with
+#
+#   ERROR: Could not find a version that satisfies the requirement tensorflow==2.20.0
+#          (from versions: none)
+#   ERROR: No matching distribution found for tensorflow==2.20.0
+#
+# with pip listing the candidates it rejected for requiring <3.11 / <3.13. Raising this line
+# without a cp314 aarch64 TensorFlow wheel breaks the image; it does not merely warn.
+#
+# Revisit when TensorFlow ships cp314 aarch64. Then this line, TF_VERSION below, and the
+# essentia commit pin move together and the whole recipe is re-proven on a native arm64 host --
+# they are one combination, not three independent knobs (see the TF_VERSION note).
 FROM python:3.13-slim-bookworm
 
 # TF version (override with --build-arg). 2.20.0 is the spike-proven combo: 2.19 has

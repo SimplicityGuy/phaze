@@ -44,6 +44,19 @@ updates:
       - "docker"
     assignees:
       - "SimplicityGuy"
+    ignore:
+      # The Python base image is a PROJECT CONSTRAINT, not a dependency to auto-bump.
+      # CLAUDE.md fixes the runtime at 3.14, and `scripts/update-project.sh --python VERSION`
+      # is the deliberate path that moves it across every manifest at once.
+      #
+      # Dockerfile.agent-arm64 additionally CANNOT move: it builds essentia from source against
+      # the aarch64 `tensorflow` wheel, and TensorFlow publishes no cp314 aarch64 build. PR #326
+      # proposed 3.14 there and the arm64 image failed to build ("No matching distribution found
+      # for tensorflow==2.20.0"). Dependabot cannot see that constraint and reopened it weekly.
+      #
+      # Ignores match on dependency name, not filename, so this covers both Dockerfiles. That is
+      # acceptable: neither should move on a bot's schedule.
+      - dependency-name: "python"
     groups:
       docker-images:
         patterns:
