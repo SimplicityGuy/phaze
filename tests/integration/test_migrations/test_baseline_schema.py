@@ -75,6 +75,7 @@ _EXPECTED_TABLES = frozenset(
         "discogs_links",
         "execution_log",
         "file_companions",
+        "filename_convention",
         "files",
         "files_state_archive",
         "metadata",
@@ -226,7 +227,9 @@ def test_baseline_is_the_only_migration() -> None:
     timestamp timestamptz; 050 (phaze-fq9h.3) creates tracklist_lookup_cache; 051 (phaze-fq9h.7)
     adds tracklists propagation columns + narrows external_id uniqueness to canonical rows; 052
     (phaze-fq9h.8) creates tracklist_priority_flags, the persisted home for an operator's "answer
-    this file first". Any other resurrected 0xx chain file is a regression.
+    this file first"; 053 (phaze-5fta.2) creates filename_convention, the generic corpus-learned
+    convention store keyed (scope, scope_value, convention_kind) with a DB-derived confidence
+    column. Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -244,6 +247,7 @@ def test_baseline_is_the_only_migration() -> None:
         "050_tracklist_lookup_cache.py",
         "051_tracklists_propagation.py",
         "052_tracklist_priority_flags.py",
+        "053_filename_convention.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -275,10 +279,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (052: tracklist priority flags)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (053: filename_convention)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "052"
+    assert version == "053"
 
 
 @pytest.mark.asyncio
@@ -573,7 +577,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "052"
+        assert version == "053"
     finally:
         if engine is not None:
             await engine.dispose()
