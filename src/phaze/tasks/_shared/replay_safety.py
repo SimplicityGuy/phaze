@@ -58,6 +58,11 @@ LEDGER_REPLAY_TIME_INVARIANT: frozenset[str] = frozenset(
         "push_file",
         "submit_cloud_job",
         "write_file_tags",
+        # phaze-5fta.3: the payload is at most a ``batch_size`` page-size knob -- the sweep reads
+        # the corpus at RUN time and names no file, no credential and no clock. A row replayed a
+        # week later recomputes against the corpus as it stands then, which is the only thing a
+        # full-refresh cache could ever mean.
+        "learn_filename_conventions",
     }
 )
 """Keyed producers whose stored payload is TIME-INVARIANT -- safe to replay verbatim, forever.
