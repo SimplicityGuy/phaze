@@ -350,11 +350,14 @@ ephemeral harness, deliberately **not** 5432, which is reserved for the develope
 `TEST_DATABASE_URL` against its 5432 service container and never relies on it.
 
 **Concurrent agents/worktrees:** never share Postgres *or* Redis between seats. `just test-db-for
-<name>` creates the isolated pair `phaze_<name>_test` + `phaze_<name>_migrations_test` on the shared
+<name>` normalizes `<name>` into `<derived>` — hyphens become underscores, plus a short hash of
+the original `<name>` so e.g. `my-seat` and `my_seat` can't collide onto one shared seat — then
+creates the isolated pair `phaze_<derived>_test` + `phaze_<derived>_migrations_test` on the shared
 harness, allocates a dedicated Redis logical database out of the test container's 64-index space
 (DB 0 holds the allocation registry, so re-running it for the same worktree is idempotent), and
-prints the exact `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` exports to
-use.
+prints the exact `TEST_DATABASE_URL` / `MIGRATIONS_TEST_DATABASE_URL` / `PHAZE_REDIS_URL` exports
+to use. Always copy those printed exports rather than constructing the DSN from `<name>` yourself
+— they agree only when `<name>` has no hyphens.
 
 `just check` (and therefore a bare `bh work check`/`bh work submit` in a brand-new worktree, which
 have nothing exported and no services running) auto-provisions: if `TEST_DATABASE_URL` isn't

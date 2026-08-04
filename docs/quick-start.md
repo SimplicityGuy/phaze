@@ -241,12 +241,16 @@ Redis:
 just test-db-for <name>
 ```
 
-It creates `phaze_<name>_test` + `phaze_<name>_migrations_test` and allocates a dedicated Redis
-logical database, then prints three exports. Export **all three**:
+It normalizes `<name>` into `<derived>` (hyphens become underscores, plus a short hash of the
+original `<name>` so e.g. `my-seat` and `my_seat` can't collide onto one shared seat), creates
+`phaze_<derived>_test` + `phaze_<derived>_migrations_test`, and allocates a dedicated Redis
+logical database, then prints three exports. **Copy the exports it prints** rather than
+constructing the DSN from `<name>` yourself — they agree only when `<name>` has no hyphens.
+Export **all three**:
 
 ```bash
-export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_test"
-export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<name>_migrations_test"
+export TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<derived>_test"
+export MIGRATIONS_TEST_DATABASE_URL="postgresql+asyncpg://phaze:phaze@localhost:5433/phaze_<derived>_migrations_test"
 export PHAZE_REDIS_URL="redis://localhost:6380/<index>"
 ```
 
