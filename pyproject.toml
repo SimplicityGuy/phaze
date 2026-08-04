@@ -60,7 +60,7 @@ dependencies = [
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
     # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
     # explicitly (hygiene) so a future kr8s dropping PyYAML cannot silently break the kubeconfig
-    # parse. Floor at the currently-resolved 6.0.3 (>=2 days old, exclude-newer cooldown satisfied).
+    # parse. Floor at the currently-resolved 6.0.3.
     "PyYAML>=6.0.3",
     "rapidfuzz>=3.14.5",
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
@@ -231,15 +231,25 @@ split-on-trailing-comma = true
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
 [tool.uv]
-# Supply-chain cooldown: refuse to resolve any package published in the last 2 days.
-# Freshly published versions are the 1.82.7/1.82.8 malicious-release risk class, so we
-# wait out a cooldown before they can enter a lockfile. The window is relative ("7
-# days") rather than a pinned date so it rolls forward on its own; every dependency
-# floor is deliberately kept at a release already older than the window so resolution
-# stays satisfiable (a floor newer than 2 days would make `uv lock` fail). Adopt newer
-# releases by waiting out the cooldown or, when urgent, vetting and overriding via
-# `exclude-newer-package`. `scripts/update-project.sh` re-asserts this across manifests.
-exclude-newer = "2 days"
+# nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+# NO dependency cooldown. Operator decision 2026-08-03: resolve every package at its latest
+# published version rather than deferring adoption.
+#
+# What this gives up, stated so nobody has to reconstruct it: a cooldown exists so a compromised
+# release has time to be detected and yanked before it can enter a lockfile. This repo has already
+# been on the receiving end of that class -- litellm is pinned `>=1.85.7,<1.86.0` because of the
+# March 2026 supply-chain attack on 1.82.7/1.82.8. With no window, a malicious release published
+# minutes ago is eligible the moment `uv lock` runs.
+#
+# The compensating controls that remain: pip-audit, osv-scanner, bandit and Trivy all run in CI on
+# every PR, and `uv.lock` pins exact versions with hashes, so nothing changes without a reviewed
+# lockfile diff. Those catch KNOWN-bad releases; they do not catch a fresh one in its first hours,
+# which is precisely what the cooldown covered.
+#
+# The semgrep suppression above is deliberate and paired with this decision -- the rule hardcodes
+# a 7-day recommendation, so it cannot express "no cooldown, knowingly". Re-adding a window means
+# deleting the nosemgrep line, restoring `exclude-newer`, and re-raising COOLDOWN_DAYS in
+# scripts/update-project.sh (which re-asserts it across manifests).
 environments = [
     # Only support Linux platforms that we build for in CI/CD
     "sys_platform == 'linux' and platform_machine == 'x86_64'",   # linux/amd64
