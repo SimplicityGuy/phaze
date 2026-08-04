@@ -55,6 +55,7 @@ from phaze.services.review import (
     get_tagwrite_review_page,
 )
 from phaze.services.route_control import get_route_control
+from phaze.web.static import static_asset_url
 
 from .pipeline import build_dashboard_context
 
@@ -65,6 +66,9 @@ if TYPE_CHECKING:
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# phaze-315t: fingerprinted, cache-forever static asset URLs. `shell/shell.html` is the
+# top-level layout that carries the app.css link + favicon set.
+templates.env.globals["static_url"] = static_asset_url
 router = APIRouter(tags=["shell"])
 
 # Rail-node id -> bridged content partial (D-01). The keys + their order are VERBATIM
