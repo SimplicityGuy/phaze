@@ -46,9 +46,6 @@ from phaze.services.pipeline import (
     get_pushing_count,
     get_queue_activity,
     get_scanned_total,
-    get_scrape_busy_count,
-    get_scrape_pending_tracklists,
-    get_search_busy_count,
     get_stage_busy_counts,
     get_stage_progress,
     get_straggler_count,
@@ -395,97 +392,12 @@ async def test_get_stage_busy_counts_degrade_does_not_poison_session(session: As
     assert follow_up["discovery"]["done"] == 0
 
 
-# ---------------------------------------------------------------------------
-# get_search_busy_count (Phase 39, REQ-39-3) — search_tracklist in-flight gate, degrade-safe
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_search_busy_count_buckets_by_search_prefix() -> None:
-    """Returns ONLY the ``search_tracklist`` in-flight count; other function prefixes are ignored.
-
-    search_tracklist is a CONTROLLER task (not an agent stage), so it is absent from
-    ``get_stage_busy_counts``'s {metadata,analyze} contract. The key is
-    ``search_tracklist:<file_id>`` (Phase 35), so the SELECT groups by ``split_part(key, ':', 1)``
-    and only the ``search_tracklist`` bucket is summed.
-    """
-
-    class _FakeResult:
-        def __init__(self, rows: list[tuple[str, int]]) -> None:
-            self._rows = rows
-
-        def all(self) -> list[tuple[str, int]]:
-            return self._rows
-
-    class _FakeSession:
-        def __init__(self, rows: list[tuple[str, int]]) -> None:
-            self._rows = rows
-
-        def begin_nested(self) -> _NullSavepoint:
-            return _NullSavepoint()
-
-        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
-            return _FakeResult(self._rows)
-
-    rows = [
-        ("search_tracklist", 7),
-        ("extract_file_metadata", 4),  # not search → ignored
-        ("scrape_and_store_tracklist", 3),  # not search → ignored
-    ]
-    assert await get_search_busy_count(_FakeSession(rows)) == 7  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_search_busy_count_zero_when_no_search_rows() -> None:
-    """With no ``search_tracklist`` rows the in-flight count is 0 (not an error)."""
-
-    class _FakeResult:
-        def all(self) -> list[tuple[str, int]]:
-            return [("extract_file_metadata", 4)]
-
-    class _FakeSession:
-        def begin_nested(self) -> _NullSavepoint:
-            return _NullSavepoint()
-
-        async def execute(self, *_args: object, **_kwargs: object) -> _FakeResult:
-            return _FakeResult()
-
-    assert await get_search_busy_count(_FakeSession()) == 0  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_search_busy_count_degrades_on_db_error() -> None:
-    """get_search_busy_count returns 0 and never raises when the saq_jobs read fails (T-39-03).
-
-    A missing ``saq_jobs`` table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
-    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (``begin_nested``); the
-    exception propagates out of the nested scope and is caught by the degrade ``except``.
-    """
-
-    class _ExplodingSession:
-        def begin_nested(self) -> _NullSavepoint:
-            return _NullSavepoint()
-
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise RuntimeError('relation "saq_jobs" does not exist')
-
-    assert await get_search_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_search_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
-    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the stage-busy guard).
-
-    DROP ``saq_jobs`` inside this test's uncommitted transaction to deterministically force the
-    absent-table degrade — the only branch that exercises the SAVEPOINT rollback recovery. A
-    follow-up query on the SAME session must still succeed, proving the dashboard's later ORM
-    lazy-loads are not poisoned (the bug a plain ``session.rollback()`` would cause).
-    """
-    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
-    assert await get_search_busy_count(session) == 0
-    # The outer transaction is intact after the SAVEPOINT rollback: a normal query still runs.
-    follow_up = await get_stage_progress(session)
-    assert follow_up["discovery"]["done"] == 0
+# phaze-2akf: the get_search_busy_count / get_scrape_busy_count sections that used to sit here are
+# gone with those functions. They counted saq_jobs rows for search_tracklist /
+# scrape_and_store_tracklist, two tasks the legacy scrape path took with it, so both were
+# structurally pinned at 0. get_match_busy_count -- the surviving sibling, same static
+# _STAGE_BUSY_SQL scan and the same SAVEPOINT degrade -- is still covered below, which is what keeps
+# that shared shape under test.
 
 
 # ---------------------------------------------------------------------------
@@ -539,8 +451,8 @@ async def test_count_active_agents_degrades_on_db_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_scrape_busy_count / get_match_busy_count (Phase 41, REQ-41-3) — controller-task
-# in-flight gates over the SAME saq_jobs table, degrade-safe (mirror get_search_busy_count).
+# get_match_busy_count (Phase 41, REQ-41-3) — the controller-task in-flight gate over the
+# saq_jobs table, degrade-safe.
 # ---------------------------------------------------------------------------
 
 
@@ -568,63 +480,12 @@ class _BusySession:
 
 
 @pytest.mark.asyncio
-async def test_get_scrape_busy_count_buckets_by_scrape_prefix() -> None:
-    """Returns ONLY the ``scrape_and_store_tracklist`` in-flight count; other prefixes are ignored.
-
-    scrape_and_store_tracklist is a CONTROLLER task (not an agent stage), so it is absent from
-    ``get_stage_busy_counts``'s {metadata,analyze} contract. The key is
-    ``scrape_and_store_tracklist:<tracklist_id>`` (Phase 35), so the SELECT groups by
-    ``split_part(key, ':', 1)`` and only the ``scrape_and_store_tracklist`` bucket is summed.
-    """
-    rows = [
-        ("scrape_and_store_tracklist", 4),
-        ("search_tracklist", 7),  # not scrape → ignored
-        ("match_tracklist_to_discogs", 2),  # not scrape → ignored
-    ]
-    assert await get_scrape_busy_count(_BusySession(rows)) == 4  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_scrape_busy_count_zero_when_no_scrape_rows() -> None:
-    """With no ``scrape_and_store_tracklist`` rows the in-flight count is 0 (not an error)."""
-    assert await get_scrape_busy_count(_BusySession([("match_tracklist_to_discogs", 3)])) == 0  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_scrape_busy_count_degrades_on_db_error() -> None:
-    """get_scrape_busy_count returns 0 and never raises when the saq_jobs read fails (T-41-03).
-
-    A missing ``saq_jobs`` table or a DB hiccup must degrade to 0 so the hot 5s /pipeline/stats poll
-    keeps serving instead of 500ing. The read runs inside a SAVEPOINT (``begin_nested``); the
-    exception propagates out of the nested scope and is caught by the degrade ``except``.
-    """
-
-    class _ExplodingSession:
-        def begin_nested(self) -> _NullSavepoint:
-            return _NullSavepoint()
-
-        async def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise RuntimeError('relation "saq_jobs" does not exist')
-
-    assert await get_scrape_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_get_scrape_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
-    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
-    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
-    assert await get_scrape_busy_count(session) == 0
-    follow_up = await get_stage_progress(session)
-    assert follow_up["discovery"]["done"] == 0
-
-
-@pytest.mark.asyncio
 async def test_get_match_busy_count_buckets_by_match_prefix() -> None:
     """Returns ONLY the ``match_tracklist_to_discogs`` in-flight count; other prefixes are ignored."""
     rows = [
         ("match_tracklist_to_discogs", 6),
-        ("scrape_and_store_tracklist", 4),  # not match → ignored
-        ("search_tracklist", 7),  # not match → ignored
+        ("generate_proposals", 4),  # not match → ignored
+        ("process_file", 7),  # not match → ignored
     ]
     assert await get_match_busy_count(_BusySession(rows)) == 6  # type: ignore[arg-type]
 
@@ -632,7 +493,7 @@ async def test_get_match_busy_count_buckets_by_match_prefix() -> None:
 @pytest.mark.asyncio
 async def test_get_match_busy_count_zero_when_no_match_rows() -> None:
     """With no ``match_tracklist_to_discogs`` rows the in-flight count is 0 (not an error)."""
-    assert await get_match_busy_count(_BusySession([("scrape_and_store_tracklist", 4)])) == 0  # type: ignore[arg-type]
+    assert await get_match_busy_count(_BusySession([("generate_proposals", 4)])) == 0  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -659,8 +520,9 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
 
 
 # ---------------------------------------------------------------------------
-# get_scrape_pending_tracklists / get_match_pending_tracklists (Phase 41, REQ-41-1/REQ-41-2) —
-# the exact complements of get_stage_progress scrape.done / match.done.
+# get_match_pending_tracklists (Phase 41, REQ-41-2) — the exact complement of
+# get_stage_progress match.done. (phaze-2akf removed its get_scrape_pending_tracklists sibling
+# along with the SCRAPE ALL trigger and the ``scrape`` stage node it complemented.)
 # ---------------------------------------------------------------------------
 
 
@@ -668,24 +530,6 @@ def _make_tracklist(n: int) -> Tracklist:
     """Build a bare Tracklist row (no version, no discogs chain)."""
     uid = uuid.uuid4()
     return Tracklist(id=uid, external_id=f"tl-{n}-{uid.hex}", source_url=f"http://x/{n}")
-
-
-@pytest.mark.asyncio
-async def test_get_scrape_pending_tracklists_excludes_versioned(session: AsyncSession) -> None:
-    """Scrape pending = tracklists with NO tracklist_versions row; a versioned tracklist is excluded."""
-    from phaze.models.tracklist import TracklistVersion
-
-    pending = _make_tracklist(1)
-    scraped = _make_tracklist(2)
-    session.add_all([pending, scraped])
-    await session.flush()
-    session.add(TracklistVersion(id=uuid.uuid4(), tracklist_id=scraped.id, version_number=1))
-    await session.flush()
-
-    result = await get_scrape_pending_tracklists(session)
-    ids = {tl.id for tl in result}
-    assert pending.id in ids
-    assert scraped.id not in ids
 
 
 @pytest.mark.asyncio

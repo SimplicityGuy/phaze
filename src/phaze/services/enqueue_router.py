@@ -75,9 +75,9 @@ logger = structlog.get_logger(__name__)
 CONTROLLER_TASKS: frozenset[str] = frozenset(
     {
         "generate_proposals",
-        "search_tracklist",
-        "scrape_and_store_tracklist",
         "match_tracklist_to_discogs",
+        # phaze-2akf: an operator-triggered re-arm of the drain for specific pages. It was a
+        # monthly cron; it is now enqueued from the admin UI, which is why it stays routable.
         "refresh_tracklists",
         # phaze-fq9h.7: the drain slice and its request-free status read. Both are controller
         # tasks -- they need ctx["async_session"] and the headful browser phaze-fq9h.5 puts in the
@@ -90,9 +90,8 @@ CONTROLLER_TASKS: frozenset[str] = frozenset(
 )
 """Fileless tasks the application-server controller worker consumes.
 
-MUST mirror ``phaze.tasks.controller.settings["functions"]`` (+ the
-``refresh_tracklists`` cron). ``reap_stalled_scans`` is cron-only (never
-operator-enqueued) so it is intentionally omitted from the routable set.
+MUST mirror ``phaze.tasks.controller.settings["functions"]``. ``reap_stalled_scans`` is cron-only
+(never operator-enqueued) so it is intentionally omitted from the routable set.
 """
 
 LANE_TASKS: dict[str, frozenset[str]] = {

@@ -177,6 +177,19 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 150
 target-version = "py313"
+# Do not format fenced code blocks in markdown. ruff 0.16 began formatting them, which would
+# rewrite 217 committed docs (214 under .planning/, 3 under docs/) purely to normalise comment
+# spacing inside illustrative snippets.
+#
+# This is the same decision `[tool.ruff.format] docstring-code-format = false` already records:
+# embedded samples are PROSE, and their layout is often the point -- an aligned trailing comment
+# marking the line a write-up is about, or a deliberately terse fragment that is not valid
+# standalone module text. Reformatting them edits documentation to satisfy a code formatter.
+#
+# Nothing gated this (`just lint` is `ruff check`; the pre-commit ruff-format hook is Python-only),
+# so it never failed CI -- but a bare `uv run ruff format` by anyone churned 217 files. Excluding
+# markdown makes that impossible rather than merely unlikely.
+extend-exclude = ["*.md"]
 
 [tool.ruff.format]
 docstring-code-format = false
@@ -285,6 +298,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.16.0",
+    "ruff>=0.16.1",
     "vulture>=2.16",
 ]

@@ -93,7 +93,7 @@ async def test_missing_saq_jobs_table_degrades_to_no_op() -> None:
     ("blob", "expected"),
     [
         (b'{"function": "process_file", "key": "process_file:1"}', {"function": "process_file", "key": "process_file:1"}),
-        ('{"function": "search_tracklist"}', {"function": "search_tracklist"}),
+        ('{"function": "match_tracklist_to_discogs"}', {"function": "match_tracklist_to_discogs"}),
         ({"function": "already_a_dict"}, {"function": "already_a_dict"}),  # pre-decoded passthrough
         (b"\xff\xfenot json", None),  # not JSON -> None
         (b'"a json string but not a dict"', None),  # JSON, not a dict -> None

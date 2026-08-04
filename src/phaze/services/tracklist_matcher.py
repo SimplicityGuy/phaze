@@ -57,12 +57,15 @@ def compute_match_confidence(
     CRITICAL (Pitfall 3): If artist+event similarity > 80 but date differs
     by more than 3 days, cap at 89 to prevent false auto-links.
 
-    NOTE: this cap only fires when BOTH sides supply a date. The auto-link path guards the
-    remaining holes (a missing scraped or file date) at the decision site in
-    ``tasks/tracklist.search_tracklist`` -- an auto-link requires a confirmed same-window date, so
-    artist+event alone can never auto-link a wrong-date tracklist (phaze-rkxy). This function's
-    score is left intact for the manual "find better match" panel, which displays it for operator
-    review rather than gating on it.
+    NOTE: this cap only fires when BOTH sides supply a date. phaze-2akf retired the caller that
+    used to guard the remaining holes itself (``tasks/tracklist.search_tracklist``, whose rule was
+    phaze-rkxy: an auto-link requires a CONFIRMED same-window date, so artist+event alone can never
+    auto-link a wrong-date tracklist). That rule is not lost -- it moved and got stricter. The
+    drain's selector, ``services/tracklist_result_scorer.select_result``, calls this function and
+    then applies its own disqualifiers: a date mismatch DISQUALIFIES a row outright rather than
+    merely capping it below a threshold, and an ambiguous/absent date drops the candidate to a
+    transient refusal instead of a silent accept. This function's score is left intact for the
+    manual "find better match" panel, which displays it for operator review rather than gating.
 
     CRITICAL (phaze-bsdu): normalizing by ``weights_used`` (only the signals present on BOTH
     sides) lets an INCOMPLETE scrape reach full confidence. With no artist on either side, a bare

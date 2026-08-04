@@ -213,11 +213,11 @@ no-op instead of doubling work (the lesson of the 2026-06-11 queue-doubling inci
 A single `before_enqueue` chokepoint, `apply_deterministic_key`
 (`tasks/_shared/deterministic_key.py`), assigns `job.key = "<function>:<natural_id>"` for
 every registered pipeline task — overriding any caller-supplied key so no call site can
-drift back to a random UUID (anti-drift, threat T-35-01). The registry (`_KEY_BUILDERS`,
-9 functions) maps each task's payload to its natural id: `process_file`,
-`extract_file_metadata`, `search_tracklist`, `push_file`,
-`s3_upload`, and `submit_cloud_job` key on `<file_id>`; `scrape_and_store_tracklist` and
-`match_tracklist_to_discogs` key on `<tracklist_id>`; and the batch task
+drift back to a random UUID (anti-drift, threat T-35-01). The registry (`_KEY_BUILDERS`)
+maps each task's payload to its natural id: `process_file`,
+`extract_file_metadata`, `push_file`,
+`s3_upload`, and `submit_cloud_job` key on `<file_id>`;
+`match_tracklist_to_discogs` keys on `<tracklist_id>`; and the batch task
 `generate_proposals` keys on an order-independent
 SHA-256 of its sorted `file_ids` set. The hook is registered on **every** enqueue seam —
 both worker queues (`tasks/controller.py`, `tasks/agent_worker.py`) and the per-agent

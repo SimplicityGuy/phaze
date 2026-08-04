@@ -2,13 +2,14 @@
 
    The Tracklist workspace used to render one row per Tracklist inline and unbounded
    (shell._render_stage -> get_tracklist_set_rows, no LIMIT). It now ships an empty host div below
-   the three step cards that hx-gets this fragment on load -- the SAME paging contract
+   the aggregate cards that hx-gets this fragment on load -- the SAME paging contract
    (phaze.services.pagination) as #analyze-files-view / #metadata-files-view.
 
-   IMPORTANT (paging contract rule 7): ONLY the table moved. The three step cards above it, and their
-   SEARCH / SCRAPE / MATCH ALL triggers, stay server-rendered by the shell and keep enqueuing their
-   UNBOUNDED pending sets (get_untracked_files / get_scrape_pending_tracklists /
-   get_match_pending_tracklists). Bounding a render is not bounding an enqueue -- do not merge them.
+   IMPORTANT (paging contract rule 7): ONLY the table moved. The aggregates above it -- the drain
+   panel and the MATCH step card -- stay server-rendered/hx-get by the shell, and MATCH ALL keeps
+   enqueuing its UNBOUNDED pending set (get_match_pending_tracklists). Bounding a render is not
+   bounding an enqueue -- do not merge them. (phaze-2akf: the SEARCH ALL / SCRAPE ALL triggers this
+   note used to name are gone with the legacy scrape path.)
 
    The per-row presentation is UNCHANGED: the Tracks cell is the D-07 N/M track-level coverage
    (confident/total) from TracklistTrack.confidence, emerald at full coverage and blue otherwise.
@@ -54,7 +55,7 @@
     {% endfor %}
     {% set rows = ns.rows %}
     {% set empty_heading = "No tracklists yet" %}
-    {% set empty_body = "Run SEARCH ALL to discover 1001Tracklists matches for your live sets." %}
+    {% set empty_body = "Run a drain slice to look your live sets up on 1001Tracklists." %}
     {% set row_id_prefix = "tracklist-row" %}
     {% set table_id = "tracklist-set-table" %}
     {% include "pipeline/partials/_file_table.html" %}
