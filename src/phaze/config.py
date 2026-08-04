@@ -729,50 +729,89 @@ class ControlSettings(BaseSettings):
     # FAIL-CLOSED ROLLOUT (epic phaze-5fta DESIGN note 5). `convention_date_fallback_enabled`
     # DEFAULTS OFF and gates the WHOLE capability, not just the store lookup: with it off the
     # proposal path adds nothing to the LLM context and nothing to the stored `context_used`, so
-    # proposals are byte-identical to the pre-phaze-5fta behavior. It stays off until
-    # phaze-5fta.5 validates derived dates against an independent source (1001tracklists / event
-    # histories) and flips it on deliberately. "Consistent" is not "correct": every group in the
-    # 2026-07-18 measurement was internally unanimous, and NONE of them has yet been checked
-    # against anything outside the archive. Turning this on early would put unvalidated
-    # inferences into real rename proposals, which are the one output that permanently rewrites
-    # what is on disk.
+    # proposals are byte-identical to the pre-phaze-5fta behavior.
+    #
+    # phaze-5fta.5 has now run that external validation and it PASSED: 130 ambiguous corpus files
+    # were read under their group's learned convention and tested against published event dates
+    # from five independent sources, giving 120 discriminating matches, 9 non-discriminating
+    # matches (tokens like 07-07 that read the same either way) and 0 contradictions, spanning 12
+    # release groups. So the epic's "NONE of them has been checked against anything outside the
+    # archive" no longer holds.
+    #
+    # It STILL DEFAULTS OFF. The validation answers "are the derived dates correct"; it does not
+    # answer "should inferred dates rewrite filenames on disk", which is an operator decision that
+    # phaze-5fta.5 was explicitly not authorized to take. Flip it deliberately, with the
+    # phaze-5fta.6 approval UI in place so every derived date is shown as an inference with its
+    # evidence rather than as a bare fact.
     convention_date_fallback_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "convention_date_fallback_enabled"),
         description=(
             "Enable the corpus-learned release-group date-order fallback in the rename-proposal path (phaze-5fta.4). "
-            "DEFAULT OFF -- convention-derived dates must not drive proposals until phaze-5fta.5's external validation."
+            "DEFAULT OFF -- phaze-5fta.5's external validation passed, but enabling it is a separate operator decision."
         ),
     )
     # The EVIDENCE bar: how many self-resolving files must support a group's convention before it
-    # may resolve any of that group's ambiguous ones. Named, not inline, because phaze-5fta.5 owns
-    # the final value and must be able to move it without hunting for a literal. The default is a
-    # deliberately conservative placeholder: it admits the measurement's large groups (talion
-    # 1,373 / 1king 232) and excludes the long tail of groups whose "unanimity" is a handful of
-    # files and therefore indistinguishable from chance.
+    # may resolve any of that group's ambiguous ones.
+    #
+    # 50 is now the VALIDATED value, not the placeholder it started as -- phaze-5fta.5 confirmed it
+    # against a full sweep of the live corpus (6,911 files carrying the NN-NN-YYYY shape, 4,480
+    # self-resolving, 2,431 ambiguous, 98 groups) rather than accepting it by default. What the
+    # sweep showed:
+    #
+    #   bar   groups admitted   ambiguous files resolved (of the 1,672 that land in ANY group)
+    #    50        10                 1,419  (84.9%)
+    #    25        14                 1,474  (88.2%)
+    #    10        23                 1,564  (93.5%)
+    #     1        75                 1,617  (96.7%)
+    #
+    # The tail is nearly worthless and expensive: dropping 50 -> 1 multiplies the number of trusted
+    # conventions by 7.5x to buy 11.8 more points of coverage, and every group it adds rests on a
+    # handful of files whose "unanimity" is indistinguishable from chance. 50 sits on the knee.
+    # It is also the bar the external validation actually covers: the smallest EXTERNALLY validated
+    # group has 57 supporting files, and no group below 50 has meaningful external evidence.
     convention_date_min_supporting: int = Field(
         default=50,
         ge=1,
         validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_MIN_SUPPORTING", "convention_date_min_supporting"),
         description=(
             "Minimum supporting_count before a learned release-group date-order convention may resolve an ambiguous date "
-            "(phaze-5fta.4). Provisional -- phaze-5fta.5 sets the validated value."
+            "(phaze-5fta.4). Validated at 50 by phaze-5fta.5 against the live corpus."
         ),
     )
     # The PURITY bar, compared against `filename_convention.confidence` -- which IS
     # supporting/(supporting+contradicting), derived by Postgres from the counts and impossible to
     # hand-set. Separate from the evidence bar on purpose: 1,000 supporting files do not make a
     # convention safe if 400 files contradict it, and 60/0 is a different object from 60/40 even
-    # though both clear the count bar. Default 0.99 admits the measured unanimous groups and
-    # rejects anything with meaningful drift.
+    # though both clear the count bar.
+    #
+    # RAISED 0.99 -> 1.0 by phaze-5fta.5, which is the one threshold that measurement changed. Two
+    # reasons, both from the corpus sweep rather than from taste:
+    #
+    # 1. 0.99 IS NOT A RULE, IT IS A GROUP-SIZE TEST. A single contradicting file yields 0.9939 in
+    #    a 165-file group (admitted), 0.9901 in a 101-file group (admitted) and 0.9836 in a 61-file
+    #    group (rejected) -- the SAME evidence, "this uploader has written the other order at least
+    #    once", passing or failing on how prolific the uploader is. Unanimity is the property the
+    #    epic actually measured and the only one that means the same thing at every size.
+    # 2. AT THIS EVIDENCE BAR, 0.99 WAS INERT. With min_supporting=50, 0.95 and 0.99 admit an
+    #    identical 10 groups; only 1.0 changes the set. So the old default was not buying the
+    #    safety its comment claimed -- the count bar was doing all the work.
+    #
+    # The cost is measured, not hypothetical: exactly one group (164 supporting / 1 contradicting)
+    # falls out, taking 97 ambiguous files with it -- 1,419 -> 1,322 resolved, 84.9% -> 79.1% of
+    # the grouped ambiguous corpus. Its lone contradicting file is a genuine day-first release
+    # (the day component is > 12, so it cannot be read any other way), i.e. real proof that this
+    # uploader sometimes encodes the other order, not an extractor artifact. An operator who
+    # accepts that documented outlier can re-admit the group with PHAZE_CONVENTION_DATE_MIN_PURITY;
+    # the default should not make that choice silently.
     convention_date_min_purity: float = Field(
-        default=0.99,
+        default=1.0,
         ge=0.0,
         le=1.0,
         validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_MIN_PURITY", "convention_date_min_purity"),
         description=(
             "Minimum filename_convention.confidence (supporting share of supporting+contradicting) before a learned "
-            "date-order convention may resolve an ambiguous date (phaze-5fta.4). Provisional -- phaze-5fta.5 sets the validated value."
+            "date-order convention may resolve an ambiguous date (phaze-5fta.4). Raised to 1.0 (unanimity) by phaze-5fta.5."
         ),
     )
 
