@@ -265,11 +265,13 @@ async def test_row_detail_self_resolved_date_is_unchanged(client: AsyncClient, s
 
 @pytest.mark.asyncio
 async def test_row_detail_no_date_convention_key_is_unchanged(client: AsyncClient, session: AsyncSession) -> None:
-    """The default (flag-off) shape -- no ``date_convention`` key at all -- renders a bare date.
+    """The unresolved shape -- no ``date_convention`` key at all -- renders a bare date.
 
-    This is the byte-for-byte-equivalent case the epic's fail-closed rollout guarantees:
-    ``convention_date_fallback_enabled`` defaults off, so ``context_used`` never carries
-    ``date_convention`` and this row_detail view must be indistinguishable from before phaze-5fta.6.
+    This is the byte-for-byte-equivalent case the epic's gated rollout guarantees. It is reached
+    whenever the fallback did not resolve the date: ``convention_date_fallback_enabled`` set false,
+    or on (the default since 2026-08-04) but with no group clearing the evidence and purity bars.
+    ``context_used`` then carries no ``date_convention`` and this row_detail view must be
+    indistinguishable from before phaze-5fta.6.
     """
     proposal = await create_test_proposal(
         session,

@@ -1,13 +1,18 @@
-"""The fail-closed rollout knobs for the convention-derived date fallback (phaze-5fta.4).
+"""The rollout knobs for the convention-derived date fallback (phaze-5fta.4).
 
 The default of ``convention_date_fallback_enabled`` is not a preference -- it is the epic's DESIGN
-note 5. A rename proposal is the one output that permanently rewrites what is on disk.
+note 5. The flag shipped fail-closed because a rename proposal feeds the one workflow that
+permanently rewrites what is on disk.
 
-phaze-5fta.5 has since run the external validation the note demanded, and it passed (130 derived
-dates checked against published event dates from five independent sources: 120 discriminating
-matches, 9 non-discriminating, 0 contradictions, across 12 release groups). The flag still defaults
-OFF, because "the derived dates are correct" and "inferred dates may rewrite filenames" are
-different questions and only the first has been answered here.
+phaze-5fta.5 ran the external validation the note demanded, and it passed (130 derived dates checked
+against published event dates from five independent sources: 120 discriminating matches, 9
+non-discriminating, 0 contradictions, across 12 release groups). On that evidence the operator
+flipped the default ON (2026-08-04). The second question the validation deliberately left open --
+"may inferred dates rewrite filenames" -- was answered by the operator, and narrowly: a derived date
+reaches a rename PROPOSAL, never the filesystem, and the approval workflow still gates every move.
+
+These tests pin BOTH directions. The default is a decision with a record behind it, so a silent flip
+either way should fail the build rather than change behavior on a live archive unnoticed.
 """
 
 from __future__ import annotations
@@ -18,13 +23,15 @@ import pytest
 from phaze.config import ControlSettings
 
 
-class TestFailClosedDefault:
-    def test_the_fallback_defaults_off(self) -> None:
-        assert ControlSettings().convention_date_fallback_enabled is False
-
-    def test_it_takes_an_explicit_operator_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "true")
+class TestEnabledDefault:
+    def test_the_fallback_defaults_on(self) -> None:
+        """Enabled by operator decision on phaze-5fta.5's passing external validation."""
         assert ControlSettings().convention_date_fallback_enabled is True
+
+    def test_it_stays_one_env_var_from_fail_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Restoring the pre-phaze-5fta behavior must not need a code change or a deploy of one."""
+        monkeypatch.setenv("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "false")
+        assert ControlSettings().convention_date_fallback_enabled is False
 
 
 class TestThresholds:

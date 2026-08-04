@@ -75,9 +75,10 @@ async def generate_proposals(ctx: dict[str, Any], *, file_ids: list[str], batch_
 
         # phaze-5fta.4: resolve each file's scene date and attach its provenance, in the SAME read
         # session (one batched store query, no extra connection). This is a no-op returning 0 --
-        # and issuing no query at all -- while `convention_date_fallback_enabled` is off, which is
-        # the default and what keeps proposals byte-identical to today's behavior until
-        # phaze-5fta.5's external validation flips the flag on.
+        # and issuing no query at all -- while `convention_date_fallback_enabled` is off. It now
+        # defaults ON (phaze-5fta.5's external validation passed and the operator enabled it), so
+        # this is the live path; setting the flag false restores the byte-identical pre-phaze-5fta
+        # behavior without a code change.
         await annotate_date_conventions(
             session,
             files_context,

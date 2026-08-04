@@ -430,9 +430,9 @@ async def store_proposals(
         # `input_context`, but the approval UI (phaze-5fta.6) must render "date inferred from
         # release-group convention -- N supporting, M contradicting" without reaching into the raw
         # LLM payload, and a top-level key is the stable contract for that. Added ONLY when the
-        # gated fallback actually resolved a date: with `convention_date_fallback_enabled` off
-        # (the default) the key is absent from the context, so `context_used` is byte-identical to
-        # what this function has always written.
+        # gated fallback actually resolved a date: with `convention_date_fallback_enabled` off, or
+        # on but with no group clearing the bars, the key is absent from the context and
+        # `context_used` is byte-identical to what this function has always written.
         date_provenance = files_context[idx].get(DATE_CONVENTION_CONTEXT_KEY)
         if date_provenance is not None:
             context_used[DATE_CONVENTION_CONTEXT_KEY] = date_provenance

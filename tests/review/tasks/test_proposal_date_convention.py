@@ -83,6 +83,23 @@ def enable_fallback(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped
     return _enable
 
 
+@pytest.fixture
+def disable_fallback(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """Flip ``convention_date_fallback_enabled`` OFF for one test.
+
+    Set explicitly rather than leaning on the field default: the default is an operator decision
+    that has already moved once (off -> on, 2026-08-04, on phaze-5fta.5's validation). A flag-off
+    test that reads the default is really asserting the default, and silently inverts its own
+    meaning the next time that decision changes -- which is exactly what happened to these tests.
+    """
+    from phaze.tasks import proposal as proposal_task
+
+    def _disable() -> None:
+        monkeypatch.setattr(proposal_task.settings, "convention_date_fallback_enabled", False)
+
+    return _disable
+
+
 async def _seed_convention(session: AsyncSession, *, supporting: int = 500, contradicting: int = 0) -> FilenameConvention:
     row = FilenameConvention(
         scope=CONVENTION_SCOPE,
@@ -114,8 +131,9 @@ async def _context_used(session: AsyncSession, file_id: uuid.UUID) -> dict[str, 
 
 
 class TestFlagOff:
-    async def test_no_provenance_reaches_the_llm_or_the_stored_row(self, session: AsyncSession, make_file: Any) -> None:
-        """The default. Even with a perfectly qualifying convention present, nothing changes."""
+    async def test_no_provenance_reaches_the_llm_or_the_stored_row(self, session: AsyncSession, make_file: Any, disable_fallback: Any) -> None:
+        """The opt-out path. Even with a perfectly qualifying convention present, nothing changes."""
+        disable_fallback()
         await _seed_convention(session)
         record = await make_file(original_filename=AMBIGUOUS)
 
@@ -125,8 +143,9 @@ class TestFlagOff:
         assert CONTEXT_KEY not in service.seen[0]
         assert CONTEXT_KEY not in await _context_used(session, record.id)
 
-    async def test_a_self_resolving_date_is_also_left_alone(self, session: AsyncSession, make_file: Any) -> None:
+    async def test_a_self_resolving_date_is_also_left_alone(self, session: AsyncSession, make_file: Any, disable_fallback: Any) -> None:
         """The flag gates the WHOLE capability, not merely the store lookup."""
+        disable_fallback()
         record = await make_file(original_filename=SELF_RESOLVING)
 
         service, _ = await _run(session, [record.id])
@@ -184,11 +203,16 @@ class TestFlagOn:
         assert CONTEXT_KEY not in service.seen[0]
 
     async def test_the_provenance_survives_a_re_run_that_overwrites_the_pending_proposal(
-        self, session: AsyncSession, make_file: Any, enable_fallback: Any
+        self, session: AsyncSession, make_file: Any, enable_fallback: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``store_proposals`` upserts the one PENDING row -- the new provenance must land with it."""
+        from phaze.tasks import proposal as proposal_task
+
         await _seed_convention(session)
         record = await make_file(original_filename=AMBIGUOUS)
+        # First pass with the capability off, so the stored row starts WITHOUT provenance and the
+        # assertion below is about the upsert rather than about the flag's default.
+        monkeypatch.setattr(proposal_task.settings, "convention_date_fallback_enabled", False)
         await _run(session, [record.id])
         assert CONTEXT_KEY not in await _context_used(session, record.id)
 

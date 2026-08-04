@@ -726,29 +726,39 @@ class ControlSettings(BaseSettings):
     # ------------------------------------------------------------------------------------
     # phaze-5fta.4: corpus-learned date-order fallback for the rename-proposal path.
     #
-    # FAIL-CLOSED ROLLOUT (epic phaze-5fta DESIGN note 5). `convention_date_fallback_enabled`
-    # DEFAULTS OFF and gates the WHOLE capability, not just the store lookup: with it off the
-    # proposal path adds nothing to the LLM context and nothing to the stored `context_used`, so
-    # proposals are byte-identical to the pre-phaze-5fta behavior.
+    # ROLLOUT HISTORY (epic phaze-5fta DESIGN note 5). `convention_date_fallback_enabled` gates the
+    # WHOLE capability, not just the store lookup: with it off the proposal path adds nothing to the
+    # LLM context and nothing to the stored `context_used`, so proposals are byte-identical to the
+    # pre-phaze-5fta behavior. It shipped fail-closed for exactly that reason.
     #
-    # phaze-5fta.5 has now run that external validation and it PASSED: 130 ambiguous corpus files
+    # phaze-5fta.5 has now run the external validation and it PASSED: 130 ambiguous corpus files
     # were read under their group's learned convention and tested against published event dates
     # from five independent sources, giving 120 discriminating matches, 9 non-discriminating
     # matches (tokens like 07-07 that read the same either way) and 0 contradictions, spanning 12
     # release groups. So the epic's "NONE of them has been checked against anything outside the
     # archive" no longer holds.
     #
-    # It STILL DEFAULTS OFF. The validation answers "are the derived dates correct"; it does not
-    # answer "should inferred dates rewrite filenames on disk", which is an operator decision that
-    # phaze-5fta.5 was explicitly not authorized to take. Flip it deliberately, with the
-    # phaze-5fta.6 approval UI in place so every derived date is shown as an inference with its
-    # evidence rather than as a bare fact.
+    # It now DEFAULTS ON, by deliberate operator decision (2026-08-04). The two questions the
+    # validation kept separate were "are the derived dates correct" (settled: yes) and "may inferred
+    # dates rewrite filenames on disk" (an operator call). The second is answered here, and it is
+    # narrower than it sounds: a derived date reaches a rename PROPOSAL, never the filesystem. The
+    # human-in-the-loop approval workflow still gates every move, and phaze-5fta.6's approval UI --
+    # in this same epic -- renders each derived date as an inference with its supporting/
+    # contradicting evidence rather than as a bare fact, so the reviewer sees what they are
+    # approving. Set PHAZE_CONVENTION_DATE_FALLBACK_ENABLED=false to restore the fail-closed
+    # behavior on any deployment.
+    #
+    # Residual risk accepted with this flip: 2 of the 10 admitted groups (142/0 and 131/0, both
+    # unanimous, both clearing every bar) have no externally checkable dates at any effort -- their
+    # ambiguous files are obscure internet-radio streams -- so they are applied on internal
+    # consistency alone. The approval UI is the mitigation.
     convention_date_fallback_enabled: bool = Field(
-        default=False,
+        default=True,
         validation_alias=AliasChoices("PHAZE_CONVENTION_DATE_FALLBACK_ENABLED", "convention_date_fallback_enabled"),
         description=(
             "Enable the corpus-learned release-group date-order fallback in the rename-proposal path (phaze-5fta.4). "
-            "DEFAULT OFF -- phaze-5fta.5's external validation passed, but enabling it is a separate operator decision."
+            "DEFAULT ON -- phaze-5fta.5's external validation passed and the operator enabled it; derived dates reach "
+            "rename proposals only, which the approval workflow still gates. Set false to restore fail-closed behavior."
         ),
     )
     # The EVIDENCE bar: how many self-resolving files must support a group's convention before it

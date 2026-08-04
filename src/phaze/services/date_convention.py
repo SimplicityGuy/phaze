@@ -11,14 +11,15 @@ same self-resolving files are what the convention was learned FROM.
 
 ## Three gates, all of which must pass
 
-1. **The feature flag** (``convention_date_fallback_enabled``) -- **defaults OFF**, and gates the
-   whole capability rather than just the store query. With it off this module writes nothing into
-   the LLM context and nothing into the proposal's ``context_used``, so proposals are byte-identical
-   to the pre-phaze-5fta behavior. phaze-5fta.5 has since validated derived dates against
-   independent published event dates and the check passed with 0 contradictions, but the flag still
-   defaults off: correctness of the inference and permission to rewrite filenames with it are
-   separate questions, and only the first was settled. A rename proposal is the one output that
-   permanently rewrites what is on disk.
+1. **The feature flag** (``convention_date_fallback_enabled``) -- **defaults ON** since 2026-08-04,
+   and gates the whole capability rather than just the store query. With it off this module writes
+   nothing into the LLM context and nothing into the proposal's ``context_used``, so proposals are
+   byte-identical to the pre-phaze-5fta behavior; that fail-closed path is still one env var away
+   (``PHAZE_CONVENTION_DATE_FALLBACK_ENABLED=false``). It shipped off and was flipped on by operator
+   decision after phaze-5fta.5 validated derived dates against independent published event dates
+   with 0 contradictions. The permission question that validation deliberately left open was
+   answered narrowly: a derived date reaches a rename PROPOSAL, never the filesystem, and the
+   approval workflow still gates every move.
 2. **The evidence bar** (``convention_date_min_supporting``) -- a group whose convention rests on a
    handful of files is indistinguishable from chance. Validated at 50 against the live corpus,
    where it admits the 10 groups covering 84.9% of the ambiguous files that land in any group.
