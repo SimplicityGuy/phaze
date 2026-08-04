@@ -14,6 +14,10 @@ supported-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "PT0S"
+
 [manifest]
 constraints = [{ name = "setuptools", specifier = ">=83.0.0" }]
 
@@ -1517,7 +1521,7 @@ requires-dist = [
     { name = "sse-starlette", specifier = ">=3.4.6" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
-    { name = "uvicorn", specifier = ">=0.52.0" },
+    { name = "uvicorn", specifier = ">=0.52.1" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
 

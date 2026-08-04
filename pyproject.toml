@@ -80,7 +80,7 @@ dependencies = [
     "sse-starlette>=3.4.6",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
-    "uvicorn>=0.52.0",
+    "uvicorn>=0.52.1",
     "watchdog>=6.0.0",
 ]
 
@@ -251,6 +251,7 @@ split-on-trailing-comma = true
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
 [tool.uv]
+exclude-newer = "0 days"
 # nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
 # NO dependency cooldown. Operator decision 2026-08-03: resolve every package at its latest
 # published version rather than deferring adoption.
