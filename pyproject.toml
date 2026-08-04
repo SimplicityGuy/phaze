@@ -16,9 +16,9 @@ dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",
     "beautifulsoup4>=4.15.0",
-    "cryptography>=49.0.0",
+    "cryptography>=50.0.0",
     "essentia-tensorflow>=2.1b6.dev1438; sys_platform != 'linux' or platform_machine == 'x86_64'",
-    "fastapi>=0.139.0",
+    "fastapi>=0.140.7",
     "httpx>=0.28.1",
     # Phase 54 (KSUBMIT-01): control-plane Kubernetes client. Submits suspended Kueue Jobs
     # via the kube API, watches them to completion, and reconciles their status. Lives on the
@@ -60,7 +60,7 @@ dependencies = [
     # Phase 70 (MKUE-01): kube_staging parses inline kubeconfig YAML content into a dict for the
     # per-backend kr8s client. Already resolved transitively via the pinned kr8s -- declared
     # explicitly (hygiene) so a future kr8s dropping PyYAML cannot silently break the kubeconfig
-    # parse. Floor at the currently-resolved 6.0.3 (>=7 days old, exclude-newer cooldown satisfied).
+    # parse. Floor at the currently-resolved 6.0.3.
     "PyYAML>=6.0.3",
     "rapidfuzz>=3.14.5",
     # Direct dep since Phase 36: dropping `saq[redis]` removes the transitive `redis`,
@@ -70,7 +70,7 @@ dependencies = [
     # Phase 36: postgres extra pulls psycopg[pool]>=3.3.4 for the PostgresQueue broker.
     "saq[postgres]>=0.26.4",
     "sqlalchemy>=2.0.51",
-    "sse-starlette>=3.4.5",
+    "sse-starlette>=3.4.6",
     "structlog>=26.1.0",
     "tenacity>=9.1.4",
     "uvicorn>=0.51.0",
@@ -231,15 +231,25 @@ split-on-trailing-comma = true
 "tests/**" = ["T201", "PLC", "S105", "ARG001"]
 
 [tool.uv]
-# Supply-chain cooldown: refuse to resolve any package published in the last 7 days.
-# Freshly published versions are the 1.82.7/1.82.8 malicious-release risk class, so we
-# wait out a cooldown before they can enter a lockfile. The window is relative ("7
-# days") rather than a pinned date so it rolls forward on its own; every dependency
-# floor is deliberately kept at a release already older than the window so resolution
-# stays satisfiable (a floor newer than 7 days would make `uv lock` fail). Adopt newer
-# releases by waiting out the cooldown or, when urgent, vetting and overriding via
-# `exclude-newer-package`. `scripts/update-project.sh` re-asserts this across manifests.
-exclude-newer = "7 days"
+# nosemgrep: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+# NO dependency cooldown. Operator decision 2026-08-03: resolve every package at its latest
+# published version rather than deferring adoption.
+#
+# What this gives up, stated so nobody has to reconstruct it: a cooldown exists so a compromised
+# release has time to be detected and yanked before it can enter a lockfile. This repo has already
+# been on the receiving end of that class -- litellm is pinned `>=1.85.7,<1.86.0` because of the
+# March 2026 supply-chain attack on 1.82.7/1.82.8. With no window, a malicious release published
+# minutes ago is eligible the moment `uv lock` runs.
+#
+# The compensating controls that remain: pip-audit, osv-scanner, bandit and Trivy all run in CI on
+# every PR, and `uv.lock` pins exact versions with hashes, so nothing changes without a reviewed
+# lockfile diff. Those catch KNOWN-bad releases; they do not catch a fresh one in its first hours,
+# which is precisely what the cooldown covered.
+#
+# The semgrep suppression above is deliberate and paired with this decision -- the rule hardcodes
+# a 7-day recommendation, so it cannot express "no cooldown, knowingly". Re-adding a window means
+# deleting the nosemgrep line, restoring `exclude-newer`, and re-raising COOLDOWN_DAYS in
+# scripts/update-project.sh (which re-asserts it across manifests).
 environments = [
     # Only support Linux platforms that we build for in CI/CD
     "sys_platform == 'linux' and platform_machine == 'x86_64'",   # linux/amd64
@@ -251,7 +261,7 @@ environments = [
 constraint-dependencies = [
     # setuptools 82.0.1 carries PYSEC-2026-3447 (macOS APFS/HFS+ NFD filename bypasses an NFC
     # MANIFEST.in exclude when packing an sdist); fixed in 83.0.0 (published 2026-07-04, already
-    # past the 7-day cooldown). setuptools is only a transitive test dependency (via moto), so
+    # past the 2-day cooldown). setuptools is only a transitive test dependency (via moto), so
     # floor it here to keep pip-audit clean without promoting it to a direct dependency.
     "setuptools>=83.0.0",
 ]
@@ -259,7 +269,7 @@ constraint-dependencies = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
-    "greenlet>=3.5.3",
+    "greenlet>=3.5.4",
     "httpx>=0.28.1",
     # Phase 53: S3 mock so the staging leg (presign/upload/delete) is testable without a
     # live S3 backend or cluster. The [server] extra (flask/werkzeug) provides
@@ -267,14 +277,14 @@ dev = [
     # is incompatible with moto's in-process `mock_aws`, so the SDK must talk real HTTP to a
     # wire-compatible moto server (this is what makes presigned-URL round-trips testable).
     "moto[server]>=5.2.2",
-    "mypy>=2.2.0",
+    "mypy>=2.3.0",
     "pip-audit>=2.10.1",
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
-    "ruff>=0.15.21",
+    "ruff>=0.16.0",
     "vulture>=2.16",
 ]
