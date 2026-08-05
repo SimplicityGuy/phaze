@@ -199,6 +199,18 @@ class KubeConfig(BaseModel):
     # PV/PVC and references the claim by name only. Unset (None) -> no models volume/mount is emitted
     # (byte-identical manifest, current behavior). The PVC carries ONLY model weights -- never secrets/certs.
     models_pvc_name: str | None = None
+    # ADR-0005 (phaze-k6d5): OPT-IN, and OFF by default. When set, build_job_manifest emits
+    # ``resources.limits.memory`` on the analyze container so a runaway pod is cgroup-OOMKilled
+    # (a predictable, pod-scoped fault) instead of the kernel choosing a victim node-wide
+    # (``constraint=CONSTRAINT_NONE``) -- the failure mode that killed coredns/metrics-server/
+    # local-path-provisioner in production (spike phaze-esut). This is a KERNEL bound only: it is
+    # NEVER read by Kueue's quota accounting, which reads ``memory_request`` exclusively and is
+    # unaffected by this field (ADR-0005 keeps requests authoritative). Unset (None, the default)
+    # -> NO ``limits`` key is emitted at all -- the manifest is byte-identical to today's
+    # (regression-guarded), the same backward-compatibility posture as ``models_pvc_name`` /
+    # ``active_deadline_seconds``. Stays unset until a real Linux measurement (spike follow-up C)
+    # calibrates a number; a guessed default risks OOMKilling legitimate work.
+    memory_limit: str | None = None
     # phaze-202e: OPT-IN, and OFF by default. Emitted as ``spec.activeDeadlineSeconds`` by
     # ``build_job_manifest`` only when set; ``None`` (the default) emits NO key at all, so k8s applies
     # no wall-clock bound to the analyze Job.

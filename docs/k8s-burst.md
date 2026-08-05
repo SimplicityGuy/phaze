@@ -333,9 +333,9 @@ metadata:
 
 One ClusterQueue, **no preemption** (`reclaimWithinCohort: Never` + `withinClusterQueue:
 Never`), covering `cpu` + `memory`. The operator sizes `nominalQuota` for the cluster. There is
-**no `pods` covered resource and no `limits`** — this matches phaze's **requests-only** Job
-manifest (`kube_staging.build_job_manifest` emits `resources.requests` cpu+memory, never
-limits).
+**no `pods` covered resource**, and quota accounting reads `resources.requests` only —
+`resources.limits`, when set (§2.5), is **invisible to Kueue's quota arithmetic** and changes no
+scheduling decision (ADR-0005).
 
 ```bash
 kubectl apply -f clusterqueue.yaml
@@ -362,6 +362,47 @@ spec:
       - name: "memory"
         nominalQuota: "32Gi"
 ```
+
+### 2.5 — Memory limit (optional, bounds the pod — not the scheduler)
+
+`build_job_manifest` emits `resources.requests` **and, opt-in, `resources.limits.memory`**. The
+two are governed by two entirely different systems and answer two entirely different questions:
+
+- `resources.requests.memory` (always emitted, from `[backends.kube].memory_request`) is what
+  **Kueue** admits against — the ClusterQueue `nominalQuota` above is sized against requests
+  summed across in-flight Workloads. This is the **scheduling** input.
+- `resources.limits.memory` (opt-in, from `[backends.kube].memory_limit`, unset by default) is a
+  **kernel cgroup bound on the pod** — it is never read by Kueue's quota accounting and changes
+  no admission or scheduling decision. This is a **containment** knob, not a capacity knob.
+
+Without a limit, a pod that exceeds its request is not cgroup-OOMKilled — because it carries no
+memory ceiling of its own, the kernel treats the OOM as **global**
+(`oom-kill:constraint=CONSTRAINT_NONE`) and can pick *any* process on the node by
+`oom_score_adj`, including `coredns`, `metrics-server`, or `local-path-provisioner`. Setting
+`memory_limit` converts that into a deterministic, pod-scoped OOMKill of the offending analyze
+pod instead (ADR-0005 —
+[`docs/design/0005-analyze-job-memory-limits.md`](design/0005-analyze-job-memory-limits.md)).
+It does **not** reduce peak memory usage by one byte, and it does **not** change what Kueue
+admits — it only changes which process the kernel kills when usage exceeds what the node has.
+
+```toml
+[backends.kube]
+# ... api_url / namespace / local_queue / job_image / memory_request as usual ...
+memory_limit = "16Gi"   # OPTIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
+```
+
+Set it **above** `memory_request`, not equal to it — equal values (on both cpu *and* memory)
+would promote the pod's QoS class to `Guaranteed`, which this deployment deliberately avoids:
+`build_job_manifest` never emits a CPU limit, so a memory-only limit leaves the pod `Burstable`
+(confirmed by the `kubepods/burstable` cgroup path in production OOM records, and pinned by
+`tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable`).
+
+> Leave `memory_limit` unset (the default) and no `limits` key is emitted at all — the manifest
+> is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There is
+> currently no code-computed default; a real Linux measurement (spike follow-up C) has not
+> happened yet, and a guessed number risks OOMKilling legitimate work. An interim operator
+> starting point on a 31 GB node: `memory_request = "12Gi"`, `memory_limit = "16Gi"`, concurrency
+> 1 (see the ADR).
 
 ### 3 — LocalQueue (the object phaze references by name)
 

@@ -228,17 +228,25 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
 
-    **SUPERSEDED (2026-08-04) -- do not re-adopt the requests-only lock without reading
-    ADR-0005** (``docs/design/0005-analyze-job-memory-limits.md``), which supersedes it on
-    measured evidence from spike ``phaze-esut``. The lock rested on the premise that requests
-    approximate actual usage; the spike measured a duration-INDEPENDENT 8.5-10.5 GiB floor that
-    EVERY file exceeds (a 3.3-minute file peaks at 9.73 GiB against an 8Gi request), and the
-    absence of a limit is what made the resulting kills ``constraint=CONSTRAINT_NONE`` global
-    OOMs that took out coredns/metrics-server/local-path-provisioner instead of cgroup-OOMKilling
-    the offending pod. Note the stated rationale above is about ``requests`` (true, and ADR-0005
-    keeps requests authoritative) -- it never supported omitting ``limits``, which Kueue's quota
-    accounting does not read. THIS FUNCTION IS STILL REQUESTS-ONLY: emitting an optional
-    ``KubeConfig.memory_limit`` is scoped as its own bead, not done in the spike.
+    **SUPERSEDED (2026-08-04) -- ADR-0005** (``docs/design/0005-analyze-job-memory-limits.md``)
+    supersedes the requests-only lock above on measured evidence from spike ``phaze-esut``. The
+    lock rested on the premise that requests approximate actual usage; the spike measured a
+    duration-INDEPENDENT 8.5-10.5 GiB floor that EVERY file exceeds (a 3.3-minute file peaks at
+    9.73 GiB against an 8Gi request), and the absence of a limit is what made the resulting kills
+    ``constraint=CONSTRAINT_NONE`` global OOMs that took out coredns/metrics-server/
+    local-path-provisioner instead of cgroup-OOMKilling the offending pod. Note the stated
+    rationale above is about ``requests`` (true, and ADR-0005 keeps requests authoritative) -- it
+    never supported omitting ``limits``, which Kueue's quota accounting does not read.
+
+    **phaze-k6d5 (this function, implementing ADR-0005):** when the optional
+    ``kube.memory_limit`` is set, the analyze container gains ``resources.limits.memory`` --
+    ``requests`` is untouched (Kueue's quota input stays authoritative), and NO CPU limit is
+    emitted (a memory-only limit does not promote the pod's QoS class off Burstable -- see
+    ``tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable``).
+    When ``memory_limit`` is unset (the default), NO ``limits`` key is emitted at all -- the
+    manifest is byte-identical to the pre-ADR-0005 form (regression-guarded), the same
+    backward-compatibility posture already used for ``models_pvc_name`` /
+    ``active_deadline_seconds``.
 
     The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
     KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
@@ -375,6 +383,17 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             }
         )
         pod_spec["containers"][0]["volumeMounts"].append({"name": "models", "mountPath": "/models", "readOnly": True})
+    # ADR-0005 (phaze-k6d5): OPT-IN memory limit, OFF by default. When set, the analyze container
+    # gains `resources.limits.memory` so the kernel cgroup-OOMKills the offending pod instead of a
+    # global, node-scoped OOM choosing a victim by oom_score_adj (the failure mode that killed
+    # coredns/metrics-server/local-path-provisioner in production). `requests` is NOT touched --
+    # Kueue's quota accounting reads requests only and is unaffected. Deliberately NO cpu limit
+    # (memory-only keeps the pod QoS class Burstable, not Guaranteed -- see
+    # test_build_job_manifest_memory_limit_keeps_qos_burstable). Unset (None, the default) -> NO
+    # `limits` key at all, so the manifest stays byte-identical to the pre-ADR-0005 form
+    # (regression-guarded by test_build_job_manifest_omits_memory_limit_by_default).
+    if kube.memory_limit:
+        manifest["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"] = {"memory": kube.memory_limit}
     return manifest
 
 

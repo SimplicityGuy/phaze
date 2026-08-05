@@ -250,6 +250,61 @@ def test_build_job_manifest_omits_models_volume_when_unset() -> None:
     assert [m["name"] for m in pod_spec["containers"][0]["volumeMounts"]] == ["phaze-ca"]
 
 
+def test_build_job_manifest_emits_memory_limit_when_set() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE: with ``memory_limit`` set, the analyze container carries
+    ``resources.limits.memory`` == the configured value, and ``resources.requests`` is UNCHANGED
+    (Kueue's quota accounting reads requests only; ADR-0005 keeps requests authoritative -- the
+    limit is a kernel bound, invisible to scheduling, and must not distort the request)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources["limits"] == {"memory": "16Gi"}
+    assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # untouched by ADR-0005
+    assert "cpu" not in resources["limits"]  # deliberately memory-only (QoS stays Burstable)
+
+
+def test_build_job_manifest_omits_memory_limit_by_default() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE / regression guard: with ``memory_limit`` unset (the
+    default), the manifest is BYTE-IDENTICAL to the pre-ADR-0005, requests-only form -- no
+    ``limits`` key, not an empty ``limits: {}``. Any consumer that has not opted in sees zero
+    change. Asserted structurally (not by eye) via a full manifest equality against the
+    known-good pre-ADR-0005 shape."""
+    fid = uuid.uuid4()
+    kube = _kube()
+    assert kube.memory_limit is None  # the field default is OFF
+
+    manifest = kube_staging.build_job_manifest(fid, kube)
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources == {"requests": {"cpu": "2", "memory": "4Gi"}}  # no "limits" key at all
+
+    # Full-manifest byte-identical assertion: rebuilding with memory_limit explicitly set to None
+    # yields the exact same dict as the default -- no sentinel, no drift.
+    assert manifest == kube_staging.build_job_manifest(fid, _kube(memory_limit=None))
+
+
+def test_build_job_manifest_memory_limit_keeps_qos_burstable() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE: a memory limit WITHOUT a matching CPU limit must not
+    promote the pod's Kubernetes QoS class to Guaranteed -- Guaranteed requires EVERY container to
+    set limits == requests on BOTH cpu and memory (K8s QoS spec). Verified here rather than
+    assumed: a QoS change would silently alter eviction ordering, which is exactly what ADR-0005
+    promises NOT to do (the pods are already Burstable per the OOM records; this must stay true)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    def _qos_class(res: dict[str, dict[str, str]]) -> str:
+        """Minimal K8s QoS classifier (BestEffort/Burstable/Guaranteed) mirroring kubelet's rule."""
+        requests, limits = res.get("requests", {}), res.get("limits", {})
+        if not requests and not limits:
+            return "BestEffort"
+        if requests.get("cpu") == limits.get("cpu") and requests.get("memory") == limits.get("memory") and requests and limits:
+            return "Guaranteed"
+        return "Burstable"
+
+    assert "cpu" not in resources["limits"]  # no CPU limit -> Guaranteed is structurally impossible
+    assert _qos_class(resources) == "Burstable"
+
+
 def test_build_job_manifest_injects_env_contract() -> None:
     """JOB-ENV-CONTRACT: the analyze container carries the per-Job PHAZE_JOB_FILE_ID (== str(file_id))
     PLUS an envFrom that sources the static agent env from the operator-created ConfigMap + Secret.
