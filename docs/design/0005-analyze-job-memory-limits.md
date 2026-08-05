@@ -74,6 +74,17 @@ It is worth separating two claims that the original lock ran together:
    `memory_request: 12Gi`, `memory_limit: 16Gi`, concurrency 1 — to be re-derived from a Linux
    measurement (spike follow-up C) rather than from the macOS floor plus the observed ratchet.
 
+> **Update 2026-08-05 — the Linux measurement ran (`phaze-7i0k`,
+> [report](../spikes/phaze-7i0k-linux-memory-measurement.md)) and the interim numbers in point 5
+> are superseded: `memory_request: 9Gi`, `memory_limit: 12Gi`, concurrency 2.** The Linux peak is
+> 7.99 GiB synthetic and 7.92–7.96 GiB on real production audio — *lower* than the macOS floor
+> this ADR reasoned from, and with no ratchet above it. 12Gi over-reserved by 50%; 16Gi sat above
+> the 15.27 GiB floor of the pathological OOM population it was meant to backstop. **The decision
+> itself is unaffected and, if anything, better supported:** the pathological runs were not
+> reproduced under any allocator, thread, concurrency, or audio-content variant, so they are not
+> reachable by tuning — which is exactly the argument for a kernel-enforced limit rather than a
+> larger request. The `None` code default stays as decided in point 1.
+
 ## Consequences
 
 **Intended.** A pod that exceeds its limit is OOMKilled by its own cgroup. The victim is

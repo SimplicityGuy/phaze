@@ -387,8 +387,9 @@ admits — it only changes which process the kernel kills when usage exceeds wha
 
 ```toml
 [backends.kube]
-# ... api_url / namespace / local_queue / job_image / memory_request as usual ...
-memory_limit = "16Gi"   # OPTIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
+# ... api_url / namespace / local_queue / job_image as usual ...
+memory_request = "9Gi"   # Kueue admits against this. Measured Linux peak 7.99 GiB + ~13%.
+memory_limit   = "12Gi"  # OPTIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
 ```
 
 Set it **above** `memory_request`, not equal to it — equal values (on both cpu *and* memory)
@@ -399,10 +400,36 @@ would promote the pod's QoS class to `Guaranteed`, which this deployment deliber
 
 > Leave `memory_limit` unset (the default) and no `limits` key is emitted at all — the manifest
 > is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There is
-> currently no code-computed default; a real Linux measurement (spike follow-up C) has not
-> happened yet, and a guessed number risks OOMKilling legitimate work. An interim operator
-> starting point on a 31 GB node: `memory_request = "12Gi"`, `memory_limit = "16Gi"`, concurrency
-> 1 (see the ADR).
+> deliberately **no code-computed default**: the right value is a property of the operator's node,
+> and a shipped default that silently starts OOMKilling somebody's cluster is the wrong direction
+> for an opt-in knob.
+
+**Calibrated sizing for a 31 GB node — `memory_request = "9Gi"`, `memory_limit = "12Gi"`,
+concurrency 2.** These replace the interim 12Gi/16Gi, which was extrapolated from a macOS
+measurement plus an assumed allocator ratchet that
+[the Linux measurement](spikes/phaze-7i0k-linux-memory-measurement.md) refuted:
+
+| input | measured |
+| --- | ---: |
+| Linux peak, 30 coarse windows (synthetic, the cap ceiling) | 7.987 GiB |
+| Linux peak, real audio in production (3 independent runs) | 7.919–7.956 GiB |
+| Linux peak, 10-minute file at production caps | 6.836 GiB |
+
+- **The request must cover the peak, because the peak is flat in duration.** Every file pays
+  6–8 GiB, so 8Gi is below the floor for a three-minute song. 9Gi covers the measured maximum
+  with 13% margin.
+- **The limit is a backstop, not a bound on normal work.** 12Gi is 1.5× the measured peak — above
+  anything ever measured on Linux, and below the 15.27 GiB floor of the pathological population
+  seen in production OOM records, so it catches exactly those and nothing else. 16Gi sits *above*
+  that floor and would let the smaller pathological runs through.
+- **The request is what makes the limit node-safe.** At an 8Gi request, a 24Gi ClusterQueue admits
+  **3** jobs, whose worst case under a 12Gi limit is 36 GiB — more than a 31 GB node has. At 9Gi
+  it admits **2**: worst case 24 GiB, leaving ~7 GiB for k0s/kubelet/coredns/metrics-server.
+  Steady state is ~16 GiB.
+- **Also worth setting on the analyze container:** `TF_NUM_INTRAOP_THREADS=4`,
+  `TF_NUM_INTEROP_THREADS=1`, `OMP_NUM_THREADS=4`. Measured −14.4% peak for +8.2% wall time on a
+  path that is bound by single-threaded decode, not by TF. The knee is exactly at 4 — 2 threads
+  buys 0.001 GiB more for another 62 points of wall clock.
 
 ### 3 — LocalQueue (the object phaze references by name)
 

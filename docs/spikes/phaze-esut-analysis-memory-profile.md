@@ -46,11 +46,17 @@ document is a `tracemalloc` number.** Because `ru_maxrss` is monotonic, the *del
 high-water between two marks is exactly the new peak attributable to the stage between them,
 which is what makes the per-stage attribution below sound rather than inferred.
 
-**The load-bearing limitation, stated up front:** all measurements are macOS/arm64. The
-production nodes are Linux/glibc. §7 explains why that gap is the most plausible account of
-production's 16.7–30.2 GB against this host's 9.0–11.7 GiB, marks that explanation as an
-**inference rather than a measurement**, and scopes a bead to confirm it. It does not change
-the verdict, because duration-independence is a property of the code path, not of the allocator.
+**The load-bearing limitation, stated up front:** all measurements *in this document* are
+macOS/arm64. The production nodes are Linux/glibc. §7 gave an inference about that gap and scoped
+a bead to confirm it. **That bead ran** — `phaze-7i0k`, 2026-08-05,
+[`phaze-7i0k-linux-memory-measurement.md`](phaze-7i0k-linux-memory-measurement.md) — and found
+Linux **cheaper** than this host by 25–39%, with **no ratchet** — §7's allocator inference is
+retracted. Every number below is macOS; read §7 for the Linux equivalents before sizing anything.
+The verdict is unchanged either way, because duration-independence is a property of the code path,
+not of the allocator — and it reproduced across the same 216× duration span.
+
+**On units:** `ru_maxrss` here is **bytes** (Darwin). On Linux the same field is **KiB**.
+Comparing the two without that conversion produces a 1024× error.
 
 ______________________________________________________________________
 
@@ -223,6 +229,12 @@ behave differently from this host.
 **Verdict:** roughly **40% of the floor is avoidable retention** with no loss of work and no
 extra model loads; the remainder is closer to inherent, pending the Linux measurement.
 
+> **Measured on Linux (`phaze-7i0k`).** Graph residency costs **+3.995 GiB** there against
+> +4.090 GiB here — the avoidable term is platform-independent to within 2.3%. Because Linux's
+> per-inference arena is 6× smaller (0.87 GiB against 5.26 GiB), that same 4 GiB is **50% of the
+> 7.99 GiB Linux envelope maximum**, not 40%. The 3–4 GiB post-change estimate survives, landing
+> at ≈3.5–4.5 GiB — or ≈3.0–3.9 GiB combined with the 4-thread intra-op cap.
+
 ______________________________________________________________________
 
 ## 6. Do the existing fine/coarse caps bound memory? — **No. They bound work.**
@@ -241,24 +253,91 @@ ______________________________________________________________________
 
 ## 7. Why production sees 16.7–30.2 GB and this host sees 9.0–11.7 GiB
 
-**Marked explicitly as inference. This was not measured — no Linux host was available.**
+> **MEASURED — 2026-08-05, and the inference below it was wrong.** Follow-up C ran this spike's
+> harness on the real Linux/glibc burst node against the deployed image and model set. Full
+> report: [`phaze-7i0k-linux-memory-measurement.md`](phaze-7i0k-linux-memory-measurement.md).
+> The original text of this section is retained in §7.1 as the superseded record.
 
-**(a) Allocator.** macOS's magazine allocator returns freed pages to the OS: instantaneous RSS
-visibly oscillated **3.256 ↔ 8.205 GiB** across the 30-window run while the high-water sat at
-10.39 GiB. Linux glibc `malloc` with per-thread arenas does not trim by default, so the same
-allocation pattern becomes a **monotone ratchet toward the envelope maximum**, then accumulates
-fragmentation. The production values — 16.7, 17.1, 18.5, 20.9, 21.2, 23.4, 23.4, 30.2 — form a
-**continuum**, which is the signature of a ratchet sampled at kill time, not of a fixed peak.
+### 7.0 What the measurement found
 
-**(b) Thread pools.** TensorFlow sizes intra-op pools from the core count and each worker thread
-gets its own arena. Measured here: `TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1
-OMP_NUM_THREADS=1` cut post-inference RSS from **5.00 → 1.79 GiB** (peak 8.94 → 8.39) at **5.1×
-the wall time** (53 s → 272 s per window). Not a viable mitigation on its own, but it locates a
-large share of the footprint in *resident-but-freeable* memory — exactly the component glibc
-would decline to return.
+**Linux is not more expensive than this host — it is 25–39% cheaper, and there is no ratchet.**
+The same 3.3-minute file peaks at **5.948 GiB** on Linux against 9.734 GiB here; the 30-window
+envelope maximum is **7.987 GiB** against 10.39 GiB. Three *live production* analyses of real
+audio on the same image, sampled externally, peaked at **7.919 / 7.928 / 7.956 GiB** — within 0.9%
+of the synthetic figure, which is what licenses a sine-wave measurement to size a production
+limit.
 
-Both point the same way, and neither disturbs the verdict: **duration-independence is a property
-of the code path.** Follow-up C exists to convert this section from inference to measurement.
+| | this host (macOS) | measured on Linux |
+| --- | ---: | ---: |
+| `dur_200` (3.3 min), production caps | 9.734 GiB | **5.948 GiB** |
+| `dur_600` (10 min), production caps | 9.165 GiB | **6.836 GiB** |
+| `dur_3600` (60 min), production caps | 11.739 GiB | **7.949 GiB** |
+| `dur_43200` (12.1 h), caps 2 | 9.033 GiB | **6.463 GiB** |
+| 1 coarse window | 8.55 GiB | **5.809 GiB** |
+| 30 coarse windows (envelope maximum) | 10.39 GiB | **7.987 GiB** |
+| 34 graphs resident, zero inference | +4.090 GiB | **+3.995 GiB** |
+| production real-audio peak (3 runs) | — | **7.919–7.956 GiB** |
+
+The whole §3a sweep reproduces in shape: across a 216× duration span the Linux peak stays inside
+**5.9–8.0 GiB** and moves non-monotonically, with the 12.1-hour file cheaper than the 60-minute
+one. §3d's predictor holds with new constants — a least-squares refit over the seven Linux window-count
+points gives `peak_GiB ≈ 6.06 + 0.64 × ln(min(n_coarse, cap))` (R² 0.93, max |error| 0.37 GiB),
+with the same logarithmic shape and a range of **5.8–8.0 GiB** instead of 8.5–10.5 GiB.
+
+**(a) Allocator — retracted in full.** There is no monotone ratchet. A host-side 2-second trace of
+a 30-window Linux run finds instantaneous RSS **below its own running maximum in 96% of 1042
+samples**, shedding up to **1.485 GiB** at a time and swinging **5.314 ↔ 7.962 GiB** — a sawtooth,
+like this host's, just shallower (2.6 GiB against 4.9) and with a higher floor. glibc *does*
+retain more; that retention is worth about 1.5 GiB and is *why Linux is cheaper*, because arena
+reuse absorbs transients this host re-faults and counts in its high-water. Nor does the curve
+climb toward the envelope maximum: the high-water **saturates at 7.9 GiB by window 10** and moves
++1.1% over the following twenty windows, with free-but-retained arena bytes flat at 0.59 GiB — no
+fragmentation accumulation. **The claim that the production values form a ratchet continuum is
+retracted**: the full kill distribution has a hard floor at 15.27 GiB with clusters near 2×/3×/4×
+the measured working set — a multiplicative signature no allocator-retention mechanism produces.
+Capping arenas (`MALLOC_ARENA_MAX=1`) is worth **3.6%**, so per-thread arena proliferation was the
+wrong pool to suspect. (An *in-process* sampler does report a clean monotone ratchet — max
+drawdown 0.081 GiB — but that is an artifact: essentia holds the GIL through inference, so the
+sampler thread only runs between models, always at the same phase of the cycle.)
+
+**(b) Thread pools — survives, in reduced form, and the knee is at 4.** Capping TF intra-op
+threads saves **14.4%** of peak on Linux (7.488 → 6.412 GiB), not the near-3× the macOS
+post-inference RSS figure suggested. The 5.1× wall-time penalty does not generalize: it was
+measured only at 1 thread, and on Linux **the entire saving is already available at 4 threads for
++8.2% wall time** (2 threads: +70%; 1 thread: +211%, for 0.001 GiB more). This is the one
+mitigation worth adopting.
+
+Neither disturbs the verdict: **duration-independence is a property of the code path**, and it
+reproduced exactly.
+
+### 7.1 Superseded — the original inference
+
+*Retained verbatim. Marked explicitly as inference at the time; (a) is now refuted in its
+consequence and (b) confirmed at roughly a fifth of its assumed magnitude.*
+
+> **(a) Allocator.** macOS's magazine allocator returns freed pages to the OS: instantaneous RSS
+> visibly oscillated **3.256 ↔ 8.205 GiB** across the 30-window run while the high-water sat at
+> 10.39 GiB. Linux glibc `malloc` with per-thread arenas does not trim by default, so the same
+> allocation pattern becomes a **monotone ratchet toward the envelope maximum**, then accumulates
+> fragmentation. The production values — 16.7, 17.1, 18.5, 20.9, 21.2, 23.4, 23.4, 30.2 — form a
+> **continuum**, which is the signature of a ratchet sampled at kill time, not of a fixed peak.
+>
+> **(b) Thread pools.** TensorFlow sizes intra-op pools from the core count and each worker thread
+> gets its own arena. Measured here: `TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1
+> OMP_NUM_THREADS=1` cut post-inference RSS from **5.00 → 1.79 GiB** (peak 8.94 → 8.39) at **5.1×
+> the wall time** (53 s → 272 s per window). Not a viable mitigation on its own, but it locates a
+> large share of the footprint in *resident-but-freeable* memory — exactly the component glibc
+> would decline to return.
+
+### 7.2 What remains genuinely open
+
+The production kill values are real — 20 kernel OOM records, `anon-rss` 15.27–30.41 GiB, all
+`constraint=CONSTRAINT_NONE`. Follow-up C **did not reproduce them** under any variant tested
+(30 windows, onset-dense synthetic audio, three-way concurrency, every allocator and thread
+setting), and ruled out the mechanism this section proposed. Their 2–4× multiplicative structure
+is unexplained and is filed as its own investigation. The operational consequence is unchanged
+and if anything sharper: the outlier is not reachable by tuning, which is exactly the case for a
+**limit as a backstop** (ADR-0005) rather than a larger request.
 
 ______________________________________________________________________
 
@@ -341,6 +420,16 @@ Ordered by value per unit of effort:
    Linux ratchet exceeds 16 GiB. Re-derive both numbers from the follow-up C measurement — 12/16
    is sized from this host's 8.5–10.5 GiB floor plus the production ratchet, not from a Linux
    measurement.
+
+   > **Superseded by the follow-up C measurement (`phaze-7i0k`): use `memory_request: 9Gi`,
+   > `memory_limit: 12Gi`, concurrency 2.** The Linux peak is 7.99 GiB synthetic / 7.96 GiB on
+   > real production audio, so 12Gi over-reserves by 50% and 16Gi sits *above* the 15.27 GiB floor
+   > of the pathological population it was meant to catch. 9Gi is the measured peak + 13%; 12Gi is
+   > 1.5× it, below that floor, so it catches every pathological run and nothing else. The request
+   > is the load-bearing half: at 8Gi, Kueue's 24Gi quota admits 3 jobs whose worst case under a
+   > 12Gi limit is 36 GiB — more than the node has. At 9Gi it admits 2 (worst case 24 GiB, ~7 GiB
+   > left for the system). Concurrency 2 is safe; "not even 1" was derived from the same
+   > unexplained p100 that §7.2 shows is not the operating footprint.
 1. **Do not gate admission on duration as a memory control.** It is the wrong variable: it would
    admit every 3-minute file, and those peak just as high. The bead note's "45 known landmines"
    framing is superseded — gating those 45 would not have prevented a single OOM.
@@ -364,7 +453,7 @@ ______________________________________________________________________
 | --- | --- | --- | --- |
 | **A** | Restructure `_run_model_sets` to model-major iteration so exactly one TF graph is resident; hold the ≤30 coarse buffers (345 MB) instead of 34 graphs (4.09 GiB). Re-measure with this spike's harness. | Removes the single largest avoidable term. Est. peak 9.7 → 3–4 GiB (**must be measured**). Same number of model constructions as today. | **High value**, medium |
 | **B** | Emit `resources.limits.memory` in `build_job_manifest` from a new optional `KubeConfig.memory_limit`; absent ⇒ no `limits` key (byte-identical manifest, backward compatible). Implements ADR-0005. | Turns a node crash into a predictable pod OOMKill. Stops phaze killing `coredns`/`metrics-server`/`local-path-provisioner`. | **High value**, small |
-| **C** | Measure peak + ratchet on a real Linux burst node; test `MALLOC_ARENA_MAX`, periodic `malloc_trim`, and TF thread caps. | Converts §7 from inference to measurement and calibrates B's default and §10's 12Gi/16Gi. | Medium |
+| **C** | ~~Measure peak + ratchet on a real Linux burst node; test `MALLOC_ARENA_MAX`, periodic `malloc_trim`, and TF thread caps.~~ **DONE 2026-08-05 (`phaze-7i0k`)** — see [the measurement](phaze-7i0k-linux-memory-measurement.md). §7 rewritten; 12Gi/16Gi corrected to 9Gi/12Gi; only the TF 4-thread cap is worth adopting. | Converts §7 from inference to measurement and calibrates B's default and §10's 12Gi/16Gi. | Medium |
 | **D** | Replace the O(total-duration) per-window decode — seek-based extraction, or a single decode pass feeding both tiers. | O(90 × duration) → O(duration). Unblocks the >4 h tail and recovers the idle CPU in §8. | Medium-high |
 | **E** | Raise the documented `memory_request` guidance in `docs/k8s-burst.md`; log measured post-model-load RSS once at analyze start. | Makes the floor observable instead of rediscovered by an OOM. | Small |
 
