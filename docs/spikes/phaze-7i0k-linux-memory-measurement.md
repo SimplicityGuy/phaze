@@ -415,6 +415,41 @@ plus the production ratchet". The ratchet term was wrong, so both numbers inheri
 
 ### 7c. Follow-up A's 3–4 GiB estimate — **survives, and removes a larger fraction**
 
+> **SHIPPED AND MEASURED — 2026-08-05, `phaze-15sw`.** Model-major iteration landed. Re-run of
+> **this** harness, on this node, against the deployed image (`job:2026.8.0`, whose
+> `analysis.py` is byte-identical to the tree the change was made on) and the deployed models
+> PVC. The baseline column was independently re-measured here, not copied: it reproduces this
+> spike to **0.01%** on the envelope maximum and **0.3%** on graph residency.
+>
+> | measurement | window-major | model-major | Δ |
+> | --- | ---: | ---: | ---: |
+> | 34 graphs resident, zero inference | 4.007 GiB† | **0.806 GiB** | −79.9% |
+> | 1 coarse window | 5.713 GiB† | **2.126 GiB** | −62.8% |
+> | **30 coarse windows (envelope maximum)** | **7.986 GiB†** | **2.482 GiB** | **−68.9%** |
+> | `dur_200` (3.3 min), production caps | 5.675 GiB† | **2.074 GiB** | −63.5% |
+> | `dur_600` (10 min), production caps | 6.793 GiB† | **2.141 GiB** | −68.5% |
+> | `dur_3600` (60 min), production caps | 7.949 GiB‡ | **2.489 GiB** | −68.7% |
+>
+> † re-measured by `phaze-15sw`. ‡ this spike's figure, not re-run: its full pipeline costs ~51
+> min per run, dominated by §8's non-seeking decode. The re-measured rows validate the harness
+> against this spike to **0.01%** on the envelope maximum and **0.3%** on graph residency, which
+> is what licenses citing the one row that was not repeated.
+>
+> **Duration-independence survives the restructure**, and tightens: 2.074 / 2.141 / 2.489 GiB
+> across an 18× duration span, against 5.675 / 6.793 / 7.949 before. What is left is close to a
+> constant plus the ≤`coarse_cap` buffers, which is the shape the change predicted.
+>
+> **The estimate was beaten, not met**: 2.1–2.5 GiB against a predicted 3.5–4.5, and −69% of the
+> peak against a predicted −50%. The error was in the remainder term, not the removed one —
+> §2d's arena figures were read as "one architecture *family* stands behind the resident graph",
+> but sweeping one model at a time never stands the vggish arena up on top of the musicnn one.
+> **Wall clock: +2.1%** at 30 windows (2115.0 → 2159.0 s) and within noise on the full pipeline
+> (`dur_200` 110.5 → 110.3 s, `dur_600` 345.2 → 345.2 s); model constructions per file unchanged
+> at 34; `analyze_file` output **byte-identical** (sha256 match + `cmp`) on both files. The
+> host-side sampler (14 283 samples) puts instantaneous RSS at 0.754–2.482 GiB, below its own
+> running maximum in **100%** of samples — the same sawtooth as §3, one third the height.
+
+
 Graph residency measures **+3.995 GiB on Linux** (§2d) against a 7.99 GiB envelope maximum, so
 model-major iteration removes **50%** of the peak on Linux, not the 40% estimated on macOS. The
 predicted remainder
@@ -433,7 +468,7 @@ ______________________________________________________________________
 | 1 | **`memory_request: 9Gi`, `memory_limit: 12Gi`, concurrency 2** on a 31 GB node | §7a. Replaces the interim 12Gi/16Gi, which was sized from an assumed ratchet. |
 | 2 | **`TF_NUM_INTRAOP_THREADS=4 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=4`** on the analyze container | §5. −14.4% peak for +8.2% wall on a path that is not wall-clock bound. The only knob that pays. |
 | 3 | **Do not adopt** `MALLOC_ARENA_MAX`, periodic `malloc_trim`, `MALLOC_MMAP_THRESHOLD_`, or a THP opt-out | §4, §5. Each is ≤4.2% on the peak, and `malloc_trim` is 0.0% on the quantity a limit enforces. |
-| 4 | **Proceed with follow-up A** | §7c. It is the only change measured to move the peak by more than 15%, and it removes 50% of it. |
+| 4 | ~~**Proceed with follow-up A**~~ **DONE 2026-08-05 (`phaze-15sw`)** — envelope maximum **7.986 → 2.482 GiB (−68.9%)** for **+2.1%** wall clock, output byte-identical | §7c. It was the only change measured to move the peak by more than 15%, and it removed ~69% of it — more than the 50% predicted. **Recommendation 1's `9Gi`/`12Gi` is now sized against a peak that no longer exists** and should be re-derived from 2.5 GiB (tracked as `phaze-7qfd`); this bead deliberately did not touch `docs/k8s-burst.md`. |
 | 5 | **File the §6d anomaly as its own investigation** | The 2–4× population is real, unexplained, and unreachable by tuning. The limit contains it; it does not explain it. |
 
 ______________________________________________________________________

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import gc
 import json
 import logging
 import os
@@ -124,6 +125,18 @@ GENRE_MODEL = ModelConfig(
 # Module-level caches for lazy loading in ProcessPoolExecutor workers
 # ---------------------------------------------------------------------------
 
+# _classifier_cache holds the ONE graph currently being swept across the coarse windows.
+#
+# It used to hold all 34 for the process's lifetime. That was a deliberate, documented
+# time optimization -- "inference-only; no per-window graph reload" -- priced against
+# wall-clock and never against a memory bound. Spike phaze-esut measured the residency it
+# bought: +4.090 GiB on macOS / +3.995 GiB on Linux (phaze-7i0k) with ZERO inference
+# performed, ~50% of the Linux peak, while `_run_model_sets` used the graphs strictly one
+# at a time. The memory bound became the binding constraint (node-scoped OOM kills), so
+# phaze-15sw repriced the trade rather than fixing a bug: `_run_model_sets_over_windows`
+# iterates MODEL-major, so each graph is constructed exactly once per file (the load cost
+# the cache existed to avoid is unchanged), swept across every coarse window, then released
+# by `_release_classifier` before the next is built.
 _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
@@ -144,7 +157,14 @@ def _suppress_essentia_logging() -> None:
 
 
 def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
-    """Get or create a cached classifier instance for the given model."""
+    """Get or create the cached classifier instance for the given model.
+
+    Unchanged construction; what changed (phaze-15sw) is the LIFETIME of what it
+    caches. Under model-major iteration the caller sweeps one model across every
+    window before calling :func:`_release_classifier`, so this still constructs each
+    graph exactly once per file -- the cache hit rate on the hot path is identical --
+    but the cache holds one graph instead of 34.
+    """
     if model.filename in _classifier_cache:
         return _classifier_cache[model.filename]
 
@@ -183,6 +203,31 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
     classifier = _get_classifier(model, models_dir)
     activations = classifier(audio_16k)
     return np.mean(activations, axis=0)
+
+
+def _release_classifier(model_filename: str) -> None:
+    """Evict one graph from ``_classifier_cache`` and hand its native memory back.
+
+    The `TensorflowPredict*` wrapper owns a C++ TF session; dropping the last Python
+    reference runs its destructor, which is what actually returns the graph's arena.
+    **Measured (phaze-15sw, on the Linux burst node, deployed image + model set):** the
+    refcount drop alone already returns it -- popping a vggish graph moves instantaneous
+    RSS 0.500 -> 0.219 GiB *before* any collection, and building then releasing all 34 in
+    turn leaves RSS at 0.263 GiB against 3.751 GiB when they are held co-resident. So the
+    eviction frees memory; it does not merely drop a name.
+
+    ``gc.collect()`` is therefore insurance, not the mechanism: it costs ~0.2 s across the
+    34 releases of a file and closes the case where something in a reference cycle keeps
+    the wrapper alive past the pop. The one such path this module could create -- retaining
+    a caught exception, whose traceback pins ``_predict_single``'s frame and with it the
+    classifier -- is closed at the source in :func:`_sweep_one_model`, which reports a
+    window failure inside the handler and retains only the window index.
+
+    No-op when the model is not cached, so it is safe in a ``finally``.
+    """
+    if _classifier_cache.pop(model_filename, None) is None:
+        return
+    gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -466,30 +511,113 @@ def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[l
     return kept, True
 
 
-def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
-    """Run all 11 characteristic model sets + the genre model on one buffer.
+def _sweep_one_model(
+    model: ModelConfig,
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    failed: set[int],
+    on_failure: Callable[[int], None],
+) -> dict[int, tuple[Any, list[str]]]:
+    """Construct ONE model's graph, run it across every still-live buffer, release it.
 
-    Identical prediction shape to the previous whole-file path, but fed a single
-    coarse-window buffer instead of the whole file. Reuses the module-level
-    ``_classifier_cache`` (inference-only; no per-window graph reload).
+    The model-major primitive (phaze-15sw). ``buffers`` is ``(window_index, audio_16k)``
+    in window order; ``failed`` is the shared per-window kill list, read to skip windows an
+    earlier model already failed on and added to when this model fails on one.
+    Returns ``{window_index: (mean_activations, labels)}`` for the windows that succeeded.
+
+    The prediction call order per window is ``_predict_single`` then ``_get_labels``,
+    identical to the window-major loop this replaced, so a raising ``_get_labels`` fails
+    exactly the same windows it failed before (all of them, one at a time).
+
+    ``on_failure(window_index)`` is invoked from INSIDE the ``except`` block, and only the
+    index is retained afterwards. That is deliberate and memory-load-bearing: keeping the
+    caught exception would keep its traceback, whose ``_predict_single`` frame holds a
+    reference to ``classifier`` -- pinning for the rest of the file the very graph the
+    ``finally`` below is about to evict, and re-creating in the failure path exactly the
+    co-residency this restructure exists to remove. Reporting in-handler also keeps
+    ``log.warning(..., exc_info=True)`` rendering the same traceback it always did.
+
+    The ``finally`` is the other load-bearing line: it is what bounds residency to one
+    graph even when the consumer raises partway through a sweep.
     """
-    features: dict[str, Any] = {}
-    for model_set in MODEL_SETS:
-        set_data: dict[str, list[dict[str, Any]]] = {}
-        for model in model_set.models:
-            predictions = _predict_single(audio_16k, model, models_dir)
-            labels = _get_labels(model.filename, models_dir)
-            set_data[model.variant] = [{"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)]
-        features[model_set.name] = set_data
+    out: dict[int, tuple[Any, list[str]]] = {}
+    try:
+        for key, buf in buffers:
+            if key in failed:
+                continue  # a previous model already killed this window; the window-major loop had abandoned it too
+            try:
+                predictions = _predict_single(buf, model, models_dir)
+                labels = _get_labels(model.filename, models_dir)
+            except Exception:  # per-window failure isolation, hoisted from _analyze_coarse_windows
+                failed.add(key)
+                on_failure(key)  # report NOW; see the docstring on why the exception is not retained
+                continue
+            out[key] = (predictions, labels)
+    finally:
+        _release_classifier(model.filename)
+    return out
 
-    genre_predictions = _predict_single(audio_16k, GENRE_MODEL, models_dir)
-    genre_labels = _get_labels(GENRE_MODEL.filename, models_dir)
-    genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
-    genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
-    features["genre"] = {
-        "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
-    }
-    return features
+
+def _run_model_sets_over_windows(
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    on_failure: Callable[[int], None],
+) -> tuple[dict[int, dict[str, Any]], set[int]]:
+    """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer.
+
+    **Model-major** (phaze-15sw): models are the outer loop, windows the inner one, so
+    exactly one ``TensorflowPredict*`` graph is resident at any instant instead of 34.
+    Each model is still constructed exactly once per file -- no per-window graph reload,
+    so the wall-clock optimization ``_classifier_cache`` existed to provide is fully
+    preserved -- and the price is holding the <=``coarse_cap`` decoded buffers
+    concurrently (30 x 180 s x 16 kHz x 4 B ~= 345 MB) instead of 4.09 GiB of idle graphs.
+    See the ``_classifier_cache`` comment for the measurement that motivated the reprice.
+
+    ``on_failure(window_index)`` fires once, in-handler, for each window an inference
+    fails on; that window is excluded from every later model.
+
+    Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
+    insertion order is pinned to ``MODEL_SETS`` order (pre-seeded) with ``"genre"`` last,
+    matching the window-major build byte for byte -- the dicts are JSON-serialized
+    downstream, where insertion order is output.
+    """
+    features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
+    failed: set[int] = set()
+
+    for model_set in MODEL_SETS:
+        for model in model_set.models:
+            for key, (predictions, labels) in _sweep_one_model(model, buffers, models_dir, failed, on_failure).items():
+                features[key][model_set.name][model.variant] = [
+                    {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
+                ]
+
+    for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure).items():
+        genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
+        genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
+        features[key]["genre"] = {
+            "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
+        }
+
+    return features, failed
+
+
+def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
+    """Run all 11 characteristic model sets + the genre model on ONE buffer.
+
+    The single-buffer entry point, retained for callers/harnesses that hold exactly one
+    window; it is a thin wrapper over :func:`_run_model_sets_over_windows` so there is
+    one inference path, not two. Failure semantics are the pre-phaze-15sw ones: the
+    exception propagates rather than being isolated, because with one window there is
+    nothing to isolate it from. The bare ``raise`` re-raises the exception currently being
+    handled by :func:`_sweep_one_model` -- so the caller still sees the original error and
+    traceback, without that exception ever being stored.
+    """
+
+    def _propagate(_window_index: int) -> None:
+        raise  # intentional bare re-raise: only ever called from inside _sweep_one_model's except block
+
+    features, _failed = _run_model_sets_over_windows([(0, audio_16k)], models_dir, _propagate)
+    return features[0]
 
 
 def _analyze_fine_windows(
@@ -551,14 +679,53 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
     Returns ``(windows, total, sampled)`` mirroring ``_analyze_fine_windows``:
     ``total`` is the natural pre-stride count and ``sampled`` is True when the
     cap forced an even stride.
+
+    Three phases since phaze-15sw, because the inference is MODEL-major (see
+    :func:`_run_model_sets_over_windows`) and a model-major sweep needs every buffer in
+    hand before the first graph is built:
+
+    1. **decode** every kept window up front -- <=``cap`` buffers held concurrently
+       (30 x 180 s x 16 kHz x 4 B ~= 345 MB), deliberately, in exchange for not holding
+       34 co-resident TF graphs (~4 GiB);
+    1. **infer** model-major across all of them, one resident graph at a time;
+    1. **derive + assemble** in window order.
+
+    Per-window failure isolation is preserved across all three: a decode failure drops
+    that window before inference, an inference failure kills only that window (later
+    models skip it), and derivation failure drops it at assembly. Same warning, same
+    ``exc_info``; only the ORDER of the log lines changes, since a window's inference
+    failure is now discovered during the sweep rather than in window order.
     """
     natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
     kept, sampled = _stride_to_cap(natural, cap)
-    coarse_windows: list[CoarseWindow] = []
+
+    def _skip(idx: int, start: float, end: float) -> None:
+        log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+
+    # (1) decode
+    spans: list[tuple[int, float, float]] = []
+    buffers: list[tuple[int, Any]] = []
     for idx, start, end in kept:
         try:
             buf = es.EasyLoader(filename=file_path, sampleRate=_COARSE_SAMPLE_RATE, startTime=start, endTime=end)()
-            features = _run_model_sets(buf, models_dir)
+        except Exception:  # per-window failure isolation: skip, never fail the file
+            _skip(idx, start, end)
+            continue
+        spans.append((idx, start, end))
+        buffers.append((idx, buf))
+
+    # (2) infer, model-major
+    geometry = {idx: (start, end) for idx, start, end in spans}
+    features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, lambda idx: _skip(idx, *geometry[idx]))
+    buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
+
+    # (3) derive + assemble, in window order
+    coarse_windows: list[CoarseWindow] = []
+    for idx, start, end in spans:
+        if idx in failed:
+            continue  # already reported, in-handler, by the model sweep that failed it
+        try:
+            features = features_by_window[idx]
             coarse_windows.append(
                 CoarseWindow(
                     window_index=idx,
@@ -571,7 +738,7 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
                 )
             )
         except Exception:  # per-window failure isolation: skip, never fail the file
-            log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            _skip(idx, start, end)
             continue
     return coarse_windows, len(natural), sampled
 
@@ -614,6 +781,15 @@ def analyze_file(
         ``fine_min_sec`` are dropped (except window 0).
       * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
         every window with audio is analyzed (no minimum-length floor).
+
+    The two passes bound memory differently, and deliberately so. FINE holds one
+    44.1 kHz window at a time. COARSE (phaze-15sw) holds ALL its ``coarse_cap``
+    16 kHz windows at once -- ~345 MB at the default 30 -- because its inference is
+    model-major: one ``TensorflowPredict*`` graph is built, run across every window,
+    and released before the next is built. That trades ~345 MB of PCM for the ~4 GiB
+    of co-resident TF graphs the window-major loop used to hold (phaze-esut /
+    phaze-7i0k), at the same 34 model constructions per file. Both passes stay
+    bounded by the CAPS, not by duration.
 
     Per-window failures are logged and skipped — one bad window never fails the
     file. The one floor (phaze-zibn): if EVERY window fails in BOTH passes while

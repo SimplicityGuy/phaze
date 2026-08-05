@@ -111,3 +111,11 @@ decision once the residency fix (spike follow-up A) has landed and been measured
 *shape of the failure*, which is strictly better, and it is deliberately the small, backward-
 compatible change that ships first. The actual reduction is spike follow-up A — restructuring
 `_run_model_sets` to model-major iteration so one TF graph is resident instead of 34.
+
+> **Follow-up A landed 2026-08-05 (`phaze-15sw`).** Measured on the burst node: the Linux
+> envelope maximum fell **7.986 → 2.482 GiB (−68.9%)**. This ADR's decision is unaffected — a
+> limit is still the right backstop against the unexplained 2–4× population of
+> `phaze-7i0k` §6d, which the restructure does not explain or reach. But the **numbers** in it
+> are now sized against a peak that no longer exists: the interim 12Gi/16Gi, and the 9Gi/12Gi
+> that superseded them, are both derived from an ~8 GiB working set. Re-deriving them from the
+> measured 2.5 GiB is `phaze-7qfd`'s job, not this ADR's.

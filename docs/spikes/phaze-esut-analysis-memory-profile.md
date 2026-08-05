@@ -234,6 +234,15 @@ extra model loads; the remainder is closer to inherent, pending the Linux measur
 > per-inference arena is 6× smaller (0.87 GiB against 5.26 GiB), that same 4 GiB is **50% of the
 > 7.99 GiB Linux envelope maximum**, not 40%. The 3–4 GiB post-change estimate survives, landing
 > at ≈3.5–4.5 GiB — or ≈3.0–3.9 GiB combined with the 4-thread intra-op cap.
+>
+> **Shipped and re-measured (`phaze-15sw`, 2026-08-05).** Model-major iteration landed and the
+> envelope maximum went **7.986 → 2.482 GiB (−69%, 3.2×)** on the same node, same image, same
+> model set — **better than both estimates**, and better than the 50% this note predicted. The
+> full-pipeline sweep lands at **2.074 / 2.141 / 2.489 GiB** for 3.3 min / 10 min / 60 min, so
+> §3's duration-independence not only survives but tightens.
+> The estimate's error was assuming a full architecture family's arena would stand behind the
+> one resident graph; sweeping one model at a time never stands up the vggish arena on top of
+> the musicnn one. Wall clock +2.1%, output byte-identical. See §11 row A.
 
 ______________________________________________________________________
 
@@ -451,7 +460,7 @@ ______________________________________________________________________
 
 | | scope | why | size |
 | --- | --- | --- | --- |
-| **A** | Restructure `_run_model_sets` to model-major iteration so exactly one TF graph is resident; hold the ≤30 coarse buffers (345 MB) instead of 34 graphs (4.09 GiB). Re-measure with this spike's harness. | Removes the single largest avoidable term. Est. peak 9.7 → 3–4 GiB (**must be measured**). Same number of model constructions as today. | **High value**, medium |
+| **A** | ~~Restructure `_run_model_sets` to model-major iteration so exactly one TF graph is resident; hold the ≤30 coarse buffers (345 MB) instead of 34 graphs (4.09 GiB). Re-measure with this spike's harness.~~ **DONE 2026-08-05 (`phaze-15sw`)** — measured on the burst node with this harness: Linux envelope maximum **7.986 → 2.482 GiB (−69%, 3.2×)**, 34 constructions per file unchanged, output byte-identical, wall clock **+2.1%**. Beat the 3–4 GiB estimate; see §5 and the [Linux measurement](phaze-7i0k-linux-memory-measurement.md) §7c. | Removes the single largest avoidable term. ~~Est. peak 9.7 → 3–4 GiB (**must be measured**).~~ Same number of model constructions as today. | **High value**, medium |
 | **B** | Emit `resources.limits.memory` in `build_job_manifest` from a new optional `KubeConfig.memory_limit`; absent ⇒ no `limits` key (byte-identical manifest, backward compatible). Implements ADR-0005. | Turns a node crash into a predictable pod OOMKill. Stops phaze killing `coredns`/`metrics-server`/`local-path-provisioner`. | **High value**, small |
 | **C** | ~~Measure peak + ratchet on a real Linux burst node; test `MALLOC_ARENA_MAX`, periodic `malloc_trim`, and TF thread caps.~~ **DONE 2026-08-05 (`phaze-7i0k`)** — see [the measurement](phaze-7i0k-linux-memory-measurement.md). §7 rewritten; 12Gi/16Gi corrected to 9Gi/12Gi; only the TF 4-thread cap is worth adopting. | Converts §7 from inference to measurement and calibrates B's default and §10's 12Gi/16Gi. | Medium |
 | **D** | Replace the O(total-duration) per-window decode — seek-based extraction, or a single decode pass feeding both tiers. | O(90 × duration) → O(duration). Unblocks the >4 h tail and recovers the idle CPU in §8. | Medium-high |
