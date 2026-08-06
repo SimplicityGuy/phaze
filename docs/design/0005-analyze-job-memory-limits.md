@@ -119,3 +119,12 @@ compatible change that ships first. The actual reduction is spike follow-up A �
 > are now sized against a peak that no longer exists: the interim 12Gi/16Gi, and the 9Gi/12Gi
 > that superseded them, are both derived from an ~8 GiB working set. Re-deriving them from the
 > measured 2.5 GiB is `phaze-7qfd`'s job, not this ADR's.
+>
+> **And the target moved again on 2026-08-06 (`phaze-0582`).** Setting `TensorflowPredict*`'s
+> `batchSize` to 32 (essentia's default is 64; `discogs-effnet-bs64-1` stays at 64 because its
+> Placeholder is fixed) takes the same 60-minute saturated-cap shape from **2.4445 → 1.6206 GiB
+> (−33.7%)** for **+0.40%** wall, re-measured end to end on the burst node. So whoever picks up
+> `phaze-7qfd` should derive from **~1.6 GiB**, not 2.5 — and should do it from a **joint**
+> measurement with `phaze-5lop`'s streaming decode rather than by adding the two spikes'
+> numbers. `phaze-rc1q` §6 is the standing proof that exactly this kind of arithmetic can be
+> wrong by a gigabyte; the two changes point opposite ways and have never run in one process.

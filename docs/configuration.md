@@ -406,6 +406,7 @@ The agent worker reads these to size the per-window decode loop in `services/ana
 | `PHAZE_ANALYSIS_FINE_CAP` (or `analysis_fine_cap`) | No | `60` | Max FINE-tier (BPM/key) windows `analyze_file` decodes per file. Bounded `ge=2` (even-stride keeps first+last) (Phase 43). |
 | `PHAZE_ANALYSIS_COARSE_CAP` (or `analysis_coarse_cap`) | No | `30` | Max COARSE-tier (mood/style/danceability) windows `analyze_file` decodes per file. Bounded `ge=2` (Phase 43). |
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
+| `PHAZE_ANALYSIS_TF_BATCH_SIZE` | No | `32` | `TensorflowPredict*` `batchSize` for the 33 tunable model graphs (phaze-0582). **Not** a `phaze.config` field: read straight from the process environment by `services/analysis.py::_resolve_tf_batch_size` at classifier construction, so a value set only in a `.env` file (and never exported into the environment) does not apply. Essentia's own default is `64`; `32` is the measured knee — `-33.7%` peak analysis RSS for `+0.36%` wall end to end, with lower values flat on memory and batch 1 costing `+55.7%` wall. A malformed or non-positive value logs a warning and falls back to `32`. `discogs-effnet-bs64-1` ignores this entirely and always uses `64`: its graph Placeholder is `[64, 128, 96]`. |
 
 ## Docker Compose-only variables
 

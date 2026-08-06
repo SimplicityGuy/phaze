@@ -273,6 +273,30 @@ oversubscribed 3:1, and the spike's §8 shows the workload is serialized on sing
 anyway. `TF_NUM_INTRAOP_THREADS=4 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=4` on the analyze
 container is a 14% memory reduction for 8% of a wall clock that is not the constraint.
 
+> **The knob this table is missing — `batchSize`. Shipped 2026-08-06 (`phaze-0582`).** Every row
+> above holds `TensorflowPredict*`'s `batchSize` at essentia's default of **64**, because phaze
+> passed no override and the parameter was not in scope here. `phaze-mqq5` found it, and
+> `phaze-0582` re-measured it end to end on this node with this harness's discipline (host-side
+> `VmHWM`, synthetic audio, one arm per process, node idle, the two arms differing only in
+> `analysis.py`):
+>
+> | file / shape | batch 64 | **batch 32** | Δ peak | wall | Δ wall |
+> | --- | ---: | ---: | ---: | ---: | ---: |
+> | `dur_3600`, fine cap saturated (60 fine + 20 coarse) | 2.4445 GiB | **1.6206 GiB** | **−33.7%** | 3039.97 → 3052.09 s | **+0.40%** |
+> | `dur_600` (20 fine + 4 coarse) | 2.1743 GiB | **1.4111 GiB** | **−35.1%** | 344.27 → 345.72 s | **+0.42%** |
+>
+> **It is a bigger lever than anything in the table above, at a twentieth of the wall-clock
+> cost** — −33.7% against the intra-op cap's −14.4%, for +0.4% wall against +8.2%. The two are
+> independent (one sizes the thread pool, the other the input tensor) and the intra-op
+> recommendation is unaffected; sizing it from the host is `phaze-rvcn`.
+>
+> `discogs-effnet-bs64-1` stays at 64 — its Placeholder is `[64, 128, 96]` — so the saving comes
+> from the other 33 graphs. Output is **not** byte-identical and is not claimed to be: max
+> |Δ| **1.79 × 10⁻⁷** over the whole serialized result (3702 leaves), **0/714** top-1 flips,
+> every categorical field identical, `danceability` moving 2.98 × 10⁻⁹. Running the same patched
+> code at `PHAZE_ANALYSIS_TF_BATCH_SIZE=64` reproduces the pre-change output byte-identically,
+> which is what attributes the whole delta to the batch.
+
 ______________________________________________________________________
 
 ## 6. What the production 16.7–30.2 GB numbers actually are
