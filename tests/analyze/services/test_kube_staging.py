@@ -148,6 +148,13 @@ def test_build_job_manifest_spec() -> None:
     assert spec["parallelism"] == 1
     assert spec["completions"] == 1
     assert spec["backoffLimit"] == 0  # KSUBMIT-05: pod-level retry neutralized
+    # phaze-1q4g: backoffLimit alone does NOT make "one Job => one pod" true. The default
+    # ``TerminatingOrFailed`` replacement policy mints a replacement the moment a pod starts
+    # TERMINATING -- before the failure is counted -- so a pod stuck Terminating on a dead node yields
+    # an unbounded stream of replacement pods that phaze never asked for and cannot count against
+    # ``cloud_job.attempts``. ``Failed`` makes the Job wait for the Failed phase, at which point
+    # backoffLimit=0 terminalizes it instead of replacing it.
+    assert spec["podReplacementPolicy"] == "Failed"
     assert spec["ttlSecondsAfterFinished"] == 900
     assert spec["ttlSecondsAfterFinished"] == kube_staging.JOB_TTL_SECONDS
 
@@ -786,6 +793,85 @@ def test_describe_job_pods_summarises_for_the_operator_log() -> None:
     assert kube_staging.describe_job_pods([]) == "no-pods"
     assert kube_staging.describe_job_pods([fake_pod("Pending", waiting_reason="ImagePullBackOff")]) == "Pending/ImagePullBackOff"
     assert kube_staging.describe_job_pods([fake_pod("Running")]) == "Running"
+    # phaze-1q4g: a node-loss reason is what the operator needs first -- it is rendered ahead of any
+    # container state, which on a dead node is a consequence rather than an independent finding.
+    assert kube_staging.describe_job_pods([fake_pod("Failed", status_reason="NodeShutdown")]) == "Failed/NodeShutdown"
+    assert (
+        kube_staging.describe_job_pods([fake_pod("Failed", status_reason="NodeShutdown", waiting_reason="ImagePullBackOff")]) == "Failed/NodeShutdown"
+    )
+    assert (
+        kube_staging.describe_job_pods([fake_pod("Failed", disruption_target_reason="DeletionByTaintManager")])
+        == "Failed/DisruptionTarget/DeletionByTaintManager"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# phaze-1q4g -- NODE_LOST: the pod died WITH ITS NODE, not because of the file
+# --------------------------------------------------------------------------- #
+#
+# A node-loss re-drive deliberately does NOT charge ``cloud_job.attempts`` (an infrastructure fault
+# is not the file's fault). That made it invisible to the retry ceiling, which is how one file
+# produced eight pods over five days against a cap of three, crashing the burst node each time
+# (spike phaze-wcrb §5). The classifier is what makes the case NAMEABLE, so reconcile can give it its
+# own bounded budget instead of either an unbounded free pass or the wrong meter.
+
+
+@pytest.mark.parametrize("reason", sorted(kube_staging.NODE_LOSS_POD_STATUS_REASONS))
+def test_classify_job_pods_flags_every_node_loss_status_reason(reason: str) -> None:
+    """Each node-scoped ``status.reason`` the node controller / kubelet stamps reads as NODE_LOST."""
+    assert kube_staging.classify_job_pods([fake_pod("Failed", status_reason=reason)], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+@pytest.mark.parametrize("reason", ["DeletionByTaintManager", "TerminationByKubelet", "DeletionByPodGC", "PreemptionByScheduler"])
+def test_classify_job_pods_flags_a_disruption_target_condition(reason: str) -> None:
+    """The k8s>=1.26 ``DisruptionTarget=True`` condition is node loss for EVERY reason value.
+
+    Its reason vocabulary is open and version-dependent, and every member of it means the same thing:
+    the control plane, not the analysis, ended this pod. Filtering on the reason would silently miss
+    whichever spelling a future cluster uses -- so only the condition itself is matched.
+    """
+    assert kube_staging.classify_job_pods([fake_pod("Failed", disruption_target_reason=reason)], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+def test_classify_job_pods_ignores_a_false_disruption_target_condition() -> None:
+    """``DisruptionTarget`` with ``status != "True"`` proves nothing and must not read as node loss."""
+    pod = fake_pod("Failed")
+    pod.status["conditions"] = [{"type": "DisruptionTarget", "status": "False", "reason": "DeletionByTaintManager"}]
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_alive_still_dominates_node_loss() -> None:
+    """A Running pod is NEVER terminalized, not even alongside a node-lost sibling (the 1b39 invariant).
+
+    NODE_LOST is ranked strictly below ALIVE on purpose: a pod still reporting Running is doing work,
+    and no node-scoped marker on a *sibling* may kill it. This is the same alive-dominates rule that
+    protects a 2-6 h concert-set analyze, and phaze-1q4g does not weaken it.
+    """
+    pods = [fake_pod("Failed", status_reason="NodeShutdown"), fake_pod("Running")]
+    assert kube_staging.classify_job_pods(pods, now=_NOW) is kube_staging.PodLiveness.ALIVE
+
+
+def test_classify_job_pods_node_loss_outranks_a_dead_before_start_container() -> None:
+    """A node-lost pod whose container also shows a fatal waiting reason is NODE_LOST, not DEAD_BEFORE_START.
+
+    Both facts are true; only one is the cause. The node took the pod, and the container state it left
+    behind is a consequence -- charging it to the operator-misconfig budget would meter the wrong thing.
+    """
+    pod = fake_pod("Failed", status_reason="NodeLost", waiting_reason="CreateContainerConfigError")
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+def test_classify_job_pods_an_in_container_oomkill_is_not_node_loss() -> None:
+    """A container OOMKilled under its OWN ``limits.memory`` is the file overrunning, NOT node loss.
+
+    ADR-0005's memory limit converts a node-scoped OOM into a pod-scoped one; that pod is paying for
+    its own excess and MUST keep charging the ordinary ``attempts`` budget. Only node-scoped fields
+    (``status.reason`` / ``DisruptionTarget``) select the node-loss budget -- a container's terminated
+    reason never does.
+    """
+    pod = fake_pod("Failed")
+    pod.status["containerStatuses"] = [{"name": "analyze", "state": {"terminated": {"reason": "OOMKilled", "exitCode": 137}}}]
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
 
 
 # --------------------------------------------------------------------------- #

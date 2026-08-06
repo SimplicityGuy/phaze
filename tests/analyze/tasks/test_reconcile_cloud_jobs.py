@@ -156,7 +156,7 @@ _KUEUE_BACKEND_ID = "kueue-x64"
 _STAGING_BUCKET_ID = "staging-a"
 
 
-def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
+def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3, node_loss_ceiling: int = 1) -> None:
     """Pin ``get_settings()`` for BOTH the cron and ``KueueBackend.reconcile`` so cap + registry are deterministic.
 
     The Phase-69 cron (SCHED-05) resolves backends via ``resolve_backends(get_settings())`` and dispatches
@@ -166,6 +166,8 @@ def _patch_cap(monkeypatch: pytest.MonkeyPatch, cap: int = 3) -> None:
     """
     settings = SimpleNamespace(
         cloud_submit_max_attempts=cap,
+        # phaze-1q4g: the SECOND re-drive budget -- node-loss re-drives spend this one, not ``attempts``.
+        cloud_node_loss_max_redrives=node_loss_ceiling,
         cloud_enabled=True,
         backends=[
             SimpleNamespace(
@@ -241,7 +243,9 @@ def _make_file() -> FileRecord:
     )
 
 
-async def _seed(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED.value, attempts: int = 0) -> tuple[uuid.UUID, str]:
+async def _seed(
+    session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED.value, attempts: int = 0, node_loss_redrives: int = 0
+) -> tuple[uuid.UUID, str]:
     """Seed a FileRecord + its in-flight cloud_job; return ``(file_id, kueue_workload_name)``."""
     file = _make_file()
     session.add(file)
@@ -256,6 +260,7 @@ async def _seed(session: AsyncSession, *, status: str = CloudJobStatus.SUBMITTED
             status=status,
             kueue_workload=name,
             attempts=attempts,
+            node_loss_redrives=node_loss_redrives,  # phaze-1q4g: the independent node-loss budget already spent.
             staging_bucket=_STAGING_BUCKET_ID,  # MKUE-02: the at-cap staged-object delete acts on this recorded bucket.
         )
     )
@@ -1680,3 +1685,238 @@ async def test_stale_phantom_row_with_landed_callback_records_success(session: A
     assert dj.calls == []  # no Job to delete
     assert s3.calls == []  # success path makes ZERO S3 calls (the callback deleted the object inline)
     assert tally["succeeded"] == 1
+
+
+# --- phaze-1q4g: the node-loss re-drive budget ------------------------------------------------------
+#
+# ``cloud_job.attempts`` is the file's ANALYZE retry budget. A re-drive taken because the pod died WITH
+# ITS NODE deliberately does not charge it -- an infrastructure fault is not the file's fault. What was
+# missing is that "not charged" had become "NOT BOUNDED": one pathological file produced EIGHT pods over
+# five days against a cap of three, taking the burst node down every time (spike phaze-wcrb §5).
+#
+# The fix keeps the two causes DISTINCT (they are genuinely different, and collapsing them would
+# recreate the phaze-1b39 mistake of spending a file's budget on infrastructure) and gives node loss its
+# own, tighter ceiling: ``cloud_job.node_loss_redrives`` against ``cloud_node_loss_max_redrives``.
+
+
+def _node_lost_pod(name: str = "phaze-analyze-dead-node") -> Any:
+    """The production shape: the pod is Failed and its NODE is the stated reason (kernel OOM took the node)."""
+    return fake_pod("Failed", status_reason="NodeShutdown", name=name)
+
+
+async def _simulate_submit_ran(session: AsyncSession, file_id: uuid.UUID, name: str, queue: DedupFakeQueue) -> bool:
+    """Model the re-drive's enqueued ``submit_cloud_job`` actually running; return whether a pod was created.
+
+    A re-drive is only an ENQUEUE (phaze-32wz): the kube POST happens later, on the controller queue,
+    and only then does a new pod exist. This mirrors that upsert -- re-stamp ``kueue_workload`` to the
+    same deterministic Job name -- and clears the SAQ dedup key, so a genuinely-unbounded loop would be
+    free to enqueue again on the next tick rather than being silently absorbed by the dedup.
+    """
+    cj = await _read_cloud_job(session, file_id)
+    if cj.kueue_workload is not None or cj.status != CloudJobStatus.SUBMITTED.value:
+        return False
+    await session.execute(update(CloudJob).where(CloudJob.file_id == file_id).values(kueue_workload=name))
+    await session.commit()
+    queue.finish(submit_cloud_job_key(file_id))
+    return True
+
+
+@pytest.mark.asyncio
+async def test_one_file_cannot_take_the_node_down_eight_times(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE phaze-1q4g REGRESSION TEST -- the exact observed shape, driven to the production count.
+
+    Reproduces cloud job ``713a368e``: every pod dies with its node (kernel OOM on the burst node), the
+    Job is re-driven, and the cycle repeats. Pre-fix, nothing charged a budget on this path, so the
+    "ceiling" of 3 never bound it and the file produced 8 pods over 5 days.
+
+    The loop runs EIGHT full node deaths -- the production number -- and asserts the bound holds:
+    ``1 + cloud_node_loss_max_redrives`` pods, then a terminal. The ``attempts`` budget is untouched
+    throughout (the distinction is preserved, not collapsed), and the row ends in the ONE state the
+    drain can still act on rather than in-flight forever.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+    queue = DedupFakeQueue("controller")
+    pods_created = 1  # the first submit's pod, already running when the story starts
+
+    for _ in range(8):
+        # Each tick: the Job reads Failed and its pod says the NODE took it. The second get_job read is
+        # the re-drive's confirm-gone check.
+        _patch_seam(
+            monkeypatch,
+            get_job=GetJobSpy(fake_job(failed=1, name=name), None),
+            list_pods=ListPodsSpy(_node_lost_pod()),
+        )
+        await reconcile_cloud_jobs(_make_ctx(queue))
+        if await _simulate_submit_ran(session, fid, name, queue):
+            pods_created += 1
+
+    cj = await _read_cloud_job(session, fid)
+    assert pods_created == 2, "a node-killing file must not outlive 1 + cloud_node_loss_max_redrives pods"
+    assert cj.node_loss_redrives == 1  # the node-loss budget, spent exactly once
+    assert cj.attempts == 3  # == cap: the budget-spent MARKER stamped by the terminal, not four failures
+    assert cj.status == CloudJobStatus.AWAITING.value  # terminal: out of IN_FLIGHT, drain-owned, local-bound
+    assert len(queue.captured) == 1  # exactly one re-drive was ever enqueued, dedup or no dedup
+
+
+@pytest.mark.asyncio
+async def test_node_loss_redrive_charges_node_loss_budget_not_attempts(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under the ceiling a node-loss terminal re-drives, spending ``node_loss_redrives`` and NOT ``attempts``.
+
+    The distinction is the point: the file has not failed an analysis, so its analyze retry budget must
+    read 0 afterwards. Everything else about the re-drive is unchanged -- the prior Job is deleted, the
+    staged object is PRESERVED (the re-submitted pod still needs it) and a fresh submit is enqueued.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=2)
+    fid, name = await _seed(session)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), None),
+        list_pods=ListPodsSpy(_node_lost_pod()),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.node_loss_redrives == 1
+    assert cj.attempts == 0  # the analyze budget is NOT charged for a node dying
+    assert cj.status == CloudJobStatus.SUBMITTED.value
+    assert cj.kueue_workload is None  # phaze-32wz pending-confirmation record
+    assert dj.calls == [name]
+    assert s3.calls == []  # re-drive path preserves the staged object
+    assert queue.captured == [("submit_cloud_job", {"file_id": str(fid)})]
+    assert tally["redriven"] == 1
+
+
+@pytest.mark.asyncio
+async def test_node_loss_at_its_ceiling_spills_to_awaiting(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At the node-loss ceiling the row takes the SAME terminal as the attempts cap -- and cannot strand.
+
+    ``awaiting`` is the defined terminal: OUT of :data:`IN_FLIGHT` (the burst-lane slot is released),
+    ``attempts`` stamped to cap so ``select_backend`` can only route it to the local safety net, staged
+    object deleted, Job deleted. It is specifically not a hard analyze failure (reconcile writes no
+    result and no ``FileRecord.state``) and specifically not a SUBMITTED/RUNNING hold, which is the
+    shape that would leave the row un-advanceable by anything but this cron.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session, node_loss_redrives=1)
+    queue = DedupFakeQueue("controller")
+    _, _, dj, s3 = _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), None),
+        list_pods=ListPodsSpy(_node_lost_pod()),
+    )
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.status == CloudJobStatus.AWAITING.value
+    assert cj.status not in (CloudJobStatus.SUBMITTED.value, CloudJobStatus.RUNNING.value)  # never left in-flight
+    assert cj.attempts == 3  # == cap: cloud-ineligible, routed to local by select_backend
+    assert cj.node_loss_redrives == 1  # the counter records what happened; the terminal does not inflate it
+    assert cj.cloud_phase is None  # off the "Running" tile (WR-01)
+    assert cj.inadmissible is False
+    assert s3.calls == [fid]  # the staged object is genuinely dead now
+    assert dj.calls == [name]
+    assert queue.captured == []  # no further pod is ever created for this row
+    assert tally["failed"] == 1
+    # KSUBMIT-03/D-04: cloud flakiness never fails a file. Reconcile wrote NO analysis row of any kind
+    # -- the local safety net still owes this file an analyze outcome, which is why the spill must land
+    # somewhere the drain can pick up rather than in a terminal that merely stops.
+    assert (await session.execute(select(AnalysisResult).where(AnalysisResult.file_id == fid))).scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_ordinary_failure_still_charges_attempts_not_the_node_loss_budget(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two budgets do not leak into each other: an ordinary Job failure charges ``attempts`` only.
+
+    The pod is Failed with no node-scoped marker -- the analysis died, the node is fine. This is the
+    pre-existing D-08 behaviour and must be byte-for-byte unchanged.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+    queue = DedupFakeQueue("controller")
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(failed=1, name=name), None),
+        list_pods=ListPodsSpy(fake_pod("Failed")),
+    )
+
+    await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.node_loss_redrives == 0
+
+
+@pytest.mark.asyncio
+async def test_node_loss_seen_through_the_pod_wedge_charges_the_node_loss_budget(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wedge path classifies node loss too: an admitted Job whose pod died with its node.
+
+    A node can take the pod down without the Job ever reading Failed (the Job is still Admitted and
+    non-terminal). ``_pod_wedge_reason`` reaches the same verdict from pod state, so the same budget is
+    charged whichever surface notices first.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=2)
+    fid, name = await _seed(session, status=CloudJobStatus.RUNNING.value)
+    queue = DedupFakeQueue("controller")
+    _patch_seam(
+        monkeypatch,
+        get_job=GetJobSpy(fake_job(name=name, active=1), None),
+        get_workload=GetWorkloadSpy(ADMITTED),
+        list_pods=ListPodsSpy(fake_pod("Failed", disruption_target_reason="DeletionByTaintManager")),
+    )
+
+    await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.node_loss_redrives == 1
+    assert cj.attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_absence_of_pods_is_never_read_as_node_loss(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A vanished Job with no readable pods charges ``attempts``, NOT the node-loss budget.
+
+    An empty pod list is indistinguishable from a pod label this code does not know, so inferring node
+    loss from an ABSENCE would hand the whole burst lane the looser budget on a single label drift. The
+    node-loss verdict requires a POSITIVE marker on a pod; without one, the ordinary meter runs.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, _name = await _seed(session)
+    queue = DedupFakeQueue("controller")
+    _patch_seam(monkeypatch, get_job=GetJobSpy(None), list_pods=ListPodsSpy())
+
+    await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1
+    assert cj.node_loss_redrives == 0
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_pod_list_degrades_to_the_ordinary_budget(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raising pod list must not abort a terminal the caller already decided on.
+
+    The node-loss classification is a REFINEMENT of a terminal, so a kube hiccup during it may not
+    escape: letting it raise would hand the row to the per-row rollback guard and leave it in-flight
+    holding a burst-lane slot -- trading a bounded retry for a wedged row. It degrades to "cannot prove
+    node loss" -> charge ``attempts``, exactly as before phaze-1q4g.
+    """
+    _patch_cap(monkeypatch, cap=3, node_loss_ceiling=1)
+    fid, name = await _seed(session)
+    queue = DedupFakeQueue("controller")
+
+    async def _raising_list_pods(job_name: str, kube: Any = None) -> list[Any]:
+        raise RuntimeError("kube API unreachable")
+
+    _patch_seam(monkeypatch, get_job=GetJobSpy(fake_job(failed=1, name=name), None))
+    monkeypatch.setattr("phaze.services.kube_staging.list_pods_for_job", _raising_list_pods)
+
+    tally = await reconcile_cloud_jobs(_make_ctx(queue))
+
+    cj = await _read_cloud_job(session, fid)
+    assert cj.attempts == 1  # the terminal still happened -- the row is NOT left wedged in-flight
+    assert cj.node_loss_redrives == 0
+    assert tally["redriven"] == 1

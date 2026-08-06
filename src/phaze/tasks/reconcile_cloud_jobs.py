@@ -33,6 +33,50 @@ hasn't run yet -- recorded by clearing ``kueue_workload``, held quietly with NO 
 NOW a genuine no-callback terminal), and **terminal** (a real Failed/Evicted signal from the Job or
 Workload itself). Only "confirmed vanished" and "terminal" burn a re-drive attempt.
 
+phaze-1q4g -- A NODE-LOSS RE-DRIVE IS BOUNDED, NOT FREE. ``cloud_job.attempts`` is the file's ANALYZE
+retry budget; a re-drive taken because the pod died WITH ITS NODE does not charge it (an
+infrastructure fault is not the file's fault). "Not charged" had silently become "NOT BOUNDED": one
+pathological file produced EIGHT pods over five days against a cap of three, taking the burst node
+down on every one (spike ``phaze-wcrb`` §5). That path now spends its OWN counter,
+``cloud_job.node_loss_redrives``, against its OWN (tightest) ceiling ``cloud_node_loss_max_redrives``
+-- so the cases stay distinguishable on the row itself, and the total pods one row can ever produce
+is ``1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives``. At the node-loss ceiling the row
+takes the SAME terminal as the attempts cap (spill to ``'awaiting'`` with ``attempts=cap``): out of
+IN_FLIGHT, cloud-ineligible, drain-owned, routed to the local safety net -- never left SUBMITTED or
+RUNNING, which is the shape that strands. The other half of the same defect is in
+``kube_staging.build_job_manifest``: ``backoffLimit: 0`` bounds *counted failures*, not *pod
+creations*, so the default ``podReplacementPolicy: TerminatingOrFailed`` was free to mint replacement
+pods for a pod stuck Terminating on a dead node -- a re-drive phaze never made and could not count.
+``podReplacementPolicy: Failed`` closes it.
+
+AUDIT (phaze-1q4g acceptance -- can any OTHER branch re-drive without charging a budget?). Every
+re-drive path in the system was walked; findings, including the negatives:
+
+* ``_reconcile_one`` phantom-row hold (``kueue_workload IS NULL``, fresh) -- holds WITHOUT charging,
+  by design, but creates NO pod and cannot loop: it is bounded by
+  :data:`PENDING_SUBMIT_CONFIRMATION_SECONDS`, after which it terminalizes through the charged path.
+  NOT a bypass.
+* ``_handle_no_callback_terminal`` still-terminating deferral -- returns with NO state change and NO
+  pod created; the next tick re-decides. NOT a bypass.
+* ``Inadmissible`` hold (D-06/D-07) -- deliberately never consumes the cap, and deliberately creates
+  no pod: it holds one Job that is not admitting. NOT a bypass.
+* ``KueueBackend._reap_stranded_staging`` -- charges ``min(attempts + 1, cap)``. Bounded.
+* ``submit_cloud_job`` SAQ retries -- idempotent (deterministic Job name + 409->refresh + a CAS'd
+  upsert), so N retries converge on ONE Job. Not a pod multiplier.
+* **A REAL SECOND BYPASS, recorded and deliberately NOT fixed here.** ``attempts`` lives only on the
+  ``cloud_job`` row, and ``routers/agent_analysis``'s D-14 reaper DELETES that row
+  (``DELETE FROM cloud_job WHERE file_id = ... AND status = 'awaiting'``) on BOTH analyze-terminal
+  seams -- the analysis-result PUT and the analysis-failure POST. A file that spends its cloud budget,
+  spills to local, and then fails locally therefore loses its entire attempt history: a later
+  re-analysis of the same file starts a FRESH chain with ``attempts = 0``, and the ceiling this bead
+  bounds resets with it. That is consistent with the production evidence -- ``713a368e``'s eight pods
+  are two chains of four, 07-24..07-25 and 07-29, with a four-day gap between them, while the other
+  three files show exactly one chain of four each. Fixing it is NOT a one-line WHERE-clause change:
+  the reaper exists to stop ``ix_cloud_job_awaiting`` scanning a monotonically growing dead set at
+  200K rows, and simply retaining budget-spent rows recreates the phaze-9sqa head-of-line poison the
+  drain was paginated to walk past. It needs its own bead (a durable per-file cloud-budget marker
+  that outlives the sidecar row), and this file's ceiling holds within a chain regardless.
+
 phaze-202e -- NO WALL CLOCK MAY KILL A RUN. There is no ``activeDeadlineSeconds`` on the Job by
 default and no age-based terminal for a Job-backed row anywhere in this file. A wedged row is found by
 POD STATE (:func:`_pod_wedge_reason` -> ``kube_staging.classify_job_pods``): a fatal container waiting
@@ -56,7 +100,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import kr8s
 from sqlalchemy import select
@@ -105,6 +149,46 @@ PENDING_SUBMIT_CONFIRMATION_SECONDS = 3600
 # is empty -- i.e. nothing is running to kill. Measured on the Job's ``status.startTime`` (when Kueue
 # un-gated it), never on how long an analysis has run. 15 min = 3x the */5 reconcile tick.
 NO_POD_PROBE_SECONDS = 900
+
+
+class Wedge(NamedTuple):
+    """A terminalizing pod verdict: WHY the pod is dead, and whether its NODE is what killed it.
+
+    phaze-1q4g split this off the bare ``str`` :func:`_pod_wedge_reason` used to return, because the
+    two causes must be budgeted differently. ``node_loss=True`` means the pod died WITH ITS NODE
+    (:attr:`kube_staging.PodLiveness.NODE_LOST`) -- an infrastructure fault that is not the file's
+    fault, so it charges :data:`CloudJob.node_loss_redrives` against ``cloud_node_loss_max_redrives``
+    instead of ``attempts`` against ``cloud_submit_max_attempts``. ``node_loss=False`` is an ordinary
+    dead-before-start / unschedulable / zero-pod wedge and is charged exactly as before.
+    """
+
+    reason: str
+    node_loss: bool
+
+
+async def _terminal_node_loss_reason(name: str, kube: KubeConfig) -> str | None:
+    """Return a node-loss reason when the Job's own pods say the NODE took them, else None (phaze-1q4g).
+
+    The Job-terminal branches (a Job reading Failed, a Workload reading Evicted) know only THAT the
+    work ended, never WHY -- with ``backoffLimit: 0`` a pod disrupted by its node reads exactly like a
+    pod whose analysis crashed. This asks the pods, which do carry the distinction
+    (``status.reason=NodeShutdown/NodeLost/...`` or a ``DisruptionTarget`` condition).
+
+    One extra list call, on the TERMINAL path only (never on the healthy per-tick read), and it MUST
+    NOT raise: a classification is a refinement of a terminal the caller has ALREADY decided on, so
+    letting a kube hiccup escape would abort that terminal, hand the row to the per-row rollback guard,
+    and leave it in-flight holding a burst-lane slot -- trading a bounded retry for a wedged row.
+    ``contextlib.suppress`` therefore degrades any failure to None, i.e. "cannot prove node loss" ->
+    charge the ordinary attempt budget, which is exactly the pre-phaze-1q4g behaviour. Being wrong in
+    that direction costs one retry; being wrong the other way would hand a node-killing file the looser
+    of the two budgets, which is the whole defect this bead closes.
+    """
+    pods: list[Any] = []
+    with contextlib.suppress(Exception):
+        pods = await kube_staging.list_pods_for_job(name, kube)
+    if kube_staging.classify_job_pods(pods) is not kube_staging.PodLiveness.NODE_LOST:
+        return None
+    return f"node_lost ({kube_staging.describe_job_pods(pods)})"
 
 
 def _row_age_seconds(cloud_job: CloudJob) -> float:
@@ -181,8 +265,8 @@ async def _job_gone(name: str | None, kube: KubeConfig) -> bool:
     return job is None
 
 
-async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> str | None:
-    """Return a short reason when ``job``'s pod is PROVABLY dead-before-start, else None (phaze-202e).
+async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> Wedge | None:
+    """Return a :class:`Wedge` when ``job``'s pod is PROVABLY not working, else None (phaze-202e).
 
     THE REPLACEMENT FOR THE WALL CLOCK. phaze-1b39 answered "is this row wedged?" with
     ``activeDeadlineSeconds + slack``, which cannot distinguish a 4h concert-set analyze from a hang --
@@ -190,11 +274,18 @@ async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> str | None
     attempt budget (incident 2026-07-28). This asks the pod instead, and only ever terminalizes on
     positive proof that no work is happening:
 
+    * **the pod died WITH ITS NODE** (phaze-1q4g -- ``PodLiveness.NODE_LOST``: a node-scoped
+      ``status.reason`` or a ``DisruptionTarget`` condition). Returned with ``node_loss=True`` so the
+      caller charges the SEPARATE, tighter ``cloud_node_loss_max_redrives`` budget rather than the
+      file's analyze ``attempts`` -- see :func:`_handle_no_callback_terminal`;
     * a container waiting in a fatal reason (ImagePullBackOff / ErrImagePull / InvalidImageName /
       CreateContainerConfigError -- a bad image, or the missing operator ConfigMap/Secret that was
       1b39's motivating wedge);
     * scheduling that has been failing past the scheduling probe (``PodScheduled=False/Unschedulable``);
-    * an un-suspended, non-terminal Job with NO pod at all past :data:`NO_POD_PROBE_SECONDS`.
+    * an un-suspended, non-terminal Job with NO pod at all past :data:`NO_POD_PROBE_SECONDS`. This one
+      stays ``node_loss=False``: an empty pod list cannot tell "the node took the pod" from "a pod was
+      never created", and inferring node loss from an ABSENCE is exactly how a label drift would hand
+      the whole burst lane the wrong budget.
 
     **A Running pod returns None, always.** :func:`kube_staging.classify_job_pods` short-circuits on
     ALIVE before it looks at any clock, so no age, no cluster, and no config can terminalize genuine
@@ -211,14 +302,14 @@ async def _pod_wedge_reason(job: Any, name: str, kube: KubeConfig) -> str | None
     verdict = kube_staging.classify_job_pods(pods)
     if verdict is kube_staging.PodLiveness.ALIVE:
         return None
-    if verdict in (kube_staging.PodLiveness.DEAD_BEFORE_START, kube_staging.PodLiveness.UNSCHEDULABLE):
-        return f"{verdict.value} ({kube_staging.describe_job_pods(pods)})"
+    if verdict in (kube_staging.PodLiveness.NODE_LOST, kube_staging.PodLiveness.DEAD_BEFORE_START, kube_staging.PodLiveness.UNSCHEDULABLE):
+        return Wedge(f"{verdict.value} ({kube_staging.describe_job_pods(pods)})", verdict is kube_staging.PodLiveness.NODE_LOST)
     if pods or _job_counter(job, "active") != 0 or kube_staging.job_is_suspended(job):
         return None
     started = kube_staging.job_started_at(job)
     if started is None or (datetime.now(UTC) - started).total_seconds() <= NO_POD_PROBE_SECONDS:
         return None
-    return "no_pod (job un-suspended with zero active pods past the probe)"
+    return Wedge("no_pod (job un-suspended with zero active pods past the probe)", False)
 
 
 async def _analysis_completed(session: AsyncSession, file_id: uuid.UUID) -> bool:
@@ -273,6 +364,8 @@ async def _handle_no_callback_terminal(
     cap: int,
     tally: dict[str, int],
     kube: KubeConfig,
+    *,
+    node_loss_reason: str | None = None,
 ) -> None:
     """Failed/Evicted (no-callback terminal): bounded re-drive under cap, spill the sidecar to 'awaiting' at cap (D-08/SCHED-03).
 
@@ -316,11 +409,44 @@ async def _handle_no_callback_terminal(
     re-stamps ``kueue_workload`` to the fresh Job name (unchanged deterministic string) -- exiting the
     pending state and resuming the normal get_job read on the next tick. No new attempt is burned for
     the SAME re-drive merely waiting on its own enqueue to execute.
-    """
-    file_id = cloud_job.file_id
-    next_attempt = cloud_job.attempts + 1
 
-    if next_attempt > cap:
+    phaze-1q4g -- THE SECOND BUDGET. ``node_loss_reason`` (set when the pod died WITH ITS NODE:
+    ``PodLiveness.NODE_LOST``) switches WHICH counter this re-drive spends: ``node_loss_redrives``
+    against ``cloud_node_loss_max_redrives``, instead of ``attempts`` against
+    ``cloud_submit_max_attempts``. Everything else about the branch -- the delete-then-confirm-gone
+    race guard, the ``kueue_workload=None`` pending-confirmation record, the enqueue, and the
+    at-ceiling terminal below -- is IDENTICAL, because the two cases differ in whose fault it is, not
+    in what has to happen next.
+
+    Why a SEPARATE counter rather than making node loss charge ``attempts``: a node reboot is not the
+    file's fault, and spending the file's analyze budget on infrastructure is the mistake phaze-1b39
+    made in the other direction (a wall clock burned every long recording's whole cloud budget). Why a
+    counter AT ALL, when this path used to charge nothing: "not charged" had silently become "not
+    bounded", and a node-loss re-drive is the single case most likely to RECUR -- whatever killed the
+    node is still there and the same file is about to meet it again. One file used that to produce
+    EIGHT pods over five days against a cap of three, taking the burst node down every time (spike
+    ``phaze-wcrb`` §5). The ceiling is deliberately the tightest of the three budgets (default 1): one
+    free retry for the genuinely-transient case, and no more. Total pods a row can ever produce is
+    therefore ``1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives``.
+
+    **The at-ceiling terminal is the SAME terminal as the at-cap one, deliberately** -- spill the
+    sidecar to ``'awaiting'`` with ``attempts=cap`` (the budget-spent marker), taking the row OUT of
+    ``IN_FLIGHT`` (releasing its burst-lane slot) and making it a drain candidate ``select_backend``
+    can only route to LOCAL. It is specifically NOT a hard analyze failure (reconcile writes no
+    ``FileRecord.state`` and no analysis result -- D-04/KSUBMIT-03: cloud flakiness must not fail a
+    file), and specifically NOT a hold: leaving the row SUBMITTED/RUNNING is the shape that STRANDS,
+    because no writer but this cron can advance it and this cron would only re-drive it again.
+    """
+    cfg = cast("ControlSettings", get_settings())
+    file_id = cloud_job.file_id
+    # phaze-1q4g: pick the budget this re-drive spends. The counter, its ceiling and its log label move
+    # together; every line below is otherwise cause-agnostic.
+    if node_loss_reason is not None:
+        next_attempt, ceiling, budget = cloud_job.node_loss_redrives + 1, cfg.cloud_node_loss_max_redrives, "node_loss_redrives"
+    else:
+        next_attempt, ceiling, budget = cloud_job.attempts + 1, cap, "attempts"
+
+    if next_attempt > ceiling:
         # SCHED-03/D-04: at the cloud cap DO NOT hard-fail. Re-stamp the cloud_job sidecar to 'awaiting'
         # ('awaiting' is NOT in IN_FLIGHT, so the row drops out of ``in_flight_count`` -- the
         # reconcile-only-decrements invariant) and write NO FileRecord.state (D-04, the whole point of the
@@ -329,6 +455,13 @@ async def _handle_no_callback_terminal(
         # (the guaranteed safety net) -- do NOT increment attempts again here (avoids a double-count). Local
         # failure, not cloud flakiness, is the only terminal into ANALYSIS_FAILED (D-04). The re-stamped
         # ``updated_at`` on the spill gives a fresh lane-entry clock (desirable).
+        #
+        # phaze-1q4g: the NODE-LOSS ceiling lands here too, and on purpose. ``attempts`` may well still be
+        # 0 on that path (node loss never charged it), so the ``attempts=cap`` stamp below is doing real
+        # work there rather than re-affirming a value: it is what makes ``select_backend`` stop offering
+        # this file to cloud at all. Cloud is finished with this row either way -- once because the
+        # analysis kept failing, once because the node kept dying under it -- and the row must land in the
+        # one state the drain can still act on.
         #
         # MKUE-04 clean-before-flip (D-01/D-03, Pitfall 9 -- the crux): the OLD (backend_id, staging_bucket)
         # staged object MUST be deleted WHILE the per-row ``pg_advisory_xact_lock(5_000_504)`` is still held
@@ -345,7 +478,6 @@ async def _handle_no_callback_terminal(
         # (D-03): ``contextlib.suppress(Exception)`` so a slow/failed/absent S3 delete never blocks the spill
         # nor pins the lock beyond one network timeout (the per-bucket TTL is the backstop). A bucketless row
         # (no staged object) resolves to None and skips the delete cleanly.
-        cfg = cast("ControlSettings", get_settings())
         old_bucket_id = cloud_job.staging_bucket  # captured pre-mutation -- the authoritative old identity.
         bucket = s3_staging.resolve_bucket_config(cfg, old_bucket_id)
         with contextlib.suppress(Exception):
@@ -387,11 +519,13 @@ async def _handle_no_callback_terminal(
             "reconcile_cloud_jobs: submit cap reached -> cloud_job re-stamped 'awaiting' + spill to local",
             file_id=str(file_id),
             attempt=next_attempt,
-            cap=cap,
+            cap=ceiling,
+            budget=budget,  # phaze-1q4g: WHICH ceiling ran out -- 'attempts' (the file kept failing) or
+            node_loss_reason=node_loss_reason,  # 'node_loss_redrives' (the node kept dying under it).
         )
         return
 
-    # Under cap -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
+    # Under the ceiling -> re-drive. Delete the prior Job, then confirm it is gone before re-submitting.
     if name is not None:  # phaze-1b39: a phantom row (kueue_workload IS NULL) has no Job to delete.
         await kube_staging.delete_job(name, kube)
     if not await _job_gone(name, kube):
@@ -406,7 +540,13 @@ async def _handle_no_callback_terminal(
         await session.commit()
         logger.info("reconcile_cloud_jobs: prior Job still terminating; deferring re-drive", file_id=str(file_id), kueue_workload=name)
         return
-    cloud_job.attempts = next_attempt
+    # phaze-1q4g: charge the budget this cause spends -- and ONLY that one. A node-loss re-drive leaves
+    # ``attempts`` untouched (the file has not failed an analysis), so the two causes stay separable on
+    # the row forever; an ordinary re-drive leaves ``node_loss_redrives`` untouched for the same reason.
+    if node_loss_reason is not None:
+        cloud_job.node_loss_redrives = next_attempt
+    else:
+        cloud_job.attempts = next_attempt
     cloud_job.status = CloudJobStatus.SUBMITTED.value
     cloud_job.inadmissible = False  # CR-01: re-driving a failed Job clears any stale Inadmissible flag.
     # phaze-32wz: clear the (now-deleted) Job's name so the NEXT tick reads this row as "pending
@@ -417,7 +557,13 @@ async def _handle_no_callback_terminal(
     await session.commit()
     await _enqueue_resubmit(ctx, file_id)
     tally["redriven"] += 1
-    logger.info("reconcile_cloud_jobs: re-driving submit_cloud_job", file_id=str(file_id), attempt=next_attempt)
+    logger.info(
+        "reconcile_cloud_jobs: re-driving submit_cloud_job",
+        file_id=str(file_id),
+        attempt=next_attempt,
+        budget=budget,  # phaze-1q4g: which of the two re-drive budgets this one spent, and (when it is
+        node_loss_reason=node_loss_reason,  # the node-loss one) the pod evidence that classified it.
+    )
 
 
 async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: CloudJob, cap: int, tally: dict[str, int], kube: KubeConfig) -> None:
@@ -497,7 +643,12 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         if await _analysis_completed(session, cloud_job.file_id):
             await _record_success(session, cloud_job, name, tally, kube)
             return
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
+        # phaze-1q4g: with ``backoffLimit: 0`` a Job reads Failed for BOTH "the analysis died" and "the
+        # node took the pod", and the two must not share a retry budget. The Job cannot tell them apart;
+        # its pods can. Ask them once, here on the terminal path only.
+        await _handle_no_callback_terminal(
+            ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=await _terminal_node_loss_reason(name, kube)
+        )
         return
 
     # 2. Not terminal -> read the paired Kueue Workload for admission state (D-02 by job-uid).
@@ -519,7 +670,11 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         if await _analysis_completed(session, cloud_job.file_id):
             await _record_success(session, cloud_job, name, tally, kube)
             return
-        await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
+        # phaze-1q4g: same question as the Job-Failed branch. A Kueue eviction is usually quota pressure
+        # (ordinary), but a node going down also evicts -- and the pods say which.
+        await _handle_no_callback_terminal(
+            ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=await _terminal_node_loss_reason(name, kube)
+        )
         return
 
     quota_reserved = _workload_condition(workload, _TYPE_QUOTA_RESERVED)
@@ -577,16 +732,19 @@ async def _reconcile_one(ctx: dict[str, Any], session: AsyncSession, cloud_job: 
         #
         # The analysis-result guard stays: the callback (KSUBMIT-03) keys off file_id, so a row whose
         # result already landed is finalized by the normal terminal paths, never re-driven.
-        wedge_reason = await _pod_wedge_reason(job, name, kube)
-        if wedge_reason is not None and not await _analysis_completed(session, cloud_job.file_id):
+        wedge = await _pod_wedge_reason(job, name, kube)
+        if wedge is not None and not await _analysis_completed(session, cloud_job.file_id):
             logger.warning(
-                "reconcile_cloud_jobs: in-flight Job's pod is provably dead-before-start -- terminalizing",
+                "reconcile_cloud_jobs: in-flight Job's pod is provably not working -- terminalizing",
                 cloud_job_id=str(cloud_job.id),
                 file_id=str(cloud_job.file_id),
                 kueue_workload=name,
-                wedge_reason=wedge_reason,
+                wedge_reason=wedge.reason,
+                node_loss=wedge.node_loss,  # phaze-1q4g: which budget the re-drive below will spend.
             )
-            await _handle_no_callback_terminal(ctx, session, cloud_job, name, cap, tally, kube)
+            await _handle_no_callback_terminal(
+                ctx, session, cloud_job, name, cap, tally, kube, node_loss_reason=wedge.reason if wedge.node_loss else None
+            )
             return
         # D-04 admission progression (ORTHOGONAL to the status advance): Admitted=True means the pod
         # is un-gated and running -> RUNNING; QuotaReserved-only (quota granted, not yet un-suspended)

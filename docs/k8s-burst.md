@@ -253,6 +253,21 @@ dropped/expired watch never loses or duplicates a result" true.
   `select_backend` excludes every cloud backend (`attempts >= cap`) and routes the file to the
   local safety net. A *local* failure — never cloud flakiness — is the only path into
   `ANALYSIS_FAILED` (D-04).
+- **A node-loss re-drive has its OWN, tighter ceiling (phaze-1q4g)** — when the pod died *with its
+  node* (`status.reason` of `NodeShutdown`/`NodeLost`/`Evicted`/…, or a `DisruptionTarget` pod
+  condition) the re-drive charges `cloud_job.node_loss_redrives` against
+  `cloud_node_loss_max_redrives` (default **1**) instead of `attempts`. The two causes stay
+  distinguishable on the row — `attempts=3/node_loss_redrives=0` is a file that failed analysis three
+  times, `attempts=0/node_loss_redrives=1` is a file that lost a node once — and both are bounded, so
+  one row can produce at most `1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives` pods. At
+  the node-loss ceiling the row takes the **same** terminal as the attempts cap (spill to `'awaiting'`
+  with `attempts` stamped to the cap → local). Before this, node loss charged nothing at all: one
+  pathological file re-drove **8 times over 5 days**, crashing the burst node on every pod, while its
+  `attempts` never left 3 (spike `phaze-wcrb` §5). The other half of that defect was in the Job
+  manifest — `backoffLimit: 0` bounds *counted failures*, not *pod creations*, so the default
+  `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
+  Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
+  "one Job ⇒ one pod" actually true.
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
   **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
