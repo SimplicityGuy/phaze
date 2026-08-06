@@ -334,6 +334,20 @@ throughput and node-arithmetic question, not a per-process memory question.
 
 ### 6d. What the OOM distribution is not
 
+> **SUPERSEDED IN PART — 2026-08-06, [`phaze-wcrb`](phaze-wcrb-oom-multiplier-forensics.md).**
+> The negative claim below stands: this is not a ratchet. The *positive* reading — "a small number
+> of co-resident copies of the whole working set" — does **not**. It was drawn from the one-line
+> `Out of memory: Killed process` records; the kernel also dumps a full **task table** before each
+> kill, and those tables show one pod running **one** `analysis_child` (never two) alongside two
+> ordinary analyses at 6.4–7.8 GiB. Summed over every task, all 22 dumps report **30.76–30.82
+> GiB** — node capacity. The victim's `anon-rss` is therefore the *residual*, `30.80 − Σ(others)`,
+> and the "2× / 3× / 4× clusters" are 2, 1 and 0 healthy neighbours subtracted. **The hard floor
+> at 15.27 GiB is `30.80 − 2 × 7.81`**: Kueue admits at most 3 analyze pods, so at most two
+> neighbours can be subtracted, and a runaway below that size never fills the node and so is never
+> recorded. The distribution is left-censored, not multiplicative. The real fault is **one process
+> in unbounded growth on 4 files out of ~520**, which `phaze-wcrb` leaves open with three further
+> rule-outs. Read §6d below as the shape of the *evidence available at the time*, not as a finding.
+
 If the kills were "a ratchet sampled at kill time", the values would form a continuum rising from
 the floor. They do not:
 
