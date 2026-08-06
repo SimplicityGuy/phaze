@@ -96,8 +96,10 @@ def _build_mock_es(duration_sec: float = _DURATION_SEC) -> MagicMock:
     mock_es.KeyExtractor.return_value = mock_key
 
     for cls_name in ("TensorflowPredictMusiCNN", "TensorflowPredictVGGish", "TensorflowPredictEffnetDiscogs"):
-
-        def _ctor(*, graphFilename: str) -> MagicMock:
+        # batchSize is accepted and ignored: these mocks assert the model-major LOOP
+        # SHAPE, and the batch parameter (phaze-0582) does not change which graph sees
+        # which window. Its own contract is asserted in test_analysis_batch_size.py.
+        def _ctor(*, graphFilename: str, batchSize: int) -> MagicMock:
             inst = MagicMock()
             inst.side_effect = lambda audio: _predictions_for(graphFilename, audio)
             return inst

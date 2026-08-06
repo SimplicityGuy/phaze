@@ -143,6 +143,88 @@ _essentia_logging_suppressed = False
 
 
 # ---------------------------------------------------------------------------
+# TensorFlow inference batch size (phaze-0582)
+# ---------------------------------------------------------------------------
+
+# `TensorflowPredict*` batches patches before feeding the graph, and its `batchSize`
+# DEFAULTS to 64. phaze passed no override until phaze-0582, so every inference stood up
+# a `[64, patch, bands]` input and -- far more expensively -- 64x the intermediate
+# activations of a musicnn / VGGish / EfficientNet forward pass. Spike phaze-mqq5 measured
+# that default as the dominant remaining term in the analysis peak.
+#
+# 32 is the KNEE of the curve, not an arbitrary pick. Re-measured for phaze-0582 end to end
+# through the real `analyze_file` on the burst node, host-side `VmHWM`, synthetic audio,
+# node otherwise idle -- one arm per process, the two arms differing ONLY in this file:
+#
+#   60 min, fine cap saturated (60 fine + 20 coarse):  2.4445 -> 1.6206 GiB (-33.71%),
+#                                                      3039.97 -> 3052.09 s (+0.40%)
+#   10 min (20 fine + 4 coarse):                       2.1743 -> 1.4111 GiB (-35.10%),
+#                                                      344.27 -> 345.72 s  (+0.42%)
+#
+# Below 32 the memory curve is FLAT -- phaze-mqq5 measured batch 16 and batch 8 at ~-34%
+# each -- because what is left is the graph plus the allocator floor, not the batch; and
+# batch 1 buys only ~8 more points of peak for +55.7% WALL CLOCK, which is the wrong trade
+# on a node measured CPU-bound. So going lower costs time and returns nothing.
+#
+# This is NOT a byte-identical change and must not be described as one. Regrouping patches
+# into different batches changes float32 summation order, so the last ulp moves. Measured
+# over the whole serialized result (3702 leaves, 1922 numeric) on the 60-minute file: max
+# |delta| 1.79e-7 (~1.5 float32 ulp at 1.0), 0/714 top-1 flips, every categorical field
+# (bpm/key/mood/style) and every window count identical, `danceability` moving 2.98e-9 in
+# the float64. The bar this change is held to is that tolerance (aggregated |delta| <= 1e-3,
+# zero top-1 flips), NOT bit-exactness -- an equivalence test written against a sha256 will
+# fail for the right reason and be deleted for the wrong one.
+#
+# The batch value is also the ONLY thing that moved: the same patched code run with
+# `PHAZE_ANALYSIS_TF_BATCH_SIZE=64` reproduces the pre-change output **byte-identically**
+# (max |delta| exactly 0.0 across all 918 leaves), so the whole delta above is attributable
+# to the batch and none of it to the plumbing.
+_DEFAULT_TF_BATCH_SIZE = 32
+
+# Deployment override. Read from the ENVIRONMENT at classifier construction, deliberately
+# not plumbed through the per-job windowing kwargs (`fine_cap`/`coarse_cap`): those are
+# per-FILE knobs the enqueue path varies per request, while this is a per-HOST sizing knob.
+# phaze-rvcn will make thread/concurrency sizing host-derived; when it does, the derivation
+# belongs in `_resolve_tf_batch_size` -- this one function is the seam.
+_TF_BATCH_SIZE_ENV = "PHAZE_ANALYSIS_TF_BATCH_SIZE"
+
+# `discogs-effnet-bs64-1`'s input Placeholder is `[64, 128, 96]` -- a batch of 64 baked into
+# the graph, which is literally what the `bs64` in the filename means. The batch lever
+# CANNOT move it from the caller: any other value is a configuration error, not a data
+# point, and it is also why `lastBatchMode` exists on that algorithm at all. It therefore
+# keeps its own arena and the measured saving is delivered by the other 33 graphs.
+_FIXED_BATCH_SIZE: dict[str, int] = {GENRE_MODEL.filename: 64}
+
+
+def _resolve_tf_batch_size(model: ModelConfig) -> int:
+    """Resolve the `TensorflowPredict*` ``batchSize`` for one model.
+
+    Models whose graph fixes the batch in the Placeholder (:data:`_FIXED_BATCH_SIZE`)
+    always get that value and ignore the override entirely. Everything else takes
+    ``PHAZE_ANALYSIS_TF_BATCH_SIZE`` when it parses as a positive int, else
+    :data:`_DEFAULT_TF_BATCH_SIZE`. A malformed or non-positive override is logged and
+    ignored rather than raised: a typo in a deployment env var must not turn every
+    analysis into a hard failure.
+    """
+    fixed = _FIXED_BATCH_SIZE.get(model.filename)
+    if fixed is not None:
+        return fixed
+
+    raw = os.environ.get(_TF_BATCH_SIZE_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_TF_BATCH_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
+        return _DEFAULT_TF_BATCH_SIZE
+    if value < 1:
+        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
+        return _DEFAULT_TF_BATCH_SIZE
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
@@ -159,23 +241,41 @@ def _suppress_essentia_logging() -> None:
 def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
     """Get or create the cached classifier instance for the given model.
 
-    Unchanged construction; what changed (phaze-15sw) is the LIFETIME of what it
-    caches. Under model-major iteration the caller sweeps one model across every
-    window before calling :func:`_release_classifier`, so this still constructs each
-    graph exactly once per file -- the cache hit rate on the hot path is identical --
-    but the cache holds one graph instead of 34.
+    Construction now passes an explicit ``batchSize`` (phaze-0582) instead of inheriting
+    essentia's default of 64 -- see :func:`_resolve_tf_batch_size` and
+    :data:`_DEFAULT_TF_BATCH_SIZE` for the measurement behind the value, and
+    :data:`_FIXED_BATCH_SIZE` for the one model that cannot take it.
+
+    What changed before that (phaze-15sw) is the LIFETIME of what this caches. Under
+    model-major iteration the caller sweeps one model across every window before calling
+    :func:`_release_classifier`, so this still constructs each graph exactly once per file
+    -- the cache hit rate on the hot path is identical -- but the cache holds one graph
+    instead of 34.
     """
     if model.filename in _classifier_cache:
         return _classifier_cache[model.filename]
 
     graph_path = str(Path(models_dir) / (model.filename + ".pb"))
+    batch_size = _resolve_tf_batch_size(model)
 
     if model.classifier_type == "musicnn":
-        classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path)
+        classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "vggish":
-        classifier = es.TensorflowPredictVGGish(graphFilename=graph_path)
+        classifier = es.TensorflowPredictVGGish(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "effnet_discogs":
-        classifier = es.TensorflowPredictEffnetDiscogs(graphFilename=graph_path)
+        # batchSize stays 64 here (via _FIXED_BATCH_SIZE) because the graph's Placeholder
+        # is fixed at 64, and `lastBatchMode` stays unpassed at its default "same" --
+        # zero-pad the final batch, then erase exactly the padded predictions -- which is
+        # the behaviour phaze-rc1q 3d flagged as batch-coupled.
+        #
+        # phaze-0582 checked that interaction on the wheel rather than assuming it:
+        # `lastBatchMode` is a parameter of THIS algorithm ONLY. TensorflowPredictMusiCNN
+        # and TensorflowPredictVGGish -- the 33 graphs whose batch actually moves -- do not
+        # expose it at all, so the padding branch is unreachable for them. And the returned
+        # patch count is invariant to batchSize across 64/32/16/8/1 (musicnn 402, vggish
+        # 645 on the same buffer), so nothing is padded in or dropped. The one algorithm
+        # the padding DOES apply to is the one this change does not touch.
+        classifier = es.TensorflowPredictEffnetDiscogs(graphFilename=graph_path, batchSize=batch_size)
     else:
         msg = f"Unknown classifier type: {model.classifier_type}"
         raise ValueError(msg)
