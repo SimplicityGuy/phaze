@@ -332,6 +332,12 @@ changes allocator behaviour. Three harness processes were run simultaneously on 
 contention on 8 cores. Node total was 19 GiB — the three peaks simply add. Concurrency is a
 throughput and node-arithmetic question, not a per-process memory question.
 
+> **Confirmed at 12-way post-`phaze-15sw` (`phaze-3j67` §3):** per-process peak is flat at
+> **2.074–2.151 GiB across W=1…12**, a 3.7% spread with no trend. The "only wall time moves" finding
+> also survives and sharpens — per-file wall rises **+115.9 s per added worker, R² 0.9997**. Note
+> that "8 cores" here is 8 *logical*: vox is a Xeon E3-1271 v3 with **4 physical cores** plus SMT,
+> which is what sets the ~30 files/hour node ceiling that spike measures.
+
 ### 6d. What the OOM distribution is not
 
 If the kills were "a ratchet sampled at kill time", the values would form a continuum rising from
@@ -465,8 +471,8 @@ ______________________________________________________________________
 
 | | action | why |
 | --- | --- | --- |
-| 1 | **`memory_request: 9Gi`, `memory_limit: 12Gi`, concurrency 2** on a 31 GB node | §7a. Replaces the interim 12Gi/16Gi, which was sized from an assumed ratchet. |
-| 2 | **`TF_NUM_INTRAOP_THREADS=4 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=4`** on the analyze container | §5. −14.4% peak for +8.2% wall on a path that is not wall-clock bound. The only knob that pays. |
+| 1 | ~~**`memory_request: 9Gi`, `memory_limit: 12Gi`, concurrency 2** on a 31 GB node~~ **SUPERSEDED 2026-08-05 (`phaze-3j67`)** — re-measured post-`phaze-15sw` as **`memory_request: 3Gi`, `memory_limit: 4Gi`, `cap` 4**; see [the capacity sweep](phaze-3j67-concurrent-extractor-capacity.md) §9 | §7a. The 9Gi/12Gi replaced the interim 12Gi/16Gi, which was sized from an assumed ratchet; §7c then removed the 8 GiB peak it was itself sized against. The **concurrency** half was raised 2 → 4 for a different reason: the node stopped being memory-bound and is now CPU-bound at W=2, so `cap` is now set from cores, not GiB. |
+| 2 | **`TF_NUM_INTRAOP_THREADS=4 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=4`** on the analyze container | §5. −14.4% peak for +8.2% wall on a path that is not wall-clock bound. The only knob that pays. **Re-measured against the model-major code (`phaze-3j67` §5): −41.7% peak (2.151 → 1.211 GiB) for +0.9% throughput at the operating point** — the two changes compose, because what the cap shrinks is the per-inference arena `phaze-15sw` left behind. |
 | 3 | **Do not adopt** `MALLOC_ARENA_MAX`, periodic `malloc_trim`, `MALLOC_MMAP_THRESHOLD_`, or a THP opt-out | §4, §5. Each is ≤4.2% on the peak, and `malloc_trim` is 0.0% on the quantity a limit enforces. |
 | 4 | ~~**Proceed with follow-up A**~~ **DONE 2026-08-05 (`phaze-15sw`)** — envelope maximum **7.986 → 2.482 GiB (−68.9%)** for **+2.1%** wall clock, output byte-identical | §7c. It was the only change measured to move the peak by more than 15%, and it removed ~69% of it — more than the 50% predicted. **Recommendation 1's `9Gi`/`12Gi` is now sized against a peak that no longer exists** and should be re-derived from 2.5 GiB (tracked as `phaze-7qfd`); this bead deliberately did not touch `docs/k8s-burst.md`. |
 | 5 | **File the §6d anomaly as its own investigation** | The 2–4× population is real, unexplained, and unreachable by tuning. The limit contains it; it does not explain it. |
