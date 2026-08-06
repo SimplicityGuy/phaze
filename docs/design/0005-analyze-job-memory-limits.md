@@ -128,3 +128,18 @@ compatible change that ships first. The actual reduction is spike follow-up A โ€
 > measurement with `phaze-5lop`'s streaming decode rather than by adding the two spikes'
 > numbers. `phaze-rc1q` ยง6 is the standing proof that exactly this kind of arithmetic can be
 > wrong by a gigabyte; the two changes point opposite ways and have never run in one process.
+>
+> **And every one of those numbers is qualified by a core count as of 2026-08-06
+> (`phaze-rvcn`).** TensorFlow sizes both of its thread pools from the machine's core count,
+> so an analyze process that inherits those defaults has a peak that is a property of the
+> *node*, not of the workload: 7.986 / 2.482 / 1.6206 GiB are all figures for a
+> **4-physical-core** host (Xeon E3-1271 v3, 8 logical). Measured on that node, restricting
+> the process to 2 physical cores moves the unpinned peak 1.3349 -> 1.2936 GiB, and pinning
+> `TF_NUM_INTEROP_THREADS=1` alone moves it -15.3% -- the thread pools, not the graph or the
+> batch, are what is left coupling peak to hardware. phaze now derives all three thread
+> variables from the schedulable physical core count before importing essentia
+> (`services/analysis_sizing.py`), which makes the derived peak flat (1.127-1.153 GiB across
+> effective core counts 1-4). **This ADR's decision is again unaffected** -- a limit remains
+> the right backstop -- but whoever re-derives the numbers must state the core count they hold
+> for, and should derive from the *pinned* figure, which is the only one that is a property of
+> the code. See `docs/k8s-burst.md`, "Thread sizing is derived, not configured".

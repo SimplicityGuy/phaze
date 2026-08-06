@@ -408,6 +408,18 @@ would promote the pod's QoS class to `Guaranteed`, which this deployment deliber
 
 ### Calibrated sizing — provenance, not just numbers
 
+> **Every figure in this section is valid for a stated core count: 4 physical cores (Xeon
+> E3-1271 v3, 8 logical via SMT).** They are not properties of the workload. TensorFlow sizes
+> both of its thread pools from the machine's core count, and each pool thread carries
+> allocation arena, so an *unpinned* analyze process peaks differently on a different box. On
+> this node, halving the visible cores moved the unpinned peak **1.3349 → 1.2936 GiB (−3.1%)**
+> — the direction that says the coupling is real; the magnitude at 32 or 64 physical cores is
+> *not measurable here* and must not be extrapolated. phaze therefore **pins the pools from
+> the host instead of inheriting the core count**, which removes the extrapolation question
+> rather than answering it. See
+> [Thread sizing is derived, not configured](#thread-sizing-is-derived-not-configured) below
+> for the derivation, so a reader on other hardware can compute their own.
+
 **This guidance has been wrong twice.** The first two sizings were falsified by measurements
 that landed after they were written, and the number a reader lands on depends entirely on which
 measurement it traces to. Read the provenance column, not just the figure:
@@ -458,11 +470,120 @@ anywhere else, they predate this restructure and should not be used.
   `phaze-7i0k` §6c/§8 found the workload CPU-bound on single-threaded decode once the graph
   residency term was removed, so packing more jobs onto a memory-sized quota can exhaust cores
   before it exhausts memory.
-- **Also worth setting on the analyze container:** `TF_NUM_INTRAOP_THREADS=4`,
-  `TF_NUM_INTEROP_THREADS=1`, `OMP_NUM_THREADS=4`. Measured (pre-`phaze-15sw`, window-major)
-  −14.4% peak for +8.2% wall time on a path bound by single-threaded decode, not by TF; not
-  re-measured against the model-major baseline, but independent of graph residency and free to
-  keep.
+- **You no longer need to set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` /
+  `OMP_NUM_THREADS` on the analyze container.** phaze derives all three from the host at
+  import time (`phaze-rvcn`); an operator-set value still wins. See the next section.
+
+### Thread sizing is derived, not configured
+
+**The problem this solves is a hardware upgrade.** TensorFlow sizes both of its thread pools
+from the machine's core count and pool threads carry allocation arena, so an analyze process
+that inherits those defaults has a peak that is a property of *the box* rather than of the
+work. Every figure in the section above would then move on a bigger node — upward, silently,
+toward the node-scoped OOM that [ADR-0005](design/0005-analyze-job-memory-limits.md) exists to
+prevent — and an operator who bought more cores would have no reason to suspect they now need
+to retune. phaze therefore computes the pools itself:
+
+```
+intra_op_threads = min(4, physical_cores)   # a CAP: the wall-clock knee, never below 2 by choice
+inter_op_threads = 1                        # a CONSTANT: the memory term, host-independent
+omp_threads      = intra_op_threads
+concurrency      = physical_cores // intra_op_threads
+
+                     intra_op_threads x concurrency  ~=  physical_cores
+```
+
+`physical_cores` is the count of SMT sibling groups among the CPUs in this process's
+`sched_getaffinity` mask, clamped by the cgroup v2 `cpu.max` quota — **physical, not `nproc`**
+([`phaze-3j67` §4](spikes/phaze-3j67-concurrent-extractor-capacity.md): throughput per busy
+logical core splits 2:1 at exactly the physical count, so SMT is not free capacity here).
+Both knobs come out of one function (`services/analysis_sizing.py::derive_sizing`) because
+they are not independent: capping intra-op moves the concurrency knee, so a concurrency chosen
+anywhere else would be chosen against the wrong threading. To compute your own hardware's
+sizing, run the four lines above; to override, set `PHAZE_ANALYSIS_PHYSICAL_CORES` (moves both
+knobs together) or any individual variable (phaze never overwrites an operator value).
+
+| host | physical | intra-op | concurrency |
+| --- | ---: | ---: | ---: |
+| a 2-core VM | 2 | 2 | 1 |
+| **vox (Xeon E3-1271 v3)** — the node every figure above was measured on | **4** | **4** | **1** |
+| nox (compose lanes) | 8 | 4 | 2 |
+| a 32-core upgrade | 32 | 4 | 8 |
+
+#### What was measured (`phaze-rvcn`, 2026-08-06)
+
+Deployed image `job:2026.8.0` with `main`'s `services/analysis.py` (model-major +
+`batchSize=32`) and the new `analysis_sizing.py` overlaid; deployed `phaze-models` PVC
+read-only; synthetic 300 s ffmpeg sine pair; **one exec'd process per arm**; peak =
+`/proc/self/status:VmHWM` read once at exit (a kernel high-water mark, not a sampled curve —
+`phaze-7i0k` §9); node idle and out of the backend registry. Effective core count varied with
+`sched_setaffinity` over the E3-1271 v3 sibling map `(0,4)(1,5)(2,6)(3,7)`, since a second
+machine is not available. Repeatability: **0.17% on peak, 0.44% on wall** across a repeated
+arm pair.
+
+**1. Each variable's independent contribution** (4 physical cores, everything else at TF's
+defaults). This **corrects** `phaze-7i0k` §5 and `phaze-3j67` §5, which set all three together
+against essentia's default batch of 64 and attributed the saving to intra-op:
+
+| set | peak (GiB) | Δ peak | wall (s) | Δ wall |
+| --- | ---: | ---: | ---: | ---: |
+| nothing (TF reads the core count for both pools) | 1.3349 | — | 160.8 | — |
+| `TF_NUM_INTRAOP_THREADS=4` alone | 1.3375 | +0.2% | 165.6 | +3.0% |
+| `OMP_NUM_THREADS=4` alone | 1.3419 | +0.5% | 160.8 | +0.0% |
+| **`TF_NUM_INTEROP_THREADS=1` alone** | **1.1312** | **−15.3%** | 171.7 | +6.8% |
+| all three (4 / 1 / 4) | 1.1509 | −13.8% | 174.4 | +8.5% |
+
+**The memory belongs to the inter-op pool.** Intra-op and OpenMP are memory-neutral in the
+1–8 range now that `phaze-0582` took the batch to 32 and removed the arena the pool was
+multiplying. The +8.5% wall for the full set reproduces `phaze-7i0k` §5's +8.2%.
+
+**2. The knee is a property of the derivation, not of vox** (inter-op pinned at 1, OMP =
+intra-op). The wall-clock floor is reached at intra-op = physical cores at **both** core
+counts, which is what `min(4, physical_cores)` derives:
+
+| intra-op | 4 physical: peak / wall | 2 physical: peak / wall |
+| ---: | ---: | ---: |
+| 1 | 1.1449 / 475.8 s (**+172.8%**) | 1.1365 / 474.8 s (**+77.4%**) |
+| 2 | 1.1303 / 268.0 s (+53.7%) | **1.1494 / 267.6 s ← derived** |
+| 4 | **1.1509 / 174.4 s ← derived** | 1.1547 / 259.6 s (−3.0%) |
+| 8 | 1.1286 / 171.5 s (−1.7%) | 1.1308 / 262.7 s (−1.8%) |
+
+The 2 → 4 step is worth **−34.9%** wall at 4 physical cores and only **−3.0%** at 2 — the knee
+moved with the effective core count, which is the whole claim. Going below the derived value
+is steep at every size, so **1 thread is never derived** unless the host genuinely has one
+physical core. Going above it buys under 2% and would put the thread count back on the host.
+
+**3. The decoupling.** Peak with the derivation active, as the effective core count (and with
+it the derived thread count) is varied:
+
+| effective physical cores | unpinned — TF reads the core count | **derived** | Δ |
+| ---: | ---: | ---: | ---: |
+| 4 (8 logical) | 1.3349 GiB / 160.8 s | **1.1273 GiB / 174.3 s** (4/1/4) | −15.6% peak, +8.4% wall |
+| 3 (6 logical) | 1.3371 GiB / 188.9 s | **1.1276 GiB / 204.4 s** (3/1/3) | −15.7% peak, +8.2% wall |
+| 2 (4 logical) | 1.2936 GiB / 250.6 s | **1.1527 GiB / 267.6 s** (2/1/2) | −10.9% peak, +6.8% wall |
+| 1 (2 logical) | — | **1.1454 GiB / 474.7 s** (1/1/1) | — |
+
+**Derived peak is flat: 1.1273–1.1527 GiB, a 2.3% spread with no trend** (its minimum is at
+the *largest* core count), while the derived thread count moved 4 → 3 → 2 → 1 underneath it.
+Unpinned peak is 1.2936–1.3371 GiB and sits 10.9–15.7% higher at every core count.
+
+#### What this does not show
+
+- **It does not show what an unpinned process would do on a 32-core host.** vox can only be
+  made smaller. Over the range it can span, the unpinned peak moves −3.1% for a 2× core
+  reduction — the direction the per-thread-arena mechanism predicts, but a magnitude that must
+  not be extrapolated eightfold. **That unmeasurability is the argument for pinning, not
+  against it:** `inter_op = 1` is a constant and `intra_op ≤ 4` is a bound, so the question
+  stops being a property of hardware nobody has yet.
+- **It does not re-measure concurrency.** Every arm is one process. The concurrency half of
+  the relation is carried over from `phaze-3j67` §3–§5 and re-expressed as a derivation; note
+  that spike's own §9a recommends `cap = 4` on this 4-core node, which is a *deliberately
+  oversubscribed* operating point (4 × 4 threads on 4 physical cores) trading per-file latency
+  for ~30% aggregate throughput. The derivation is the non-oversubscribed default; `cap` in
+  `backends.toml` stays operator-owned and still wins.
+- **Synthetic audio is inherited, not re-validated.** `phaze-7i0k` §6b established that peak
+  is content-independent (real and sine agree to 0.9%) because it is a function of window
+  *shape*. Wall-clock figures should be read as relative comparisons between arms.
 
 ### 3 — LocalQueue (the object phaze references by name)
 

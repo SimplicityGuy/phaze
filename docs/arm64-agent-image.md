@@ -105,6 +105,16 @@ Everything needed is prebuilt; the friction is all in essentia's `setup_from_pyt
    the parity-guard run** driving real audio through `analyze_file` on a native arm64
    runner (below).
 
+   > **This `OMP_NUM_THREADS=1` is a CORRECTNESS mitigation, not a sizing choice — keep it
+   > set explicitly on arm64 (phaze-rvcn).** phaze now *derives* `OMP_NUM_THREADS` (along
+   > with the two TF thread variables) from the host's schedulable physical core count so
+   > per-process peak RSS stops tracking the machine — on a 4-core arm64 box that derivation
+   > would produce `4`, which is exactly the value this fix exists to avoid. The derivation
+   > **never overwrites an operator-set value** (each variable is considered independently),
+   > so an image or deployment that sets `OMP_NUM_THREADS=1` keeps `1` and still gets the
+   > derived `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS`. Do not "clean up" the
+   > explicit `=1` on the arm64 path on the grounds that phaze derives it now.
+
 ### Runtime-libs-or-crash-loop rule (T-47-06)
 
 The final image **must** carry these runtime native libs or the agent crash-loops on
