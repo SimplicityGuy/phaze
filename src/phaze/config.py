@@ -29,6 +29,7 @@ from phaze.config_backends import (
     _default_local_registry,
     _read_secret_file,
 )
+from phaze.services.analysis_sizing import derive_sizing
 
 
 logger = structlog.get_logger(__name__)
@@ -252,12 +253,24 @@ class BaseSettings(PydanticBaseSettings):
     worker_max_jobs: int = 8
     # Per-lane agent-worker concurrency knobs (quick-260707-dh1). Only the agent lane
     # worker reads these (via PHAZE_AGENT_LANE); they live on BaseSettings so both roles
-    # parse cleanly. The one CPU-bound lane (analyze 4) takes 4 of nox's 8 cores, leaving
-    # headroom for the fast meta lane + OS; io is network-bound (off CPU).
+    # parse cleanly. The io lane is network-bound and runs off the CPU budget.
+    #
+    # phaze-rvcn: the ANALYZE lane's default is DERIVED, not the literal 4 it used to be.
+    # It and the analyze process's TF intra-op cap are the two halves of one relationship
+    # (`intra_op_threads x concurrency ~= physical_cores`) and were previously set in two
+    # different files with two different literals -- `docker-compose.agent.yml` pinned
+    # `TF_NUM_INTRAOP_THREADS=1` while this default said 4, giving a product of 4 on a host
+    # with 8 physical cores AND parking the extractor on the 1-thread arm `phaze-7i0k` 5
+    # measured at +210.6% wall for 0.001 GiB less than 4 threads. That is exactly the drift
+    # `services/analysis_sizing.py` exists to make impossible: both halves now come out of
+    # one `derive_sizing` call, so on the same 8-physical-core host the lane derives
+    # concurrency 2 against an intra-op cap of 4 -- the same total core budget, spent where
+    # the measurement says it is worth spending. `PHAZE_LANE_ANALYZE_CONCURRENCY` still
+    # overrides it.
     lane_analyze_concurrency: int = Field(
-        default=4,
+        default_factory=lambda: derive_sizing().concurrency,
         validation_alias=AliasChoices("PHAZE_LANE_ANALYZE_CONCURRENCY", "lane_analyze_concurrency"),
-        description="Concurrency of the analyze lane worker (process_file; in-process essentia, CPU-bound).",
+        description="Concurrency of the analyze lane worker (process_file; essentia, CPU-bound). Defaults to the host-derived value.",
     )
     lane_meta_concurrency: int = Field(
         default=2,

@@ -151,9 +151,19 @@ def test_lane_concurrency_setting_covers_every_lane() -> None:
 
 
 def test_concurrency_for_queue_reads_the_lane_suffix() -> None:
-    """``phaze-agent-<id>-<lane>`` resolves to that lane's knob, clamped by worker_max_jobs."""
-    assert concurrency_for_queue("phaze-agent-nox-analyze") == 4  # lane_analyze_concurrency default
-    assert concurrency_for_queue("phaze-agent-nox-meta") == 2  # lane_meta_concurrency default
+    """``phaze-agent-<id>-<lane>`` resolves to that lane's knob, clamped by worker_max_jobs.
+
+    The analyze arm is compared against the derivation rather than a literal: phaze-rvcn made
+    ``lane_analyze_concurrency``'s default a function of the host's schedulable physical core
+    count (so it stays paired with the TF intra-op cap), and a hardcoded expectation here
+    would assert the test runner's hardware instead of the routing.
+    """
+    from phaze.config import get_settings
+    from phaze.services.analysis_sizing import derive_sizing
+
+    expected_analyze = min(derive_sizing().concurrency, get_settings().worker_max_jobs)
+    assert concurrency_for_queue("phaze-agent-nox-analyze") == expected_analyze
+    assert concurrency_for_queue("phaze-agent-nox-meta") == 2  # lane_meta_concurrency default (not core-derived)
 
 
 def test_concurrency_for_queue_falls_back_for_an_unlaned_queue() -> None:

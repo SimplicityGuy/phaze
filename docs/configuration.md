@@ -408,6 +408,51 @@ The agent worker reads these to size the per-window decode loop in `services/ana
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
 | `PHAZE_ANALYSIS_TF_BATCH_SIZE` | No | `32` | `TensorflowPredict*` `batchSize` for the 33 tunable model graphs (phaze-0582). **Not** a `phaze.config` field: read straight from the process environment by `services/analysis.py::_resolve_tf_batch_size` at classifier construction, so a value set only in a `.env` file (and never exported into the environment) does not apply. Essentia's own default is `64`; `32` is the measured knee — `-33.7%` peak analysis RSS for `+0.36%` wall end to end, with lower values flat on memory and batch 1 costing `+55.7%` wall. A malformed or non-positive value logs a warning and falls back to `32`. `discogs-effnet-bs64-1` ignores this entirely and always uses `64`: its graph Placeholder is `[64, 128, 96]`. |
 
+### Thread sizing — derived from the host, not configured (phaze-rvcn)
+
+**You do not need to set any of these.** `services/analysis_sizing.py` derives them at import
+time, before TensorFlow builds its thread pools, from the **schedulable physical core count**.
+They are listed because they are readable, overridable, and load-bearing for memory.
+
+TensorFlow sizes its intra-op pool from the machine's core count and gives each worker thread
+its own allocation arena, so an *uncapped* analyze process peaks higher on a bigger box —
+per-process peak becomes a function of the host rather than of the workload. Capping intra-op
+is the mechanism that decouples the two; without it no published memory figure is portable
+across hardware. The derivation is one relationship, applied in one function
+(`analysis_sizing.py::derive_sizing`):
+
+```
+intra_op_threads = min(4, physical_cores)   # 4 is the measured knee, and it is a CAP
+inter_op_threads = 1
+omp_threads      = intra_op_threads
+concurrency      = physical_cores // intra_op_threads
+
+                       intra_op_threads x concurrency  ~=  physical_cores
+```
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TF_NUM_INTRAOP_THREADS` | No | `min(4, physical_cores)` | TensorFlow intra-op pool size. Derived and stamped onto the process environment immediately before `import essentia` (TF reads it when it builds the pool; a value set later is read by nothing). **An operator-set value always wins** — the derivation only fills a variable that is absent or blank, and each of the three is considered independently. |
+| `TF_NUM_INTEROP_THREADS` | No | `1` | TensorFlow inter-op pool size. Pinned rather than derived: essentia drives one `TensorflowPredict*` graph at a time through a synchronous binding, so a wider inter-op pool has no second independent op to run and is pure arena cost. |
+| `OMP_NUM_THREADS` | No | `min(4, physical_cores)` | OpenMP pool for essentia's own non-TF DSP. Tracks the intra-op value, never the host's core count. |
+| `PHAZE_ANALYSIS_PHYSICAL_CORES` | No | *(detected)* | Overrides the **input** to the derivation, so both knobs move together and stay in the relationship above — as opposed to overriding one output and silently breaking the pairing. Use it when the detection cannot see the truth (a CPU limit expressed outside cgroup v2, a hypervisor misreporting topology) or to rehearse another host's sizing. A malformed or non-positive value logs a warning and falls back to detection. |
+
+**Detection order** (each source intersected with `sched_getaffinity`, then clamped by the
+cgroup v2 `cpu.max` quota): `PHAZE_ANALYSIS_PHYSICAL_CORES` → sysfs
+`topology/thread_siblings_list` → `/proc/cpuinfo` `(physical id, core id)` pairs → Darwin
+`sysctl hw.physicalcpu_max` → the schedulable **logical** count as a last resort. The
+detection is of cores *this process may run on*, not of the machine, so a `taskset`ed or
+CPU-limited container derives from its own slice.
+
+**Physical, not `nproc`.** `phaze-3j67` measured essentia's linear-scaling claim as validated
+to the physical core count (3.61× on 4 workers, 90.3% efficiency) and contradicted past it
+(4 → 8 workers gained +3.9% for double the per-file latency). SMT is not free capacity for
+this workload.
+
+The same derivation supplies the `cap` of the implicit all-local backend (`config_backends.py`
+D-03 zero-config registry), so the two knobs cannot drift apart on a host with no
+`backends.toml`. An explicit `backends.toml` `cap` overrides it, as before.
+
 ## Docker Compose-only variables
 
 These are consumed by the Compose stack (`docker-compose.yml`, `docker-compose.agent.yml`), not by `phaze.config`.

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
+from phaze.services.analysis_sizing import derive_sizing
+
 
 # Chars that must never reach the ssh remote spec / rsync operand (whitespace + shell metacharacters).
 # Keep in sync with ``PushFilePayload._DEST_HOST_FORBIDDEN`` in ``schemas/agent_tasks.py`` — both guard
@@ -299,12 +301,22 @@ class BucketConfig(BaseModel):
 
 
 def _default_local_registry() -> list[BackendConfig]:
-    """Absent config → implicit all-local: one kind=local backend (id=local, rank=99, cap=1) (D-03).
+    """Absent config → implicit all-local: one kind=local backend (id=local, rank=99) (D-03).
 
     A ``default_factory`` only fires when the ``backends`` key is entirely absent (D-03 zero-config).
     A present-but-empty array is a distinct fail-fast case handled by the container validator (Plan 02).
+
+    phaze-rvcn: ``cap`` is **derived from the host**, not the hardcoded ``1`` it used to be. This is
+    the one concurrency phaze picks *without operator action*, so it is exactly where the
+    ``intra_op_threads x concurrency ~= physical_cores`` policy has to be read from rather than
+    guessed -- ``derive_sizing`` chooses both halves together (``services/analysis_sizing.py``), so
+    the local lane's concurrency can never drift out of step with the intra-op cap the analyze child
+    stamps on itself. On a 4-physical-core host that reproduces the previous ``cap=1``; on a
+    32-physical-core host it derives ``8`` instead of leaving 31 cores idle. An operator-supplied
+    ``backends.toml`` overrides it wholesale, as before -- this default fires only when there is no
+    registry at all.
     """
-    return [LocalBackend(kind="local", id="local", rank=99, cap=1)]
+    return [LocalBackend(kind="local", id="local", rank=99, cap=derive_sizing().concurrency)]
 
 
 # KueueBackend forward-references KubeConfig (defined after it for readability); rebuild so the

@@ -3,6 +3,7 @@
 import pytest
 
 from phaze.config import Settings
+from phaze.services.analysis_sizing import PHYSICAL_CORES_ENV
 
 
 def test_worker_max_jobs_default() -> None:
@@ -62,12 +63,24 @@ def test_scan_stall_seconds_default() -> None:
 # --------------------------------------------------------------------------- lane knobs (dh1)
 
 
-def test_lane_concurrency_defaults() -> None:
-    """Per-lane concurrency defaults: analyze 4, meta 2, io 4 (design table)."""
+def test_lane_concurrency_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-lane concurrency defaults: analyze DERIVED, meta 2, io 4 (design table).
+
+    phaze-rvcn replaced the analyze lane's literal 4 with the host derivation, because that
+    literal was one half of ``intra_op_threads x concurrency ~= physical_cores`` written down
+    in a different file from the other half (``docker-compose.agent.yml`` pinned
+    ``TF_NUM_INTRAOP_THREADS=1``, giving a product of 4 on an 8-physical-core host). Pinning
+    the core count keeps the expectation about the POLICY rather than about the test runner.
+    The two non-CPU lanes are unchanged -- neither is sized against cores.
+    """
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "8")  # nox: 8 physical -> intra-op 4 x concurrency 2
     s = Settings()
-    assert s.lane_analyze_concurrency == 4
+    assert s.lane_analyze_concurrency == 2
     assert s.lane_meta_concurrency == 2
     assert s.lane_io_concurrency == 4
+
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "32")  # the upgrade phaze-rvcn exists for
+    assert Settings().lane_analyze_concurrency == 8
 
 
 def test_agent_heartbeat_enabled_default() -> None:
