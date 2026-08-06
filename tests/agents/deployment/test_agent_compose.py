@@ -84,7 +84,12 @@ def test_lane_workers_carry_their_lane_and_concurrency() -> None:
     for svc_name, (lane, knob) in expected.items():
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
         assert any(e == f"PHAZE_AGENT_LANE={lane}" for e in env), f"{svc_name} must set PHAZE_AGENT_LANE={lane}; got {env!r}"
-        assert any(e.startswith(f"{knob}=") for e in env), f"{svc_name} must set {knob}; got {env!r}"
+        # phaze-rvcn: the ANALYZE knob is passed through as a bare name so the host-derived
+        # default applies when the operator sets nothing (it is the concurrency half of
+        # `intra_op x concurrency ~= physical_cores`). The two non-CPU lanes keep their literal
+        # `${...:-N}` defaults -- they are not sized against cores at all.
+        expect_literal = svc_name != "worker-analyze"
+        assert any(e.startswith(f"{knob}=") if expect_literal else e == knob for e in env), f"{svc_name} must carry {knob}; got {env!r}"
 
 
 def test_lane_workers_share_one_image_and_command() -> None:
@@ -97,13 +102,28 @@ def test_lane_workers_share_one_image_and_command() -> None:
     assert "phaze.tasks.agent_worker.settings" in next(iter(commands))
 
 
-def test_cpu_lanes_pin_threads_single_threaded() -> None:
-    """quick-260707-dh1: the CPU lanes (analyze) pin essentia/TF to one thread."""
+def test_cpu_lanes_pass_thread_caps_through_rather_than_pinning_them() -> None:
+    """phaze-rvcn: the CPU lanes must NOT hardcode a thread count -- they pass through.
+
+    REPLACES the quick-260707-dh1 "pin essentia/TF to one thread" invariant, which was half
+    of a relationship written down in two files. The compose file pinned
+    ``TF_NUM_INTRAOP_THREADS=1`` while ``config.py``'s lane default said 4, so the deployed
+    product was 4 on a host with 8 physical cores -- and the pin itself sat on the arm
+    `phaze-7i0k` §5 measured at **+210.6% wall for 0.001 GiB less than 4 threads**.
+
+    Both halves now come from one ``derive_sizing`` call keyed on the schedulable physical
+    core count. A bare name (no ``=``) forwards the variable ONLY when the operator sets it
+    in their environment, so the derived default stays in force otherwise -- and a literal
+    reintroduced here would silently re-pin peak RSS to whatever box the container lands on.
+    """
     data = _load_agent_compose()
     for svc_name in ("worker-analyze", "worker-drain"):
         env = _env_to_strs(data["services"][svc_name].get("environment", []))
-        for pin in ("OMP_NUM_THREADS=1", "TF_NUM_INTRAOP_THREADS=1", "TF_NUM_INTEROP_THREADS=1"):
-            assert pin in env, f"{svc_name} must pin {pin} (honest core budget); got {env!r}"
+        for name in ("OMP_NUM_THREADS", "TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS"):
+            assert name in env, f"{svc_name} must pass {name} through (bare name, no value); got {env!r}"
+            assert not any(e.startswith(f"{name}=") for e in env), (
+                f"{svc_name} must NOT hardcode {name} -- phaze derives it from the host (phaze-rvcn); got {env!r}"
+            )
 
 
 def test_every_lane_worker_heartbeats() -> None:

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from phaze.services.analysis_sizing import PHYSICAL_CORES_ENV
 from phaze.services.enqueue_router import AGENT_TASKS, LANE_TASKS
 
 
@@ -138,11 +139,16 @@ def test_lane_concurrency_clamped_by_worker_max_jobs(monkeypatch: pytest.MonkeyP
 
 
 def test_lane_concurrency_default_unclamped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """quick-260707-g84: with no WORKER_MAX_JOBS override the analyze lane keeps its knob (4).
+    """quick-260707-g84: with no WORKER_MAX_JOBS override the analyze lane keeps its knob.
 
-    The file-server default case (lane 4, worker_max_jobs default 8) is unchanged:
-    min(4, 8) == 4. Only an explicit, lower WORKER_MAX_JOBS ceiling clamps a lane.
+    The knob is no longer the literal 4 -- phaze-rvcn derives it from the schedulable
+    physical core count so it stays paired with the TF intra-op cap
+    (``intra_op x concurrency ~= physical_cores``). The core count is pinned here rather
+    than read from the test runner's machine, or this assertion would mean something
+    different on every laptop: 16 physical cores derive concurrency 4, which reproduces the
+    exact scenario this test was written for (lane 4 vs worker_max_jobs 8, min(4, 8) == 4).
     """
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "16")
     mod = _reload_worker(monkeypatch, lane="analyze")
 
     assert mod.settings["concurrency"] == 4

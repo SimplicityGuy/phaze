@@ -121,6 +121,13 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/python3.13/site-packages/tenso
 # CANNOT be proven by hadolint or a synthetic np.sin signal — its real validation is a
 # real-audio analyze through phaze.services.analysis.analyze_file on a native arm64 runner,
 # which is OWNED BY PLAN 47-04 (Assumption A1: do NOT assume benign).
+#
+# phaze-rvcn: this stays an EXPLICIT 1 and must not be deleted on the grounds that phaze now
+# derives its thread sizing. That derivation (services/analysis_sizing.py) would compute
+# min(4, physical_cores) here -- precisely the value this line exists to avoid -- and it is a
+# SIZING policy, whereas this is a CORRECTNESS mitigation for a segfault. The derivation never
+# overwrites a variable that is already set, so this ENV wins and the other two thread
+# variables are still derived, which is the intended interaction.
 ENV OMP_NUM_THREADS=1
 
 # Models (frozen TF1 graphs, arch-independent) are mounted at /models at runtime, never

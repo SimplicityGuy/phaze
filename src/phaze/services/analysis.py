@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from phaze.services.analysis_sizing import apply_thread_env
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,8 +25,27 @@ if TYPE_CHECKING:
 # Suppress TF C++ logging before any essentia/TF import
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import essentia
-import essentia.standard as es
+# phaze-rvcn: derive TF_NUM_INTRAOP_THREADS / TF_NUM_INTEROP_THREADS / OMP_NUM_THREADS from
+# the host's SCHEDULABLE PHYSICAL core count -- here, because TF reads all three when it
+# builds its thread pools and a value stamped after the first session is read by nothing.
+#
+# Left unset, TF sizes its intra-op pool from the machine's core count and gives each worker
+# thread its own allocation arena, which makes the per-process analyze peak a function of the
+# HOST rather than of the workload: every figure in docs/k8s-burst.md would rise silently on
+# a bigger box, reintroducing the node-scoped OOM ADR-0005 exists to prevent. The cap is the
+# mechanism that decouples the two -- see services/analysis_sizing.py for the policy, the
+# measurements behind the constants, and the env overrides (an operator-set value wins).
+#
+# Bound to a name rather than called bare so the derivation stays inspectable after import (and
+# so this pre-import stamp reads as an assignment, like the TF_CPP_MIN_LOG_LEVEL line above).
+ANALYSIS_SIZING = apply_thread_env()
+
+# E402 is deliberate and load-bearing on BOTH lines: essentia pulls TensorFlow in at import, and
+# TF reads TF_CPP_MIN_LOG_LEVEL and its thread-pool env at that point -- so these imports MUST come
+# after the two stamps above. (ruff waives E402 after a bare `os.environ` mutation but not after the
+# `apply_thread_env` call, which is why only these two lines carry the marker.)
+import essentia  # noqa: E402
+import essentia.standard as es  # noqa: E402
 
 
 log = logging.getLogger(__name__)
