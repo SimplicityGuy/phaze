@@ -388,8 +388,8 @@ admits — it only changes which process the kernel kills when usage exceeds wha
 ```toml
 [backends.kube]
 # ... api_url / namespace / local_queue / job_image as usual ...
-memory_request = "9Gi"   # Kueue admits against this. Measured Linux peak 7.99 GiB + ~13%.
-memory_limit   = "12Gi"  # OPTIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
+memory_request = "3Gi"   # Kueue admits against this. Measured Linux design peak 2.482 GiB + ~13%.
+memory_limit   = "4Gi"   # OPTIONAL, PROVISIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
 ```
 
 Set it **above** `memory_request`, not equal to it — equal values (on both cpu *and* memory)
@@ -398,38 +398,71 @@ would promote the pod's QoS class to `Guaranteed`, which this deployment deliber
 (confirmed by the `kubepods/burstable` cgroup path in production OOM records, and pinned by
 `tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable`).
 
-> Leave `memory_limit` unset (the default) and no `limits` key is emitted at all — the manifest
-> is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There is
-> deliberately **no code-computed default**: the right value is a property of the operator's node,
-> and a shipped default that silently starts OOMKilling somebody's cluster is the wrong direction
-> for an opt-in knob.
+> Leave `memory_limit` unset (**the code default**) and no `limits` key is emitted at all — the
+> manifest is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There
+> is deliberately **no code-computed default**
+> ([ADR-0005](design/0005-analyze-job-memory-limits.md), point 1): the right value is a property
+> of the operator's node, and a shipped default that silently starts OOMKilling somebody's
+> cluster is the wrong direction for an opt-in knob. The `4Gi` above is a **published
+> recommendation for that opt-in**, not a value the code imposes.
 
-**Calibrated sizing for a 31 GB node — `memory_request = "9Gi"`, `memory_limit = "12Gi"`,
-concurrency 2.** These replace the interim 12Gi/16Gi, which was extrapolated from a macOS
-measurement plus an assumed allocator ratchet that
-[the Linux measurement](spikes/phaze-7i0k-linux-memory-measurement.md) refuted:
+### Calibrated sizing — provenance, not just numbers
 
-| input | measured |
-| --- | ---: |
-| Linux peak, 30 coarse windows (synthetic, the cap ceiling) | 7.987 GiB |
-| Linux peak, real audio in production (3 independent runs) | 7.919–7.956 GiB |
-| Linux peak, 10-minute file at production caps | 6.836 GiB |
+**This guidance has been wrong twice.** The first two sizings were falsified by measurements
+that landed after they were written, and the number a reader lands on depends entirely on which
+measurement it traces to. Read the provenance column, not just the figure:
 
-- **The request must cover the peak, because the peak is flat in duration.** Every file pays
-  6–8 GiB, so 8Gi is below the floor for a three-minute song. 9Gi covers the measured maximum
-  with 13% margin.
-- **The limit is a backstop, not a bound on normal work.** 12Gi is 1.5× the measured peak — above
-  anything ever measured on Linux, and below the 15.27 GiB floor of the pathological population
-  seen in production OOM records, so it catches exactly those and nothing else. 16Gi sits *above*
-  that floor and would let the smaller pathological runs through.
-- **The request is what makes the limit node-safe.** At an 8Gi request, a 24Gi ClusterQueue admits
-  **3** jobs, whose worst case under a 12Gi limit is 36 GiB — more than a 31 GB node has. At 9Gi
-  it admits **2**: worst case 24 GiB, leaving ~7 GiB for k0s/kubelet/coredns/metrics-server.
-  Steady state is ~16 GiB.
+| measurement | value | status |
+| --- | ---: | --- |
+| macOS floor, all 34 graphs held resident (window-major) | 8.5–10.5 GiB | **superseded** — [`phaze-esut`](spikes/phaze-esut-analysis-memory-profile.md), the original spike |
+| Linux floor, all 34 graphs held resident (window-major) | 7.92–7.99 GiB | **superseded** — [`phaze-7i0k`](spikes/phaze-7i0k-linux-memory-measurement.md), the Linux re-measurement (refuted the assumed allocator ratchet; Linux was *cheaper* than macOS, not dearer) |
+| **Linux design peak, one graph resident at a time (model-major)** | **2.482 GiB** | **current** — `phaze-7i0k` §7c, re-measured against `phaze-15sw`'s deployed image; the 30-coarse-window envelope maximum, validated to 0.01% against the original harness |
+
+`phaze-15sw` restructured `_run_model_sets` to iterate models-major instead of windows-major, so
+exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%**
+(7.986 → 2.482 GiB). The two prior rows are not wrong measurements of what they measured; they
+are correct measurements of a code shape that no longer exists. **`3Gi`/`4Gi` below are sized
+against the current, post-`phaze-15sw` peak.** If you find `9Gi`/`12Gi` or `12Gi`/`16Gi` cited
+anywhere else, they predate this restructure and should not be used.
+
+- **Nothing about the file predicts peak memory — the model set does.** The design peak is flat
+  across an 18× duration span once model-major iteration holds one graph resident at a time:
+  2.074 GiB at 3.3 minutes, 2.141 GiB at 10 minutes, 2.489 GiB at 60 minutes. **Do not size
+  `memory_request` or `memory_limit` on file duration or file size** — both were already the
+  wrong variable under the old code shape, and duration-derived requests were considered and
+  explicitly **rejected** in [ADR-0005](design/0005-analyze-job-memory-limits.md) (Decision,
+  point 4): peak tracks the model set the pipeline loads and the coarse-window cap, not the
+  input.
+- **`memory_request = "3Gi"`** (design peak × 1.13 — the same margin ratio the prior, now-stale
+  guidance used) covers the measured maximum with headroom for the gap between a synthetic
+  sine-wave sweep and real-audio variance.
+- **`memory_limit = "4Gi"`** (design peak × 1.5) is a backstop, not a bound on ordinary work — per
+  ADR-0005 it does not reduce peak usage by a single byte; it only changes which process the
+  kernel kills when usage exceeds what the node has.
+- **PROVISIONAL — the pathological OOM population has not been re-measured against this
+  baseline.** `phaze-7i0k` §6d found 20 production kernel-OOM kills clustering at roughly
+  **2×/3×/4×** a ~7.7 GiB pre-restructure working set, with a **hard floor at 15.27 GiB** — a
+  real, unexplained, multiplicative population, not a ratchet, not reproduced under any variant
+  tested. See [`phaze-7i0k` §6d](spikes/phaze-7i0k-linux-memory-measurement.md) for the data;
+  the mechanism itself is tracked as its own open investigation, bead `phaze-wcrb`. Those kills
+  were recorded **before** `phaze-15sw` shrank the working set 69%; whether the same
+  mechanism recurs at a proportionally lower absolute floor, stays fixed near 15.27 GiB
+  regardless of the working set, or disappears entirely is unknown. `4Gi` sits comfortably below
+  every one of those 20 recorded kills, but **that is what makes it a limit that catches the
+  population, not one that has been shown to accommodate it if it recurs at a lower multiple.**
+  Treat `3Gi`/`4Gi` as provisional pending production monitoring on the restructured image, and
+  re-derive them (not just re-read them) if that monitoring surfaces kills near either figure.
+- **The request is what makes the limit node-safe, and re-derive concurrency for your node.** At
+  `memory_request = "3Gi"` a 24Gi ClusterQueue admits far more concurrent jobs than the previous
+  8–9Gi request did — check your node's CPU/core count and quota before raising concurrency:
+  `phaze-7i0k` §6c/§8 found the workload CPU-bound on single-threaded decode once the graph
+  residency term was removed, so packing more jobs onto a memory-sized quota can exhaust cores
+  before it exhausts memory.
 - **Also worth setting on the analyze container:** `TF_NUM_INTRAOP_THREADS=4`,
-  `TF_NUM_INTEROP_THREADS=1`, `OMP_NUM_THREADS=4`. Measured −14.4% peak for +8.2% wall time on a
-  path that is bound by single-threaded decode, not by TF. The knee is exactly at 4 — 2 threads
-  buys 0.001 GiB more for another 62 points of wall clock.
+  `TF_NUM_INTEROP_THREADS=1`, `OMP_NUM_THREADS=4`. Measured (pre-`phaze-15sw`, window-major)
+  −14.4% peak for +8.2% wall time on a path bound by single-threaded decode, not by TF; not
+  re-measured against the model-major baseline, but independent of graph residency and free to
+  keep.
 
 ### 3 — LocalQueue (the object phaze references by name)
 

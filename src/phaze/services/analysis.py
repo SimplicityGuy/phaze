@@ -8,6 +8,8 @@ import json
 import logging
 import os
 from pathlib import Path
+import platform
+import resource
 from statistics import mean, median
 from typing import TYPE_CHECKING, Any
 
@@ -228,6 +230,65 @@ def _release_classifier(model_filename: str) -> None:
     if _classifier_cache.pop(model_filename, None) is None:
         return
     gc.collect()
+
+
+def _peak_rss_gib() -> float | None:
+    """This process's peak (high-water) RSS in GiB so far, or ``None`` if unreadable.
+
+    phaze-7qfd -- makes the memory floor spikes `phaze-esut`/`phaze-7i0k` measured by hand a
+    routine observable instead of something reconstructed from OOM forensics after the fact.
+
+    **The unit differs by platform and was verified, not assumed** (both directly against a
+    live process on each platform, and against `phaze-7i0k`'s independent cross-check, which
+    found `ru_maxrss` and `/proc/self/status:VmHWM` agree to the byte on Linux):
+
+    * **Linux** -- read `/proc/self/status:VmHWM`, which `proc(5)` documents in kB (kibibytes)
+      *always*, regardless of `getrusage`'s platform-dependent unit. This is the TRUE
+      high-water mark -- the kernel's own peak-RSS accounting -- not a resident-at-this-instant
+      sample, so it is unaffected by exactly where in the job this function is called.
+    * **Darwin** (dev/test only; never the production job pod) -- `getrusage(RUSAGE_SELF)
+      .ru_maxrss` is in **bytes**. Reusing the Linux divisor here would under-report by 1024x.
+    * Anywhere else, return ``None`` rather than guess a unit that was never verified.
+
+    Dispatches on ``platform.system()`` rather than ``sys.platform`` -- the latter is
+    special-cased by mypy for cross-platform-typeshed conditionals (``--python-platform``
+    defaults to the host running the type checker), which would mark whichever branch
+    that host isn't as permanently unreachable instead of a real runtime dispatch.
+    """
+    system = platform.system()
+    if system == "Linux":
+        try:
+            with Path("/proc/self/status").open() as status_file:
+                for line in status_file:
+                    if line.startswith("VmHWM:"):
+                        vm_hwm_kib = int(line.split()[1])  # proc(5): always kB, never bytes
+                        return vm_hwm_kib / (1024 * 1024)
+        except OSError:
+            pass
+        # /proc unreadable (e.g. a sandboxed or non-Linux-proc container): ru_maxrss is KiB
+        # on Linux, unlike Darwin's bytes -- see the docstring's platform note.
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+    if system == "Darwin":
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3)
+    return None
+
+
+def _log_job_peak_rss() -> None:
+    """Log this job's peak RSS once, at INFO, after analysis completes.
+
+    **What this measures, post-`phaze-15sw`.** Model-major coarse inference means only ONE
+    `TensorflowPredict*` graph is ever resident at a time (see the `_classifier_cache` module
+    comment) -- there is no longer a single "all models loaded" instant to log after, the way
+    there was under the old window-major loop. `VmHWM`/`ru_maxrss` is a HIGH-WATER MARK, not a
+    point-in-time sample, so calling this once at the end of :func:`analyze_file` still reports
+    the job's true peak regardless of which stage produced it (in practice, the coarse pass's
+    first model sweep -- see `phaze-7i0k` section 2d). That peak is this job's contribution to
+    the design-peak figure `docs/k8s-burst.md` sizes cluster memory from.
+    """
+    peak_gib = _peak_rss_gib()
+    if peak_gib is None:
+        return
+    log.info("analyze job peak RSS (high-water mark): %.3f GiB", peak_gib)
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +906,11 @@ def analyze_file(
 
     windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
     windows.extend(w.as_payload_dict() for w in coarse_windows)
+
+    # phaze-7qfd: log the job's peak RSS once the memory-dominant work is done, so the
+    # floor is a routine observable instead of something reconstructed from OOM forensics.
+    # See _log_job_peak_rss's docstring for what this does and does not measure post-15sw.
+    _log_job_peak_rss()
 
     return {
         "bpm": aggregate_bpm(fine_windows),
