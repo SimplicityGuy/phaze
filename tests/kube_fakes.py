@@ -74,6 +74,8 @@ def fake_pod(
     waiting_reason: str | None = None,
     init_waiting_reason: str | None = None,
     unschedulable_since: str | None = None,
+    status_reason: str | None = None,
+    disruption_target_reason: str | None = None,
     name: str = "phaze-analyze-fake-abcde",
 ) -> SimpleNamespace:
     """Return a canned v1 Pod stand-in for the phaze-202e pod-state wedge classifier.
@@ -84,14 +86,28 @@ def fake_pod(
     app or init container respectively; ``unschedulable_since`` stamps an RFC3339
     ``PodScheduled=False/Unschedulable`` condition ``lastTransitionTime`` so the scheduling
     probe can be exercised without patching a clock.
+
+    phaze-1q4g adds the two NODE-LOSS shapes -- a pod that died WITH ITS NODE rather than because the
+    analysis failed. ``status_reason`` sets the pod-level ``status.reason`` (``NodeShutdown`` /
+    ``NodeLost`` / ``Evicted`` / ...: the node-lifecycle controller's and kubelet's own vocabulary);
+    ``disruption_target_reason`` stamps the k8s>=1.26 ``DisruptionTarget=True`` condition with that
+    reason (``DeletionByTaintManager`` / ``TerminationByKubelet`` / ...). Either alone is sufficient
+    for :attr:`PodLiveness.NODE_LOST`, so both can be exercised independently.
     """
     status: dict[str, object] = {"phase": phase}
+    if status_reason is not None:
+        status["reason"] = status_reason
     if waiting_reason is not None:
         status["containerStatuses"] = [{"name": "analyze", "state": {"waiting": {"reason": waiting_reason}}}]
     if init_waiting_reason is not None:
         status["initContainerStatuses"] = [{"name": "init", "state": {"waiting": {"reason": init_waiting_reason}}}]
+    conditions: list[dict[str, str]] = []
     if unschedulable_since is not None:
-        status["conditions"] = [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "lastTransitionTime": unschedulable_since}]
+        conditions.append({"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "lastTransitionTime": unschedulable_since})
+    if disruption_target_reason is not None:
+        conditions.append({"type": "DisruptionTarget", "status": "True", "reason": disruption_target_reason})
+    if conditions:
+        status["conditions"] = conditions
     return SimpleNamespace(status=status, metadata=SimpleNamespace(name=name))
 
 

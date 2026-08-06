@@ -8,7 +8,9 @@ row is the durable record of where the bytes live and what stage the burst is in
 
 Phase 54 (D-09) extends this with the Kube submit/reconcile lifecycle: the ``kueue_workload``
 (Job name), ``attempts`` (bounded re-drive counter) and ``inadmissible`` (operator-alert flag)
-columns, plus the SUBMITTED/RUNNING/SUCCEEDED status members. ``cloud_phase`` (Phase 55) is the
+columns, plus the SUBMITTED/RUNNING/SUCCEEDED status members. phaze-1q4g adds
+``node_loss_redrives``, the SEPARATE budget for re-drives caused by the node dying under the pod
+(which must not spend the file's analyze ``attempts``, but must still be bounded). ``cloud_phase`` (Phase 55) is the
 only column still deferred to its OWN migration so each migration stays scoped to its phase.
 Mirrors the v5.0 ``scheduling_ledger`` per-file sidecar precedent.
 
@@ -89,6 +91,17 @@ class CloudJob(TimestampMixin, Base):
     # Bounded re-drive counter (D-08): incremented on each Failed/Evicted re-submit; once it
     # exceeds cloud_submit_max_attempts the file is marked ANALYSIS_FAILED.
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    # phaze-1q4g: the SECOND, independent re-drive budget -- re-drives taken because the pod died WITH
+    # ITS NODE (kube_staging.PodLiveness.NODE_LOST), which deliberately do NOT charge ``attempts``.
+    # An infra fault is not the file's fault, so it must not spend the file's analyze retry budget;
+    # but "not charged" was silently reading as "not bounded", and a file that reliably takes the burst
+    # node down is exactly the case where an unbounded re-drive is worst (one file, eight pods, five
+    # days -- spike phaze-wcrb §5). Bounded by ``cloud_node_loss_max_redrives``, separately from
+    # ``cloud_submit_max_attempts``, so the two causes stay distinguishable in the row itself: a row
+    # with attempts=3/node_loss_redrives=0 failed three analyses, one with attempts=0/
+    # node_loss_redrives=1 lost a node once. Total pods per row is bounded by
+    # 1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives.
+    node_loss_redrives: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     # Drives the D-06 operator alert: set when the Kueue Workload is Inadmissible (never enters
     # the re-drive cap path).
     inadmissible: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)

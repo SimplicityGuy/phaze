@@ -885,6 +885,25 @@ class ControlSettings(BaseSettings):
         validation_alias=AliasChoices("PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS", "cloud_submit_max_attempts"),
         description="Max kube Job submit attempts before a file is marked ANALYSIS_FAILED (Phase 54, D-08). A distinct budget from push_max_attempts. Default 3; bounded gt=0, lt=20.",
     )
+    # phaze-1q4g: how many times control re-drives a Job whose POD DIED WITH ITS NODE before giving up
+    # on cloud for that file. A THIRD budget, deliberately separate from `cloud_submit_max_attempts`:
+    # node loss is an infrastructure fault, so charging it to the file's analyze retry budget would be
+    # wrong -- but "not charged" had silently become "not bounded", and one pathological file used that
+    # to take the burst node down eight times over five days (spike phaze-wcrb §5). The default is
+    # deliberately the TIGHTEST of the three: a node-loss re-drive is the single case most likely to
+    # recur, because whatever killed the node is still there and the same file is about to meet it
+    # again. 1 buys the genuinely-transient case (an unrelated reboot) one free retry and stops there.
+    # Bounded (gt=0, lt=20) like its two siblings so a misconfig cannot re-open the unbounded loop.
+    cloud_node_loss_max_redrives: int = Field(
+        default=1,
+        gt=0,
+        lt=20,
+        validation_alias=AliasChoices("PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES", "cloud_node_loss_max_redrives"),
+        description=(
+            "Max re-drives of a kube Job whose pod died WITH ITS NODE before the file spills to the local safety net (phaze-1q4g). "
+            "Charged to cloud_job.node_loss_redrives, NOT to attempts. Default 1; bounded gt=0, lt=20."
+        ),
+    )
     # Phase 69 D-02: seconds a long file waits in AWAITING_CLOUD while higher-rank backends are
     # online-but-FULL before the slow local (rank-99) backend becomes an eligible spill target. The
     # pure `select_backend` policy (services/backend_selection.py) compares (now - file.updated_at)

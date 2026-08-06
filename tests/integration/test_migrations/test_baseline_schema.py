@@ -229,7 +229,9 @@ def test_baseline_is_the_only_migration() -> None:
     (phaze-fq9h.8) creates tracklist_priority_flags, the persisted home for an operator's "answer
     this file first"; 053 (phaze-5fta.2) creates filename_convention, the generic corpus-learned
     convention store keyed (scope, scope_value, convention_kind) with a DB-derived confidence
-    column. Any other resurrected 0xx chain file is a regression.
+    column; 054 (phaze-1q4g) adds cloud_job.node_loss_redrives, the independent budget for re-drives
+    caused by the pod dying with its node (which must not spend the file's analyze `attempts`, but
+    must still be bounded). Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -248,6 +250,7 @@ def test_baseline_is_the_only_migration() -> None:
         "051_tracklists_propagation.py",
         "052_tracklist_priority_flags.py",
         "053_filename_convention.py",
+        "054_cloud_job_node_loss_redrives.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -279,10 +282,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (053: filename_convention)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (054: node_loss_redrives)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "053"
+    assert version == "054"
 
 
 @pytest.mark.asyncio
@@ -577,7 +580,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "053"
+        assert version == "054"
     finally:
         if engine is not None:
             await engine.dispose()
