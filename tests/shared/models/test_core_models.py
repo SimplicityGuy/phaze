@@ -25,6 +25,11 @@ def test_all_tables_defined() -> None:
         "pipeline_stage_control",
         "scheduling_ledger",
         "cloud_job",
+        # phaze-2mwyo (migration 055): the DURABLE per-file cloud budget ledger. Separate from cloud_job
+        # because `routers/agent_analysis`'s D-14 reaper deletes that sidecar on every analyze terminal,
+        # taking the file's retry budget with it -- which let one file start an unbounded number of
+        # fresh cloud attempt chains.
+        "cloud_budget",
         "route_control",  # Phase 71 (71-02, BEUI-02): force-local control row (migration 031)
         "dedup_resolution",  # Phase 77 (77-02, D-07): dedup marker sidecar (migration 032)
         "stage_skip",  # Phase 87 (87-01, D-13): force-skip marker sidecar (migration 037)

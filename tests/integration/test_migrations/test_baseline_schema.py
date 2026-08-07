@@ -70,6 +70,11 @@ _EXPECTED_TABLES = frozenset(
         "agents",
         "analysis",
         "analysis_window",
+        # phaze-2mwyo (migration 055): the DURABLE per-file cloud budget. Deliberately its OWN table
+        # rather than columns on `files` -- the D-14 reaper deletes the `cloud_job` sidecar that used to
+        # hold the budget, and Phase 90 (MIG-04) removed `files.state` precisely so `files` carries
+        # description, never scheduling state.
+        "cloud_budget",
         "cloud_job",
         "dedup_resolution",
         "discogs_links",
@@ -231,7 +236,10 @@ def test_baseline_is_the_only_migration() -> None:
     convention store keyed (scope, scope_value, convention_kind) with a DB-derived confidence
     column; 054 (phaze-1q4g) adds cloud_job.node_loss_redrives, the independent budget for re-drives
     caused by the pod dying with its node (which must not spend the file's analyze `attempts`, but
-    must still be bounded). Any other resurrected 0xx chain file is a regression.
+    must still be bounded); 055 (phaze-2mwyo) creates cloud_budget, the DURABLE per-file cloud budget
+    that outlives the `cloud_job` sidecar the D-14 reaper deletes -- the row 054's per-chain counters
+    were being erased with, which let one file start an unbounded number of fresh attempt chains.
+    Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -251,6 +259,7 @@ def test_baseline_is_the_only_migration() -> None:
         "052_tracklist_priority_flags.py",
         "053_filename_convention.py",
         "054_cloud_job_node_loss_redrives.py",
+        "055_cloud_budget_ledger.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -282,10 +291,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (054: node_loss_redrives)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (055: the cloud_budget ledger)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "054"
+    assert version == "055"
 
 
 @pytest.mark.asyncio
@@ -580,7 +589,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "054"
+        assert version == "055"
     finally:
         if engine is not None:
             await engine.dispose()

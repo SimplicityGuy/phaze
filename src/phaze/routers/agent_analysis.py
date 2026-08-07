@@ -314,6 +314,15 @@ async def put_analysis(
     # 200K, degrading `ix_cloud_job_awaiting`. The DELETE joins this seam's existing transaction (no new
     # commit). The `status='awaiting'` filter leaves a cloud-analyzed file's SUCCEEDED/RUNNING row
     # untouched. `file_id` is the PATH value only (AUTH-01).
+    #
+    # phaze-2mwyo -- DELIBERATELY UNCHANGED, and now safe to leave that way. This DELETE also destroyed
+    # the file's cloud retry budget, because `attempts` lived only on the row it removes: a file that
+    # spent its budget, spilled to local and then failed locally came back with `attempts = 0` and could
+    # spend the whole budget again (phaze-wcrb's eight pods are TWO chains of four, four days apart).
+    # The tempting fix -- retaining budget-spent rows -- re-creates the exact dead-set growth this reaper
+    # exists to prevent (phaze-9sqa). So the budget moved instead: `cloud_budget` is a durable per-file
+    # ledger, written by `hold_awaiting_cloud` when a chain burns out and untouched by anything here. Do
+    # NOT narrow this predicate to "preserve" a budget; the budget no longer lives in this row.
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
 
     await session.commit()
@@ -512,6 +521,12 @@ async def report_analysis_failed(
     # bounded and the `*/5` drain tick does not scan a growing dead set. Joins this seam's existing
     # transaction (no new commit); `status='awaiting'` leaves a SUCCEEDED/RUNNING row untouched.
     # `file_id` is the PATH value only (AUTH-01).
+    #
+    # phaze-2mwyo: THIS is the seam the production defect ran through -- budget spent -> spill to local ->
+    # LOCAL failure lands here -> the row (and with it `attempts`) is deleted -> the next re-analysis
+    # starts a fresh chain at 0. The reaper is unchanged and correct; the budget now also lives on the
+    # durable per-file `cloud_budget` row this DELETE cannot reach. See the twin comment in
+    # `put_analysis` and `services/cloud_budget.py`.
     await session.execute(delete(CloudJob).where(CloudJob.file_id == file_id, CloudJob.status == CloudJobStatus.AWAITING.value))
     await session.commit()
     # phaze-uoiw: the staged-object S3 DELETE runs AFTER the commit (see put_analysis). Pre-commit it

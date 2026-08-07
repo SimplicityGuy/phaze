@@ -63,19 +63,22 @@ re-drive path in the system was walked; findings, including the negatives:
 * ``KueueBackend._reap_stranded_staging`` -- charges ``min(attempts + 1, cap)``. Bounded.
 * ``submit_cloud_job`` SAQ retries -- idempotent (deterministic Job name + 409->refresh + a CAS'd
   upsert), so N retries converge on ONE Job. Not a pod multiplier.
-* **A REAL SECOND BYPASS, recorded and deliberately NOT fixed here.** ``attempts`` lives only on the
-  ``cloud_job`` row, and ``routers/agent_analysis``'s D-14 reaper DELETES that row
+* **A REAL SECOND BYPASS, found here and FIXED by phaze-2mwyo (migration 055).** ``attempts`` lived only
+  on the ``cloud_job`` row, and ``routers/agent_analysis``'s D-14 reaper DELETES that row
   (``DELETE FROM cloud_job WHERE file_id = ... AND status = 'awaiting'``) on BOTH analyze-terminal
-  seams -- the analysis-result PUT and the analysis-failure POST. A file that spends its cloud budget,
-  spills to local, and then fails locally therefore loses its entire attempt history: a later
-  re-analysis of the same file starts a FRESH chain with ``attempts = 0``, and the ceiling this bead
-  bounds resets with it. That is consistent with the production evidence -- ``713a368e``'s eight pods
+  seams -- the analysis-result PUT and the analysis-failure POST. A file that spent its cloud budget,
+  spilled to local, and then failed locally therefore lost its entire attempt history: a later
+  re-analysis of the same file started a FRESH chain with ``attempts = 0``, and the ceiling this bead
+  bounds reset with it. That is consistent with the production evidence -- ``713a368e``'s eight pods
   are two chains of four, 07-24..07-25 and 07-29, with a four-day gap between them, while the other
-  three files show exactly one chain of four each. Fixing it is NOT a one-line WHERE-clause change:
+  three files show exactly one chain of four each. Fixing it was NOT a one-line WHERE-clause change:
   the reaper exists to stop ``ix_cloud_job_awaiting`` scanning a monotonically growing dead set at
   200K rows, and simply retaining budget-spent rows recreates the phaze-9sqa head-of-line poison the
-  drain was paginated to walk past. It needs its own bead (a durable per-file cloud-budget marker
-  that outlives the sidecar row), and this file's ceiling holds within a chain regardless.
+  drain was paginated to walk past. So the reaper is UNCHANGED and the budget moved instead: the
+  ``cloud_budget`` table (``models/cloud_budget.py``) is a durable per-file ledger the reaper has no
+  reason to touch, folded exactly once per chain by ``hold_awaiting_cloud`` -- including the at-ceiling
+  spill below -- and read by ``select_backend`` alongside this row's ``attempts``. This file's ceiling
+  still bounds ONE chain; that ledger bounds how many chains there may be.
 
 phaze-202e -- NO WALL CLOCK MAY KILL A RUN. There is no ``activeDeadlineSeconds`` on the Job by
 default and no age-based terminal for a Job-backed row anywhere in this file. A wedged row is found by
