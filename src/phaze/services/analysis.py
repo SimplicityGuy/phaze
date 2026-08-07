@@ -826,17 +826,26 @@ def _analyze_fine_windows(
     This seam emits only an ``(int, int)`` count and does NO I/O; throttling and transport
     live DOWNSTREAM in the lane bridge, never here (keeps the compute seam HTTP/pickle-free).
     ``progress_cb=None`` (the default) leaves behavior byte-identical to before.
+
+    ``RhythmExtractor2013`` and ``KeyExtractor`` are constructed ONCE per file and reused
+    across every window (phaze-ap8y), not rebuilt per window: neither takes a per-window
+    parameter, and construction was 7.55 s of the 31.50 s fine tier on a 60-window file
+    (measured, phaze-i93a §6a). ``reset()`` between windows was verified NOT required —
+    0/60 output mismatches with and without it, across the full ``(window_index, bpm, key,
+    confidence)`` tuple — so it is deliberately not called here.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     kept, sampled = _stride_to_cap(natural, cap)
     if progress_cb is not None:
         progress_cb(0, len(natural))  # START: analyzed=0, total=natural pre-stride
+    rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
+    key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
     for idx, start, end in kept:
         try:
             buf = es.EasyLoader(filename=file_path, sampleRate=_FINE_SAMPLE_RATE, startTime=start, endTime=end)()
-            bpm, _beats, confidence, _, _beats_intervals = es.RhythmExtractor2013(method="multifeature")(buf)
-            key, scale, _strength = es.KeyExtractor(profileType="edma")(buf)
+            bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+            key, scale, _strength = key_extractor(buf)
             fine_windows.append(
                 FineWindow(
                     window_index=idx,

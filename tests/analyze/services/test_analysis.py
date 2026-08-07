@@ -230,6 +230,32 @@ def test_analyze_file_returns_complete_result(_mock_es: MagicMock, mock_get_labe
 
 @patch("phaze.services.analysis._get_labels")
 @patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_hoists_fine_extractors_out_of_the_window_loop(mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """phaze-ap8y: RhythmExtractor2013/KeyExtractor are constructed ONCE per file, not per window.
+
+    ``_MOCK_DURATION_SEC`` (600s) yields 20 fine windows (VALIDATION.md's own comment on
+    ``_build_mock_essentia``), so a per-window construction would show 20 calls to each
+    constructor; a per-file hoist shows exactly 1. This is the regression guard for the
+    hoist phaze-i93a measured at -24.0% of the fine tier.
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert result["fine_windows_analyzed"] == 20, "expected 20 fine windows from _MOCK_DURATION_SEC=600s"
+    assert mock_es.RhythmExtractor2013.call_count == 1, (
+        f"RhythmExtractor2013 constructed {mock_es.RhythmExtractor2013.call_count} times; expected 1 (once per file, not per window)"
+    )
+    assert mock_es.KeyExtractor.call_count == 1, (
+        f"KeyExtractor constructed {mock_es.KeyExtractor.call_count} times; expected 1 (once per file, not per window)"
+    )
+    # The single shared instance must still be CALLED once per analyzed window.
+    assert mock_es.RhythmExtractor2013.return_value.call_count == 20
+    assert mock_es.KeyExtractor.return_value.call_count == 20
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
 def test_analyze_file_features_has_all_model_sets(_mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
     """The features dict returned by analyze_file contains entries for all 11 model sets plus genre."""
     mock_get_labels.side_effect = _mock_labels_file
