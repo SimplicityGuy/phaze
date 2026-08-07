@@ -31,10 +31,12 @@ Everything else that mentions essentia is plumbing:
 | `src/phaze/schemas/agent_tasks.py`, `tasks/functions.py`, `job_runner.py` | Carry `models_path`; defer the heavy import to call time |
 | `src/phaze/analysis_child.py`, `src/phaze/services/analysis_exec.py` | Phase 101 subprocess boundary: `analyze_file` now runs in a real child process (`python -m phaze.analysis_child`), spawned by the shared parent driver, so essentia's C++ never holds the parent asyncio event loop's GIL |
 
-`analyze_file()` in `analysis.py` runs **two passes per file**, decoding one short
-window at a time via segmented `EasyLoader` (so no essentia algorithm ever sees more
-than one window — the architecture that fixed the long-file `RhythmExtractor2013`
-buffer overflow / OOM):
+`analyze_file()` in `analysis.py` runs **two passes per file**, analyzing one short window
+at a time (so no essentia algorithm ever sees more than one window — the architecture that
+fixed the long-file `RhythmExtractor2013` buffer overflow / OOM). Since `phaze-5lop` each
+pass gets its windows from **one streaming decode network per tier** —
+`MonoLoader(sampleRate=tier_rate)` fanned out to a `Scale(1.0) → Trimmer` branch per window,
+run once — rather than one `EasyLoader` call per window:
 
 | Pass | Sample rate | Window | essentia algorithms | Features produced |
 | ---- | ----------- | ------ | ------------------- | ----------------- |
@@ -81,6 +83,31 @@ Corollaries already settled in prior investigation:
   full float TF graphs, not Edge-TPU-compiled TFLite.
 - **The throughput lever is horizontal CPU parallelism across files** — which the
   Kueue burst / multi-compute agents already deliver.
+
+> **⚠️ Half of this section is now falsified — measured, twice, on the Linux burst node.**
+> The claim that TF inference is "a negligible slice" was never measured; it is wrong, and it
+> was wrong even when written. Measured `analyze_file` on a 60-minute file at production caps
+> (vox, deployed image, synthetic audio):
+>
+> | | before `phaze-5lop` | after `phaze-5lop` |
+> | --- | ---: | ---: |
+> | total wall | 3 205.05 s | **1 960.37 s** |
+> | audio decode + resample | 1 370.77 s (**42.8%**) | **126.98 s (6.5%)** |
+> | everything else (34 TF graphs × 20 windows, + `RhythmExtractor2013`/`KeyExtractor` × 60) | 1 834.28 s (57.2%) | 1 833.39 s (**93.5%**) |
+>
+> **What survives.** Decode + native DSP really did dominate — decode alone was 43% of a
+> 60-minute analyze, and `phaze-esut` §8 found why: `EasyLoader` does not seek, so every one of
+> the 80–90 windows re-decoded the file from byte 0. `phaze-5lop` removed that multiplier and
+> decode fell to **6.5%**. The compute lever *was* the decode path, and it has now been pulled.
+>
+> **What does not survive: "the TF model step is a negligible slice."** It was 57% of the wall
+> before and is **93%** after — the two rightmost cells above are the same 1 834 seconds, which
+> is the point: nothing about the model step changed, it simply stopped being hidden behind the
+> decode. So the corollaries below are now *load-bearing in the opposite direction*: replacing
+> the classifiers with something cheaper, or `#4`'s ONNX/TFLite re-export, is no longer "image
+> size, RAM and cold-start but not CPU-seconds" — after `phaze-5lop` the inference **is** the
+> CPU-seconds. (The GPU/Edge-TPU corollary is unaffected for a different reason: `phaze-mqq5`
+> and `phaze-i93a` evaluated the runtime question directly and on its own terms.)
 
 ______________________________________________________________________
 
@@ -173,7 +200,7 @@ variants cuts the model download from ~3.1 GB toward ~1 GB and speeds
 directly helps the OCI-free-tier / Kueue-pod memory story. Gate on parity (it
 slightly changes outputs).
 
-### #3 — Decode-once across the two passes *(verdict: NOT worth it standalone)*
+### #3 — Decode-once across the two passes *(verdict: NOT worth it standalone — and still true)*
 
 The fine (44.1 kHz / 30 s) and coarse (16 kHz / 180 s) passes decode the source
 audio's codec twice. The redundancy is real, **but eliminating it cleanly means
@@ -181,10 +208,24 @@ unifying the two window sizes — and those sizes are load-bearing in opposite
 directions:** rhythm extraction needs *short* windows (long windows reopened the
 `OnsetDetectionGlobal` overflow / OOM), while the TF models want *longer* windows
 (shorter windows = 6× more inference calls). You cannot merge them without
-reintroducing a fixed bug or adding compute. Decode is also a secondary fraction of
-wall-clock behind `RhythmExtractor2013 multifeature`. **Recommendation: do not fix
+reintroducing a fixed bug or adding compute. **Recommendation: do not fix
 in isolation.** Fold decode-sharing in only if the windowing is being restructured
 for another reason.
+
+> **Measured, and the verdict holds — but it was aimed at the wrong redundancy
+> (`phaze-rc1q` §8, shipped as `phaze-5lop` 2026-08-06).** Sharing ONE decode across both
+> tiers was built and measured: it is **5.3% faster and costs +0.364 GiB** of peak, because
+> the two tiers cannot share the expensive stage at all — their **resamplers differ**
+> (44 100→44 100 is a near no-op, 44 100→16 000 is real libsamplerate work), so all a shared
+> pass shares is the mp3 decode and downmix, while both tiers' PCM is live at once. Bad trade.
+> phaze therefore runs **two passes, one per tier.**
+>
+> The redundancy that *was* worth removing is a different one this section did not see:
+> **within** a tier, `EasyLoader` does not seek, so every window re-decoded and re-resampled
+> the file **from byte 0** — 80–90 full passes per file, not 2. Removing that is
+> **3.5×/10.9×/≈15×/≈18×** on decode at 10/60/180/720 minutes, for byte-identical buffers.
+> It required exactly the windowing restructure this section says to wait for, and it left the
+> two window sizes untouched.
 
 ### #4 — Convert TF graphs to ONNX Runtime / quantized TFLite *(footprint / dependency, not wall-clock)*
 
@@ -216,6 +257,17 @@ make compute *worse*. If the real pain is memory / image-size / cold-start rathe
 than CPU-seconds, aim at **#2 / #4** instead — a different problem than "compute
 intensive." Any of these is a separate implementation phase with parity validation;
 this document only records the analysis.
+
+> **Re-read this against the compute-profile correction above (2026-08-06).** The decode half of
+> that sentence was the true half, and it has been dealt with: `phaze-5lop` cut audio decode
+> from **42.8% of a 60-minute analyze to 6.5%** by removing the 80–90 redundant full-file
+> decodes `EasyLoader`'s missing seek was causing — for byte-identical output, no window-size
+> change, and none of the feature risk this section weighs. **The remaining answer to "essentia
+> is compute-intensive" is the 34 TensorFlow graphs, which are now 93% of the wall clock.** So
+> the ranking here has inverted: **#4** (ONNX / quantized TFLite re-export) and **#2** (prune
+> redundant classifier variants) are now the CPU-second levers, and **#1** is a lever on ~2% of
+> the wall. `phaze-mqq5` and `phaze-i93a` evaluate that ground directly and supersede this
+> ranking; read them first.
 
 ______________________________________________________________________
 
