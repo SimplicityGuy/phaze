@@ -74,9 +74,15 @@ def upgrade() -> None:
         # frozen ORM<->schema drift set; a NEW table has no excuse to join them.
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-        sa.CheckConstraint("chains_spent >= 0", name="ck_cloud_budget_chains_spent_nonneg"),
-        sa.CheckConstraint("attempts_spent >= 0", name="ck_cloud_budget_attempts_spent_nonneg"),
-        sa.CheckConstraint("node_loss_spent >= 0", name="ck_cloud_budget_node_loss_spent_nonneg"),
+        # BARE names -- do NOT write the `ck_cloud_budget_` prefix here (phaze-x8tof). Alembic builds
+        # every `op.*` constraint against a MetaData carrying `Base.metadata.naming_convention`
+        # (alembic/operations/schemaobj.py), and the `ck` entry of that convention is
+        # `ck_%(table_name)s_%(constraint_name)s`. A pre-prefixed name therefore lands in Postgres
+        # double-prefixed (`ck_cloud_budget_ck_cloud_budget_chains_spent_nonneg`). Migration 056
+        # renames the ones that already shipped that way; this is the shape to copy.
+        sa.CheckConstraint("chains_spent >= 0", name="chains_spent_nonneg"),
+        sa.CheckConstraint("attempts_spent >= 0", name="attempts_spent_nonneg"),
+        sa.CheckConstraint("node_loss_spent >= 0", name="node_loss_spent_nonneg"),
     )
     # Backfill (see the module docstring for why `attempts > 0` and why over-inclusion is the safe
     # direction). ON CONFLICT DO NOTHING is belt-and-braces: cloud_job.file_id is already unique, so this
