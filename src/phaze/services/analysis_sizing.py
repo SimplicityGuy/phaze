@@ -61,7 +61,7 @@ import os
 from pathlib import Path
 import platform
 import re
-import subprocess  # sysctl(8) on Darwin only; fixed argv, no shell
+import subprocess  # nosec B404  # sysctl(8) on Darwin only; fixed argv, no shell
 
 
 log = logging.getLogger(__name__)
@@ -300,7 +300,7 @@ def _physical_cores_from_proc_cpuinfo(schedulable: set[int]) -> int | None:
 def _physical_cores_from_darwin() -> int | None:
     """`hw.physicalcpu_max` on Darwin. Dev-machine path only -- production analyze is Linux."""
     try:
-        out = subprocess.run(  # fixed argv, no shell, no interpolation
+        out = subprocess.run(  # nosec B603  # fixed argv, absolute path, no shell, no interpolation
             ["/usr/sbin/sysctl", "-n", "hw.physicalcpu_max"],
             capture_output=True,
             text=True,
