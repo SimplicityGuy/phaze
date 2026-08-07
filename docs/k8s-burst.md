@@ -443,18 +443,39 @@ measurement it traces to. Read the provenance column, not just the figure:
 | --- | ---: | --- |
 | macOS floor, all 34 graphs held resident (window-major) | 8.5–10.5 GiB | **superseded** — [`phaze-esut`](spikes/phaze-esut-analysis-memory-profile.md), the original spike |
 | Linux floor, all 34 graphs held resident (window-major) | 7.92–7.99 GiB | **superseded** — [`phaze-7i0k`](spikes/phaze-7i0k-linux-memory-measurement.md), the Linux re-measurement (refuted the assumed allocator ratchet; Linux was *cheaper* than macOS, not dearer) |
-| **Linux design peak, one graph resident at a time (model-major)** | **2.482 GiB** | **current** — `phaze-7i0k` §7c, re-measured against `phaze-15sw`'s deployed image; the 30-coarse-window envelope maximum, validated to 0.01% against the original harness |
+| Linux design peak, one graph resident at a time (model-major) | 2.482 GiB | **superseded** — `phaze-7i0k` §7c, re-measured against `phaze-15sw`'s deployed image; the 30-coarse-window envelope maximum, validated to 0.01% against the original harness. Predates `batchSize=32`, host-derived thread sizing, and the streaming decode |
+| **Linux end-to-end peak of the SHIPPED pipeline, 60-minute file at saturated caps** | **1.7383 GiB** | **current** — `phaze-5lop`, measured end to end through the real `analyze_file` on the burst node, with `phaze-0582` (batch 32), `phaze-rvcn` (host-derived thread sizing), `phaze-ap8y` and the `phaze-5lop` streaming decode all present. The same shape measures **1.3999 GiB** without the streaming decode, so **+0.338 GiB is what the decode change costs**, in exchange for **−38.8% wall clock** |
 
 `phaze-15sw` restructured `_run_model_sets` to iterate models-major instead of windows-major, so
 exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%**
-(7.986 → 2.482 GiB). The two prior rows are not wrong measurements of what they measured; they
+(7.986 → 2.482 GiB). The prior rows are not wrong measurements of what they measured; they
 are correct measurements of a code shape that no longer exists. **`3Gi`/`4Gi` below are sized
-against the current, post-`phaze-15sw` peak.** If you find `9Gi`/`12Gi` or `12Gi`/`16Gi` cited
-anywhere else, they predate this restructure and should not be used.
+against the current peak and still fit it with room to spare.** If you find `9Gi`/`12Gi` or
+`12Gi`/`16Gi` cited anywhere else, they predate this restructure and should not be used.
+
+> **The current row is an END-TO-END peak, and that difference matters when you compare it.**
+> Every superseded row above is a *stage* or *envelope* figure. `1.7383 GiB` is `VmHWM` for a
+> whole `analyze_file` — decode, both tiers, the 34-graph sweep and assembly — read once at
+> process exit, which is the same quantity `analyze_file` itself logs (`phaze-7qfd`,
+> `_log_job_peak_rss`). It is what a pod actually needs. **`memory_request: 3Gi` covers it at
+> 1.73×**, so nothing here needs re-sizing; the margin is now larger than the 1.13× the guidance
+> below describes, and it is deliberately **not** being tightened — `phaze-7i0k` §6d's
+> unexplained 2–4× OOM population (bead `phaze-wcrb`) is still unexplained, and the headroom is
+> what a limit is for.
+>
+> `phaze-5lop` also **discharges `phaze-rc1q` recommendation 7**, which required a joint
+> measurement of the batch-size and streaming-decode changes before anyone touched this sizing.
+> The prediction it guarded against was real: `phaze-rc1q`'s own prototype measured **3.584 GiB**,
+> which would have breached `3Gi`. The shipped implementation is 1.7383 GiB because it carries
+> the two mitigations that prototype did not.
 
 - **Nothing about the file predicts peak memory — the model set does.** The design peak is flat
   across an 18× duration span once model-major iteration holds one graph resident at a time:
-  2.074 GiB at 3.3 minutes, 2.141 GiB at 10 minutes, 2.489 GiB at 60 minutes. **Do not size
+  2.074 GiB at 3.3 minutes, 2.141 GiB at 10 minutes, 2.489 GiB at 60 minutes. (Still flat on the
+  shipped pipeline, at lower absolute values: `phaze-5lop` measured **1.3381 GiB** end to end at
+  10 minutes against **1.7383 GiB** at 60 — a 6× duration span for a 1.30× peak, and the gap is
+  the *cap*, not the duration, since the 60-minute file is the first one that saturates
+  `fine_cap`.) **Do not size
   `memory_request` or `memory_limit` on file duration or file size** — both were already the
   wrong variable under the old code shape, and duration-derived requests were considered and
   explicitly **rejected** in [ADR-0005](design/0005-analyze-job-memory-limits.md) (Decision,

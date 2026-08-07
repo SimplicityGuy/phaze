@@ -280,6 +280,35 @@ were run before §8 settled the choice). Per §8 that shape is 5% *faster*, so t
 marginally optimistic on the streaming side by about that much; 15.7× and 19.2× read as ≈15× and
 ≈18× for the recommended two-pass shape.
 
+> **Re-measured against the shipped implementation — `phaze-5lop`, 2026-08-06.** Same node, same
+> deployed image, same synthetic files, same window geometry; the streaming arm is now the
+> **two-pass** shape throughout (no ‡ footnote needed) and the code is the merged
+> `services/analysis.py`, not a monkeypatch.
+>
+> | file | duration | windows (f+c) | **STANDARD** | **STREAMING** | **speedup** |
+> | --- | ---: | ---: | ---: | ---: | ---: |
+> | `dur_600` | 10 min | 20 + 4 | **53.09 s** | **15.22 s** | **3.49×** |
+> | `dur_3600` | 60 min | 60 + 20 | **1 370.77 s** | **127.04 s** | **10.79×** |
+> | `dur_10800` | 180 min | 60 + 30 | **5 542.2 s** ※ | **370.22 s** | **15.0×** |
+> | `dur_43200` | 720 min | 60 + 30 | **22 100.4 s** ※ (6.14 h) | **1 233.96 s** (20.6 min) | **17.9×** |
+>
+> Every figure above sits inside this section's own: 53.4 → 53.09 (−0.6%), 1 376.7 → 1 370.77
+> (−0.4%), 15.1 → 15.22 (+0.8%), 126.6 → 127.04 (+0.3%). The two long files' streaming figures
+> are 370.22 / 1 233.96 s against this section's 350.0 / 1 153.7 s — **+5.8% / +7.0%, which is
+> the ‡ footnote's own prediction of the two-pass penalty** (§8: one shared pass is 5.3%
+> faster), arriving from a separate implementation.
+>
+> ※ Extrapolated by the same cap-2 method, and **this time the calibration was measured directly
+> rather than inherited.** Standard-arm cap-2 per-window cost on `dur_3600`, where the
+> production-cap truth is known: coarse **52.099 s** against a measured **52.070 s** (**+0.06%**);
+> fine **4.371 s** against **5.490 s** (**−20.4%**) — reproducing this section's own +1.0% / −21%
+> split. Weighted by each tier's share of the standard total (coarse ≈ 86%), the method
+> **under**-states the standard arm by **≈2.9%**, so 15.0× and 17.9× are conservative and read as
+> ≈15.4× and ≈18.4×.
+>
+> **A 12-hour file's decode falls from 6.14 hours to 20.6 minutes** — recommendation 8's figure,
+> measured on the shipped code.
+
 ### 4a. `phaze-esut` §8 reproduces on this node, to within 1%
 
 Wall time for one 180-second coarse window at 16 kHz — §8's exact quantity, remeasured here:
@@ -328,6 +357,35 @@ The identity is not an artefact of short files. `dur_10800` and `dur_43200` comp
 window of each tier — fine window 359 / 1439 and coarse window 59 / 239 — which is the case a
 truncating fan-out (§3b) would fail first and loudest. And no window came back `MISSING`: all 60
 fine and 30 coarse sinks of the 12-hour file produced full-length buffers from a single pass.
+
+> **Re-proved against the shipped implementation, on a wider surface — `phaze-5lop`,
+> 2026-08-06.** Same metric (sha256 over raw float32 bytes, per window, plus length), same node,
+> against the merged `services/analysis.py`:
+>
+> | configuration | windows compared | **mismatches** |
+> | --- | ---: | ---: |
+> | `dur_600` @ production caps (20 fine + 4 coarse) | 24 | **0** |
+> | `dur_600` @ production caps, re-decoded by the committed arm | 24 | **0** |
+> | `dur_600` @ 10 s fine / 60 s coarse | 11 | **0** |
+> | `dur_600` @ 20 s fine / 30 s coarse | 50 | **0** |
+> | `dur_3600` @ production caps, **fine cap saturated** | 80 | **0** |
+> | `dur_3600` @ production caps, re-decoded by the committed arm | 80 | **0** |
+> | `dur_10800` strided endpoints (cap 2) | 4 | **0** |
+> | `dur_10800` strided (cap 4) | 8 | **0** |
+> | `dur_43200` strided endpoints — the **last** window of a 12-hour file | 4 | **0** |
+> | **end-to-end `analyze_file`, `dur_600`** | sha256 `f46508e8…`, `cmp` identical over 27 484 B | **0** |
+> | **end-to-end `analyze_file`, `dur_3600`, caps saturated** | sha256 `829086a7…`, `cmp` identical over 112 784 B | **0** |
+> | **end-to-end, `dur_3600`, all three memory ablations** | sha256 `829086a7…` | **0** |
+>
+> **285 individually hashed buffer comparisons, 0 mismatches** — 181 of them distinct windows,
+> the rest a second independent decode of the same geometry by the committed arm. That is more
+> than double this section's 136, and it adds two geometries whose window boundaries do not
+> align with the production ones (10 s / 20 s fine, 30 s / 60 s coarse), which is where a
+> half-frame `Trimmer` offset would show up first. The bar is held.
+>
+> The identity is also asserted in CI, on real audio, at both tier rates, with a mutation check:
+> shifting every `Trimmer`'s `startTime` by 0.5 ms (22 samples at 44.1 kHz, 8 at 16 kHz) fails
+> four of the tests — see `tests/analyze/services/test_analysis_streaming_decode.py`.
 
 ______________________________________________________________________
 
@@ -407,6 +465,64 @@ handed to the sweep is the *only* copy. Between that and the trim, all 1.079 GiB
 and both parts have a concrete fix. **Neither fix was applied here, so §11 asks `phaze-5lop` to
 apply them and re-measure rather than assuming they land.**
 
+> **Both fixes applied and re-measured — `phaze-5lop`, 2026-08-06.** The diagnosis holds; the
+> prescribed *mechanism* for recommendation 3 does not exist in essentia's Python API (see the
+> §11 annotation), so the shipped fix removes each `Pool` key the instant its buffer is
+> extracted instead of sinking into a pre-sized array. Same effect where it matters: nothing of
+> the `Pool` is alive when the model sweep starts.
+>
+> Measured end to end on vox against **current `main`** — which has moved twice since this
+> spike (`phaze-0582` batch 32, `phaze-rvcn` host-derived thread sizing), so the baseline here
+> is 1.3999 GiB rather than this section's 2.505 GiB. Same file, same caps, same node, one
+> variable at a time:
+>
+> | `dur_3600`, saturated caps (60 fine + 20 coarse) | wall | **peak RSS** | vs baseline | result sha256 |
+> | --- | ---: | ---: | ---: | --- |
+> | **BASELINE** (`main`) | **3 205.05 s** | **1.3999 GiB** | — | `829086a7…` |
+> | **SHIPPED** (rec. 3 + rec. 4) | **1 960.37 s** | **1.7383 GiB** | **+0.338** | `829086a7…` |
+> | ablation: rec. 4 removed (no `malloc_trim`) | 1 956.41 s | 1.7489 GiB | +0.349 | `829086a7…` |
+> | ablation: rec. 3 removed (`Pool` keys kept) | 1 937.01 s | 2.0878 GiB | +0.688 | `829086a7…` |
+> | ablation: both removed (this prototype's shape) | 1 936.98 s | 2.1177 GiB | +0.718 | `829086a7…` |
+>
+> **All five configurations produce a byte-identical `analyze_file` result** (`cmp`, 112 784 B) —
+> which is the first thing to check about a memory knob, and the thing that would be easiest to
+> lose.
+>
+> **The split is not what §6b predicted, and the difference is the most useful thing here.**
+> Isolated on the shipped code:
+>
+> | | worth, with the other mitigation ON | worth, with the other OFF | §6b's attribution |
+> | --- | ---: | ---: | ---: |
+> | rec. 3 — drop the `Pool`'s copy | **0.3495 GiB** | 0.3688 GiB | 0.677 GiB |
+> | rec. 4 — `malloc_trim(0)` | **0.0106 GiB** | 0.0299 GiB | 0.403 GiB |
+>
+> **Recommendation 3 does essentially all of the work and recommendation 4 almost none** — the
+> reverse of the weighting §6b implied and roughly the reverse of its magnitudes. §6b's
+> inference was sound *given its prototype*: it observed that a trim removed 0.403 GiB and
+> concluded the trim was worth 0.403 GiB. But every variant it measured **kept the `Pool` live**,
+> so what the trim was reclaiming there was largely `Pool` slack that recommendation 3 now never
+> allocates in the first place. Once the keys are dropped as they are read, there is almost
+> nothing left for a trim to return — 0.011 GiB. The two mitigations were never independent;
+> they were two ways of attacking the same bytes, and the cheaper one wins on its own.
+>
+> That also settles whether both should ship. **Recommendation 3 costs 1.1% wall** (1 960.37 s
+> against 1 937.01 s — the two `Pool`-kept runs land 0.03 s apart, so the split is real and not
+> noise) **for −0.35 GiB**: an easy trade on the resource with the OOM history.
+> **Recommendation 4 costs nothing measurable** (−0.2%, inside run-to-run spread) **for
+> −0.011 GiB**, and is kept as a cheap backstop — the ablation shows it is worth 3× more
+> (0.030 GiB) precisely when a large freed transient *is* retained, which is the regression it
+> exists to catch.
+>
+> One thing §6b got exactly right: **the total.** Both-removed measures **+0.718 GiB** over
+> baseline here against this section's +1.079 on its own baseline; scaled by the two baselines
+> (2.505 vs 1.3999 GiB) the fan-out's untreated transient is 43% and 51% of the pipeline's peak
+> respectively — the same phenomenon, on a machine whose thread pools `phaze-rvcn` has since
+> pinned.
+>
+> Recommendation **7 is discharged: `1.7383 GiB` is the joint peak of the shipped
+> implementation** — 58% of `phaze-3j67`'s `memory_request: 3Gi`, 43% of its `memory_limit: 4Gi`
+> — measured, not summed. §6c's concern does not survive: nothing in the sizing needs to move.
+
 ### 6c. What the regression means operationally, unfixed
 
 `phaze-3j67` §9b recommends `memory_request: 3Gi`, `memory_limit: 4Gi`, sized on a 2.57 GiB design
@@ -482,6 +598,29 @@ seek) or a single sink that emits windows without one branch per window. Neither
 essentia's Python streaming API today. The fan-out is what *is* available, it is worth 3.5–19×, and
 it is compatible with a later seek-based change rather than in tension with it.
 
+> **This is `phaze-5lop`'s answer to its own acceptance criterion, and the coefficients reproduce
+> (2026-08-06).** That bead asks for "per-window decode cost is **O(window)**, or the reason it
+> cannot be, documented with evidence." **It cannot be, and this is the evidence.** Re-running
+> the width sweep against the shipped implementation, on the same file and node:
+>
+> | | fixed term | marginal per window | fit | vs this section |
+> | --- | ---: | ---: | ---: | --- |
+> | fine, 44.1 kHz | **3.86 s** | **1.3210 s** | R² **0.9973** | 3.91 s / 1.319 s / 0.997 |
+> | coarse, 16 kHz | **38.67 s** | **0.2194 s** | R² **0.9994** | 38.61 s / 0.212 s / 0.999 |
+>
+> Against the standard arm's per-window cost on the same file (5.462 s fine, 52.479 s coarse,
+> both remeasured), the margin is **4.1× cheaper** on the fine tier and **239× cheaper** on the
+> coarse one — this section's 4.2× and 246×.
+>
+> And the marginal term is confirmed to still scale with **total duration**, not window length,
+> which is the whole reason the answer is "cannot": at a **fixed** 30 coarse windows, streaming
+> decode goes **134.31 s → 536.90 s** between the 180-minute and 720-minute files — **4.00× for
+> 4× the duration, exactly linear.** Each `Scale → Trimmer` branch consumes the entire resampled
+> stream to find its range; there is no Python-reachable source or sink in essentia that can
+> skip. What the change buys is the multiplier, not the exponent: the per-window *decode +
+> resample* became a per-window *copy*, and the decode + resample moved into a term paid **once
+> per tier** instead of once per window.
+
 ### 7b. The adapter cost the documentation warns about, measured
 
 Standard mode's overhead over streaming, isolated: ARM STANDARD's cost for a **single** window is
@@ -540,6 +679,29 @@ The table's own numbers are the fix's specification: **the transient is ~2× its
 should take both to ~1×, which is the ≈345 MB `phaze-15sw` already budgets and this document's whole
 double-hold answer: **the design does not double-hold; this prototype's `Pool` usage does.**
 
+> **Settled by measurement — `phaze-5lop`, 2026-08-06. The coarse buffers are held ONCE.**
+> This is the question `phaze-5lop`'s acceptance criteria put as "whether coarse buffers are held
+> once or twice, and what the combined peak is", and it now has an answer that is not an
+> inference:
+>
+> - **Once.** Every `Pool` key is removed the instant its buffer is extracted, so by the time
+>   `_run_model_sets_over_windows` is called the `Pool` is empty and the ≈345 MB the model-major
+>   sweep holds is the only copy in the process — the same ≈345 MB `phaze-15sw` budgeted, produced
+>   differently. Asserted in CI (`test_every_pool_key_is_removed_as_its_buffer_is_extracted`)
+>   rather than argued: the removals are recorded in order and the `Pool` is checked empty before
+>   the buffers are handed on.
+> - **The combined peak is 1.7383 GiB**, measured end to end at saturated caps against a 1.3999 GiB
+>   baseline on current `main` — see §6b's annotation for the number and its ablations. That is
+>   **58% of `phaze-3j67`'s `memory_request: 3Gi`** and 43% of its `memory_limit: 4Gi`.
+> - **Two passes, as recommended.** The shipped code never fans both tiers off one decode, so the
+>   +0.364 GiB this section priced is not paid. The fine tier's transient lands and is released
+>   (and trimmed) entirely **before** the coarse tier decodes.
+>
+> The residual **+0.338 GiB** over baseline is the fan-out's own transient — the `Pool`'s doubling
+> slack while `essentia.run()` is filling it — which is freed and trimmed before the sweep but
+> still sets the high-water mark on the way through. It is the price of the 3.5–17.9× and it is
+> paid in a resource `phaze-3j67` measured as having 13.1 GiB of unusable slack.
+
 ______________________________________________________________________
 
 ## 9. The three options, priced
@@ -590,7 +752,7 @@ Three further blockers, recorded so they are not rediscovered:
 | decode wall | **3.5× / 10.9× / ≈15× / ≈18×** faster at 10 / 60 / 180 / 720 min |
 | end-to-end wall | **−41.7%** at saturated caps (`dur_3600`); −11.7% on a 10-minute file whose caps are not saturated and where decode is only 15% of the work |
 | output | **byte-identical** — sha256 + `cmp` on the `analyze_file` result on both files and in all three hybrid runs, plus **136 buffer comparisons, 0 mismatches** |
-| peak | **+1.079 GiB measured** at saturated caps. 0.403 GiB of that is glibc retention, removable by one `malloc_trim(0)` at 0.13% wall cost (**measured**); the remaining 0.677 GiB is a `Pool`-materialisation double-hold that recommendation 3 removes (**not yet measured — `phaze-5lop` must confirm**) |
+| peak | **+1.079 GiB measured** at saturated caps. 0.403 GiB of that is glibc retention, removable by one `malloc_trim(0)` at 0.13% wall cost (**measured**); the remaining 0.677 GiB is a `Pool`-materialisation double-hold that recommendation 3 removes (**not yet measured — `phaze-5lop` must confirm**). **Confirmed 2026-08-06:** the shipped implementation carries both mitigations and measures **+0.338 GiB** over a 1.3999 GiB baseline, for a joint peak of **1.7383 GiB** — under `phaze-3j67`'s 3Gi request. See §6b. |
 | `phaze-15sw` | fully preserved — the model sweep is untouched, and the coarse buffers it holds are the same buffers, produced differently |
 | correctness surface | four traps, all identified with upstream citations, three closed by construction (§3a–c) and the fourth (§3d) avoided by keeping the models in standard mode |
 | C++ portability (`phaze-i93a`) | improved — the fan-out is idiomatic streaming, which is the mode essentia says ports straightforwardly, and it is the shape of `streaming_extractor_la-cupula.cpp` |
@@ -609,10 +771,16 @@ ______________________________________________________________________
   saturated; buffer-level and `analyze_file`-level output identity; the two-term cost model in §7 and
   its coefficients on this node/image; the double-hold arithmetic in §8; the `malloc_trim` split of
   the peak regression in §6b; the reproduction of `phaze-esut` §8 on Linux.
-- **Not supported: that recommendation 3 recovers the remaining 0.677 GiB.** §6b identifies the
+- ~~**Not supported: that recommendation 3 recovers the remaining 0.677 GiB.**~~ §6b identifies the
   `Pool` as the holder from a subtraction (a trim removes the rest) and from the per-tier deltas in
   §8, and the fix follows from that diagnosis — but the fix was **not built or measured**.
   `phaze-5lop` must measure it before anyone re-sizes the pod (recommendation 7).
+  **Now supported, with a correction (`phaze-5lop`, 2026-08-06): both mitigations were built and
+  ablated one at a time on the shipped code.** The *total* reproduces almost exactly on a
+  different baseline; the *attribution split* in §6b does not — it read the residual-after-trim as
+  entirely `Pool` and therefore over-weighted recommendation 3. See §6b's annotated table for the
+  ablation figures. The operational conclusion is unaffected and better than predicted: the joint
+  peak is **1.7383 GiB**, under `phaze-3j67`'s 3Gi request rather than breaching it.
 - **Supported by source, not by measurement:** every claim in §2 and §3, and §9b's rejection of
   wholesale streaming. These are readings of `MTG/essentia@master` plus one already-measured number
   (`phaze-15sw`'s graph-residency cost). They are cited to file and symbol so they can be checked.
@@ -647,6 +815,28 @@ ______________________________________________________________________
 | 6 | **Do not go wholesale streaming, and correct the "34 graphs at risk" framing before it reaches `phaze-i93a`.** | §3c, §3d, §9b. The normalization hazard is `TensorflowPredictFSDSINet`-only and phaze runs none of it; the real divergence is **one** graph (`discogs-effnet-bs64-1`, batch padding). Wholesale streaming is blocked by a structural conflict with `phaze-15sw`, not by either hazard. |
 | 7 | **Re-measure peak at saturated caps after 3 and 4 land**, against `analyze_file`'s peak-RSS log line (`phaze-7qfd`), before touching `phaze-3j67`'s sizing. | §6c. Recommendations 3+4 are predicted to return the peak to roughly baseline; 4 is measured, 3 is not. Do not size the pod against a prediction. |
 | 8 | **`phaze-esut` §8's duration gate remains worth having, and this change shrinks what it is for.** | §4a. A 12-hour file's decode falls from **6.15 hours to ~20 minutes**. The exposure-time argument for gating long files does not disappear — inference is still 30 × 34 model runs — but the dominant term in it does. |
+
+> **Shipped 2026-08-06 (`phaze-5lop`).** Recommendations **1, 2, 4, 5 and 6 landed as written.**
+> Recommendation **3 landed by a different mechanism than the one specified**, and that is worth
+> reading before trusting the specification elsewhere: essentia's **Python** streaming API
+> exposes no `numpy` sink at all — the only sinks reachable from Python are a `Pool`,
+> `FileOutput`, and the accumulators, none of which can be pre-sized (verified against the pinned
+> wheel: `essentia.streaming` exports `FileOutput`, `RealAccumulator`, `VectorRealAccumulator`,
+> `VectorInput` and nothing else). What actually closes the double-hold is **removing each
+> `Pool` key the instant its buffer is extracted**, which is available and is what §6b's
+> diagnosis really requires: `pool[key]` *copies* (confirmed — two reads do not alias, and an
+> extracted array outlives `pool.remove`), so the second copy is real, and dropping the key
+> means nothing of the `Pool` survives into the model sweep. The `Pool`'s doubling slack is
+> still paid **during** the run, as a transient that is freed and then trimmed — it just never
+> reaches the sweep. Recommendation **7 is discharged** in §6b's annotation with a measured
+> joint peak.
+>
+> One implementation note against recommendation 1's wording: the shipped network is
+> **`MonoLoader(sampleRate=tier_rate)`** per tier, not `AudioLoader → MonoMixer → Resample`
+> assembled by hand. They are the same graph — `monoloader.cpp` *is* that chain — but the
+> composite reads the native rate off `AudioLoader` at configure time, so the implementation
+> needs no `inputSampleRate` and cannot drift from what `EasyLoader` does. §3a's trap is avoided
+> by the same thing that makes recommendation 2 correct: one loader **per tier**.
 
 ______________________________________________________________________
 

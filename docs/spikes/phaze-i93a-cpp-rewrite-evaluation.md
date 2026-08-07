@@ -210,6 +210,32 @@ plausible arithmetic argument about freed transients missed (`phaze-rc1q` §6 wa
   the real implementations land. What this measurement establishes is that the two changes **compose
   in the favourable direction**, which is what was in doubt.
 
+> **Recommendation 7 discharged, and this section's 2.812 GiB superseded — `phaze-5lop`,
+> 2026-08-06.** The real implementation landed and was measured end to end on the same node,
+> same file, same caps, through the shipped `analyze_file` rather than a reimplemented
+> `improved` arm:
+>
+> | | `dur_3600` wall | `dur_3600` peak |
+> | --- | ---: | ---: |
+> | this document's `base` (batch 64, per-window decode) | 3 043.83 s | 2.466 GiB |
+> | this document's `improved` (batch 32 + hybrid decode, **without** `phaze-rc1q` rec. 3/4) | 1 793.57 s | **2.812 GiB** |
+> | `main` before `phaze-5lop` (batch 32 + `phaze-rvcn` threads + `phaze-ap8y`) | 3 205.05 s | **1.3999 GiB** |
+> | **shipped (`phaze-5lop`, with rec. 3 + rec. 4)** | **1 960.37 s** | **1.7383 GiB** |
+>
+> §2c's central claim survives and strengthens: the two changes compose favourably, and the
+> joint peak lands **under** `phaze-3j67`'s 3Gi request. It lands **1.074 GiB further under it**
+> than this section measured, for two reasons that are worth separating — `phaze-rvcn`'s
+> host-derived thread pinning (which arrived after this document and moved the *baseline* down
+> to 1.3999 GiB) and `phaze-rc1q` recommendations 3 and 4 (which the `improved` arm here
+> deliberately did not apply, and which are worth the difference between +1.078 and +0.338 GiB
+> over that baseline).
+>
+> The wall-clock figures moved too, and in the less flattering direction: **3 043.83 → 3 205.05 s**
+> on the baseline (+5.3%), because `phaze-rvcn` trades wall clock for a hardware-independent
+> peak. So `phaze-5lop`'s end-to-end saving reads **−38.8%** where this section measured −41.1%
+> — the decode saving is the same, the denominator grew. `docs/k8s-burst.md`'s sizing table now
+> carries `1.7383 GiB` as the current row.
+
 ______________________________________________________________________
 
 ## 3. Python orchestration as a fraction of wall clock — the ceiling

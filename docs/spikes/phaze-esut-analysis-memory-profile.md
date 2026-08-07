@@ -383,6 +383,66 @@ resampling.
    single-threaded libsamplerate resampling is exactly that shape. The idle CPU is not idle
    because memory blocks it — it is idle because the workload is serialized on decode.
 
+> **Follow-up D shipped 2026-08-06 (`phaze-5lop`), and this section's table was re-measured on
+> the burst node in both arms.** The mechanism is exactly what `phaze-rc1q` §3b named: the
+> streaming `Trimmer`'s `parent()->shouldStop(true)` cannot cross the `MonoLoader` composite
+> that standard `EasyLoader` wraps, so `startTime` never seeks. Each tier now stands up **one**
+> streaming network — `MonoLoader(sampleRate=tier_rate)` fanned out to a `Scale(1.0) → Trimmer`
+> branch per window, `essentia.run()` once — so the file is decoded and resampled **twice per
+> analysis instead of 80–90 times**, for byte-identical buffers.
+>
+> This section's exact quantity, wall time for ONE 180 s coarse window at 16 kHz, remeasured on
+> vox against the deployed image and current `main`:
+>
+> | total file duration | §8 (macOS) | `phaze-rc1q` (vox) | **standard, remeasured** | s per minute of total file |
+> | ---: | ---: | ---: | ---: | ---: |
+> | 10 min | 6.6 s | 7.91 s | **7.890 s** | 0.789 |
+> | 60 min | 45.9 s | 52.12 s | **52.070 s** | 0.868 |
+> | 180 min | 143.6 s | 157.48 s | **158.422 s** | 0.880 |
+> | **720 min** | **600.2 s** | **632.36 s** | **631.570 s** | 0.877 |
+>
+> §8's claim is confirmed a third time, on a third harness, to **within 0.5%** of `phaze-rc1q`
+> across a 72× duration span — and the fine tier tracks it too (1.076 / 5.490 / 13.159 /
+> 52.555 s per 30 s window at 44.1 kHz). **This is the "before" half of the before/after.** The
+> "after" is in `phaze-rc1q` §4's annotation and in `phaze-5lop`'s tables.
+>
+> **What did NOT change, and it matters for how this is read.** The fixed cost of decoding a
+> file end to end is still `O(total_duration)`: essentia exposes no seek — `AudioLoader` has no
+> seek input, and a fan-out must consume the whole stream — so the per-tier decode still reads
+> every byte. What is gone is the **multiplier**. Per-file decode went from
+> `n_windows × O(duration)` to `O(duration) + n_windows × O(window)`, and the marginal term is
+> a memory copy rather than libsamplerate work. Consequence 2's "the workload is serialized on
+> decode" therefore stops being true at production caps: decode falls from ~45% of a 60-minute
+> file's analyze wall to ~7%, and what remains is multi-threaded TF inference.
+>
+> **And on consequence 1 — should the burst path carry a wall-clock bound? No.** Recorded here
+> because this is where the question was raised.
+>
+> 1. **The exposure this was reaching for is largely gone.** A 12-hour file's decode falls from
+>    **6.15 hours to ~19 minutes**. The plateau is still occupied — the 30 × 34 model runs are
+>    untouched — but the dominant term in "sits at peak for 5.7 hours" was the decode, and it no
+>    longer dominates.
+> 1. **A wall clock cannot distinguish a long analyze from a hang, and production proved it.**
+>    `phaze-1b39` shipped exactly this as a required 3 h `activeDeadlineSeconds`; it SIGTERM'd
+>    every 2–6 h concert set at exactly 3 h, burned `cloud_submit_max_attempts` per file, and
+>    D-04 then barred 14 files from Kueue entirely — stalling the whole burst lane (incident
+>    2026-07-28). A faster decode makes that *worse*, not better: it widens the gap between the
+>    files a fixed deadline would kill and the ones it would not, on a distribution nobody has
+>    characterised.
+> 1. **The protection it was reaching for already exists, without a clock.** `phaze-202e`
+>    replaced it with pod-state detection (`reconcile_cloud_jobs._pod_wedge_reason` /
+>    `kube_staging.classify_job_pods`), which terminalizes only on positive proof that no work
+>    is happening — a fatal container waiting reason, persistent unschedulability, an
+>    un-suspended Job with no pod — and **never terminalizes a Running pod, at any age**. That
+>    is a strictly better instrument than elapsed time for the failure being guarded against.
+> 1. **The knob still exists, opt-in, per backend** (`backends.kube.active_deadline_seconds`,
+>    default `None` → the key is absent from the manifest). An operator with a genuinely runaway
+>    cluster can arm it on one backend. Setting it as a matter of course re-arms the incident.
+> 1. **What the exposure argument still supports is a duration gate at ENQUEUE, not a kill at
+>    runtime** — and it should now be sized against inference, not decode. Deciding not to start
+>    a 12-hour file on a contended node is a scheduling choice with a clean failure mode;
+>    SIGTERMing one 3 hours in is not.
+
 ______________________________________________________________________
 
 ## 9. Re-examination of the requests-only decision (`services/kube_staging.py:228`)
@@ -463,7 +523,7 @@ ______________________________________________________________________
 | **A** | ~~Restructure `_run_model_sets` to model-major iteration so exactly one TF graph is resident; hold the ≤30 coarse buffers (345 MB) instead of 34 graphs (4.09 GiB). Re-measure with this spike's harness.~~ **DONE 2026-08-05 (`phaze-15sw`)** — measured on the burst node with this harness: Linux envelope maximum **7.986 → 2.482 GiB (−69%, 3.2×)**, 34 constructions per file unchanged, output byte-identical, wall clock **+2.1%**. Beat the 3–4 GiB estimate; see §5 and the [Linux measurement](phaze-7i0k-linux-memory-measurement.md) §7c. | Removes the single largest avoidable term. ~~Est. peak 9.7 → 3–4 GiB (**must be measured**).~~ Same number of model constructions as today. | **High value**, medium |
 | **B** | Emit `resources.limits.memory` in `build_job_manifest` from a new optional `KubeConfig.memory_limit`; absent ⇒ no `limits` key (byte-identical manifest, backward compatible). Implements ADR-0005. | Turns a node crash into a predictable pod OOMKill. Stops phaze killing `coredns`/`metrics-server`/`local-path-provisioner`. | **High value**, small |
 | **C** | ~~Measure peak + ratchet on a real Linux burst node; test `MALLOC_ARENA_MAX`, periodic `malloc_trim`, and TF thread caps.~~ **DONE 2026-08-05 (`phaze-7i0k`)** — see [the measurement](phaze-7i0k-linux-memory-measurement.md). §7 rewritten; 12Gi/16Gi corrected to 9Gi/12Gi; only the TF 4-thread cap is worth adopting. | Converts §7 from inference to measurement and calibrates B's default and §10's 12Gi/16Gi. | Medium |
-| **D** | Replace the O(total-duration) per-window decode — seek-based extraction, or a single decode pass feeding both tiers. | O(90 × duration) → O(duration). Unblocks the >4 h tail and recovers the idle CPU in §8. | Medium-high |
+| **D** | ~~Replace the O(total-duration) per-window decode — seek-based extraction, or a single decode pass feeding both tiers.~~ **DONE 2026-08-06 (`phaze-5lop`)**, by neither of the two options this row proposed. There is no seek to use — essentia's `AudioLoader` exposes none (`phaze-rc1q` §7a) — and a single pass feeding **both** tiers was built and rejected on measurement: the tiers' resamplers differ, so it shares only the mp3 decode (5.3% faster) while holding both tiers' PCM at once (+0.364 GiB). What shipped is **one streaming fan-out pass PER TIER**: 80–90 decodes per file → 2. See §8's annotation and [`phaze-rc1q`](phaze-rc1q-streaming-vs-standard-mode.md) §4/§11. | ~~O(90 × duration) → O(duration).~~ Achieved: `n_windows × O(duration)` → `O(duration) + n_windows × O(window)` — a 3.5–19× constant factor, not an asymptotic collapse, because the per-tier pass still reads every byte. The §8 idle CPU is recovered: decode falls from ~45% of a 60-minute analyze to ~7%. | Medium-high |
 | **E** | ~~Raise the documented `memory_request` guidance in `docs/k8s-burst.md`; log measured post-model-load RSS once at analyze start.~~ **DONE 2026-08-05 (`phaze-7qfd`)** — `docs/k8s-burst.md`'s sizing now cites the current `phaze-15sw` design peak (2.482 GiB) with a provenance table instead of either superseded figure, and `analyze_file` logs the job's peak RSS at INFO once per job (`_log_job_peak_rss`, `src/phaze/services/analysis.py`) — high-water RSS rather than a window-load-instant sample, since model-major iteration no longer has a single "all models loaded" point to log after. | Makes the floor observable instead of rediscovered by an OOM. | Small |
 
 **Ordering note:** **B before A.** B is small, backward compatible, and stops the collateral

@@ -143,3 +143,23 @@ compatible change that ships first. The actual reduction is spike follow-up A �
 > the right backstop -- but whoever re-derives the numbers must state the core count they hold
 > for, and should derive from the *pinned* figure, which is the only one that is a property of
 > the code. See `docs/k8s-burst.md`, "Thread sizing is derived, not configured".
+>
+> **The joint measurement this note asked for exists as of 2026-08-06 (`phaze-5lop`), and it
+> ends the chain of moving targets.** Rather than adding the two spikes' numbers, the whole
+> shipped pipeline was measured end to end through the real `analyze_file` on the burst node,
+> 60-minute file at saturated caps, one variable at a time:
+>
+> | configuration | wall | **peak** |
+> | --- | ---: | ---: |
+> | `main` before `phaze-5lop` (batch 32 + derived threads + hoisted extractors) | 3 205.05 s | **1.3999 GiB** |
+> | **`main` with the streaming decode (shipped)** | **1 960.37 s** | **1.7383 GiB** |
+>
+> **`1.7383 GiB` is the number to derive from** — a whole-process `VmHWM`, not a stage figure,
+> on a 4-physical-core host, with the thread pools pinned. The caution above was warranted:
+> the two changes do point opposite ways, and adding them would have been wrong in both
+> directions (`phaze-rc1q`'s own prototype measured **3.584 GiB** for the decode change alone,
+> which would have breached a 3Gi request; the shipped implementation is under half that because
+> it carries two mitigations the prototype did not). **This ADR's decision is again unaffected**
+> — the unexplained 2–4× population in `phaze-7i0k` §6d is neither explained nor reached by a
+> decode rewrite, so a limit is still the right backstop, and `3Gi`/`4Gi` still clear the
+> measured peak by 1.73× / 2.30×.

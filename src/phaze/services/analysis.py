@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass, field
 import gc
 import json
@@ -19,7 +20,7 @@ from phaze.services.analysis_sizing import apply_thread_env
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 
 # Suppress TF C++ logging before any essentia/TF import
@@ -46,6 +47,7 @@ ANALYSIS_SIZING = apply_thread_env()
 # `apply_thread_env` call, which is why only these two lines carry the marker.)
 import essentia  # noqa: E402
 import essentia.standard as es  # noqa: E402
+import essentia.streaming as ess  # noqa: E402
 
 
 log = logging.getLogger(__name__)
@@ -164,6 +166,11 @@ _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
 
+# phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
+# ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
+# strided window set maps back to `_stride_to_cap`'s indices without a side table.
+_SINK_KEY_PREFIX = "phaze.window."
+
 
 # ---------------------------------------------------------------------------
 # TensorFlow inference batch size (phaze-0582)
@@ -259,6 +266,65 @@ def _suppress_essentia_logging() -> None:
         essentia.log.infoActive = False
         essentia.log.warningActive = False
         _essentia_logging_suppressed = True
+
+
+def _resolve_malloc_trim() -> Callable[[int], int] | None:
+    """Resolve glibc's ``malloc_trim`` once, or ``None`` where it does not exist.
+
+    Deliberately narrow: ``malloc_trim`` is a glibc extension. macOS and musl do not have it,
+    and a ``CDLL(None)`` lookup there raises ``AttributeError`` -- so this returns ``None`` and
+    :func:`_malloc_trim` becomes a no-op rather than a per-call exception. Resolution is
+    memoised in :data:`_MALLOC_TRIM` because the lookup is the expensive part, not the call.
+
+    Gated on ``platform.libc_ver`` rather than ``sys.platform`` because the C library, not the
+    kernel, is what owns this symbol -- musl Linux would pass a ``sys.platform`` check and then
+    fail the lookup. (It also keeps the body reachable for a type checker running on macOS,
+    which narrows ``sys.platform`` to a literal and would call everything below it dead.)
+    """
+    try:
+        if platform.libc_ver()[0] != "glibc":
+            return None
+        trim: Callable[[int], int] = ctypes.CDLL(None).malloc_trim
+    except (AttributeError, OSError):  # no malloc_trim, or no dlopen of the running image
+        return None
+    trim.argtypes = [ctypes.c_size_t]  # type: ignore[attr-defined]
+    trim.restype = ctypes.c_int  # type: ignore[attr-defined]
+    return trim
+
+
+_MALLOC_TRIM: Callable[[int], int] | None = _resolve_malloc_trim()
+
+
+def _malloc_trim() -> None:
+    """Hand the decode pass's freed transient back to the OS (phaze-rc1q rec. 4).
+
+    ``free()`` returns a block to glibc's arena, not to the kernel, and glibc only trims
+    the top of the main arena on its own. The streaming fan-out (:func:`_decode_windows`)
+    frees a transient roughly twice the size of a tier's PCM the instant its ``Pool`` is
+    dropped; TensorFlow's own arena allocations in the model sweep that follows do NOT
+    reuse those retained pages, so without this call the sweep's 2.5 GiB stacks *on top of*
+    the decode transient instead of sitting under it.
+
+    **This is a BACKSTOP, and the measurement says so.** phaze-rc1q 6b priced it at
+    ``-0.403 GiB`` for ``+0.13%`` wall -- but every variant that spike measured kept the
+    ``Pool`` alive through the sweep, so most of what its trim reclaimed was ``Pool`` slack
+    that :func:`_decode_windows_streaming` now never holds. Ablated one knob at a time on THIS
+    implementation (phaze-5lop, vox, deployed image, 60-min file at saturated caps, 1.3999 GiB
+    baseline): dropping the ``Pool`` keys is worth **-0.3495 GiB**, and this trim on top of it
+    only **-0.0106 GiB**. Kept anyway because it costs nothing measurable (-0.2%, inside
+    run-to-run spread) and because the same ablation shows it worth **3x more** (-0.0299 GiB)
+    when a large freed transient IS retained -- which is exactly the regression it is here to
+    absorb. phaze-7i0k 4 measured the same call worth 0.0% against the pre-phaze-5lop workload
+    and was right: that workload freed no large transient at all.
+
+    Never raises -- a failed trim is a missed optimisation, not an analysis failure.
+    """
+    if _MALLOC_TRIM is None:
+        return
+    try:
+        _MALLOC_TRIM(0)
+    except Exception:  # pragma: no cover -- defensive; a trim must never fail a file
+        log.debug("malloc_trim(0) failed; continuing", exc_info=True)
 
 
 def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
@@ -693,6 +759,130 @@ def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[l
     return kept, True
 
 
+def _decode_windows_streaming(file_path: str, sample_rate: int, windows: Sequence[tuple[int, float, float]]) -> dict[int, Any]:
+    """Decode EVERY window of one tier in a SINGLE streaming pass (phaze-5lop).
+
+    Returns ``{window_index: float32 buffer}``, omitting any window the pass produced no
+    audio for. Raises if the network itself cannot be built or run -- :func:`_decode_windows`
+    owns that fallback.
+
+    **Why this exists.** ``es.EasyLoader`` does not seek: standard ``EasyLoader`` wraps the
+    *streaming* ``EasyLoader`` composite, so ``Trimmer``'s "tell my parent to stop" optimisation
+    (``trimmer.cpp``, a line upstream itself marks ``FIXME``) cannot cross the ``MonoLoader``
+    composite boundary and the file is decoded and resampled from byte 0 for **every** window.
+    Per-file decode was therefore ``O(n_windows x total_duration)`` -- 6.15 hours of
+    single-threaded libsamplerate for a 12-hour file at production caps (phaze-esut 8,
+    remeasured phaze-rc1q 4a). This function decodes once per tier and fans the ONE resampled
+    stream out to a ``Trimmer`` per window, which is 3.5x / 10.9x / ~15x / ~18x faster on
+    decode at 10 / 60 / 180 / 720 minutes for byte-identical buffers (phaze-rc1q 4, 5).
+
+    **Three upstream traps this shape closes** -- all read out of ``MTG/essentia@master``,
+    none of them stylistic:
+
+    1. ``MonoLoader`` per TIER, not one shared loader fanned to both. ``monoloader.cpp`` builds
+       ``AudioLoader -> MonoMixer -> Resample`` unconditionally with no ratio-1.0 short circuit,
+       so hanging a second ``Resample(44100->16000)`` off a 44.1 kHz loader would run the coarse
+       tier through TWO libsamplerate passes and produce a different signal than
+       ``EasyLoader(sampleRate=16000)`` does. One loader per tier is bit-for-bit each
+       ``EasyLoader``'s own internal chain -- which is also why this takes no ``inputSampleRate``:
+       ``MonoLoader`` reads the native rate off ``AudioLoader`` at configure time, exactly as
+       ``EasyLoader`` does. (phaze-rc1q 3a)
+    1. ``Scale(factor=1.0)`` is interposed per branch and is LOAD-BEARING, not decorative.
+       A streaming ``Trimmer`` calls ``_input.source()->parent()->shouldStop(true)`` when it
+       reaches ``endTime``; hung straight off the shared loader, the earliest-ending window
+       would shut the shared decode down and truncate every other window. The interposer gives
+       each ``Trimmer`` a private parent to stop. It is ``EasyLoader``'s own composition
+       (``db2amp(-6+6) == 1.0``, same default clipping), so it is free of semantic risk and
+       costs 13% of the fine tier / 0.6% of a full ``analyze_file``. (phaze-rc1q 3b, 7c)
+    1. The buffer is extracted and its ``Pool`` key **removed immediately**, so the ``Pool``'s
+       copy dies with the loop iteration instead of staying live through the model sweep.
+       ``pool[key]`` copies (verified: two reads do not alias, and an extracted array survives
+       ``pool.remove``), so leaving the keys in place holds every window's PCM TWICE. **Measured
+       by ablating this one line on the deployed image, 60-min file at saturated caps: peak
+       1.7383 -> 2.0878 GiB, +0.3495, for 1.1% less wall.** It is the single largest term in the
+       change's memory cost -- larger than the ``malloc_trim`` below by 33x -- and without it a
+       decode this fast would have cost `phaze-3j67` a pod sizing tier. (phaze-rc1q rec. 3)
+
+    Not applicable here, recorded so it is not rediscovered: the standard/streaming
+    normalization divergence upstream documents is ``TensorflowPredictFSDSINet``-only, and
+    phaze runs none of it -- musicnn / vggish / effnet normalize in NEITHER mode. The one
+    mode-coupled behaviour that does touch phaze's set is ``EffnetDiscogs`` batch padding, and
+    it cannot bind because the models stay in standard mode; only the DECODE moves.
+    (phaze-rc1q 3c, 3d)
+    """
+    pool = essentia.Pool()
+    loader = ess.MonoLoader(filename=file_path, sampleRate=sample_rate)
+    branches: list[tuple[Any, Any]] = []  # holds the per-branch algos alive for the run
+    try:
+        for idx, start, end in windows:
+            scale = ess.Scale(factor=1.0)
+            trimmer = ess.Trimmer(sampleRate=sample_rate, startTime=start, endTime=end)
+            loader.audio >> scale.signal
+            scale.signal >> trimmer.signal
+            trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
+            branches.append((scale, trimmer))
+
+        essentia.run(loader)
+
+        produced = set(pool.descriptorNames())  # read ONCE: `remove` below mutates it
+        decoded: dict[int, Any] = {}
+        for idx, _start, _end in windows:
+            key = f"{_SINK_KEY_PREFIX}{idx}"
+            if key not in produced:
+                continue  # the pass produced no audio for this window; caller reports it as a skip
+            buf = pool[key]
+            pool.remove(key)  # drop the Pool's copy NOW -- see trap 3 above
+            if len(buf) == 0:
+                continue
+            decoded[idx] = buf
+        return decoded
+    finally:
+        # Drop the network before returning: the branches are what hold the per-window
+        # C++ sinks, and the caller's `_malloc_trim` can only return pages that are free.
+        branches.clear()
+        del loader, pool
+
+
+def _decode_windows(
+    file_path: str,
+    sample_rate: int,
+    windows: Sequence[tuple[int, float, float]],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> dict[int, Any]:
+    """Decode one tier's windows, streaming fan-out first, per-window ``EasyLoader`` as fallback.
+
+    Returns ``{window_index: buffer}`` for the windows that decoded. ``on_skip(idx, start, end,
+    exc_info)`` fires once per window that did not, with ``exc_info`` False when there is no
+    live exception to render (a window the streaming pass simply produced no audio for).
+
+    The fallback is not defensive padding: it is what preserves phaze-zibn's contract. The
+    per-window loop isolates a bad window from the rest of the file, and a single shared network
+    cannot -- one raise takes the whole tier. So a network-level failure drops back to the
+    decode this replaced, which then fails (or skips) exactly the windows it always did, and
+    ``analyze_file``'s all-windows-failed floor still sees the same evidence.
+
+    The ``malloc_trim`` is here rather than at the call sites because THIS is where the fan-out's
+    transient dies: the ``Pool`` doubling slack is freed the moment the loop above finishes, and
+    glibc keeps those pages unless asked. (phaze-rc1q rec. 4 -- measured -0.403 GiB for +0.13% wall.)
+    """
+    try:
+        decoded = _decode_windows_streaming(file_path, sample_rate, windows)
+    except Exception:  # tier-level failure isolation: fall back to the per-window decode
+        log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
+        decoded = {}
+        for idx, start, end in windows:
+            try:
+                decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
+            except Exception:  # per-window failure isolation: skip, never fail the file
+                on_skip(idx, start, end, True)
+    else:
+        for idx, start, end in windows:
+            if idx not in decoded:
+                on_skip(idx, start, end, False)
+    _malloc_trim()
+    return decoded
+
+
 def _sweep_one_model(
     model: ModelConfig,
     buffers: list[tuple[int, Any]],
@@ -811,7 +1001,7 @@ def _analyze_fine_windows(
     *,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[list[FineWindow], int, bool]:
-    """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode.
+    """FINE pass: BPM + key per ``win_sec`` window off ONE 44.1 kHz streaming decode.
 
     Returns ``(windows, total, sampled)`` where ``total`` is the natural window
     count BEFORE striding and ``sampled`` is True when the cap forced an even
@@ -833,17 +1023,34 @@ def _analyze_fine_windows(
     (measured, phaze-i93a §6a). ``reset()`` between windows was verified NOT required —
     0/60 output mismatches with and without it, across the full ``(window_index, bpm, key,
     confidence)`` tuple — so it is deliberately not called here.
+
+    Since phaze-5lop the decode is ONE streaming pass for the whole tier
+    (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader`` per window — that is
+    what makes per-window cost proportional to the WINDOW rather than to the whole file. Two
+    deliberate consequences. Decode failures are now discovered, and logged, before any
+    extraction rather than interleaved with it: only the ORDER of the warnings moves, never
+    which windows are dropped. And the tier briefly holds all ``<=cap`` 44.1 kHz buffers
+    (60 x 30 s ~= 317 MB) instead of one — a transient that lands entirely BEFORE the coarse
+    tier's model sweep and is dropped, and trimmed, before it starts. Retention stays bounded
+    by the CAP and never by duration, which is the invariant that matters.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     kept, sampled = _stride_to_cap(natural, cap)
     if progress_cb is not None:
         progress_cb(0, len(natural))  # START: analyzed=0, total=natural pre-stride
+
+    def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
+        log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
+
+    decoded = _decode_windows(file_path, _FINE_SAMPLE_RATE, kept, _skip)
     rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
     key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
     for idx, start, end in kept:
+        buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+        if buf is None:
+            continue  # no audio for this window; already reported by the decode above
         try:
-            buf = es.EasyLoader(filename=file_path, sampleRate=_FINE_SAMPLE_RATE, startTime=start, endTime=end)()
             bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
             key, scale, _strength = key_extractor(buf)
             fine_windows.append(
@@ -857,10 +1064,13 @@ def _analyze_fine_windows(
                 )
             )
         except Exception:  # per-window failure isolation: skip, never fail the file
-            log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            _skip(idx, start, end)
             continue
+        finally:
+            del buf
         if progress_cb is not None:
             progress_cb(len(fine_windows), len(natural))  # bump (throttle lives downstream, not here)
+    _malloc_trim()  # the fine tier's PCM is gone; do not carry its freed pages into the coarse tier
     return fine_windows, len(natural), sampled
 
 
@@ -886,29 +1096,30 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
     models skip it), and derivation failure drops it at assembly. Same warning, same
     ``exc_info``; only the ORDER of the log lines changes, since a window's inference
     failure is now discovered during the sweep rather than in window order.
+
+    phaze-5lop changed only HOW phase 1 produces those buffers — one streaming fan-out pass
+    for the whole tier (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader``
+    per window, byte-identical output, 10.9x faster on a 60-minute file. **The buffers the
+    sweep holds are the same buffers, produced differently**: this tier's designed ~345 MB of
+    concurrent PCM is unchanged, and the fan-out's own ``Pool`` copy is dropped inside the
+    decode rather than kept alive underneath the sweep (phaze-rc1q §6b, rec. 3).
     """
     natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
     kept, sampled = _stride_to_cap(natural, cap)
 
-    def _skip(idx: int, start: float, end: float) -> None:
-        log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+    def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
+        log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
 
     # (1) decode
-    spans: list[tuple[int, float, float]] = []
-    buffers: list[tuple[int, Any]] = []
-    for idx, start, end in kept:
-        try:
-            buf = es.EasyLoader(filename=file_path, sampleRate=_COARSE_SAMPLE_RATE, startTime=start, endTime=end)()
-        except Exception:  # per-window failure isolation: skip, never fail the file
-            _skip(idx, start, end)
-            continue
-        spans.append((idx, start, end))
-        buffers.append((idx, buf))
+    decoded = _decode_windows(file_path, _COARSE_SAMPLE_RATE, kept, _skip)
+    spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in kept if idx in decoded]
+    buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
 
     # (2) infer, model-major
     geometry = {idx: (start, end) for idx, start, end in spans}
     features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, lambda idx: _skip(idx, *geometry[idx]))
     buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
+    _malloc_trim()
 
     # (3) derive + assemble, in window order
     coarse_windows: list[CoarseWindow] = []
@@ -963,8 +1174,11 @@ def analyze_file(
     The main synchronous function called from ``run_in_process_pool``. Instead of
     decoding the whole file into one buffer (the latent OOM) and feeding long
     audio to ``RhythmExtractor2013`` (the ``OnsetDetectionGlobal`` overflow), it
-    decodes one short window at a time via segmented ``EasyLoader`` (Plan 31-01
-    locked strategy) so no essentia algorithm ever sees more than one window.
+    analyzes the file as a set of short windows (Plan 31-01 locked strategy) so no
+    essentia algorithm ever sees more than one window. Since phaze-5lop those windows
+    come off ONE streaming decode pass per tier (:func:`_decode_windows`) instead of one
+    non-seeking ``EasyLoader`` call per window: same windows, byte-identical PCM, but
+    the file is decoded and resampled twice per analysis rather than 80-90 times.
 
     Two passes:
       * FINE (44.1 kHz): ``RhythmExtractor2013`` + ``KeyExtractor`` per
@@ -973,14 +1187,19 @@ def analyze_file(
       * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
         every window with audio is analyzed (no minimum-length floor).
 
-    The two passes bound memory differently, and deliberately so. FINE holds one
-    44.1 kHz window at a time. COARSE (phaze-15sw) holds ALL its ``coarse_cap``
-    16 kHz windows at once -- ~345 MB at the default 30 -- because its inference is
-    model-major: one ``TensorflowPredict*`` graph is built, run across every window,
-    and released before the next is built. That trades ~345 MB of PCM for the ~4 GiB
-    of co-resident TF graphs the window-major loop used to hold (phaze-esut /
-    phaze-7i0k), at the same 34 model constructions per file. Both passes stay
-    bounded by the CAPS, not by duration.
+    Each pass holds all of its own windows and nothing of the other's, deliberately.
+    COARSE (phaze-15sw) holds ALL its ``coarse_cap`` 16 kHz windows at once -- ~345 MB at
+    the default 30 -- because its inference is model-major: one ``TensorflowPredict*``
+    graph is built, run across every window, and released before the next is built. That
+    trades ~345 MB of PCM for the ~4 GiB of co-resident TF graphs the window-major loop
+    used to hold (phaze-esut / phaze-7i0k), at the same 34 model constructions per file.
+    FINE now holds its ``fine_cap`` 44.1 kHz windows the same way (~317 MB at the default
+    60) because a single decode pass is what makes the tier fast (phaze-5lop) -- but that
+    transient is released, and its pages returned to the OS, BEFORE the coarse pass runs,
+    so the two never stack. **The passes run in sequence, never fanned off one shared
+    decode: sharing is only 5.3% faster and holds +0.364 GiB, because the tiers' resamplers
+    differ and so the expensive stage cannot be shared at all (phaze-rc1q §8).** Both
+    passes stay bounded by the CAPS, not by duration.
 
     Per-window failures are logged and skipped — one bad window never fails the
     file. The one floor (phaze-zibn): if EVERY window fails in BOTH passes while
