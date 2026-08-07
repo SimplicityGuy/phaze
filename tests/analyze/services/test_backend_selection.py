@@ -27,6 +27,7 @@ from phaze.services.backend_selection import (
     select_backend_with_reason,
 )
 from phaze.services.backends import ComputeAgentBackend, KueueBackend, LocalBackend
+from phaze.services.cloud_budget import CloudBudgetState
 
 
 NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=UTC)
@@ -198,9 +199,19 @@ def test_stateless_rerank_repicks_same_backend_after_prior_failure() -> None:
 
 
 def test_stateless_signature_has_no_last_failed_parameter() -> None:
-    """D-06: the function carries no 'last-failed backend' / history parameter."""
+    """D-06: the function carries no 'last-failed backend' / history parameter.
+
+    phaze-2mwyo added ``cloud_budget``, and it is deliberately NOT a D-06 violation: D-06 forbids
+    remembering WHICH backend failed, so that a recovered backend can be re-picked. Every field of
+    ``CloudBudgetState`` is a COUNTER or a TIMESTAMP -- ``chains_spent`` / ``attempts_spent`` /
+    ``node_loss_spent`` / ``budget_spent_at`` -- and none of them names a backend, exactly as
+    ``cloud_attempts`` does not. The assertion is therefore tightened rather than relaxed: it pins the
+    full parameter list AND asserts no parameter can carry a backend identity.
+    """
     params = list(inspect.signature(select_backend).parameters)
-    assert params == ["lane_entered_at", "cloud_attempts", "snapshot", "now", "cfg"]
+    assert params == ["lane_entered_at", "cloud_attempts", "snapshot", "now", "cfg", "cloud_budget"]
+    assert not any("backend" in name for name in params if name != "cloud_budget"), "no per-file backend memory may enter the policy"
+    assert [f for f in CloudBudgetState._fields if "backend" in f] == [], "the durable record stores counters + a clock, never a backend id"
 
 
 # --- SCHED-04: tie-break by utilization then stable id ------------------------------------

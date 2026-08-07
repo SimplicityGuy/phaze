@@ -268,6 +268,29 @@ dropped/expired watch never loses or duplicates a result" true.
   `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
   Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
   "one Job ⇒ one pod" actually true.
+- **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
+  `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
+  (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
+  seams. So a file that spent its whole cloud budget, spilled to local, and then failed *locally* lost
+  its entire history: the next re-analysis started a fresh chain at `attempts = 0` and could spend the
+  whole budget again. That is what the forensics actually show — `713a368e`'s eight pods are **two
+  chains of four** (07-24…07-25, then 07-29 after a four-day gap), not one runaway chain, while the
+  other three affected files show exactly one chain each. The reaper is **unchanged** (retaining
+  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the `phaze-9sqa`
+  head-of-line poison it exists to prevent); the *budget* moved instead, to a durable per-file
+  `cloud_budget` row the reaper cannot reach. `hold_awaiting_cloud` folds a chain into it exactly once,
+  on the edge where `attempts` first crosses the cap, accumulating `attempts_spent` and
+  `node_loss_spent` **separately** so the two causes stay legible across chains too. `select_backend`
+  reads it alongside `cloud_job.attempts`.
+- **The cross-chain policy is configuration, not schema** — `cloud_budget` stores *evidence*
+  (chains burned, attempts spent, node losses, when the last chain ended), never a verdict.
+  `cloud_budget_cooldown_days` (default **14**) bars cloud for a while after a burnout and is
+  **self-clearing**, so a file grounded by one bad node is re-admitted on its own;
+  `cloud_budget_max_chains` / `cloud_budget_max_node_loss` (default **3** each, `0` disables) are the
+  intrinsic-cause backstop behind it. `phaze-6ck1` has not yet established whether the ~4 runaway files
+  are intrinsically pathological or the victims of one bad node — when it does, the answer changes a
+  **default**, not the schema. Local (rank-99) is never excluded by any of these, so a budget-grounded
+  file is still routed every tick and still reaches a terminal analyze outcome.
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
   **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
