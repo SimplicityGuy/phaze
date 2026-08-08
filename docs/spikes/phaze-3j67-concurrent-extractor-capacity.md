@@ -7,6 +7,14 @@
   `main`'s post-`phaze-15sw` `services/analysis.py` overlaid (model-major coarse pass, sha256
   `45a84a70…`), against the deployed `phaze-models` PVC (34 graphs, 3.1 GB)
 - **Status:** measurement only. **No product code changed.**
+- **Re-verified 2026-08-07 by [`phaze-8r6t4`](phaze-8r6t4-concurrency-knee-recheck.md)** on
+  `release/2026.8.1-prep`: the **W=2 knee (§3) and `cap = 4` (§9a) are confirmed**, §2's
+  *"one extractor consumes ~6.2 of 8 logical cores"* is **superseded** (now 3.47, since
+  `phaze-rvcn` pinned the thread pools), §8's long-file duration penalty **no longer holds**
+  (`phaze-5lop` removed it), and **recommendation 2** — set the three thread env vars in the
+  `phaze-agent-env` ConfigMap — is **retired**: `phaze-rvcn` made it a runtime derivation and
+  pinning it is now a portability regression. Current operator guidance lives in
+  [`docs/k8s-burst.md` → Sizing the burst lane](../k8s-burst.md#sizing-the-burst-lane--what-to-set-who-owns-it-what-measured-it).
 
 ______________________________________________________________________
 
