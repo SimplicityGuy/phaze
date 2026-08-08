@@ -16,7 +16,8 @@ The nox agent used to run a **single** SAQ worker with one shared concurrency po
    newly-enqueued `extract_file_metadata` wait behind it.
 
 Splitting into per-type **lanes** buys **fairness / no head-of-line blocking** — not unlimited
-parallelism. nox has **8 physical cores**; CPU-bound lanes must sum to ≈ cores.
+parallelism. nox has **8 physical cores**; CPU-bound lanes must sum to ≈ cores -- which is
+now derived rather than asserted (phaze-rvcn: `intra_op_threads x concurrency ~= physical_cores`).
 
 ## Lane topology
 
@@ -28,7 +29,7 @@ consumer (the lane worker settings) derive from it.
 
 | Lane          | Tasks                                                                                 | Bound by                        | Concurrency env                          | Default |
 |---------------|---------------------------------------------------------------------------------------|---------------------------------|------------------------------------------|---------|
-| `analyze`     | `process_file`                                                                        | Host CPU (in-process essentia)  | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | 4       |
+| `analyze`     | `process_file`                                                                        | Host CPU (essentia child)       | `PHAZE_LANE_ANALYZE_CONCURRENCY`         | *derived* (nox: 2) |
 | `meta`        | `extract_file_metadata`, `scan_directory`, `execute_approved_batch`, `write_file_tags`, `write_cue_sheet`, `read_companion_files` | Light / fast                    | `PHAZE_LANE_META_CONCURRENCY`            | 2       |
 | `io`          | `s3_upload`, `push_file`                                                              | Network (off CPU budget)        | `PHAZE_LANE_IO_CONCURRENCY`              | 4       |
 
@@ -42,24 +43,53 @@ I/O-light, so it costs little against the CPU budget.
 
 ### Core-budget rationale
 
-`analyze(4)` = 4 CPU-bound slots on 8 cores (phaze-0jpe removed the `fingerprint` lane's 2
-slots), leaving headroom for the fast `meta` lane and the OS. The `io` lane is network-bound
-and runs **off** the CPU budget. All concurrencies are env-overridable.
+The `analyze` lane's default is **derived from the host** since phaze-rvcn:
+`physical_cores // min(4, physical_cores)`, which is 2 CPU-bound slots on nox's 8 physical
+cores, each running a 4-thread extractor (phaze-0jpe removed the `fingerprint` lane's 2
+slots). That leaves headroom for the fast `meta` lane and the OS, and it keeps the lane in
+lockstep with the thread cap instead of restating a literal that can drift from it -- see
+[Thread sizing](#thread-sizing--derived-not-pinned-phaze-rvcn) below. The `io` lane is
+network-bound and runs **off** the CPU budget. All concurrencies are env-overridable.
 
 **`WORKER_MAX_JOBS` is a ceiling in lane mode (quick-260707-g84).** In lane mode the per-lane
 concurrency knob (`PHAZE_LANE_<LANE>_CONCURRENCY`) **governs** the worker's concurrency, and
 `WORKER_MAX_JOBS` acts only as an upper bound: `concurrency = min(lane knob, worker_max_jobs)`.
 So an explicit, lower `WORKER_MAX_JOBS` is authoritative and clamps every lane, but setting
 `WORKER_MAX_JOBS` alone does **not** raise a lane above its knob. On the file-server defaults
-(lane ≤ 4, `worker_max_jobs` 8) the ceiling never bites and behavior is unchanged. The effective
-concurrency, the lane, and whether the ceiling clamped it are logged once at worker startup.
+(nox: derived analyze lane 2, `worker_max_jobs` 8) the ceiling never bites and behavior is
+unchanged. The effective concurrency, the lane, and whether the ceiling clamped it are logged
+once at worker startup. **One interaction to know about on very large hosts (phaze-rvcn):**
+the derived analyze concurrency is `physical_cores // 4`, so past **32 physical cores** it
+reaches the default `worker_max_jobs` of 8 and past that the ceiling — not the derivation —
+becomes the binding constraint. Raise `WORKER_MAX_JOBS` alongside, or the extra cores go
+unused.
 
-### Thread pinning
+### Thread sizing — derived, not pinned (phaze-rvcn)
 
-essentia/TensorFlow are pinned single-threaded on the `analyze` CPU lane so one
-slot ≈ one core and the budget stays honest: `OMP_NUM_THREADS=1`, `TF_NUM_INTRAOP_THREADS=1`,
-`TF_NUM_INTEROP_THREADS=1` (set in `docker-compose.agent.yml`). This addresses the load-18-on-8-cores
-oversubscription observed under the old single pool.
+**Superseded 2026-08-06.** The lane used to pin `OMP_NUM_THREADS=1`,
+`TF_NUM_INTRAOP_THREADS=1`, `TF_NUM_INTEROP_THREADS=1` in `docker-compose.agent.yml` so one
+slot ≈ one core. That fixed the load-18-on-8-cores oversubscription, but it wrote **one half
+of a relationship in a different file from the other half**: the compose file said 1 thread
+while `config.py`'s `lane_analyze_concurrency` said 4, so the product was 4 on nox's 8 physical
+cores, and the extractor sat on the arm measured at **+172.8% wall for no memory saving**
+(`docs/k8s-burst.md`, "Thread sizing is derived, not configured").
+
+Both halves now come from **one** function keyed on the host's schedulable *physical* core
+count (`services/analysis_sizing.py::derive_sizing`), applied before essentia is imported:
+
+```
+intra_op_threads = min(4, physical_cores)   # nox: 4
+inter_op_threads = 1                        # constant -- this is the memory term
+omp_threads      = intra_op_threads         # nox: 4
+lane concurrency = physical_cores // intra_op_threads   # nox: 2
+
+                   intra_op_threads x concurrency  ~=  physical_cores
+```
+
+So on nox the analyze lane defaults to **2 slots × 4 threads** rather than 4 slots × 1 thread:
+the same 8-core budget, spent where the measurement says it is worth spending. The compose
+file passes all four variables through as bare names, so any value an operator exports still
+wins; `PHAZE_LANE_ANALYZE_CONCURRENCY` overrides the concurrency half exactly as before.
 
 ## Heartbeat — every lane beats, tagged with its lane (phaze-30fo)
 

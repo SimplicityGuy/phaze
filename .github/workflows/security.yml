@@ -112,7 +112,16 @@ jobs:
         uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11  # frozen: v3.96.0
         with:
           path: ./
-          extra_args: --only-verified
+          # Lob is excluded because its detector matches pytest function names, not secrets.
+          # A Lob test key is `test_<alphanumerics>` -- which is also the shape of every test
+          # this repo writes, so the detector fires on names like
+          # `test_a_blank_override_is_not_an_override` and
+          # `test_is_allowed_url_allows_the_apex_host`. It reports them as `verified: true`,
+          # which is the detector's validation being wrong rather than a live credential:
+          # reproduced locally against the full branch, every hit is a def name in tests/.
+          # Costs no real coverage -- phaze has no Lob dependency, import, or account
+          # (Lob is a direct-mail API). Revisit if that ever changes.
+          extra_args: --only-verified --exclude-detectors=Lob
 
   container-scanning:
     name: Container Scanning

@@ -41,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, cast
 import uuid
 
 from sqlalchemy import CursorResult, exists, func, select, text, update
@@ -56,6 +56,7 @@ from phaze.models.file import FileRecord
 from phaze.schemas.agent_tasks import PushFilePayload
 from phaze.services import kube_staging, s3_staging
 from phaze.services.analysis_enqueue import enqueue_process_file
+from phaze.services.cloud_budget import record_cloud_budget_spent
 from phaze.services.cloud_staging import _stage_file_to_s3
 from phaze.services.enqueue_router import LANES, NoActiveAgentError, lane_for_task, select_active_agent, select_agent_by_id
 from phaze.services.pipeline import MUSIC_VIDEO_TYPES, get_live_job_keys
@@ -132,7 +133,36 @@ async def hold_awaiting_cloud(
     backend's ``in_flight_count`` (D-03). NEVER commits in EITHER mode -- the caller owns the commit
     boundary (the dispatch discipline at :meth:`Backend.dispatch`; a commit here would drop the tick's
     ``pg_advisory_xact_lock`` and re-open the over-stage class, Landmine L1).
+
+    phaze-2mwyo -- THIS IS ALSO WHERE A SPENT BUDGET BECOMES DURABLE. Every caller that declares a file's
+    cloud budget spent does it by calling this function with ``attempts >= cloud_submit_max_attempts``
+    (the four spill sites plus :meth:`KueueBackend._reap_stranded_staging`, whose ``min(attempts + 1,
+    cap)`` reaches the cap on its last reap). That made this the one seam where "a cloud chain has ended
+    at its ceiling" is knowable, so the fold into the durable ``cloud_budget`` ledger
+    (``services/cloud_budget.record_cloud_budget_spent``) happens here rather than being hand-copied into
+    five callers -- the same single-writer argument that produced this function in the first place. It
+    matters because ``routers/agent_analysis``'s D-14 reaper DELETES the row being written here as soon
+    as the file reaches an analyze terminal, taking ``attempts`` with it; without the fold the next
+    re-analysis starts a brand-new chain at 0 (phaze-wcrb's 8 pods = two chains of four).
+
+    FOLD-ONCE is an EDGE trigger on the row ENTERING the terminal budget-spent state -- see
+    :func:`_fold_spent_budget_if_edge` for the exact predicate and why "attempts crossed the cap" is
+    NOT it (on the reconcile at-ceiling path ``attempts`` already equals the cap by the time the chain
+    ends, because the last under-cap re-drive set it).
     """
+    cap = cast("ControlSettings", get_settings()).cloud_submit_max_attempts
+    # Pre-read ONLY on the terminal path (``attempts >= cap``), so the hot ``attempts=0`` hold path pays
+    # nothing. Two things are needed and neither survives the write: whether the row was ALREADY parked
+    # in the terminal budget-spent state (the edge trigger), and the chain's ``node_loss_redrives``
+    # tally, which the fold accumulates SEPARATELY from ``attempts`` so the two causes stay legible on
+    # the durable record exactly as phaze-1q4g kept them legible on the row.
+    prior: _PriorChain | None = None
+    if attempts >= cap:
+        row = (
+            await session.execute(select(CloudJob.status, CloudJob.attempts, CloudJob.node_loss_redrives).where(CloudJob.file_id == file.id))
+        ).first()
+        prior = None if row is None else _PriorChain(str(row[0]), int(row[1]), int(row[2]))
+
     if expect_status is None:
         # Hold mode: the unconditional cloud_job upsert; always writes -> return True.
         # Phase 90 (D-09): the AWAITING_CLOUD files.state dual-write was removed; the cloud_job row
@@ -158,6 +188,7 @@ async def hold_awaiting_cloud(
             set_={"status": stmt.excluded.status, "attempts": stmt.excluded.attempts, "updated_at": func.now()},
         )
         await session.execute(stmt)
+        await _fold_spent_budget_if_edge(session, file.id, attempts=attempts, cap=cap, prior=prior)
         return True
 
     # Spill mode: rowcount-guarded CAS ONLY. Preserve the shipped D-09/D-10 guard -- an unconditional
@@ -171,7 +202,60 @@ async def hold_awaiting_cloud(
         "CursorResult[Any]",
         await session.execute(update(CloudJob).where(CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)).values(**values)),
     )
-    return res.rowcount > 0
+    wrote = res.rowcount > 0
+    if wrote:
+        # Only a CAS that actually MOVED the row ends a chain. A 0-row late/duplicate callback is a full
+        # no-op here too -- folding on it would double-count a chain some earlier writer already recorded.
+        await _fold_spent_budget_if_edge(session, file.id, attempts=attempts, cap=cap, prior=prior)
+    return wrote
+
+
+class _PriorChain(NamedTuple):
+    """The ``cloud_job`` row as it stood BEFORE an at-cap :func:`hold_awaiting_cloud` write.
+
+    Read once, only on the terminal path, because none of it survives the write: the status is
+    overwritten to ``'awaiting'`` and ``attempts`` to the cap. ``node_loss_redrives`` is untouched by
+    that write, so reading it before is merely the cheapest place to get it.
+    """
+
+    status: str
+    attempts: int
+    node_loss_redrives: int
+
+
+async def _fold_spent_budget_if_edge(session: AsyncSession, file_id: uuid.UUID, *, attempts: int, cap: int, prior: _PriorChain | None) -> None:
+    """Fold a just-ended cloud chain into the durable ``cloud_budget`` ledger, iff this write ended it (phaze-2mwyo).
+
+    THE EDGE is the row ENTERING the terminal budget-spent state -- ``status='awaiting'`` WITH the budget
+    stamped spent -- from anywhere else. Two conditions, both load-bearing:
+
+    1. this write declares the budget spent (``attempts >= cap``); and
+    2. the row was not ALREADY parked there (``prior.status == 'awaiting' and prior.attempts >= cap``).
+
+    "``attempts`` crossed the cap" is the obvious predicate and is WRONG. On the reconcile at-ceiling
+    path ``attempts`` already equals the cap when the chain ends: the last under-cap re-drive set it and
+    re-submitted, and the ceiling is only detected on the NEXT terminal (``attempts + 1 > cap``), which
+    deliberately does not increment again. A crossing test would therefore skip the fold on the single
+    most common way a chain dies -- the exact path phaze-wcrb's four files took.
+
+    Condition 2 is what makes it exactly-once. In spill mode it is nearly free: no caller's
+    ``expect_status`` contains ``'awaiting'``, so a late/duplicate CAS against an already-spilled row
+    matches 0 rows and never reaches here. Stating it anyway covers hold mode (an unconditional upsert)
+    and any future caller, so a second at-cap write can never charge the same chain twice and drag the
+    file toward the lifetime ceilings for events that did not happen.
+
+    ``prior is None`` (no ``cloud_job`` row -- e.g. the reaper already removed it) is NOT "already
+    spent": there is no parked chain to double-count, so an at-cap write there is a genuine burnout.
+
+    The node-loss tally comes from ``prior`` because the write does not touch ``node_loss_redrives``;
+    with no prior row there were no node-loss re-drives to charge, so 0 is the truth, not a fallback.
+    NEVER commits -- see :func:`hold_awaiting_cloud`.
+    """
+    if attempts < cap:
+        return
+    if prior is not None and prior.status == CloudJobStatus.AWAITING.value and prior.attempts >= cap:
+        return
+    await record_cloud_budget_spent(session, file_id, attempts=attempts, node_loss_redrives=prior.node_loss_redrives if prior is not None else 0)
 
 
 def _build_push_file_enqueue_kwargs(

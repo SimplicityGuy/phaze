@@ -21,6 +21,7 @@ import pytest
 
 from phaze.config import ControlSettings
 from phaze.config_backends import BucketConfig, ComputeBackend, KueueBackend, LocalBackend
+from phaze.services.analysis_sizing import PHYSICAL_CORES_ENV
 from phaze.services.backends import resolve_compute_backend
 
 
@@ -40,9 +41,14 @@ def test_implicit_local_when_no_pointer_and_no_file(monkeypatch: _pytest.MonkeyP
     """No PHAZE_BACKENDS_CONFIG_FILE + no default file → a single implicit kind=local backend (D-03).
 
     The live all-local deploy needs zero config edits: the ``default_factory`` synthesizes the
-    rank-99 cap-1 local backend when the ``backends`` key is entirely absent.
+    rank-99 local backend when the ``backends`` key is entirely absent. Its ``cap`` is
+    host-derived since phaze-rvcn (the concurrency half of
+    ``intra_op_threads x concurrency ~= physical_cores``), so the core count is pinned here to
+    keep the assertion about the registry rather than about the test runner's machine; 4
+    physical cores reproduce the value this test was originally written against.
     """
     _clear_backends_env(monkeypatch)
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "4")
     settings = ControlSettings()
     assert settings.backends == [LocalBackend(kind="local", id="local", rank=99, cap=1)]
     assert settings.buckets == []

@@ -23,6 +23,7 @@ from phaze.config_backends import (
     LocalBackend,
     _default_local_registry,
 )
+from phaze.services.analysis_sizing import PHYSICAL_CORES_ENV
 
 
 # Literal secret/name values pulled into module constants so ruff's S106 (hardcoded password in a
@@ -145,8 +146,17 @@ def test_union_dispatches_on_kind() -> None:
     assert isinstance(be, LocalBackend)
 
 
-def test_default_local_registry_returns_single_rank99_local() -> None:
-    """Absent config resolves via the factory to one kind=local backend (id=local, rank=99, cap=1) (D-03)."""
+def test_default_local_registry_returns_single_rank99_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Absent config resolves via the factory to one kind=local backend (id=local, rank=99) (D-03).
+
+    ``cap`` was a hardcoded ``1`` until phaze-rvcn made it a function of the host's
+    **schedulable physical core count** -- the same ``derive_sizing`` call that sizes the TF
+    intra-op pool, so the two knobs cannot drift out of the
+    ``intra_op x concurrency ~= physical_cores`` relationship on a host with no
+    ``backends.toml``. The core count is pinned here rather than read from the test runner's
+    machine, or this assertion would mean something different on every laptop.
+    """
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "4")  # vox, and the previous hardcoded value
     registry = _default_local_registry()
     assert len(registry) == 1
     only = registry[0]
@@ -154,6 +164,9 @@ def test_default_local_registry_returns_single_rank99_local() -> None:
     assert only.id == "local"
     assert only.rank == 99
     assert only.cap == 1
+
+    monkeypatch.setenv(PHYSICAL_CORES_ENV, "32")  # the upgrade phaze-rvcn exists for
+    assert _default_local_registry()[0].cap == 8
 
 
 # --------------------------------------------------------------------------- #

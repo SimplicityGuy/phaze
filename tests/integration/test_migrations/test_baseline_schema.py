@@ -21,6 +21,14 @@ durable value against the one baseline that replaced it:
   phaze-cz3m's migration 049 resolved the twenty timestamp ``modify_type`` entries by
   making the schema uniformly ``timestamptz``; the "timestamp-typing nuances" this
   docstring used to list as accepted drift were a live defect, not a nuance.
+  phaze-x8tof: alembic 1.19.0 (the 2026.8.1 dependency refresh) added a CHECK-constraint
+  comparator this gate had never had, which surfaced five constraints the
+  ``ck_%(table_name)s_%(constraint_name)s`` convention had DOUBLE-prefixed in the database
+  (``ck_agents_ck_agents_id_charset`` and friends -- two of them dating to the 039 baseline
+  and migration 053, months before the release). Migration 056 renames them to what the ORM
+  renders, so the frozen set still carries no check-constraint entry and must not gain one:
+  a ``ck``-shaped add/remove pair means the double-prefix is back, and
+  ``test_no_check_constraint_is_double_prefixed`` should be failing alongside it.
 * phaze-cz3m: no timestamp column in the schema is naive, and no mapped ``DateTime``
   column declares itself naive -- the two halves of the same invariant, asserted
   schema-wide so a new table cannot reintroduce the split.
@@ -70,6 +78,11 @@ _EXPECTED_TABLES = frozenset(
         "agents",
         "analysis",
         "analysis_window",
+        # phaze-2mwyo (migration 055): the DURABLE per-file cloud budget. Deliberately its OWN table
+        # rather than columns on `files` -- the D-14 reaper deletes the `cloud_job` sidecar that used to
+        # hold the budget, and Phase 90 (MIG-04) removed `files.state` precisely so `files` carries
+        # description, never scheduling state.
+        "cloud_budget",
         "cloud_job",
         "dedup_resolution",
         "discogs_links",
@@ -229,7 +242,14 @@ def test_baseline_is_the_only_migration() -> None:
     (phaze-fq9h.8) creates tracklist_priority_flags, the persisted home for an operator's "answer
     this file first"; 053 (phaze-5fta.2) creates filename_convention, the generic corpus-learned
     convention store keyed (scope, scope_value, convention_kind) with a DB-derived confidence
-    column. Any other resurrected 0xx chain file is a regression.
+    column; 054 (phaze-1q4g) adds cloud_job.node_loss_redrives, the independent budget for re-drives
+    caused by the pod dying with its node (which must not spend the file's analyze `attempts`, but
+    must still be bounded); 055 (phaze-2mwyo) creates cloud_budget, the DURABLE per-file cloud budget
+    that outlives the `cloud_job` sidecar the D-14 reaper deletes -- the row 054's per-chain counters
+    were being erased with, which let one file start an unbounded number of fresh attempt chains; 056
+    (phaze-x8tof) renames the five CHECK constraints the `ck_%(table_name)s_%(constraint_name)s`
+    convention had double-prefixed in the database.
+    Any other resurrected 0xx chain file is a regression.
     """
     chain_files = sorted(p.name for p in _BASELINE_PATH.parent.glob("0*.py"))
     assert chain_files == [
@@ -248,6 +268,9 @@ def test_baseline_is_the_only_migration() -> None:
         "051_tracklists_propagation.py",
         "052_tracklist_priority_flags.py",
         "053_filename_convention.py",
+        "054_cloud_job_node_loss_redrives.py",
+        "055_cloud_budget_ledger.py",
+        "056_fix_double_prefixed_check_constraints.py",
     ], f"unexpected chain files resurrected: {chain_files}"
 
 
@@ -279,10 +302,10 @@ def test_baseline_seed_inserts_render_bound_params_in_offline_sql_mode() -> None
 
 @pytest.mark.asyncio
 async def test_alembic_version_is_head(migrated_engine: AsyncEngine) -> None:
-    """A bare ``upgrade head`` on an empty DB lands at the current head (053: filename_convention)."""
+    """A bare ``upgrade head`` on an empty DB lands at the current head (056: the CHECK-name repair)."""
     async with migrated_engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-    assert version == "053"
+    assert version == "056"
 
 
 @pytest.mark.asyncio
@@ -496,6 +519,40 @@ async def test_enum_checks_present_and_enforced(migrated_engine: AsyncEngine) ->
 
 
 @pytest.mark.asyncio
+async def test_no_check_constraint_is_double_prefixed(migrated_engine: AsyncEngine) -> None:
+    """phaze-x8tof: no CHECK constraint carries its ``ck_<table>_`` prefix twice.
+
+    ``models/base.py``'s convention keys ``ck`` on ``ck_%(table_name)s_%(constraint_name)s`` -- the only
+    entry interpolating ``%(constraint_name)s``, which is exactly the token that makes SQLAlchemy apply
+    the convention to EXPLICITLY NAMED constraints too. So a ``CheckConstraint(..., name="ck_<table>_x")``
+    (in a model OR in a migration -- alembic's ``op.*`` builds against the same ``naming_convention``)
+    lands in Postgres as ``ck_<table>_ck_<table>_x``. Five constraints shipped that way before migration
+    056 repaired them; ``filename_convention``'s doubled name was already 66 bytes and got truncated to a
+    hash-suffixed stub (``..._counts_no_e237``), so this is a live collision hazard, not cosmetics.
+
+    ``test_autogenerate_drift_is_frozen`` also catches this (alembic 1.19 added the CHECK comparator that
+    made it visible in the first place), but only as an opaque add/remove pair. This assertion names the
+    defect, so the next occurrence is diagnosable from the failure line alone.
+    """
+    async with migrated_engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT t.relname AS table_name, c.conname AS constraint_name
+                      FROM pg_constraint c
+                      JOIN pg_class t ON t.oid = c.conrelid
+                      JOIN pg_namespace n ON n.oid = t.relnamespace
+                     WHERE n.nspname = 'public' AND c.contype = 'c'
+                    """
+                )
+            )
+        ).all()
+    doubled = sorted(f"{table}.{name}" for table, name in rows if name.startswith(f"ck_{table}_ck_{table}_"))
+    assert not doubled, f"CHECK constraints double-prefixed by the ck naming convention (declare BARE names): {doubled}"
+
+
+@pytest.mark.asyncio
 async def test_partial_and_gin_indexes_present(migrated_engine: AsyncEngine) -> None:
     """The partial (WHERE-qualified) and GIN index inventory survived the flatten."""
     async with migrated_engine.connect() as conn:
@@ -577,7 +634,7 @@ async def test_upgrade_downgrade_roundtrip() -> None:
         await asyncio.to_thread(upgrade_to, cfg, "head")
         async with engine.connect() as conn:
             version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-        assert version == "053"
+        assert version == "056"
     finally:
         if engine is not None:
             await engine.dispose()

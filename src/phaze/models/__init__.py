@@ -2,6 +2,7 @@
 
 from phaze.models.agent import Agent
 from phaze.models.analysis import AnalysisResult, AnalysisWindow
+from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob, CloudJobStatus
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
@@ -26,6 +27,7 @@ __all__ = [
     "Agent",
     "AnalysisResult",
     "AnalysisWindow",
+    "CloudBudget",
     "CloudJob",
     "CloudJobStatus",
     "DedupResolution",

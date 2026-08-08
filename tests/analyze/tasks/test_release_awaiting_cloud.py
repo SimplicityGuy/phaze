@@ -400,7 +400,7 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
     """CR-02 safety net: an unexpected raise from the loop body (a poisoned-txn statement) is caught, the tick rolls back, and the cron returns a clean hold.
 
     Models a Postgres serialization/deadlock surfaced from a ``session.execute`` in the loop body that sits
-    OUTSIDE the per-candidate dispatch try (here: ``_cloud_attempts_for``). Before the fix this propagated
+    OUTSIDE the per-candidate dispatch try (here: ``_cloud_budget_for``). Before the fix this propagated
     straight out of ``stage_cloud_window`` (and, downstream, a poisoned txn made the single post-loop
     ``session.commit()`` raise), violating the T-50-cron-raise NEVER-raises discipline. After the fix the
     outer guard rolls the whole tick back and returns ``{"staged": 0, "skipped": len(candidates)}`` -- every
@@ -417,7 +417,7 @@ async def test_stage_cloud_window_unexpected_error_rolls_back_and_never_raises(
 
     # Force an unexpected raise from the loop body OUTSIDE the per-candidate dispatch try.
     monkeypatch.setattr(
-        "phaze.tasks.release_awaiting_cloud._cloud_attempts_for",
+        "phaze.tasks.release_awaiting_cloud._cloud_budget_for",
         AsyncMock(side_effect=RuntimeError("current transaction is aborted")),
     )
 

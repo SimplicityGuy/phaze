@@ -221,6 +221,10 @@ Phase 54 (v6.0 Kubernetes Burst) adds Kueue-cluster analysis: the control plane 
 | Knob | Env var (alias) | Class | Default | `_FILE`? | Description |
 |------|-----------------|-------|---------|----------|-------------|
 | `cloud_submit_max_attempts` | `PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS` (or `cloud_submit_max_attempts`) | Control | `3` | no | Max kube Job **submit** attempts before a file is marked `ANALYSIS_FAILED` (Phase 54, D-08). A **distinct** budget from `push_max_attempts` (the rsync leg). Bounded `gt=0, lt=20`. |
+| `cloud_node_loss_max_redrives` | `PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES` (or `cloud_node_loss_max_redrives`) | Control | `1` | no | Max re-drives of a kube Job whose **pod died with its node** before the file spills to the local safety net (phaze-1q4g). A **third**, separate budget: it charges `cloud_job.node_loss_redrives`, never `attempts`, because a node reboot is not the file's fault — but it *is* bounded, and deliberately the tightest of the three, because a node-loss re-drive is the case most likely to recur (whatever killed the node is still there). Total pods one `cloud_job` row can produce is `1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives`. Bounded `gt=0, lt=20`. |
+| `cloud_budget_cooldown_days` | `PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS` (or `cloud_budget_cooldown_days`) | Control | `14.0` | no | Days a file is barred from **cloud** backends after a cloud chain burns out its budget (phaze-2mwyo). The three per-chain budgets above all live on the `cloud_job` sidecar, which the D-14 awaiting-row reaper deletes at every analyze terminal — so a file that spilled to local and then failed there used to come back with `attempts = 0` and a whole fresh budget (`713a368e`'s 8 pods are **two chains of four**, four days apart). This is the durable, cross-chain bound. A cooldown rather than a ban because it is **self-clearing**: a file grounded by one bad node flies again with no operator action. Default 14 — comfortably above the 4-day re-chain gap observed in the incident. `0` disables it. Bounded `ge=0, le=3650`. |
+| `cloud_budget_max_chains` | `PHAZE_CLOUD_BUDGET_MAX_CHAINS` (or `cloud_budget_max_chains`) | Control | `3` | no | Lifetime ceiling on how many cloud chains **one file** may burn out before it stops being offered cloud at all (phaze-2mwyo). The intrinsic-cause backstop behind the cooldown: ~6 weeks of evidence at the default cooldown. Persistent but **not permanent** — raising this knob (or setting it to `0`) re-admits the file with no row edited and no migration, which is how the policy changes once `phaze-6ck1` explains the >8 GiB growth. Local is never excluded, so this can ground a file but never strand it. Bounded `ge=0, lt=100`. |
+| `cloud_budget_max_node_loss` | `PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS` (or `cloud_budget_max_node_loss`) | Control | `3` | no | Lifetime ceiling on **node-loss** re-drives charged to one file across all its cloud chains (phaze-2mwyo). Deliberately separate from `cloud_budget_max_chains` — the same discipline `cloud_node_loss_max_redrives` applies per chain — so "kept failing analysis" and "kept taking nodes down" stay legible as different situations, one level up. Looser than its per-chain sibling because ADR-0005's pod memory limit turns a runaway into a pod-scoped OOMKill rather than a node crash. `0` disables it. Bounded `ge=0, lt=100`. |
 | `kube_api_url` | `[backends.kube]` `api_url` | Control | `None` | no | Kubernetes API server URL the control plane submits/watches Jobs against. **Required on a `kind="kueue"` backend** (its `[backends.kube]` submodel validates it at startup). |
 | `kube_namespace` | `[backends.kube]` `namespace` | Control | `None` | no | Namespace the Kueue Jobs are submitted into. **Required on a `kind="kueue"` backend** (submodel-validated at startup). |
 | `kube_local_queue` | `[backends.kube]` `local_queue` | Control | `None` | no | Kueue LocalQueue name stamped on submitted Jobs (`kueue.x-k8s.io/queue-name` label). **Required on a `kind="kueue"` backend** (submodel-validated at startup). |
@@ -406,6 +410,52 @@ The agent worker reads these to size the per-window decode loop in `services/ana
 | `PHAZE_ANALYSIS_FINE_CAP` (or `analysis_fine_cap`) | No | `60` | Max FINE-tier (BPM/key) windows `analyze_file` decodes per file. Bounded `ge=2` (even-stride keeps first+last) (Phase 43). |
 | `PHAZE_ANALYSIS_COARSE_CAP` (or `analysis_coarse_cap`) | No | `30` | Max COARSE-tier (mood/style/danceability) windows `analyze_file` decodes per file. Bounded `ge=2` (Phase 43). |
 | `PHAZE_ANALYSIS_PROGRESS_INTERVAL_SEC` (or `analysis_progress_interval_sec`) | No | `5.0` | Minimum seconds between mid-flight analyze-progress POSTs; the final count is always flushed regardless, and `0` disables throttling. Bounded `ge=0.0` (Phase 57.1 D-04). |
+| `PHAZE_ANALYSIS_TF_BATCH_SIZE` | No | `32` | `TensorflowPredict*` `batchSize` for the 33 tunable model graphs (phaze-0582). **Not** a `phaze.config` field: read straight from the process environment by `services/analysis.py::_resolve_tf_batch_size` at classifier construction, so a value set only in a `.env` file (and never exported into the environment) does not apply. Essentia's own default is `64`; `32` is the measured knee — `-33.7%` peak analysis RSS for `+0.36%` wall end to end, with lower values flat on memory and batch 1 costing `+55.7%` wall. A malformed or non-positive value logs a warning and falls back to `32`. `discogs-effnet-bs64-1` ignores this entirely and always uses `64`: its graph Placeholder is `[64, 128, 96]`. |
+
+### Thread sizing — derived from the host, not configured (phaze-rvcn)
+
+**You do not need to set any of these.** `services/analysis_sizing.py` derives them at import
+time, before TensorFlow builds its thread pools, from the **schedulable physical core count**.
+They are listed because they are readable, overridable, and load-bearing for memory.
+
+TensorFlow sizes its intra-op pool from the machine's core count and gives each worker thread
+its own allocation arena, so an *uncapped* analyze process peaks higher on a bigger box —
+per-process peak becomes a function of the host rather than of the workload. Capping intra-op
+is the mechanism that decouples the two; without it no published memory figure is portable
+across hardware. The derivation is one relationship, applied in one function
+(`analysis_sizing.py::derive_sizing`):
+
+```
+intra_op_threads = min(4, physical_cores)   # 4 is the measured knee, and it is a CAP
+inter_op_threads = 1
+omp_threads      = intra_op_threads
+concurrency      = physical_cores // intra_op_threads
+
+                       intra_op_threads x concurrency  ~=  physical_cores
+```
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TF_NUM_INTRAOP_THREADS` | No | `min(4, physical_cores)` | TensorFlow intra-op pool size. Derived and stamped onto the process environment immediately before `import essentia` (TF reads it when it builds the pool; a value set later is read by nothing). **An operator-set value always wins** — the derivation only fills a variable that is absent or blank, and each of the three is considered independently. |
+| `TF_NUM_INTEROP_THREADS` | No | `1` | TensorFlow inter-op pool size. Pinned rather than derived: essentia drives one `TensorflowPredict*` graph at a time through a synchronous binding, so a wider inter-op pool has no second independent op to run and is pure arena cost. |
+| `OMP_NUM_THREADS` | No | `min(4, physical_cores)` | OpenMP pool for essentia's own non-TF DSP. Tracks the intra-op value, never the host's core count. |
+| `PHAZE_ANALYSIS_PHYSICAL_CORES` | No | *(detected)* | Overrides the **input** to the derivation, so both knobs move together and stay in the relationship above — as opposed to overriding one output and silently breaking the pairing. Use it when the detection cannot see the truth (a CPU limit expressed outside cgroup v2, a hypervisor misreporting topology) or to rehearse another host's sizing. A malformed or non-positive value logs a warning and falls back to detection. |
+
+**Detection order** (each source intersected with `sched_getaffinity`, then clamped by the
+cgroup v2 `cpu.max` quota): `PHAZE_ANALYSIS_PHYSICAL_CORES` → sysfs
+`topology/thread_siblings_list` → `/proc/cpuinfo` `(physical id, core id)` pairs → Darwin
+`sysctl hw.physicalcpu_max` → the schedulable **logical** count as a last resort. The
+detection is of cores *this process may run on*, not of the machine, so a `taskset`ed or
+CPU-limited container derives from its own slice.
+
+**Physical, not `nproc`.** `phaze-3j67` measured essentia's linear-scaling claim as validated
+to the physical core count (3.61× on 4 workers, 90.3% efficiency) and contradicted past it
+(4 → 8 workers gained +3.9% for double the per-file latency). SMT is not free capacity for
+this workload.
+
+The same derivation supplies the `cap` of the implicit all-local backend (`config_backends.py`
+D-03 zero-config registry), so the two knobs cannot drift apart on a host with no
+`backends.toml`. An explicit `backends.toml` `cap` overrides it, as before.
 
 ## Docker Compose-only variables
 

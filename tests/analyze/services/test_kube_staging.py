@@ -148,6 +148,13 @@ def test_build_job_manifest_spec() -> None:
     assert spec["parallelism"] == 1
     assert spec["completions"] == 1
     assert spec["backoffLimit"] == 0  # KSUBMIT-05: pod-level retry neutralized
+    # phaze-1q4g: backoffLimit alone does NOT make "one Job => one pod" true. The default
+    # ``TerminatingOrFailed`` replacement policy mints a replacement the moment a pod starts
+    # TERMINATING -- before the failure is counted -- so a pod stuck Terminating on a dead node yields
+    # an unbounded stream of replacement pods that phaze never asked for and cannot count against
+    # ``cloud_job.attempts``. ``Failed`` makes the Job wait for the Failed phase, at which point
+    # backoffLimit=0 terminalizes it instead of replacing it.
+    assert spec["podReplacementPolicy"] == "Failed"
     assert spec["ttlSecondsAfterFinished"] == 900
     assert spec["ttlSecondsAfterFinished"] == kube_staging.JOB_TTL_SECONDS
 
@@ -248,6 +255,61 @@ def test_build_job_manifest_omits_models_volume_when_unset() -> None:
 
     assert [v["name"] for v in pod_spec["volumes"]] == ["phaze-ca"]
     assert [m["name"] for m in pod_spec["containers"][0]["volumeMounts"]] == ["phaze-ca"]
+
+
+def test_build_job_manifest_emits_memory_limit_when_set() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE: with ``memory_limit`` set, the analyze container carries
+    ``resources.limits.memory`` == the configured value, and ``resources.requests`` is UNCHANGED
+    (Kueue's quota accounting reads requests only; ADR-0005 keeps requests authoritative -- the
+    limit is a kernel bound, invisible to scheduling, and must not distort the request)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources["limits"] == {"memory": "16Gi"}
+    assert resources["requests"] == {"cpu": "2", "memory": "4Gi"}  # untouched by ADR-0005
+    assert "cpu" not in resources["limits"]  # deliberately memory-only (QoS stays Burstable)
+
+
+def test_build_job_manifest_omits_memory_limit_by_default() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE / regression guard: with ``memory_limit`` unset (the
+    default), the manifest is BYTE-IDENTICAL to the pre-ADR-0005, requests-only form -- no
+    ``limits`` key, not an empty ``limits: {}``. Any consumer that has not opted in sees zero
+    change. Asserted structurally (not by eye) via a full manifest equality against the
+    known-good pre-ADR-0005 shape."""
+    fid = uuid.uuid4()
+    kube = _kube()
+    assert kube.memory_limit is None  # the field default is OFF
+
+    manifest = kube_staging.build_job_manifest(fid, kube)
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources == {"requests": {"cpu": "2", "memory": "4Gi"}}  # no "limits" key at all
+
+    # Full-manifest byte-identical assertion: rebuilding with memory_limit explicitly set to None
+    # yields the exact same dict as the default -- no sentinel, no drift.
+    assert manifest == kube_staging.build_job_manifest(fid, _kube(memory_limit=None))
+
+
+def test_build_job_manifest_memory_limit_keeps_qos_burstable() -> None:
+    """ADR-0005 (phaze-k6d5) ACCEPTANCE: a memory limit WITHOUT a matching CPU limit must not
+    promote the pod's Kubernetes QoS class to Guaranteed -- Guaranteed requires EVERY container to
+    set limits == requests on BOTH cpu and memory (K8s QoS spec). Verified here rather than
+    assumed: a QoS change would silently alter eviction ordering, which is exactly what ADR-0005
+    promises NOT to do (the pods are already Burstable per the OOM records; this must stay true)."""
+    manifest = kube_staging.build_job_manifest(uuid.uuid4(), _kube(memory_limit="16Gi"))
+    resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    def _qos_class(res: dict[str, dict[str, str]]) -> str:
+        """Minimal K8s QoS classifier (BestEffort/Burstable/Guaranteed) mirroring kubelet's rule."""
+        requests, limits = res.get("requests", {}), res.get("limits", {})
+        if not requests and not limits:
+            return "BestEffort"
+        if requests.get("cpu") == limits.get("cpu") and requests.get("memory") == limits.get("memory") and requests and limits:
+            return "Guaranteed"
+        return "Burstable"
+
+    assert "cpu" not in resources["limits"]  # no CPU limit -> Guaranteed is structurally impossible
+    assert _qos_class(resources) == "Burstable"
 
 
 def test_build_job_manifest_injects_env_contract() -> None:
@@ -731,6 +793,85 @@ def test_describe_job_pods_summarises_for_the_operator_log() -> None:
     assert kube_staging.describe_job_pods([]) == "no-pods"
     assert kube_staging.describe_job_pods([fake_pod("Pending", waiting_reason="ImagePullBackOff")]) == "Pending/ImagePullBackOff"
     assert kube_staging.describe_job_pods([fake_pod("Running")]) == "Running"
+    # phaze-1q4g: a node-loss reason is what the operator needs first -- it is rendered ahead of any
+    # container state, which on a dead node is a consequence rather than an independent finding.
+    assert kube_staging.describe_job_pods([fake_pod("Failed", status_reason="NodeShutdown")]) == "Failed/NodeShutdown"
+    assert (
+        kube_staging.describe_job_pods([fake_pod("Failed", status_reason="NodeShutdown", waiting_reason="ImagePullBackOff")]) == "Failed/NodeShutdown"
+    )
+    assert (
+        kube_staging.describe_job_pods([fake_pod("Failed", disruption_target_reason="DeletionByTaintManager")])
+        == "Failed/DisruptionTarget/DeletionByTaintManager"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# phaze-1q4g -- NODE_LOST: the pod died WITH ITS NODE, not because of the file
+# --------------------------------------------------------------------------- #
+#
+# A node-loss re-drive deliberately does NOT charge ``cloud_job.attempts`` (an infrastructure fault
+# is not the file's fault). That made it invisible to the retry ceiling, which is how one file
+# produced eight pods over five days against a cap of three, crashing the burst node each time
+# (spike phaze-wcrb §5). The classifier is what makes the case NAMEABLE, so reconcile can give it its
+# own bounded budget instead of either an unbounded free pass or the wrong meter.
+
+
+@pytest.mark.parametrize("reason", sorted(kube_staging.NODE_LOSS_POD_STATUS_REASONS))
+def test_classify_job_pods_flags_every_node_loss_status_reason(reason: str) -> None:
+    """Each node-scoped ``status.reason`` the node controller / kubelet stamps reads as NODE_LOST."""
+    assert kube_staging.classify_job_pods([fake_pod("Failed", status_reason=reason)], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+@pytest.mark.parametrize("reason", ["DeletionByTaintManager", "TerminationByKubelet", "DeletionByPodGC", "PreemptionByScheduler"])
+def test_classify_job_pods_flags_a_disruption_target_condition(reason: str) -> None:
+    """The k8s>=1.26 ``DisruptionTarget=True`` condition is node loss for EVERY reason value.
+
+    Its reason vocabulary is open and version-dependent, and every member of it means the same thing:
+    the control plane, not the analysis, ended this pod. Filtering on the reason would silently miss
+    whichever spelling a future cluster uses -- so only the condition itself is matched.
+    """
+    assert kube_staging.classify_job_pods([fake_pod("Failed", disruption_target_reason=reason)], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+def test_classify_job_pods_ignores_a_false_disruption_target_condition() -> None:
+    """``DisruptionTarget`` with ``status != "True"`` proves nothing and must not read as node loss."""
+    pod = fake_pod("Failed")
+    pod.status["conditions"] = [{"type": "DisruptionTarget", "status": "False", "reason": "DeletionByTaintManager"}]
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
+
+
+def test_classify_job_pods_alive_still_dominates_node_loss() -> None:
+    """A Running pod is NEVER terminalized, not even alongside a node-lost sibling (the 1b39 invariant).
+
+    NODE_LOST is ranked strictly below ALIVE on purpose: a pod still reporting Running is doing work,
+    and no node-scoped marker on a *sibling* may kill it. This is the same alive-dominates rule that
+    protects a 2-6 h concert-set analyze, and phaze-1q4g does not weaken it.
+    """
+    pods = [fake_pod("Failed", status_reason="NodeShutdown"), fake_pod("Running")]
+    assert kube_staging.classify_job_pods(pods, now=_NOW) is kube_staging.PodLiveness.ALIVE
+
+
+def test_classify_job_pods_node_loss_outranks_a_dead_before_start_container() -> None:
+    """A node-lost pod whose container also shows a fatal waiting reason is NODE_LOST, not DEAD_BEFORE_START.
+
+    Both facts are true; only one is the cause. The node took the pod, and the container state it left
+    behind is a consequence -- charging it to the operator-misconfig budget would meter the wrong thing.
+    """
+    pod = fake_pod("Failed", status_reason="NodeLost", waiting_reason="CreateContainerConfigError")
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.NODE_LOST
+
+
+def test_classify_job_pods_an_in_container_oomkill_is_not_node_loss() -> None:
+    """A container OOMKilled under its OWN ``limits.memory`` is the file overrunning, NOT node loss.
+
+    ADR-0005's memory limit converts a node-scoped OOM into a pod-scoped one; that pod is paying for
+    its own excess and MUST keep charging the ordinary ``attempts`` budget. Only node-scoped fields
+    (``status.reason`` / ``DisruptionTarget``) select the node-loss budget -- a container's terminated
+    reason never does.
+    """
+    pod = fake_pod("Failed")
+    pod.status["containerStatuses"] = [{"name": "analyze", "state": {"terminated": {"reason": "OOMKilled", "exitCode": 137}}}]
+    assert kube_staging.classify_job_pods([pod], now=_NOW) is kube_staging.PodLiveness.STARTING
 
 
 # --------------------------------------------------------------------------- #

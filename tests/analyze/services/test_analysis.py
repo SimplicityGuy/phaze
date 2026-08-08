@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+import phaze.services.analysis as analysis_mod
 from phaze.services.analysis import (
     GENRE_MODEL,
     MODEL_SETS,
@@ -17,6 +19,7 @@ from phaze.services.analysis import (
     FineWindow,
     ModelConfig,
     ModelSetConfig,
+    _peak_rss_gib,
     _stride_to_cap,
     aggregate_bpm,
     aggregate_danceability,
@@ -223,6 +226,32 @@ def test_analyze_file_returns_complete_result(_mock_es: MagicMock, mock_get_labe
     assert "features" in result
     assert result["bpm"] == 128.0
     assert result["musical_key"] == "C minor"
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_hoists_fine_extractors_out_of_the_window_loop(mock_es: MagicMock, mock_get_labels: MagicMock) -> None:
+    """phaze-ap8y: RhythmExtractor2013/KeyExtractor are constructed ONCE per file, not per window.
+
+    ``_MOCK_DURATION_SEC`` (600s) yields 20 fine windows (VALIDATION.md's own comment on
+    ``_build_mock_essentia``), so a per-window construction would show 20 calls to each
+    constructor; a per-file hoist shows exactly 1. This is the regression guard for the
+    hoist phaze-i93a measured at -24.0% of the fine tier.
+    """
+    mock_get_labels.side_effect = _mock_labels_file
+
+    result = analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert result["fine_windows_analyzed"] == 20, "expected 20 fine windows from _MOCK_DURATION_SEC=600s"
+    assert mock_es.RhythmExtractor2013.call_count == 1, (
+        f"RhythmExtractor2013 constructed {mock_es.RhythmExtractor2013.call_count} times; expected 1 (once per file, not per window)"
+    )
+    assert mock_es.KeyExtractor.call_count == 1, (
+        f"KeyExtractor constructed {mock_es.KeyExtractor.call_count} times; expected 1 (once per file, not per window)"
+    )
+    # The single shared instance must still be CALLED once per analyzed window.
+    assert mock_es.RhythmExtractor2013.return_value.call_count == 20
+    assert mock_es.KeyExtractor.return_value.call_count == 20
 
 
 @patch("phaze.services.analysis._get_labels")
@@ -853,3 +882,91 @@ def test_aggregates_valid_over_strided_subset() -> None:
 
     expected = round(median([w.bpm for w in subset if w.bpm is not None]), 1)
     assert aggregate_bpm(subset) == expected
+
+
+# ---------------------------------------------------------------------------
+# phaze-7qfd -- job-peak-RSS observability: platform unit handling + the log line
+# ---------------------------------------------------------------------------
+
+
+def test_peak_rss_gib_linux_reads_vmhwm_in_kb(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Linux: VmHWM is read from /proc/self/status, which proc(5) documents as ALWAYS kB.
+
+    A value read as bytes instead of kB would be off by 1024x -- this pins the divisor.
+    """
+    fake_status = tmp_path / "status"
+    fake_status.write_text("VmData:\t     123 kB\nVmHWM:\t    8824 kB\nVmRSS:\t    8000 kB\n")
+    real_path = analysis_mod.Path
+    monkeypatch.setattr(analysis_mod, "Path", lambda arg: fake_status if arg == "/proc/self/status" else real_path(arg))
+    monkeypatch.setattr(analysis_mod.platform, "system", lambda: "Linux")
+
+    result = _peak_rss_gib()
+
+    assert result == pytest.approx(8824 / (1024 * 1024))
+
+
+def test_peak_rss_gib_linux_falls_back_to_ru_maxrss_in_kib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux, /proc unreadable: falls back to ru_maxrss, which IS KiB on Linux (unlike Darwin)."""
+
+    class _Unreadable:
+        def open(self) -> Any:
+            msg = "no /proc here"
+            raise OSError(msg)
+
+    monkeypatch.setattr(analysis_mod, "Path", lambda _arg: _Unreadable())
+    monkeypatch.setattr(analysis_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(analysis_mod.resource, "getrusage", lambda _who: MagicMock(ru_maxrss=1024 * 1024 * 3))  # 3 GiB in KiB
+
+    result = _peak_rss_gib()
+
+    assert result == pytest.approx(3.0)
+
+
+def test_peak_rss_gib_darwin_uses_bytes_not_kib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Darwin: ru_maxrss is BYTES. Using the Linux (KiB) divisor here would misreport by 1024x."""
+    monkeypatch.setattr(analysis_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(analysis_mod.resource, "getrusage", lambda _who: MagicMock(ru_maxrss=2 * 1024**3))  # 2 GiB in bytes
+
+    result = _peak_rss_gib()
+
+    assert result == pytest.approx(2.0)
+
+
+def test_peak_rss_gib_unknown_platform_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A platform whose RSS unit was never verified returns None rather than guess one."""
+    monkeypatch.setattr(analysis_mod.platform, "system", lambda: "Windows")
+
+    assert _peak_rss_gib() is None
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_logs_peak_rss_once_at_info(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """analyze_file logs the job's peak RSS exactly once, at INFO, after analysis completes."""
+    mock_get_labels.side_effect = _mock_labels_file
+    monkeypatch.setattr(analysis_mod, "_peak_rss_gib", lambda: 2.482)
+
+    with caplog.at_level(logging.INFO, logger="phaze.services.analysis"):
+        analyze_file("/fake/audio.mp3", "/fake/models")
+
+    peak_records = [r for r in caplog.records if "peak RSS" in r.getMessage()]
+    assert len(peak_records) == 1, f"expected exactly one peak-RSS log line, got {len(peak_records)}"
+    assert peak_records[0].levelno == logging.INFO
+    assert "2.482" in peak_records[0].getMessage()
+
+
+@patch("phaze.services.analysis._get_labels")
+@patch("phaze.services.analysis.es", new_callable=_build_mock_essentia)
+def test_analyze_file_skips_peak_rss_log_when_unreadable(
+    _mock_es: MagicMock, mock_get_labels: MagicMock, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unverified/unreadable platform logs nothing rather than a guessed number."""
+    mock_get_labels.side_effect = _mock_labels_file
+    monkeypatch.setattr(analysis_mod, "_peak_rss_gib", lambda: None)
+
+    with caplog.at_level(logging.INFO, logger="phaze.services.analysis"):
+        analyze_file("/fake/audio.mp3", "/fake/models")
+
+    assert not [r for r in caplog.records if "peak RSS" in r.getMessage()]

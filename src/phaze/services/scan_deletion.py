@@ -33,6 +33,7 @@ from sqlalchemy import CursorResult, String, cast as sql_cast, delete, select
 import structlog
 
 from phaze.models.analysis import AnalysisResult
+from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
 from phaze.models.dedup_resolution import DedupResolution
 from phaze.models.discogs_link import DiscogsLink
@@ -150,6 +151,12 @@ async def delete_scan_cascade(session: AsyncSession, batch_id: uuid.UUID) -> dic
             delete(DedupResolution).where(DedupResolution.file_id.in_(files_of_batch) | DedupResolution.canonical_file_id.in_(files_of_batch)),
         ),
         (CloudJob.__tablename__, delete(CloudJob).where(CloudJob.file_id.in_(files_of_batch))),
+        # phaze-2mwyo: the DURABLE cloud-budget ledger. Its FK carries ON DELETE CASCADE (so it can never
+        # block the files delete the way stage_skip once did), but it is deleted explicitly here anyway --
+        # the cascade would remove the rows silently, and this list is also the rowcount report an operator
+        # reads to see what a scan deletion actually took. Deleting a file legitimately erases its cloud
+        # budget history: a re-scanned file is a NEW files.id and has genuinely never spent a cloud budget.
+        (CloudBudget.__tablename__, delete(CloudBudget).where(CloudBudget.file_id.in_(files_of_batch))),
         # StageSkip (force-skip sidecar) FKs files.id with NO ON DELETE and is not deferrable. It is
         # the ONLY file sidecar with no undo/reaper, so a force-skipped file leaves a live stage_skip
         # row that blocks the files delete (ForeignKeyViolation -> 500 -> batch permanently undeletable).

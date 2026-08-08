@@ -21,9 +21,14 @@
 #                         the LEGACY un-suffixed `phaze-agent-nox` queue for the migration window.
 #   watcher             — directory watcher (PHAZE_ROLE=agent). Pulls from GHCR.
 #
-# CPU budget (nox = 8 cores): analyze(4) CPU-bound slots, leaving headroom
-# for the fast meta lane + OS. essentia/TF are pinned single-threaded
-# (OMP_NUM_THREADS=1, TF intra/inter-op=1) on the CPU lanes so one slot ≈ one core.
+# CPU budget: DERIVED, not pinned (phaze-rvcn). The analyze lane's concurrency and the
+# extractor's TF intra-op cap are two halves of one relationship —
+# `intra_op_threads x concurrency ~= physical_cores` — and phaze now computes both from the
+# host's schedulable PHYSICAL core count in one place (services/analysis_sizing.py). On nox
+# (8 physical) that is intra-op 4 x concurrency 2; on a 32-physical-core host it would be
+# intra-op 4 x concurrency 8, with per-process peak RSS unchanged. Pinning either half here
+# is what let them drift (they did: 1 x 4 = 4 of 8 cores), so the CPU lanes now pass the
+# variables through only when the operator explicitly sets them.
 # EVERY lane worker heartbeats (PHAZE_AGENT_HEARTBEAT=true on all three), each tagging its
 # own lane (phaze-30fo). This REPLACES the former "exactly one heartbeat per agent, on
 # worker-analyze" rule: that pinned the agent's whole liveness signal -- and its work-routing
@@ -66,14 +71,24 @@ services:
     environment:
       - PHAZE_ROLE=agent
       - PHAZE_AGENT_LANE=analyze
-      - PHAZE_LANE_ANALYZE_CONCURRENCY=${PHAZE_LANE_ANALYZE_CONCURRENCY:-4}
+      # phaze-rvcn: NO `:-4` default and NO thread pinning here any more. Both were literals, in
+      # two different files, for the two halves of one relationship — and they had drifted:
+      # concurrency 4 x intra-op 1 = 4 on a host with 8 physical cores, with the extractor parked
+      # on the 1-thread arm measured at +210.6% wall for 0.001 GiB less than 4 threads
+      # (`phaze-7i0k` §5). phaze now derives BOTH from the host's schedulable physical core count
+      # in one place (`services/analysis_sizing.py`), so this bare name passes the variable through
+      # ONLY when the operator actually sets it, and otherwise leaves the derived default in force.
+      - PHAZE_LANE_ANALYZE_CONCURRENCY
       # phaze-30fo: every lane worker heartbeats (see the header block above) — this beat is tagged
       # lane=analyze; the dashboard's get_queue_activity remains the authoritative all-lane figure.
       - PHAZE_AGENT_HEARTBEAT=true
-      # CPU-bound lane: pin essentia/TF single-threaded so one slot ≈ one core (honest budget).
-      - OMP_NUM_THREADS=1
-      - TF_NUM_INTRAOP_THREADS=1
-      - TF_NUM_INTEROP_THREADS=1
+      # Same pass-through rule for the thread caps: set one and it wins (phaze never overwrites an
+      # operator value); leave them unset and the derivation supplies min(4, physical_cores) / 1 /
+      # min(4, physical_cores), which is what keeps peak RSS a property of the workload rather than
+      # of the box this container happens to land on.
+      - OMP_NUM_THREADS
+      - TF_NUM_INTRAOP_THREADS
+      - TF_NUM_INTEROP_THREADS
     volumes:
       - "${SCAN_PATH:?SCAN_PATH required}:/data/music:ro"
       - "${MODELS_PATH:-./models}:/models:rw"
@@ -133,9 +148,10 @@ services:
       - PHAZE_ROLE=agent
       # PHAZE_AGENT_LANE intentionally UNSET -> all-mode: consumes the legacy base queue with all functions.
       - PHAZE_AGENT_HEARTBEAT=false
-      - OMP_NUM_THREADS=1
-      - TF_NUM_INTRAOP_THREADS=1
-      - TF_NUM_INTEROP_THREADS=1
+      # phaze-rvcn: pass-through, not pinned — see worker-analyze above for why.
+      - OMP_NUM_THREADS
+      - TF_NUM_INTRAOP_THREADS
+      - TF_NUM_INTEROP_THREADS
     volumes:
       # rw for the same reason as worker-meta: all-mode registers EVERY function, including the
       # three archive-mutating meta-lane tasks, so a :ro mount here silently fails legacy-queue

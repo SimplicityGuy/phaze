@@ -207,7 +207,7 @@ stage_cloud_window: every candidate held on consecutive ticks -- the cloud lane 
 
 | Reason | Means | What to do |
 |---|---|---|
-| `cloud_attempts_exhausted` | These files spent their cloud budget (`cloud_submit_max_attempts`), so they can only route **local** — and local has no free slot. | **Act.** An attempt counter only grows, so this never clears on its own. Give the local backend headroom (raise its `cap`, or let its in-flight work finish), or investigate why those files kept failing their cloud submits. |
+| `cloud_attempts_exhausted` | These files spent their cloud budget (`cloud_submit_max_attempts`), so they can only route **local** — and local has no free slot. | **Act.** An attempt counter only grows, so this never clears on its own. Give the local backend headroom (raise its `cap`, or let its in-flight work finish), or investigate why those files kept failing their cloud submits. **Read `cloud_job.node_loss_redrives` first** — it tells you *which* budget ran out. `> 0` means the pod kept dying **with its node** (phaze-1q4g), not that the analysis kept failing: the file is a burst-node killer and the local route is deliberate, so look at the node's kernel journal rather than at the file's analyze logs. `= 0` is the ordinary case — the submits themselves kept failing. |
 | `local_spill_not_reached` | Cloud is online but full, and the files have not yet waited out `cloud_spill_to_local_after_seconds`. | **Wait.** This is the staleness gate working; it clears itself when the clock elapses. |
 | `no_free_slots` | Every backend is offline or at cap. | Check the lane grid and the offline probes — this is fleet-wide saturation, not a per-file problem. |
 

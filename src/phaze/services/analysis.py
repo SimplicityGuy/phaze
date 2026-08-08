@@ -2,26 +2,52 @@
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass, field
+import gc
 import json
 import logging
 import os
 from pathlib import Path
+import platform
+import resource
 from statistics import mean, median
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from phaze.services.analysis_sizing import apply_thread_env
+
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 
 # Suppress TF C++ logging before any essentia/TF import
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-import essentia
-import essentia.standard as es
+# phaze-rvcn: derive TF_NUM_INTRAOP_THREADS / TF_NUM_INTEROP_THREADS / OMP_NUM_THREADS from
+# the host's SCHEDULABLE PHYSICAL core count -- here, because TF reads all three when it
+# builds its thread pools and a value stamped after the first session is read by nothing.
+#
+# Left unset, TF sizes its intra-op pool from the machine's core count and gives each worker
+# thread its own allocation arena, which makes the per-process analyze peak a function of the
+# HOST rather than of the workload: every figure in docs/k8s-burst.md would rise silently on
+# a bigger box, reintroducing the node-scoped OOM ADR-0005 exists to prevent. The cap is the
+# mechanism that decouples the two -- see services/analysis_sizing.py for the policy, the
+# measurements behind the constants, and the env overrides (an operator-set value wins).
+#
+# Bound to a name rather than called bare so the derivation stays inspectable after import (and
+# so this pre-import stamp reads as an assignment, like the TF_CPP_MIN_LOG_LEVEL line above).
+ANALYSIS_SIZING = apply_thread_env()
+
+# E402 is deliberate and load-bearing on BOTH lines: essentia pulls TensorFlow in at import, and
+# TF reads TF_CPP_MIN_LOG_LEVEL and its thread-pool env at that point -- so these imports MUST come
+# after the two stamps above. (ruff waives E402 after a bare `os.environ` mutation but not after the
+# `apply_thread_env` call, which is why only these two lines carry the marker.)
+import essentia  # noqa: E402
+import essentia.standard as es  # noqa: E402
+import essentia.streaming as ess  # noqa: E402
 
 
 log = logging.getLogger(__name__)
@@ -124,9 +150,108 @@ GENRE_MODEL = ModelConfig(
 # Module-level caches for lazy loading in ProcessPoolExecutor workers
 # ---------------------------------------------------------------------------
 
+# _classifier_cache holds the ONE graph currently being swept across the coarse windows.
+#
+# It used to hold all 34 for the process's lifetime. That was a deliberate, documented
+# time optimization -- "inference-only; no per-window graph reload" -- priced against
+# wall-clock and never against a memory bound. Spike phaze-esut measured the residency it
+# bought: +4.090 GiB on macOS / +3.995 GiB on Linux (phaze-7i0k) with ZERO inference
+# performed, ~50% of the Linux peak, while `_run_model_sets` used the graphs strictly one
+# at a time. The memory bound became the binding constraint (node-scoped OOM kills), so
+# phaze-15sw repriced the trade rather than fixing a bug: `_run_model_sets_over_windows`
+# iterates MODEL-major, so each graph is constructed exactly once per file (the load cost
+# the cache existed to avoid is unchanged), swept across every coarse window, then released
+# by `_release_classifier` before the next is built.
 _classifier_cache: dict[str, Any] = {}
 _labels_cache: dict[str, list[str]] = {}
 _essentia_logging_suppressed = False
+
+# phaze-5lop: the streaming decode's sink-key namespace inside its per-tier essentia
+# ``Pool``. Prefixed and numbered by ORIGINAL window index (never renumbered), so a
+# strided window set maps back to `_stride_to_cap`'s indices without a side table.
+_SINK_KEY_PREFIX = "phaze.window."
+
+
+# ---------------------------------------------------------------------------
+# TensorFlow inference batch size (phaze-0582)
+# ---------------------------------------------------------------------------
+
+# `TensorflowPredict*` batches patches before feeding the graph, and its `batchSize`
+# DEFAULTS to 64. phaze passed no override until phaze-0582, so every inference stood up
+# a `[64, patch, bands]` input and -- far more expensively -- 64x the intermediate
+# activations of a musicnn / VGGish / EfficientNet forward pass. Spike phaze-mqq5 measured
+# that default as the dominant remaining term in the analysis peak.
+#
+# 32 is the KNEE of the curve, not an arbitrary pick. Re-measured for phaze-0582 end to end
+# through the real `analyze_file` on the burst node, host-side `VmHWM`, synthetic audio,
+# node otherwise idle -- one arm per process, the two arms differing ONLY in this file:
+#
+#   60 min, fine cap saturated (60 fine + 20 coarse):  2.4445 -> 1.6206 GiB (-33.71%),
+#                                                      3039.97 -> 3052.09 s (+0.40%)
+#   10 min (20 fine + 4 coarse):                       2.1743 -> 1.4111 GiB (-35.10%),
+#                                                      344.27 -> 345.72 s  (+0.42%)
+#
+# Below 32 the memory curve is FLAT -- phaze-mqq5 measured batch 16 and batch 8 at ~-34%
+# each -- because what is left is the graph plus the allocator floor, not the batch; and
+# batch 1 buys only ~8 more points of peak for +55.7% WALL CLOCK, which is the wrong trade
+# on a node measured CPU-bound. So going lower costs time and returns nothing.
+#
+# This is NOT a byte-identical change and must not be described as one. Regrouping patches
+# into different batches changes float32 summation order, so the last ulp moves. Measured
+# over the whole serialized result (3702 leaves, 1922 numeric) on the 60-minute file: max
+# |delta| 1.79e-7 (~1.5 float32 ulp at 1.0), 0/714 top-1 flips, every categorical field
+# (bpm/key/mood/style) and every window count identical, `danceability` moving 2.98e-9 in
+# the float64. The bar this change is held to is that tolerance (aggregated |delta| <= 1e-3,
+# zero top-1 flips), NOT bit-exactness -- an equivalence test written against a sha256 will
+# fail for the right reason and be deleted for the wrong one.
+#
+# The batch value is also the ONLY thing that moved: the same patched code run with
+# `PHAZE_ANALYSIS_TF_BATCH_SIZE=64` reproduces the pre-change output **byte-identically**
+# (max |delta| exactly 0.0 across all 918 leaves), so the whole delta above is attributable
+# to the batch and none of it to the plumbing.
+_DEFAULT_TF_BATCH_SIZE = 32
+
+# Deployment override. Read from the ENVIRONMENT at classifier construction, deliberately
+# not plumbed through the per-job windowing kwargs (`fine_cap`/`coarse_cap`): those are
+# per-FILE knobs the enqueue path varies per request, while this is a per-HOST sizing knob.
+# phaze-rvcn will make thread/concurrency sizing host-derived; when it does, the derivation
+# belongs in `_resolve_tf_batch_size` -- this one function is the seam.
+_TF_BATCH_SIZE_ENV = "PHAZE_ANALYSIS_TF_BATCH_SIZE"
+
+# `discogs-effnet-bs64-1`'s input Placeholder is `[64, 128, 96]` -- a batch of 64 baked into
+# the graph, which is literally what the `bs64` in the filename means. The batch lever
+# CANNOT move it from the caller: any other value is a configuration error, not a data
+# point, and it is also why `lastBatchMode` exists on that algorithm at all. It therefore
+# keeps its own arena and the measured saving is delivered by the other 33 graphs.
+_FIXED_BATCH_SIZE: dict[str, int] = {GENRE_MODEL.filename: 64}
+
+
+def _resolve_tf_batch_size(model: ModelConfig) -> int:
+    """Resolve the `TensorflowPredict*` ``batchSize`` for one model.
+
+    Models whose graph fixes the batch in the Placeholder (:data:`_FIXED_BATCH_SIZE`)
+    always get that value and ignore the override entirely. Everything else takes
+    ``PHAZE_ANALYSIS_TF_BATCH_SIZE`` when it parses as a positive int, else
+    :data:`_DEFAULT_TF_BATCH_SIZE`. A malformed or non-positive override is logged and
+    ignored rather than raised: a typo in a deployment env var must not turn every
+    analysis into a hard failure.
+    """
+    fixed = _FIXED_BATCH_SIZE.get(model.filename)
+    if fixed is not None:
+        return fixed
+
+    raw = os.environ.get(_TF_BATCH_SIZE_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_TF_BATCH_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
+        return _DEFAULT_TF_BATCH_SIZE
+    if value < 1:
+        log.warning("%s=%r is not a positive int; using %d", _TF_BATCH_SIZE_ENV, raw, _DEFAULT_TF_BATCH_SIZE)
+        return _DEFAULT_TF_BATCH_SIZE
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -143,19 +268,103 @@ def _suppress_essentia_logging() -> None:
         _essentia_logging_suppressed = True
 
 
+def _resolve_malloc_trim() -> Callable[[int], int] | None:
+    """Resolve glibc's ``malloc_trim`` once, or ``None`` where it does not exist.
+
+    Deliberately narrow: ``malloc_trim`` is a glibc extension. macOS and musl do not have it,
+    and a ``CDLL(None)`` lookup there raises ``AttributeError`` -- so this returns ``None`` and
+    :func:`_malloc_trim` becomes a no-op rather than a per-call exception. Resolution is
+    memoised in :data:`_MALLOC_TRIM` because the lookup is the expensive part, not the call.
+
+    Gated on ``platform.libc_ver`` rather than ``sys.platform`` because the C library, not the
+    kernel, is what owns this symbol -- musl Linux would pass a ``sys.platform`` check and then
+    fail the lookup. (It also keeps the body reachable for a type checker running on macOS,
+    which narrows ``sys.platform`` to a literal and would call everything below it dead.)
+    """
+    try:
+        if platform.libc_ver()[0] != "glibc":
+            return None
+        trim: Callable[[int], int] = ctypes.CDLL(None).malloc_trim
+    except (AttributeError, OSError):  # no malloc_trim, or no dlopen of the running image
+        return None
+    trim.argtypes = [ctypes.c_size_t]  # type: ignore[attr-defined]
+    trim.restype = ctypes.c_int  # type: ignore[attr-defined]
+    return trim
+
+
+_MALLOC_TRIM: Callable[[int], int] | None = _resolve_malloc_trim()
+
+
+def _malloc_trim() -> None:
+    """Hand the decode pass's freed transient back to the OS (phaze-rc1q rec. 4).
+
+    ``free()`` returns a block to glibc's arena, not to the kernel, and glibc only trims
+    the top of the main arena on its own. The streaming fan-out (:func:`_decode_windows`)
+    frees a transient roughly twice the size of a tier's PCM the instant its ``Pool`` is
+    dropped; TensorFlow's own arena allocations in the model sweep that follows do NOT
+    reuse those retained pages, so without this call the sweep's 2.5 GiB stacks *on top of*
+    the decode transient instead of sitting under it.
+
+    **This is a BACKSTOP, and the measurement says so.** phaze-rc1q 6b priced it at
+    ``-0.403 GiB`` for ``+0.13%`` wall -- but every variant that spike measured kept the
+    ``Pool`` alive through the sweep, so most of what its trim reclaimed was ``Pool`` slack
+    that :func:`_decode_windows_streaming` now never holds. Ablated one knob at a time on THIS
+    implementation (phaze-5lop, vox, deployed image, 60-min file at saturated caps, 1.3999 GiB
+    baseline): dropping the ``Pool`` keys is worth **-0.3495 GiB**, and this trim on top of it
+    only **-0.0106 GiB**. Kept anyway because it costs nothing measurable (-0.2%, inside
+    run-to-run spread) and because the same ablation shows it worth **3x more** (-0.0299 GiB)
+    when a large freed transient IS retained -- which is exactly the regression it is here to
+    absorb. phaze-7i0k 4 measured the same call worth 0.0% against the pre-phaze-5lop workload
+    and was right: that workload freed no large transient at all.
+
+    Never raises -- a failed trim is a missed optimisation, not an analysis failure.
+    """
+    if _MALLOC_TRIM is None:
+        return
+    try:
+        _MALLOC_TRIM(0)
+    except Exception:  # pragma: no cover -- defensive; a trim must never fail a file
+        log.debug("malloc_trim(0) failed; continuing", exc_info=True)
+
+
 def _get_classifier(model: ModelConfig, models_dir: str) -> Any:
-    """Get or create a cached classifier instance for the given model."""
+    """Get or create the cached classifier instance for the given model.
+
+    Construction now passes an explicit ``batchSize`` (phaze-0582) instead of inheriting
+    essentia's default of 64 -- see :func:`_resolve_tf_batch_size` and
+    :data:`_DEFAULT_TF_BATCH_SIZE` for the measurement behind the value, and
+    :data:`_FIXED_BATCH_SIZE` for the one model that cannot take it.
+
+    What changed before that (phaze-15sw) is the LIFETIME of what this caches. Under
+    model-major iteration the caller sweeps one model across every window before calling
+    :func:`_release_classifier`, so this still constructs each graph exactly once per file
+    -- the cache hit rate on the hot path is identical -- but the cache holds one graph
+    instead of 34.
+    """
     if model.filename in _classifier_cache:
         return _classifier_cache[model.filename]
 
     graph_path = str(Path(models_dir) / (model.filename + ".pb"))
+    batch_size = _resolve_tf_batch_size(model)
 
     if model.classifier_type == "musicnn":
-        classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path)
+        classifier = es.TensorflowPredictMusiCNN(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "vggish":
-        classifier = es.TensorflowPredictVGGish(graphFilename=graph_path)
+        classifier = es.TensorflowPredictVGGish(graphFilename=graph_path, batchSize=batch_size)
     elif model.classifier_type == "effnet_discogs":
-        classifier = es.TensorflowPredictEffnetDiscogs(graphFilename=graph_path)
+        # batchSize stays 64 here (via _FIXED_BATCH_SIZE) because the graph's Placeholder
+        # is fixed at 64, and `lastBatchMode` stays unpassed at its default "same" --
+        # zero-pad the final batch, then erase exactly the padded predictions -- which is
+        # the behaviour phaze-rc1q 3d flagged as batch-coupled.
+        #
+        # phaze-0582 checked that interaction on the wheel rather than assuming it:
+        # `lastBatchMode` is a parameter of THIS algorithm ONLY. TensorflowPredictMusiCNN
+        # and TensorflowPredictVGGish -- the 33 graphs whose batch actually moves -- do not
+        # expose it at all, so the padding branch is unreachable for them. And the returned
+        # patch count is invariant to batchSize across 64/32/16/8/1 (musicnn 402, vggish
+        # 645 on the same buffer), so nothing is padded in or dropped. The one algorithm
+        # the padding DOES apply to is the one this change does not touch.
+        classifier = es.TensorflowPredictEffnetDiscogs(graphFilename=graph_path, batchSize=batch_size)
     else:
         msg = f"Unknown classifier type: {model.classifier_type}"
         raise ValueError(msg)
@@ -183,6 +392,90 @@ def _predict_single(audio_16k: Any, model: ModelConfig, models_dir: str) -> Any:
     classifier = _get_classifier(model, models_dir)
     activations = classifier(audio_16k)
     return np.mean(activations, axis=0)
+
+
+def _release_classifier(model_filename: str) -> None:
+    """Evict one graph from ``_classifier_cache`` and hand its native memory back.
+
+    The `TensorflowPredict*` wrapper owns a C++ TF session; dropping the last Python
+    reference runs its destructor, which is what actually returns the graph's arena.
+    **Measured (phaze-15sw, on the Linux burst node, deployed image + model set):** the
+    refcount drop alone already returns it -- popping a vggish graph moves instantaneous
+    RSS 0.500 -> 0.219 GiB *before* any collection, and building then releasing all 34 in
+    turn leaves RSS at 0.263 GiB against 3.751 GiB when they are held co-resident. So the
+    eviction frees memory; it does not merely drop a name.
+
+    ``gc.collect()`` is therefore insurance, not the mechanism: it costs ~0.2 s across the
+    34 releases of a file and closes the case where something in a reference cycle keeps
+    the wrapper alive past the pop. The one such path this module could create -- retaining
+    a caught exception, whose traceback pins ``_predict_single``'s frame and with it the
+    classifier -- is closed at the source in :func:`_sweep_one_model`, which reports a
+    window failure inside the handler and retains only the window index.
+
+    No-op when the model is not cached, so it is safe in a ``finally``.
+    """
+    if _classifier_cache.pop(model_filename, None) is None:
+        return
+    gc.collect()
+
+
+def _peak_rss_gib() -> float | None:
+    """This process's peak (high-water) RSS in GiB so far, or ``None`` if unreadable.
+
+    phaze-7qfd -- makes the memory floor spikes `phaze-esut`/`phaze-7i0k` measured by hand a
+    routine observable instead of something reconstructed from OOM forensics after the fact.
+
+    **The unit differs by platform and was verified, not assumed** (both directly against a
+    live process on each platform, and against `phaze-7i0k`'s independent cross-check, which
+    found `ru_maxrss` and `/proc/self/status:VmHWM` agree to the byte on Linux):
+
+    * **Linux** -- read `/proc/self/status:VmHWM`, which `proc(5)` documents in kB (kibibytes)
+      *always*, regardless of `getrusage`'s platform-dependent unit. This is the TRUE
+      high-water mark -- the kernel's own peak-RSS accounting -- not a resident-at-this-instant
+      sample, so it is unaffected by exactly where in the job this function is called.
+    * **Darwin** (dev/test only; never the production job pod) -- `getrusage(RUSAGE_SELF)
+      .ru_maxrss` is in **bytes**. Reusing the Linux divisor here would under-report by 1024x.
+    * Anywhere else, return ``None`` rather than guess a unit that was never verified.
+
+    Dispatches on ``platform.system()`` rather than ``sys.platform`` -- the latter is
+    special-cased by mypy for cross-platform-typeshed conditionals (``--python-platform``
+    defaults to the host running the type checker), which would mark whichever branch
+    that host isn't as permanently unreachable instead of a real runtime dispatch.
+    """
+    system = platform.system()
+    if system == "Linux":
+        try:
+            with Path("/proc/self/status").open() as status_file:
+                for line in status_file:
+                    if line.startswith("VmHWM:"):
+                        vm_hwm_kib = int(line.split()[1])  # proc(5): always kB, never bytes
+                        return vm_hwm_kib / (1024 * 1024)
+        except OSError:
+            pass
+        # /proc unreadable (e.g. a sandboxed or non-Linux-proc container): ru_maxrss is KiB
+        # on Linux, unlike Darwin's bytes -- see the docstring's platform note.
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+    if system == "Darwin":
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3)
+    return None
+
+
+def _log_job_peak_rss() -> None:
+    """Log this job's peak RSS once, at INFO, after analysis completes.
+
+    **What this measures, post-`phaze-15sw`.** Model-major coarse inference means only ONE
+    `TensorflowPredict*` graph is ever resident at a time (see the `_classifier_cache` module
+    comment) -- there is no longer a single "all models loaded" instant to log after, the way
+    there was under the old window-major loop. `VmHWM`/`ru_maxrss` is a HIGH-WATER MARK, not a
+    point-in-time sample, so calling this once at the end of :func:`analyze_file` still reports
+    the job's true peak regardless of which stage produced it (in practice, the coarse pass's
+    first model sweep -- see `phaze-7i0k` section 2d). That peak is this job's contribution to
+    the design-peak figure `docs/k8s-burst.md` sizes cluster memory from.
+    """
+    peak_gib = _peak_rss_gib()
+    if peak_gib is None:
+        return
+    log.info("analyze job peak RSS (high-water mark): %.3f GiB", peak_gib)
 
 
 # ---------------------------------------------------------------------------
@@ -466,30 +759,237 @@ def _stride_to_cap(windows: list[tuple[int, float, float]], cap: int) -> tuple[l
     return kept, True
 
 
-def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
-    """Run all 11 characteristic model sets + the genre model on one buffer.
+def _decode_windows_streaming(file_path: str, sample_rate: int, windows: Sequence[tuple[int, float, float]]) -> dict[int, Any]:
+    """Decode EVERY window of one tier in a SINGLE streaming pass (phaze-5lop).
 
-    Identical prediction shape to the previous whole-file path, but fed a single
-    coarse-window buffer instead of the whole file. Reuses the module-level
-    ``_classifier_cache`` (inference-only; no per-window graph reload).
+    Returns ``{window_index: float32 buffer}``, omitting any window the pass produced no
+    audio for. Raises if the network itself cannot be built or run -- :func:`_decode_windows`
+    owns that fallback.
+
+    **Why this exists.** ``es.EasyLoader`` does not seek: standard ``EasyLoader`` wraps the
+    *streaming* ``EasyLoader`` composite, so ``Trimmer``'s "tell my parent to stop" optimisation
+    (``trimmer.cpp``, a line upstream itself marks ``FIXME``) cannot cross the ``MonoLoader``
+    composite boundary and the file is decoded and resampled from byte 0 for **every** window.
+    Per-file decode was therefore ``O(n_windows x total_duration)`` -- 6.15 hours of
+    single-threaded libsamplerate for a 12-hour file at production caps (phaze-esut 8,
+    remeasured phaze-rc1q 4a). This function decodes once per tier and fans the ONE resampled
+    stream out to a ``Trimmer`` per window, which is 3.5x / 10.9x / ~15x / ~18x faster on
+    decode at 10 / 60 / 180 / 720 minutes for byte-identical buffers (phaze-rc1q 4, 5).
+
+    **Three upstream traps this shape closes** -- all read out of ``MTG/essentia@master``,
+    none of them stylistic:
+
+    1. ``MonoLoader`` per TIER, not one shared loader fanned to both. ``monoloader.cpp`` builds
+       ``AudioLoader -> MonoMixer -> Resample`` unconditionally with no ratio-1.0 short circuit,
+       so hanging a second ``Resample(44100->16000)`` off a 44.1 kHz loader would run the coarse
+       tier through TWO libsamplerate passes and produce a different signal than
+       ``EasyLoader(sampleRate=16000)`` does. One loader per tier is bit-for-bit each
+       ``EasyLoader``'s own internal chain -- which is also why this takes no ``inputSampleRate``:
+       ``MonoLoader`` reads the native rate off ``AudioLoader`` at configure time, exactly as
+       ``EasyLoader`` does. (phaze-rc1q 3a)
+    1. ``Scale(factor=1.0)`` is interposed per branch and is LOAD-BEARING, not decorative.
+       A streaming ``Trimmer`` calls ``_input.source()->parent()->shouldStop(true)`` when it
+       reaches ``endTime``; hung straight off the shared loader, the earliest-ending window
+       would shut the shared decode down and truncate every other window. The interposer gives
+       each ``Trimmer`` a private parent to stop. It is ``EasyLoader``'s own composition
+       (``db2amp(-6+6) == 1.0``, same default clipping), so it is free of semantic risk and
+       costs 13% of the fine tier / 0.6% of a full ``analyze_file``. (phaze-rc1q 3b, 7c)
+    1. The buffer is extracted and its ``Pool`` key **removed immediately**, so the ``Pool``'s
+       copy dies with the loop iteration instead of staying live through the model sweep.
+       ``pool[key]`` copies (verified: two reads do not alias, and an extracted array survives
+       ``pool.remove``), so leaving the keys in place holds every window's PCM TWICE. **Measured
+       by ablating this one line on the deployed image, 60-min file at saturated caps: peak
+       1.7383 -> 2.0878 GiB, +0.3495, for 1.1% less wall.** It is the single largest term in the
+       change's memory cost -- larger than the ``malloc_trim`` below by 33x -- and without it a
+       decode this fast would have cost `phaze-3j67` a pod sizing tier. (phaze-rc1q rec. 3)
+
+    Not applicable here, recorded so it is not rediscovered: the standard/streaming
+    normalization divergence upstream documents is ``TensorflowPredictFSDSINet``-only, and
+    phaze runs none of it -- musicnn / vggish / effnet normalize in NEITHER mode. The one
+    mode-coupled behaviour that does touch phaze's set is ``EffnetDiscogs`` batch padding, and
+    it cannot bind because the models stay in standard mode; only the DECODE moves.
+    (phaze-rc1q 3c, 3d)
     """
-    features: dict[str, Any] = {}
-    for model_set in MODEL_SETS:
-        set_data: dict[str, list[dict[str, Any]]] = {}
-        for model in model_set.models:
-            predictions = _predict_single(audio_16k, model, models_dir)
-            labels = _get_labels(model.filename, models_dir)
-            set_data[model.variant] = [{"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)]
-        features[model_set.name] = set_data
+    pool = essentia.Pool()
+    loader = ess.MonoLoader(filename=file_path, sampleRate=sample_rate)
+    branches: list[tuple[Any, Any]] = []  # holds the per-branch algos alive for the run
+    try:
+        for idx, start, end in windows:
+            scale = ess.Scale(factor=1.0)
+            trimmer = ess.Trimmer(sampleRate=sample_rate, startTime=start, endTime=end)
+            loader.audio >> scale.signal
+            scale.signal >> trimmer.signal
+            trimmer.signal >> (pool, f"{_SINK_KEY_PREFIX}{idx}")
+            branches.append((scale, trimmer))
 
-    genre_predictions = _predict_single(audio_16k, GENRE_MODEL, models_dir)
-    genre_labels = _get_labels(GENRE_MODEL.filename, models_dir)
-    genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
-    genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
-    features["genre"] = {
-        "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
-    }
-    return features
+        essentia.run(loader)
+
+        produced = set(pool.descriptorNames())  # read ONCE: `remove` below mutates it
+        decoded: dict[int, Any] = {}
+        for idx, _start, _end in windows:
+            key = f"{_SINK_KEY_PREFIX}{idx}"
+            if key not in produced:
+                continue  # the pass produced no audio for this window; caller reports it as a skip
+            buf = pool[key]
+            pool.remove(key)  # drop the Pool's copy NOW -- see trap 3 above
+            if len(buf) == 0:
+                continue
+            decoded[idx] = buf
+        return decoded
+    finally:
+        # Drop the network before returning: the branches are what hold the per-window
+        # C++ sinks, and the caller's `_malloc_trim` can only return pages that are free.
+        branches.clear()
+        del loader, pool
+
+
+def _decode_windows(
+    file_path: str,
+    sample_rate: int,
+    windows: Sequence[tuple[int, float, float]],
+    on_skip: Callable[[int, float, float, bool], None],
+) -> dict[int, Any]:
+    """Decode one tier's windows, streaming fan-out first, per-window ``EasyLoader`` as fallback.
+
+    Returns ``{window_index: buffer}`` for the windows that decoded. ``on_skip(idx, start, end,
+    exc_info)`` fires once per window that did not, with ``exc_info`` False when there is no
+    live exception to render (a window the streaming pass simply produced no audio for).
+
+    The fallback is not defensive padding: it is what preserves phaze-zibn's contract. The
+    per-window loop isolates a bad window from the rest of the file, and a single shared network
+    cannot -- one raise takes the whole tier. So a network-level failure drops back to the
+    decode this replaced, which then fails (or skips) exactly the windows it always did, and
+    ``analyze_file``'s all-windows-failed floor still sees the same evidence.
+
+    The ``malloc_trim`` is here rather than at the call sites because THIS is where the fan-out's
+    transient dies: the ``Pool`` doubling slack is freed the moment the loop above finishes, and
+    glibc keeps those pages unless asked. (phaze-rc1q rec. 4 -- measured -0.403 GiB for +0.13% wall.)
+    """
+    try:
+        decoded = _decode_windows_streaming(file_path, sample_rate, windows)
+    except Exception:  # tier-level failure isolation: fall back to the per-window decode
+        log.warning("streaming decode pass failed at %d Hz; falling back to per-window EasyLoader", sample_rate, exc_info=True)
+        decoded = {}
+        for idx, start, end in windows:
+            try:
+                decoded[idx] = es.EasyLoader(filename=file_path, sampleRate=sample_rate, startTime=start, endTime=end)()
+            except Exception:  # per-window failure isolation: skip, never fail the file
+                on_skip(idx, start, end, True)
+    else:
+        for idx, start, end in windows:
+            if idx not in decoded:
+                on_skip(idx, start, end, False)
+    _malloc_trim()
+    return decoded
+
+
+def _sweep_one_model(
+    model: ModelConfig,
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    failed: set[int],
+    on_failure: Callable[[int], None],
+) -> dict[int, tuple[Any, list[str]]]:
+    """Construct ONE model's graph, run it across every still-live buffer, release it.
+
+    The model-major primitive (phaze-15sw). ``buffers`` is ``(window_index, audio_16k)``
+    in window order; ``failed`` is the shared per-window kill list, read to skip windows an
+    earlier model already failed on and added to when this model fails on one.
+    Returns ``{window_index: (mean_activations, labels)}`` for the windows that succeeded.
+
+    The prediction call order per window is ``_predict_single`` then ``_get_labels``,
+    identical to the window-major loop this replaced, so a raising ``_get_labels`` fails
+    exactly the same windows it failed before (all of them, one at a time).
+
+    ``on_failure(window_index)`` is invoked from INSIDE the ``except`` block, and only the
+    index is retained afterwards. That is deliberate and memory-load-bearing: keeping the
+    caught exception would keep its traceback, whose ``_predict_single`` frame holds a
+    reference to ``classifier`` -- pinning for the rest of the file the very graph the
+    ``finally`` below is about to evict, and re-creating in the failure path exactly the
+    co-residency this restructure exists to remove. Reporting in-handler also keeps
+    ``log.warning(..., exc_info=True)`` rendering the same traceback it always did.
+
+    The ``finally`` is the other load-bearing line: it is what bounds residency to one
+    graph even when the consumer raises partway through a sweep.
+    """
+    out: dict[int, tuple[Any, list[str]]] = {}
+    try:
+        for key, buf in buffers:
+            if key in failed:
+                continue  # a previous model already killed this window; the window-major loop had abandoned it too
+            try:
+                predictions = _predict_single(buf, model, models_dir)
+                labels = _get_labels(model.filename, models_dir)
+            except Exception:  # per-window failure isolation, hoisted from _analyze_coarse_windows
+                failed.add(key)
+                on_failure(key)  # report NOW; see the docstring on why the exception is not retained
+                continue
+            out[key] = (predictions, labels)
+    finally:
+        _release_classifier(model.filename)
+    return out
+
+
+def _run_model_sets_over_windows(
+    buffers: list[tuple[int, Any]],
+    models_dir: str,
+    on_failure: Callable[[int], None],
+) -> tuple[dict[int, dict[str, Any]], set[int]]:
+    """Run all 11 characteristic model sets + the genre model over EVERY coarse buffer.
+
+    **Model-major** (phaze-15sw): models are the outer loop, windows the inner one, so
+    exactly one ``TensorflowPredict*`` graph is resident at any instant instead of 34.
+    Each model is still constructed exactly once per file -- no per-window graph reload,
+    so the wall-clock optimization ``_classifier_cache`` existed to provide is fully
+    preserved -- and the price is holding the <=``coarse_cap`` decoded buffers
+    concurrently (30 x 180 s x 16 kHz x 4 B ~= 345 MB) instead of 4.09 GiB of idle graphs.
+    See the ``_classifier_cache`` comment for the measurement that motivated the reprice.
+
+    ``on_failure(window_index)`` fires once, in-handler, for each window an inference
+    fails on; that window is excluded from every later model.
+
+    Returns ``({window_index: features}, {failed window_index})``. Feature-dict key
+    insertion order is pinned to ``MODEL_SETS`` order (pre-seeded) with ``"genre"`` last,
+    matching the window-major build byte for byte -- the dicts are JSON-serialized
+    downstream, where insertion order is output.
+    """
+    features: dict[int, dict[str, Any]] = {key: {model_set.name: {} for model_set in MODEL_SETS} for key, _ in buffers}
+    failed: set[int] = set()
+
+    for model_set in MODEL_SETS:
+        for model in model_set.models:
+            for key, (predictions, labels) in _sweep_one_model(model, buffers, models_dir, failed, on_failure).items():
+                features[key][model_set.name][model.variant] = [
+                    {"label": label, "prediction": float(pred)} for label, pred in zip(labels, predictions, strict=False)
+                ]
+
+    for key, (genre_predictions, genre_labels) in _sweep_one_model(GENRE_MODEL, buffers, models_dir, failed, on_failure).items():
+        genre_pairs = list(zip(genre_labels, genre_predictions, strict=False))
+        genre_pairs.sort(key=lambda pair: float(pair[1]), reverse=True)
+        features[key]["genre"] = {
+            "predictions": [{"label": label, "confidence": float(conf)} for label, conf in genre_pairs[:10]],
+        }
+
+    return features, failed
+
+
+def _run_model_sets(audio_16k: Any, models_dir: str) -> dict[str, Any]:
+    """Run all 11 characteristic model sets + the genre model on ONE buffer.
+
+    The single-buffer entry point, retained for callers/harnesses that hold exactly one
+    window; it is a thin wrapper over :func:`_run_model_sets_over_windows` so there is
+    one inference path, not two. Failure semantics are the pre-phaze-15sw ones: the
+    exception propagates rather than being isolated, because with one window there is
+    nothing to isolate it from. The bare ``raise`` re-raises the exception currently being
+    handled by :func:`_sweep_one_model` -- so the caller still sees the original error and
+    traceback, without that exception ever being stored.
+    """
+
+    def _propagate(_window_index: int) -> None:
+        raise  # intentional bare re-raise: only ever called from inside _sweep_one_model's except block
+
+    features, _failed = _run_model_sets_over_windows([(0, audio_16k)], models_dir, _propagate)
+    return features[0]
 
 
 def _analyze_fine_windows(
@@ -501,7 +1001,7 @@ def _analyze_fine_windows(
     *,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[list[FineWindow], int, bool]:
-    """FINE pass: BPM + key per ``win_sec`` window via segmented EasyLoader decode.
+    """FINE pass: BPM + key per ``win_sec`` window off ONE 44.1 kHz streaming decode.
 
     Returns ``(windows, total, sampled)`` where ``total`` is the natural window
     count BEFORE striding and ``sampled`` is True when the cap forced an even
@@ -516,17 +1016,43 @@ def _analyze_fine_windows(
     This seam emits only an ``(int, int)`` count and does NO I/O; throttling and transport
     live DOWNSTREAM in the lane bridge, never here (keeps the compute seam HTTP/pickle-free).
     ``progress_cb=None`` (the default) leaves behavior byte-identical to before.
+
+    ``RhythmExtractor2013`` and ``KeyExtractor`` are constructed ONCE per file and reused
+    across every window (phaze-ap8y), not rebuilt per window: neither takes a per-window
+    parameter, and construction was 7.55 s of the 31.50 s fine tier on a 60-window file
+    (measured, phaze-i93a §6a). ``reset()`` between windows was verified NOT required —
+    0/60 output mismatches with and without it, across the full ``(window_index, bpm, key,
+    confidence)`` tuple — so it is deliberately not called here.
+
+    Since phaze-5lop the decode is ONE streaming pass for the whole tier
+    (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader`` per window — that is
+    what makes per-window cost proportional to the WINDOW rather than to the whole file. Two
+    deliberate consequences. Decode failures are now discovered, and logged, before any
+    extraction rather than interleaved with it: only the ORDER of the warnings moves, never
+    which windows are dropped. And the tier briefly holds all ``<=cap`` 44.1 kHz buffers
+    (60 x 30 s ~= 317 MB) instead of one — a transient that lands entirely BEFORE the coarse
+    tier's model sweep and is dropped, and trimmed, before it starts. Retention stays bounded
+    by the CAP and never by duration, which is the invariant that matters.
     """
     natural = _iter_windows(total_sec, win_sec, min_sec, drop_short_trailing=True)
     kept, sampled = _stride_to_cap(natural, cap)
     if progress_cb is not None:
         progress_cb(0, len(natural))  # START: analyzed=0, total=natural pre-stride
+
+    def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
+        log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
+
+    decoded = _decode_windows(file_path, _FINE_SAMPLE_RATE, kept, _skip)
+    rhythm_extractor = es.RhythmExtractor2013(method="multifeature")
+    key_extractor = es.KeyExtractor(profileType="edma")
     fine_windows: list[FineWindow] = []
     for idx, start, end in kept:
+        buf = decoded.pop(idx, None)  # pop, not [], so each window's PCM dies as it is consumed
+        if buf is None:
+            continue  # no audio for this window; already reported by the decode above
         try:
-            buf = es.EasyLoader(filename=file_path, sampleRate=_FINE_SAMPLE_RATE, startTime=start, endTime=end)()
-            bpm, _beats, confidence, _, _beats_intervals = es.RhythmExtractor2013(method="multifeature")(buf)
-            key, scale, _strength = es.KeyExtractor(profileType="edma")(buf)
+            bpm, _beats, confidence, _, _beats_intervals = rhythm_extractor(buf)
+            key, scale, _strength = key_extractor(buf)
             fine_windows.append(
                 FineWindow(
                     window_index=idx,
@@ -538,10 +1064,13 @@ def _analyze_fine_windows(
                 )
             )
         except Exception:  # per-window failure isolation: skip, never fail the file
-            log.warning("fine window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            _skip(idx, start, end)
             continue
+        finally:
+            del buf
         if progress_cb is not None:
             progress_cb(len(fine_windows), len(natural))  # bump (throttle lives downstream, not here)
+    _malloc_trim()  # the fine tier's PCM is gone; do not carry its freed pages into the coarse tier
     return fine_windows, len(natural), sampled
 
 
@@ -551,14 +1080,54 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
     Returns ``(windows, total, sampled)`` mirroring ``_analyze_fine_windows``:
     ``total`` is the natural pre-stride count and ``sampled`` is True when the
     cap forced an even stride.
+
+    Three phases since phaze-15sw, because the inference is MODEL-major (see
+    :func:`_run_model_sets_over_windows`) and a model-major sweep needs every buffer in
+    hand before the first graph is built:
+
+    1. **decode** every kept window up front -- <=``cap`` buffers held concurrently
+       (30 x 180 s x 16 kHz x 4 B ~= 345 MB), deliberately, in exchange for not holding
+       34 co-resident TF graphs (~4 GiB);
+    1. **infer** model-major across all of them, one resident graph at a time;
+    1. **derive + assemble** in window order.
+
+    Per-window failure isolation is preserved across all three: a decode failure drops
+    that window before inference, an inference failure kills only that window (later
+    models skip it), and derivation failure drops it at assembly. Same warning, same
+    ``exc_info``; only the ORDER of the log lines changes, since a window's inference
+    failure is now discovered during the sweep rather than in window order.
+
+    phaze-5lop changed only HOW phase 1 produces those buffers — one streaming fan-out pass
+    for the whole tier (:func:`_decode_windows`) instead of one non-seeking ``EasyLoader``
+    per window, byte-identical output, 10.9x faster on a 60-minute file. **The buffers the
+    sweep holds are the same buffers, produced differently**: this tier's designed ~345 MB of
+    concurrent PCM is unchanged, and the fan-out's own ``Pool`` copy is dropped inside the
+    decode rather than kept alive underneath the sweep (phaze-rc1q §6b, rec. 3).
     """
     natural = _iter_windows(total_sec, win_sec, 0, drop_short_trailing=False)
     kept, sampled = _stride_to_cap(natural, cap)
+
+    def _skip(idx: int, start: float, end: float, exc_info: bool = True) -> None:
+        log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=exc_info)
+
+    # (1) decode
+    decoded = _decode_windows(file_path, _COARSE_SAMPLE_RATE, kept, _skip)
+    spans: list[tuple[int, float, float]] = [(idx, start, end) for idx, start, end in kept if idx in decoded]
+    buffers: list[tuple[int, Any]] = [(idx, decoded.pop(idx)) for idx, _start, _end in spans]
+
+    # (2) infer, model-major
+    geometry = {idx: (start, end) for idx, start, end in spans}
+    features_by_window, failed = _run_model_sets_over_windows(buffers, models_dir, lambda idx: _skip(idx, *geometry[idx]))
+    buffers.clear()  # the peak is behind us; do not carry ~345 MB of PCM through assembly
+    _malloc_trim()
+
+    # (3) derive + assemble, in window order
     coarse_windows: list[CoarseWindow] = []
-    for idx, start, end in kept:
+    for idx, start, end in spans:
+        if idx in failed:
+            continue  # already reported, in-handler, by the model sweep that failed it
         try:
-            buf = es.EasyLoader(filename=file_path, sampleRate=_COARSE_SAMPLE_RATE, startTime=start, endTime=end)()
-            features = _run_model_sets(buf, models_dir)
+            features = features_by_window[idx]
             coarse_windows.append(
                 CoarseWindow(
                     window_index=idx,
@@ -571,7 +1140,7 @@ def _analyze_coarse_windows(file_path: str, total_sec: float, win_sec: int, mode
                 )
             )
         except Exception:  # per-window failure isolation: skip, never fail the file
-            log.warning("coarse window %d [%.1f, %.1f) failed; skipping", idx, start, end, exc_info=True)
+            _skip(idx, start, end)
             continue
     return coarse_windows, len(natural), sampled
 
@@ -605,8 +1174,11 @@ def analyze_file(
     The main synchronous function called from ``run_in_process_pool``. Instead of
     decoding the whole file into one buffer (the latent OOM) and feeding long
     audio to ``RhythmExtractor2013`` (the ``OnsetDetectionGlobal`` overflow), it
-    decodes one short window at a time via segmented ``EasyLoader`` (Plan 31-01
-    locked strategy) so no essentia algorithm ever sees more than one window.
+    analyzes the file as a set of short windows (Plan 31-01 locked strategy) so no
+    essentia algorithm ever sees more than one window. Since phaze-5lop those windows
+    come off ONE streaming decode pass per tier (:func:`_decode_windows`) instead of one
+    non-seeking ``EasyLoader`` call per window: same windows, byte-identical PCM, but
+    the file is decoded and resampled twice per analysis rather than 80-90 times.
 
     Two passes:
       * FINE (44.1 kHz): ``RhythmExtractor2013`` + ``KeyExtractor`` per
@@ -614,6 +1186,20 @@ def analyze_file(
         ``fine_min_sec`` are dropped (except window 0).
       * COARSE (16 kHz): the 34 TF model sets per ``coarse_window_sec`` window;
         every window with audio is analyzed (no minimum-length floor).
+
+    Each pass holds all of its own windows and nothing of the other's, deliberately.
+    COARSE (phaze-15sw) holds ALL its ``coarse_cap`` 16 kHz windows at once -- ~345 MB at
+    the default 30 -- because its inference is model-major: one ``TensorflowPredict*``
+    graph is built, run across every window, and released before the next is built. That
+    trades ~345 MB of PCM for the ~4 GiB of co-resident TF graphs the window-major loop
+    used to hold (phaze-esut / phaze-7i0k), at the same 34 model constructions per file.
+    FINE now holds its ``fine_cap`` 44.1 kHz windows the same way (~317 MB at the default
+    60) because a single decode pass is what makes the tier fast (phaze-5lop) -- but that
+    transient is released, and its pages returned to the OS, BEFORE the coarse pass runs,
+    so the two never stack. **The passes run in sequence, never fanned off one shared
+    decode: sharing is only 5.3% faster and holds +0.364 GiB, because the tiers' resamplers
+    differ and so the expensive stage cannot be shared at all (phaze-rc1q §8).** Both
+    passes stay bounded by the CAPS, not by duration.
 
     Per-window failures are logged and skipped — one bad window never fails the
     file. The one floor (phaze-zibn): if EVERY window fails in BOTH passes while
@@ -669,6 +1255,11 @@ def analyze_file(
 
     windows: list[dict[str, Any]] = [w.as_payload_dict() for w in fine_windows]
     windows.extend(w.as_payload_dict() for w in coarse_windows)
+
+    # phaze-7qfd: log the job's peak RSS once the memory-dominant work is done, so the
+    # floor is a routine observable instead of something reconstructed from OOM forensics.
+    # See _log_job_peak_rss's docstring for what this does and does not measure post-15sw.
+    _log_job_peak_rss()
 
     return {
         "bpm": aggregate_bpm(fine_windows),

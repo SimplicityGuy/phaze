@@ -70,6 +70,11 @@ _EXPECTED_COUNTS = {
     # cascade always reports every table in its ordered list (0 rows deleted here).
     "dedup_resolution": 0,
     "cloud_job": 0,
+    # phaze-2mwyo: the durable cloud-budget ledger is deleted explicitly here too, even though its FK
+    # carries ON DELETE CASCADE -- the cascade would remove the rows silently, and this dict IS the
+    # rowcount report an operator reads. Deleting a file legitimately erases its cloud budget history:
+    # a re-scanned file is a NEW files.id and has genuinely never spent a cloud budget.
+    "cloud_budget": 0,
     # phaze-u5dn: the full-graph seed creates no scheduling_ledger rows either -- exercised
     # separately by test_cascade_purges_scheduling_ledger_rows_for_its_files below.
     "scheduling_ledger": 0,

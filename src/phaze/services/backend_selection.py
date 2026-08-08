@@ -30,6 +30,17 @@ The policy encodes (RESEARCH § "Pattern 2" + § "Novel Mechanism 3"):
 * **SCHED-04** tie-break -- equal-rank backends are ordered by in_flight/cap utilization, then by
   stable (lexicographic) id.
 
+phaze-2mwyo adds the DURABLE half of D-04. `cloud_attempts` bounds ONE chain, and it cannot bound more
+than one: it is read off the `cloud_job` sidecar, which `routers/agent_analysis`'s D-14 reaper
+legitimately DELETES on both analyze-terminal seams -- so a file that spent its budget, spilled to local
+and then failed locally re-entered this function with `cloud_attempts = 0` and a whole fresh budget (two
+chains of four pods, four days apart, is what the phaze-wcrb forensics actually recorded). The optional
+`cloud_budget` argument carries the per-file record that OUTLIVES the sidecar
+(`services/cloud_budget.py`), and its verdict enters the policy at exactly the same place and with
+exactly the same effect as the attempts cap: cloud/Kueue backends are filtered out, local is not. The
+difference is the LABEL -- a durable hold reports why, and (for the cooldown) that it will clear itself,
+which `HOLD_CLOUD_ATTEMPTS_EXHAUSTED` explicitly does not.
+
 Signature note: attempts live on the file's `cloud_job` row, not on `FileRecord`, so the drain
 passes `cloud_attempts` explicitly rather than reading `file.cloud_attempts` (RESEARCH pseudocode
 used `file.cloud_attempts`; the real model has no such attribute). The staleness clock is likewise
@@ -50,6 +61,7 @@ from typing import TYPE_CHECKING, TypedDict
 import structlog
 
 from phaze.services.backends import LocalBackend
+from phaze.services.cloud_budget import cloud_budget_hold_reason
 
 
 if TYPE_CHECKING:
@@ -57,6 +69,7 @@ if TYPE_CHECKING:
 
     from phaze.config import ControlSettings
     from phaze.services.backends import Backend
+    from phaze.services.cloud_budget import CloudBudgetState
 
 
 logger = structlog.get_logger(__name__)
@@ -99,6 +112,12 @@ HOLD_LOCAL_SPILL_NOT_REACHED = "local_spill_not_reached"
 Self-clearing -- the file becomes eligible once `cloud_spill_to_local_after_seconds` elapses.
 """
 
+# phaze-2mwyo: the DURABLE (cross-chain) hold labels -- HOLD_CLOUD_BUDGET_COOLDOWN /
+# HOLD_CLOUD_BUDGET_CHAINS / HOLD_CLOUD_BUDGET_NODE_LOSS -- are defined in `services/cloud_budget.py`,
+# next to the pure policy that emits them, because THIS module imports that one and not the reverse.
+# They are the same closed vocabulary the drain bins and logs; see that module for what each means and
+# which of them clear themselves.
+
 
 def _utilization(slot: BackendSlot) -> float:
     """in_flight/cap utilization for the SCHED-04 tie-break; 0.0 when cap is 0 (never divides by zero)."""
@@ -114,18 +133,20 @@ def select_backend(
     snapshot: dict[str, BackendSlot],
     now: datetime,
     cfg: ControlSettings,
+    *,
+    cloud_budget: CloudBudgetState | None = None,
 ) -> Backend | None:
     """Return the backend to dispatch this candidate to this tick, or `None` to hold it (never raises).
 
     Pure and synchronous -- reads only `lane_entered_at` (the awaiting `cloud_job.updated_at` staleness
-    clock, D-07), the in-memory `snapshot`, `cloud_attempts`, and the two bounded config knobs. Encodes
-    SCHED-01/04 + D-01/D-03/D-04/D-06 (see module docstring).
+    clock, D-07), the in-memory `snapshot`, `cloud_attempts`, the optional durable `cloud_budget` record,
+    and the bounded config knobs. Encodes SCHED-01/04 + D-01/D-03/D-04/D-06 (see module docstring).
 
     The one-value face of :func:`select_backend_with_reason`, which carries the identical policy plus the
     label for WHY a hold happened. Kept as the primary name because every caller that only routes (and
     every policy test) wants exactly this.
     """
-    return select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg)[0]
+    return select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg, cloud_budget=cloud_budget)[0]
 
 
 def select_backend_with_reason(
@@ -134,6 +155,8 @@ def select_backend_with_reason(
     snapshot: dict[str, BackendSlot],
     now: datetime,
     cfg: ControlSettings,
+    *,
+    cloud_budget: CloudBudgetState | None = None,
 ) -> tuple[Backend | None, str]:
     """Return `(backend, "")` on a dispatch, or `(None, reason)` on a hold (phaze-9sqa; never raises).
 
@@ -150,6 +173,13 @@ def select_backend_with_reason(
     `None` for the same inputs. Each filter now returns its own labelled empty-set exit instead of falling
     through to one shared `if not eligible` at the end -- an equivalent short-circuit, since a filter that
     empties the list can never be refilled by a later one.
+
+    phaze-2mwyo: `cloud_budget` is the DURABLE per-file record (`services/cloud_budget.CloudBudgetState`)
+    of budgets spent in PREVIOUS chains -- the history the D-14 reaper deletes along with the sidecar row.
+    It defaults to `None`, which means "no durable row, so no durable rule": that is the correct reading
+    for a file that has never burned a cloud chain, and it is also what keeps every routing-only caller
+    and policy test that does not model the ledger unchanged. The drain (`tasks/release_awaiting_cloud`)
+    is the ONE production caller, and it always supplies it.
     """
     # 1. Eligible = available AND has a free slot.
     eligible = [slot for slot in snapshot.values() if slot["available"] and slot["remaining"] > 0]
@@ -157,24 +187,36 @@ def select_backend_with_reason(
         # Registry-wide saturation, not a property of this file: every backend is down or at cap.
         return None, HOLD_NO_FREE_SLOTS
 
-    # 2. Attempt-exclusion (D-04): a file that has spent its cloud budget is cloud/Kueue-INELIGIBLE.
-    #    Local is never excluded -- it is the guaranteed safety net.
-    attempts_exhausted = cloud_attempts >= cfg.cloud_submit_max_attempts
-    if attempts_exhausted:
+    # 2. Budget-exclusion (D-04 + phaze-2mwyo): a file that has spent its cloud budget -- in THIS chain
+    #    (`cloud_attempts`, the sidecar counter) or in PREVIOUS ones (`cloud_budget`, the durable record
+    #    the D-14 reaper cannot delete) -- is cloud/Kueue-INELIGIBLE. Local is never excluded; it is the
+    #    guaranteed safety net, which is exactly why no verdict here can strand a file.
+    #
+    #    The per-chain cap is checked first so its label wins when both apply: a file at the cap right now
+    #    is being held by the live chain, and that is the more actionable reading. The two produce the
+    #    SAME filter -- only the reported reason differs, and the reason is the whole point (phaze-9sqa),
+    #    since `cloud_attempts_exhausted` is permanent while local is full and `cloud_budget_cooldown`
+    #    clears itself.
+    cloud_barred_reason = (
+        HOLD_CLOUD_ATTEMPTS_EXHAUSTED if cloud_attempts >= cfg.cloud_submit_max_attempts else cloud_budget_hold_reason(cloud_budget, now, cfg)
+    )
+    if cloud_barred_reason:
         eligible = [slot for slot in eligible if isinstance(slot["backend"], LocalBackend)]
         if not eligible:
-            # phaze-9sqa's head-of-line poison: cloud-ineligible forever, and local has nothing free.
-            return None, HOLD_CLOUD_ATTEMPTS_EXHAUSTED
+            # phaze-9sqa's head-of-line poison: cloud-ineligible, and local has nothing free. Permanent
+            # for the attempts cap (the counter only grows); bounded for a cooldown, which expires.
+            return None, cloud_barred_reason
 
     # 3. Staleness gate on local spill (D-01/D-03). Local is eligible ONLY when:
     #      (a) every non-local backend is OFFLINE (spill immediately -- NOT staleness-gated), OR
     #      (b) the file has waited past the threshold (spill after a transient full window), OR
-    #      (c) the file already exhausted its cloud budget (step 2 forced local).
+    #      (c) the file is barred from cloud entirely (step 2 forced local -- per-chain cap OR durable
+    #          budget rule; waiting out a staleness gate cannot help a file no cloud backend may take).
     #    `any_non_local_online` keys off `available` (online-ness), distinguishing "cloud OFFLINE"
     #    (-> local now) from "cloud online but FULL" (-> local gated behind the wait threshold).
     any_non_local_online = any(slot["available"] for slot in snapshot.values() if not isinstance(slot["backend"], LocalBackend))
     waited = (now - lane_entered_at).total_seconds() >= cfg.cloud_spill_to_local_after_seconds
-    local_ok = (not any_non_local_online) or waited or attempts_exhausted
+    local_ok = (not any_non_local_online) or waited or bool(cloud_barred_reason)
     if not local_ok:
         eligible = [slot for slot in eligible if not isinstance(slot["backend"], LocalBackend)]
         if not eligible:

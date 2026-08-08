@@ -29,6 +29,7 @@ from phaze.config_backends import (
     _default_local_registry,
     _read_secret_file,
 )
+from phaze.services.analysis_sizing import derive_sizing
 
 
 logger = structlog.get_logger(__name__)
@@ -252,12 +253,24 @@ class BaseSettings(PydanticBaseSettings):
     worker_max_jobs: int = 8
     # Per-lane agent-worker concurrency knobs (quick-260707-dh1). Only the agent lane
     # worker reads these (via PHAZE_AGENT_LANE); they live on BaseSettings so both roles
-    # parse cleanly. The one CPU-bound lane (analyze 4) takes 4 of nox's 8 cores, leaving
-    # headroom for the fast meta lane + OS; io is network-bound (off CPU).
+    # parse cleanly. The io lane is network-bound and runs off the CPU budget.
+    #
+    # phaze-rvcn: the ANALYZE lane's default is DERIVED, not the literal 4 it used to be.
+    # It and the analyze process's TF intra-op cap are the two halves of one relationship
+    # (`intra_op_threads x concurrency ~= physical_cores`) and were previously set in two
+    # different files with two different literals -- `docker-compose.agent.yml` pinned
+    # `TF_NUM_INTRAOP_THREADS=1` while this default said 4, giving a product of 4 on a host
+    # with 8 physical cores AND parking the extractor on the 1-thread arm `phaze-7i0k` 5
+    # measured at +210.6% wall for 0.001 GiB less than 4 threads. That is exactly the drift
+    # `services/analysis_sizing.py` exists to make impossible: both halves now come out of
+    # one `derive_sizing` call, so on the same 8-physical-core host the lane derives
+    # concurrency 2 against an intra-op cap of 4 -- the same total core budget, spent where
+    # the measurement says it is worth spending. `PHAZE_LANE_ANALYZE_CONCURRENCY` still
+    # overrides it.
     lane_analyze_concurrency: int = Field(
-        default=4,
+        default_factory=lambda: derive_sizing().concurrency,
         validation_alias=AliasChoices("PHAZE_LANE_ANALYZE_CONCURRENCY", "lane_analyze_concurrency"),
-        description="Concurrency of the analyze lane worker (process_file; in-process essentia, CPU-bound).",
+        description="Concurrency of the analyze lane worker (process_file; essentia, CPU-bound). Defaults to the host-derived value.",
     )
     lane_meta_concurrency: int = Field(
         default=2,
@@ -884,6 +897,86 @@ class ControlSettings(BaseSettings):
         lt=20,
         validation_alias=AliasChoices("PHAZE_CLOUD_SUBMIT_MAX_ATTEMPTS", "cloud_submit_max_attempts"),
         description="Max kube Job submit attempts before a file is marked ANALYSIS_FAILED (Phase 54, D-08). A distinct budget from push_max_attempts. Default 3; bounded gt=0, lt=20.",
+    )
+    # phaze-1q4g: how many times control re-drives a Job whose POD DIED WITH ITS NODE before giving up
+    # on cloud for that file. A THIRD budget, deliberately separate from `cloud_submit_max_attempts`:
+    # node loss is an infrastructure fault, so charging it to the file's analyze retry budget would be
+    # wrong -- but "not charged" had silently become "not bounded", and one pathological file used that
+    # to take the burst node down eight times over five days (spike phaze-wcrb §5). The default is
+    # deliberately the TIGHTEST of the three: a node-loss re-drive is the single case most likely to
+    # recur, because whatever killed the node is still there and the same file is about to meet it
+    # again. 1 buys the genuinely-transient case (an unrelated reboot) one free retry and stops there.
+    # Bounded (gt=0, lt=20) like its two siblings so a misconfig cannot re-open the unbounded loop.
+    cloud_node_loss_max_redrives: int = Field(
+        default=1,
+        gt=0,
+        lt=20,
+        validation_alias=AliasChoices("PHAZE_CLOUD_NODE_LOSS_MAX_REDRIVES", "cloud_node_loss_max_redrives"),
+        description=(
+            "Max re-drives of a kube Job whose pod died WITH ITS NODE before the file spills to the local safety net (phaze-1q4g). "
+            "Charged to cloud_job.node_loss_redrives, NOT to attempts. Default 1; bounded gt=0, lt=20."
+        ),
+    )
+    # --- phaze-2mwyo: the DURABLE (cross-chain) cloud budget policy ----------------------------------
+    #
+    # The three knobs above bound ONE cloud chain. They cannot bound the NUMBER of chains, because they
+    # are all read off the `cloud_job` sidecar -- and `routers/agent_analysis`'s D-14 reaper legitimately
+    # DELETES that row on both analyze-terminal seams, so a file that spent its budget, spilled to local
+    # and then failed locally came back with `attempts = 0` and a whole fresh budget. That is what made
+    # cloud job 713a368e eight pods over five days: TWO chains of four, four days apart, not one runaway
+    # (spike phaze-wcrb; audit in tasks/reconcile_cloud_jobs.py). The budget therefore also lives on a
+    # durable per-file row (`models/cloud_budget.py`) the reaper does not touch, and THESE three knobs --
+    # not the schema -- decide what that record means.
+    #
+    # Keeping the verdict in config is deliberate: phaze-6ck1 has not yet established whether the ~4
+    # runaway files are intrinsically pathological (-> a permanent marker is right) or the victims of one
+    # bad node (-> a cooldown is right), and this fix cannot wait for that answer. Changing the answer
+    # later changes a default here. It does not change the schema.
+    cloud_budget_cooldown_days: float = Field(
+        default=14.0,
+        ge=0,
+        le=3650,
+        validation_alias=AliasChoices("PHAZE_CLOUD_BUDGET_COOLDOWN_DAYS", "cloud_budget_cooldown_days"),
+        description=(
+            "Days a file is barred from CLOUD backends after a cloud chain burns out its budget (phaze-2mwyo). "
+            "The primary policy: rate-limits fresh chains instead of banning files, and is SELF-CLEARING, so a file "
+            "grounded by a transient node fault flies again without operator action. Default 14 -- comfortably above the "
+            "4-day re-chain gap observed in the incident. 0 disables the cooldown; local is never barred either way."
+        ),
+    )
+    # The intrinsic-cause backstop, sitting BEHIND the cooldown. A file that has burned this many WHOLE
+    # cloud chains (~6 weeks of evidence at the default cooldown) has demonstrated something that is not
+    # transient. Persistent, but not permanent: raising this knob (or setting it to 0) re-admits the file
+    # with no row edited and no migration, which is the "clearable marker" option expressed as config.
+    # Deliberately NOT a per-file DB flag -- see models/cloud_budget.py on evidence-vs-verdict.
+    cloud_budget_max_chains: int = Field(
+        default=3,
+        ge=0,
+        lt=100,
+        validation_alias=AliasChoices("PHAZE_CLOUD_BUDGET_MAX_CHAINS", "cloud_budget_max_chains"),
+        description=(
+            "Lifetime ceiling on how many cloud chains one file may burn out before it stops being offered cloud at all "
+            "(phaze-2mwyo). The intrinsic-cause backstop behind cloud_budget_cooldown_days. Default 3; 0 disables. "
+            "Local (the guaranteed safety net) is never excluded, so this can ground a file but never strand it."
+        ),
+    )
+    # The node-loss half of the lifetime ceiling, kept SEPARATE from cloud_budget_max_chains on purpose:
+    # phaze-1q4g split `attempts` from `node_loss_redrives` on the cloud_job row so "kept failing
+    # analysis" and "kept taking the node down" stay distinguishable, and that distinction matters MORE
+    # once it is the durable record an operator reads weeks later. Looser than its per-chain sibling
+    # (cloud_node_loss_max_redrives=1) because ADR-0005's pod memory limit turns a runaway into a
+    # pod-scoped OOMKill rather than a node crash, so this path should be rare going forward -- rare
+    # enough to be generous with, not rare enough to leave unbounded (which was phaze-1q4g's whole point).
+    cloud_budget_max_node_loss: int = Field(
+        default=3,
+        ge=0,
+        lt=100,
+        validation_alias=AliasChoices("PHAZE_CLOUD_BUDGET_MAX_NODE_LOSS", "cloud_budget_max_node_loss"),
+        description=(
+            "Lifetime ceiling on node-loss re-drives charged to one file across ALL its cloud chains (phaze-2mwyo). "
+            "Separate from cloud_budget_max_chains so repeated analysis failure and repeated node loss stay legible as "
+            "different situations. Default 3; 0 disables."
+        ),
     )
     # Phase 69 D-02: seconds a long file waits in AWAITING_CLOUD while higher-rank backends are
     # online-but-FULL before the slow local (rank-99) backend becomes an eligible spill target. The

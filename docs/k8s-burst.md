@@ -253,6 +253,44 @@ dropped/expired watch never loses or duplicates a result" true.
   `select_backend` excludes every cloud backend (`attempts >= cap`) and routes the file to the
   local safety net. A *local* failure — never cloud flakiness — is the only path into
   `ANALYSIS_FAILED` (D-04).
+- **A node-loss re-drive has its OWN, tighter ceiling (phaze-1q4g)** — when the pod died *with its
+  node* (`status.reason` of `NodeShutdown`/`NodeLost`/`Evicted`/…, or a `DisruptionTarget` pod
+  condition) the re-drive charges `cloud_job.node_loss_redrives` against
+  `cloud_node_loss_max_redrives` (default **1**) instead of `attempts`. The two causes stay
+  distinguishable on the row — `attempts=3/node_loss_redrives=0` is a file that failed analysis three
+  times, `attempts=0/node_loss_redrives=1` is a file that lost a node once — and both are bounded, so
+  one row can produce at most `1 + cloud_submit_max_attempts + cloud_node_loss_max_redrives` pods. At
+  the node-loss ceiling the row takes the **same** terminal as the attempts cap (spill to `'awaiting'`
+  with `attempts` stamped to the cap → local). Before this, node loss charged nothing at all: one
+  pathological file re-drove **8 times over 5 days**, crashing the burst node on every pod, while its
+  `attempts` never left 3 (spike `phaze-wcrb` §5). The other half of that defect was in the Job
+  manifest — `backoffLimit: 0` bounds *counted failures*, not *pod creations*, so the default
+  `podReplacementPolicy: TerminatingOrFailed` silently minted replacement pods for a pod stuck
+  Terminating on a dead node; phaze now submits `podReplacementPolicy: Failed`, which makes
+  "one Job ⇒ one pod" actually true.
+- **The budget now OUTLIVES the sidecar row (phaze-2mwyo)** — every budget above lives on the
+  `cloud_job` row, and `routers/agent_analysis`'s D-14 reaper *deletes* that row
+  (`DELETE FROM cloud_job WHERE file_id = … AND status = 'awaiting'`) at **both** analyze-terminal
+  seams. So a file that spent its whole cloud budget, spilled to local, and then failed *locally* lost
+  its entire history: the next re-analysis started a fresh chain at `attempts = 0` and could spend the
+  whole budget again. That is what the forensics actually show — `713a368e`'s eight pods are **two
+  chains of four** (07-24…07-25, then 07-29 after a four-day gap), not one runaway chain, while the
+  other three affected files show exactly one chain each. The reaper is **unchanged** (retaining
+  budget-spent rows re-creates the growing dead set `ix_cloud_job_awaiting` scans — the `phaze-9sqa`
+  head-of-line poison it exists to prevent); the *budget* moved instead, to a durable per-file
+  `cloud_budget` row the reaper cannot reach. `hold_awaiting_cloud` folds a chain into it exactly once,
+  on the edge where `attempts` first crosses the cap, accumulating `attempts_spent` and
+  `node_loss_spent` **separately** so the two causes stay legible across chains too. `select_backend`
+  reads it alongside `cloud_job.attempts`.
+- **The cross-chain policy is configuration, not schema** — `cloud_budget` stores *evidence*
+  (chains burned, attempts spent, node losses, when the last chain ended), never a verdict.
+  `cloud_budget_cooldown_days` (default **14**) bars cloud for a while after a burnout and is
+  **self-clearing**, so a file grounded by one bad node is re-admitted on its own;
+  `cloud_budget_max_chains` / `cloud_budget_max_node_loss` (default **3** each, `0` disables) are the
+  intrinsic-cause backstop behind it. `phaze-6ck1` has not yet established whether the ~4 runaway files
+  are intrinsically pathological or the victims of one bad node — when it does, the answer changes a
+  **default**, not the schema. Local (rank-99) is never excluded by any of these, so a budget-grounded
+  file is still routed every tick and still reaches a terminal analyze outcome.
 - **Inadmissible vs Pending** — a Workload `Inadmissible` (operator misconfig — e.g. a
   missing/mis-sized LocalQueue) sets the `cloud_job.inadmissible` alert flag + a WARNING log and
   **holds indefinitely without consuming the re-drive cap**. A healthy `Pending` (queued behind
@@ -333,9 +371,9 @@ metadata:
 
 One ClusterQueue, **no preemption** (`reclaimWithinCohort: Never` + `withinClusterQueue:
 Never`), covering `cpu` + `memory`. The operator sizes `nominalQuota` for the cluster. There is
-**no `pods` covered resource and no `limits`** — this matches phaze's **requests-only** Job
-manifest (`kube_staging.build_job_manifest` emits `resources.requests` cpu+memory, never
-limits).
+**no `pods` covered resource**, and quota accounting reads `resources.requests` only —
+`resources.limits`, when set (§2.5), is **invisible to Kueue's quota arithmetic** and changes no
+scheduling decision (ADR-0005).
 
 ```bash
 kubectl apply -f clusterqueue.yaml
@@ -362,6 +400,410 @@ spec:
       - name: "memory"
         nominalQuota: "32Gi"
 ```
+
+> **These two numbers are in lockstep with that backend's `cap` and requests** —
+> `cap` × `memory_request` ≤ memory `nominalQuota`, `cap` × `cpu_request` ≤ cpu `nominalQuota`.
+> The placeholders above are illustrative; the measured values for the 4-physical-core burst node
+> are `6` cpu / `12Gi` memory against `cap = 4`. See
+> [The lockstep contract](#the-lockstep-contract).
+
+### 2.5 — Memory limit (optional, bounds the pod — not the scheduler)
+
+`build_job_manifest` emits `resources.requests` **and, opt-in, `resources.limits.memory`**. The
+two are governed by two entirely different systems and answer two entirely different questions:
+
+- `resources.requests.memory` (always emitted, from `[backends.kube].memory_request`) is what
+  **Kueue** admits against — the ClusterQueue `nominalQuota` above is sized against requests
+  summed across in-flight Workloads. This is the **scheduling** input.
+- `resources.limits.memory` (opt-in, from `[backends.kube].memory_limit`, unset by default) is a
+  **kernel cgroup bound on the pod** — it is never read by Kueue's quota accounting and changes
+  no admission or scheduling decision. This is a **containment** knob, not a capacity knob.
+
+Without a limit, a pod that exceeds its request is not cgroup-OOMKilled — because it carries no
+memory ceiling of its own, the kernel treats the OOM as **global**
+(`oom-kill:constraint=CONSTRAINT_NONE`) and can pick *any* process on the node by
+`oom_score_adj`, including `coredns`, `metrics-server`, or `local-path-provisioner`. Setting
+`memory_limit` converts that into a deterministic, pod-scoped OOMKill of the offending analyze
+pod instead (ADR-0005 —
+[`docs/design/0005-analyze-job-memory-limits.md`](design/0005-analyze-job-memory-limits.md)).
+It does **not** reduce peak memory usage by one byte, and it does **not** change what Kueue
+admits — it only changes which process the kernel kills when usage exceeds what the node has.
+
+```toml
+[backends.kube]
+# ... api_url / namespace / local_queue / job_image as usual ...
+memory_request = "3Gi"   # Kueue admits against this. 1.73x the measured 1.7383 GiB end-to-end peak (phaze-5lop).
+memory_limit   = "4Gi"   # OPTIONAL, PROVISIONAL. Bounds the pod (kernel OOM); invisible to Kueue's quota math.
+```
+
+Both figures, their provenance, and the quota they must stay in lockstep with are in
+[Sizing the burst lane](#sizing-the-burst-lane--what-to-set-who-owns-it-what-measured-it) below.
+
+Set it **above** `memory_request`, not equal to it — equal values (on both cpu *and* memory)
+would promote the pod's QoS class to `Guaranteed`, which this deployment deliberately avoids:
+`build_job_manifest` never emits a CPU limit, so a memory-only limit leaves the pod `Burstable`
+(confirmed by the `kubepods/burstable` cgroup path in production OOM records, and pinned by
+`tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable`).
+
+> Leave `memory_limit` unset (**the code default**) and no `limits` key is emitted at all — the
+> manifest is byte-identical to the pre-ADR-0005, requests-only form (regression-guarded). There
+> is deliberately **no code-computed default**
+> ([ADR-0005](design/0005-analyze-job-memory-limits.md), point 1): the right value is a property
+> of the operator's node, and a shipped default that silently starts OOMKilling somebody's
+> cluster is the wrong direction for an opt-in knob. The `4Gi` above is a **published
+> recommendation for that opt-in**, not a value the code imposes.
+
+### Sizing the burst lane — what to set, who owns it, what measured it
+
+This section is the **single current source** for the burst lane's sizing. Read it in order: the
+ceilings, then the knobs, then the lockstep, then the provenance. If a number you found elsewhere
+is not in the [provenance table](#provenance), check [Superseded values](#superseded-values) —
+every dead figure is listed there with the reason it died, so a stale value found by `grep` is
+identifiable as stale rather than quotable.
+
+> **Every figure below is measured on ONE machine: `vox`, a Xeon E3-1271 v3 with 4 physical cores
+> / 8 logical (SMT), 31.31 GiB RAM, Debian 13 + k0s.** `cap` is a **per-backend** setting and the
+> ceilings are a property of that silicon, not of the workload. See
+> [Validity: 4 physical cores](#validity-4-physical-cores) for what transfers to other hardware
+> and what must be re-derived.
+
+#### How many files can run at once?
+
+This is the first question every operator asks, so here is the whole answer. There are **three
+different ceilings** on concurrent analysis, they are far apart, and only one of them binds:
+
+| ceiling | on vox (4 physical cores) | what sets it | measured by |
+| --- | ---: | --- | --- |
+| **Kueue admission** — the hard cap on concurrent analyze pods | **4** | `cap` in `backends.toml`, bounded by the ClusterQueue quota | operator-chosen; recommended in [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), re-confirmed against the shipping code in [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
+| **Throughput knee** — where extra concurrency stops paying | **W=2** | 4 physical cores; node CPU is 85.4% busy at W=2 and ≥98.5% from W=4 | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md) — **63.7%** of everything concurrency buys arrives at W=2, **84.6%** by W=3 |
+| **Memory wall** — where the node would actually run out | **W≈33** | node RSS grows **+0.880 GiB per worker** (R² 0.9965) on 31.31 GiB | [`phaze-8r6t4` §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) |
+
+**CPU binds, and it binds sixteen times sooner than memory does.** Per-process peak RSS is flat at
+**1.282–1.332 GiB across a 12× change in co-residency**, so adding pods does not make each one
+dearer; it only adds cores' worth of demand to a node that has four. Sizing `cap` from "how much
+does memory allow" is the wrong question — it allows about 33.
+
+**So why is `cap` 4 and not 2, if the knee is at 2?** Because a burst lane exists to drain a
+backlog, not to minimise any single file's turnaround, and past the knee the curve is flat rather
+than falling. Priced from `phaze-8r6t4` §5/§10:
+
+| cap | files/hour | % of the node's ceiling | per-file wall |
+| ---: | ---: | ---: | ---: |
+| 2 | 27.3 | 89% | 261 s |
+| 3 | 29.2 | 95% | 366 s |
+| **4** | **29.8** | **97%** | **478 s** |
+| 8 | 30.5 | 100% | 936 s |
+| 12 | 30.6 | 100% | 1 400 s |
+
+`cap` should be **the smallest concurrency that reaches the node's throughput ceiling** — 4 buys
+**97% of the ceiling at a third of cap 12's per-file latency**. Going to 6 buys +1.6% throughput
+for +47.6% per-file wall; going to 8 buys +2.3% for +95.6%. Both are bad trades for a lane whose
+purpose is to shorten the tail. `cap = 4` on a 4-physical-core node is **16 TF threads against 4
+cores** — a *deliberately oversubscribed* operating point, priced at **+9.2% aggregate throughput
+for +83.6% per-file latency** against W=2, taken knowingly, not free capacity.
+
+**`cap = 4` is safe because the operator sets `memory_limit`, not because 4 is a small number**
+([`phaze-8r6t4` §9b](spikes/phaze-8r6t4-concurrency-knee-recheck.md)). Four pods each bounded at
+`4Gi` is 16 GiB against 31.21 GiB allocatable and ~2 GiB of k0s stack, so the node-scoped
+`CONSTRAINT_NONE` OOM that [ADR-0005](design/0005-analyze-job-memory-limits.md) exists to prevent
+is unreachable. On a deployment that leaves `memory_limit` unset (the code default), the same
+reading caps safe concurrency at 3 and realistically at 2.
+
+#### The knobs, and who owns each
+
+Six knobs govern this lane and they live at **four different layers**. Four are operator-set; two
+are derived by phaze at runtime and need no operator action at all:
+
+| knob | layer | derived or operator-set | where it lives | value on the 4-core burst node |
+| --- | --- | --- | --- | ---: |
+| `cap` | **Kueue pod admission** — how many analyze *pods* run at once | **operator-set** | the consuming deployment's `backends.toml`, on the `[[backends]] kind="kueue"` entry | **4** |
+| `memory_request` / `cpu_request` | **pod resources** — what Kueue admits against | **operator-set** | `backends.toml`, `[backends.kube]` | **`3Gi`** / **`1500m`** |
+| `memory_limit` | **pod resources** — the kernel cgroup bound (§2.5) | **operator-set**, opt-in, no code default | `backends.toml`, `[backends.kube]` | **`4Gi`** |
+| ClusterQueue `nominalQuota` (cpu + memory) | **Kueue cluster objects** | **operator-set** | the consuming deployment's ClusterQueue manifest (runbook §2) | **`6`** cpu / **`12Gi`** memory |
+| **lane concurrency** — how many analyze tasks one phaze worker runs at once | **phaze internal** | **derived at runtime** (`physical_cores // intra_op`), env-overridable | `src/phaze/services/analysis_sizing.py::derive_sizing` | **1** |
+| intra-op / inter-op / OMP thread counts | **TensorFlow thread pools** | **derived at runtime**, env-overridable | same function, applied by `apply_thread_env` at import | **4 / 1 / 4** |
+
+**Do NOT set `TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` in the
+`phaze-agent-env` ConfigMap (§6).** `phaze-3j67` recommendation 2 originally asked for exactly
+that; `phaze-rvcn` then moved the derivation into the code, and
+[`phaze-8r6t4` §10 / recommendation 2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires
+that recommendation**: all 222 analyze children in its sweep derived `4 / 1 / 4` from the host with
+nothing set. Pinning the values would freeze vox's numbers onto every future burst node and undo
+the portability the derivation exists to provide. phaze never overwrites an operator-set value, so
+setting them is silent rather than loud — which is what makes it a trap.
+
+#### `cap` is not lane concurrency
+
+Two published numbers look like a contradiction and are not:
+
+- [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md) recommends **`cap = 4`**
+  on the 4-physical-core node, and calls it a deliberately oversubscribed operating point.
+- `phaze-rvcn` derives **concurrency = 1** on that same node: `physical_cores // intra_op` =
+  `4 // 4` = 1.
+
+**They are different knobs at different layers, and they compose rather than compete.** Worked
+through on vox:
+
+```
+lane concurrency = 1   -> ONE analyze process inside ONE pod,
+                          which asks for intra_op = 4 TF threads.
+                          Derived by phaze. Nobody sets it.
+
+cap              = 4   -> Kueue admits FOUR such pods at once.
+                          Set by the operator, in backends.toml.
+
+                          4 pods x 1 process x 4 threads = 16 threads on 4 physical cores.
+```
+
+The derivation answers *"how wide should one analyze process be on this host?"* — a
+memory-and-portability question, where oversubscribing inside the process is a correctness-adjacent
+risk (each TF pool thread carries allocation arena). `cap` answers *"how many such processes should
+this cluster run at once?"* — a throughput-vs-latency question, where the oversubscription is
+bounded, measured, and paid for in latency the operator has chosen to spend.
+
+Raising `cap` does **not** raise lane concurrency, and phaze raising the derived concurrency on a
+bigger host does **not** raise `cap`. The failure mode this paragraph exists to prevent is reading
+`concurrency = 1` as "so `cap` must be 1" (stranding 89% of the lane's throughput) or reading
+`cap = 4` as "so phaze runs 4 analyses per pod" (a 4× memory miscount per pod). Both readings are
+wrong; neither is obvious from either number alone.
+
+#### The lockstep contract
+
+**`cap` × `memory_request` ≤ ClusterQueue memory `nominalQuota`. `cap` × `cpu_request` ≤
+ClusterQueue cpu `nominalQuota`. Change one, change the other, in the same deploy.**
+
+On vox the two land exactly, which is deliberate — the quota is the enforcement point for `cap`,
+not a redundant copy of it:
+
+```
+memory:  cap 4 x memory_request 3Gi   = 12Gi  <= ClusterQueue memory quota 12Gi   (a 5th pod needs 15Gi   -> refused)
+cpu:     cap 4 x cpu_request 1500m    = 6     <= ClusterQueue cpu    quota 6      (a 5th pod needs 7.5    -> refused)
+```
+
+Quota **below** the product silently strands capacity: the extra pods sit `Pending` forever
+(healthy Kueue behaviour, and deliberately silent — see *Inadmissible vs Pending* above), so the
+lane runs under its configured `cap` with nothing to alert on. Quota **above** the product removes
+the second bound, and the lane's concurrency then rests on `cap` alone — recoverable, but it means
+a `cap` typo is no longer caught by the cluster.
+
+`memory_limit` is **not** in either equation. Kueue's quota accounting reads `resources.requests`
+exclusively; a limit is invisible to scheduling and only bounds the pod
+([ADR-0005](design/0005-analyze-job-memory-limits.md), §2.5 above). Sizing the quota against the
+`4Gi` limit instead would need 16Gi to admit the same four pods — at 12Gi it admits three, and the
+fourth waits forever on quota that was never the binding resource.
+
+#### Provenance
+
+Every number this page publishes, with what measured it, on what hardware, against what code
+generation:
+
+| figure | value | measured by | code generation |
+| --- | ---: | --- | --- |
+| **end-to-end peak RSS**, 60-minute file at saturated caps | **1.7383 GiB** | `phaze-5lop`, end to end through the real `analyze_file` on vox; `VmHWM` read once at process exit | the **shipped** pipeline — `phaze-0582` (batch 32), `phaze-rvcn` (host-derived threads), `phaze-ap8y`, and `phaze-5lop`'s streaming decode all present |
+| `memory_request` | **`3Gi`** | derived from the row above — **1.73×** the measured peak | same |
+| `memory_limit` | **`4Gi`** | derived from the row above — **2.30×**; opt-in, no code default (ADR-0005) | same |
+| `cpu_request` | **`1500m`** | [`phaze-3j67` §9](spikes/phaze-3j67-concurrent-extractor-capacity.md), unchanged | post-`phaze-15sw` image; not re-litigated by `phaze-8r6t4` §10 |
+| `cap` | **4** | [`phaze-3j67` §9a](spikes/phaze-3j67-concurrent-extractor-capacity.md), **re-measured and confirmed** by [`phaze-8r6t4` §10](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07), 222 analyze processes, digest-gated | `release/2026.8.1-prep` overlaid on `job:2026.8.0` |
+| throughput knee | **W=2** | [`phaze-8r6t4` §3](spikes/phaze-8r6t4-concurrency-knee-recheck.md); reproduces `phaze-3j67` §3 inside 2% | same |
+| memory wall | **W≈33** | [`phaze-8r6t4` §7](spikes/phaze-8r6t4-concurrency-knee-recheck.md) | same |
+| ClusterQueue quota | **`6`** cpu / **`12Gi`** memory | lockstep with `cap` × request — arithmetic, not measurement | — |
+| intra-op / inter-op / OMP | **4 / 1 / 4** | `phaze-rvcn` — **derived at runtime**, never set | current; `analysis_sizing.py` |
+
+Three things worth pulling out of that table:
+
+- **`1.7383 GiB` is an END-TO-END peak, and that is what makes it comparable to what a pod needs.**
+  Every superseded figure in the next section is a *stage* or *envelope* number. This one is
+  `VmHWM` for a whole `analyze_file` — decode, both tiers, the 34-graph sweep, assembly — read once
+  at process exit, the same quantity `analyze_file` itself logs (`_log_job_peak_rss`). The largest
+  per-process peak measured anywhere in `phaze-8r6t4`'s 222-process sweep was **1.4522 GiB**,
+  comfortably inside it.
+- **Nothing about the file predicts peak memory — the model set does.** `phaze-5lop` measured
+  **1.3381 GiB** at 10 minutes against **1.7383 GiB** at 60: a 6× duration span for a 1.30× peak,
+  and the gap is the *cap*, not the duration, since the 60-minute file is the first that saturates
+  `fine_cap`. **Do not size `memory_request` or `memory_limit` on file duration or file size** —
+  duration-derived requests were considered and explicitly **rejected** in
+  [ADR-0005](design/0005-analyze-job-memory-limits.md) (Decision, point 4).
+- **`3Gi`/`4Gi` are PROVISIONAL, and deliberately not being tightened.** `phaze-7i0k` §6d found 20
+  production kernel-OOM kills clustering at roughly **2×/3×/4×** a ~7.7 GiB pre-restructure working
+  set, with a hard floor at 15.27 GiB — a real, unexplained, multiplicative population, tracked as
+  bead `phaze-wcrb` (mechanism) and `phaze-6ck1` (growth). Those kills predate the 69% working-set
+  reduction, so whether the mechanism recurs at a proportionally lower absolute floor is unknown.
+  The margin is what a limit is for. Re-derive both figures — do not just re-read them — if
+  production monitoring on the shipped image surfaces kills near either.
+
+#### Validity: 4 physical cores
+
+**The figures above are valid for 4 physical cores.** What transfers to other hardware, and what
+does not:
+
+| quantity | transfers? | why |
+| --- | --- | --- |
+| `memory_request` / `memory_limit` | **yes, on any host phaze's derivation runs on** | peak is decoupled from host core count **only because the pools are pinned**. `phaze-rvcn` measured derived peak flat at **1.1273–1.1527 GiB — a 2.3% spread with no trend** while the derived thread count moved 4 → 3 → 2 → 1 underneath it. An *unpinned* process does not have this property (see below) |
+| `cap` | **no — re-derive per node** | the ceiling is 4 Haswell cores. A node with more real cores has a proportionally higher ceiling and a knee at a different W. `cap` is a **per-backend** setting; each cluster in the mesh is sized from its own hardware |
+| ClusterQueue quota | **no** | it is `cap` × request, so it moves with `cap` |
+| lane concurrency + thread counts | **n/a — computed on each host** | `derive_sizing` reads the host at import; nothing to transfer |
+
+To size `cap` on other hardware, re-measure the knee on that node — the shape that transfers is
+**CPU binds long before memory**, so size `cap` from *physical* cores and `memory_request` from the
+measured peak. Re-measure **when the node changes, not when the code changes**: three changes that
+between them cut long-file decode 17.9×, per-process memory 38%, and thread footprint 42% moved the
+throughput plateau **+1.4%** and the knee **not at all**
+([`phaze-8r6t4` §12](spikes/phaze-8r6t4-concurrency-knee-recheck.md)).
+
+The pinning is load-bearing for the memory row. TensorFlow sizes both of its thread pools from the
+machine's core count and each pool thread carries allocation arena, so an *unpinned* analyze process
+peaks as a property of *the box*: on vox, halving the visible cores moved the unpinned peak
+**1.3349 → 1.2936 GiB (−3.1%)** — the direction the mechanism predicts, and a magnitude that must
+**not** be extrapolated to 32 or 64 cores, which vox cannot measure. phaze therefore pins the pools
+from the host rather than inheriting the core count, which removes the extrapolation question
+instead of answering it. See
+[Thread sizing is derived, not configured](#thread-sizing-is-derived-not-configured) below for the
+derivation, so a reader on other hardware can compute their own.
+
+#### Superseded values
+
+**This guidance has been wrong three times in eight days.** Each correction was honest — the
+sizings were falsified by measurements that landed after they were written — but the corpses are
+still greppable, in git history, in older spikes, and in deployment templates. They are listed here
+so a stale value is identifiable **as** stale:
+
+| pair (request / limit) | where it came from | why it died |
+| --- | --- | --- |
+| **`8Gi`** request, no limit | pre-investigation, the value production actually ran | **Wrong, not merely stale.** `phaze-esut` measured peak *above* it for **every** file tested, including a 3.3-minute one (9.73 GiB). With no limit, the overshoot became a node-scoped `CONSTRAINT_NONE` OOM that killed `coredns`, `metrics-server`, and `local-path-provisioner` — the failure that started this whole line of work ([ADR-0005](design/0005-analyze-job-memory-limits.md), Context) |
+| **`12Gi` / `16Gi`** | interim, sized from `phaze-esut`'s **macOS** 8.5–10.5 GiB floor plus an assumed Linux allocator ratchet | **`phaze-7i0k` refuted the ratchet.** Linux measured 7.92–7.99 GiB — *cheaper* than macOS, not dearer. The pair was sized against a penalty that does not exist |
+| **`9Gi` / `12Gi`** | `phaze-7i0k`, against an ~8.0 GiB Linux floor with all 34 graphs co-resident (window-major) | **Superseded by the code shape changing.** `phaze-15sw` made `_run_model_sets` iterate models-major, so exactly one TF graph is resident at a time instead of 34 — cutting the design peak **68.9%** (7.986 → 2.482 GiB). Predates `phaze-0582` (batch 32), `phaze-rvcn` and `phaze-5lop` as well |
+| **`3Gi` / `4Gi`** against a **2.482–2.57 GiB** design peak | `phaze-7i0k` §7c / `phaze-3j67` §9b — the same pair, a different basis | **The pair is current; its stated basis is not.** These were envelope maxima on the pre-`phaze-5lop` pipeline. The pair survived re-derivation against `phaze-5lop`'s 1.7383 GiB end-to-end peak, so the ratio is now 1.73× rather than the ~1.17× originally quoted. If you find `3Gi` justified as "design peak × 1.13" or "× 1.17", the number is right and the sentence is one generation stale |
+| **thread env in the ConfigMap** (`4 / 1 / 4`) | `phaze-3j67` recommendation 2 | **Retired by `phaze-8r6t4` recommendation 2.** `phaze-rvcn` made it a runtime derivation; pinning it now is a portability regression, not a memory win |
+
+The superseded rows are not wrong measurements of what they measured — they are correct
+measurements of code shapes that no longer exist. **The only pair you should set today is
+`3Gi`/`4Gi`**, and only with the basis the [provenance table](#provenance) gives it; the last row
+is a knob you should not set at all.
+
+> `phaze-5lop` also **discharges `phaze-rc1q` recommendation 7**, which required a joint
+> measurement of the batch-size and streaming-decode changes before anyone touched this sizing.
+> The prediction it guarded against was real: `phaze-rc1q`'s own prototype measured **3.584 GiB**,
+> which would have breached `3Gi`. The shipped implementation is 1.7383 GiB because it carries
+> the two mitigations that prototype did not.
+
+### Thread sizing is derived, not configured
+
+**The problem this solves is a hardware upgrade.** TensorFlow sizes both of its thread pools
+from the machine's core count and pool threads carry allocation arena, so an analyze process
+that inherits those defaults has a peak that is a property of *the box* rather than of the
+work. Every figure in the section above would then move on a bigger node — upward, silently,
+toward the node-scoped OOM that [ADR-0005](design/0005-analyze-job-memory-limits.md) exists to
+prevent — and an operator who bought more cores would have no reason to suspect they now need
+to retune. phaze therefore computes the pools itself:
+
+```
+intra_op_threads = min(4, physical_cores)   # a CAP: the wall-clock knee, never below 2 by choice
+inter_op_threads = 1                        # a CONSTANT: the memory term, host-independent
+omp_threads      = intra_op_threads
+concurrency      = physical_cores // intra_op_threads
+
+                     intra_op_threads x concurrency  ~=  physical_cores
+```
+
+> **`concurrency` here is phaze's internal LANE concurrency — it is not `cap`.** It says how many
+> analyze tasks one phaze worker runs at once *inside* a process, and phaze computes it; `cap` says
+> how many analyze *pods* Kueue admits, and the operator sets it. On vox they read **1** and **4**
+> respectively and both are correct. See
+> [`cap` is not lane concurrency](#cap-is-not-lane-concurrency) above for the worked example.
+
+`physical_cores` is the count of SMT sibling groups among the CPUs in this process's
+`sched_getaffinity` mask, clamped by the cgroup v2 `cpu.max` quota — **physical, not `nproc`**
+([`phaze-3j67` §4](spikes/phaze-3j67-concurrent-extractor-capacity.md): throughput per busy
+logical core splits 2:1 at exactly the physical count, so SMT is not free capacity here).
+Both knobs come out of one function (`services/analysis_sizing.py::derive_sizing`) because
+they are not independent: capping intra-op moves the concurrency knee, so a concurrency chosen
+anywhere else would be chosen against the wrong threading. To compute your own hardware's
+sizing, run the four lines above; to override, set `PHAZE_ANALYSIS_PHYSICAL_CORES` (moves both
+knobs together) or any individual variable (phaze never overwrites an operator value).
+
+| host | physical | intra-op | concurrency |
+| --- | ---: | ---: | ---: |
+| a 2-core VM | 2 | 2 | 1 |
+| **vox (Xeon E3-1271 v3)** — the node every figure above was measured on | **4** | **4** | **1** |
+| nox (compose lanes) | 8 | 4 | 2 |
+| a 32-core upgrade | 32 | 4 | 8 |
+
+#### What was measured (`phaze-rvcn`, 2026-08-06)
+
+Deployed image `job:2026.8.0` with `main`'s `services/analysis.py` (model-major +
+`batchSize=32`) and the new `analysis_sizing.py` overlaid; deployed `phaze-models` PVC
+read-only; synthetic 300 s ffmpeg sine pair; **one exec'd process per arm**; peak =
+`/proc/self/status:VmHWM` read once at exit (a kernel high-water mark, not a sampled curve —
+`phaze-7i0k` §9); node idle and out of the backend registry. Effective core count varied with
+`sched_setaffinity` over the E3-1271 v3 sibling map `(0,4)(1,5)(2,6)(3,7)`, since a second
+machine is not available. Repeatability: **0.17% on peak, 0.44% on wall** across a repeated
+arm pair.
+
+**1. Each variable's independent contribution** (4 physical cores, everything else at TF's
+defaults). This **corrects** `phaze-7i0k` §5 and `phaze-3j67` §5, which set all three together
+against essentia's default batch of 64 and attributed the saving to intra-op:
+
+| set | peak (GiB) | Δ peak | wall (s) | Δ wall |
+| --- | ---: | ---: | ---: | ---: |
+| nothing (TF reads the core count for both pools) | 1.3349 | — | 160.8 | — |
+| `TF_NUM_INTRAOP_THREADS=4` alone | 1.3375 | +0.2% | 165.6 | +3.0% |
+| `OMP_NUM_THREADS=4` alone | 1.3419 | +0.5% | 160.8 | +0.0% |
+| **`TF_NUM_INTEROP_THREADS=1` alone** | **1.1312** | **−15.3%** | 171.7 | +6.8% |
+| all three (4 / 1 / 4) | 1.1509 | −13.8% | 174.4 | +8.5% |
+
+**The memory belongs to the inter-op pool.** Intra-op and OpenMP are memory-neutral in the
+1–8 range now that `phaze-0582` took the batch to 32 and removed the arena the pool was
+multiplying. The +8.5% wall for the full set reproduces `phaze-7i0k` §5's +8.2%.
+
+**2. The knee is a property of the derivation, not of vox** (inter-op pinned at 1, OMP =
+intra-op). The wall-clock floor is reached at intra-op = physical cores at **both** core
+counts, which is what `min(4, physical_cores)` derives:
+
+| intra-op | 4 physical: peak / wall | 2 physical: peak / wall |
+| ---: | ---: | ---: |
+| 1 | 1.1449 / 475.8 s (**+172.8%**) | 1.1365 / 474.8 s (**+77.4%**) |
+| 2 | 1.1303 / 268.0 s (+53.7%) | **1.1494 / 267.6 s ← derived** |
+| 4 | **1.1509 / 174.4 s ← derived** | 1.1547 / 259.6 s (−3.0%) |
+| 8 | 1.1286 / 171.5 s (−1.7%) | 1.1308 / 262.7 s (−1.8%) |
+
+The 2 → 4 step is worth **−34.9%** wall at 4 physical cores and only **−3.0%** at 2 — the knee
+moved with the effective core count, which is the whole claim. Going below the derived value
+is steep at every size, so **1 thread is never derived** unless the host genuinely has one
+physical core. Going above it buys under 2% and would put the thread count back on the host.
+
+**3. The decoupling.** Peak with the derivation active, as the effective core count (and with
+it the derived thread count) is varied:
+
+| effective physical cores | unpinned — TF reads the core count | **derived** | Δ |
+| ---: | ---: | ---: | ---: |
+| 4 (8 logical) | 1.3349 GiB / 160.8 s | **1.1273 GiB / 174.3 s** (4/1/4) | −15.6% peak, +8.4% wall |
+| 3 (6 logical) | 1.3371 GiB / 188.9 s | **1.1276 GiB / 204.4 s** (3/1/3) | −15.7% peak, +8.2% wall |
+| 2 (4 logical) | 1.2936 GiB / 250.6 s | **1.1527 GiB / 267.6 s** (2/1/2) | −10.9% peak, +6.8% wall |
+| 1 (2 logical) | — | **1.1454 GiB / 474.7 s** (1/1/1) | — |
+
+**Derived peak is flat: 1.1273–1.1527 GiB, a 2.3% spread with no trend** (its minimum is at
+the *largest* core count), while the derived thread count moved 4 → 3 → 2 → 1 underneath it.
+Unpinned peak is 1.2936–1.3371 GiB and sits 10.9–15.7% higher at every core count.
+
+#### What this does not show
+
+- **It does not show what an unpinned process would do on a 32-core host.** vox can only be
+  made smaller. Over the range it can span, the unpinned peak moves −3.1% for a 2× core
+  reduction — the direction the per-thread-arena mechanism predicts, but a magnitude that must
+  not be extrapolated eightfold. **That unmeasurability is the argument for pinning, not
+  against it:** `inter_op = 1` is a constant and `intra_op ≤ 4` is a bound, so the question
+  stops being a property of hardware nobody has yet.
+- **It did not itself re-measure concurrency — `phaze-8r6t4` since has.** Every `phaze-rvcn` arm
+  is one process, so the concurrency half of the relation was carried over from `phaze-3j67`
+  §3–§5. [`phaze-8r6t4`](spikes/phaze-8r6t4-concurrency-knee-recheck.md) (2026-08-07) closed that
+  gap on the shipping code: it swept concurrency 1 → 12 at four thread widths and found the knee
+  **still at W=2**, the joint intra-op × pod-count surface **flat within 3.6%** at the W=4
+  operating point, and `cap = 4` **confirmed**. The derivation is the non-oversubscribed default;
+  `cap` in `backends.toml` stays operator-owned, is a deliberate oversubscription
+  (+9.2% throughput for +83.6% per-file wall against W=2), and still wins.
+- **Synthetic audio is inherited, not re-validated.** `phaze-7i0k` §6b established that peak
+  is content-independent (real and sine agree to 0.9%) because it is a function of window
+  *shape*. Wall-clock figures should be read as relative comparisons between arms.
 
 ### 3 — LocalQueue (the object phaze references by name)
 
@@ -541,6 +983,15 @@ The analyze container declares `envFrom: [configMapRef(phaze-agent-env), secretR
   regardless of what this ConfigMap carries. Do **not** add `PHAZE_AGENT_KIND` to the ConfigMap
   above — the code-injected value always wins on conflict (`env` overrides `envFrom` of the same
   name), so a ConfigMap entry would be silent, confusing dead weight, not a second source of truth.
+- **`TF_NUM_INTRAOP_THREADS` / `TF_NUM_INTEROP_THREADS` / `OMP_NUM_THREADS` do NOT belong in this
+  ConfigMap either — and unlike `PHAZE_AGENT_KIND`, an entry here would take effect.** phaze
+  derives all three from the host at import (`phaze-rvcn`, `apply_thread_env`) and **never
+  overwrites an operator-set value**, so pinning them here silently replaces the derivation with
+  vox's numbers on every burst node the ConfigMap is copied to. `phaze-3j67` recommendation 2
+  originally asked for `4 / 1 / 4` here; [`phaze-8r6t4` recommendation
+  2](spikes/phaze-8r6t4-concurrency-knee-recheck.md) **retires that** — all 222 of its analyze
+  children derived `4 / 1 / 4` with nothing set. See
+  [The knobs, and who owns each](#the-knobs-and-who-owns-each).
 
 > If you name the ConfigMap or the env Secret something other than the defaults, set this
 > backend's `[backends.kube].env_configmap_name` / `env_secret_name` to match (mirrors the

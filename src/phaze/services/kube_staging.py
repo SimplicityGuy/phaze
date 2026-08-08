@@ -94,6 +94,37 @@ DEAD_BEFORE_START_WAITING_REASONS: frozenset[str] = frozenset(
     }
 )
 
+# phaze-1q4g: ``status.reason`` values the node-lifecycle controller / kubelet stamp on a pod that is
+# going away BECAUSE OF ITS NODE, not because the workload failed. These are the "the pod died with
+# the node" vocabulary:
+#
+# * ``NodeLost`` -- the node-lifecycle controller's marker for pods on a node that stopped reporting.
+# * ``NodeShutdown`` / ``Shutdown`` -- graceful node shutdown (kubelet's shutdown manager); the two
+#   spellings differ by k8s version.
+# * ``NodeAffinity`` -- kubelet rejected a pod already bound to it after a restart (the node it was
+#   admitted to is no longer the node it woke up on).
+# * ``Evicted`` -- kubelet node-pressure eviction (memory/disk). On a node whose RAM was exhausted by
+#   the very pod being evicted, this is the *node* reporting duress, not the analyze reporting a fault.
+#
+# NARROW on purpose, and matched ONLY against ``status.reason`` (a node-scoped field), never against a
+# container's terminated reason: an in-container OOMKill under an explicit ``resources.limits.memory``
+# (ADR-0005) is the pod paying for its OWN excess and must keep charging the ordinary attempt budget.
+NODE_LOSS_POD_STATUS_REASONS: frozenset[str] = frozenset(
+    {
+        "NodeLost",
+        "NodeShutdown",
+        "Shutdown",
+        "NodeAffinity",
+        "Evicted",
+    }
+)
+
+# phaze-1q4g: the k8s>=1.26 pod condition that says "the control plane has decided to terminate this
+# pod" (node shutdown, taint-manager deletion, PodGC after node deletion, scheduler preemption,
+# Eviction API). Its presence is the modern, reason-agnostic form of the same node-scoped signal the
+# legacy ``status.reason`` strings above carry, so both are read.
+_DISRUPTION_TARGET_CONDITION = "DisruptionTarget"
+
 # phaze-202e: how long ``PodScheduled=False/Unschedulable`` must PERSIST before it counts as a wedge
 # ("unschedulable past a scheduling probe"). A brief unschedulable window is the normal shape of a
 # cluster-autoscaler scale-up, so an instantaneous verdict would fight the autoscaler. 15 min = 3x the
@@ -107,6 +138,17 @@ class PodLiveness(StrEnum):
 
     ALIVE = "alive"
     """At least one pod is Running or Succeeded. NEVER terminalize, at any age."""
+
+    NODE_LOST = "node_lost"
+    """The pod died WITH ITS NODE (node shutdown/loss/eviction, or a ``DisruptionTarget`` condition).
+
+    phaze-1q4g: kept DISTINCT from :attr:`DEAD_BEFORE_START` and from an ordinary Job failure because
+    the cause is the infrastructure, not the file -- charging the file's analyze retry budget for a
+    node reboot is what phaze-1b39 got wrong in the other direction. Reconcile therefore re-drives it
+    on a SEPARATE, much tighter budget (``cloud_node_loss_max_redrives``) rather than on ``attempts``.
+    Ranked strictly BELOW :attr:`ALIVE`: a pod still reporting Running or Succeeded is never
+    terminalized by this verdict, at any age (the invariant this classifier exists to protect).
+    """
 
     DEAD_BEFORE_START = "dead_before_start"
     """A container is wedged in a fatal waiting reason (bad image / unresolvable ConfigMap-Secret)."""
@@ -223,10 +265,32 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
     Exactly one object phaze writes: ``suspend: true`` (never starts a pod before Kueue gates it),
     ``parallelism/completions: 1``, ``backoffLimit: 0`` (KSUBMIT-05 -- the first pod failure is
     immediately terminal; pod-level retry neutralized, control plane owns retry),
+    ``podReplacementPolicy: Failed`` (phaze-1q4g -- ``backoffLimit`` alone does NOT make "one Job =>
+    one pod" true; see the inline comment),
     ``ttlSecondsAfterFinished`` = ``JOB_TTL_SECONDS`` (D-04 orphan backstop only),
     ``restartPolicy: Never``, the ``kueue.x-k8s.io/queue-name`` label ON THE JOB (Kueue reads it
     off the Job, not the pod template), and ``resources.requests`` ONLY -- NO ``limits`` (Kueue's
     quota accounting reads requests; Q1 RESOLVED-adopted: requests-only is locked).
+
+    **SUPERSEDED (2026-08-04) -- ADR-0005** (``docs/design/0005-analyze-job-memory-limits.md``)
+    supersedes the requests-only lock above on measured evidence from spike ``phaze-esut``. The
+    lock rested on the premise that requests approximate actual usage; the spike measured a
+    duration-INDEPENDENT 8.5-10.5 GiB floor that EVERY file exceeds (a 3.3-minute file peaks at
+    9.73 GiB against an 8Gi request), and the absence of a limit is what made the resulting kills
+    ``constraint=CONSTRAINT_NONE`` global OOMs that took out coredns/metrics-server/
+    local-path-provisioner instead of cgroup-OOMKilling the offending pod. Note the stated
+    rationale above is about ``requests`` (true, and ADR-0005 keeps requests authoritative) -- it
+    never supported omitting ``limits``, which Kueue's quota accounting does not read.
+
+    **phaze-k6d5 (this function, implementing ADR-0005):** when the optional
+    ``kube.memory_limit`` is set, the analyze container gains ``resources.limits.memory`` --
+    ``requests`` is untouched (Kueue's quota input stays authoritative), and NO CPU limit is
+    emitted (a memory-only limit does not promote the pod's QoS class off Burstable -- see
+    ``tests/analyze/services/test_kube_staging.py::test_build_job_manifest_memory_limit_keeps_qos_burstable``).
+    When ``memory_limit`` is unset (the default), NO ``limits`` key is emitted at all -- the
+    manifest is byte-identical to the pre-ADR-0005 form (regression-guarded), the same
+    backward-compatibility posture already used for ``models_pvc_name`` /
+    ``active_deadline_seconds``.
 
     The internal CA is MOUNTED at runtime, not baked into the image (Phase 56, KJOB-05 reversed ->
     KDEPLOY-06): the pod spec carries a ``phaze-ca`` volume sourced from the operator-created Secret
@@ -281,6 +345,22 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             "parallelism": 1,
             "completions": 1,
             "backoffLimit": 0,
+            # phaze-1q4g: MAKE "one Job => one pod" ACTUALLY TRUE. ``backoffLimit: 0`` bounds
+            # *counted failures*, not *pod creations*, and the default replacement policy
+            # (``TerminatingOrFailed``) creates the replacement the moment the previous pod starts
+            # TERMINATING -- before it reaches Failed and therefore before it is counted. A pod whose
+            # node dies goes Terminating and, with the node gone, may never finalize: the failure is
+            # never counted, ``backoffLimit`` is never reached, and the Job controller keeps minting
+            # replacement pods. That path is invisible to ``cloud_job.attempts`` (phaze never re-drove
+            # anything), which is how ONE file produced EIGHT pods over five days against a cap of 3,
+            # crashing the burst node each time (spike phaze-wcrb §5).
+            # ``Failed`` makes the Job wait for the previous pod to actually reach Failed before
+            # replacing it -- at which point ``failed=1 > backoffLimit=0`` terminalizes the Job
+            # instead, so no replacement is ever created and the control plane's bounded re-drive is
+            # the ONLY thing that can produce another pod. Beta-on-by-default since k8s 1.29, GA 1.32;
+            # an older/gated API server prunes the unknown field, degrading to today's behaviour
+            # rather than rejecting the submit.
+            "podReplacementPolicy": "Failed",
             "ttlSecondsAfterFinished": JOB_TTL_SECONDS,
             "template": {
                 "spec": {
@@ -363,6 +443,17 @@ def build_job_manifest(file_id: uuid.UUID, kube: KubeConfig) -> dict[str, Any]:
             }
         )
         pod_spec["containers"][0]["volumeMounts"].append({"name": "models", "mountPath": "/models", "readOnly": True})
+    # ADR-0005 (phaze-k6d5): OPT-IN memory limit, OFF by default. When set, the analyze container
+    # gains `resources.limits.memory` so the kernel cgroup-OOMKills the offending pod instead of a
+    # global, node-scoped OOM choosing a victim by oom_score_adj (the failure mode that killed
+    # coredns/metrics-server/local-path-provisioner in production). `requests` is NOT touched --
+    # Kueue's quota accounting reads requests only and is unaffected. Deliberately NO cpu limit
+    # (memory-only keeps the pod QoS class Burstable, not Guaranteed -- see
+    # test_build_job_manifest_memory_limit_keeps_qos_burstable). Unset (None, the default) -> NO
+    # `limits` key at all, so the manifest stays byte-identical to the pre-ADR-0005 form
+    # (regression-guarded by test_build_job_manifest_omits_memory_limit_by_default).
+    if kube.memory_limit:
+        manifest["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"] = {"memory": kube.memory_limit}
     return manifest
 
 
@@ -508,6 +599,32 @@ def _dead_before_start_reason(pod: Any) -> str | None:
     return None
 
 
+def _node_lost_reason(pod: Any) -> str | None:
+    """Return a short reason when ``pod`` died WITH ITS NODE, else None (phaze-1q4g).
+
+    Two independent signals, either of which is sufficient:
+
+    * ``status.reason`` in :data:`NODE_LOSS_POD_STATUS_REASONS` -- the node-lifecycle controller's /
+      kubelet's own vocabulary for "this pod is gone because of its node".
+    * a ``DisruptionTarget`` condition with ``status=True`` -- the k8s>=1.26 reason-agnostic form of
+      the same statement. Its ``reason`` (``DeletionByTaintManager`` / ``TerminationByKubelet`` /
+      ``DeletionByPodGC`` / ``PreemptionByScheduler`` / ...) is reported for the operator log but is
+      NOT filtered on: every value of it means the control plane, not the analysis, ended the pod.
+
+    Deliberately reads ONLY node-scoped fields. A container that exited 137 under its own
+    ``resources.limits.memory`` (ADR-0005) is the analyze overrunning its budget -- an ordinary
+    failure that must keep charging ``attempts`` -- and is not matched here.
+    """
+    status = getattr(pod, "status", None) or {}
+    reason = status.get("reason")
+    if isinstance(reason, str) and reason in NODE_LOSS_POD_STATUS_REASONS:
+        return reason
+    for cond in status.get("conditions", []) or []:
+        if cond.get("type") == _DISRUPTION_TARGET_CONDITION and cond.get("status") == "True":
+            return f"{_DISRUPTION_TARGET_CONDITION}/{cond.get('reason') or 'unknown'}"
+    return None
+
+
 def _unschedulable_since(pod: Any) -> datetime | None:
     """Return when ``pod`` went ``PodScheduled=False/Unschedulable``, or None if it is schedulable.
 
@@ -534,6 +651,11 @@ def classify_job_pods(
 
     Only when nothing is alive does it look for proof of death:
 
+    * :attr:`PodLiveness.NODE_LOST` -- the pod died WITH ITS NODE (phaze-1q4g:
+      :func:`_node_lost_reason` -- a node-scoped ``status.reason`` or a ``DisruptionTarget``
+      condition). Checked FIRST among the death verdicts because a node that took the pod down also
+      explains any container state left behind on it, and because reconcile budgets this case
+      separately from an ordinary failure.
     * :attr:`PodLiveness.DEAD_BEFORE_START` -- a container is waiting in a reason from
       :data:`DEAD_BEFORE_START_WAITING_REASONS` (bad image, unresolvable ConfigMap/Secret). These need
       operator action; k8s will retry the image pull forever on its own, so age adds no information
@@ -550,6 +672,8 @@ def classify_job_pods(
     reference = now or datetime.now(UTC)
     if any(_pod_phase(pod) in _ALIVE_POD_PHASES for pod in pods):
         return PodLiveness.ALIVE
+    if any(_node_lost_reason(pod) is not None for pod in pods):
+        return PodLiveness.NODE_LOST
     if any(_dead_before_start_reason(pod) is not None for pod in pods):
         return PodLiveness.DEAD_BEFORE_START
     for pod in pods:
@@ -580,7 +704,10 @@ def describe_job_pods(pods: Sequence[Any]) -> str:
     """Render a compact ``phase/reason`` summary of ``pods`` for the reconcile warning log (never raises)."""
     parts: list[str] = []
     for pod in pods:
-        reason = _dead_before_start_reason(pod)
+        # phaze-1q4g: the node-loss reason is rendered ahead of the waiting reason -- when a node goes
+        # down it is the operator-actionable fact, and the container state left behind on a dead node
+        # is a consequence of it rather than an independent finding.
+        reason = _node_lost_reason(pod) or _dead_before_start_reason(pod)
         parts.append(f"{_pod_phase(pod) or 'unknown'}{'/' + reason if reason else ''}")
     return ",".join(parts) if parts else "no-pods"
 

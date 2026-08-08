@@ -50,8 +50,11 @@ from sqlalchemy import select, text
 import structlog
 
 from phaze.config import get_settings
+from phaze.models.cloud_budget import CloudBudget
 from phaze.models.cloud_job import CloudJob
+from phaze.models.file import FileRecord
 from phaze.services import cloud_staging
+from phaze.services.cloud_budget import CloudBudgetState
 from phaze.services.enqueue_router import NoActiveAgentError, select_active_agent
 from phaze.services.pipeline import get_cloud_staging_candidates
 from phaze.services.route_control import get_route_control
@@ -63,7 +66,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from phaze.config import ControlSettings
-    from phaze.models.file import FileRecord
     from phaze.services.backend_selection import BackendSlot
 
 
@@ -115,7 +117,7 @@ _PROBE_TIMEOUT_SEC = 1.5
 _MIN_CANDIDATE_PAGE = 20
 
 # Hard bound on rows examined per tick, across all pages. Caps three costs that all scale with the walk:
-# rows locked, the per-candidate ``_cloud_attempts_for`` lookups, and time spent holding
+# rows locked, the per-candidate ``_cloud_budget_for`` lookups, and time spent holding
 # pg_advisory_xact_lock. A lane whose unroutable prefix is longer than this still starves -- but it now
 # says so, loudly and every tick, via the repeated-all-held WARNING below, instead of silently.
 _MAX_CANDIDATE_SCAN = 500
@@ -172,14 +174,52 @@ def push_file_job_key(file_id: uuid.UUID) -> str:
     return f"push_file:{file_id}"
 
 
-async def _cloud_attempts_for(session: AsyncSession, file_id: uuid.UUID) -> int:
-    """Return the file's ``cloud_job.attempts`` (0 when it has never been dispatched -> no cloud_job row).
+async def _cloud_budget_for(session: AsyncSession, file_id: uuid.UUID) -> tuple[int, CloudBudgetState | None]:
+    """Return ``(this chain's cloud_job.attempts, the durable cross-chain ledger or None)`` for one candidate.
 
-    The pure ``select_backend`` policy reads this per candidate to enforce D-04 attempt-exclusion (a
-    file that has spent its cloud budget routes to local only). Attempts live on the ``cloud_job``
-    sidecar, not on ``FileRecord`` (Plan 01 signature note), so the drain looks them up here.
+    Both halves of the D-04 budget the pure ``select_backend`` policy enforces, fetched in ONE round trip
+    (the same single lookup the attempts-only predecessor cost -- two outer joins off the guaranteed
+    ``files`` row, since either sidecar may legitimately be absent):
+
+    * ``cloud_job.attempts`` -- 0 when the file has never been dispatched (no sidecar row). Bounds the
+      CURRENT chain. Attempts live on the sidecar, not on ``FileRecord`` (Plan 01 signature note).
+    * ``cloud_budget`` -- ``None`` until the file has burned at least one whole chain. Bounds the NUMBER
+      of chains (phaze-2mwyo), and is the half that survives ``routers/agent_analysis``'s D-14 reaper:
+      the reaper deletes the ``awaiting`` sidecar on every analyze terminal, so reading ``attempts``
+      alone made a re-analysed file look brand new and handed it a fresh full budget.
     """
-    return int((await session.execute(select(CloudJob.attempts).where(CloudJob.file_id == file_id))).scalar() or 0)
+    row = (
+        await session.execute(
+            select(
+                CloudJob.attempts,
+                CloudBudget.chains_spent,
+                CloudBudget.attempts_spent,
+                CloudBudget.node_loss_spent,
+                CloudBudget.budget_spent_at,
+            )
+            .select_from(FileRecord)
+            .outerjoin(CloudJob, CloudJob.file_id == FileRecord.id)
+            .outerjoin(CloudBudget, CloudBudget.file_id == FileRecord.id)
+            .where(FileRecord.id == file_id)
+        )
+    ).first()
+    if row is None:
+        # The FileRecord vanished between the candidate SELECT and here (concurrent scan deletion). No
+        # budget of either kind -> the candidate simply routes as a fresh file and its dispatch fails
+        # harmlessly downstream; never a raise from inside the tick.
+        return 0, None
+    attempts, chains_spent, attempts_spent, node_loss_spent, budget_spent_at = row
+    budget = (
+        None
+        if budget_spent_at is None
+        else CloudBudgetState(
+            chains_spent=int(chains_spent),
+            attempts_spent=int(attempts_spent),
+            node_loss_spent=int(node_loss_spent),
+            budget_spent_at=budget_spent_at,
+        )
+    )
+    return int(attempts or 0), budget
 
 
 async def _next_candidate_page(
@@ -346,7 +386,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
         # CR-02 safety net (T-50-cron-raise): the candidate loop + the single post-loop commit run under
         # ONE outer guard so an UNEXPECTED raise -- e.g. a Postgres serialization/deadlock surfaced from a
         # session.execute mid-loop (which aborts the txn, so every subsequent statement INCLUDING the final
-        # commit raises), or a raise from _cloud_attempts_for outside the per-candidate try below -- can
+        # commit raises), or a raise from _cloud_budget_for outside the per-candidate try below -- can
         # NEVER propagate out of this cron. On any such error we roll back the WHOLE tick (discarding every
         # partial/uncommitted write so no phantom dispatch is ever committed) and report a clean hold; the
         # held candidates stay AWAITING_CLOUD and re-stage next tick. This is the ONLY rollback: we never
@@ -361,7 +401,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
                 scanned += len(page)
                 fileserver_vanished = False
                 for index, (file, lane_entered_at) in enumerate(page):
-                    cloud_attempts = await _cloud_attempts_for(session, file.id)
+                    cloud_attempts, cloud_budget = await _cloud_budget_for(session, file.id)
                     # models/base.py: created_at/updated_at carry no timezone=True, so create_all yields naive
                     # datetimes while a TIMESTAMPTZ migration column hands asyncpg tz-aware ones. Match the
                     # candidate's awareness (assume-UTC, the scan_reaper / pipeline_scans convention) so the pure
@@ -372,7 +412,7 @@ async def stage_cloud_window(ctx: dict[str, Any]) -> dict[str, int]:
                     now = datetime.now(UTC)
                     if lane_entered_at.tzinfo is None:
                         now = now.replace(tzinfo=None)
-                    target, hold_reason = select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg)
+                    target, hold_reason = select_backend_with_reason(lane_entered_at, cloud_attempts, snapshot, now, cfg, cloud_budget=cloud_budget)
                     if target is None:
                         # Clean per-candidate hold: no eligible backend for this file this tick. No state change
                         # -- the file stays AWAITING_CLOUD (guards the updated_at staleness signal, RESEARCH A3).

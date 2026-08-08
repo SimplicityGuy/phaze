@@ -26,6 +26,7 @@ by Alembic using the async template (`alembic/`). All models inherit a `created_
 | `tracklist_tracks`    | Individual tracks within a version                                    |
 | `discogs_links`       | Candidate/accepted Discogs release matches per tracklist track        |
 | `cloud_job`           | Per-`file_id` sidecar for the S3 object-staging / cloud-burst leg (1:1 with `files`) |
+| `cloud_budget`        | Durable per-`file_id` cloud-budget ledger that **outlives** the `cloud_job` sidecar (1:1 with `files`, row exists only once a cloud chain has burned out) |
 | `pipeline_stage_control` | Durable per-stage pause/priority operator intent (one row per agent pipeline stage) |
 | `scheduling_ledger`   | Durable "this stage was scheduled for this item" record (recovery source of truth)  |
 | `route_control`       | Single-row (`id = 'global'`) force-local routing override switch       |
@@ -46,8 +47,8 @@ guarded by `status = 'queued'`.
 
 Foreign keys to `agents` are `ON DELETE RESTRICT` (an agent that owns files/scans cannot be
 deleted); `analysis_window` and `file_companions` cascade with their `files` row
-(`ON DELETE CASCADE`); the remaining per-file sidecars (`metadata`, `analysis`,
-`proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
+(`ON DELETE CASCADE`), as does `cloud_budget`; the remaining per-file sidecars (`metadata`,
+`analysis`, `proposals`, `cloud_job`, `dedup_resolution`, `stage_skip`) and the
 tracklist chain use the default restricting FK (no cascade).
 
 ```mermaid
@@ -59,6 +60,7 @@ erDiagram
     files ||--o{ analysis_window : "CASCADE"
     files ||--o{ proposals : "rename/move"
     files ||--o| cloud_job : "0..1 sidecar"
+    files ||--o| cloud_budget : "0..1 durable budget (CASCADE)"
     files ||--o{ file_companions : "CASCADE"
     tracklists ||--o{ tracklist_versions : "versions"
     tracklist_versions ||--o{ tracklist_tracks : "tracks"
