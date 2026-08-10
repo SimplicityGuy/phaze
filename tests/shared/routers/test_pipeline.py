@@ -1774,6 +1774,49 @@ async def test_deepen_collision_with_a_dead_job_reports_blocked_and_does_not_pol
 
 
 @pytest.mark.asyncio
+async def test_deepen_collision_lookup_broker_error_degrades_to_already_in_flight_not_500(
+    client: AsyncClient, session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """phaze-qim6c: a transient broker/pool error on the post-collision ``queue.job()`` lookup
+
+    must NOT escape as a raw 500 -- the endpoint's own docstring promises T-44-10 ("never a
+    raw 500"). Pre-fix, this lookup ran uncontained outside the ``try``'s only ``except``
+    (``NoActiveAgentError``), so a SAQ ``PostgresQueue`` pool error propagated straight past
+    FastAPI as a 500. The fix degrades the SAME way ``classify_process_file_collision``
+    already treats an unlookupable (``None``) job -- benign "in_flight" -- and logs a warning
+    instead of raising.
+    """
+    from unittest.mock import AsyncMock
+
+    file_rec = _make_file()
+    session.add(file_rec)
+    await session.commit()
+    await make_agent_live(session)
+
+    router = DedupFakeTaskRouter()
+    app = client._transport.app  # type: ignore[union-attr]
+    app.state.controller_queue = DedupFakeQueue("controller")
+    app.state.task_router = router
+
+    r1 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+    assert r1.status_code == 200
+    queue = router.queues["test-fileserver-analyze"]
+    assert len(queue.captured) == 1
+
+    # Model a transient broker/pool error on the collision lookup itself.
+    queue.job = AsyncMock(side_effect=RuntimeError("connection pool exhausted"))
+
+    with caplog.at_level("WARNING", logger="phaze.routers.pipeline"):
+        r2 = await client.post(f"/pipeline/files/{file_rec.id}/deepen")
+
+    assert r2.status_code == 200, r2.text
+    assert len(queue.captured) == 1  # still deduped -- no second enqueue
+    assert "already analyzing" in r2.text.lower()
+    assert 'hx-get="/pipeline/files/' in r2.text  # in_flight -- poller still starts
+    assert "collision lookup failed -- degrading to already-in-flight" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_deepen_no_active_agent_does_not_enqueue(client: AsyncClient, session: AsyncSession) -> None:
     """When no agent is online the deepen endpoint surfaces a fragment and does NOT enqueue (Phase-30 guard).
 
@@ -2484,14 +2527,26 @@ async def test_refresh_on_a_file_with_no_tracklist_does_nothing(client: AsyncCli
 
 
 @pytest.mark.asyncio
-async def test_refresh_unknown_file_is_404(client: AsyncClient) -> None:
-    assert (await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")).status_code == 404
+async def test_refresh_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: an unknown file renders the review fragment (200), never a 404 htmx drops.
+
+    This handler's response swaps into ``#tracklist-review-{file_id}`` and htmx 2.x's stock
+    ``responseHandling`` does not swap a 4xx body (response_shape.py rule 3) -- a bare 404
+    here is silently discarded and the pane sits unchanged with no operator feedback. A
+    status-only assertion would have passed against that exact bug, so this asserts the body
+    htmx actually swaps: the fragment's own "File not found." rendering.
+    """
+    response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/refresh")
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_prioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_prioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/prioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -2510,9 +2565,11 @@ async def test_unprioritize_clears_a_flag(client: AsyncClient, session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_unprioritize_unknown_file_is_404(client: AsyncClient) -> None:
+async def test_unprioritize_unknown_file_renders_fragment_not_dropped_404(client: AsyncClient) -> None:
+    """phaze-9xyjp: same vanished-file race as refresh/prioritize -- see that test's rationale."""
     response = await client.post(f"/pipeline/tracklists/{uuid.uuid4()}/unprioritize")
-    assert response.status_code == 404
+    assert response.status_code == 200, response.text
+    assert "file not found" in response.text.lower()
 
 
 @pytest.mark.asyncio

@@ -1470,22 +1470,36 @@ async def test_delete_failed_scan_is_deletable(
 
 
 @pytest.mark.asyncio
-async def test_delete_unknown_batch_returns_404(
+async def test_delete_unknown_batch_renders_alert_not_dropped_404(
     smoke: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """DELETE an unknown batch_id -> 404."""
+    """DELETE an unknown batch_id -> 200 + re-rendered table with a role="alert" banner.
+
+    phaze-ytmfm: this handler's sole caller is the trash control in
+    ``recent_scans_table.html`` (``hx-target="#recent-scans"``), and htmx 2.x's stock
+    ``responseHandling`` does not swap a 4xx/5xx body (response_shape.py rule 3) -- a bare
+    404 here is silently dropped and the operator sees nothing. A status assertion alone
+    would have passed against that bug, so this asserts the SHAPE htmx actually swaps: 200,
+    the re-rendered ``#recent-scans`` section, and an announced ``role="alert"`` message.
+    """
     ac, _ = smoke
     response = await ac.delete(f"/pipeline/scans/{uuid.uuid4()}")
-    assert response.status_code == 404
-    assert "scan batch not found" in response.text.lower()
+    assert response.status_code == 200, response.text
+    assert 'id="recent-scans"' in response.text
+    assert 'role="alert"' in response.text
+    assert "already gone" in response.text.lower()
 
 
 @pytest.mark.asyncio
-async def test_delete_live_batch_returns_409(
+async def test_delete_live_batch_renders_alert_not_dropped_409(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """The LIVE watcher sentinel can NEVER be deleted -> 409; no rows touched."""
+    """The LIVE watcher sentinel can NEVER be deleted -> 200 + alert banner; no rows touched.
+
+    phaze-ytmfm: was a bare 409 htmx silently drops (response_shape.py rule 3) -- see
+    ``test_delete_unknown_batch_renders_alert_not_dropped_404`` for the full rationale.
+    """
     ac, _ = smoke
     batch = ScanBatch(
         id=uuid.uuid4(),
@@ -1500,21 +1514,25 @@ async def test_delete_live_batch_returns_409(
     batch_id = batch.id
 
     response = await ac.delete(f"/pipeline/scans/{batch_id}")
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    assert 'role="alert"' in response.text
     assert "live" in response.text.lower()
     # Row survives.
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 
 
 @pytest.mark.asyncio
-async def test_delete_running_batch_returns_409(
+async def test_delete_running_batch_renders_alert_not_dropped_409(
     smoke: tuple[AsyncClient, AsyncMock],
     session: AsyncSession,
 ) -> None:
-    """A RUNNING scan cannot be deleted (only terminal scans are) -> 409; row survives.
+    """A RUNNING scan cannot be deleted (only terminal scans are) -> 200 + alert; row survives.
 
     Server-side recheck is authoritative: the reaper may flip a row's status, or a
     stale button may target a now-running row, so the guard lives on the server.
+
+    phaze-ytmfm: was a bare 409 htmx silently drops (response_shape.py rule 3) -- see
+    ``test_delete_unknown_batch_renders_alert_not_dropped_404`` for the full rationale.
     """
     ac, _ = smoke
     batch = ScanBatch(
@@ -1530,7 +1548,8 @@ async def test_delete_running_batch_returns_409(
     batch_id = batch.id
 
     response = await ac.delete(f"/pipeline/scans/{batch_id}")
-    assert response.status_code == 409
+    assert response.status_code == 200, response.text
+    assert 'role="alert"' in response.text
     assert "running" in response.text.lower()
     assert (await session.execute(select(ScanBatch).where(ScanBatch.id == batch_id))).scalars().all() != []
 

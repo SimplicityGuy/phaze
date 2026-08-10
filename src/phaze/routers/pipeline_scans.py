@@ -29,7 +29,7 @@ from typing import Annotated
 import unicodedata
 import uuid
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -359,10 +359,16 @@ async def delete_scan(
     """Delete a terminal scan + all associated DB data, then re-render the table.
 
     Guards (server-side authoritative -- defense-in-depth against a stale button
-    or a reaper-flipped status):
-    - unknown batch -> 404.
-    - ``status == 'live'`` -> 409 (the watcher sentinel can NEVER be deleted).
-    - non-terminal (``running``) -> 409 (only completed/failed scans are deletable).
+    or a reaper-flipped status). phaze-ytmfm: none of these raise anymore -- see the STATUS
+    CONTRACT note above the guard block below; each renders the same re-rendered table with a
+    ``role="alert"`` banner at :data:`~phaze.routers.response_shape.RENDERABLE_ALERT_STATUS`
+    (200) instead, because a raw 4xx here would be silently dropped by htmx (response_shape.py
+    rule 3) and this table's sole caller (the trash control in this table's own template) would
+    never see it:
+    - unknown batch -> "that scan is already gone" alert.
+    - ``status == 'live'`` -> "cannot delete the live watcher" alert (it can NEVER be deleted).
+    - non-terminal (``running``) -> "cannot delete a running scan" alert (only completed/failed
+      scans are deletable).
 
     On a deletable row: run the ordered cascade, commit atomically, then return the
     re-rendered Recent Scans section for the HTMX ``outerHTML`` swap into
@@ -380,21 +386,22 @@ async def delete_scan(
 
     Until this bead this endpoint had NO caller: the delete control lives only in
     ``recent_scans_table.html``, which no served document mounted between the Phase-62 cutover and
-    the workspace re-mount -- so this handler, ``delete_scan_cascade`` behind it, and the 404/409
-    guards above were reachable by curl alone, and an operator's only remediation for a
-    half-ingested failed scan was psql.
+    the workspace re-mount -- so this handler, ``delete_scan_cascade`` behind it, and the
+    now-renderable guards above were reachable by curl alone, and an operator's only remediation
+    for a half-ingested failed scan was psql.
     """
     batch = await session.get(ScanBatch, batch_id)
+    alert_message: str | None = None
     if batch is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan batch not found")
-    if batch.status == ScanStatus.LIVE.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="live watcher batch cannot be deleted")
-    if batch.status not in _TERMINAL_STATUSES:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cannot delete a running scan; wait for it to complete or fail")
-
-    counts = await delete_scan_cascade(session, batch_id)
-    await session.commit()
-    logger.info("scan deleted", batch_id=str(batch_id), **counts)
+        alert_message = "That scan is already gone -- table refreshed."
+    elif batch.status == ScanStatus.LIVE.value:
+        alert_message = "The live watcher batch cannot be deleted."
+    elif batch.status not in _TERMINAL_STATUSES:
+        alert_message = "Cannot delete a running scan; wait for it to complete or fail."
+    else:
+        counts = await delete_scan_cascade(session, batch_id)
+        await session.commit()
+        logger.info("scan deleted", batch_id=str(batch_id), **counts)
 
     polling = poll != "0"
     sort_state = RECENT_SCANS_SORT.resolve(sort=sort, order=order, view_state={} if polling else {"poll": "0"})
@@ -402,7 +409,8 @@ async def delete_scan(
     return templates.TemplateResponse(
         request=request,
         name="pipeline/partials/recent_scans_table.html",
-        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling},
+        context={"request": request, "recent_scans": rows, "sort": sort_state, "scans_poll": polling, "alert_message": alert_message},
+        status_code=RENDERABLE_ALERT_STATUS,
     )
 
 

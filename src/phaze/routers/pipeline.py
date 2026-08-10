@@ -39,7 +39,7 @@ from phaze.models.tracklist import Tracklist
 from phaze.routers.column_sort import SortableColumn, SortContract
 from phaze.routers.pipeline_scans import build_recent_scans
 from phaze.routers.request_guards import MALFORMED_PAYLOAD_STATUS
-from phaze.routers.response_shape import wants_fragment
+from phaze.routers.response_shape import RENDERABLE_ALERT_STATUS, wants_fragment
 from phaze.schemas.agent_tasks import ExtractMetadataPayload
 from phaze.services import enqueue_router
 from phaze.services.agent_liveness import derive_compute_lane_identities
@@ -2480,8 +2480,25 @@ async def deepen_analysis(
             if job is None:
                 # Deterministic-key collision -- classify it rather than assuming "in flight"
                 # (phaze-ewen). A dead job holding the key means this deepen was silently dropped.
-                existing = await routed.queue.job(process_file_job_key(file.id))
-                if classify_process_file_collision(existing) == "blocked":
+                try:
+                    existing = await routed.queue.job(process_file_job_key(file.id))
+                    collision = classify_process_file_collision(existing)
+                except Exception:
+                    # phaze-qim6c: the lookup itself (a Postgres pool query via SAQ's
+                    # PostgresQueue) can raise transiently -- a broker/pool hiccup must NOT
+                    # escape this interactive endpoint as a raw 500; the docstring above
+                    # promises T-44-10 ("never a raw 500") for exactly this collision path.
+                    # Degrade the same way classify_process_file_collision already treats an
+                    # unlookupable job (``job is None`` -> "in_flight", benign rather than
+                    # crying wolf) instead of leaving the exception to propagate.
+                    logger.warning(
+                        "deepen_analysis: collision lookup failed -- degrading to already-in-flight",
+                        file_id=str(file.id),
+                        key=process_file_job_key(file.id),
+                        exc_info=True,
+                    )
+                    collision = "in_flight"
+                if collision == "blocked":
                     blocked = True
                     logger.warning(
                         "deepen_analysis: deterministic key held by a dead job -- deepen dropped",
@@ -2847,7 +2864,18 @@ async def prioritize_tracklist_lookup_ui(
     """
     review = await get_file_tracklist_review(session, file_id)
     if review is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: the file vanished (a concurrent delete_scan cascade or duplicate
+        # resolve) between the button render and this click. htmx 2.x's stock
+        # responseHandling never swaps a 4xx body (response_shape.py rule 3), so a raw 404
+        # here would be silently dropped and the slide-in would sit unchanged with no
+        # feedback. The fragment already renders "File not found." for review is None --
+        # answer with that at RENDERABLE_ALERT_STATUS instead of raising.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     queued = False
     if review.tracklist is None and review.actionable:
@@ -2891,7 +2919,15 @@ async def refresh_tracklist_lookup_ui(
     """
     review = await get_file_tracklist_review(session, file_id)
     if review is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: same vanished-file race as prioritize_tracklist_lookup_ui -- answer
+        # with the renderable fragment at RENDERABLE_ALERT_STATUS rather than a 404 htmx
+        # would silently drop.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     refreshed = False
     if review.tracklist is not None:
@@ -2926,7 +2962,15 @@ async def unprioritize_tracklist_lookup_ui(
     """
     file = await session.get(FileRecord, file_id)
     if file is None:
-        raise HTTPException(status_code=404, detail="file not found")
+        # phaze-9xyjp: same vanished-file race as the other two tracklist buttons -- render
+        # the fragment (get_file_tracklist_review also returns None for a missing file) at
+        # RENDERABLE_ALERT_STATUS instead of a 404 htmx would silently drop.
+        return templates.TemplateResponse(
+            request=request,
+            name="record/partials/_tracklist_review_body.html",
+            context={"request": request, "file_id": file_id, "review": None, "just_queued": False, "just_refreshed": False},
+            status_code=RENDERABLE_ALERT_STATUS,
+        )
 
     await unflag_file(session, file_id)
     await session.commit()

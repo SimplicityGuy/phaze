@@ -29,6 +29,12 @@
    rows that issues DELETE /pipeline/scans/{id} and swaps the re-rendered table
    into #recent-scans. Running rows render an empty Actions cell; live rows never
    appear here.
+
+   phaze-ytmfm: `alert_message` (optional) is rendered as a role="alert" banner above the
+   table -- delete_scan's stale-row guards (unknown batch / live / non-terminal) answer with
+   this re-render + a message instead of a bare 404/409 htmx would silently drop (mirrors
+   trigger_scan's STATUS CONTRACT, response_shape.py rule 3). The re-render is strictly better
+   than the alert alone: it also drops the vanished row from the table it swaps into.
 #}
 {# phaze-a6hm.6: the poll URL CARRIES THE ACTIVE SORT (column_sort contract rule 4a).
 
@@ -53,6 +59,11 @@
          hx-swap="outerHTML"
          {% endif %}class="border border-gray-200 dark:border-phaze-border rounded-lg p-4">
     <h2 id="recent-scans-heading" class="text-lg font-semibold mb-4">Recent Scans</h2>
+    {% if alert_message %}
+    <div class="mb-4 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md p-3" role="alert">
+        <p class="text-sm text-red-700 dark:text-red-400">{{ alert_message }}</p>
+    </div>
+    {% endif %}
     {% if not recent_scans %}
     <div class="text-center py-8">
         <p class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">No scans yet</p>
