@@ -1,4 +1,12 @@
-{% if no_active_agent %}
+{% if already_running %}
+{# phaze-8qheu: a re-trigger while a prior generate_proposals batch set is still queued/active is
+   REFUSED server-side (the set-hash dedup key does not survive the pending set moving between
+   triggers) -- distinct copy from the "No files ready" empty state below so the operator does not
+   read a refusal as an (incorrect) claim that nothing is pending. #}
+<span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+    {{ action|capitalize }} already in progress ({{ busy }} batch job(s) queued/active) — try again once it finishes.
+</span>
+{% elif no_active_agent %}
 {# Phase 49 (WR-01): with NO agent online a long file is still HELD in AWAITING_CLOUD (a real state
    change), so surface the held count instead of a bare "0 enqueued". Short/null files with no
    fileserver are merely skipped (no state change), so the awaiting==0 case keeps the original copy. #}

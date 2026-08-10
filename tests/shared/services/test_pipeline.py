@@ -28,6 +28,7 @@ from phaze.services.pipeline import (
     count_inflight_jobs,
     count_proposal_pending_files,
     deduped_count,
+    get_agent_lane_depths,
     get_agent_recent_scans,
     get_agent_reconciliations,
     get_analysis_failed_count,
@@ -41,6 +42,7 @@ from phaze.services.pipeline import (
     get_match_busy_count,
     get_match_pending_tracklists,
     get_metadata_pending_files,
+    get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -295,6 +297,49 @@ async def test_get_queue_activity_isolates_one_failing_agent(session: AsyncSessi
 
 
 # ---------------------------------------------------------------------------
+# get_agent_lane_depths (phaze-en7s7) — per-lane agent-activity-pane depths,
+# connect-before-count regression (the #217 fix, missed by this sibling reader)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_agent_lane_depths_connects_runtime_registered_agent(session: AsyncSession):
+    """A runtime-registered agent's lanes are connected before counting, not degraded to 0.
+
+    Regression (phaze-en7s7): unlike ``get_queue_activity`` (fixed for #217), this reader called
+    ``q.count(...)`` directly with no preceding ``q.connect()``. ``main.py``'s lifespan only opens
+    pools for agents present at boot, so an agent registered at runtime (``phaze agents add``) has
+    an unopened psycopg pool and every lane's ``count()`` raised ``PoolClosed`` -- silently caught
+    by the per-lane ``except`` and rendered as 0 on EVERY poll, not a rare race. ``connect()`` is
+    idempotent, mirroring the fixed sibling.
+    """
+    await seed_active_agent(session, "k8s-vox")
+    router = FakeTaskRouter()
+    for lane in ("analyze", "meta", "io"):
+        router.queue_for("k8s-vox", lane).require_connect().set_counts(queued=2, active=1)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_agent_lane_depths(app_state, "k8s-vox")
+
+    assert depths == {"analyze": 3, "meta": 3, "io": 3}
+
+
+@pytest.mark.asyncio
+async def test_get_agent_lane_depths_isolates_one_failing_lane(session: AsyncSession):
+    """One lane's count failure zeroes only that lane, not the whole agent's depth dict."""
+    await seed_active_agent(session, "nox")
+    router = FakeTaskRouter()
+    router.queue_for("nox", "analyze").set_counts(queued=5, active=1)
+    router.queue_for("nox", "meta").set_counts(queued=9, active=9).fail_count()
+    router.queue_for("nox", "io").set_counts(queued=1, active=0)
+    app_state = SimpleNamespace(task_router=router)
+
+    depths = await get_agent_lane_depths(app_state, "nox")
+
+    assert depths == {"analyze": 6, "meta": 0, "io": 1}
+
+
+# ---------------------------------------------------------------------------
 # get_stage_busy_counts (t7k FIX2) — per-stage in-flight gate, degrade-safe
 # ---------------------------------------------------------------------------
 
@@ -515,6 +560,52 @@ async def test_get_match_busy_count_degrade_does_not_poison_session(session: Asy
     """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the search-busy guard)."""
     await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
     assert await get_match_busy_count(session) == 0
+    follow_up = await get_stage_progress(session)
+    assert follow_up["discovery"]["done"] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_proposal_busy_count (phaze-8qheu) — the generate_proposals in-flight gate over the
+# saq_jobs table, degrade-safe. Mirrors get_match_busy_count's shape verbatim.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_buckets_by_generate_proposals_prefix() -> None:
+    """Returns ONLY the ``generate_proposals`` in-flight count; other prefixes are ignored."""
+    rows = [
+        ("generate_proposals", 5),
+        ("match_tracklist_to_discogs", 6),  # not proposals → ignored
+        ("process_file", 7),  # not proposals → ignored
+    ]
+    assert await get_proposal_busy_count(_BusySession(rows)) == 5  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_zero_when_no_proposal_rows() -> None:
+    """With no ``generate_proposals`` rows the in-flight count is 0 (not an error)."""
+    assert await get_proposal_busy_count(_BusySession([("match_tracklist_to_discogs", 6)])) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrades_on_db_error() -> None:
+    """get_proposal_busy_count returns 0 and never raises when the saq_jobs read fails."""
+
+    class _ExplodingSession:
+        def begin_nested(self) -> _NullSavepoint:
+            return _NullSavepoint()
+
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError('relation "saq_jobs" does not exist')
+
+    assert await get_proposal_busy_count(_ExplodingSession()) == 0  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_busy_count_degrade_does_not_poison_session(session: AsyncSession) -> None:
+    """The SAVEPOINT degrade leaves the outer transaction usable (mirrors the match-busy guard)."""
+    await session.execute(text("DROP TABLE IF EXISTS saq_jobs"))
+    assert await get_proposal_busy_count(session) == 0
     follow_up = await get_stage_progress(session)
     assert follow_up["discovery"]["done"] == 0
 

@@ -81,6 +81,7 @@ from phaze.services.pipeline import (
     get_metadata_failed_files,
     get_metadata_pending_files,
     get_pending_files_page,
+    get_proposal_busy_count,
     get_proposal_pending_batches,
     get_pushed_count,
     get_pushing_count,
@@ -792,10 +793,25 @@ async def trigger_proposals(
     """Enqueue generate_proposals jobs for files with both metadata and analysis (per D-02 convergence gate).
 
     Uses settings.llm_batch_size (default 10) for batch chunking.
+
+    phaze-8qheu: gated on :func:`get_proposal_busy_count` -- a second trigger while a prior
+    batch set is still queued/active is REFUSED (zero enqueued) rather than recomputing the
+    pending set. The set-hash dedup key (``generate_proposals:<sha256(sorted file_ids)>``) is
+    NOT robust to the pending set moving between the two triggers (see
+    :func:`get_proposal_pending_batches`'s docstring), so this server-side gate -- not the SAQ
+    key dedup -- is what prevents a mid-drain re-trigger from double-proposing the backlog.
     """
+    busy = await get_proposal_busy_count(session)
+    if busy > 0:
+        return {
+            "enqueued_batches": 0,
+            "total_files": 0,
+            "message": f"Proposal generation already in progress ({busy} batch job(s) queued/active); try again once it finishes.",
+        }
+
     # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
-    # (D-03 anti-drift): recovery and this manual trigger build the SAME sorted batches, so their
-    # generate_proposals:<sha256(sorted file_ids)> keys align and dedup (42-RESEARCH Pitfall 2).
+    # (D-03 anti-drift) -- see the busy gate above for why this alone is not enough to make a
+    # re-trigger dedup-safe.
     batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
     total_files = sum(len(b) for b in batches)
     if not batches:
@@ -2741,9 +2757,29 @@ async def trigger_proposals_ui(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    """HTMX endpoint: trigger proposal generation and return response fragment."""
+    """HTMX endpoint: trigger proposal generation and return response fragment.
+
+    phaze-8qheu: gated on :func:`get_proposal_busy_count` -- see ``trigger_proposals`` (the API
+    twin) for why the set-hash dedup key alone cannot make a re-trigger safe.
+    """
+    busy = await get_proposal_busy_count(session)
+    if busy > 0:
+        return templates.TemplateResponse(
+            request=request,
+            name="pipeline/partials/trigger_response.html",
+            context={
+                "request": request,
+                "action": "proposal generation",
+                "count": 0,
+                "no_active_agent": False,
+                "already_running": True,
+                "busy": busy,
+            },
+        )
+
     # Per D-02: convergence gate via the shared, deterministically-sorted pending-set helper
-    # (D-03 anti-drift) -- same sorted batches as the API trigger + recovery, so keys align.
+    # (D-03 anti-drift) -- see the busy gate above for why this alone is not enough to make a
+    # re-trigger dedup-safe.
     batches = await get_proposal_pending_batches(session, settings.llm_batch_size)
     count = sum(len(b) for b in batches)
     batches_count = 0

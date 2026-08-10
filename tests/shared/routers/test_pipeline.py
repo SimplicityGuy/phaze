@@ -2267,6 +2267,40 @@ async def test_proposals_generate_no_files(client: AsyncClient) -> None:
     assert data["total_files"] == 0
 
 
+@pytest.mark.asyncio
+async def test_proposals_generate_refuses_while_batch_in_flight(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8qheu: a second trigger while a prior generate_proposals batch is queued/active is refused.
+
+    The set-hash dedup key (``generate_proposals:<sha256(sorted file_ids)>``) is NOT robust to the
+    pending set moving between two triggers (removing one file's proposal shifts every later chunk
+    boundary), so a re-trigger must be REFUSED server-side instead of recomputing + re-enqueueing
+    the pending backlog. Files that would otherwise batch stay untouched -- zero new enqueues.
+    """
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence()
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'active')"), {"key": "generate_proposals:already-in-flight"})
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/api/v1/proposals/generate")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enqueued_batches"] == 0
+    assert data["total_files"] == 0
+    assert "already in progress" in data["message"]
+
+    await _drain_background()
+    assert capture == []
+
+
 # ---------------------------------------------------------------------------
 # Phase 41 (REQ-41-2/REQ-41-4): the bulk match trigger routes to the controller queue (never
 # default), skips already-linked rows, and renders the tracklist-unit empty-state.
@@ -3039,6 +3073,31 @@ async def test_trigger_proposals_ui_no_files(client: AsyncClient) -> None:
     response = await client.post("/pipeline/proposals")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_trigger_proposals_ui_refuses_while_batch_in_flight(client: AsyncClient, session: AsyncSession) -> None:
+    """phaze-8qheu: the HTMX trigger twin also refuses a re-trigger while a batch is queued/active."""
+    files = []
+    related = []
+    for _ in range(5):
+        file_rec, analysis, metadata = _make_file_with_convergence()
+        files.append(file_rec)
+        related.extend([analysis, metadata])
+    session.add_all(files)
+    await session.flush()
+    session.add_all(related)
+    await _reset_saq_jobs_minimal(session)
+    await session.execute(text("INSERT INTO saq_jobs (key, status) VALUES (:key, 'queued')"), {"key": "generate_proposals:already-in-flight"})
+    await session.commit()
+    capture = wire_fakes(client)
+
+    response = await client.post("/pipeline/proposals")
+    assert response.status_code == 200
+    assert "already in progress" in response.text
+
+    await _drain_background()
+    assert capture == []
 
 
 @pytest.mark.asyncio

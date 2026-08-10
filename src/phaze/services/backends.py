@@ -1814,6 +1814,17 @@ async def get_lane_queue_depths(session: AsyncSession, app_state: Any, backend_i
     A lane with NO SAQ agent queue (kueue; or local with no live fileserver) returns ``depths=None`` and a
     ``note`` -- NOT a zero row. ``queue_for`` is not called at all in that case, so no phantom queue name
     is ever constructed.
+
+    phaze-en7s7: connect-before-count (#217), the same fix applied to the sibling reader
+    :func:`phaze.services.pipeline.get_agent_lane_depths`. ``queue_for`` constructs the lane's
+    ``PostgresQueue`` with its psycopg pool ``open=False``; unless something else (the dashboard
+    poll, an API-side enqueue on that exact lane) has already connected it, ``count()`` raises
+    ``PoolClosed`` and the per-tier ``except`` below silently degrades it to 0 -- this docstring
+    already claimed to "mirror the get_queue_activity idiom", which stopped being true the moment
+    #217 added ``connect()`` there and not here. A lane never touched by an API-side enqueue is
+    GUARANTEED to construct a virgin closed pool, so this was not a rare race but the common case
+    for a lane :func:`resolve_lane_queue_agent` binds fresh. ``connect()`` is idempotent (SAQ
+    guards on ``self._connected``).
     """
     identity = await resolve_lane_queue_agent(session, backend_id, kind)
     if identity.agent_id is None:
@@ -1823,6 +1834,7 @@ async def get_lane_queue_depths(session: AsyncSession, app_state: Any, backend_i
     for lane in LANES:
         try:
             queue = app_state.task_router.queue_for(identity.agent_id, lane)
+            await queue.connect()
             depths[lane] = await queue.count("queued") + await queue.count("active")
         except Exception:
             depths[lane] = 0
