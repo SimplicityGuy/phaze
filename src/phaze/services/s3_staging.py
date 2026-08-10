@@ -64,6 +64,13 @@ S3_MAX_PART_COUNT = 10_000
 # lifecycle backstop to clean up.
 S3_MAX_OBJECT_SIZE_BYTES = 5 * 1024**4
 
+# phaze-pq1fe: AWS's hard SigV4 ceiling on how long a presigned URL may remain valid (7 days), i.e.
+# the max legal value for the ``ExpiresIn``/``X-Amz-Expires`` presign parameter. ``presign_upload_parts``
+# clamps its caller-supplied ``expires_in_sec`` here so a caller deriving a TTL from an enormous
+# ``part_count`` (see ``cloud_staging._stage_file_to_s3``) degrades to "the longest S3 will honor"
+# instead of minting a signature S3 would reject outright.
+S3_MAX_PRESIGN_EXPIRES_SEC = 604800
+
 
 class S3StagingError(RuntimeError):
     """Raised when the S3 staging substrate is unconfigured or a control-side S3 call fails.
@@ -174,11 +181,19 @@ async def create_multipart_upload(file_id: uuid.UUID, bucket: BucketConfig) -> s
         raise S3StagingError(f"failed to create multipart upload for {file_id}") from exc
 
 
-async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: int, bucket: BucketConfig) -> list[str]:
+async def presign_upload_parts(
+    file_id: uuid.UUID,
+    upload_id: str,
+    part_count: int,
+    bucket: BucketConfig,
+    *,
+    expires_in_sec: int | None = None,
+) -> list[str]:
     """Presign ``part_count`` PUT URLs (PartNumber 1..part_count) on ``bucket`` for the upload leg (D-01).
 
-    Each URL is bounded by ``s3_presign_put_ttl_sec``. The agent PUTs each part's bytes
-    to its URL over httpx and reports back the ``(part_number, etag)`` pairs.
+    Each URL is bounded by ``expires_in_sec`` when given, else the kept-global ``s3_presign_put_ttl_sec``
+    knob (D-15). The agent PUTs each part's bytes to its URL over httpx and reports back the
+    ``(part_number, etag)`` pairs.
 
     WR-02: wrap a raw ``ClientError`` in ``S3StagingError`` so this verb matches the module's fail-loud
     error surface (see :func:`create_multipart_upload`).
@@ -187,10 +202,27 @@ async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: i
     This is the shared SDK seam every caller (``cloud_staging._stage_file_to_s3`` for both the
     ``stage_cloud_window`` drain and ``redrive_upload``) funnels through, so it is the last-resort
     backstop against an unbounded loop even if a caller's own part-count derivation regresses.
+
+    phaze-pq1fe: ``expires_in_sec`` lets the producer override the flat ``s3_presign_put_ttl_sec``
+    default with a TTL SCALED to the transfer's own sanctioned budget. Every part used to be minted
+    with the SAME fixed 1h TTL regardless of ``part_count``, while the file-server agent
+    (``tasks/s3_upload._transfer_parts``) PUTs the parts strictly SEQUENTIALLY under a sanctioned
+    per-part budget of its own -- so a large multi-part transfer's later parts routinely reached
+    their PUT already past the fixed TTL, S3 returned 403, and the re-drive restarted from part 0 into
+    the SAME expiry every attempt (a deterministic, budget-burning failure on exactly the large files
+    the cloud path exists for). ``cloud_staging._stage_file_to_s3`` passes
+    ``max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))`` -- the SAME
+    part-count-scaled budget already used to size the transfer's SAQ job-net timeout (phaze-g37f), so
+    the presign TTL and the transfer's own sanctioned wall-clock budget can never drift apart again.
+    Defaults to ``None`` (falls back to the flat ``s3_presign_put_ttl_sec`` knob) so every other
+    caller -- single-shot small uploads, existing tests -- is unaffected. Clamped to
+    ``S3_MAX_PRESIGN_EXPIRES_SEC`` (AWS's SigV4 hard ceiling) regardless of source.
     """
     if part_count > S3_MAX_PART_COUNT:
         raise S3StagingError(f"refusing to presign {part_count} parts for {file_id}: exceeds S3's {S3_MAX_PART_COUNT}-part multipart limit")
     cfg = cast("ControlSettings", get_settings())  # kept-global tuning knobs (D-15)
+    ttl = cfg.s3_presign_put_ttl_sec if expires_in_sec is None else expires_in_sec
+    ttl = max(1, min(ttl, S3_MAX_PRESIGN_EXPIRES_SEC))
     key = staged_object_key(file_id)
     urls: list[str] = []
     try:
@@ -199,7 +231,7 @@ async def presign_upload_parts(file_id: uuid.UUID, upload_id: str, part_count: i
                 url: str = await client.generate_presigned_url(
                     "upload_part",
                     Params={"Bucket": bucket.bucket, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
-                    ExpiresIn=cfg.s3_presign_put_ttl_sec,  # kept-global tuning knob (D-15)
+                    ExpiresIn=ttl,
                 )
                 urls.append(url)
         return urls

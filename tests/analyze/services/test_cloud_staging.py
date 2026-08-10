@@ -197,6 +197,73 @@ async def test_stage_file_to_s3_scales_timeout_with_part_count(
     assert policy["timeout"] > UPLOAD_FILE_SAQ_TIMEOUT_SEC  # strictly larger than the single-part cap
 
 
+async def test_stage_file_to_s3_scales_presign_ttl_with_part_count(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phaze-pq1fe: a multi-part upload presigns every part with a TTL SCALED to the transfer's own
+    sanctioned budget (``upload_file_saq_timeout_sec(part_count)``), not the flat
+    ``s3_presign_put_ttl_sec`` default -- the fixed 1h TTL made every part URL for a long-enough
+    sequential transfer expire before the agent reached it.
+    """
+    cfg = get_settings()
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    # Enough parts that the sanctioned per-part budget alone (630s/part) exceeds the flat 3600s TTL
+    # default -- the exact shape of the bug: a fixed 1h cap while the sanctioned transfer time scales.
+    part_count = 6
+    file_size = _PART_SIZE * part_count
+    file = await _seed_file(session, fileserver_id, file_size=file_size)
+
+    captured: dict[str, object] = {}
+    real_presign = s3_staging.presign_upload_parts
+
+    async def _spy_presign(*args: object, **kwargs: object) -> list[str]:
+        captured["expires_in_sec"] = kwargs.get("expires_in_sec")
+        return await real_presign(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _spy_presign)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    expected_ttl = max(cfg.s3_presign_put_ttl_sec, upload_file_saq_timeout_sec(part_count))
+    assert expected_ttl > cfg.s3_presign_put_ttl_sec  # sanity: the 6-part budget actually widened it
+    assert captured["expires_in_sec"] == expected_ttl
+
+
+async def test_stage_file_to_s3_presign_ttl_never_drops_below_configured_floor(
+    s3_env: str,
+    session: AsyncSession,
+    bucket,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short (single-part) transfer whose sanctioned budget is well under the configured TTL keeps
+    the OPERATOR's configured floor, rather than shrinking the TTL down to the transfer budget.
+    """
+    cfg = get_settings()
+    fileserver = await seed_active_agent(session, agent_id="fileserver-01", kind="fileserver")
+    fileserver_id = fileserver.id
+    file = await _seed_file(session, fileserver_id, file_size=_PART_SIZE)  # ceil == 1 part
+
+    captured: dict[str, object] = {}
+    real_presign = s3_staging.presign_upload_parts
+
+    async def _spy_presign(*args: object, **kwargs: object) -> list[str]:
+        captured["expires_in_sec"] = kwargs.get("expires_in_sec")
+        return await real_presign(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(s3_staging, "presign_upload_parts", _spy_presign)
+
+    task_router = FakeTaskRouter()
+    await cloud_staging.stage_file_to_s3(session, file, task_router, bucket)
+
+    assert upload_file_saq_timeout_sec(1) < cfg.s3_presign_put_ttl_sec  # sanity: budget is the smaller one
+    assert captured["expires_in_sec"] == cfg.s3_presign_put_ttl_sec
+
+
 async def test_stage_file_to_s3_is_idempotent_on_file_id(
     s3_env: str,
     session: AsyncSession,
@@ -336,7 +403,7 @@ async def test_stage_file_to_s3_caps_effective_part_size_for_huge_file_size(
 
     captured: dict[str, object] = {}
 
-    async def _fake_presign(file_id: uuid.UUID, upload_id: str, part_count: int, bucket_arg: object) -> list[str]:
+    async def _fake_presign(file_id: uuid.UUID, upload_id: str, part_count: int, bucket_arg: object, **_kw: object) -> list[str]:
         captured["part_count"] = part_count
         return [f"https://example.invalid/{file_id}/{upload_id}/{n}" for n in range(part_count)]
 
