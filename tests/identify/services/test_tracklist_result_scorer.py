@@ -404,6 +404,25 @@ class TestAmbiguityIsRefusedNotGuessed:
         assert "nothing to score" in selection.reason
         assert selection.ranked, "candidates are still reported for the operator panel"
 
+    def test_no_signal_query_stays_transient_even_when_results_are_also_empty(self) -> None:
+        """phaze-m15xr: zero rows must never win the race against the no-signal guard.
+
+        A no-signal derived query (no artist, no event) that happens to match zero search rows
+        establishes nothing about whether the set is on the site -- the same reasoning the
+        no-signal guard's own docstring states. Before the reorder this fell into the "search
+        returned no result rows" branch instead and was cached as the DEFINITIVE NOT_FOUND for the
+        full negative TTL, even though the module's stated policy for a no-signal query is always
+        a transient refusal.
+        """
+        derived = derive_query("2024-10-25.mp3")
+        assert not derived.artist
+        assert not derived.event
+        selection = select_result(derived, [])
+        assert selection.selected is None
+        assert selection.rejection is LookupOutcome.SEARCH_FAILED
+        assert "nothing to score" in selection.reason
+        assert selection.ranked == ()
+
     def test_two_rows_sharing_the_exact_date_do_not_get_the_uniqueness_exemption(self) -> None:
         """Synthetic: two stages of one festival, same artist, same day.
 

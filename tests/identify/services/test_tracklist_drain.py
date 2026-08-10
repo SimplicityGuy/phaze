@@ -337,6 +337,22 @@ class TestPerformLookupHonesty:
         assert attempt.outcome.is_transient
         assert attempt.host_requests == 2
 
+    async def test_a_no_signal_query_is_refused_without_ever_spending_the_search(self) -> None:
+        """phaze-97uw8: a bare-date/noise-only filename never reaches the host at all.
+
+        `select_result` refuses any derived query with neither an artist nor an event before it
+        looks at results -- a pure function of `derived`, which `perform_lookup` already holds
+        before it would issue the search. Checking it first means the predetermined SEARCH_FAILED
+        never costs a host request against the shared crawl-delay budget.
+        """
+        search = FakeSearch("time-warp-2024")  # would answer if asked -- asserting it never IS
+        attempt = await perform_lookup(candidate_for("2024-10-25.mp3"), search=search, renderer=FakeRenderer())
+
+        assert attempt.outcome is LookupOutcome.SEARCH_FAILED
+        assert attempt.outcome.is_transient
+        assert attempt.host_requests == 0
+        assert search.queries == [], "no-signal queries must never spend a host request"
+
     async def test_no_non_found_path_ever_claims_more_than_it_knows(self) -> None:
         """Sweep: every outcome this module can produce is either FOUND, a definitive negative, or transient."""
         producible = {

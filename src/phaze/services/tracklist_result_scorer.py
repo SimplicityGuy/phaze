@@ -373,24 +373,31 @@ def select_result(derived: DerivedQuery, results: Sequence[TracklistSearchResult
     """
     ranked = score_results(derived, results)
 
-    if not ranked:
-        return ResultSelection(
-            selected=None,
-            rejection=LookupOutcome.NOT_FOUND,
-            reason="search returned no result rows",
-            ranked=(),
-        )
-
     # A file with neither artist nor event has nothing to score AGAINST -- every candidate would be
     # judged on a date alone, which on a date-descending results page means "pick the newest", the
     # exact defect this module exists to prevent. Refuse before scoring can launder that into a
     # number, and refuse TRANSIENTLY: the set may well be on the site, we just cannot ask for it.
+    #
+    # phaze-m15xr: this guard does not depend on `ranked` (or on `results` at all -- it is a pure
+    # function of `derived`), so it must run BEFORE the "no result rows" check below. A no-signal
+    # query that happens to match zero rows says nothing about whether the set is on the site --
+    # exactly the reasoning this comment already states -- but ordered after the empty-results
+    # check, that same no-signal query was instead read as the empty-results case's own signal and
+    # returned the DEFINITIVE NOT_FOUND, cached for the full negative TTL.
     if not derived.artist and not derived.event:
         return ResultSelection(
             selected=None,
             rejection=LookupOutcome.SEARCH_FAILED,
             reason="derived query has neither artist nor event -- nothing to score candidates against",
             ranked=ranked,
+        )
+
+    if not ranked:
+        return ResultSelection(
+            selected=None,
+            rejection=LookupOutcome.NOT_FOUND,
+            reason="search returned no result rows",
+            ranked=(),
         )
 
     file_date = _trustworthy_file_date(derived)

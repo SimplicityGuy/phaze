@@ -60,7 +60,7 @@ from phaze.models.tracklist import Tracklist, TracklistTrack
 from phaze.models.tracklist_priority_flag import TracklistPriorityFlag
 from phaze.services.tracklist_candidate_queue import CUE_FILE_TYPE
 from phaze.services.tracklist_candidates import CandidateSignals, classify, detect_embedded_tracklist, group_unique_sets
-from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup
+from phaze.services.tracklist_lookup_cache import CacheVerdict, lookup, lookup_by_query_text
 from phaze.services.tracklist_query import derive_query
 
 
@@ -360,4 +360,16 @@ async def _lookup_status_without_a_tracklist(
         return classification.candidate_class, None, None, answered_elsewhere
 
     verdict: CacheVerdict = await lookup(session, unique_sets[0].key)
+    if verdict.entry is None:
+        # phaze-3dwsp: the drain writes cache rows under the CLUSTER's key -- built from the most
+        # common query and the MEDIAN duration across every member of the corpus-wide cluster --
+        # while this singleton lookup was just built from this one file's own query and duration.
+        # They agree for a lone file and can disagree for one part of a multi-part set (a linked
+        # part's own duration bucket need not match the cluster median) or a hash-linked rename.
+        # A miss on the exact key does not mean "never looked up"; probe by the readable query
+        # text too before reporting that to the operator -- see lookup_by_query_text's docstring
+        # for which divergence cases this does and does not recover.
+        fallback = await lookup_by_query_text(session, unique_sets[0].query_text)
+        if fallback is not None:
+            verdict = fallback
     return classification.candidate_class, verdict.entry, verdict.decision, answered_elsewhere

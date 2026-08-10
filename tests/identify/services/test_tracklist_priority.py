@@ -28,7 +28,7 @@ import pytest
 from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
 from phaze.models.metadata import FileMetadata
 from phaze.models.tracklist import Tracklist, TracklistTrack, TracklistVersion
-from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets
+from phaze.services.tracklist_candidates import CandidateSignals, group_unique_sets, set_key
 from phaze.services.tracklist_lookup_cache import record_outcome
 from phaze.services.tracklist_priority import (
     clear_flags,
@@ -253,6 +253,44 @@ class TestFileTracklistReview:
         assert review.cache_entry is not None
         assert review.cache_entry.outcome == LookupOutcome.BLOCKED.value
         assert review.cache_entry.outcome != LookupOutcome.NOT_FOUND.value
+
+    async def test_a_multi_part_members_cluster_row_is_found_by_query_text_when_the_singleton_key_misses(
+        self, session: AsyncSession, make_file
+    ) -> None:  # type: ignore[no-untyped-def]
+        """phaze-3dwsp: part 2 of a two-part set, parked under the CLUSTER's key.
+
+        The drain writes the cache row under ``set_key(cluster_query, cluster_median_duration)``.
+        This file's own singleton key -- ``set_key(this file's query, THIS file's duration)`` --
+        differs because a linked part's own duration (35 min) lands in a different 5-minute bucket
+        than the cluster's median (90 min, dominated by the much longer part 1). Before the fix
+        this diverging key was a flat MISS and the record page told the operator the set was
+        "never looked up", when it was actually parked awaiting their attention.
+        """
+        file = await make_file(original_filename=LIVE_SET_FILENAME)
+        session.add(FileMetadata(file_id=file.id, duration=2100.0))  # this file's own duration: 35 min
+        await session.commit()
+
+        # The cluster's query_text is `group_unique_sets`' normalized form of the derived query --
+        # the same normalization `get_file_tracklist_review` applies to build its own key, so this
+        # mirrors what the drain actually writes rather than a hand-normalized approximation.
+        signals = CandidateSignals(file_id=file.id, filename=file.original_filename, sha256_hash=file.sha256_hash, duration_seconds=2100.0)
+        derived = derive_query(signals.filename)
+        signals = replace(signals, derived_query=derived.query)
+        cluster_query_text = group_unique_sets([signals])[0].query_text
+        cluster_key = set_key(cluster_query_text, 5400.0)  # the cluster's median duration: 90 min
+        for _ in range(TRANSIENT_MAX_ATTEMPTS):
+            await record_outcome(session, set_key=cluster_key, query_text=cluster_query_text, outcome=LookupOutcome.BLOCKED, now=datetime.now(UTC))
+            await session.commit()
+
+        own_key = await _set_key_for(session, file, duration=2100.0)
+        assert own_key != cluster_key, "the singleton and cluster keys must actually diverge for this test to mean anything"
+
+        review = await get_file_tracklist_review(session, file.id)
+
+        assert review is not None
+        assert review.cache_entry is not None, "the parked cluster row must be found via the query-text fallback"
+        assert review.cache_decision is CacheDecision.TRANSIENT_EXHAUSTED
+        assert review.actionable is False
 
     @pytest.mark.parametrize("propagated", [False, True])
     async def test_a_tracklist_shows_scraped_vs_propagated_distinctly(self, session: AsyncSession, make_file, propagated: bool) -> None:  # type: ignore[no-untyped-def]
