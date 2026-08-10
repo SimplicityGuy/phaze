@@ -1067,6 +1067,17 @@ class KueueBackend(_BaseBackend):
                 # ran DESTRUCTIVE cleanup before the commit (a commit failure then left the DB claiming an upload
                 # whose S3 substrate was already gone).
                 await clear_ledger_entry(session, f"s3_upload:{file_id}")
+                if observed_status == CloudJobStatus.UPLOADED.value:
+                    # phaze-2iizn: an UPLOADED row is owned by submit_cloud_job:<file_id> (phaze-1k0i's
+                    # status-keyed liveness gate above), not s3_upload:<file_id> -- the s3_upload job
+                    # already completed and swept its own broker key by the time the row reached
+                    # UPLOADED. The lost job here is submit_cloud_job's, and its before_enqueue-written
+                    # ledger row survives this reap untouched unless cleared too: recover_orphaned_work
+                    # would otherwise replay it against an already-spilled/terminal file and guarantee-fail
+                    # with KubeStagingError. Clearing s3_upload:<file_id> stays -- it is unconditionally
+                    # load-bearing (the control side never clears it on the success path) -- this ADDS the
+                    # second key rather than swapping it.
+                    await clear_ledger_entry(session, f"submit_cloud_job:{file_id}")
                 await session.commit()
                 tally["staging_reaped"] += 1
                 logger.warning(
