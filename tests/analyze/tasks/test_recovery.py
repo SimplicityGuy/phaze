@@ -51,6 +51,9 @@ from phaze.tasks.reenqueue import (
     _build_done_sets,
     _DoneSets,
     _ledger_fids,
+    _regenerate_row_isolated,
+    _RegenTarget,
+    _replay_agent_rows_by_owner,
     is_domain_completed,
     recover_orphaned_work,
 )
@@ -2269,3 +2272,155 @@ async def test_stale_s3_upload_row_is_reported_as_stale_not_as_time_limited(
     # on the CLAIM, not the word.
     assert "payload is time-limited and cannot be regenerated" not in caplog.text
     assert "payload is time-limited and could not be regenerated" not in caplog.text
+
+
+# --- Coverage: _ledger_fids non-UUID skip, _regenerate_s3_upload edge branches, ------------------
+# --- _replay_agent_rows_by_owner's owner-less skip (phaze-kzz4b) --------------------------------
+
+
+def test_ledger_fids_skips_a_non_uuid_natural_id() -> None:
+    """A row whose ``payload["file_id"]`` is not UUID-parseable is dropped from the scope, not raised.
+
+    ``_ledger_fids`` feeds the ``= ANY(:fids)`` bind for the done-set queries; a controller set-hash
+    or malformed id can never match a per-file output-table row, so skipping it is a pure
+    optimization -- proven here by checking the well-formed sibling row still makes it through.
+    """
+    good_id = uuid.uuid4()
+    good_row = SchedulingLedger(key="push_file:good", function="push_file", routing="agent", payload={"file_id": str(good_id)})
+    bad_row = SchedulingLedger(key="push_file:bad", function="push_file", routing="agent", payload={"file_id": "not-a-uuid"})
+
+    fids = _ledger_fids([good_row, bad_row])
+
+    assert fids == [good_id]
+
+
+@pytest.mark.asyncio
+async def test_regenerate_row_isolated_missing_file_id_is_unreplayable(
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``s3_upload`` regeneration needs ``payload["file_id"]``; absent, the row is reported unreplayable."""
+    target = _RegenTarget(key="s3_upload:none", function="s3_upload", payload={})
+    stages: dict[str, dict[str, int]] = {}
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        await _regenerate_row_isolated(session, DedupFakeTaskRouter(), target, stages)
+
+    assert stages["s3_upload"] == {"reenqueued": 0, "skipped": 0, "errored": 0, "unreplayable": 1}
+    assert "nothing durable to regenerate from" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_row_isolated_non_uuid_file_id_is_unreplayable(
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stored ``file_id`` that does not parse as a UUID is reported unreplayable, not raised uncaught."""
+    target = _RegenTarget(key="s3_upload:bad", function="s3_upload", payload={"file_id": "not-a-uuid"})
+    stages: dict[str, dict[str, int]] = {}
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        await _regenerate_row_isolated(session, DedupFakeTaskRouter(), target, stages)
+
+    assert stages["s3_upload"]["unreplayable"] == 1
+    assert "non-UUID file_id" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_row_isolated_missing_file_is_unreplayable(
+    session: AsyncSession,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A well-formed ``file_id`` that no longer names a ``FileRecord`` is reported unreplayable."""
+    vanished_id = uuid.uuid4()
+    target = _RegenTarget(key="s3_upload:gone", function="s3_upload", payload={"file_id": str(vanished_id)})
+    stages: dict[str, dict[str, int]] = {}
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        await _regenerate_row_isolated(session, DedupFakeTaskRouter(), target, stages)
+
+    assert stages["s3_upload"]["unreplayable"] == 1
+    assert "no longer exists" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_row_isolated_unexpected_error_rolls_back_and_tallies_errored(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unanticipated exception from ``redrive_upload`` rolls back, drops parked enqueues, and re-raises
+    to the caller -- which isolates it as ``errored`` rather than aborting the whole recovery run.
+    """
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    target = _RegenTarget(key="s3_upload:boom", function="s3_upload", payload={"file_id": str(f.id)})
+    stages: dict[str, dict[str, int]] = {}
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        msg = "unexpected transport failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("phaze.tasks.reenqueue.cloud_staging.redrive_upload", _boom)
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        await _regenerate_row_isolated(session, DedupFakeTaskRouter(), target, stages)
+
+    assert stages["s3_upload"]["errored"] == 1
+    assert "row regeneration failed" in caplog.text
+    # the session must still be usable afterward (BaseException handler rolled it back cleanly)
+    assert await session.get(FileRecord, f.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_regenerate_s3_upload_fired_zero_tallies_skipped(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``flush_pending_s3_enqueues`` returning 0 (SAQ deduped against a still-live job) tallies ``skipped``,
+    the same "already covered, not lost" semantics a verbatim replay's dedup-``None`` return carries.
+    """
+    f = _make_file()
+    session.add(f)
+    await session.commit()
+    target = _RegenTarget(key="s3_upload:dedup", function="s3_upload", payload={"file_id": str(f.id)})
+    stages: dict[str, dict[str, int]] = {}
+
+    async def _noop_redrive(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _zero_fired(*_args: object, **_kwargs: object) -> int:
+        return 0
+
+    monkeypatch.setattr("phaze.tasks.reenqueue.cloud_staging.redrive_upload", _noop_redrive)
+    monkeypatch.setattr("phaze.tasks.reenqueue.cloud_staging.flush_pending_s3_enqueues", _zero_fired)
+
+    await _regenerate_row_isolated(session, DedupFakeTaskRouter(), target, stages)
+
+    assert stages["s3_upload"] == {"reenqueued": 0, "skipped": 1, "errored": 0, "unreplayable": 0}
+
+
+@pytest.mark.asyncio
+async def test_replay_agent_rows_by_owner_skips_rows_with_no_owning_agent_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A row whose payload carries no ``agent_id`` is skipped with a WARNING, never rerouted (phaze-fjii).
+
+    Its true owner is unknowable, so blind-routing it onto some other live agent would repeat the
+    exact misroute phaze-fjii fixed. Session/task_router are never touched on this path -- the function
+    must return before either is used, proven here by passing sentinels that would blow up on any I/O.
+    """
+    orphan_row = SchedulingLedger(
+        key="process_file:orphan",
+        function="process_file",
+        routing="agent",
+        payload={"file_id": str(uuid.uuid4())},
+    )
+    stages: dict[str, dict[str, int]] = {}
+
+    with caplog.at_level("WARNING", logger="phaze.tasks.reenqueue"):
+        await _replay_agent_rows_by_owner(None, None, [orphan_row], stages, required_kind=None)  # type: ignore[arg-type]
+
+    assert stages == {}
+    assert "no owning agent_id" in caplog.text

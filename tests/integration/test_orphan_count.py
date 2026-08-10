@@ -199,6 +199,30 @@ async def test_no_progress_file_is_one_orphan_for_its_stage(db_session: AsyncSes
     assert counts == {"metadata": 0, "analyze": 1}
 
 
+async def test_non_badge_function_row_is_skipped_not_counted(db_session: AsyncSession) -> None:
+    """A ``push_file`` ledger row -- not one of the two enrich badge functions -- is skipped entirely.
+
+    ``_BUSY_FUNCTION_TO_STAGE`` maps only ``extract_file_metadata``/``process_file`` to a badge stage;
+    ``push_file`` and the controller functions resolve to ``None`` and hit the ``continue`` branch,
+    proven here by a lone ``push_file`` orphan row leaving BOTH badge counts at zero.
+    """
+    f = await _file(db_session)
+    key = f"push_file:{f.id}"
+    db_session.add(
+        SchedulingLedger(
+            key=key,
+            function="push_file",
+            routing="agent",
+            payload={"file_id": str(f.id)},
+        )
+    )
+    await db_session.flush()
+
+    counts = await get_stage_orphan_counts(db_session)
+
+    assert counts == {"metadata": 0, "analyze": 0}
+
+
 async def test_orphan_count_matches_recovery_candidate_set(db_session: AsyncSession) -> None:
     """Over a mixed corpus the badge count equals the inline recovery-candidate set for EVERY stage (no drift)."""
     # metadata: one no-progress (orphan) + one domain-completed (metadata row present -> excluded).
