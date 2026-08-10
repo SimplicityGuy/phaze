@@ -22,8 +22,10 @@ from sqlalchemy import select
 from phaze.database import get_session
 from phaze.enums.tag_write import TagWriteStatus
 from phaze.models.file import FileRecord
+from phaze.models.scheduling_ledger import SchedulingLedger
 from phaze.models.tag_write_log import TagWriteLog
 from phaze.routers.agent_tag_writes import router as agent_tag_writes_router
+from phaze.services.scheduling_ledger import upsert_ledger_entry
 
 
 if TYPE_CHECKING:
@@ -468,3 +470,45 @@ async def test_before_snapshot_unauthenticated_is_refused(session: AsyncSession)
         resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}/before-snapshot", json=_snapshot_body())
 
     assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# phaze-yy9bk: the result callback must clear the write_file_tags:<log_id> scheduling-ledger row
+# it left orphaned forever -- the deeper root cause behind the callback-discard bug (every tag
+# write, not just a retried one, leaked a row ``recover_orphaned_work`` would replay without limit).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_result_callback_clears_its_scheduling_ledger_row(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+    await upsert_ledger_entry(
+        session,
+        key=f"write_file_tags:{log.id}",
+        function="write_file_tags",
+        kwargs={"log_id": str(log.id)},
+    )
+    await session.commit()
+
+    async with _make_client(session, token) as client:
+        resp = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+
+    assert resp.status_code == 200
+    row = await session.get(SchedulingLedger, f"write_file_tags:{log.id}")
+    assert row is None, "a terminal callback must clear its own ledger row, or recover_orphaned_work replays it forever"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_callback_does_not_error_when_ledger_row_is_already_gone(session: AsyncSession, seed_test_agent) -> None:  # type: ignore[no-untyped-def]
+    """A replay (the row already left ``queued``) short-circuits before the ledger clear -- no row, no error."""
+    _agent, token = seed_test_agent
+    log = await _seed_queued_log(session)
+
+    async with _make_client(session, token) as client:
+        first = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+        second = await client.patch(f"/api/internal/agent/tag-writes/{log.id}", json=_body())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["applied"] is False

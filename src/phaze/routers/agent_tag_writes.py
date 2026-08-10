@@ -19,6 +19,7 @@ from phaze.schemas.agent_tag_writes import (
     TagWriteResultResponse,
 )
 from phaze.services.pg_text import sanitize_pg_text
+from phaze.services.scheduling_ledger import clear_ledger_entry
 
 
 router = APIRouter(prefix="/api/internal/agent/tag-writes", tags=["agent-internal"])
@@ -106,6 +107,15 @@ async def patch_tag_write(
     # a mangled filename in an OSError string passes pydantic but aborts the transaction in Postgres
     # (CharacterNotInRepertoireError), which would roll the whole callback back and strand the row.
     log_entry.error_message = sanitize_pg_text(body.error_message)[:_ERROR_MESSAGE_MAX] if body.error_message else None
+    # phaze-yy9bk: clear the write_file_tags:<log_id> scheduling-ledger row in the SAME
+    # transaction as the terminal write. No other code path clears it -- unlike every other
+    # agent-side stage (agent_analysis.py / agent_metadata.py / agent_push.py / agent_s3), this
+    # callback previously left it forever, so EVERY tag write (not just a broker-hiccup retry)
+    # became a permanently orphaned ledger row that ``recover_orphaned_work`` would replay --
+    # re-executing a real mutagen rewrite -- on every subsequent controller restart or manual
+    # Recover, without limit. ``write_file_tags`` is keyed on ``log_id`` (deterministic_key.py),
+    # not ``file_id``, so the key mirrors that exactly.
+    await clear_ledger_entry(session, f"write_file_tags:{log_id}")
     await session.commit()
 
     return TagWriteResultResponse(agent_id=agent.id, log_id=log_id, status=body.status, applied=True)
