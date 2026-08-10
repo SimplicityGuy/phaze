@@ -5,8 +5,13 @@ proposals by ``FileRecord.agent_id``, chunks each group at 500, seeds the
 ``exec:{batch_id}`` Redis hash (D-04), and enqueues one sub-job per
 (agent, chunk) via ``AgentTaskRouter.enqueue_for_agent``. ``execution_progress``
 emits three SSE event types every tick (``progress``, ``agents_table``,
-plus a one-shot ``dispatch_summary`` on first connect) and closes on either
-``complete`` or ``complete_with_errors``.
+plus a one-shot ``dispatch_summary`` on first connect), yields a status
+event on either ``complete`` or ``complete_with_errors``, and then (phaze-047gd)
+a final canonical ``close`` event that the ``sse-close`` listener on the
+template's ``sse-connect`` element uses to actually stop the browser's
+EventSource -- htmx-ext-sse never reads ``sse-close`` from a descendant, so a
+status-named close event alone (the pre-phaze-047gd markup) registers no
+listener and the client auto-reconnects forever.
 
 The application server is the sole writer of the ``exec:{batch_id}`` hash via
 HSET at dispatch; HINCRBY mutations come exclusively from the Plan 28-02 POST
@@ -653,7 +658,12 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
 
     On terminal status (``complete`` or ``complete_with_errors``) the generator
     yields the final ``progress`` + ``agents_table`` events for that state,
-    then emits the matching close event and returns.
+    the matching status event, then a canonical ``close`` event (phaze-047gd)
+    before returning -- the ``close`` event is what the template's
+    ``sse-close="close"`` listener actually reacts to; the status-named event
+    alone does not close the browser's EventSource (htmx-ext-sse only reads
+    ``sse-close`` from the ``sse-connect`` element, and only one listener can
+    live there).
 
     phaze-5zyv: the ``not data`` (empty-hash) branch is bounded by
     ``_MAX_EMPTY_POLLS``. A batch that never seeds a hash (empty dispatch), one
@@ -687,6 +697,11 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
                         "event": "complete",
                         "data": 'This execution is no longer available. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>',
                     }
+                    # phaze-047gd: the browser's EventSource only stops reconnecting on an
+                    # sse-close-registered event; htmx-ext-sse reads sse-close exclusively from the
+                    # element carrying sse-connect (progress.html), never from a descendant, so both
+                    # terminal paths emit this same canonical close event for that listener to catch.
+                    yield {"event": "close", "data": ""}
                     return
                 yield {"event": "progress", "data": "Waiting for execution to start..."}
                 await asyncio.sleep(1)
@@ -754,6 +769,10 @@ async def execution_progress(request: Request, batch_id: uuid.UUID) -> EventSour
                 else:
                     msg = f'Execution complete. {completed} succeeded, {failed} failed. <a href="/s/audit" class="text-blue-600 hover:underline ml-2">View Audit Log</a>'
                 yield {"event": status, "data": msg}
+                # phaze-047gd: see the empty-hash terminal path above for why this second yield is
+                # required -- the sse-close listener lives on the sse-connect element and only ever
+                # fires on this canonical "close" event name.
+                yield {"event": "close", "data": ""}
                 return
 
             await asyncio.sleep(1)

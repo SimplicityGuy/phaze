@@ -213,6 +213,11 @@ async def test_sse_empty_hash_terminates_after_cap(smoke_sse_app: tuple[FastAPI,
     # The generator closed on its own: a terminal 'complete' event was emitted and the stream ended.
     assert b"event: complete" in body
     assert b"no longer available" in body
+    # phaze-047gd: a canonical 'close' event must follow -- it's the only event name the template's
+    # sse-close="close" listener (on the sse-connect element) reacts to. Without it the browser's
+    # EventSource treats the server closing the HTTP stream as a network drop and auto-reconnects.
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete")
     # It did not poll forever: the empty-hash cap is small, so hgetall was called a bounded number
     # of times (the cap), not unboundedly.
     from phaze.routers.execution import _MAX_EMPTY_POLLS
@@ -277,6 +282,36 @@ async def test_sse_with_valid_dispatch_summary_succeeds(
 
     assert b"event: agents_table" in body
     assert b"event: complete" in body
+    # phaze-047gd: canonical close event follows the status event on this terminal path too.
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete")
+
+
+async def test_sse_status_terminal_path_emits_close_after_complete_with_errors(
+    smoke_sse_app: tuple[FastAPI, MagicMock],
+) -> None:
+    """phaze-047gd: the ``complete_with_errors`` terminal branch also emits the canonical close event."""
+    app, redis = smoke_sse_app
+    redis.hgetall = AsyncMock(
+        return_value={
+            "total": "2",
+            "completed": "1",
+            "failed": "1",
+            "status": "complete_with_errors",
+            "dispatch_summary": "[]",
+        }
+    )
+    with patch("phaze.routers.execution.asyncio.sleep", new=AsyncMock(return_value=None)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            async with ac.stream("GET", f"/execution/progress/{uuid.uuid4()}") as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+
+    assert b"event: complete_with_errors" in body
+    assert b"event: close" in body
+    assert body.index(b"event: close") > body.index(b"event: complete_with_errors")
 
 
 # ---------------------------------------------------------------------------
@@ -861,3 +896,5 @@ async def test_sse_wrong_key_type_still_emits_a_terminal_close(
 
     # Degrades to the empty-hash path, which is bounded by _MAX_EMPTY_POLLS and closes the stream.
     assert b"event: complete" in body
+    # phaze-047gd: and the canonical close event that actually stops the browser's EventSource.
+    assert b"event: close" in body
