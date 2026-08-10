@@ -4,6 +4,13 @@
      x-transition:leave="transition ease-in duration-200"
      x-transition:leave-start="opacity-100"
      x-transition:leave-end="opacity-0"
+     {# phaze-ebyjh: x-show only toggles display:none -- it never detaches the node, so every
+        resolve/bulk-resolve/undo OOB-appended a toast that outlived its 10s visibility forever,
+        growing #toast-container (shell.html, never reloaded in the v7 single-page shell) with
+        hidden nodes and live Alpine components for the whole session. Removing the element once
+        its leave transition finishes (whether triggered by the auto-dismiss timeout above or an
+        Undo click) keeps the visible 10s window intact while actually detaching the node. #}
+     @transitionend="$el.remove()"
      class="bg-slate-800 text-white rounded-lg shadow dark:shadow-none dark:ring-1 dark:ring-phaze-border-lg px-4 py-3 flex items-center gap-3 text-sm">
     <span>{{ toast_message }}</span>
     {% if is_bulk is defined and is_bulk %}
