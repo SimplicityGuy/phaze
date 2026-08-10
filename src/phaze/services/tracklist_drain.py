@@ -106,7 +106,7 @@ from phaze.services.tracklist_priority import clear_flags, load_flagged_file_ids
 from phaze.services.tracklist_query import DerivedQuery, derive_query
 from phaze.services.tracklist_render import RenderOutcome, RenderResult
 from phaze.services.tracklist_result_scorer import ScoredResult, select_result
-from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, TracklistSearchResult
+from phaze.services.tracklist_scraper import DisallowedScrapeHostError, SearchParseFailureError, SearchRequestFailedError, TracklistSearchResult
 
 
 if TYPE_CHECKING:
@@ -410,7 +410,12 @@ async def perform_lookup(candidate: DrainCandidate, *, search: SearchClient, ren
 
     try:
         results = await search.search(derived.query)
-    except (SearchParseFailureError, DisallowedScrapeHostError) as exc:
+    except (SearchRequestFailedError, SearchParseFailureError, DisallowedScrapeHostError) as exc:
+        # phaze-i7gkc: SearchRequestFailedError covers what search() used to swallow to `[]`
+        # (transport error, non-200, a generic parse blowup) -- routine and often frequent
+        # (a Cloudflare block wave, a timeout), so it is handled here alongside the other two
+        # EXPECTED search-failure types rather than falling into the `logger.exception` catch-all
+        # below, which would log a full stack trace for something that is not a bug.
         return replace(base, detail=f"search failed: {exc}", host_requests=1)
     except Exception as exc:
         logger.exception("tracklist drain search raised", set_key=candidate.set_key)

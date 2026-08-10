@@ -72,6 +72,27 @@ class DisallowedScrapeHostError(ValueError):
         self.url = url
 
 
+class SearchRequestFailedError(RuntimeError):
+    """Raised when the search request itself fails, rather than running cleanly to a page.
+
+    Sibling of :class:`SearchParseFailureError` (phaze-i7gkc, same defect class as phaze-mk6y):
+    a transport error, a non-200 response, or an unexpected parse blowup (an ``Exception`` other
+    than :class:`SearchParseFailureError`, e.g. a truncated-HTML lxml failure or an encoding
+    error) are all statements about US -- our network, our client, our parser -- not about
+    whether 1001Tracklists has this set. Before this existed, ``search()`` collapsed all three
+    into the same ``[]`` a genuine zero-result page returns, and the drain's
+    ``select_result()`` cannot tell "the site said no" from "we never got an answer" -- so it
+    wrote a 180-day definitive ``NOT_FOUND`` (and cleared the set's operator priority flags) for
+    a Cloudflare block wave or a timeout. ``[]`` is now reserved strictly for a cleanly parsed
+    200 page with zero result rows; every other failure raises this instead, so
+    ``tracklist_drain.perform_lookup`` records the transient ``LookupOutcome.SEARCH_FAILED``
+    (backoff, eventually parked for an operator) rather than a permanent negative.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+
+
 class SearchParseFailureError(RuntimeError):
     """Raised when search result rows are present but NONE of them could be parsed.
 
@@ -363,12 +384,15 @@ class TracklistScraper:
     async def search(self, query: str) -> list[TracklistSearchResult]:
         """Search 1001Tracklists for tracklists matching query.
 
-        Returns empty list on 403, HTTP error, or genuinely no results. Raises
-        SearchParseFailureError (NOT swallowed to []) when the results page contains candidate
-        rows that none of them could be parsed from -- that is a stale-selector defect, and must
-        be distinguishable from a normal empty result (phaze-mk6y). Also raises
-        DisallowedScrapeHostError if the client's followed redirects land the request off the
-        1001Tracklists host allow-list (phaze-8ib8/phaze-k5zz).
+        Returns an empty list ONLY for a cleanly parsed 200 page with zero result rows -- a real
+        statement about the world. Every other way the request can fail to produce that page now
+        RAISES instead of collapsing to the same ``[]`` (phaze-i7gkc, same defect class as
+        phaze-mk6y): :class:`SearchRequestFailedError` for a transport error (``httpx.HTTPError``),
+        a non-200 response, or an unexpected parse blowup; :class:`SearchParseFailureError` when
+        the results page contains candidate rows none of which could be parsed (a stale-selector
+        defect, phaze-mk6y); :class:`DisallowedScrapeHostError` if the client's followed redirects
+        land the request off the 1001Tracklists host allow-list (phaze-8ib8/phaze-k5zz). All three
+        map to the drain's transient ``LookupOutcome.SEARCH_FAILED`` rather than a cached negative.
         """
         cached = self._search_cache.get(query)
         if cached is not None:
@@ -382,19 +406,22 @@ class TracklistScraper:
                 self.SEARCH_URL,
                 data={"main_search": query, "search_selection": "9"},
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
             logger.warning("HTTP error during search for: %s", query)
-            return []
+            raise SearchRequestFailedError(f"HTTP error during search for {query!r}: {exc}") from exc
 
         if response.status_code != 200:
             logger.info("Search returned status %d for: %s", response.status_code, query)
-            return []
+            raise SearchRequestFailedError(f"search returned status {response.status_code} for {query!r}")
 
         # phaze-8ib8: the client now follows redirects (see __init__), so a redirected search
         # POST could otherwise land on an off-allow-list host and have its (attacker-controlled)
         # HTML parsed as if it were a legitimate 1001Tracklists results page. Re-check the FINAL
         # response.url the same way scrape_tracklist() does, so this can't be used to smuggle a
-        # search off-host through a malicious/compromised redirect chain (phaze-k5zz).
+        # search off-host through a malicious/compromised redirect chain (phaze-k5zz). phaze-niflr:
+        # this is now defense in depth -- the owned client's ``_validate_request_host`` event hook
+        # (see __init__) already rejects a disallowed redirect hop BEFORE it is sent; this recheck
+        # is what still protects an INJECTED client built without that hook.
         if not self._is_allowed_url(str(response.url)):
             logger.warning("Refusing search result redirected to disallowed URL: %s", response.url)
             raise DisallowedScrapeHostError(str(response.url))
@@ -405,9 +432,14 @@ class TracklistScraper:
             # Already logged at ERROR inside _parse_search_results with the candidate count.
             # Propagate rather than collapsing to [] -- that collapse is exactly phaze-mk6y.
             raise
-        except Exception:
+        except Exception as exc:
+            # phaze-i7gkc: a generic parse blowup (lxml choking on truncated HTML, an encoding
+            # error) is exactly as "our fault, not a fact about the world" as SearchParseFailureError
+            # above -- collapsing it to [] here made it byte-indistinguishable from a genuine
+            # zero-result page, which is the same defect that comment names for the sibling except
+            # clause. Raise rather than swallow, same as every other failure mode in this method.
             logger.warning("Failed to parse search results for: %s", query, exc_info=True)
-            return []
+            raise SearchRequestFailedError(f"failed to parse search results for {query!r}: {exc}") from exc
 
         self._search_cache.set(query, results)
         return results

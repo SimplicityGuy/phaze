@@ -25,6 +25,7 @@ from phaze.config import get_settings
 from phaze.services.tracklist_scraper import (
     DisallowedScrapeHostError,
     SearchParseFailureError,
+    SearchRequestFailedError,
     TracklistScraper,
     TracklistSearchResult,
 )
@@ -155,14 +156,16 @@ class TestTracklistScraperSearch:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_search_403_returns_empty(self):
+    async def test_search_403_raises_search_request_failed(self):
+        """phaze-i7gkc: a non-200 response is a statement about US, not the world -- it must not
+        collapse to the same `[]` a genuine zero-result page returns, or the drain caches a
+        403/Turnstile block as a permanent 180-day NOT_FOUND."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(403, "Forbidden"))
 
         scraper = TracklistScraper(client=client)
-        results = await scraper.search("Skrillex")
-
-        assert results == []
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
 
     @pytest.mark.asyncio
     async def test_rate_limit_delay(self):
@@ -275,23 +278,27 @@ class TestTracklistScraperSearchEdgeCases:
     """Search error/parse branches and result-item skip paths."""
 
     @pytest.mark.asyncio
-    async def test_search_http_error_returns_empty(self):
-        """A transport error during the search POST is logged and yields []."""
+    async def test_search_http_error_raises_search_request_failed(self):
+        """phaze-i7gkc: a transport error during the search POST must RAISE, not collapse to []
+        -- a timeout/connection error says nothing about whether the site has this set."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(side_effect=httpx.ConnectError("boom"))
 
         scraper = TracklistScraper(client=client)
-        assert await scraper.search("skrillex") == []
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("skrillex")
 
     @pytest.mark.asyncio
-    async def test_search_parse_failure_returns_empty(self):
-        """An unexpected (non-stale-selector) parser exception on a 200 body is still swallowed to []."""
+    async def test_search_parse_failure_raises_search_request_failed(self):
+        """phaze-i7gkc: an unexpected (non-stale-selector) parser exception on a 200 body is the
+        THIRD collapse site the verifier flagged -- it must raise, exactly like the two above, not
+        be swallowed to [] (which is byte-indistinguishable from a genuine empty result)."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(200, SAMPLE_SEARCH_HTML))
 
         scraper = TracklistScraper(client=client)
-        with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")):
-            assert await scraper.search("skrillex") == []
+        with patch.object(scraper, "_parse_search_results", side_effect=ValueError("bad parse")), pytest.raises(SearchRequestFailedError):
+            await scraper.search("skrillex")
 
     @pytest.mark.asyncio
     async def test_search_parse_failure_error_is_not_swallowed(self):
@@ -729,12 +736,15 @@ class TestTracklistScraperCaching:
 
     @pytest.mark.asyncio
     async def test_search_does_not_cache_a_403(self):
-        """A blocked/transient response must not poison the cache with a permanent []."""
+        """A blocked/transient response must not poison the cache with a permanent [] -- it now
+        raises instead (phaze-i7gkc), but the "never cached" guarantee still needs pinning."""
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post = AsyncMock(return_value=_mock_response(403, "Forbidden"))
         scraper = TracklistScraper(client=client)
 
-        await scraper.search("Skrillex")
-        await scraper.search("Skrillex")
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
+        with pytest.raises(SearchRequestFailedError):
+            await scraper.search("Skrillex")
 
         assert client.post.await_count == 2
