@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from phaze.enums.tracklist_candidate import TRANSIENT_MAX_ATTEMPTS, CacheDecision, LookupOutcome
 from phaze.models.tracklist_lookup_cache import TracklistLookupCache
@@ -25,6 +25,7 @@ from phaze.services.tracklist_lookup_cache import (
     chunked,
     compute_expires_at,
     lookup,
+    lookup_by_query_text,
     lookup_many,
     purge_expired_negatives,
     record_outcome,
@@ -281,6 +282,59 @@ class TestRecordAndLookup:
         assert verdicts["c-2"].decision is CacheDecision.MISS
         assert verdicts["c-4"].decision is CacheDecision.MISS
         assert verdicts["c-5"].decision is CacheDecision.MISS
+
+
+class TestLookupByQueryText:
+    """phaze-3dwsp: the fallback probe for a caller whose own cache key misses.
+
+    ``tracklist_priority.get_file_tracklist_review`` computes a SINGLETON key from one file's own
+    query and duration; the drain writes cluster rows keyed by the cluster's query and MEDIAN
+    duration, which can land in a different bucket. This is the recovery path -- match on the
+    readable ``query_text`` column, ignoring the duration bucket entirely.
+    """
+
+    async def test_none_when_nothing_matches(self, session: AsyncSession) -> None:
+        assert await lookup_by_query_text(session, "never seen", now=NOW) is None
+
+    async def test_finds_a_row_written_under_a_different_key(self, session: AsyncSession) -> None:
+        """The whole point: a query-text match must succeed even when the caller's own key doesn't."""
+        await record_outcome(session, set_key="cluster-key", query_text="artist event 2024", outcome=LookupOutcome.NOT_FOUND, now=NOW)
+
+        verdict = await lookup_by_query_text(session, "artist event 2024", now=NOW)
+
+        assert verdict is not None
+        assert verdict.set_key == "cluster-key"
+        assert verdict.decision is CacheDecision.SUPPRESSED_NEGATIVE
+        assert verdict.entry is not None
+        assert verdict.entry.query_text == "artist event 2024"
+
+    async def test_matches_on_query_text_only_not_the_key(self, session: AsyncSession) -> None:
+        """A query-text match must not require any relationship between the two set_keys."""
+        await record_outcome(
+            session, set_key="totally-unrelated-key", query_text="shared query", outcome=LookupOutcome.FOUND, external_id="x", now=NOW
+        )
+
+        verdict = await lookup_by_query_text(session, "shared query", now=NOW)
+
+        assert verdict is not None
+        assert verdict.decision is CacheDecision.HIT_POSITIVE
+        assert verdict.external_id == "x"
+
+    async def test_most_recently_updated_row_wins_when_several_share_the_text(self, session: AsyncSession) -> None:
+        """``updated_at`` is a server-side ``func.now()``, constant for the whole test transaction
+        (the ``session`` fixture wraps every test in one outer transaction, never committed) -- so
+        the two rows' timestamps are forced apart explicitly rather than by real elapsed time."""
+        await record_outcome(session, set_key="old", query_text="shared query", outcome=LookupOutcome.NOT_FOUND)
+        await record_outcome(session, set_key="new", query_text="shared query", outcome=LookupOutcome.FOUND, external_id="fresh")
+        await session.execute(update(TracklistLookupCache).where(TracklistLookupCache.set_key == "old").values(updated_at=NOW - timedelta(days=10)))
+        await session.execute(update(TracklistLookupCache).where(TracklistLookupCache.set_key == "new").values(updated_at=NOW))
+        await session.commit()
+
+        verdict = await lookup_by_query_text(session, "shared query", now=NOW)
+
+        assert verdict is not None
+        assert verdict.set_key == "new"
+        assert verdict.external_id == "fresh"
 
 
 class TestChunked:

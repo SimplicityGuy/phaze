@@ -189,6 +189,37 @@ async def lookup(session: AsyncSession, set_key: str, *, now: datetime | None = 
     return (await lookup_many(session, [set_key], now=now))[set_key]
 
 
+async def lookup_by_query_text(session: AsyncSession, query_text: str, *, now: datetime | None = None) -> CacheVerdict | None:
+    """Fallback probe by the readable ``query_text`` column, ``None`` when nothing matches.
+
+    phaze-3dwsp: a per-file review recomputes a SINGLETON ``set_key`` -- ``set_key(this file's own
+    query, this file's own duration bucket)`` -- but the drain writes the row under the CLUSTER's
+    key, built from the cluster's most-common query and its members' MEDIAN duration bucket. The
+    two agree for a singleton cluster and can disagree for a multi-member one: a linked part whose
+    own duration lands in a different 5-minute bucket than the cluster median has no way to find
+    the row its own set was actually parked or answered under, by key alone.
+
+    ``normalize_query`` already merges same-set variants (part markers, hash-linked renames) into
+    one string BEFORE clustering, so the file's own normalized query is usually exactly what the
+    cluster wrote -- the divergence is almost always the duration bucket, not the query. Matching
+    on ``query_text`` alone (ignoring the bucket) recovers those cases without a schema change or a
+    corpus-wide join. It does not recover the rarer case where the cluster's chosen query differs
+    from this file's own (distinct filenames sharing only a content hash) -- persisting the
+    file-to-cluster edge at write time would be the complete fix; see the bead for the tradeoff.
+
+    Most-recently-updated match wins when more than one row shares the query text, since a newer
+    attempt supersedes an older one for the same set.
+    """
+    moment = now or datetime.now(UTC)
+    result = await session.execute(
+        select(TracklistLookupCache).where(TracklistLookupCache.query_text == query_text).order_by(TracklistLookupCache.updated_at.desc()).limit(1)
+    )
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        return None
+    return CacheVerdict(set_key=entry.set_key, decision=_decide(entry, moment), entry=entry)
+
+
 _NON_TRANSIENT_OUTCOME_VALUES: frozenset[str] = frozenset({LookupOutcome.FOUND.value, LookupOutcome.NOT_FOUND.value})
 """The stored ``outcome`` values that end a transient streak: everything NOT in
 ``TRANSIENT_OUTCOMES``. Spelled as a literal set (mirroring that frozenset) because it needs to
