@@ -154,22 +154,32 @@ def _env_list(service: dict[str, Any]) -> list[str]:
     return [str(e) for e in env]
 
 
-def test_app_services_assemble_authenticated_redis_url() -> None:
-    """phaze-hti8: api + worker inject an authenticated REDIS_URL via compose interpolation.
+def test_app_services_pass_through_raw_redis_password() -> None:
+    """phaze-hti8 / phaze-1g89i: api + worker forward RAW REDIS_PASSWORD, not a pre-built URL.
 
     Redis runs with ``--requirepass``, so the app-server's own Redis clients must
-    authenticate. Because ``env_file`` does not interpolate, the authenticated URL
-    is assembled in each service's ``environment:`` block with a ``${REDIS_PASSWORD}``
-    token — making the NOAUTH drift impossible.
+    authenticate. Because ``env_file`` does not interpolate, the credential used to be
+    assembled into a full DSN in each service's ``environment:`` block
+    (``REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0``) — but compose's raw string
+    interpolation embeds the password's bytes UNENCODED into the URL, and
+    ``redis.asyncio.Redis.from_url`` RFC-3986-parses + percent-DECODES the result: a password
+    containing ``/``, ``#``, or ``?`` truncated the netloc and crashed the api/worker at
+    startup, and one containing a ``%XX`` sequence silently decoded to the wrong bytes
+    (phaze-1g89i). Passing the raw password through its OWN var instead lets
+    ``config.py``'s ``_apply_redis_password`` percent-encode it into ``redis_url``'s userinfo
+    in Python, where the byte string is still intact — no shell/URL round-trip to mangle it.
     """
     data = _load_compose()
     for svc_name in ("api", "worker"):
         env = _env_list(data["services"][svc_name])
-        redis_entries = [e for e in env if e.startswith("REDIS_URL=")]
-        assert redis_entries, f"{svc_name} must set REDIS_URL in its environment block to authenticate against requirepass Redis"
-        entry = redis_entries[0]
-        assert "REDIS_PASSWORD" in entry, f"{svc_name} REDIS_URL must interpolate ${{REDIS_PASSWORD}}; got {entry!r}"
-        assert "default:" in entry, f"{svc_name} REDIS_URL must use the `default:` ACL user for the password; got {entry!r}"
+        assert not any(e.startswith("REDIS_URL=") for e in env), (
+            f"{svc_name} must NOT pre-assemble REDIS_URL in compose (phaze-1g89i — breaks on a password containing /, #, ? or %XX); got {env!r}"
+        )
+        password_entries = [e for e in env if e.startswith("REDIS_PASSWORD=")]
+        assert password_entries, f"{svc_name} must pass REDIS_PASSWORD through in its environment block; got {env!r}"
+        assert "${REDIS_PASSWORD:?" in password_entries[0], (
+            f"{svc_name} REDIS_PASSWORD must keep the fail-fast ${{REDIS_PASSWORD:?...}} form; got {password_entries[0]!r}"
+        )
 
 
 def test_api_service_pins_container_side_models_path() -> None:
