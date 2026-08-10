@@ -314,7 +314,7 @@ DEBUG so it never floods INFO. To watch a running scan in detail: `PHAZE_LOG_LEV
 | Variable               | Required | Default          | Description                                                   |
 |------------------------|----------|------------------|---------------------------------------------------------------|
 | `AGENT_TOKEN_PREFIX`   | No       | `phaze_agent_`   | Required prefix for agent bearer tokens.                      |
-| `AGENT_FILE_CHUNK_MAX` | No       | `1000`           | Max file records per chunk in the internal agent API.         |
+| `AGENT_FILE_CHUNK_MAX` | No       | `1000`           | Max file records per chunk in the internal agent API. `scan_directory`'s effective chunk size (`PHAZE_SCAN_CHUNK_SIZE`, below) is clamped to this value, so raising `PHAZE_SCAN_CHUNK_SIZE` past it has no effect unless this is raised too. |
 
 ## Bring-up settings (all roles)
 
@@ -396,7 +396,7 @@ These fields exist only on `AgentSettings` (the file server). When `PHAZE_ROLE=a
 | `PHAZE_WATCHER_MAX_PENDING_SECONDS` (or `WATCHER_MAX_PENDING_SECONDS`) | No | `3600` | Stuck-file cap; pending entries older than this are evicted without posting.|
 | `PHAZE_WATCHER_SWEEP_INTERVAL_SECONDS` (or `WATCHER_SWEEP_INTERVAL_SECONDS`) | No | `2` | How often the watcher's sweep task checks for settled files.               |
 | `PHAZE_WATCHER_POLLING_MODE` (or `WATCHER_POLLING_MODE`) | No | `false` | Use watchdog's `PollingObserver` instead of native inotify. Required for macOS Docker bind mounts where inotify events do not propagate. |
-| `PHAZE_SCAN_CHUNK_SIZE` (or `SCAN_CHUNK_SIZE`)    | No       | `500`                | Number of file-upsert rows per chunk in `scan_directory`.                   |
+| `PHAZE_SCAN_CHUNK_SIZE` (or `SCAN_CHUNK_SIZE`)    | No       | `500`                | Number of file-upsert rows per chunk in `scan_directory`. Clamped to `AGENT_FILE_CHUNK_MAX` (above) -- values above the cap are silently capped, never rejected. |
 
 ### Agent analysis tuning (windowed analysis — Phase 31/43/57.1)
 
