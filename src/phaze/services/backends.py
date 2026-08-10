@@ -104,6 +104,7 @@ async def hold_awaiting_cloud(
     *,
     attempts: int = 0,
     expect_status: Sequence[str] | None = None,
+    expect_upload_id: str | None = None,
     clear_cloud_phase: bool = False,
 ) -> bool:
     """The SINGLE go-forward writer of ``cloud_job.status='awaiting'`` (D-01/D-02). NEVER commits.
@@ -127,7 +128,14 @@ async def hold_awaiting_cloud(
       late/duplicate callback matched an already-advanced row (0 rows), and the CALLER keeps its FULL
       no-op (no FileRecord write, no cleanup, no ledger clear -- D-10). This mode does NOT write
       ``file.state`` and does NOT touch the FileRecord: the caller owns the gated dual-write behind the
-      returned bool.
+      returned bool. ``expect_upload_id``, when given, is ADDED to the CAS predicate
+      (``CloudJob.upload_id == expect_upload_id``) -- phaze-wnp51, mirroring ``report_uploaded``'s
+      phaze-p8h3 CAS. ``status`` alone is not a generation identifier: a row CAN legitimately
+      RE-ENTER ``expect_status`` (``cloud_staging.redrive_upload`` re-stages a failed upload back into
+      ``'uploading'`` with a FRESH ``upload_id``), so a caller whose observed status was read before a
+      concurrent re-drive can otherwise win its CAS against a generation it never actually observed.
+      Pinning ``upload_id`` too makes a re-drive's fresh generation fail the CAS -- a clean no-op --
+      instead of silently spilling live work out from under its running job.
 
     ``'awaiting'`` is deliberately OUT of :data:`IN_FLIGHT`, so a held/re-stamped row never inflates any
     backend's ``in_flight_count`` (D-03). NEVER commits in EITHER mode -- the caller owns the commit
@@ -198,9 +206,14 @@ async def hold_awaiting_cloud(
     values: dict[str, Any] = {"status": CloudJobStatus.AWAITING.value, "attempts": attempts}
     if clear_cloud_phase:
         values["cloud_phase"] = None
+    conditions = [CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)]
+    if expect_upload_id is not None:
+        # phaze-wnp51: pin the CAS to the observed generation too, not just status -- see the
+        # ``expect_upload_id`` docstring paragraph above for why status alone is not enough here.
+        conditions.append(CloudJob.upload_id == expect_upload_id)
     res = cast(
         "CursorResult[Any]",
-        await session.execute(update(CloudJob).where(CloudJob.file_id == file.id, CloudJob.status.in_(expect_status)).values(**values)),
+        await session.execute(update(CloudJob).where(*conditions).values(**values)),
     )
     wrote = res.rowcount > 0
     if wrote:
@@ -1032,6 +1045,12 @@ class KueueBackend(_BaseBackend):
                     file,
                     attempts=attempts,
                     expect_status=(observed_status,),
+                    # phaze-wnp51: pin the spill to the generation we actually observed. ``status`` alone
+                    # is not a generation identifier -- redrive_upload can re-stage the row back into the
+                    # SAME status with a fresh upload_id between our read and this CAS; requiring the
+                    # observed upload_id too makes that re-drive fail the CAS instead of losing its work
+                    # to a reap that thinks it is spilling the OLD (dead) generation.
+                    expect_upload_id=upload_id,
                     clear_cloud_phase=True,
                 )
                 if not spilled:
